@@ -18,7 +18,16 @@ function fixture(t) {
   const path = join(directory, 'invented.sqlite'), store = new Store(path);
   const config = { input: 'mqtt', settings: validateSettings({ comfort: { targetC: 21 } }),
     control: { learningTrials: false } };
-  let now = start, engine = new Engine({ store, config, clock: () => now });
+  let now = start;
+  const createEngine = () => {
+    const value = new Engine({ store, config, clock: () => now });
+    const manager = value.fireplaceManager.bind(value);
+    // These tests deliberately inspect the prepared candidate before allowing
+    // publication. Automatic progress is exercised by engine-correction-progress.
+    value.fireplaceManager = () => { const result = manager(); result.onReady = null; return result; };
+    return value;
+  };
+  let engine = createEngine();
   const observer = new DatabaseSync(path, { readOnly: true });
   const externalState = key => {
     const row = observer.prepare('SELECT value FROM state WHERE key=?').get(key);
@@ -40,12 +49,12 @@ function fixture(t) {
       powerKw: 1.22, energyBasis: 'estimated' }, { config: engine.control });
     now = Math.max(now, timestamp);
   };
-  return { store, sample, externalState,
+  return { store, sample, externalState, observer,
     get engine() { return engine; }, get now() { return now; }, set now(value) { now = value; },
     async restart() {
       await engine.charging.close();
       await engine.closeFireplace(); engine.executor.closed = true; clearTimeout(engine.executor.timer);
-      engine = new Engine({ store, config, clock: () => now }); return engine;
+      engine = createEngine(); return engine;
     } };
 }
 async function waitReady(engine) {
@@ -90,21 +99,17 @@ test('engine holds the old revision through real-worker replay and suffix catchu
     f.engine.pendingPlan = { invented: true };
     f.store.setState('pending-plan:mqtt', f.engine.pendingPlan);
     const beforeSwap = structuredClone(f.store.getState('adaptive:mqtt'));
-    const setState = f.store.setState.bind(f.store);
-    let inspectedSwap = false;
-    f.store.setState = (key, value) => {
-      const result = setState(key, value);
-      if (key === 'adaptive:mqtt' && value.fireplaceRevision === removed.revision) {
-        inspectedSwap = true;
-        assert.deepEqual(f.externalState('adaptive:mqtt'), beforeSwap, 'A separate reader cannot see a half-published checkpoint');
-        assert.equal(f.externalState('fireplace:rebuild:mqtt').status, 'ready');
-        assert.deepEqual(f.externalState('pending-plan:mqtt'), { invented: true });
-      }
-      return result;
-    };
+    f.observer.exec('BEGIN');
+    assert.deepEqual(f.externalState('adaptive:mqtt'), beforeSwap);
+    f.engine.readAdaptive(f.now);
+    await f.engine.fireplaceManager().publication;
+    // A WAL reader retains the old complete interpretation throughout the
+    // worker commit; a fresh snapshot then sees the entire replacement.
+    assert.deepEqual(f.externalState('adaptive:mqtt'), beforeSwap);
+    assert.equal(f.externalState('fireplace:rebuild:mqtt').status, 'ready');
+    assert.deepEqual(f.externalState('pending-plan:mqtt'), { invented: true });
+    f.observer.exec('ROLLBACK');
     const current = f.engine.readAdaptive(f.now);
-    f.store.setState = setState;
-    assert.equal(inspectedSwap, true);
     assert.equal(current.fireplaceRevision, removed.revision);
     assert.deepEqual(current, pureReplay(f.store));
     assert.equal(validLearningCheckpoint(current), true);
@@ -153,8 +158,35 @@ test('restart resumes a pending correction while preserving the previous checkpo
     assert.equal(firstRead.fireplaceRevision, old.fireplaceRevision);
     assert.equal(f.engine.fireplaceStatus().rebuild.status, 'running');
     await waitReady(f.engine);
+    f.engine.readAdaptive(f.now);
+    await f.engine.fireplaceManager().publication;
     const current = f.engine.readAdaptive(f.now);
     assert.equal(current.fireplaceRevision, removed.revision);
     assert.deepEqual(current, pureReplay(f.store));
     assert.equal(f.engine.fireplaceStatus().rebuild.status, 'idle');
   });
+
+test('a failed correction publication retains control and is not retried by every update', async t => {
+  const f = fixture(t);
+  const load = f.engine.changeFireplace({ requestId: 'invented-publication-failure-load', kg: 4 }).entries[0];
+  for (let i = 1; i <= 4; i++) f.sample(i);
+  const old = structuredClone(f.engine.readAdaptive(f.now));
+  f.now++;
+  f.engine.changeFireplace({ requestId: 'invented-publication-failure-remove', id: load.id }, true);
+  await waitReady(f.engine);
+  const runPublication = f.store.runPublication.bind(f.store);
+  let attempts = 0;
+  f.store.runPublication = (operation, options) => runPublication(() => {
+    attempts++; throw new Error('Invented publication storage failure');
+  }, options);
+  f.engine.reconcileFireplace();
+  await f.engine.fireplaceManager().publication;
+  f.store.runPublication = runPublication;
+  assert.equal(f.engine.fireplaceManager().status().status, 'failed');
+  assert.deepEqual(f.store.getState('adaptive:mqtt'), old);
+  for (let i = 0; i < 3; i++) await f.store.runWrite(() => f.engine.tick());
+  assert.equal(attempts, 1);
+  assert.equal(f.engine.fireplaceManager().status().status, 'failed');
+  assert.equal(f.engine.checkpoint.fireplaceRevision, old.fireplaceRevision);
+  assert(f.store.learningJournalHead('mqtt') >= old.journalCursor, 'committed learning continues with the prior interpretation');
+});

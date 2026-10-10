@@ -3,6 +3,7 @@ import { learningJournalHead } from '../storage/store.js';
 import { LEARNING_ALGORITHM, validLearningCheckpoint } from './committed-learning.js';
 import { fireplaceLearningContext } from './fireplace-inputs.js';
 import { sensorLearningContext, sensorRevision } from './sensor-inputs.js';
+import { publishLearning } from './learning-publication.js';
 import { fireplaceActive, fireplaceIntegral, fireplaceRate, FIREPLACE_HORIZON_MS } from '../domain/fireplace.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated']);
@@ -116,11 +117,11 @@ export function fireplaceView(store, input, { asOf = Date.now(), revision } = {}
     rebuild: { ...rebuild, status: rebuild.status === 'ready' ? 'running' : rebuild.status === 'current' ? 'idle' : rebuild.status } };
 }
 
-/** Workers build candidates only. The engine owns the atomic checkpoint swap.
- * Durable job intent survives restart without persisting a partial model. */
+/** Replay workers build candidates; a publication worker commits the verified
+ * replacement before the engine adopts it. Durable intent survives restart. */
 export class FireplaceRebuildManager {
-  constructor({ store, input, workerFactory = options => new Worker(new URL('./fireplace-worker.js', import.meta.url), options) }) {
-    this.store = store; this.input = validInput(input); this.workerFactory = workerFactory;
+  constructor({ store, input, onReady, workerFactory = options => new Worker(new URL('./fireplace-worker.js', import.meta.url), options) }) {
+    this.store = store; this.input = validInput(input); this.workerFactory = workerFactory; this.onReady = onReady;
     this.worker = null; this.ready = null; this.generation = 0; this.closed = false;
   }
   status() { return this.store.getState(jobKey(this.input)) ?? { status: 'idle',
@@ -131,11 +132,13 @@ export class FireplaceRebuildManager {
   current(selection) {
     return selection.revision === fireplaceRevision(this.store, this.input)
       && selection.sensorRevision === sensorRevision(this.store, this.input)
-      && selection.epoch === this.store.learningEpoch(this.input);
+      && selection.epoch === this.store.learningEpoch(this.input)
+      && selection.selection === this.store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation;
   }
   start(revision = fireplaceRevision(this.store, this.input), correctedSensors = sensorRevision(this.store, this.input), { force = false } = {}) {
     if (this.closed) return false;
-    const selection = { revision, sensorRevision: correctedSensors, epoch: this.store.learningEpoch(this.input) };
+    const selection = { revision, sensorRevision: correctedSensors, epoch: this.store.learningEpoch(this.input),
+      selection: this.store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation };
     if (!this.current(selection)) return false;
     if (!force && this.worker && this.current(this.workerSelection)) return true;
     const previousWorker = this.worker;
@@ -155,6 +158,7 @@ export class FireplaceRebuildManager {
           error: 'Model rebuild failed; the previous model remains active.' });
       };
       const admit = operation => {
+        if (this.closed || generation !== this.generation) return;
         void this.store.runWrite(() => {
           if (this.closed || generation !== this.generation) return;
           const previousReady = this.ready;
@@ -185,6 +189,7 @@ export class FireplaceRebuildManager {
           || result.head === 0 && result.checkpoint !== null) { fail(); return; }
         this.ready = { checkpoint: result.checkpoint, ...selection, head: result.head };
         this.setStatus({ ...this.status(), status: 'ready', journalCursor: result.head, processed: result.processed });
+        this.store.afterCommit(() => { if (!this.closed && generation === this.generation) this.onReady?.(); });
       }));
       this.store.afterCommit(() => { if (!this.closed && generation === this.generation)
         this.send({ type: 'rebuild', ...selection, head: this.head(), affectedAt: old.affectedAt }); });
@@ -234,8 +239,47 @@ export class FireplaceRebuildManager {
     if (worker) void worker.terminate();
     return true;
   }
+  publish(onPublish, isCurrent = () => true) {
+    if (this.publication || this.closed) return this.publication;
+    const candidate = this.takeReady();
+    if (!candidate) return null;
+    const generation = this.generation;
+    let retry = false;
+    const cancellation = this.publicationAbort = new AbortController();
+    const current = () => !this.closed && !cancellation.signal.aborted && isCurrent();
+    this.publication = publishLearning({ store: this.store, input: this.input, kind: 'correction',
+      message: candidate, signal: cancellation.signal, isCurrent: current,
+      onPublish: result => {
+        // Adoption is required even when cancellation followed a successful
+        // commit. Revoked runtimes gain no permission to command equipment.
+        onPublish(result.checkpoint);
+        this.ready = null;
+        const worker = this.worker; this.worker = null; this.generation++;
+        if (worker) void worker.terminate();
+      } }).then(result => { retry = !result; }).catch(async error => {
+      if (!current() || error.code === 'STORAGE_WRITE_ROLLED_BACK') return;
+      await this.store.runWrite(() => {
+        if (!current() || generation !== this.generation || !this.current(candidate)) return;
+        this.ready = null;
+        const worker = this.worker; this.worker = null; this.generation++;
+        if (worker) void worker.terminate();
+        this.setStatus({ ...this.status(), status: 'failed', requiresRebuild: true,
+          error: 'Model publication failed; the previous model remains active.' });
+      }, { signal: cancellation.signal, isCurrent: current });
+    }).catch(error => this.store.writeHealth.failure(error)).finally(() => {
+      this.publication = null; this.publicationAbort = null;
+      if (retry && !this.closed) this.onReady?.();
+    });
+    return this.publication;
+  }
+  beginShutdown() {
+    if (!this.closed) { this.closed = true; this.generation++; }
+    this.ready = null;
+    this.publicationAbort?.abort();
+  }
   async close() {
-    this.closed = true; this.generation++; this.ready = null;
+    this.beginShutdown();
+    await this.publication;
     const worker = this.worker; this.worker = null;
     if (worker) {
       const closing = new AbortController();

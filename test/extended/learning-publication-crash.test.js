@@ -50,12 +50,22 @@ for (const seed of seeds) test(`generated learning ${seed}: process death cannot
       const decisionsBefore = store.db.prepare('SELECT COUNT(*) n FROM recovery_decisions').get().n;
       store.close(); store = null;
       try {
-        const killed = spawnSync(process.execPath, [childScript, '--crash-child', path, donorPath, action, boundary],
+        const args = [childScript, '--crash-child', path, donorPath, action, boundary];
+        if (boundary === 'during-publication') {
+          // A startup preload is inherited by worker threads; mutating the
+          // parent's process.execArgv after startup does not install a preload.
+          const hook = new URL('../helpers/learning-publication-crash-hook.js', import.meta.url);
+          hook.searchParams.set('path', path); hook.searchParams.set('action', action);
+          args.unshift('--import', hook.href);
+        }
+        const killed = spawnSync(process.execPath, args,
           { encoding: 'utf8', timeout: 60_000, maxBuffer: 2 * 1024 * 1024 });
         assert.equal(killed.signal, 'SIGKILL', killed.stderr || killed.error?.message);
         const witnessed = JSON.parse(readFileSync(`${path}.crash.json`, 'utf8'));
         assert.equal(witnessed.boundary, boundary);
         assert.equal(witnessed.inTransaction, boundary === 'during-publication');
+        assert.equal(witnessed.threadId > 0, boundary === 'during-publication',
+          'only the in-transaction crash originates in the actual publication worker');
         store = new Store(path);
         const reopened = selectedState(store), published = boundary === 'after-commit';
         assertOriginalEvidence(store, original);

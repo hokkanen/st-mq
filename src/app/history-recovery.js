@@ -230,7 +230,10 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
         onPublish(result) {
           // An unchanged learning interpretation may return an older persisted
           // cache while ordinary live learning has already advanced in memory.
-          if (result.report?.model?.status !== 'unchanged') engine.checkpoint = result.checkpoint;
+          if (result.report?.model?.status !== 'unchanged') {
+            engine.checkpoint = result.checkpoint;
+            engine.learningCheckpointCache?.confirmCommitted(result.checkpoint);
+          }
           engine.pendingPlan = null;
           engine.fireplaceRebuild = null; engine.fireplaceReserveOverride = null;
           engine.lastSample = null; engine.latestStatus = null;

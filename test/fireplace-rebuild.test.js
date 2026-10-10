@@ -320,3 +320,21 @@ test('queued catch-up cannot replace a correction candidate while prefix lookup 
   }
   assert.equal(replies[1].processed, 32, 'the prefix is reused once and only one later input is caught up');
 });
+
+test('shutdown immediately fences replay replies before slower runtime cleanup', async t => {
+  const store = new Store(':memory:');
+  const worker = new EventEmitter();
+  worker.postMessage = () => {}; worker.terminate = async () => 0;
+  const manager = new FireplaceRebuildManager({ store, input: 'mqtt', workerFactory: () => worker });
+  t.after(async () => { await manager.close(); store.close(); });
+  manager.start();
+  const state = manager.status(), checkpoint = store.checkpoint();
+  manager.beginShutdown();
+  worker.emit('message', { type: 'progress', revision: state.revision, sensorRevision: state.sensorRevision,
+    epoch: state.epoch, processed: 42, journalCursor: 42 });
+  worker.emit('error', new Error('Invented late worker failure'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(store.checkpoint(), checkpoint);
+  assert.deepEqual(manager.status(), state);
+  assert.equal(store.writeQueueStatus().pending, 0);
+});

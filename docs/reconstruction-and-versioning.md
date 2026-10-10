@@ -44,6 +44,30 @@ acceleration, and does not roll back an already committed controller update.
 Correction and recovery publication keep their separate exact-head and atomic
 source-selection checks.
 
+Final correction and recovery publication runs in a storage worker, including
+sparse checkpoint capture and the complete source-selection transaction. The
+application reserves one writer-admission turn through commit and synchronous
+adoption of the result in memory. It holds no main-thread SQLite transaction
+while awaiting the worker. Reconstruction and catch-up continue alongside live
+learning; only this final publication turn queues subsequent writes. Timers and
+read-only requests remain available, but write-dependent work waits for storage.
+Committed replay-ready notifications schedule publication between controller
+updates, so catch-up does not depend on a later update having no new learning.
+A single latest publication receipt per input commits with the model. The owner
+joins worker exit and checks that receipt before releasing queued updates, so a
+lost reply or cancellation after commit still adopts the complete saved result.
+If cancellation prevents the commit, the previous selection remains intact. A
+completed commit is adopted even if cancellation arrives before acknowledgement.
+Shutdown revokes the worker immediately and joins publication before closing storage.
+
+A failed source-correction publication reports failure without retrying the same
+candidate on each controller update. Restart or an explicit correction retry can
+resume it. Successful inline saves, correction publication and an already-current
+validated cache can clear an earlier cache warning. Stale results, rollback and
+older saves cannot clear a newer unresolved failure or resurrect a superseded one.
+These changes preserve the learning algorithm, source evidence, charging control
+state and restoration duties; they add no schema migration or older-format reader.
+
 Preserve a consistent backup of the full SQLite database and the corresponding
 software version. The journal contains resolved learning inputs, configuration and
 seed information; fireplace and sensor-correction events preserve the selected

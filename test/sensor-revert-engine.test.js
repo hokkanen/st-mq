@@ -22,7 +22,16 @@ function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-sensor-revert-engine-'));
   const path = join(directory, 'invented.sqlite'), store = new Store(path);
   const config = { input: 'providers', settings: validateSettings({  }), control: { learningTrials: false } };
-  let now = start, engine = new Engine({ store, config, clock: () => now });
+  let now = start;
+  const createEngine = () => {
+    const value = new Engine({ store, config, clock: () => now });
+    const manager = value.fireplaceManager.bind(value);
+    // These tests deliberately inspect the prepared candidate before allowing
+    // publication. Automatic progress is exercised by engine-correction-progress.
+    value.fireplaceManager = () => { const result = manager(); result.onReady = null; return result; };
+    return value;
+  };
+  let engine = createEngine();
   engine.tick = () => {};
   const seed = restoreAdaptiveCheckpoint(null, engine.control);
   seed.baselineC = 21.5;
@@ -43,7 +52,7 @@ function fixture(t) {
     await engine.closeFireplace(); engine.executor.closed = true; clearTimeout(engine.executor.timer);
     observer.close(); store.close(); rmSync(directory, { recursive: true, force: true });
   });
-  return { store, initial, externalState, get engine() { return engine; }, get now() { return now; },
+  return { store, initial, externalState, observer, get engine() { return engine; }, get now() { return now; },
     set now(value) { now = value; },
     appendContext() {
       now++;
@@ -52,7 +61,7 @@ function fixture(t) {
     async restart() {
       await engine.charging.close();
       await engine.closeFireplace(); engine.executor.closed = true; clearTimeout(engine.executor.timer);
-      engine = new Engine({ store, config, clock: () => now }); engine.tick = () => {};
+      engine = createEngine(); engine.tick = () => {};
     } };
 }
 
@@ -99,22 +108,16 @@ test('sensor undo keeps the old model available, catches up and atomically repub
     assert.equal(f.engine.fireplaceManager().status().status, 'running');
     await waitReady(f.engine);
     const beforeSwap = structuredClone(f.store.getState('adaptive:providers'));
-    const setState = f.store.setState.bind(f.store);
-    let inspectedSwap = false;
     f.engine.pendingPlan = { invented: 'new-plan' }; f.store.setState('pending-plan:providers', f.engine.pendingPlan);
-    f.store.setState = (key, value) => {
-      const result = setState(key, value);
-      if (key === 'adaptive:providers' && value.sensorRevision === reversed.revision) {
-        inspectedSwap = true;
-        assert.deepEqual(f.externalState('adaptive:providers'), beforeSwap);
-        assert.equal(f.externalState('fireplace:rebuild:providers').status, 'ready');
-        assert.deepEqual(f.externalState('pending-plan:providers'), { invented: 'new-plan' });
-      }
-      return result;
-    };
+    f.observer.exec('BEGIN');
+    assert.deepEqual(f.externalState('adaptive:providers'), beforeSwap);
+    f.engine.readAdaptive(f.now);
+    await f.engine.fireplaceManager().publication;
+    assert.deepEqual(f.externalState('adaptive:providers'), beforeSwap);
+    assert.equal(f.externalState('fireplace:rebuild:providers').status, 'ready');
+    assert.deepEqual(f.externalState('pending-plan:providers'), { invented: 'new-plan' });
+    f.observer.exec('ROLLBACK');
     const current = f.engine.readAdaptive(f.now);
-    f.store.setState = setState;
-    assert.equal(inspectedSwap, true);
     assert.equal(current.sensorRevision, reversed.revision);
     assert.equal(current.baselineC, f.initial.baselineC);
     assert.deepEqual(current.samples, f.initial.samples);
@@ -143,6 +146,7 @@ test('sensor reversal clears obsolete availability reasons when the corrected ch
     f.engine.revertSensor({ id: changed.events[0].id, requestId: 'invented-status-revert' });
     await waitReady(f.engine);
     f.engine.readAdaptive(f.now);
+    await f.engine.fireplaceManager().publication;
     const restored = f.engine.temperatureObservations({}, f.now).indoor;
     assert.equal(restored.stale, false);
     assert.equal(restored.observedAt, observedAt);
@@ -168,6 +172,8 @@ test('restart resumes a sensor reversal with both source revisions pinned until 
     assert.equal(retained.fireplaceRevision ?? 0, before.fireplaceRevision ?? 0);
     assert.equal(retained.baselineC, f.initial.baselineC);
     await waitReady(f.engine);
+    f.engine.readAdaptive(f.now);
+    await f.engine.fireplaceManager().publication;
     const current = f.engine.readAdaptive(f.now);
     assert.equal(current.sensorRevision, reversed.revision);
     assert.equal(current.baselineC, f.initial.baselineC);
@@ -193,6 +199,7 @@ test('reverting a reset leaves its cancelled cycle and frozen observations intac
   f.engine.revertSensor({ id: changed.events[0].id, requestId: 'invented-cycle-undo' });
   await waitReady(f.engine);
   f.engine.readAdaptive(f.now);
+  await f.engine.fireplaceManager().publication;
   assert.equal(f.engine.cycles.active(), null);
   assert.deepEqual(f.store.cycles({ input: 'providers' }), cancelled);
 });
@@ -213,11 +220,11 @@ for (const race of ['journal suffix', 'sensor correction']) test(`publication re
     const pending = { invented: 'not-yet-invalidated-by-publication' };
     f.engine.pendingPlan = pending; f.store.setState('pending-plan:providers', pending);
     const manager = f.engine.fireplaceManager(), selectedHead = manager.ready.head;
-    const transaction = f.store.transaction.bind(f.store);
+    const publication = f.store.runPublication.bind(f.store);
     const writer = new Store(f.store.path);
     let raced = false;
-    f.store.transaction = callback => {
-      f.store.transaction = transaction;
+    f.store.runPublication = (callback, options) => {
+      f.store.runPublication = publication;
       raced = true;
       assert.equal(manager.ready.head, selectedHead);
       f.now++;
@@ -225,10 +232,13 @@ for (const race of ['journal suffix', 'sensor correction']) test(`publication re
         appendLearningRecord(writer, 'providers', 'context', { timestamp: f.now }, { config: f.engine.control });
       else revertSensorChange(writer, 'providers', { id: second.events[0].id,
         requestId: 'invented-race-undo-second' }, f.now, { config: f.engine.control });
-      return transaction(callback);
+      return publication(callback, options);
     };
-    try { f.engine.reconcileFireplace(); }
-    finally { f.store.transaction = transaction; writer.close(); }
+    try {
+      f.engine.reconcileFireplace();
+      await manager.publication;
+      f.engine.reconcileFireplace();
+    } finally { f.store.runPublication = publication; writer.close(); }
     assert.equal(raced, true);
     assert.deepEqual(f.engine.checkpoint, previous, 'A stale candidate never reaches process state');
     assert.deepEqual(f.externalState('adaptive:providers'), previous, 'A stale candidate never reaches durable state');
@@ -236,6 +246,8 @@ for (const race of ['journal suffix', 'sensor correction']) test(`publication re
     assert.equal(manager.status().status, 'running', 'The manager resumes the latest complete source selection');
     assert.equal(manager.ready, null);
     await waitReady(f.engine);
+    f.engine.readAdaptive(f.now);
+    await f.engine.fireplaceManager().publication;
     const current = f.engine.readAdaptive(f.now);
     assert.deepEqual(current, pureReplay(f.store));
     assert.equal(current.journalCursor, manager.head());

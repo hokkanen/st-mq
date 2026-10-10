@@ -8,6 +8,7 @@ import { restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
 import { evaluateCycle, economicAdmission, forecastIntervals, cycleForecastCovered, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope, preheatRoomRequest, effectiveComfortDropC } from '../control/planner.js';
 import { HeatingPlanning } from './heating-planning.js';
 import { LearningCheckpointCache } from './learning-checkpoint-cache.js';
+import { publishCorrection } from './learning-publication.js';
 import { CycleTracker } from './cycles.js';
 import { controlObservations } from './control-observations.js';
 import { heatingFeedback } from './heating-feedback.js';
@@ -359,10 +360,18 @@ export class Engine {
       this.learningCheckpointCache ??= new LearningCheckpointCache({ store: this.store, input: this.config.input,
         canWrite: () => !this.suspended && this.canControl() });
       this.learningCheckpointCache.save(checkpoint);
-    } else this.store.setState(key, checkpoint);
+    } else {
+      this.store.setState(key, checkpoint);
+      this.learningCheckpointCache?.confirmCommitted(checkpoint);
+    }
   }
   fireplaceManager() {
-    return this.fireplaceRebuild ??= new FireplaceRebuildManager({ store: this.store, input: this.config.input });
+    return this.fireplaceRebuild ??= new FireplaceRebuildManager({ store: this.store, input: this.config.input,
+      onReady: () => {
+        // Publish between controller updates. Waiting for a quiet tick can
+        // starve a correction when each update contributes another input.
+        void this.runWrite(() => this.reconcileFireplace()).catch(error => this.store.writeHealth.failure(error));
+      } });
   }
   reconcileFireplace() {
     if (this.historyRecovery?.busy()) return;
@@ -372,26 +381,30 @@ export class Engine {
     const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
     if (['pending', 'running', 'ready'].includes(job?.status) || job?.status === 'failed' && !this.fireplaceRebuild) {
       const manager = this.fireplaceManager();
+      if (manager.publication) return;
       manager.start();
       const ready = manager.takeReady();
       if (ready) {
+        const adopt = checkpoint => {
+          this.checkpoint = checkpoint;
+          this.learningCheckpointCache?.confirmCommitted(checkpoint);
+          this.fireplaceReserveOverride = null;
+          this.pendingPlan = null; this.lastSample = null; this.latestStatus = null;
+        };
+        if (this.store.path !== ':memory:') {
+          manager.publish(adopt, () => !this.suspended && this.canControl() && !this.historyRecovery?.busy());
+          return;
+        }
         const published = this.store.transaction(() => {
           // Another writer can commit between takeReady and BEGIN IMMEDIATE.
           // Recheck the complete source selection while holding the writer lock.
           if (!manager.current(ready) || manager.head() !== ready.head) return false;
-          this.store.setState(`adaptive:${this.config.input}`, ready.checkpoint);
-          this.store.setState(`fireplace:rebuild:${this.config.input}`, { ...manager.status(),
-            status: 'current', revision: ready.revision, sensorRevision: ready.sensorRevision,
-            requiresRebuild: false });
-          this.store.setState(`pending-plan:${this.config.input}`, null);
-          return true;
+          return publishCorrection(this.store, this.config.input, ready);
         });
         if (!published) { manager.takeReady(); return; }
         // Publish process state only after the durable transaction succeeds.
         this.store.afterCommit(() => manager.complete(ready.checkpoint, { persist: false }));
-        this.checkpoint = ready.checkpoint;
-        this.fireplaceReserveOverride = null;
-        this.pendingPlan = null; this.lastSample = null; this.latestStatus = null;
+        adopt(ready.checkpoint);
       }
     }
   }
@@ -426,7 +439,7 @@ export class Engine {
         this.fireplaceReserveOverride = null;
         this.checkpoint.fireplaceRevision = fireplaceRevision(this.store, input);
         this.checkpoint.checkpointDigest = learningCheckpointDigest(this.checkpoint);
-        this.store.setState(`adaptive:${input}`, this.checkpoint);
+        this.persistLearningCheckpoint(this.checkpoint);
       }
       this.onTemporaryChange?.();
       return this.fireplaceStatus();
@@ -444,6 +457,7 @@ export class Engine {
   beginShutdown({ restore = true } = {}) {
     this.suspended = true;
     this.learningCheckpointCache?.beginShutdown();
+    this.fireplaceRebuild?.beginShutdown();
     // Revocation cancels obsolete publication immediately. Orderly shutdown
     // still saves command outcomes, with bounded waiting if storage is blocked.
     this.writes.beginShutdown({ restore });
@@ -1508,8 +1522,8 @@ export class Engine {
             ? (floorMode === 'on' ? 'room-boost-floor-v1' : 'room-boost-v1') : phase === 'reduction' ? 'reduction-only-v1' : 'normal'),
           targetC:this.settings.comfort.targetC??this.checkpoint?.baselineC??null,
           regime:this.settings.occupancy.mode==='occupied'?'occupied':'away',
-          episodeId:this.cycles.active()?.id ?? null},at,{config:this.control,seed:checkpoint});
-        checkpoint=this.replayLearning(checkpoint);this.checkpoint=checkpoint;
+          episodeId:this.cycles.active()?.id ?? null},at,{config:this.control,seed:this.checkpoint});
+        checkpoint=this.replayLearning(this.checkpoint);this.checkpoint=checkpoint;
         const old = this.store.getState(`phase-snapshot:${input}`);
         const expiresAt = execution.expiresAt ?? decision.expiresAt;
         if ((old?.phase ?? old) !== phase || old?.expiresAt !== expiresAt) {

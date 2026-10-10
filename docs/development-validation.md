@@ -26,6 +26,16 @@ scheduling during journal reconstruction. Keep phase cohorts atomic when boundin
 transaction work; an event-loop yield in the worker alone does not prevent it
 from repeatedly taking the lock before the controller can write.
 
+Correction publication tests use resolved learning segments that produce roughly
+1.8 MiB checkpoints through the actual Engine, recovery, revert and restore paths.
+They verify exact replay, retained original history and unchanged charging control
+choices. Worker boundary tests hold publication before and after commit, drop its
+reply, revoke authority and inject a final-write failure. The next admitted write
+must observe the adopted complete model; rollback must leave the previous model,
+selection and plan intact. Cache-status tests distinguish confirmed persistence
+from stale, failed and rolled-back attempts. These offline checks do not qualify
+household equipment or Raspberry Pi storage latency.
+
 `test/acquisition-contention.test.js` injects rejected saves, full queues and
 out-of-order completions. Recovery must use a later committed delivery from the
 affected input/device without reconnecting; retained, duplicate, ignored and

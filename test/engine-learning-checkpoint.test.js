@@ -8,6 +8,7 @@ import { Engine } from '../src/app/engine.js';
 import { appendLearningRecord, replayLearningJournal, LEARNING_WINDOW_MS as WINDOW }
   from '../src/app/committed-learning.js';
 import { MAIN_JOURNAL_CAPTURE_BYTES, MAIN_JOURNAL_ROW_BYTES } from '../src/storage/journal-codec.js';
+import { addSensorChange } from '../src/app/sensor-changes.js';
 
 const START = Date.parse('2026-10-01T12:00:00Z'), HOUR = 3_600_000;
 
@@ -78,6 +79,72 @@ async function closeEngine(engine) {
   await engine.charging.close(); await engine.garage.close({ restore: false });
   await engine.closeFireplace(); await engine.executor.close({ restore: false });
 }
+
+for (const correction of ['fireplace', 'sensor']) test(`incident-sized ${correction} correction publishes through the Engine while retaining charging controls`,
+  { timeout: 30_000 }, async t => {
+    const directory = mkdtempSync(join(tmpdir(), 'stmq-engine-correction-'));
+    const store = new Store(join(directory, 'synthetic.sqlite'));
+    let now = START - 49 * WINDOW, commands = 0;
+    const engine = new Engine({ store, config: { input: 'mqtt', settings: {},
+      control: { indoorSensorWeights: { indoor_temperature: 1 } } }, clock: () => now,
+      commandTransport: { async publish() { commands++; }, async publishDhwr() { commands++; }, async close() {} } });
+    t.after(async () => { await closeEngine(engine); store.close(); rmSync(directory, { recursive: true, force: true }); });
+    // Inspect the complete large candidate explicitly before publication.
+    engine.fireplaceManager().onReady = null;
+    const source = correction === 'fireplace'
+      ? engine.changeFireplace({ requestId: 'invented-large-load', kg: 4 }).entries[0]
+      : addSensorChange(store, 'mqtt', { requestId: 'invented-large-sensor', signal: 'outdoor_temperature', reason: 'replacement' }, now);
+    for (let index = 0; index < 48; index++) store.transaction(() => appendLearningRecord(store, 'mqtt', 'sample',
+      richSample(START - (48 - index) * WINDOW), { config: engine.control }));
+    now = START;
+    const old = replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false });
+    store.setState('adaptive:mqtt', old); engine.checkpoint = old;
+    const originalControls = controls(engine), journal = store.learningJournal({ input: 'mqtt' });
+    await store.runWrite(() => correction === 'fireplace'
+      ? engine.changeFireplace({ requestId: 'invented-large-remove', id: source.id }, true)
+      : engine.revertSensor({ requestId: 'invented-large-revert', id: source.id }));
+    const manager = engine.fireplaceManager();
+    const waitReady = async () => {
+      const deadline = Date.now() + 20_000;
+      while (manager.status().status !== 'ready') {
+        assert.notEqual(manager.status().status, 'failed');
+        assert(Date.now() < deadline, 'the correction catches up');
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    };
+    await waitReady();
+    assert.deepEqual(engine.checkpoint, old, 'the original model serves control during replay');
+    store.transaction(() => appendLearningRecord(store, 'mqtt', 'sample', richSample(now), { config: engine.control }));
+    await store.runWrite(() => engine.reconcileFireplace());
+    await waitReady();
+    const candidateBytes = Buffer.byteLength(JSON.stringify(manager.ready.checkpoint));
+    assert(candidateBytes > 1_800_000, 'real resolved inputs reproduce the affected checkpoint size');
+    await store.runWrite(() => engine.reconcileFireplace());
+    const publication = manager.publication;
+    assert(publication, 'the actual Engine starts worker publication');
+    let sawPublished = false;
+    const nextUpdate = store.runWrite(() => {
+      assert.equal(manager.status().status, 'current');
+      assert.deepEqual(engine.checkpoint, store.getState('adaptive:mqtt'), 'RAM adoption precedes the next controller write');
+      engine.tick(); sawPublished = true;
+    });
+    await publication; await nextUpdate; await engine.learningCheckpointCache?.flush();
+    assert(sawPublished);
+    assert.equal(manager.status().requiresRebuild, false);
+    assert.deepEqual(engine.checkpoint, replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false }));
+    assert.deepEqual(store.learningJournal({ input: 'mqtt' }).slice(0, journal.length), journal);
+    assert.deepEqual(controls(engine), originalControls);
+    assert.equal(commands, 0);
+    // A later firewood entry changes only the future source revision. Its
+    // optional large restart cache must also avoid a main-thread publication.
+    now++;
+    await store.runWrite(() => engine.changeFireplace({ requestId: 'invented-large-future-load', kg: 2 }));
+    await engine.learningCheckpointCache?.flush();
+    assert.equal(manager.status().status, 'current');
+    assert.deepEqual(store.getState('adaptive:mqtt'), engine.checkpoint);
+    assert.deepEqual(engine.checkpoint, replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false }));
+    t.diagnostic(JSON.stringify({ correction, candidateBytes }));
+  });
 
 test('the MQTT controller advances a rich learning cache beside durable charging state without weakening storage admission', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-engine-checkpoint-'));

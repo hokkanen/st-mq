@@ -65,7 +65,10 @@ try {
             ? boundary(store, fences.epoch, saved.journalCursor) : null;
           if ((saved.fireplaceRevision ?? 0) === fences.fireplaceRevision && (saved.sensorRevision ?? 0) === fences.sensorRevision
             && matchesBoundary(saved, savedLast) && saved.journalCursor >= checkpoint.journalCursor
-            && validLearningCheckpoint(store.getState(`adaptive:${workerData.input}`), savedLast)) return 'stale';
+            && validLearningCheckpoint(store.getState(`adaptive:${workerData.input}`), savedLast)) {
+            journalCursor = saved.journalCursor;
+            return 'current';
+          }
         }
         if (!writable()) return 'cancelled';
         store.setState(`adaptive:${workerData.input}`, checkpoint);

@@ -140,6 +140,169 @@ test('cache cannot rewind or replace an already saved current-epoch checkpoint a
   assert.deepEqual(store.checkpoint(), before);
 });
 
+test('verified already-current worker result clears a prior warning without rewriting the cache', async t => {
+  const { store, cache, checkpoint } = setup(t);
+  const first = checkpoint(1), latest = checkpoint(2);
+  cache.save({ ...latest, checkpointDigest: 'invalid' }); await cache.flush();
+  assert.equal(cache.status().status, 'failed');
+  store.setState('adaptive:mqtt', latest);
+  const before = store.checkpoint();
+  cache.save(first); await cache.flush();
+  assert.equal(cache.status().error, null);
+  assert.equal(cache.status().status, 'current');
+  assert.equal(cache.status().journalCursor, latest.journalCursor);
+  assert.equal(cache.status().saved, 0);
+  assert.equal(cache.status().skipped, 1);
+  assert.deepEqual(store.checkpoint(), before);
+});
+
+test('an older valid cache cannot clear a failed newer boundary through worker or inline confirmation', async t => {
+  const { store, cache, checkpoint } = setup(t);
+  const first = checkpoint(1), latest = checkpoint(2);
+  store.setState('adaptive:mqtt', first);
+  cache.save({ ...latest, checkpointDigest: 'invalid' }); await cache.flush();
+  cache.save(first); await cache.flush();
+  assert(cache.status().error);
+  cache.confirmCommitted(first);
+  assert(cache.status().error);
+  store.transaction(() => {
+    store.setState('adaptive:mqtt', latest);
+    cache.confirmCommitted(latest);
+    assert(cache.status().error, 'confirmation must wait for the outer commit');
+  });
+  assert.equal(cache.status().error, null);
+  assert.equal(cache.status().journalCursor, latest.journalCursor);
+});
+
+test('rolled-back inline publication retains the warning until the corrected cache really commits', async t => {
+  const { store, cache, checkpoint } = setup(t);
+  const first = checkpoint(1); store.setState('adaptive:mqtt', first);
+  const latest = checkpoint(2);
+  cache.save({ ...latest, checkpointDigest: 'invalid' }); await cache.flush();
+  assert.throws(() => store.transaction(() => {
+    store.setState('adaptive:mqtt', latest); cache.confirmCommitted(latest);
+    throw new Error('rollback');
+  }), /rollback/);
+  assert(cache.status().error);
+  assert.deepEqual(store.getState('adaptive:mqtt'), first);
+  store.transaction(() => {
+    assert.throws(() => store.transaction(() => {
+      store.setState('adaptive:mqtt', latest); cache.confirmCommitted(latest);
+      throw new Error('nested rollback');
+    }), /nested rollback/);
+  });
+  assert(cache.status().error);
+  store.transaction(() => { store.setState('adaptive:mqtt', latest); cache.confirmCommitted(latest); });
+  assert.equal(cache.status().error, null);
+});
+
+test('committed empty corrected history clears an obsolete cache warning', async t => {
+  const { store, cache, checkpoint } = setup(t);
+  const first = checkpoint(1); store.setState('adaptive:mqtt', first);
+  cache.save({ ...first, checkpointDigest: 'invalid' }); await cache.flush();
+  assert(cache.status().error);
+  store.transaction(() => {
+    store.db.prepare("INSERT INTO learning_epochs(input,epoch) VALUES('mqtt','empty-corrected-epoch')").run();
+    store.setState('adaptive:mqtt', null); cache.confirmCommitted(null);
+    assert(cache.status().error);
+  });
+  assert.equal(cache.status().error, null);
+  assert.equal(cache.status().journalCursor, 0);
+  assert.equal(store.learningJournalHead('mqtt'), 0);
+});
+
+for (const invalid of ['remaining history', 'remaining checkpoint', 'rollback'])
+test(`empty checkpoint confirmation retains a warning with ${invalid}`, async t => {
+  const { store, cache, checkpoint } = setup(t);
+  const first = checkpoint(1); store.setState('adaptive:mqtt', first); cache.fail();
+  const publish = () => store.transaction(() => {
+    if (invalid !== 'remaining history')
+      store.db.prepare("INSERT INTO learning_epochs(input,epoch) VALUES('mqtt','empty-corrected-epoch')").run();
+    if (invalid !== 'remaining checkpoint') store.setState('adaptive:mqtt', null);
+    cache.confirmCommitted(null);
+    if (invalid === 'rollback') throw new Error('rollback');
+  });
+  if (invalid === 'rollback') assert.throws(publish, /rollback/); else publish();
+  assert(cache.status().error);
+});
+
+for (const changed of ['epoch', 'history selection', 'source revision', 'digest', 'expected snapshot'])
+test(`inline confirmation does not clear a warning after changed ${changed}`, async t => {
+  const { store, cache, checkpoint } = setup(t);
+  const value = checkpoint(1); cache.fail();
+  store.transaction(() => {
+    store.setState('adaptive:mqtt', value); cache.confirmCommitted(value);
+    if (changed === 'epoch') store.db.prepare("INSERT INTO learning_epochs(input,epoch) VALUES('mqtt','different-epoch')").run();
+    else if (changed === 'history selection') store.db.prepare("UPDATE history_selection SET generation='different-selection' WHERE id=1").run();
+    else if (changed === 'source revision')
+      store.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,kg) VALUES('mqtt','new-source',?,'load',3)").run(start);
+    else if (changed === 'digest') store.setState('adaptive:mqtt', { ...value, journalHash: 'invalid' });
+    else store.setState('adaptive:mqtt', checkpoint(2));
+  });
+  assert(cache.status().error);
+});
+
+test('a changed source interpretation is not proof that a rejected worker cache succeeded', async t => {
+  const { store, cache, checkpoint } = setup(t);
+  const first = checkpoint(1); cache.fail();
+  cache.save(first);
+  store.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,kg) VALUES('mqtt','changed-source',?,'load',3)").run(start);
+  await cache.flush();
+  assert(cache.status().error);
+  assert.equal(cache.status().skipped, 1);
+  const corrected = replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false });
+  store.setState('adaptive:mqtt', corrected); cache.confirmCommitted(corrected);
+  assert.equal(cache.status().error, null);
+});
+
+for (const corrected of [false, true])
+test(`late worker failure cannot resurrect a warning after ${corrected ? 'corrected' : 'newer'} inline publication`, async t => {
+  const { store, cache, checkpoint } = setup(t);
+  const first = checkpoint(1); cache.save(first); await cache.flush();
+  const second = checkpoint(2);
+  let latest = checkpoint(3);
+  store.transaction(() => {
+    cache.save(second);
+    store.afterCommit(() => {
+      assert.equal(cache.status().active, true);
+      store.transaction(() => {
+        if (corrected) {
+          store.db.prepare("INSERT INTO fireplace_events(input,request_id,at,kind,kg) VALUES('mqtt','corrected-source',?,'load',3)").run(start);
+          latest = replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false });
+        }
+        store.setState('adaptive:mqtt', latest); cache.confirmCommitted(latest);
+      });
+      cache.worker.emit('error', new Error('delayed failure of superseded request'));
+    });
+  });
+  await cache.flush();
+  assert.equal(cache.status().error, null);
+  assert.equal(cache.status().status, 'current');
+  assert.deepEqual(store.getState('adaptive:mqtt'), latest);
+});
+
+test('delayed older worker success cannot rewind a newer confirmed publication', async t => {
+  const { store, cache, checkpoint } = setup(t);
+  const first = checkpoint(1); cache.save(first); await cache.flush();
+  const second = checkpoint(2), latest = checkpoint(3);
+  store.transaction(() => {
+    cache.save(second);
+    store.afterCommit(() => {
+      const id = cache.active.id;
+      store.transaction(() => {
+        store.setState('adaptive:mqtt', latest); cache.confirmCommitted(latest);
+      });
+      // Delivery may lag the worker commit while the main thread publishes a
+      // newer cache. Exercise the actual result listener in that ordering.
+      cache.worker.emit('message', { type: 'result', id, status: 'saved', journalCursor: second.journalCursor });
+    });
+  });
+  await cache.flush();
+  assert.equal(cache.status().error, null);
+  assert.equal(cache.status().journalCursor, latest.journalCursor);
+  assert.equal(cache.confirmation.journalCursor, latest.journalCursor);
+});
+
 test('same-head corrected source replaces an older interpretation and rejects an older queued snapshot', async t => {
   const { store, cache, checkpoint } = setup(t);
   const first = checkpoint(1); store.setState('adaptive:mqtt', first);

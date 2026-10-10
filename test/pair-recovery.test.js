@@ -303,6 +303,9 @@ test('failed recovery keeps control learning available and resumes ordinary back
   for (let attempt = 0; attempt < 200 && f.master.getState('fireplace:rebuild:mqtt').status !== 'current'; attempt++) {
     await new Promise(resolve => setTimeout(resolve, 10)); engine.reconcileFireplace();
   }
+  // Durable selection can be visible to a reader before the worker's reply.
+  // Join the publication turn before examining its adopted process model.
+  await engine.fireplaceRebuild?.publication;
   assert.equal(f.master.getState('fireplace:rebuild:mqtt').status, 'current');
   assert.equal(f.master.getState('recovery:active:mqtt').status, 'failed', 'peer remains protected until manual recovery succeeds');
   assert.equal(engine.checkpoint.fireplaceRevision, 1);

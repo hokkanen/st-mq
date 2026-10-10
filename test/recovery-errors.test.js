@@ -11,6 +11,7 @@ import { createHistoryRecovery } from '../src/app/history-recovery.js';
 import { PairPeer, publicPairError } from '../src/pairing/peer.js';
 import { pairDisplay, pairIssueHelp } from '../chart/pair-status.js';
 import { recoveryJobText } from '../chart/history-recovery.js';
+import { sample, start, W } from './helpers/recovery-fixture.js';
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-recovery-errors-'));
@@ -87,21 +88,42 @@ test('a real database lock is distinguished from corruption and a later source c
 
 test('a publication transaction failure keeps its cause and the previous model selected', async t => {
   const { master, donorPath } = fixture(t);
-  const donor = new Store(`${donorPath}.working`); await donor.backup(donorPath); donor.close();
+  const donor = new Store(`${donorPath}.working`);
+  sample(donor, start + W);
+  await donor.backup(donorPath); donor.close();
+  master.setState('pending-plan:mqtt', { id: 'synthetic-previous-plan' });
   const preview = await recoveryPreview({ masterPath: master.path, donorPath, signal: t.signal });
-  const failureDb = new DatabaseSync(':memory:');
-  failureDb.exec('CREATE TABLE synthetic(id INTEGER PRIMARY KEY); INSERT INTO synthetic VALUES(1)');
-  const setState = master.setState;
-  master.setState = function (key, value) {
-    if (key === 'recovery:active:mqtt' && value.status === 'complete') failureDb.exec('INSERT INTO synthetic VALUES(1)');
-    return setState.call(this, key, value);
+  // Inject after the worker opens the current schema and before its final
+  // authority admission. The trigger then reaches the real transaction rather
+  // than replacing a parent method which that worker never calls.
+  let publicationStarted = false, injected = false;
+  const runPublication = master.runPublication;
+  master.runPublication = function (operation, options) {
+    return runPublication.call(this, () => {
+      const pending = operation(); publicationStarted = true; return pending;
+    }, options);
+  };
+  const isCurrent = () => {
+    if (publicationStarted && !injected) {
+      master.db.exec(`CREATE TRIGGER synthetic_publication_failure BEFORE UPDATE ON state
+        WHEN NEW.key='recovery:active:mqtt' AND json_extract(NEW.value,'$.status')='complete'
+        BEGIN SELECT RAISE(ABORT,'synthetic publication constraint'); END`);
+      injected = true;
+    }
+    return true;
   };
   try {
-    await assert.rejects(recoverHistory({ store: master, donorPath, preview, signal: t.signal }),
+    await assert.rejects(recoverHistory({ store: master, donorPath, preview, signal: t.signal, isCurrent }),
       { code: 'recovery_database_constraint' });
-  } finally { master.setState = setState; failureDb.close(); }
+    assert(injected, 'publication reached the real worker admission');
+  } finally {
+    master.runPublication = runPublication;
+    if (injected) master.db.exec('DROP TRIGGER synthetic_publication_failure');
+  }
   assert.deepEqual(master.getState('adaptive:mqtt'), { synthetic: 'previous-model' });
   assert.equal(master.learningEpoch('mqtt'), 'original');
+  assert.deepEqual(master.getState('pending-plan:mqtt'), { id: 'synthetic-previous-plan' });
+  assert.equal(master.db.prepare("SELECT COUNT(*) n FROM recovery_runs WHERE status='complete'").get().n, 0);
   assert.equal(master.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
 });
 
@@ -129,6 +151,29 @@ test('cancelled recovery skips failure bookkeeping behind an external SQLite wri
     assert.equal(master.writeQueueStatus().pending, 0);
     assert.deepEqual(master.getState('adaptive:mqtt'), { synthetic: 'previous-model' });
   } finally { clearTimeout(timer); if (locked) lock.exec('ROLLBACK'); lock.close(); }
+});
+
+test('cancellation after publication commit reports the completed recovery and joins model adoption', async t => {
+  const { master, donorPath } = fixture(t), donor = new Store(`${donorPath}.working`);
+  sample(donor, start + W);
+  await donor.backup(donorPath); donor.close();
+  const preview = await recoveryPreview({ masterPath: master.path, donorPath, signal: t.signal });
+  const cancellation = new AbortController();
+  let adopted = null;
+  const result = await recoverHistory({ store: master, donorPath, preview,
+    signal: AbortSignal.any([cancellation.signal, t.signal]),
+    onPublish(value) {
+      assert.equal(master.getState('recovery:active:mqtt').status, 'complete');
+      adopted = value.checkpoint;
+      cancellation.abort();
+    } });
+  assert(cancellation.signal.aborted);
+  assert.equal(result.report.status, 'complete');
+  assert.equal(master.getState('recovery:active:mqtt').status, 'complete');
+  assert.equal(master.learningEpoch('mqtt'), result.epoch);
+  assert.deepEqual(adopted, result.checkpoint);
+  assert.deepEqual(master.getState('adaptive:mqtt'), adopted);
+  assert.equal(master.db.prepare("SELECT COUNT(*) n FROM recovery_runs WHERE status='complete'").get().n, 1);
 });
 
 test('paired transport and recovery UI preserve fixed causes while hiding arbitrary messages', async t => {

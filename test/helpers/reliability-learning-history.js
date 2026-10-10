@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { threadId } from 'node:worker_threads';
 import { Store } from '../../src/storage/store.js';
 import { recordLearningContext, replayLearningJournal, LEARNING_WINDOW_MS } from '../../src/app/committed-learning.js';
 import { addSensorChange, revertSensorChange } from '../../src/app/sensor-changes.js';
@@ -118,20 +119,9 @@ export async function runRecoveryOperation(store, donorPath, action, options = {
 async function childMain() {
   const [path, donorPath, action, boundary] = process.argv.slice(3), store = new Store(path);
   const kill = point => {
-    writeFileSync(`${path}.crash.json`, JSON.stringify({ action, boundary, point, inTransaction: store.db.isTransaction }));
+    writeFileSync(`${path}.crash.json`, JSON.stringify({ action, boundary, point, threadId, inTransaction: store.db.isTransaction }));
     process.kill(process.pid, 'SIGKILL');
   };
-  if (boundary === 'during-publication') {
-    const setState = store.setState.bind(store);
-    store.setState = (key, value) => {
-      const result = setState(key, value);
-      if (key === `adaptive:${input}`) {
-        assert(store.db.isTransaction, 'the crash must occur inside the real publication transaction');
-        kill('adaptive-state-written');
-      }
-      return result;
-    };
-  }
   await runRecoveryOperation(store, donorPath, action, {
     onProgress(value) {
       if (boundary === 'before-publication' && value.phase === 'rebuilding' && value.processed > 0)

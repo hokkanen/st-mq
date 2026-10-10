@@ -288,6 +288,16 @@ export class Store {
 
   writeQueueStatus() { return this.writeQueue.status(); }
 
+  runPublication(fn, options = {}) {
+    if (this.readOnly) return Promise.reject(new Error('Publication requires writable storage.'));
+    if (this.transactionDepth) return new Promise((resolve, reject) => {
+      this.afterCommit(() => { this.writeQueue.exclusive(fn, options).then(resolve, reject); });
+      this.afterRollback(() => reject(Object.assign(new Error('The preceding save was rolled back.'),
+        { code: 'STORAGE_WRITE_ROLLED_BACK' })));
+    });
+    return this.writeQueue.exclusive(fn, options);
+  }
+
   afterCommit(effect) {
     if (typeof effect !== 'function') throw new TypeError('A commit effect must be a function');
     if (this.transactionDepth) this.commitEffects.push(effect);

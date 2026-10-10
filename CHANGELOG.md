@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Large firewood and sensor corrections, history recovery, revert and restore
+  publish their complete model in a worker. The controller adopts the committed
+  model before queued updates resume; failed publication retains the previous
+  model and reports failure. A lost worker reply cannot undo a completed save.
+  Restart-cache warnings clear once a valid current cache is confirmed.
 - Growing Home learning checkpoints no longer make ordinary controller updates
   exceed the recording transaction limit. Large restart caches save in a worker
   after learning inputs and control intent commit; charging keeps its existing

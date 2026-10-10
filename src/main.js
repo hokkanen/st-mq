@@ -87,6 +87,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     if (closePending) return closePending;
     closed = true;
     engine?.beginShutdown({ restore: restore && canControl() });
+    historyRecovery?.cancel();
     runtimeUsable = false;
     if (engine) engine.suspended = true;
     clearTimeout(timer);

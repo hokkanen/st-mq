@@ -39,6 +39,9 @@ test('vehicle MQTT reports acknowledged subscriptions and retained/live receptio
   f.send(undefined, { retain: true });
   assert.equal((await f.view()).automaticSoc, null, 'Pending subscriptions cannot supply readings before broker acknowledgement');
   f.setNow(initial + 1000); f.acknowledge();
+  // SUBACK starts bounded buffered replay; a Store barrier alone can precede
+  // its next event-loop turn. Wait for the retained prefix before live input.
+  await f.reader.ready();
   let view = (await f.view());
   assert.equal(view.mqtt.provider, 'bmw-cardata'); assert.equal(view.mqtt.subscriptionStatus, 'subscribed');
   assert.equal(view.mqtt.lastRetainedAt, initial); assert.equal(view.mqtt.lastLiveAt, null);
