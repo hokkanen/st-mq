@@ -107,6 +107,12 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
       chargeDeadlineAt: null, chargeEnergyKwh: null, chargeUsedKwh: 0, chargePowerKw: null,
       pauseUntil: null, candidate: null, pause: null, completedAt: null, reason: null, probe: null };
   }
+  // A settled attempt's clock records its last transition, not every poll.
+  // New passive identity evidence and explicit retries still advance it;
+  // an open probe must keep its elapsed-energy accounting below.
+  if (['completed', 'inconclusive', 'observing'].includes(state.phase)
+    && (!identified || state.phase === 'completed')
+    && (state.phase !== 'observing' || !state.probe || state.probe.endedAt !== null)) return state;
   const previousAt = state.lastAt;
   state.lastAt = now;
   if (state.probe && state.probe.endedAt === null && !['completed', 'inconclusive'].includes(state.phase)) {

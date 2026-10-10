@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
+import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import { easeeChargerTelemetry, normalizeScheduleState } from '../src/charging/easee.js';
 
 const START = Date.parse('2026-10-09T08:00:00Z'), MINUTE = 60_000;
@@ -65,7 +66,10 @@ function fixture(t) {
       { ...Object.fromEntries(durableFields.map(key => [key, item[key]])), native: item.controller?.status() }])),
     vehicleFeeds: Object.fromEntries(Object.entries(runtime.vehicleFeeds).map(([id, feed]) => [id,
       { reading: feed.reading, mqtt: feed.mqtt, consumedPlugId: feed.consumedPlugId, consumedChargingId: feed.consumedChargingId }])) });
-  const read = () => reader.prepare('SELECT value FROM state WHERE key=?').get(runtime.key)?.value ?? null;
+  const read = () => JSON.stringify(readChargingRuntime({ db: reader, getState: key => {
+    const row = reader.prepare('SELECT value FROM state WHERE key=?').get(key);
+    return row ? JSON.parse(row.value) : null;
+  } }, runtime.key));
   const admit = () => runtime.write(() => runtime.persist());
   const publish = (values, { at = now, retained = false } = {}) => runtime.write(() => runtime.receiveSoc('synthetic/bmw',
     JSON.stringify({ provider: 'bmw-cardata', measuredAt: at, readingId: `synthetic-report-${at}`, ...values, fields: Object.fromEntries(Object.entries(values).map(([key, value]) =>

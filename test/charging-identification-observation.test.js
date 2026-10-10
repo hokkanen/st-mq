@@ -19,7 +19,7 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
       if (failPersistence && key === runtime.key) throw new Error('synthetic storage unavailable');
       states.set(key, structuredClone(value));
     } };
-  withReportDatabase(store, t);
+  withReportDatabase(store, t, states);
   const config = { input: 'mqtt', connections: {
     easee: { charger_id: 'synthetic-observation-charger', equalizer_id: 'synthetic-observation-equalizer' },
     mqtt: { address: 'mqtt://synthetic.invalid', user: 'synthetic-observation' } },

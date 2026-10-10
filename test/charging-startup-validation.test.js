@@ -11,15 +11,16 @@ import { verifySnapshot } from '../src/pairing/snapshots.js';
 import { initialOcppControllerState } from '../src/charging/ocpp.js';
 import { spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
+import { readChargingRuntime, writeChargingRuntime } from '../src/charging/runtime-storage.js';
 
 const association = 'a'.repeat(64);
-const withCharger = previous => ({ version: 6, chargers: { charger1: { association, ...previous } } });
+const withCharger = previous => ({ version: 7, chargers: { charger1: { association, ...previous } } });
 const cases = [
   ['retired runtime', 'charging:simulated', { version: 5 }],
-  ['unknown runtime field', 'charging:simulated', { version: 6, settings: {} }],
+  ['unknown runtime field', 'charging:simulated', { version: 7, settings: {} }],
   ['invalid runtime type', 'charging:simulated', []],
   ['unreadable runtime', 'charging:simulated', '{private synthetic payload', true],
-  ['shared controls', 'charging:simulated', { version: 6, controls: { association, priority: 'retired', revision: 1 } }],
+  ['shared controls', 'charging:simulated', { version: 7, controls: { association, priority: 'retired', revision: 1 } }],
   ['charger controls', 'charging:simulated', withCharger({ controls: { enabled: 'yes', revision: 1 } })],
   ['unknown charger field', 'charging:simulated', withCharger({ automaticAllowed: true })],
   ['invalid vehicle evidence', 'charging:simulated', withCharger({ vehicleEvidence: false })],
@@ -29,11 +30,11 @@ const cases = [
     scope: `${association}:1000`, chargingTimes: [2000, 1000], stoppedTimes: [] } })],
   ['invalid vehicle identity', 'charging:simulated', withCharger({ vehicleMatch: { id: 'tesla' } })],
   ['invalid vehicle conflict', 'charging:simulated', withCharger({ vehicleConflict: { ids: 'tesla' } })],
-  ['unknown vehicle feed', 'charging:simulated', { version: 6, vehicleFeeds: { retired: {} } }],
-  ['unknown vehicle feed field', 'charging:simulated', { version: 6, vehicleFeeds: { bmw: { lastIdentity: 'tesla' } } }],
+  ['unknown vehicle feed', 'charging:simulated', { version: 7, vehicleFeeds: { retired: {} } }],
+  ['unknown vehicle feed field', 'charging:simulated', { version: 7, vehicleFeeds: { bmw: { lastIdentity: 'tesla' } } }],
   ['session scope', 'charging:simulated', withCharger({ request: { scope: 'old-device:1000', sessionId: 'old-device:1000', revision: 1, deadlineAt: 2000, overrides: {} } })],
   ['session override', 'charging:simulated', withCharger({ request: { scope: `${association}:1000`, sessionId: `${association}:1000`, revision: 1, deadlineAt: 2000, overrides: { enabled: true } } })],
-  ['consumed evidence', 'charging:simulated', { version: 6, consumedTeslaCurrent: { association, receivedAt: -1 } }],
+  ['consumed evidence', 'charging:simulated', { version: 7, consumedTeslaCurrent: { association, receivedAt: -1 } }],
   ['identification', 'charging:simulated', withCharger({ identification: { version: -1 } })],
   ['identification evidence', 'charging:simulated', withCharger({ vehicleEvidence: { teslaCurrentCandidate: {} } })],
   ['target state', 'charging:simulated', withCharger({ targetState: { version: -1 } })],
@@ -57,13 +58,37 @@ const cases = [
   ['inactive input and equipment', 'charging:providers', withCharger({ request: { scope: 'old' } })],
 ];
 
+function seedRejectedState(store, key, value, raw = false) {
+  if (/^charging:(mqtt|providers|simulated|offline)$/.test(key) && value?.version === 7) {
+    // Begin with a valid current manifest, then corrupt its small records.
+    // These cases must reach the nested readers, not merely fail on a retired
+    // aggregate format before inspecting the malformed authority/evidence.
+    writeChargingRuntime(store, key, { version: 7 });
+    const manifest = store.getState(key);
+    for (const [field, content] of Object.entries(value)) {
+      if (field === 'version') continue;
+      manifest.roots.push(field);
+      if (field === 'chargers' || field === 'vehicleFeeds') {
+        const group = field === 'chargers' ? 'charger' : 'vehicle';
+        for (const [id, fields] of Object.entries(content)) {
+          manifest[field][id] = Object.keys(fields);
+          for (const [name, value] of Object.entries(fields))
+            store.setState(`${key}:runtime:${group}/${id}/${name}`, { value });
+        }
+      } else store.setState(`${key}:runtime:root/${field}`, { value: content });
+    }
+    store.setState(key, manifest);
+  } else store.db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)')
+    .run(key, raw ? value : JSON.stringify(value), 1000);
+}
+
 test('actual startup and read-only preflight reject all saved charging readers before any database mutation', async t => {
   for (const [name, key, value, raw = false] of cases) await t.test(name, async t => {
     const directory = mkdtempSync(join(tmpdir(), 'stmq-charging-startup-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
     const fixtureStore = new Store(config.dbPath);
-    fixtureStore.db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run(key, raw ? value : JSON.stringify(value), 1000);
+    seedRejectedState(fixtureStore, key, value, raw);
     fixtureStore.db.exec('PRAGMA journal_mode=DELETE');
     fixtureStore.close();
     const before = readFileSync(config.dbPath);
@@ -91,7 +116,7 @@ test('receiver snapshot validation detects unsupported charging state before han
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'source.sqlite');
   const store = new Store(path);
-  store.setState('charging:providers', withCharger({ controls: { enabled: 'unsupported', revision: 0 } }));
+  seedRejectedState(store, 'charging:providers', withCharger({ controls: { enabled: 'unsupported', revision: 0 } }));
   store.close();
   const before = readFileSync(path);
   await assert.rejects(verifySnapshot(path, {}), { code: 'database_state_incompatible' });
@@ -131,10 +156,10 @@ test('current valid restrictions and missing optional state survive writable and
   const ownership = initialOcppControllerState(association);
   ownership.manual = { id: 'observed-stop', kind: 'stop', at: 1500, transactionId: null, resumeAt: null, cycleEndsAt: 2000 };
   const key = `charging:simulated:charger1:${association}:ownership:ocpp`;
-  store.setState('charging:simulated', saved); store.setState(key, ownership); store.close();
+  writeChargingRuntime(store, 'charging:simulated', saved); store.setState(key, ownership); store.close();
   for (const readOnly of [true, false]) {
     const restarted = new Store(path, { readOnly });
-    try { assert.deepEqual(restarted.getState('charging:simulated'), saved); assert.deepEqual(restarted.getState(key), ownership); }
+    try { assert.deepEqual(readChargingRuntime(restarted, 'charging:simulated'), saved); assert.deepEqual(restarted.getState(key), ownership); }
     finally { restarted.close(); }
   }
 });

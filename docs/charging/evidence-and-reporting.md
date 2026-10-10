@@ -170,6 +170,11 @@ chains of deltas. Bounded page reads reconstruct each event's original planning
 horizon and forecast; original clocks and brief unknown/ready transitions remain
 available without copying complete forecast inputs into every evidence event.
 Report-owned contexts follow the report's save, expiry and deletion lifetime.
+Charging runtime snapshots do not embed completed or active report bodies. A
+replica reads their last committed checkpoints/summaries from the same published
+database as the charging state, using the publication's original clock. Report
+save failures remain visible through compact observer status; reading an older
+committed report does not turn its evidence into a fresh observation.
 Automatic expiry is performed by writable observer maintenance, checked hourly
 and processed one report at a time when a backlog exists. Read-only browsing
 does not prune the database.

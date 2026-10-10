@@ -1,3 +1,4 @@
+import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -65,8 +66,8 @@ async function savedMatch(t, { sessionOverrides = true } = {}) {
     sessionId: current.request.sessionId, revision: current.request.revision,
     changes: { readyBy: '08:30', capacityKwh: 79, minimumSoc: 100 } });
   runtime.persist();
-  const saved = f.store.getState(runtime.key);
-  assert.equal(saved.version, 6);
+  const saved = readChargingRuntime(f.store, runtime.key);
+  assert.equal(saved.version, 7);
   assert.equal(saved.chargers.charger1.vehicleMatch.id, 'bmw');
   assert.equal(saved.chargers.charger1.request.overrides.minimumSoc, sessionOverrides ? 100 : undefined);
   assert.equal(saved.chargers.charger1.request.revision, sessionOverrides ? 2 : 1);
@@ -106,7 +107,7 @@ test('current BMW identity and session choices survive startup before the charge
   restarted.tick();
   restarted.persist();
   assertRetained(restarted, f.saved);
-  const persisted = f.store.getState(restarted.key);
+  const persisted = readChargingRuntime(f.store, restarted.key);
   for (const key of ['vehicleMatch', 'request', 'targetState', 'vehicleEvidence'])
     assert.deepEqual(persisted.chargers.charger1[key], f.saved.chargers.charger1[key]);
   assert.equal(persisted.vehicleFeeds.bmw.consumedPlugId, f.saved.vehicleFeeds.bmw.consumedPlugId);
@@ -243,7 +244,7 @@ test('a live negative BMW fact revokes the saved identity before charger startup
   assertUnassigned(restarted);
   assert.equal(restarted.chargers.charger1.vehicleMatch, null);
   assert.equal(restarted.chargers.charger1.targetState, null);
-  assert.equal(f.store.getState(restarted.key).chargers.charger1.vehicleMatch, null);
+  assert.equal(readChargingRuntime(f.store, restarted.key).chargers.charger1.vehicleMatch, null);
   await f.attach(restarted);
   assert.equal(view(restarted).vehicle.id, null);
 });
@@ -259,7 +260,7 @@ test('startup unplug and replug require a new transaction and charging edges bef
     assertUnassigned(restarted);
     assert.equal(restarted.chargers.charger1.vehicleMatch, null);
     assert.equal(restarted.chargers.charger1.targetState, null);
-    const stored = f.store.getState(restarted.key);
+    const stored = readChargingRuntime(f.store, restarted.key);
     assert.equal(stored.chargers.charger1.vehicleMatch, null);
     assert.equal(stored.chargers.charger1.targetState, null);
     assert.equal(stored.vehicleFeeds.bmw.consumedPlugId, f.saved.vehicleFeeds.bmw.consumedPlugId);
@@ -304,7 +305,7 @@ test('failed BMW departure persistence restores the matched session and its requ
   const item = restarted.chargers.charger1;
   const before = structuredClone(Object.fromEntries(['request', 'vehicleMatch', 'targetState', 'vehicleDisconnect', 'vehicleEvidence']
     .map(key => [key, item[key]])));
-  const savedBefore = f.store.getState(restarted.key);
+  const savedBefore = readChargingRuntime(f.store, restarted.key);
   const revision = restarted.revision, setState = f.store.setState;
   const at = START + 3 * MINUTE, unplug = { provider: 'bmw-cardata', pluggedIn: false,
     fields: { pluggedIn: { measuredAt: at, readingId: 'synthetic-persisted-departure' } } };
@@ -315,7 +316,7 @@ test('failed BMW departure persistence restores the matched session and its requ
   } finally { f.store.setState = setState; }
   for (const [key, value] of Object.entries(before)) assert.deepEqual(item[key], value, `${key} must roll back with the failed departure`);
   assert.equal(restarted.revision, revision);
-  assert.deepEqual(f.store.getState(restarted.key), savedBefore);
+  assert.deepEqual(readChargingRuntime(f.store, restarted.key), savedBefore);
   const current = view(restarted);
   assert.equal(current.vehicle.id, 'bmw');
   assert.deepEqual(current.request, before.request);
@@ -332,7 +333,7 @@ test('failed BMW departure persistence restores the matched session and its requ
   assert.equal(item.vehicleMatch, null);
   assert.equal(item.targetState, null);
   assert.equal(item.vehicleDisconnect.measuredAt, at);
-  assert.equal(f.store.getState(restarted.key).chargers.charger1.request, null);
+  assert.equal(readChargingRuntime(f.store, restarted.key).chargers.charger1.request, null);
 });
 
 test('a confirmed same-session outcome survives adapter startup and unavailable vehicle telemetry after restart', async t => {

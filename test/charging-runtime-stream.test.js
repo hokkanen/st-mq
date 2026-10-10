@@ -2,6 +2,7 @@ import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChargingRuntime } from '../src/charging/runtime.js';
+import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import { createChargingController } from '../src/charging/controller.js';
 import { chargingSnapshot, normalizeScheduleState, delayedScheduleFor } from '../src/charging/easee.js';
 
@@ -16,7 +17,7 @@ function fixture(t) {
     if (h.failSave) throw new Error('synthetic database unavailable');
     h.saved.set(key, structuredClone(value));
   } };
-  withReportDatabase(store, t);
+  withReportDatabase(store, t, h.saved);
   const snapshot = () => chargingSnapshot([
     row(250, true, h.now), row(31, true, h.now), row(109, h.observed.mode, h.observed.at),
     row(100, h.observed.pilot, h.observed.at), row(96, h.schedule.enabled === 'none' ? 0 : 54, h.now),
@@ -137,7 +138,7 @@ test('failed stream persistence retains evidence, blocks control and retries wit
   assert.equal(runtime.streamPersistencePending, false);
   assert.equal(h.canControl(), true);
   assert.equal(view(runtime).control.session.connectedAt, null);
-  assert.equal(h.saved.get('charging:mqtt').chargers.charger1.vehicleDisconnect.readingId, boundary.readingId);
+  assert.equal(readChargingRuntime(runtime.store, runtime.key).chargers.charger1.vehicleDisconnect.readingId, boundary.readingId);
 });
 
 test('a stream cycle delivered during an in-flight read is retained for the queued reconciliation', async t => {

@@ -9,6 +9,7 @@ import { appendLearningRecord, replayLearningJournal, LEARNING_WINDOW_MS as WIND
   from '../src/app/committed-learning.js';
 import { MAIN_JOURNAL_CAPTURE_BYTES, MAIN_JOURNAL_ROW_BYTES } from '../src/storage/journal-codec.js';
 import { addSensorChange } from '../src/app/sensor-changes.js';
+import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 
 const START = Date.parse('2026-10-01T12:00:00Z'), HOUR = 3_600_000;
 
@@ -172,15 +173,22 @@ test('the MQTT controller advances a rich learning cache beside durable charging
     }
   };
   setPlans(); await store.runWrite(() => engine.charging.persist());
-  const checkpointBytes = rawStateBytes(store, 'adaptive:mqtt'), chargingBytes = rawStateBytes(store, 'charging:mqtt');
+  const checkpointBytes = rawStateBytes(store, 'adaptive:mqtt');
+  const chargingRows = store.db.prepare('SELECT key,value,updated_at FROM state WHERE key=? OR key GLOB ? ORDER BY key')
+    .all('charging:mqtt', 'charging:mqtt:runtime:*');
+  const chargingBytes = chargingRows.reduce((bytes, row) => bytes + Buffer.byteLength(JSON.stringify(row)), 0);
+  const expandedChargingBytes = Buffer.byteLength(JSON.stringify(readChargingRuntime(store, 'charging:mqtt')));
   assert(checkpointBytes > 1.75 * 1024 * 1024, `The realistic cache must reproduce the large row (${checkpointBytes} bytes)`);
   assert(checkpointBytes < MAIN_JOURNAL_ROW_BYTES, 'each individual original row is admitted');
-  assert(chargingBytes > 177_000, 'the production charging snapshot includes a substantial day horizon');
+  assert(expandedChargingBytes > 177_000, 'the production charging snapshot includes a substantial day horizon');
+  assert(chargingRows.length > 1 && chargingBytes < expandedChargingBytes,
+    'the complete day horizon is retained in deduplicated current records');
   assert(2 * (checkpointBytes + chargingBytes) > MAIN_JOURNAL_CAPTURE_BYTES,
-    'OLD plus NEW of both current rows exceeds the unchanged transaction capture limit');
+    'OLD plus NEW of the cache and all current charging records exceeds the unchanged transaction capture limit');
   const beforeAdmission = store.checkpoint();
   assert.throws(() => store.transaction(() => {
-    store.db.prepare('UPDATE state SET updated_at=updated_at+1 WHERE key=?').run('charging:mqtt');
+    store.db.prepare('UPDATE state SET updated_at=updated_at+1 WHERE key=? OR key GLOB ?')
+      .run('charging:mqtt', 'charging:mqtt:runtime:*');
     store.db.prepare('UPDATE state SET updated_at=updated_at+1 WHERE key=?').run('adaptive:mqtt');
   }), { code: 'journal_main_thread_transaction_too_large' });
   assert.deepEqual(store.checkpoint(), beforeAdmission, 'the existing guard still rejects atomically');
@@ -250,6 +258,6 @@ test('the MQTT controller advances a rich learning cache beside durable charging
   assert.deepEqual(controls(engine), priorControls);
   assert.equal(commands, 0);
   assert.equal(store.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
-  t.diagnostic(JSON.stringify({ samples: original.samples.length, checkpointBytes, chargingBytes,
+  t.diagnostic(JSON.stringify({ samples: original.samples.length, checkpointBytes, chargingBytes, expandedChargingBytes,
     combinedCaptureBytes: 2 * (checkpointBytes + chargingBytes) }));
 });

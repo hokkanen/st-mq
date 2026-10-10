@@ -274,6 +274,61 @@ test('manual retry works for completed identification while disconnect creates a
   assert.equal(state.attempt, 1); assert.equal(state.phase, 'waiting');
 });
 
+test('settled identification polls preserve persisted bytes and original clocks across restart', () => {
+  const completed = advanceIdentification(null, input({ identified: true }));
+  const inconclusive = advanceIdentification(advanceIdentification(null, input({ charging: true })),
+    input({ now: START + 1000, interrupted: true }));
+  const observing = { ...completed, phase: 'observing', completedAt: null, reason: 'awaiting-evidence' };
+  for (const original of [completed, inconclusive, observing]) {
+    const saved = JSON.stringify(original);
+    let state = JSON.parse(saved);
+    for (const now of [START + MINUTE, START + 60 * MINUTE, START + 500]) {
+      state = advanceIdentification(state, probeInput({ now, charging: true, powerKw: 11,
+        identified: original.phase === 'completed' }));
+      assert.equal(JSON.stringify(state), saved, original.phase);
+      validateIdentificationState(state);
+    }
+    assert.equal(JSON.stringify(original), saved, 'Polling does not mutate the caller state');
+  }
+});
+
+test('new passive identification and explicit retry advance settled clocks without renewing old evidence', () => {
+  const { state: paused } = pausedFixture();
+  const inconclusive = advanceIdentification(paused, input({ now: paused.pauseUntil }));
+  const observing = { ...inconclusive, phase: 'observing', completedAt: null, reason: 'awaiting-evidence' };
+  for (const original of [inconclusive, observing]) {
+    const now = START + 60 * MINUTE;
+    const completed = advanceIdentification(JSON.parse(JSON.stringify(original)), input({ now, identified: true }));
+    assert.equal(completed.phase, 'completed');
+    assert.equal(completed.lastAt, now); assert.equal(completed.completedAt, now);
+    assert.equal(completed.id, original.id); assert.equal(completed.pauseUntil, original.pauseUntil);
+    assert.deepEqual(completed.candidate, original.candidate); assert.deepEqual(completed.pause, original.pause);
+    validateIdentificationState(completed);
+    const retry = advanceIdentification(completed, input({ now: now - MINUTE, manualRetry: true, identified: true }));
+    assert.equal(retry.phase, 'waiting'); assert.equal(retry.attempt, original.attempt + 1);
+    assert.equal(retry.startedAt, now); assert.equal(retry.lastAt, now, 'A backwards clock cannot rewind a retry');
+    assert.equal(retry.pause, null); assert.equal(retry.candidate, null);
+    validateIdentificationState(retry);
+  }
+});
+
+test('active probe clocks still account for elapsed power across restart and backwards clock adjustments', () => {
+  const initial = advanceIdentification(null, probeInput({ charging: true, powerKw: 4 }));
+  let state = advanceIdentification(JSON.parse(JSON.stringify(initial)), probeInput({
+    now: START + 30_000, charging: true, powerKw: 4 }));
+  assert.equal(state.lastAt, START + 30_000);
+  assert.ok(Math.abs(state.chargeUsedKwh - 1 / 30) < 1e-10);
+  state = advanceIdentification(state, probeInput({ now: START + 10_000, charging: true, powerKw: 4 }));
+  assert.equal(state.lastAt, START + 30_000);
+  assert.ok(Math.abs(state.chargeUsedKwh - 1 / 30) < 1e-10);
+  state = advanceIdentification(JSON.parse(JSON.stringify(state)), probeInput({
+    now: START + 60_000, charging: true, powerKw: 4 }));
+  assert.ok(Math.abs(state.chargeUsedKwh - 1 / 15) < 1e-10);
+  assert.equal(state.probe.deadlineAt, initial.probe.deadlineAt);
+  assert.equal(state.probe.returnStartAt, initial.probe.returnStartAt);
+  validateIdentificationState(state);
+});
+
 test('explicit manual stop interrupts an active attempt without spending another automatic attempt', () => {
   let state = advanceIdentification(null, input({ charging: true }));
   state = advanceIdentification(state, input({ now: START + 1000, manualStop: true }));

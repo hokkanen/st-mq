@@ -178,7 +178,7 @@ test('assessment storage failure stays visible without preventing normal runtime
   f.plug();
   assert.doesNotThrow(() => f.runtime.persist());
   assert.equal(f.runtime.status().diagnostics.available, false);
-  assert.equal(f.store.getState('charging:mqtt').version, 6);
+  assert.equal(f.store.getState('charging:mqtt').version, 7);
   assert.equal(f.store.db.prepare('SELECT COUNT(*) count FROM charging_reports').get().count, 0, 'A failed event append rolls the report back');
   f.store.db.exec('DROP TRIGGER reject_report_event');
   f.runtime.persist();

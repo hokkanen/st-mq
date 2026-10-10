@@ -1,3 +1,4 @@
+import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -96,7 +97,7 @@ test('ordinary live Tesla power admits vehicle identity with Automatic off and n
   const f = await fixture(t); await f.connect();
   assert.equal(f.runtime.chargers.charger1.vehicleMatch, null);
   await f.send('charger_power', 7);
-  const saved = f.store.getState(f.runtime.key);
+  const saved = readChargingRuntime(f.store, f.runtime.key);
   assert.equal(saved.chargers.charger1.controls.enabled, false);
   assert.equal(saved.chargers.charger1.vehicleMatch.id, 'tesla');
   assert.equal(saved.consumedTeslaPower.receivedAt, START);
@@ -104,20 +105,20 @@ test('ordinary live Tesla power admits vehicle identity with Automatic off and n
   assert.deepEqual(f.nativeCommands, []);
   const revision = saved.revision, request = structuredClone(saved.chargers.charger1.request);
   f.advance(1000); await f.send('charger_power', 7); await f.send('charger_power', 7, { dup: true });
-  assert.equal(f.store.getState(f.runtime.key).revision, revision);
-  assert.deepEqual(f.store.getState(f.runtime.key).chargers.charger1.request, request);
+  assert.equal(readChargingRuntime(f.store, f.runtime.key).revision, revision);
+  assert.deepEqual(readChargingRuntime(f.store, f.runtime.key).chargers.charger1.request, request);
   assert.equal(f.runtime.teslaCapture.snapshot().fields.charger_power.receivedAt, START);
 });
 
 for (const fault of ['IOERR', 'FULL']) test(`failed ${fault} admission rolls Tesla capture and runtime identity back together`, async t => {
   const f = await fixture(t); await f.connect();
-  const runtime = f.store.getState(f.runtime.key), source = f.store.getState('charging:teslamate');
+  const runtime = readChargingRuntime(f.store, f.runtime.key), source = f.store.getState('charging:teslamate');
   const before = f.runtime.teslaCapture.snapshot();
   f.setFault(fault);
   f.client.emit('message', 'teslamate/cars/1/charger_power', Buffer.from('7'), {});
   await new Promise(resolve => setImmediate(resolve));
   f.setFault(null); await settle(f.store);
-  assert.deepEqual(f.store.getState(f.runtime.key), runtime);
+  assert.deepEqual(readChargingRuntime(f.store, f.runtime.key), runtime);
   assert.deepEqual(f.store.getState('charging:teslamate'), source);
   const { healthy, reception, connectionContext, ...after } = f.runtime.teslaCapture.snapshot();
   const { healthy: _healthy, reception: _reception, connectionContext: _context, ...prior } = before;
@@ -129,7 +130,7 @@ for (const fault of ['IOERR', 'FULL']) test(`failed ${fault} admission rolls Tes
   assert.equal(f.runtime.consumedTeslaPower, null);
   assert.deepEqual(f.nativeCommands, []);
   await f.send('charger_power', 7);
-  assert.equal(f.store.getState(f.runtime.key).chargers.charger1.vehicleMatch.id, 'tesla');
+  assert.equal(readChargingRuntime(f.store, f.runtime.key).chargers.charger1.vehicleMatch.id, 'tesla');
 });
 
 test('buffered Tesla subscription replay admits each original source once without dashboard reads', async t => {
@@ -137,22 +138,22 @@ test('buffered Tesla subscription replay admits each original source once withou
   await f.send('charger_power', 7);
   assert.equal(f.runtime.chargers.charger1.vehicleMatch, null);
   f.advance(2000); await f.releaseSubscription();
-  const saved = f.store.getState(f.runtime.key), source = f.runtime.teslaCapture.snapshot();
+  const saved = readChargingRuntime(f.store, f.runtime.key), source = f.runtime.teslaCapture.snapshot();
   assert.equal(saved.chargers.charger1.vehicleMatch.id, 'tesla');
   assert.equal(source.fields.charger_power.receivedAt, START);
   assert.equal(saved.consumedTeslaPower.receivedAt, START);
   const revision = saved.revision;
   await f.send('charger_power', 7); await f.send('healthy', true);
-  assert.equal(f.store.getState(f.runtime.key).revision, revision);
+  assert.equal(readChargingRuntime(f.store, f.runtime.key).revision, revision);
   assert.equal(f.runtime.teslaCapture.snapshot().fields.charger_power.receivedAt, START);
   assert.deepEqual(f.nativeCommands, []);
 });
 
 test('native disconnect and reconnect admit a new inert request with Automatic off and no dashboard reads', async t => {
   const f = await fixture(t); await f.connect(); await f.send('charger_power', 7);
-  const original = f.store.getState(f.runtime.key).chargers.charger1;
+  const original = readChargingRuntime(f.store, f.runtime.key).chargers.charger1;
   const connectedAt = await f.reconnect();
-  const replacement = f.store.getState(f.runtime.key).chargers.charger1;
+  const replacement = readChargingRuntime(f.store, f.runtime.key).chargers.charger1;
   assert.notEqual(replacement.request.sessionId, original.request.sessionId);
   assert.equal(replacement.request.scope, `${replacement.association}:${connectedAt}`);
   assert.equal(replacement.vehicleMatch, null); assert.deepEqual(replacement.request.overrides, {});
@@ -164,19 +165,19 @@ test('failed final replay admission retains committed source context without pub
   const setState = f.store.setState.bind(f.store);
   f.store.setState = (key, value) => {
     setState(key, value);
-    if (key === f.runtime.key && value.chargers.charger1.vehicleMatch?.id === 'tesla')
+    if (key === f.runtime.key && readChargingRuntime(f.store, key).chargers.charger1.vehicleMatch?.id === 'tesla')
       throw Object.assign(new Error('Synthetic failure after state statement'), { code: 'ERR_SQLITE_ERROR', errcode: 10 });
   };
   await f.releaseFailedSubscription();
   assert.equal(f.runtime.teslaCapture.snapshot().fields.charger_power.receivedAt, START);
   assert.equal(f.store.getState('charging:teslamate').fields.charger_power.receivedAt, START);
   assert.equal(f.runtime.chargers.charger1.vehicleMatch, null);
-  assert.equal(f.store.getState(f.runtime.key).chargers.charger1.vehicleMatch, null);
+  assert.equal(readChargingRuntime(f.store, f.runtime.key).chargers.charger1.vehicleMatch, null);
   assert.equal(f.runtime.consumedTeslaPower, null);
   assert.equal(f.runtime.teslaCapture.snapshot().healthy, false);
   f.store.setState = setState; f.advance(1000); await f.reconnectMqtt(false); await f.send('healthy', true);
   await f.send('charger_power', 7);
-  assert.equal(f.store.getState(f.runtime.key).chargers.charger1.vehicleMatch.id, 'tesla');
+  assert.equal(readChargingRuntime(f.store, f.runtime.key).chargers.charger1.vehicleMatch.id, 'tesla');
   assert.equal(f.runtime.teslaCapture.snapshot().fields.charger_power.receivedAt, START);
   assert.deepEqual(f.nativeCommands, []);
 });
@@ -195,12 +196,12 @@ for (const errcode of [10, 13]) test(`final buffered identity COMMIT failure (${
   await f.releaseFailedSubscription();
   assert.equal(injected, true);
   assert.equal(f.runtime.chargers.charger1.vehicleMatch, null);
-  assert.equal(f.store.getState(f.runtime.key).chargers.charger1.vehicleMatch, null);
+  assert.equal(readChargingRuntime(f.store, f.runtime.key).chargers.charger1.vehicleMatch, null);
   assert.equal(f.runtime.consumedTeslaPower, null);
   assert.equal(f.store.getState('charging:teslamate').fields.charger_power.receivedAt, START);
   assert.equal(f.runtime.teslaCapture.snapshot().healthy, false);
   f.advance(1000); await f.reconnectMqtt(false); await f.send('healthy', true);
-  assert.equal(f.store.getState(f.runtime.key).chargers.charger1.vehicleMatch.id, 'tesla');
+  assert.equal(readChargingRuntime(f.store, f.runtime.key).chargers.charger1.vehicleMatch.id, 'tesla');
   assert.equal(f.runtime.teslaCapture.snapshot().fields.charger_power.receivedAt, START);
   assert.deepEqual(f.nativeCommands, []);
 });
@@ -239,7 +240,7 @@ for (const at of ['source statement', 'runtime statement', 'outer commit'])
     else f.store.setState = (key, value) => {
       setState(key, value);
       if (at === 'source statement' && key === 'charging:teslamate' && value.fields.plugged_in?.value === false
-        || at === 'runtime statement' && key === f.runtime.key && !value.chargers.charger1.vehicleMatch)
+        || at === 'runtime statement' && key === f.runtime.key && !readChargingRuntime(f.store, key).chargers.charger1.vehicleMatch)
         throw Object.assign(new Error('Synthetic departure admission failure'), { code: 'ERR_SQLITE_ERROR', errcode: 10 });
     };
     await f.releaseFailedSubscription(); f.setFault(null); f.store.setState = setState; await settle(f.store);
@@ -253,6 +254,6 @@ for (const at of ['source statement', 'runtime statement', 'outer commit'])
     await f.reconnectMqtt(false); await f.send('healthy', true); await f.send('plugged_in', false);
     assert.equal(f.runtime.teslaCapture.snapshot().healthy, true);
     assert.equal(f.runtime.chargers.charger1.vehicleMatch, null);
-    assert.equal(f.store.getState(f.runtime.key).chargers.charger1.vehicleMatch, null);
+    assert.equal(readChargingRuntime(f.store, f.runtime.key).chargers.charger1.vehicleMatch, null);
     assert.deepEqual(f.nativeCommands, []);
   });

@@ -15,6 +15,8 @@ import { indoorStatusMetadata, recordedOutdoorObservation, recordedTemperatureAt
   temperatureBoundaryStatus } from './temperature-status.js';
 import { LEARNING_ALGORITHM } from './committed-learning.js';
 import { chargingSettings } from '../charging/settings.js';
+import { readChargingRuntime } from '../charging/runtime-storage.js';
+import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
 import { CHARGER_DEFINITIONS } from '../charging/model.js';
 import { validateTargetState, validateTargetSelection } from '../charging/target.js';
 import { replicaReadModel, snapshotState } from './replica-read-model.js';
@@ -53,9 +55,10 @@ function homeLearningSnapshot(snapshot, checkpoint, now) {
  * Neither the viewer clock nor copied ownership can schedule charger actions. */
 function chargingSnapshot(snapshot) {
   if (!snapshot) return null;
-  const saved = snapshot.store.getState(`charging:${snapshot.input}`);
+  const key = `charging:${snapshot.input}`;
+  const saved = readChargingRuntime(snapshot.store, key);
   if (!saved) return null;
-  if (saved.version !== 6 || Object.hasOwn(saved, 'settings')) throw new Error('Unsupported charging snapshot; start a fresh development database');
+  if (saved.version !== 7 || Object.hasOwn(saved, 'settings')) throw new Error('Unsupported charging snapshot; start a fresh development database');
   if (!saved.view?.settings || !Array.isArray(saved.view?.chargers) || CHARGER_DEFINITIONS.some(({id}) => !saved.view.chargers.some(row => row.id === id && row.values)))
     throw new Error('Malformed current charging snapshot; start a fresh development database');
   for (const record of Object.values(saved.chargers ?? {})) validateTargetState(record.targetState);
@@ -68,13 +71,17 @@ function chargingSnapshot(snapshot) {
     readOnly: true, recorded: true, snapshotAt,
     fields: Object.fromEntries(Object.entries(setup.fields ?? {}).map(([key, value]) => [key,
       { ...value, available: false, recorded: true, reason: 'read-only-snapshot' }])) } : null;
-  const reports = saved.view.diagnostics, tests = saved.view.physicalTests;
-  if (reports && (reports.version !== 3 || !Array.isArray(reports.chargers))
-    || tests && (tests.version !== 3 || !Array.isArray(tests.runs)))
+  // Reports and runtime fragments share this publication's pinned read
+  // transaction. Use its original clock, never the viewer's elapsed time.
+  const reports = new ChargingSessionDiagnostics({ store: snapshot.store, key: `${key}:session-diagnostics`,
+    clock: () => snapshotAt, retentionDays: saved.view.reportRetentionDays ?? 30 }).status(snapshotAt);
+  const tests = saved.view.physicalTests;
+  if (tests && (tests.version !== 3 || !Array.isArray(tests.runs)))
     throw new Error('Unsupported charging assessment snapshot; start a fresh development database');
   const recordedReport = report => report ? { ...structuredClone(report), readOnly: true, recorded: true, snapshotAt,
     liveAvailable: false, evidenceStale: report.endedAt === null || report.evidenceStale === true } : null;
-  const diagnostics = reports ? { ...structuredClone(reports), canManage: false, readOnly: true, recorded: true, snapshotAt, liveAvailable: false,
+  const diagnostics = reports ? { ...structuredClone(reports), ...saved.view.reportStatus,
+    canManage: false, readOnly: true, recorded: true, snapshotAt, liveAvailable: false,
     chargers: reports.chargers.map(slot => ({ id: slot.id, hasMore: slot.hasMore === true, current: recordedReport(slot.current),
       recent: (slot.recent ?? []).map(recordedReport) })) } : null;
   // Preserve the master's assessment, including an unfinished test phase. A

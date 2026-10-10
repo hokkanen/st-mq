@@ -77,8 +77,10 @@ async function historyAction(app, body) {
   assert.equal(view.job.status, 'complete');
 }
 function observation(store, at, value) {
-  store.observation({ source: 'synthetic', device: 'invented-home', signal: 'indoor_temperature',
-    value, unit: 'degC', sourceTime: at, receivedAt: at });
+  // Startup learning can still own SQLite's writer lock after promotion. Seed
+  // fixture evidence through the same admission queue as ordinary ingestion.
+  return store.runWrite(() => store.observation({ source: 'synthetic', device: 'invented-home', signal: 'indoor_temperature',
+    value, unit: 'degC', sourceTime: at, receivedAt: at }));
 }
 
 test('pair HTTP refusals preserve authored busy and missing-restoration causes before accepting an operation', async t => {
@@ -195,7 +197,7 @@ test('both fresh pair nodes stay read-only until explicit promotion, then restar
 
 test('full application handover switches controller/viewer, preserves durable roles and exposes idempotent UI actions', async t => {
   const f = await fixture(t), a = await f.open('a', 'master', 'hassio'), b = await f.open('b', 'slave', 'ubuntu');
-  connect(a, b); observation(a.store, now - W, 20);
+  connect(a, b); await observation(a.store, now - W, 20);
   await b.pair.synchronize(a.pair.state.claim());
   assert.equal(b.pair.sync.state, 'ready');
   const initial = await (await fetch(`${url(b)}/api/status`)).json();
@@ -219,15 +221,15 @@ test('full application handover switches controller/viewer, preserves durable ro
 
 test('outage promotion, returning Hassio, manual gap recovery and exact rejoin run through real app lifecycle', async t => {
   const f = await fixture(t), a = await f.open('a', 'master', 'hassio'), b = await f.open('b', 'slave', 'ubuntu');
-  connect(a, b); observation(a.store, now - 4 * W, 20);
+  connect(a, b); await observation(a.store, now - 4 * W, 20);
   await b.pair.synchronize(a.pair.state.claim()); assert.equal(b.pair.sync.state, 'ready');
   await f.close(a);
   await apiAction(b, command('promote', { verifyWithFullSnapshot: true })); assert.equal(b.pair.canControl(), true);
-  observation(b.store, now - 3 * W, 21);
-  observation(b.store, now - 2 * W, 99); // conflict: returning master's observation must win.
+  await observation(b.store, now - 3 * W, 21);
+  await observation(b.store, now - 2 * W, 99); // conflict: returning master's observation must win.
   b.store.setState('synthetic-donor-only-state', { obsolete: true });
   const returned = await f.open('a', 'master', 'hassio');
-  observation(returned.store, now - 2 * W, 22);
+  await observation(returned.store, now - 2 * W, 22);
   connect(returned, b); await b.pair.observeClaim(returned.pair.state.claim());
   assert.equal(b.pair.state.value.role, 'protected'); assert.equal(b.engine, undefined);
   await historyAction(returned, { action: 'check', requestId: randomUUID(), verifyWithFullSnapshot: true });
@@ -256,8 +258,8 @@ test('outage promotion, returning Hassio, manual gap recovery and exact rejoin r
 
 test('HTTP rejoin can explicitly skip checked gaps while preserving the master history and model', async t => {
   const f = await fixture(t), master = await f.open('master', 'master', 'hassio'), donor = await f.open('donor', 'master', 'ubuntu');
-  observation(master.store, now - 4 * W, 20);
-  observation(donor.store, now - 3 * W, 21);
+  await observation(master.store, now - 4 * W, 20);
+  await observation(donor.store, now - 3 * W, 21);
   donor.store.setState('synthetic-donor-only-state', { obsolete: true });
   connect(master, donor); await donor.pair.observeClaim(master.pair.state.claim());
   await apiAction(master, command('check-recovery'));
@@ -293,8 +295,8 @@ test('normal mirror checks preserve unavailable evidence and never restore delib
   const f = await fixture(t), master = await f.open('master', 'master', 'hassio'), slave = await f.open('slave', 'slave', 'ubuntu');
   connect(master, slave);
   for (const [index, value, quality] of [[1, null, ['missing', 'unavailable']], [2, 20, ['stale']], [3, 0, []]])
-    master.store.observation({ source: 'synthetic', device: 'invented-home', signal: 'indoor_temperature',
-      value, unit: 'degC', sourceTime: now - index * W, receivedAt: now - index * W, quality });
+    await master.store.runWrite(() => master.store.observation({ source: 'synthetic', device: 'invented-home', signal: 'indoor_temperature',
+      value, unit: 'degC', sourceTime: now - index * W, receivedAt: now - index * W, quality }));
   await slave.pair.synchronize(master.pair.state.claim());
   const original = master.store.observations();
   for (let iteration = 0; iteration < 2; iteration++) {
@@ -338,8 +340,8 @@ test('normal mirror checks preserve unavailable evidence and never restore delib
 
 test('completed recovery stays protected without rejoin through rejected actions, restart and another check', async t => {
   const f = await fixture(t), master = await f.open('master', 'master', 'hassio'), donor = await f.open('donor', 'master', 'ubuntu');
-  observation(master.store, now - 3 * W, 20);
-  observation(donor.store, now - 2 * W, 21);
+  await observation(master.store, now - 3 * W, 20);
+  await observation(donor.store, now - 2 * W, 21);
   connect(master, donor);
   await donor.pair.observeClaim(master.pair.state.claim());
   await apiAction(master, command('check-recovery'));

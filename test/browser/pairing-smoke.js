@@ -13,6 +13,7 @@ import { start } from '../../src/main.js';
 import { loadConfig } from '../../src/app/config.js';
 import { seedChartFixture } from '../../scripts/lib/chart-fixture.js';
 import { chargingSettings } from '../../src/charging/settings.js';
+import { writeChargingRuntime } from '../../src/charging/runtime-storage.js';
 import { buildCharger, CHARGER_DEFINITIONS } from '../../src/charging/model.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-pairing-browser-'));
@@ -53,7 +54,7 @@ try {
     ['outdoor', 'fmi'], ['temperatures', 'mqtt-temperature'],
   ].map(([key, source]) => [key, { source, status: 'ok', lastSuccessAt: now - 60_000 }])));
   const savedChargingSettings = chargingSettings();
-  app.store.setState('charging:simulated', { version: 6, chargers: {}, view: {
+  writeChargingRuntime(app.store, 'charging:simulated', { version: 7, chargers: {}, view: {
     settings: savedChargingSettings, controls: { priority: 'balanced', revision: 0 },
     chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
       settings: savedChargingSettings.chargers[definition.id], now, timezone: 'Europe/Helsinki' })),

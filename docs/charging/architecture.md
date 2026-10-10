@@ -168,3 +168,46 @@ See [execution and recovery](execution-and-recovery.md), [current allocation](cu
 and the integration qualification sections for the precise boundaries and
 physical limitations. [Testing](testing.md) maps software checks, passive
 assessment and manually operated hardware work to the claims each can support.
+
+
+## Charging persistence
+
+Charging runtime format 7 uses a small manifest at `charging:<input>` and
+independent state rows under `charging:<input>:runtime:`. Control intent, source
+receipts, session evidence and view fields change independently. Every publication
+commits its changed rows, manifest and removal of superseded references in one
+normal Store transaction. The shared journal and its durability policy are
+unchanged. Automatic choices, physical session/equipment scope, pending ownership
+and restoration remain authoritative only under their existing live evidence gates.
+
+Plans are immutable content-addressed records, shared by the internal charger
+state and recorded view. Scenario arrays and interval reference context are
+separate complete immutable records, referenced by the plan. Readers restore the
+exact values and original clocks; they do not recalculate a historical plan.
+Only currently referenced runtime plans/contexts remain in this namespace.
+Report-owned historical contexts retain their independent report lifetime.
+There are no chained deltas, alternate old-format readers or migration paths.
+
+Completed and active report bodies are read from the report tables at the same
+committed replica publication. Runtime state retains only report retention and
+observer availability/error metadata. The report reader uses the publication's
+source clock and preserves the last committed assessment's observed/evaluated
+clocks, rather than piggybacking unsaved observer timestamps into runtime writes.
+No viewer clock advances a recorded assessment or supplies control authority.
+
+Startup validates the current manifest, every required field, content hashes and
+references for all input environments, including inactive ones. Missing records,
+unreferenced fragments, invalid nested state and older aggregate formats fail
+before writable setup. Schema 29 requires an intentional fresh development start;
+opening an incompatible installation never resets or converts it.
+
+Rollback restores both persisted state and observer bookkeeping, including report
+save cadence, guided assessments and allowance-history row references. A failed
+publication cannot suppress report events or point the next allowance extension
+at a row that rolled back. A same-version restart hydrates the current state and
+then requires fresh device evidence under the existing execution contract.
+
+`test/charging-runtime-storage.test.js` covers unchanged large plans with changing
+source clocks, journal bytes, atomic replacement/cleanup, failed publication,
+pinned readers and invalid-fragment preflight. These offline fixtures establish
+representation and recovery behavior, not physical HA write throughput or latency.

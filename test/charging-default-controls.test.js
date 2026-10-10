@@ -1,3 +1,4 @@
+import { readChargingRuntime, writeChargingRuntime } from '../src/charging/runtime-storage.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -37,7 +38,7 @@ test('fresh charging state initializes Automatic ON for both equipment identitie
   const restarted = await f.restart();
   assert.equal(restarted.settings.chargers.charger1.enabled, true);
   assert.equal(restarted.settings.chargers.charger2.enabled, true);
-  assert.deepEqual(f.store.getState(runtime.key).chargers.charger2.controls, { enabled: true, revision: 0 });
+  assert.deepEqual(readChargingRuntime(f.store, runtime.key).chargers.charger2.controls, { enabled: true, revision: 0 });
 });
 
 test('saved Automatic OFF survives restart and replacement equipment receives no initial ON permission', async t => {
@@ -67,28 +68,22 @@ test('a different input environment cannot acquire fresh-start Automatic permiss
     assert.equal(changed.settings.chargers.charger1.enabled, false);
     assert.equal(changed.settings.chargers.charger2.enabled, false);
     assert.equal(f.store.getState(changed.key), null, 'The new namespace has no saved permission');
-    assert.equal(f.store.getState(runtime.key).chargers.charger1.controls.enabled, false);
+    assert.equal(readChargingRuntime(f.store, runtime.key).chargers.charger1.controls.enabled, false);
   });
 });
 
-test('present empty state and omitted current controls are never mistaken for first charging initialization', async t => {
+test('malformed empty state is rejected and omitted current controls cannot acquire first-start permission', async t => {
   for (const saved of [null, {}, { version: 6 }]) await t.test(JSON.stringify(saved), async t => {
     const f = fixture(t);
     f.store.setState('charging:mqtt', saved);
-    const runtime = f.create();
-    assert.equal(runtime.settings.chargers.charger1.enabled, false);
-    assert.equal(runtime.settings.chargers.charger2.enabled, false);
-    assert.deepEqual(f.store.getState('charging:mqtt'), saved, 'Reading defaults does not rewrite the saved record');
-    f.config.input = 'providers';
-    const changed = await f.restart();
-    assert.equal(changed.settings.chargers.charger1.enabled, false);
-    assert.equal(changed.settings.chargers.charger2.enabled, false);
+    assert.throws(() => f.create(), /Unsupported or incomplete charging state/);
+    assert.deepEqual(f.store.getState('charging:mqtt'), saved, 'Rejection does not rewrite the saved record');
   });
   const f = fixture(t), runtime = f.create();
   await runtime.write(() => runtime.persist());
-  const saved = f.store.getState(runtime.key);
+  const saved = readChargingRuntime(f.store, runtime.key);
   delete saved.chargers.charger1.controls;
-  f.store.setState(runtime.key, saved);
+  writeChargingRuntime(f.store, runtime.key, saved);
   const restarted = await f.restart();
   assert.equal(restarted.settings.chargers.charger1.enabled, false);
   assert.equal(restarted.settings.chargers.charger2.enabled, true);
@@ -97,9 +92,10 @@ test('present empty state and omitted current controls are never mistaken for fi
 test('invalid persisted controls cannot acquire the initial Automatic ON default', async t => {
   const f = fixture(t), runtime = f.create();
   await runtime.write(() => runtime.persist());
-  const saved = f.store.getState(runtime.key);
+  const saved = readChargingRuntime(f.store, runtime.key);
   saved.chargers.charger1.controls.enabled = 'true';
-  f.store.setState(runtime.key, saved);
+  const key = `${runtime.key}:runtime:charger/charger1/controls`;
+  f.store.setState(key, { value: saved.chargers.charger1.controls });
   assert.throws(() => f.create(), /Unsupported saved charging controls/);
-  assert.deepEqual(f.store.getState(runtime.key), saved);
+  assert.deepEqual(f.store.getState(key), { value: saved.chargers.charger1.controls });
 });

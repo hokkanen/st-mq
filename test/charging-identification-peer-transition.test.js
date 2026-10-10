@@ -192,8 +192,8 @@ test('a contested retry preserves the earlier confirmed identity', t => {
 test('malformed persisted pause-contamination restrictions fail closed', t => {
   const f = fixture(t);
   f.runtime.persist();
-  const saved = f.states.get(f.runtime.key);
-  saved.chargers.charger1.vehicleEvidence.bmwContestedPauseRequestedAt = 'unknown';
+  const saved = f.states.get(`${f.runtime.key}:runtime:charger/charger1/vehicleEvidence`);
+  saved.value.bmwContestedPauseRequestedAt = 'unknown';
   assert.throws(() => new ChargingRuntime({ engine: {}, store: f.runtime.store, config: f.runtime.config,
     clock: () => f.now }), /Unsupported saved current identification evidence/);
 });

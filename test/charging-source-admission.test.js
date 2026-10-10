@@ -11,6 +11,7 @@ import { Engine } from '../src/app/engine.js';
 import { loadConfig } from '../src/app/config.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
 import { normalizeScheduleState, easeeChargerTelemetry, createEaseeScheduleAdapter } from '../src/charging/easee.js';
+import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 
 const START = Date.parse('2026-10-09T10:00:00Z');
 const settle = async store => { await new Promise(resolve => setImmediate(resolve)); await store.runWrite(() => {}); };
@@ -19,7 +20,9 @@ async function fixture(t, { bufferSubscription = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-charging-source-flow-'));
   const store = new Store(join(directory, 'history.sqlite'));
   const reader = new DatabaseSync(store.path);
-  const saved = key => JSON.parse(reader.prepare('SELECT value FROM state WHERE key=?').get(key).value);
+  const readState = key => { const row = reader.prepare('SELECT value FROM state WHERE key=?').get(key); return row ? JSON.parse(row.value) : null; };
+  const saved = key => /^charging:(mqtt|providers|simulated|offline)$/.test(key)
+    ? readChargingRuntime({ db: reader, getState: readState }, key) : readState(key);
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory }, directory),
     input: 'mqtt', deviceId: null, connections: { mqtt: { address: 'mqtt://synthetic.invalid' },
       easee: { charger_id: 'synthetic-source-flow' }, teslamate: { enabled: true, carId: '1' } } };
@@ -394,7 +397,7 @@ for (const fault of ['statement', 'COMMIT']) test(`BMW buffered departure ${faul
   const setState = f.store.setState.bind(f.store);
   if (fault === 'COMMIT') f.setFault('IOERR');
   else f.store.setState = (key, value) => {
-    if (key === f.runtime.key && value.vehicleFeeds.bmw.reading.pluggedIn === false)
+    if (key === `${f.runtime.key}:runtime:vehicle/bmw/reading` && value.value.pluggedIn === false)
       throw Object.assign(new Error('Synthetic buffered BMW failure'), { code: 'SQLITE_FULL' });
     return setState(key, value);
   };

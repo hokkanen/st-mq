@@ -1,3 +1,4 @@
+import { readChargingRuntime, writeChargingRuntime } from '../src/charging/runtime-storage.js';
 import { withReportDatabase } from './helpers/report-database.js';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
@@ -16,7 +17,7 @@ const HOUR = 3_600_000, initialNow = Date.parse('2026-01-15T00:00:00Z');
 function fixture(charging = {}, saved = {}, automatic = {}) {
   let now = initialNow;
   const association = createHash('sha256').update(JSON.stringify(['easee', undefined, undefined])).digest('hex');
-  for (const [key, value] of Object.entries(saved)) if (key === 'charging:mqtt') { value.version = 6; for (const record of Object.values(value.chargers ?? {})) record.association = association; }
+  for (const [key, value] of Object.entries(saved)) if (key === 'charging:mqtt') { value.version = 7; for (const record of Object.values(value.chargers ?? {})) record.association = association; }
   const values = new Map(Object.entries(saved)), writes = [];
   const store = {
     getState: key => structuredClone(values.get(key)),
@@ -25,7 +26,11 @@ function fixture(charging = {}, saved = {}, automatic = {}) {
       writes.push(key); values.set(key, structuredClone(value));
     },
   };
-  withReportDatabase(store);
+  withReportDatabase(store, undefined, values);
+  if (values.has('charging:mqtt')) {
+    const initial = values.get('charging:mqtt'); values.delete('charging:mqtt');
+    writeChargingRuntime(store, 'charging:mqtt', initial);
+  }
   const engine = {};
   const options = { engine, store, config: { input: 'mqtt', charging }, clock: () => now, canControl: () => true };
   const create = () => {
@@ -239,7 +244,7 @@ test('one-day preview and selected forecast cost stay outside published accounti
   assert.ok(Math.abs(view.sessionCost.totalCents - view.sessionCost.accruedCents - view.plan.costCents) < 1e-6);
   assert.ok(runtime.chargers.charger1.sessionCost.unitPriceCt >= 20, 'predictions cannot lower the accrued-cost fallback rate');
   assert.deepEqual(runtime.prices, official);
-  const saved = f.values.get('charging:mqtt');
+  const saved = readChargingRuntime(f.store, 'charging:mqtt');
   assert.equal(JSON.stringify(saved).includes('"predicted":true'), false, 'no prediction rows in ordinary runtime or replica state');
   assert.equal(JSON.stringify(saved).includes('decisionPriceSnapshot'), false);
   assert.equal(saved.chargers.charger1.sessionCost.prices.some(row => row.priceCtPerKwh === 1), false);
@@ -281,7 +286,7 @@ test('ordinary scheduling uses forecasts before its deadline and extra-day permi
   assert.equal(view.deadlineAt, deadline);
   assert.equal(view.flexibility.active, false);
   assert.equal(view.plan.usesForecast, true, 'canceling extra time does not turn off forecast pricing');
-  assert.equal(JSON.stringify(f.values.get('charging:mqtt')).includes('"predicted":true'), false);
+  assert.equal(JSON.stringify(readChargingRuntime(f.store, 'charging:mqtt')).includes('"predicted":true'), false);
   setAvailable(false); await runtime.tick({ prices: official }); await runtime.reconcile();
   assert.equal(chargerView(runtime).deadlineAt, deadline);
   assert.equal(runtime.getPlanningPrices().some(row => row.predicted), false);
@@ -588,7 +593,7 @@ test('one-day flexibility is durable, revision-fenced, consumes exactly once thr
   assert.equal(chargerView(runtime).request.revision, revision);
   await assert.rejects(runtime.setFlexibility('charger1', { ...input, actionId: 'different-click' }), /changed/);
   await assert.rejects(runtime.setFlexibility('charger1', flexibilityInput(runtime, 'allow', 'stacked')), /unavailable/);
-  assert.equal(f.values.get('charging:mqtt').chargers.charger1.request.deadlineAt, original + 24 * HOUR);
+  assert.equal(readChargingRuntime(f.store, 'charging:mqtt').chargers.charger1.request.deadlineAt, original + 24 * HOUR);
   await runtime.close(); f.setNow(original + HOUR); runtime = f.create(); adapter = fakeAdapter(f.clock);
   assert.equal(runtime.chargers.charger1.request.deadlineAt, original + 24 * HOUR);
   await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices: [] }); await runtime.reconcile();
@@ -983,7 +988,7 @@ test('configuration defaults and automatic readings survive restart without a sa
   assert.equal(restarted.settings.chargers.charger2.capacityKwh, 62);
   assert.equal(chargerView(restarted).values.soc.value, 46);
   assert.equal(restarted.vehicleFeeds.bmw.reading.measuredAt, initialNow - HOUR);
-  assert.equal(f.values.get('charging:mqtt').settings, undefined);
+  assert.equal(readChargingRuntime(f.store, 'charging:mqtt').settings, undefined);
   f.config.charging.defaults.manualSoc = 51;
   const reconfigured = f.create(); t.after(() => reconfigured.close());
   assert.equal(chargerView(reconfigured).values.soc.value, 51);
@@ -1569,7 +1574,7 @@ test('new installations use common 20% defaults and reject retired saved prefere
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   assert.deepEqual(runtime.status().chargers.map(charger => charger.values.soc.value), [20, 20]);
   f.values.set('charging:mqtt', { version: 5, settings: {} });
-  assert.throws(() => f.create(), /Unsupported charging state/);
+  assert.throws(() => f.create(), /Unsupported or incomplete charging state/);
 });
 
 test('measured energy lowers the remaining requirement once and survives restart without crediting the outage', async t => {
@@ -1934,12 +1939,12 @@ async function takeoverFixture(t) {
 
 test('Use automatic rejects stale displayed scope or native instruction before persistence and dispatch', async t => {
   const f = await takeoverFixture(t), scope = takeoverScope(chargerView(f.runtime));
-  const before = structuredClone(f.values.get('charging:mqtt')), writes = f.writes.length;
+  const before = structuredClone(readChargingRuntime(f.store, 'charging:mqtt')), writes = f.writes.length;
   for (const changes of [{ association: 'another-charger' }, { sessionId: 'another-connection' },
     { revision: scope.revision + 1 }, { controlRevision: scope.controlRevision + 1 },
     { takeoverToken: 'fixture-newer-instruction' }, { takeoverToken: '' }, { unexpected: true }]) {
     await assert.rejects(f.runtime.useAutomatic('charger1', { ...scope, ...changes }), /changed|displayed/);
-    assert.deepEqual(f.values.get('charging:mqtt'), before);
+    assert.deepEqual(readChargingRuntime(f.store, 'charging:mqtt'), before);
     assert.equal(f.writes.length, writes); assert.equal(f.calls.length, 0);
   }
 });
@@ -1987,7 +1992,7 @@ test('Use automatic durably enables Automatic and clears Charge now with one sco
   const before = chargerView(f.runtime), scope = takeoverScope(before);
   assert.equal(before.controls.enabled, false); assert.equal(before.request.chargeNow, true);
   let persisted;
-  f.setDuring(() => { persisted = structuredClone(f.values.get('charging:mqtt').chargers.charger1); });
+  f.setDuring(() => { persisted = structuredClone(readChargingRuntime(f.store, 'charging:mqtt').chargers.charger1); });
   await f.runtime.useAutomatic('charger1', scope);
   assert.equal(persisted.controls.enabled, true); assert.equal(persisted.request.chargeNow, undefined);
   assert.equal(persisted.controls.revision, scope.controlRevision + 1);
@@ -1996,7 +2001,7 @@ test('Use automatic durably enables Automatic and clears Charge now with one sco
   assert.equal(f.calls[0].enabled, true); assert.equal(f.calls[0].chargeNow, null);
   assert.equal(Object.hasOwn(f.calls[0], 'resume'), false, 'explicit native takeover has its own controller path');
   assert.equal(f.runtime.chargers.charger1.takeoverAttempt, undefined);
-  const saved = JSON.stringify(f.values.get('charging:mqtt').chargers);
+  const saved = JSON.stringify(readChargingRuntime(f.store, 'charging:mqtt').chargers);
   assert.equal(saved.includes(scope.takeoverToken), false, 'native takeover permission is never replayed from runtime state');
 });
 
@@ -2153,7 +2158,7 @@ test('Charge Now removes the automatic delay immediately and automatic handover 
   assert.equal(chargerView(runtime).control.phase, 'waiting');
   assert.equal(adapter.calls.filter(row => row.kind === 'install').length, 2);
   assert.deepEqual(runtime.settings, defaults);
-  assert.equal(f.values.get('charging:mqtt').settings, undefined);
+  assert.equal(readChargingRuntime(f.store, 'charging:mqtt').settings, undefined);
 });
 
 test('Charge Now and value overrides survive only the same physical connection across restart', async t => {
@@ -2212,12 +2217,13 @@ test('Charge Now works without forecasts while preserving native stops and fault
 test('saved sessions cannot smuggle permanent settings over configuration on restart', async t => {
   const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(); t.after(() => runtime.close());
   await runtime.setAdapter('charger1', fakeAdapter(f.clock)); await runtime.reconcile();
-  const saved = structuredClone(f.values.get('charging:mqtt'));
+  const saved = structuredClone(readChargingRuntime(f.store, 'charging:mqtt'));
   for (const overrides of [{ enabled: false }, { priority: 'charger2' }, { capacityProfile: 'tesla' }]) {
     const invalid = structuredClone(saved); invalid.chargers.charger1.request.overrides = overrides;
-    f.values.set('charging:mqtt', invalid);
+    const key = 'charging:mqtt:runtime:charger/charger1/request';
+    f.store.setState(key, { value: invalid.chargers.charger1.request });
     assert.throws(() => f.create(), /Unsupported saved charging session/);
-    assert.deepEqual(f.values.get('charging:mqtt'), invalid, 'Malformed state is rejected without rewriting it');
+    assert.deepEqual(f.store.getState(key), { value: invalid.chargers.charger1.request }, 'Malformed state is rejected without rewriting it');
   }
 });
 
@@ -2262,7 +2268,7 @@ test('automatic charging and shared priority persist independently of configured
   assert.equal(restarted.settings.chargers.charger2.enabled, false);
   assert.equal(restarted.settings.priority, 'charger2');
   assert.equal(restarted.settings.chargers.charger1.manualSoc, 45);
-  assert.deepEqual(Object.keys(f.values.get('charging:mqtt').chargers.charger1.controls).sort(), ['enabled', 'revision']);
+  assert.deepEqual(Object.keys(readChargingRuntime(f.store, 'charging:mqtt').chargers.charger1.controls).sort(), ['enabled', 'revision']);
 });
 
 test('a replacement charger inherits neither automatic enablement nor shared priority authority', async t => {
@@ -2302,18 +2308,24 @@ test('dashboard control changes reject stale revisions and roll back failed dura
 test('malformed current dashboard controls and retired charging state fail before mutation', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   await runtime.setControl('charger1', automaticScope(runtime));
-  const saved = structuredClone(f.values.get('charging:mqtt'));
+  const saved = structuredClone(readChargingRuntime(f.store, 'charging:mqtt'));
+  const manifest = f.store.getState('charging:mqtt');
   const cases = [
-    { ...saved, version: 5 }, { ...saved, settings: {} }, { ...saved, mystery: true },
-    { ...saved, controls: { ...saved.controls, enabled: true } },
-    { ...saved, controls: { ...saved.controls, priority: 'unknown' } },
-    { ...saved, controls: { ...saved.controls, revision: -1 } },
-    { ...saved, chargers: { ...saved.chargers, charger1: { ...saved.chargers.charger1, controls: { enabled: true, revision: 0, minimumSoc: 100 } } } },
+    ['charging:mqtt', { ...manifest, version: 6 }],
+    ['charging:mqtt', { ...manifest, settings: {} }],
+    ['charging:mqtt', { ...manifest, mystery: true }],
+    ['charging:mqtt:runtime:root/controls', { value: { ...saved.controls, enabled: true } }],
+    ['charging:mqtt:runtime:root/controls', { value: { ...saved.controls, priority: 'unknown' } }],
+    ['charging:mqtt:runtime:root/controls', { value: { ...saved.controls, revision: -1 } }],
+    ['charging:mqtt:runtime:charger/charger1/controls', { value: { enabled: true, revision: 0, minimumSoc: 100 } }],
   ];
-  for (const state of cases) {
-    f.values.set('charging:mqtt', state); const writes = f.writes.length;
-    assert.throws(() => f.create(), /Unsupported (saved charging controls|charging state)/);
+  for (const [key, state] of cases) {
+    const original = f.store.getState(key);
+    f.store.setState(key, state); const writes = f.writes.length;
+    assert.throws(() => f.create(), /Unsupported (saved charging controls|(?:or incomplete )?charging state)/);
     assert.equal(f.writes.length, writes);
+    assert.deepEqual(f.store.getState(key), state);
+    f.store.setState(key, original);
   }
 });
 
@@ -2388,13 +2400,13 @@ test('a pending durable automatic replan survives interruption before controller
   await runtime.chargeNow('charger1', requestScope(chargerView(runtime)));
   runtime.reconcile = async () => {};
   await runtime.setControl('charger1', automaticScope(runtime));
-  assert.equal(f.values.get('charging:mqtt').chargers.charger1.replan, true);
+  assert.equal(readChargingRuntime(f.store, 'charging:mqtt').chargers.charger1.replan, true);
   await runtime.close();
   const restarted = f.create(); t.after(() => restarted.close());
   restarted.tick({ prices });
   await restarted.setAdapter('charger1', adapter); await restarted.reconcile();
   assert.equal(chargerView(restarted).control.phase, 'waiting');
-  assert.equal(f.values.get('charging:mqtt').chargers.charger1.replan, false);
+  assert.equal(readChargingRuntime(f.store, 'charging:mqtt').chargers.charger1.replan, false);
 });
 
 
@@ -2405,11 +2417,11 @@ test('absent new controls in current state default OFF and Balanced without impo
   const original = chargerView(runtime);
   assert.equal(original.control.phase, 'waiting'); assert(original.control.owned);
   await runtime.close();
-  const saved = structuredClone(f.values.get('charging:mqtt'));
+  const saved = structuredClone(readChargingRuntime(f.store, 'charging:mqtt'));
   delete saved.controls;
   for (const item of Object.values(saved.chargers)) { delete item.controls; delete item.replan; }
   saved.view.settings.priority = 'charger2'; saved.view.settings.chargers.charger1.enabled = true;
-  f.values.set('charging:mqtt', saved);
+  writeChargingRuntime(f.store, 'charging:mqtt', saved);
   const restarted = f.create(); t.after(() => restarted.close());
   assert.equal(restarted.settings.chargers.charger1.enabled, false);
   assert.equal(restarted.settings.priority, 'balanced');

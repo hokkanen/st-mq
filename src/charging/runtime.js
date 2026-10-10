@@ -31,6 +31,7 @@ import { bmwVehicleSetup, teslaVehicleSetup } from './setup.js';
 import { readPlanningVoltage } from '../storage/voltage.js';
 import { jointTeslaComparisonScope } from './joint-identification.js';
 import { validateChargingRuntimeState } from './runtime-state.js';
+import { readChargingRuntime, writeChargingRuntime } from './runtime-storage.js';
 import { chargingFlexibility, consumeChargingFlexibility, changeChargingFlexibility, flexibilityUnavailable, nextLocalChargingDay } from './flexibility.js';
 import { forecastPriceOutlook } from '../acquisition/electricity-forecast.js';
 import { createSourceTimePending } from '../acquisition/source-time-pending.js';
@@ -192,7 +193,7 @@ export class ChargingRuntime {
       retentionDays: this.configuration.report_retention_days });
     this.limiterHistory = new ChargingAllowanceHistory({ store, input: config.input });
     this.physicalTests = new ChargingPhysicalTests({ store, key: `${this.key}:physical-tests`, clock });
-    const stored = store.getState(this.key);
+    const stored = readChargingRuntime(store, this.key);
     // Initialize the preference only when all charging runtime state is absent.
     // A present empty/null record, missing control field or changed association
     // or environment cannot turn an earlier unknown/off choice into permission.
@@ -359,6 +360,21 @@ export class ChargingRuntime {
     this.persistAcceptedState(now);
   }
   persistAcceptedState(now) {
+    return this.store.transaction(() => this.persistAcceptedStateTransaction(now));
+  }
+  persistAcceptedStateTransaction(now) {
+    const diagnostics = { state: this.sessionDiagnostics.state, lastSavedAt: this.sessionDiagnostics.lastSavedAt,
+      lastPrunedAt: this.sessionDiagnostics.lastPrunedAt };
+    const assessment = structuredClone(this.physicalTests.state);
+    const allowance = structuredClone(this.limiterHistory.previous);
+    const errors = { diagnosticsError: this.diagnosticsError, physicalTestsError: this.physicalTestsError,
+      limiterHistoryError: this.limiterHistoryError };
+    this.store.afterRollback(() => {
+      Object.assign(this.sessionDiagnostics, diagnostics);
+      this.physicalTests.state = assessment;
+      this.limiterHistory.previous = allowance;
+      Object.assign(this, errors);
+    });
     // Assessors only observe the production view. A diagnostic storage failure
     // must not block charging or an outstanding physical restoration duty.
     try { this.sessionDiagnostics.observe(this.views(now), now, this.coordinationView()); this.diagnosticsError = null; }
@@ -375,10 +391,10 @@ export class ChargingRuntime {
         streamAssociation: this.streamAssociation, streamEvidence: item.streamEvidence }]));
     const vehicleFeeds = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id,
       { reading: item.reading, consumedPlugId: item.consumedPlugId, consumedChargingId: item.consumedChargingId }]));
-    const saved = { version: 6, revision: this.revision, controls: this.controls, chargers, vehicleFeeds,
+    const saved = { version: 7, revision: this.revision, controls: this.controls, chargers, vehicleFeeds,
       consumedTeslaPower: this.consumedTeslaPower, consumedTeslaCurrent: this.consumedTeslaCurrent, view };
     validateChargingRuntimeState(saved);
-    this.store.setState(this.key, saved);
+    writeChargingRuntime(this.store, this.key, saved);
   }
   mqttRoutes() {
     return Object.values(this.vehicleFeeds).filter(item => item.mqttTopic)
@@ -1243,7 +1259,7 @@ export class ChargingRuntime {
           if (item.vehicleMatch?.id === 'bmw' && item.vehicleMatch.matchedAt >= pauseRequestedAt) {
             item.vehicleMatch = null;
             if (item.identification?.phase === 'completed') item.identification = {
-              ...item.identification, phase: 'observing', action: null, completedAt: null, reason: 'awaiting-evidence',
+              ...item.identification, lastAt: Math.max(now, item.identification.lastAt), phase: 'observing', action: null, completedAt: null, reason: 'awaiting-evidence',
             };
           }
           if (item.vehicleConflict?.at >= pauseRequestedAt) {
@@ -1302,7 +1318,7 @@ export class ChargingRuntime {
           && item.vehicleMatch.pauseRequestedAt === pauseRequestedAt) {
           item.vehicleMatch = null;
           if (item.identification?.phase === 'completed') item.identification = {
-            ...item.identification, phase: 'observing', action: null, completedAt: null, reason: 'awaiting-evidence',
+            ...item.identification, lastAt: Math.max(now, item.identification.lastAt), phase: 'observing', action: null, completedAt: null, reason: 'awaiting-evidence',
           };
         }
         freshCandidates[id] = [...new Set(candidates[id])];
@@ -1383,7 +1399,7 @@ export class ChargingRuntime {
         // arrived. Reopen that same attempt, retaining every used probe and
         // pause deadline rather than granting a second charging allowance.
         if (displacedTesla && item.identification?.phase === 'completed') item.identification = {
-          ...item.identification, phase: 'observing', action: null, completedAt: null, reason: 'awaiting-evidence',
+          ...item.identification, lastAt: Math.max(now, item.identification.lastAt), phase: 'observing', action: null, completedAt: null, reason: 'awaiting-evidence',
         };
         if (item.vehicleConflict) {
           item.vehicleConflict.ids = item.vehicleConflict.ids.filter(value => candidates[id].includes(value));

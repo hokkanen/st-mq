@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { Store } from '../src/storage/store.js';
+import { writeChargingRuntime } from '../src/charging/runtime-storage.js';
 import { startReplica } from '../src/app/replica.js';
 import { chargingSettings } from '../src/charging/settings.js';
 import { buildCharger, CHARGER_DEFINITIONS } from '../src/charging/model.js';
@@ -38,7 +39,7 @@ test('actual replica provider categories consistently describe saved evidence wh
   ]) store.observation({ source, device: 'synthetic-provider-device', signal, value, unit, sourceTime: sourceAt,
     receivedAt, quality: value === null ? ['missing'] : [], raw: { timeBasis: 'source-measured' } });
   const settings = chargingSettings();
-  store.setState('charging:mqtt', { version: 6, chargers: {}, view: { settings,
+  writeChargingRuntime(store, 'charging:mqtt', { version: 7, chargers: {}, view: { settings,
     chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition, settings: settings.chargers[definition.id], now: at })),
     vehicleFeeds: [
       { id: 'bmw', label: 'BMW', provider: 'bmw-cardata', topic: 'synthetic/vehicles/bmw',

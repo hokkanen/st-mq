@@ -85,7 +85,7 @@ function validateCurrentIdentificationEvidence(evidence) {
  * accepting a format never grants the saved association control authority. */
 export function validateChargingRuntimeState(saved) {
   if (saved == null) return;
-  if (!object(saved) || (Object.keys(saved).length && (saved.version !== 6
+  if (!object(saved) || (Object.keys(saved).length && (saved.version !== 7
     || Object.keys(saved).some(key => !['version', 'revision', 'controls', 'chargers', 'vehicleFeeds', 'consumedTeslaPower', 'consumedTeslaCurrent', 'view'].includes(key)))))
     throw new Error('Unsupported charging state; start a fresh development database');
   if (saved.revision !== undefined && (!Number.isSafeInteger(saved.revision) || saved.revision < 0)

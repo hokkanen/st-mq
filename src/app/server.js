@@ -408,7 +408,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             : `charging:${engine.config.input}:session-diagnostics`;
           const readOnly = writesBlocked() || recovering() || engine.config.input === 'offline';
           const snapshotAt = readContext ? engine.clock() : null;
-          const recordedRetention = readerStore.getState(key.slice(0, -':session-diagnostics'.length))?.view?.diagnostics?.retention?.days;
+          const recordedRetention = readerStore.getState(`${key.slice(0, -':session-diagnostics'.length)}:runtime:view/reportRetentionDays`)?.value;
           const retentionDays = (engine.config.input === 'offline' || readContext ? recordedRetention
             : engine.charging?.configuration?.report_retention_days) ?? recordedRetention ?? 30;
           const reports = new ChargingSessionDiagnostics({ store: readerStore, key, clock: engine.clock, retentionDays });

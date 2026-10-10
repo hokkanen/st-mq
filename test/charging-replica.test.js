@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
+import { writeChargingRuntime } from '../src/charging/runtime-storage.js';
+import { ChargingSessionDiagnostics } from '../src/charging/session-diagnostics.js';
 import { startReplica } from '../src/app/replica.js';
 import { chargingSettings } from '../src/charging/settings.js';
 import { buildCharger, CHARGER_DEFINITIONS } from '../src/charging/model.js';
@@ -13,12 +15,14 @@ import { normalizeScheduleState, scheduleFingerprint, effectiveScheduleFingerpri
 
 const snapshotAt = Date.parse('2026-01-15T00:00:00Z');
 
-async function fixture(t, saved, ownership) {
+async function fixture(t, saved, ownership, seed = () => {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-charging-replica-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const dbPath = join(directory, 'snapshot.sqlite'), store = new Store(dbPath);
   store.event('decision', { input: 'mqtt',  }, snapshotAt);
-  store.setState('charging:mqtt', saved);
+  if (saved.version === 7) writeChargingRuntime(store, 'charging:mqtt', saved);
+  else store.setState('charging:mqtt', saved);
+  seed(store);
   if (ownership) store.setState('charging:mqtt:charger1:synthetic-association:ownership', ownership);
   store.close();
   const raw = new DatabaseSync(dbPath); raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
@@ -64,7 +68,7 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   view.chargers[0].requiredGridKwh -= 2;
   view.chargers[0].progress = { creditedGridKwh: 2, remainingGridKwh: view.chargers[0].requiredGridKwh,
     basis: { source: 'integrated-measured-power', lastMeasuredAt: snapshotAt - 10_000 } };
-  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 6, chargers: {
+  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 7, chargers: {
     charger1: { association: 'synthetic-association', plan }, charger2: { association: 'synthetic-second-association', plan: null },
   }, view }, ownership);
   const status = await (await fetch(`${root}/api/status`)).json();
@@ -120,7 +124,7 @@ test('replica preserves independent vehicle identification, selected values and 
   charger.vehicleMqtt = { provider: 'bmw-cardata', brokerConnected: true, subscribed: true, lastLiveAt: snapshotAt - 30_000 };
   const feed = { id: 'bmw', label: 'BMW', provider: 'bmw-cardata', topic: 'stmq/vehicles/bmw',
     usedByChargerId: 'charger1', reception: charger.vehicleMqtt };
-  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 6,
+  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 7,
     vehicleFeeds: { bmw: { reading: automaticSoc } }, chargers: { charger1: { association: 'synthetic-association' }, charger2: { association: 'synthetic-second-association' } },
     view: { settings, chargers: [charger, buildCharger({definition:CHARGER_DEFINITIONS[1], settings:settings.chargers.charger2, now:snapshotAt})], vehicleFeeds: [feed] } });
   const charging = app.status().charging, actual = charging.chargers[0];
@@ -161,12 +165,17 @@ test('replica rejects retired BMW target state and selection shapes without alte
   for (const kind of ['state', 'selection']) await t.test(kind, async t => {
     const chargers = CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
       settings: settings.chargers[definition.id], now: snapshotAt }));
-    const state = { version: 6, chargers: { charger1: { association: 'synthetic-association' } }, view: { settings, chargers } };
+    const state = { version: 7, chargers: { charger1: { association: 'synthetic-association' } }, view: { settings, chargers } };
     if (kind === 'state') state.chargers.charger1.targetState = {
-      connectedAt: snapshotAt, history: [fact], conflict: false, lower: fact, last: fact, override: null };
+      connectedAt: snapshotAt, history: [fact], conflict: false, lower: fact, last: fact };
     else chargers[0].targetSelection = { connectedAt: snapshotAt, conflict: false, lower: fact,
-      raw: fact, selected: { ...fact, source: 'bmw-cardata' }, mode: 'automatic' };
-    const { app, digest, originalDigest } = await fixture(t, state);
+      raw: fact, selected: { ...fact, source: 'bmw-cardata' } };
+    const { app, digest, originalDigest } = await fixture(t, state, undefined, store => {
+      const key = `charging:mqtt:runtime:${kind === 'state' ? 'charger/charger1/targetState' : 'view/charger/charger1/targetSelection'}`;
+      const record = store.getState(key);
+      record.value[kind === 'state' ? 'override' : 'mode'] = kind === 'state' ? null : 'automatic';
+      store.setState(key, record);
+    });
     const status = app.status();
     assert.equal(status.charging, null);
     assert.equal(status.sync.state, 'error');
@@ -178,7 +187,7 @@ test('replica rejects retired BMW target state and selection shapes without alte
 
 test('replica rejects a current snapshot missing its recorded configuration instead of inventing defaults', async t => {
   const settings = chargingSettings();
-  const { app, digest, originalDigest } = await fixture(t, { version: 6, chargers: {}, view: {
+  const { app, digest, originalDigest } = await fixture(t, { version: 7, chargers: {}, view: {
     chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
       settings: settings.chargers[definition.id], now: snapshotAt })),
   } });
@@ -192,22 +201,40 @@ test('replica rejects a current snapshot missing its recorded configuration inst
 
 test('replica preserves recorded charging assessments while withdrawing live evidence and test authority', async t => {
   const settings = chargingSettings(), outcome = { state: 'target-confirmed', at: snapshotAt - 60_000, basis: 'vehicle-reading' };
-  const current = { id: 'recorded-session', chargerId: 'charger1', startedAt: snapshotAt - 3600_000,
-    observedAt: snapshotAt, evaluatedAt: snapshotAt, endedAt: null, behavior: 'expected', evidenceStale: false,
-    outcome, current: { physicalFresh: true, charging: false }, findings: [], coverage: { targetAttainment: { state: 'verified', at: outcome.at } },
-    saved: true, savedAt: snapshotAt - 60_000, counts: { events: 15, plans: 3, findings: 0 } };
-  const finished = { ...structuredClone(current), id: 'earlier-session', endedAt: snapshotAt - 600_000 };
+  const current = { version: 3, id: 'a'.repeat(64), association: 'b'.repeat(64), chargerId: 'charger1',
+    startedAt: snapshotAt - 3600_000, observedFrom: snapshotAt - 3600_000, observedAt: snapshotAt,
+    endedAt: null, endReason: null, vehicleId: 'bmw', expectationAt: snapshotAt - 3600_000,
+    firstChargingAt: snapshotAt - 3500_000, outcome, current: { physicalFresh: true, charging: false, expectation: 'hold' },
+    findings: [], coverage: Object.fromEntries(['identification', 'initialRelease', 'pause', 'resume', 'lateReplan',
+      'targetAttainment', 'completion', 'energy'].map(key => [key, { state: ['pause', 'targetAttainment'].includes(key)
+      ? 'verified' : 'not-exercised', at: outcome.at }])),
+    saved: true, savedAt: snapshotAt - 60_000, counts: { events: 15, plans: 3, findings: 0 },
+    pendingChecks: {}, planContext: [], events: [] };
   const run = { id: 'recorded-test', chargerId: 'charger1', vehicleId: 'bmw', phase: 'observing',
     deadlineAt: snapshotAt + 60_000, updatedAt: snapshotAt, findings: [], milestones: {}, report: { id: current.id } };
   const feed = { id: 'bmw', provider: 'bmw-cardata', reception: { available: true, connected: true },
     setup: { available: true, fields: { soc: { value: 80, available: true, measuredAt: snapshotAt - 1000 },
       atHome: { value: true, available: true, measuredAt: snapshotAt - 1000 } } } };
-  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 6, chargers: {}, view: {
+  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 7, chargers: {}, view: {
     settings, chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
       settings: settings.chargers[definition.id], now: snapshotAt })), vehicleFeeds: [feed],
-    diagnostics: { version: 3, retention: { days: 30 }, chargers: [{ id: 'charger1', current, recent: [finished], hasMore: true }] },
+    reportRetentionDays: 7,
     physicalTests: { version: 3, canManage: true, runs: [run] },
-  } });
+  } }, undefined, store => {
+    const diagnostics = new ChargingSessionDiagnostics({ store, key: 'charging:mqtt:session-diagnostics',
+      clock: () => snapshotAt, retentionDays: 7 });
+    store.transaction(() => {
+      for (let index = 0; index < 5; index++) diagnostics.persist({ ...structuredClone(current),
+        id: createHash('sha256').update(`synthetic-completed-report-${index}`).digest('hex'),
+        startedAt: snapshotAt - (index + 2) * 3600_000, observedAt: snapshotAt - 30_000,
+        endedAt: snapshotAt - 30_000, endReason: 'unplugged',
+      }, snapshotAt, true);
+      diagnostics.persist(structuredClone(current), snapshotAt, true);
+      store.setState(diagnostics.key, { version: 3, chargers: { charger1: {
+        association: current.association, closedThrough: null, currentId: current.id,
+      } } });
+    });
+  });
   const before = app.status().charging, projected = before.diagnostics.chargers[0];
   assert.deepEqual(projected.current.outcome, outcome);
   assert.equal(projected.current.behavior, 'expected', 'Recorded assessment is not reinterpreted by the viewer');
@@ -220,6 +247,8 @@ test('replica preserves recorded charging assessments while withdrawing live evi
   assert.deepEqual(projected.current.counts, current.counts);
   assert.equal(projected.current.saved, true);
   assert.equal(projected.hasMore, true);
+  assert.equal(projected.recent.length, 4, 'Completed reports are loaded from their bounded SQL history');
+  assert.deepEqual(before.diagnostics.retention, { days: 7 });
   assert.equal(Object.hasOwn(projected.current, 'timeline'), false);
   assert.equal(before.physicalTests.canManage, false);
   assert.equal(before.physicalTests.runs[0].phase, 'observing');
@@ -230,6 +259,10 @@ test('replica preserves recorded charging assessments while withdrawing live evi
   assert.equal(before.vehicleFeeds[0].setup.fields.soc.value, 80);
   assert.equal(before.vehicleFeeds[0].reception.available, false);
   advance(); assert.deepEqual(app.status().charging, before, 'Elapsed viewer time never completes a physical test');
+  const reports = await (await fetch(`${root}/api/charging/reports?chargerId=charger1`)).json();
+  assert.deepEqual(reports.retention, { days: 7 }, 'Report routes read the recorded retention fragment');
+  assert.equal(reports.snapshotAt, snapshotAt);
+  assert.equal(reports.reports.find(row => row.id === current.id).evaluatedAt, snapshotAt);
   for (const action of ['preview', 'start', 'schedule', 'cancel']) {
     const denied = await fetch(`${root}/api/charging/tests/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
     assert.equal(denied.status, 405);
@@ -237,15 +270,63 @@ test('replica preserves recorded charging assessments while withdrawing live evi
   assert.equal(digest(), originalDigest);
 });
 
+test('replica retains a recorded diagnostics save failure alongside the last committed report and its original clocks', async t => {
+  const settings = chargingSettings(), observedAt = snapshotAt - 60_000;
+  const error = 'Session diagnostics could not be saved.';
+  let committed;
+  const { app, digest, originalDigest, advance } = await fixture(t, { version: 7, chargers: {}, view: {
+    settings, chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
+      settings: settings.chargers[definition.id], now: snapshotAt })),
+    diagnostics: { version: 3, retention: { days: 7 }, available: false, error, chargers: [] },
+  } }, undefined, store => {
+    const diagnostics = new ChargingSessionDiagnostics({ store, key: 'charging:mqtt:session-diagnostics',
+      clock: () => observedAt, retentionDays: 7 });
+    const reading = value => ({ value, source: 'easee', available: true, measuredAt: observedAt, receivedAt: observedAt });
+    committed = diagnostics.observe([{ id: 'charger1', association: 'synthetic-equipment',
+      request: { sessionId: 'synthetic-session', revision: 1 }, settings: { enabled: true },
+      control: { phase: 'released', released: true, session: { connectedAt: observedAt, connected: true },
+        snapshot: { online: true, readAt: observedAt } },
+      values: { connected: reading(true), charging: reading(true), powerKw: reading(7), soc: reading(40),
+        minimumSoc: reading(80), vehicleCeilingSoc: reading(90), capacityKwh: reading(74) },
+      telemetry: { providerConnected: true }, vehicle: { id: 'bmw', state: 'identified' },
+      identification: { phase: 'completed', active: false }, deadlineAt: observedAt + 8 * 3600_000,
+      plan: { periods: [{ startAt: observedAt, endAt: null }], finalStartAt: observedAt, feasible: true },
+      progress: { remainingGridKwh: 18, deliveredGridKwh: 0, connectionAt: observedAt,
+        basis: { lastMeasuredAt: observedAt } },
+    }], observedAt).chargers[0].current;
+  });
+  const diagnostics = app.status().charging.diagnostics, report = diagnostics.chargers[0].current;
+  assert.equal(diagnostics.available, false);
+  assert.equal(diagnostics.error, error);
+  assert.equal(diagnostics.canManage, false);
+  assert.equal(diagnostics.liveAvailable, false);
+  assert.equal(report.id, committed.id, 'A failed later save does not replace committed report history');
+  assert.deepEqual(report.current, committed.current);
+  assert.deepEqual(report.outcome, committed.outcome);
+  assert.equal(report.observedAt, observedAt);
+  assert.equal(report.evaluatedAt, observedAt);
+  assert.equal(report.snapshotAt, snapshotAt);
+  advance();
+  assert.deepEqual(app.status().charging.diagnostics, diagnostics);
+  assert.equal(digest(), originalDigest);
+});
+
 test('replica rejects unsupported assessment versions without altering publication', async t => {
   const settings = chargingSettings();
   for (const type of ['diagnostics', 'physicalTests']) await t.test(type, async t => {
-    const { app, digest, originalDigest } = await fixture(t, { version: 6, chargers: {}, view: {
+    const { app, digest, originalDigest } = await fixture(t, { version: 7, chargers: {}, view: {
       settings, chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
         settings: settings.chargers[definition.id], now: snapshotAt })),
-      [type]: type === 'diagnostics' ? { version: 0, chargers: [] } : { version: 0, runs: [] },
-    } });
-    assert.equal(app.status().charging.available, false);
+      ...(type === 'physicalTests' ? { physicalTests: { version: 0, runs: [] } } : {}),
+    } }, undefined, store => {
+      if (type === 'diagnostics') store.setState('charging:mqtt:session-diagnostics', { version: 0, chargers: {} });
+    });
+    const status = app.status();
+    if (type === 'diagnostics') {
+      assert.equal(status.charging, null);
+      assert.equal(status.sync.state, 'error');
+      assert.equal(status.sync.generation, null, 'Invalid report state cannot admit a snapshot');
+    } else assert.equal(status.charging.available, false);
     assert.equal(digest(), originalDigest);
   });
 });

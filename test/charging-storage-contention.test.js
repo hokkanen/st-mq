@@ -1,3 +1,4 @@
+import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
@@ -21,7 +22,7 @@ function fixture(t) {
   const dispatches = [];
   runtime.updatePlan = async () => {};
   runtime.reconcile = async id => {
-    assert.equal(store.getState(runtime.key).chargers.charger1.controls.enabled, true);
+    assert.equal(readChargingRuntime(store, runtime.key).chargers.charger1.controls.enabled, true);
     dispatches.push(id);
   };
   t.after(async () => {
@@ -42,14 +43,14 @@ test('charging permission waits through contention and publishes only after comm
   t.after(() => clearInterval(timer));
   await delay(350);
   assert.equal(f.runtime.chargers.charger1.controls.enabled, false);
-  assert.equal(f.store.getState(f.runtime.key), null);
+  assert.equal(readChargingRuntime(f.store, f.runtime.key), null);
   assert.deepEqual(f.dispatches(), []);
   assert.ok(beats > 10);
   f.writer.exec('ROLLBACK'); await pending;
   assert.equal(f.runtime.chargers.charger1.controls.enabled, true);
   assert.deepEqual(f.dispatches(), ['charger1', 'charger2']);
   const reopened = new Store(f.store.path, { readOnly: true });
-  try { assert.equal(reopened.getState(f.runtime.key).chargers.charger1.controls.enabled, true); }
+  try { assert.equal(readChargingRuntime(reopened, f.runtime.key).chargers.charger1.controls.enabled, true); }
   finally { reopened.close(); }
 });
 
@@ -60,7 +61,7 @@ test('authority loss while waiting rejects charging permission without mutating 
   f.revoke(); f.writer.exec('ROLLBACK');
   await assert.rejects(pending, { code: 'STORAGE_WRITE_STALE' });
   assert.equal(f.runtime.chargers.charger1.controls.enabled, false);
-  assert.equal(f.store.getState(f.runtime.key), null);
+  assert.equal(readChargingRuntime(f.store, f.runtime.key), null);
   assert.deepEqual(f.dispatches(), []);
 });
 
@@ -74,7 +75,7 @@ test('outer commit failure restores charging RAM as well as SQLite and never dis
   finally { f.store.db.exec = exec; }
   assert.equal(f.runtime.chargers.charger1.controls.enabled, false);
   assert.equal(f.runtime.chargers.charger1.controls.revision, 0);
-  assert.equal(f.store.getState(f.runtime.key), null);
+  assert.equal(readChargingRuntime(f.store, f.runtime.key), null);
   assert.deepEqual(f.dispatches(), []);
   await f.runtime.setControl('charger1', f.input());
   assert.deepEqual(f.dispatches(), ['charger1', 'charger2']);
@@ -87,7 +88,7 @@ test('closing charging aborts queued permission without waiting for an external 
   await f.runtime.close();
   assert.equal((await pending).code, 'STORAGE_WRITE_CANCELLED');
   assert.deepEqual(f.dispatches(), []);
-  assert.equal(f.store.getState(f.runtime.key), null);
+  assert.equal(readChargingRuntime(f.store, f.runtime.key), null);
 });
 
 test('charging shutdown fences admission immediately before slower shared-runtime cleanup', { timeout: 2000 }, async t => {

@@ -1,3 +1,4 @@
+import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -122,7 +123,7 @@ test('charging API saves fenced dashboard controls separately from defaults and 
   assert.equal(restarted.charging.settings.chargers.charger2.capacityKwh, 79);
   assert.equal(restarted.charging.settings.chargers.charger1.manualSoc, 43);
   assert.equal(restarted.charging.settings.priority, 'charger2');
-  assert.equal(Object.hasOwn(store.getState('charging:mqtt') ?? {}, 'settings'), false);
+  assert.equal(Object.hasOwn(readChargingRuntime(store, 'charging:mqtt') ?? {}, 'settings'), false);
   await restarted.charging.close();
 });
 
@@ -166,7 +167,7 @@ test('Charge Now API authenticates and rejects stale scope with automatic chargi
       assert.equal(accepted.request.sessionId, request.sessionId);
       assert.equal(accepted.request.revision, request.revision + 1);
       assert.deepEqual(updates.at(-1).chargeNow, { connectedAt });
-      assert.equal(store.getState('charging:mqtt').chargers.charger1.request.chargeNow, true);
+      assert.equal(readChargingRuntime(store, 'charging:mqtt').chargers.charger1.request.chargeNow, true);
       assert.equal((await post(request)).status, 400, 'an old screen cannot overwrite the accepted request');
       advance(60_000); sessionAt = engine.clock();
       assert.equal((await post({ ...request, revision: accepted.request.revision })).status, 400);
@@ -174,7 +175,7 @@ test('Charge Now API authenticates and rejects stale scope with automatic chargi
     }
     assert.deepEqual(runtime.settings, settings);
     assert.deepEqual(config.charging, configured);
-    assert.equal(Object.hasOwn(store.getState('charging:mqtt') ?? {}, 'settings'), false);
+    assert.equal(Object.hasOwn(readChargingRuntime(store, 'charging:mqtt') ?? {}, 'settings'), false);
   });
 });
 

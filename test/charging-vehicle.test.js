@@ -1,3 +1,4 @@
+import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -697,22 +698,25 @@ test('retired BMW target state and saved selection fields fail before any persis
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   publish(runtime, facts(START, { chargeLimitSoc: 100 })); pauseBmw(runtime, f);
   f.setNow(START + 2 * MINUTE); publishTarget(runtime, 85, START + 2 * MINUTE);
-  const saved = f.store.getState(runtime.key);
+  const saved = readChargingRuntime(f.store, runtime.key);
   const cases = [];
   for (const override of [null, { value: 100, selectedAt: START }]) {
-    const state = structuredClone(saved); state.chargers.charger1.targetState.override = override; cases.push(state);
+    const value = structuredClone(saved.chargers.charger1.targetState); value.override = override;
+    cases.push([`${runtime.key}:runtime:charger/charger1/targetState`, { value }]);
   }
   for (const mode of ['automatic', 'full']) {
-    const state = structuredClone(saved); state.view.chargers[0].targetSelection.mode = mode; cases.push(state);
+    const value = structuredClone(saved.view.chargers[0].targetSelection); value.mode = mode;
+    cases.push([`${runtime.key}:runtime:view/charger/charger1/targetSelection`, { value }]);
   }
-  for (const state of cases) {
-    f.store.setState(runtime.key, state);
+  for (const [key, state] of cases) {
+    const original = f.store.getState(key);
+    f.store.setState(key, state);
     f.store.fail = true;
     assert.throws(() => f.create(), /Unsupported saved charging target.*fresh development database/);
-    assert.deepEqual(f.store.getState(runtime.key), state, 'Rejected saved data remains unchanged');
+    assert.deepEqual(f.store.getState(key), state, 'Rejected saved data remains unchanged');
     f.store.fail = false;
+    f.store.setState(key, original);
   }
-  f.store.setState(runtime.key, saved);
   const restarted = f.create(); t.after(() => restarted.close());
   publishTarget(restarted, 100, START + 2 * MINUTE);
   assert.equal(view(restarted).values.minimumSoc.value, 85);

@@ -6,6 +6,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Charging saves changing evidence separately from accepted plans and control
+  intent. Plans and their scenario context are stored once; replica reports read
+  their existing history instead of repeatedly copying completed reports into
+  every device update. Unchanged terminal identification attempts keep their
+  original clocks. Related state remains atomic through rollback and restart.
+  Development schema 29 and charging format 7 require a deliberate fresh database;
+  incompatible databases are preserved and rejected, without migration or reset.
+
 - Garage doors, switches and heat-pump commands wait briefly for received readings
   to finish saving instead of failing immediately during a recording backlog.
   They recheck device state and authority before sending, retain their original

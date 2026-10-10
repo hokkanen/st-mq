@@ -1,3 +1,4 @@
+import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -30,7 +31,7 @@ async function fixture(t, { populated = true } = {}) {
   if (populated) for (const item of Object.values(runtime.chargers)) item.plan = { state: 'waiting', reason: 'economic-pause',
     at: initial, periods: [], intervals: structuredClone(intervals), requiredGridKwh: 20 };
   await store.runWrite(() => runtime.persist());
-  const bytes = Buffer.byteLength(JSON.stringify(store.getState(runtime.key)));
+  const bytes = Buffer.byteLength(JSON.stringify(readChargingRuntime(store, runtime.key)));
   if (populated) assert(bytes > 600_000 && bytes < 2 * 1024 * 1024, `Real runtime projection size: ${bytes}`);
   const client = new EventEmitter();
   client.pending = [];

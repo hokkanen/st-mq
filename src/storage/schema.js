@@ -1,7 +1,7 @@
 import { RECOVERY_DEPENDENCY_SCHEMA } from '../recovery/dependencies.js';
 import { journalSchema } from './journal-schema.js';
 // One current schema. Pre-production databases are never migrated.
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 29;
 // Original source rows remain immutable evidence. The active views select the
 // current recovery interpretation without erasing history or changing local IDs.
 export const RECOVERABLE_TABLES = ['annotations', 'counters', 'energy_audits', 'events',

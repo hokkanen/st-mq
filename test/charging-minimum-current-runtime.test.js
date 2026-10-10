@@ -1,3 +1,4 @@
+import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import { admitChargingObservation } from './helpers/charging-observation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -1218,7 +1219,7 @@ test('a saved Tesla label without comparison proof cannot jointly resolve a dela
 
 test('runtime rejects malformed persisted joint comparison before source evidence or commands are accepted', async t => {
   const { f } = await delayedBmwStopFixture(t, 'charger1'); f.runtime.persist();
-  const saved = structuredClone(f.data.get('charging:mqtt'));
+  const saved = structuredClone(readChargingRuntime(f.store, 'charging:mqtt'));
   assert.ok(saved.chargers.charger1.vehicleEvidence.teslaCurrentMatch);
   const writes = structuredClone(f.writes);
   for (const corrupt of [evidence => { evidence.teslaCurrentMatch.assumePeerVehicle = 'bmw'; },
@@ -1228,7 +1229,8 @@ test('runtime rejects malformed persisted joint comparison before source evidenc
     evidence => { evidence.teslaCurrentMatchTestId = 42; },
     evidence => { delete evidence.teslaCurrentMatchTestId; }]) {
     const invalid = structuredClone(saved); corrupt(invalid.chargers.charger1.vehicleEvidence);
-    const store = { ...f.store, getState: key => key === 'charging:mqtt' ? invalid : f.store.getState(key) };
+    const store = { ...f.store, getState: key => key === 'charging:mqtt:runtime:charger/charger1/vehicleEvidence'
+      ? { value: invalid.chargers.charger1.vehicleEvidence } : f.store.getState(key) };
     assert.throws(() => new ChargingRuntime({ engine: {}, store, config: f.config, clock: () => f.now }),
       /Unsupported saved (?:joint Tesla comparison|current identification evidence)/);
   }
@@ -1236,7 +1238,8 @@ test('runtime rejects malformed persisted joint comparison before source evidenc
     const valid = structuredClone(saved), evidence = valid.chargers.charger1.vehicleEvidence;
     delete evidence.teslaCurrentMatch;
     if (!keepSpentMarker) delete evidence.teslaCurrentMatchTestId;
-    const store = { ...f.store, getState: key => key === 'charging:mqtt' ? valid : f.store.getState(key) };
+    const store = { ...f.store, getState: key => key === 'charging:mqtt:runtime:charger/charger1/vehicleEvidence'
+      ? { value: valid.chargers.charger1.vehicleEvidence } : f.store.getState(key) };
     const restored = new ChargingRuntime({ engine: {}, store, config: f.config, clock: () => f.now });
     assert.equal(restored.chargers.charger1.vehicleEvidence.teslaCurrentMatch, undefined);
     assert.equal(restored.chargers.charger1.vehicleEvidence.teslaCurrentMatchTestId,
@@ -1634,13 +1637,14 @@ test('minimum-current runtime does not reuse a settling sample from a replaced T
 
 test('minimum-current runtime rejects malformed saved settling evidence before it can become a match', async t => {
   const f = await fixture(t); await f.update(); f.advance(6000); await f.sampleTesla(6); f.runtime.persist();
-  const saved = structuredClone(f.data.get('charging:mqtt'));
+  const saved = structuredClone(readChargingRuntime(f.store, 'charging:mqtt'));
   assert.ok(saved.chargers.charger2.vehicleEvidence.teslaCurrentCandidate);
   for (const patch of [{ unknownField: true }, { vehicleAssociation: null }, { testId: '' },
     { physicalAt: -1 }, { observedAt: START }, { receivedAt: START + 1_000_000 }]) {
     const invalid = structuredClone(saved);
     Object.assign(invalid.chargers.charger2.vehicleEvidence.teslaCurrentCandidate, patch);
-    const store = { ...f.store, getState: key => key === 'charging:mqtt' ? invalid : f.store.getState(key) };
+    const store = { ...f.store, getState: key => key === 'charging:mqtt:runtime:charger/charger2/vehicleEvidence'
+      ? { value: invalid.chargers.charger2.vehicleEvidence } : f.store.getState(key) };
     assert.throws(() => new ChargingRuntime({ engine: {}, store, config: f.config, clock: () => f.now }),
       /Unsupported saved current identification evidence/);
   }
