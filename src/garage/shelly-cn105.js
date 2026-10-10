@@ -6,12 +6,12 @@ export function createShellyCn105Transport({ settings, publish }) {
   if (config.driver !== 'shelly-cn105' || !config.commandTopic) return null;
   if (typeof publish !== 'function') throw new TypeError('Shelly CN105 requires an MQTT publisher');
   const transport = Object.freeze({
-    send(command) {
+    send(command, { beforePublish, signal } = {}) {
       if (command.schema !== SHELLY_CN105_CONTRACT || !['control', 'set'].includes(command.action))
         throw new TypeError('Unsupported Shelly CN105 command');
       // QoS 0 and queueQoSZero:false prevent offline replay; native results and
       // protocol challenges handle an uncertain publication outcome.
-      return publish(config.commandTopic, JSON.stringify(command), { qos: 0, retain: false, noReplay: true });
+      return publish(config.commandTopic, JSON.stringify(command), { qos: 0, retain: false, noReplay: true, beforePublish, signal });
     },
   });
   transports.add(transport);

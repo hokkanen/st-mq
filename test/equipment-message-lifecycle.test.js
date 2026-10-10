@@ -12,7 +12,8 @@ const status = (extra = {}) => ({ now, role: 'master', equipment: { devices: [de
   equipmentControls: { available: true, lastResult: receipt() }, equipmentTests: { available: true }, ...extra });
 const door = (operation = {}) => ({ ...device(), id: 'fixture-door', kind: 'door',
   controls: { cover: { open: true, close: true, stop: true } },
-  cover: { available: true, operation: { action: 'open', status: 'published', requestedAt: now, ...operation } },
+  cover: { available: true, operation: { action: 'open', status: 'published', requestedAt: now,
+    dispatchedAt: operation.requestedAt ?? now, ...operation } },
   readings: { door_open: { value: 0, unit: 'state', stale: false, observedAt: now - 1, coverState: 'closed' } } });
 
 function equipmentDocument() {
@@ -74,6 +75,14 @@ test('a late fresh report resolves an unconfirmed switch receipt without waiting
   assert.match(equipmentControlResult(current, device(0, now - 1)), /no confirming device report/);
   assert.match(equipmentControlResult({ ...current, now: now + 2_000 }, device(1, now + 1_000)), /device confirmed/);
   assert.equal(equipmentControlResult({ ...current, now: now + 86400_000 }, device(0, now - 1)), '');
+});
+
+test('matching switch feedback cannot confirm a still-pending or known-unsent request', () => {
+  const pending = status({ equipmentControls: { lastResult: receipt({ status: 'pending', confirmed: false, sent: undefined }) } });
+  assert.match(equipmentControlResult(pending, device()), /sending/);
+  const unsent = status({ equipmentControls: { lastResult: receipt({ status: 'unconfirmed', confirmed: false, sent: false,
+    code: 'EQUIPMENT_COMMAND_WAIT_EXPIRED' }) } });
+  assert.match(equipmentControlResult(unsent, device()), /not sent.*recording/);
 });
 
 test('door completion and uncertainty remain historical receipts for one day', () => {

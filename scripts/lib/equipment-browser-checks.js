@@ -185,7 +185,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
         }
         if(path.endsWith('/cover')) {
           if(fixture.holdCover) await new Promise(resolve=>{fixture.releaseCover=resolve;});
-          fixture.devices.find(device=>device.id===body.deviceId).cover.operation={action:body.action,status:'published',requestedAt:fixture.now,acknowledgedAt:fixture.now};
+          fixture.devices.find(device=>device.id===body.deviceId).cover.operation={action:body.action,status:'published',requestedAt:fixture.now,dispatchedAt:fixture.now,acknowledgedAt:fixture.now};
           return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});
         }
         if(path.endsWith('/dehumidifier')) {

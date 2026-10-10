@@ -13,6 +13,7 @@ import { familyRouteAllowed, familyActionAllowed, fireplaceAccess, FAMILY_FIREWO
 import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
 import { electricityForecastView } from './electricity-forecast-view.js';
 import { recoveryFailure } from '../recovery/errors.js';
+import { EQUIPMENT_COMMAND_ERRORS } from '../domain/equipment-command-errors.js';
 
 function authorized(req, token) {
   if (!token) return false;
@@ -634,6 +635,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             : { error: refused ? 'The paired request was rejected. Review the action requirements and current status.'
               : 'The paired request could not be confirmed. Recheck its saved outcome before trying again.' });
         }
+        if (Object.hasOwn(EQUIPMENT_COMMAND_ERRORS, error?.code))
+          return json(409, { code: error.code, error: EQUIPMENT_COMMAND_ERRORS[error.code] });
         const fireplaceWrite = req.method === 'POST' && /^\/api\/(?:fireplace(?:\/remove)?|sensor-changes(?:\/(?:revert|retry-rebuild))?)(?:\?|$)/.test(req.url);
         const code = error.statusCode ?? (fireplaceWrite && !(error instanceof TypeError || error instanceof SyntaxError) ? 503 : 400);
         json(code, { error: code >= 500 ? 'Request could not be confirmed. Retry shortly.'

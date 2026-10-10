@@ -1,7 +1,8 @@
 import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createEquipmentActions, createEquipmentPanel, equipmentReadingRows, equipmentTestAllowed, equipmentSource, equipmentControlAllowed, equipmentCheckText, dhwrReadingSummary } from '../chart/equipment.js';
+import { createEquipmentActions, createEquipmentPanel, equipmentReadingRows, equipmentTestAllowed, equipmentSource, equipmentControlAllowed,
+  equipmentCoverReceipt, equipmentCoverResult, equipmentControlResult, equipmentCheckText, dhwrReadingSummary } from '../chart/equipment.js';
 import { historyDatasets, historyValueLabel } from '../chart/history-model.js';
 import { providerName } from '../chart/provider-status.js';
 import { DEHUMIDIFIER_OPTIONS, dehumidifierControlAllowed, dehumidifierResult } from '../chart/caravan.js';
@@ -143,6 +144,55 @@ test('failed requests retain monitoring, hide transport error details and replic
   actions.update(status({ role: 'slave' }));
   assert.equal(await actions.recheck(), false); assert.equal(await actions.test('caravan', true, 5), false);
   assert.equal(count, 1);
+});
+
+test('door and switch failures display only authored known-unsent reasons and hide raw transport details', async () => {
+  const messages = [
+    ['EQUIPMENT_COMMAND_WAIT_EXPIRED', 'The request was not sent because recording did not catch up in time. Try again shortly.'],
+    ['EQUIPMENT_COMMAND_RECORDING_FAILED', 'The request was not sent because an observation could not be saved. Check recording status.'],
+    ['EQUIPMENT_COMMAND_CANCELLED', 'The request was not sent because the device state, connection or control request changed. Check its current state before trying again.'],
+    ['invented-private-error-code', 'Could not confirm the control request. Check the reported device state before trying again.'],
+    [undefined, 'Could not confirm the control request. Check the reported device state before trying again.'],
+  ];
+  for (const action of ['door', 'switch']) for (const [code, expected] of messages) {
+    const door = { id: 'door', kind: 'door', available: true,
+      controls: { cover: { open: true } }, cover: { available: true },
+      readings: { door_open: { value: 0, unit: 'state', observedAt: now, stale: false, coverState: 'closed' } } };
+    const current = status({ equipment: { devices: [structuredClone(plug), door] }, equipmentControls: { available: true } });
+    const actions = createEquipmentActions({ request: async () => {
+      throw Object.assign(new Error('invented-private-broker-detail'), { code });
+    } });
+    actions.update(current);
+    assert.equal(await (action === 'door' ? actions.cover('door', 'open') : actions.switch('caravan', false)), false);
+    const result = actions.snapshot();
+    assert.equal(result.message, expected); assert.equal(result.status, current);
+    assert.equal(result.busy, false); assert.equal(result.error, true);
+    assert.doesNotMatch(result.message, /invented-private/);
+    if (code?.startsWith('EQUIPMENT_COMMAND_')) {
+      door.cover.operation = { action: 'open', status: 'failed', requestedAt: now, code, error: 'invented-private-broker-detail' };
+      assert.equal(equipmentCoverResult(door, now), expected, 'Polled door receipts retain the authored outcome');
+      current.equipmentControls.lastResult = { deviceId: 'caravan', on: false, at: now,
+        status: 'unconfirmed', sent: false, confirmed: false, code, reason: 'invented-private-broker-detail' };
+      assert.equal(equipmentControlResult(current, current.equipment.devices[0]), expected,
+        'Polled switch receipts retain the authored outcome');
+    }
+  }
+});
+
+test('a door report before dispatch cannot make the UI claim the waiting request was confirmed', () => {
+  const door = { id: 'door', kind: 'door', available: true,
+    cover: { operation: { action: 'open', status: 'publishing', requestedAt: now } },
+    readings: { door_open: { value: 1, unit: 'state', observedAt: now + 1000, stale: false, coverState: 'open' } } };
+  let receipt = equipmentCoverReceipt(door, now + 3000);
+  assert.equal(receipt.confirmed, false); assert.equal(receipt.evidenceAt, null);
+  assert.match(equipmentCoverResult(door, now + 3000), /sending/);
+  door.cover.operation.status = 'published'; door.cover.operation.dispatchedAt = now + 2000;
+  receipt = equipmentCoverReceipt(door, now + 3000);
+  assert.equal(receipt.confirmed, false); assert.equal(receipt.evidenceAt, null);
+  assert.match(equipmentCoverResult(door, now + 3000), /position unconfirmed/);
+  door.readings.door_open.observedAt = now + 2500;
+  assert.equal(equipmentCoverReceipt(door, now + 3000).confirmed, true);
+  assert.match(equipmentCoverResult(door, now + 3000), /state reported/);
 });
 
 

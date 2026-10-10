@@ -12,7 +12,8 @@ const door = (value = 0, extra = {}) => ({
 });
 const status = device => ({ role: 'master', now, equipment: { devices: [device] } });
 const operation = (device, action, state, requestedAt = now) => {
-  device.cover.operation = { action, status: state, requestedAt };
+  device.cover.operation = { action, status: state, requestedAt,
+    ...(['published', 'observed', 'unconfirmed'].includes(state) ? { dispatchedAt: requestedAt } : {}) };
   return device;
 };
 
@@ -131,15 +132,13 @@ test('expired command waiting releases the shortcut while its historical receipt
   assert.equal(garageDoorControl(status(device), device).disabled, true, 'An active publication does not expire in presentation');
 });
 
-test('a newer live terminal report supersedes failed or unconfirmed feedback', () => {
-  for (const phase of ['failed', 'unconfirmed']) {
-    const device = operation(door(1), 'close', phase, now - 2000);
-    device.readings.side_entrance_open.coverState = 'open';
-    const view = garageDoorControl(status(device), device);
-    assert.equal(view.action, 'close');
-    assert.match(view.feedback, /latest device report: open; request superseded/);
-    assert.equal(view.failed, false);
-  }
+test('a newer live terminal report supersedes unconfirmed dispatched feedback', () => {
+  const device = operation(door(1), 'close', 'unconfirmed', now - 2000);
+  device.readings.side_entrance_open.coverState = 'open';
+  const view = garageDoorControl(status(device), device);
+  assert.equal(view.action, 'close');
+  assert.match(view.feedback, /latest device report: open; request superseded/);
+  assert.equal(view.failed, false);
 });
 
 test('unknown, stale, absent or ambiguous contacts never produce a movement shortcut', () => {

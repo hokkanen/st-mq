@@ -57,7 +57,7 @@ function memoryStore(seed = {}) {
     },
     event(type, detail, now) { this.events.push({ type, detail, now }); } };
 }
-function rig({ store = memoryStore(), values = baselines, settings = {}, behavior = null, startAt = initialTime, closeWriteTimeoutMs = 5000 } = {}) {
+function rig({ store = memoryStore(), values = baselines, settings = {}, behavior = null, startAt = initialTime, closeWriteTimeoutMs = 5000, beforePublication = null } = {}) {
   let now = startAt, elapsed = 0;
   const decoder = createH66Decoder({ deviceId, mqttScaleByRegister: settings.mqttScaleByRegister, verifiedRegisters: settings.verification });
   const sent = [], native = { ...values };
@@ -68,6 +68,8 @@ function rig({ store = memoryStore(), values = baselines, settings = {}, behavio
   controller = createH66Controller({ deviceId, store, clock: () => now, monotonicClock: () => elapsed, closeWriteTimeoutMs,
     config: { writeEnabled: true, readbackTimeoutMs: 30, ...settings },
     publish: async (topic, payload, options) => {
+      await beforePublication?.({ options, feed });
+      options.beforePublish();
       const index = topic.split('/').at(-1);
       sent.push({ index, payload, options });
       const saved = store.getState(`h66:control:${deviceId}`);
@@ -131,6 +133,7 @@ test('H66 rechecks expiry, connection and native evidence after asynchronous wri
     if (scenario === 'stale') r.setNow(r.now + 300_001);
     if (scenario === 'panel-change') r.feed('0212', 46);
     if (scenario === 'shutdown') r.controller.beginShutdown();
+    if (scenario === 'elapsed-timeout') r.elapse(500);
     if (scenario === 'clock-rollback') for (const [index, value] of Object.entries(baselines)) r.feed(index, value);
     release(); await failed;
     assert.deepEqual(r.sent, [], 'A queued command cannot acquire permission from its old checks.');
@@ -765,4 +768,41 @@ test('an uncertain native edit preserves an indefinite paused Reduced choice and
   await r.controller.restore();
   assert.equal(r.native['0212'], 46, 'The confirmed native edit becomes the new baseline.');
   assert.equal(r.native['2201'], 1);
+});
+
+test('H66 waits for admitted MQTT publication and only subsequent readback confirms it', async t => {
+  let release, options;
+  const r = rig({ settings: { readbackTimeoutMs: 500 }, beforePublication: input => {
+    options = input.options; return new Promise(resolve => { release = resolve; });
+  } });
+  t.after(() => r.controller.close());
+  const request = r.controller.setSetting({ register: '0212', value: 40 });
+  await nextTurn();
+  assert.equal(r.sent.length, 0); assert(options.signal instanceof AbortSignal);
+  r.feed('0203', 20); // An unrelated committed observation does not revoke the edit.
+  release();
+  assert.equal((await request).confirmed, true); assert.equal(r.sent.length, 1);
+});
+
+test('H66 storage waits cancel instead of sending with changed evidence, expired deadlines or lost connection', async t => {
+  for (const scenario of ['native-change', 'reconnect', 'shutdown', 'timeout', 'elapsed-timeout', 'expiry']) await t.test(scenario, async () => {
+    let release, options;
+    const r = rig({ settings: { readbackTimeoutMs: scenario === 'timeout' ? 20 : 500 }, beforePublication: input => {
+      options = input.options; return new Promise(resolve => { release = resolve; });
+    } });
+    const request = scenario === 'expiry'
+      ? r.controller.writeSettings({ '0212': 40 }, { expiresAt: r.now + 1000 })
+      : r.controller.setSetting({ register: '0212', value: 40 });
+    const rejected = assert.rejects(request);
+    await nextTurn();
+    if (scenario === 'native-change') r.feed('0212', 40);
+    if (scenario === 'reconnect') { r.controller.setConnected(false); r.controller.setConnected(true); }
+    if (scenario === 'shutdown') r.controller.beginShutdown();
+    if (scenario === 'elapsed-timeout') r.elapse(500);
+    if (scenario === 'expiry') { r.setNow(r.now + 1000); r.elapse(1000); }
+    if (scenario === 'timeout') { await rejected; assert.equal(options.signal.aborted, true); }
+    release(); await rejected; await nextTurn();
+    assert.equal(r.sent.length, 0, 'Recovery never dispatches the abandoned request');
+    await r.controller.close();
+  });
 });

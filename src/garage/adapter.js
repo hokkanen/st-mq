@@ -46,6 +46,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   // Keep each receipt's identity while its publication is pending. A later
   // transport callback still belongs to that attempt after another begins.
   const updateCommand = fields => Object.assign(lastCommand, fields);
+  const publications = new Set(), dispatched = new WeakSet();
+  const awaitingDispatch = receipt => [...publications].some(row => row.receipt === receipt) && !dispatched.has(receipt);
   let faultRaw = persisted?.faultRaw ?? null;
   const retiredBoots = new Set();
   const electrical = createGarageElectrical({ source: settings.electricalSource, onEnergy,
@@ -79,18 +81,18 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       .map(([name, field]) => [name, Boolean(fresh(now) && freshField(state.health[field], now, settings.maxAgeMs)
         && state.health[field].value === true && (field !== 'pump' || state.pumpDeadline > monotonicClock()))]));
   }
-  function blockers(now) {
+  function blockers(now, ownCommand = null) {
     const reasons = [];
     if (!transport) reasons.push('The heat-pump controller connection is unavailable.');
     if (!canControl()) reasons.push('This instance is read-only.');
     if (!fresh(now)) reasons.push('Waiting for fresh heat-pump controller status.');
     if (pendingTime.size) reasons.push('Waiting for the source clock before using newer controller status.');
     if (!health(now).pumpCommunicating) reasons.push('Waiting for heat-pump communication.');
-    if (!challengeFresh(now) || state.challenge === usedChallenge) reasons.push('Waiting for a fresh command challenge.');
+    if (!challengeFresh(now) || !ownCommand && state.challenge === usedChallenge) reasons.push('Waiting for a fresh command challenge.');
     if (pending(lastCommand) && now - lastCommand.requestedAt >= 30_000) {
       updateCommand({ status: 'uncertain', reason: 'Heat-pump controller confirmation timed out.' }); changed();
     }
-    if (pending(lastCommand)) reasons.push('Waiting for the previous command confirmation.');
+    if (pending(lastCommand) && lastCommand !== ownCommand) reasons.push('Waiting for the previous command confirmation.');
     return reasons;
   }
   function status(now = clock()) {
@@ -138,6 +140,12 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     if (reasons.length) throw Object.assign(new Error(reasons[0]), { statusCode: 409 });
     const command = { schema: SHELLY_CN105_CONTRACT, bootId: state.bootId, challenge: state.challenge,
       commandId: randomUUID(), action, ...fields };
+    const deviceId = state.deviceId;
+    const expectedControl = { targetC: state.control.targetC, externalEnabled: state.control.externalEnabled };
+    const expectedNative = action === 'set' ? state.native[fields.field]?.value : null;
+    const cancellation = new AbortController();
+    const expiresAt = Math.min(now + 30_000, state.challengeExpiresAt - 1000);
+    const elapsedEnd = Math.min(monotonicClock() + 30_000, state.challengeDeadline - 1000);
     usedChallenge = state.challenge;
     const receipt = { commandId: command.commandId, action, ...fields, requestedAt: now, status: 'published', reason: null };
     lastCommand = receipt;
@@ -147,7 +155,27 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       changed();
       throw Object.assign(new Error(lastCommand.reason), { statusCode: 409 });
     }
-    try { await transport.send(command); }
+    const publication = { cancellation, receipt };
+    publications.add(publication);
+    const timer = setTimeout(() => cancellation.abort(), Math.max(0, Math.min(expiresAt - clock(), elapsedEnd - monotonicClock())));
+    const beforePublish = () => {
+      const blocked = blockers(clock(), receipt);
+      if (cancellation.signal.aborted || lastCommand !== receipt || receipt.status !== 'published'
+        || clock() >= expiresAt || monotonicClock() >= elapsedEnd || blocked.length
+        || state?.deviceId !== deviceId || state.bootId !== command.bootId || state.challenge !== command.challenge)
+        throw Object.assign(new Error(blocked[0] ?? 'The command is no longer current.'), { statusCode: 409 });
+      if (state.control.targetC !== expectedControl.targetC || state.control.externalEnabled !== expectedControl.externalEnabled
+        || action === 'set' && (state.native[fields.field]?.value !== expectedNative
+          || !freshField(state.native[fields.field], clock(), settings.maxAgeMs)
+          || state.nativeDeadlines[fields.field] <= monotonicClock()
+          || fields.field !== 'targetC' && (!state.manualControls?.includes(fields.field)
+            || !garageNativeOptions(state.nativeOptions)[fields.field]?.includes(fields.value))
+          || fields.field === 'targetC' && (state.control.frostRescue
+            || state.native.mode?.value === 'heat' && (state.control.frostActive || state.control.externalEnabled))))
+        throw Object.assign(new Error('The native setting or control ownership changed while the command was waiting.'), { statusCode: 409 });
+      dispatched.add(receipt);
+    };
+    try { await transport.send(command, { beforePublish, signal: cancellation.signal }); }
     catch {
       // Device results and matching durable readback outrank a late transport
       // error. Never replace their receipt or mutate a newer explicit request.
@@ -157,7 +185,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       }
       if (!['applied', 'native-confirmed'].includes(receipt.status))
         throw Object.assign(new Error(receipt.reason ?? 'Command delivery is unconfirmed.'), { statusCode: 503 });
-    }
+    } finally { clearTimeout(timer); publications.delete(publication); cancellation.abort(); }
     return clone(receipt);
   }
   function invalidateTelemetry(reason, at) {
@@ -262,13 +290,13 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
             reportIntervalMs: 10_000, reportGraceMs: Math.max(0, settings.maxAgeMs - 10_000) } });
       }
       const result = value.result;
-      if (lastCommand && result?.commandId === lastCommand.commandId
+      if (lastCommand && !awaitingDispatch(lastCommand) && result?.commandId === lastCommand.commandId
         && ['accepted', 'applied', 'native-confirmed', 'rejected', 'failed', 'uncertain'].includes(result.status))
         updateCommand({ status: result.status, reason: typeof result.reason === 'string' ? result.reason : null,
           ...(result.status === 'native-confirmed' ? { nativeConfirmedAt: value.observedAt } : {}) });
       // Exact durable readback can confirm an acknowledged control edit even
       // after a lost result packet; it cannot authorize a new command.
-      if (pending(lastCommand) && lastCommand.action === 'control' && control.targetC === lastCommand.targetC
+      if (pending(lastCommand) && dispatched.has(lastCommand) && lastCommand.action === 'control' && control.targetC === lastCommand.targetC
         && control.externalEnabled === lastCommand.externalEnabled)
         updateCommand({ status: 'applied', reason: null });
     } else {
@@ -330,6 +358,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     },
     setConnected(value) {
       if (stopped || connected === Boolean(value)) return;
+      for (const publication of publications) publication.cancellation.abort();
       pendingTime.clear();
       const before = state;
       if (!value) invalidateTelemetry('mqtt-disconnected', clock());
@@ -348,7 +377,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (!connected && pending(lastCommand)) updateCommand({ status: 'uncertain', reason: 'MQTT disconnected.' });
       changed();
     },
-    subscriptionFailed() { pendingTime.clear(); subscribed = false; changed(); },
-    async close() { pendingTime.clear(); stopped = true; connected = false; changed(); },
+    subscriptionFailed() { pendingTime.clear(); subscribed = false; for (const publication of publications) publication.cancellation.abort(); changed(); },
+    async close() { pendingTime.clear(); stopped = true; connected = false; for (const publication of publications) publication.cancellation.abort(); changed(); },
   };
 }

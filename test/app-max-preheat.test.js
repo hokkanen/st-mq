@@ -20,7 +20,8 @@ function setup(t, { room = 20, boostC = 5, writableMaximum, circulation = true, 
     payload: String(native[register]), receivedAt: now }));
   controller = createH66Controller({ deviceId, store, clock: () => now,
     config: { writeEnabled: writable, readbackTimeoutMs: 100 },
-    publish: async (topic, payload) => {
+    publish: async (topic, payload, options) => {
+      options.beforePublish();
       const register = topic.split('/').at(-1);
       writes.push({ register, value: Number(payload) }); native[register] = Number(payload);
       queueMicrotask(() => feed(register));

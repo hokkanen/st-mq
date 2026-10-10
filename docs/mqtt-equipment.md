@@ -332,9 +332,22 @@ confirm a cached switch value. Restoration can still be attempted when the
 starting state is unknown; its result stays unconfirmed until this evidence arrives.
 
 Every actuator publication is bound to its current runtime and broker connection.
+Door and switch requests use the same bounded observation-storage wait as native
+heating and circulation commands. H66 setting writes, Garage heat-pump commands
+and protection-sender configuration also retain their original deadlines while
+waiting. Before dispatch each adapter rechecks its current authority, connection
+and applicable state, identity, challenge and ownership. Failed observation saves
+remain a fence. Continuous traffic or unavailable storage can exhaust the wait;
+the request then ends rather than running unexpectedly after recovery.
+For doors, a newer request cancels an older unsent movement, including when Stop
+supersedes Open. A changed door state cancels a waiting Open/Close request; Stop
+can follow ongoing movement. Door and switch reports from before dispatch cannot
+confirm the later command. Known unsent door and ordinary MQTT switch requests
+have a distinct receipt; a lost acknowledgement after dispatch remains uncertain.
+Timed tests that were never sent do not acquire a physical restoration duty.
 Disconnect, timeout or synchronous authority revocation removes pending commands
 and prevents outgoing-store replay, including QoS 1 packets. The final byte-write
-boundary checks authority again. This cannot retract a command already delivered;
+boundary checks authority and request cancellation again. This cannot retract a command already delivered;
 durable restoration obligations remain until trustworthy physical readback.
 Configured command topics must be distinct from all read/query/availability
 routes and other command owners. Native prefixes reserve their request and write

@@ -119,15 +119,101 @@ test('a failed observation retains its specific dispatch failure and no raw tran
   assert.equal(f.requests('Switch.Set').length, 0);
 });
 
-test('uncorrelated Gen1 relay feedback cannot confirm a command deferred behind observations', async t => {
+test('Gen1 relay waits for observations and requires new committed state after dispatch', async t => {
   const f = await fixture(t, 'mqtt', [{ id: 'relay', kind: 'switch', connection: 'shelly:shellies/fixture-relay',
     generation: 1, switch_control: true }]);
-  f.lock();
+  const commands = () => f.commands.filter(row => row.topic.endsWith('/relay/0/command'));
   f.client.emit('message', 'shellies/fixture-relay/relay/0', Buffer.from('off'), {});
-  await assert.rejects(f.reader.equipment.setSwitch('relay', false), { code: 'MQTT_STORAGE_PENDING' });
-  f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0);
+  f.lock(); f.at(START + 1000); f.send('0203', 21);
+  let result;
+  const pending = f.reader.equipment.setSwitch('relay', false).then(value => { result = value; }, error => { result = error; });
+  await delay(20); assert.equal(result, undefined); assert.equal(commands().length, 0);
+  f.client.emit('message', 'shellies/fixture-relay/relay/0', Buffer.from('off'), {});
+  f.unlock(); await until(() => commands().length === 1);
+  assert.equal(result, undefined, 'A matching state received before dispatch cannot confirm this command');
+  assert.equal(commands()[0].payload, 'off');
+  f.lock(); f.client.emit('message', 'shellies/fixture-relay/relay/0', Buffer.from('off'), {});
+  await delay(20); assert.equal(result, undefined, 'The new state must commit before confirmation');
+  f.unlock(); await pending;
+  assert.equal(result.confirmed, true); assert.equal(commands().length, 1);
+});
+
+for (const interruption of ['reconnect', 'device-offline', 'stale-feedback', 'changed-state', 'caller-scope', 'revocation']) {
+  test(`waiting Gen1 relay rejects ${interruption} without late dispatch`, async t => {
+    const f = await fixture(t, 'mqtt', [{ id: 'relay', kind: 'switch', connection: 'shelly:shellies/fixture-relay',
+      generation: 1, switch_control: true }]);
+    f.client.emit('message', 'shellies/fixture-relay/relay/0', Buffer.from('on'), {});
+    f.lock(); f.at(START + 1000); f.send('0203', 21);
+    let current = true;
+    const rejected = assert.rejects(f.reader.equipment.setSwitch('relay', false, { beforePublish: () => {
+      assert.equal(current, true, 'The original manual or timed action must remain current');
+    } }));
+    await delay(20);
+    if (interruption === 'reconnect') { f.client.emit('offline'); f.client.emit('connect'); }
+    if (interruption === 'device-offline') f.client.emit('message', 'shellies/fixture-relay/online', Buffer.from('false'), {});
+    if (interruption === 'stale-feedback') f.at(START + 60 * 60_000);
+    if (interruption === 'changed-state') f.client.emit('message', 'shellies/fixture-relay/relay/0', Buffer.from('off'), {});
+    if (interruption === 'caller-scope') current = false;
+    if (interruption === 'revocation') f.reader.revoke();
+    f.unlock(); await rejected; await until(() => f.store.writeQueueStatus().pending === 0);
+    assert.equal(f.commands.some(row => row.topic.endsWith('/relay/0/command')), false);
+  });
+}
+
+test('Gen1 timeout cancels the unsent command before later storage recovery', async t => {
+  const f = await fixture(t, 'mqtt', [{ id: 'relay', kind: 'switch', connection: 'shelly:shellies/fixture-relay',
+    generation: 1, switch_control: true }]);
+  f.client.emit('message', 'shellies/fixture-relay/relay/0', Buffer.from('on'), {});
+  f.lock(); f.send('0203', 21);
+  await assert.rejects(f.reader.equipment.setSwitch('relay', false), { code: 'SHELLY_READBACK_TIMEOUT' });
+  f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0); await delay(20);
   assert.equal(f.commands.some(row => row.topic.endsWith('/relay/0/command')), false);
 });
+
+test('Gen1 saved restoration can wait and dispatch with unknown starting state but still needs new readback', async t => {
+  const f = await fixture(t, 'mqtt', [{ id: 'relay', kind: 'switch', connection: 'shelly:shellies/fixture-relay',
+    generation: 1, switch_control: true }]);
+  assert.equal(f.reader.equipment.status().devices[0].available, false);
+  f.lock(); f.send('0203', 21);
+  let checked = false, result;
+  const pending = f.reader.equipment.setSwitch('relay', false, { restoring: true, beforePublish: () => { checked = true; } })
+    .then(value => { result = value; });
+  await delay(20); assert.equal(checked, false); assert.equal(result, undefined);
+  f.unlock(); await until(() => f.commands.some(row => row.topic.endsWith('/relay/0/command')));
+  assert.equal(checked, true); assert.equal(result, undefined);
+  f.client.emit('message', 'shellies/fixture-relay/relay/0', Buffer.from('off'), {});
+  await pending; assert.equal(result.confirmed, true);
+});
+
+for (const switchControl of [false, true]) {
+  test(`generic tariff Normal waits and confirms from unknown feedback with switch control ${switchControl}`, async t => {
+    const f = await fixture(t, 'mqtt', [{ id: 'heat_savings', kind: 'switch', connection: 'mqtt:invented/tariff/state',
+      tariff_control: true, switch_control: switchControl,
+      mqtt: { command_topic: 'invented/tariff/set', on_payload: 'ON', off_payload: 'OFF' } }]);
+    const transport = createHeatingTransport();
+    transport.setHeatingRelay(f.reader.equipment.publishHeating, () => f.reader.equipment.signature('heat_savings'));
+    t.after(() => transport.close());
+    assert.equal(f.reader.equipment.status().devices[0].available, false);
+    f.lock(); f.send('0203', 21);
+    let result;
+    const pending = transport.publish(['normal'], { validUntil: START + 60_000, clock: f.clock })
+      .then(value => { result = value; });
+    await delay(20);
+    assert.equal(f.commands.some(row => row.topic === 'invented/tariff/set'), false);
+    f.unlock(); await until(() => f.commands.some(row => row.topic === 'invented/tariff/set'));
+    assert.equal(result, undefined, 'Tariff restoration still needs a new admitted relay report');
+    assert.deepEqual(f.commands.filter(row => row.topic === 'invented/tariff/set').map(row => row.payload), ['OFF']);
+    f.client.emit('message', 'invented/tariff/state', Buffer.from('OFF'), {});
+    await pending; assert.equal(result.confirmed, true);
+
+    f.lock(); f.send('0203', 22);
+    const rejected = assert.rejects(transport.publish(['reduction'], { validUntil: START + 1000, clock: f.clock }));
+    await delay(20); f.at(START + 1000); f.unlock(); await rejected;
+    await until(() => f.store.writeQueueStatus().pending === 0);
+    assert.equal(f.commands.filter(row => row.topic === 'invented/tariff/set').length, 1,
+      'The same tariff path must still respect the executor deadline after waiting');
+  });
+}
 
 function failNextCommit(store) {
   const transaction = store._transaction.bind(store); let armed = true;

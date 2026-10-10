@@ -7,7 +7,8 @@ export function gateMqttPublications(client, { canControl = () => true, timeoutM
   const tokens = new Set(), ids = new Map(), packets = new WeakMap();
   let active = null, generation = 0, revoked = false;
   const authority = () => { try { return !revoked && canControl() === true; } catch { return false; } };
-  const allowed = token => token && !token.done && token.generation === generation && authority() && client.connected !== false;
+  const allowed = token => token && !token.done && !token.signal?.aborted
+    && token.generation === generation && authority() && client.connected !== false;
   const failure = () => new Error('MQTT publication unavailable; delivery unconfirmed');
   function remove(token) {
     if (!Number.isInteger(token.id)) return;
@@ -26,19 +27,23 @@ export function gateMqttPublications(client, { canControl = () => true, timeoutM
   function finish(token, error) {
     if (token.done) { if (error) remove(token); return; }
     token.done = true; clearTimeout(token.timer); tokens.delete(token);
+    token.signal?.removeEventListener('abort', token.cancel);
     if (error) remove(token);
     if (ids.get(token.id) === token) ids.delete(token.id);
     token.callback?.(error);
   }
   client.publish = function(topic, payload, options, callback) {
     if (typeof options === 'function') { callback = options; options = {}; }
-    if (!authority() || this.connected === false || this._storeProcessing || this._storeProcessingQueue?.length) {
+    const { signal, ...publicationOptions } = options ?? {};
+    if (signal?.aborted || !authority() || this.connected === false || this._storeProcessing || this._storeProcessingQueue?.length) {
       callback?.(failure()); return this;
     }
-    const token = { generation, callback, done: false, sent: false };
+    const token = { generation, callback, signal, done: false, sent: false };
+    token.cancel = () => finish(token, failure());
+    signal?.addEventListener('abort', token.cancel, { once: true });
     token.timer = setTimeout(() => finish(token, failure()), timeoutMs); token.timer.unref?.();
     tokens.add(token); const previous = active; active = token;
-    try { return publish.call(this, topic, payload, options, error => finish(token, error)); }
+    try { return publish.call(this, topic, payload, publicationOptions, error => finish(token, error)); }
     catch { finish(token, failure()); return this; }
     finally { active = previous; }
   };

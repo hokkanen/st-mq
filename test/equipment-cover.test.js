@@ -17,7 +17,7 @@ function fixture(t, config = door, options = {}) {
   const settings = equipmentConfiguration({ devices: [config] });
   const engine = { clock: () => now, ingest: row => observations.push(row) };
   const capture = createEquipmentCapture({ engine, store, settings, canControl: () => authority,
-    publish: async (topic, payload, options) => { publications.push({ topic, payload, options }); }, ...options });
+    publish: async (topic, payload, options) => { options.beforePublish?.(); publications.push({ topic, payload, options }); }, ...options });
   t.after(() => { capture.close(); store.close(); });
   const report = (state = 'closed', at = now, retain = false) => capture.receive('invented/door/state', JSON.stringify({
     value: state === 'closed' ? 'closed' : 'open', cover_state: state, timestamp: new Date(at).toISOString(),
@@ -109,7 +109,9 @@ test('broker acknowledgement and cached/opening contact do not claim observed op
   const result = await f.capture.setCover({ deviceId: door.id, action: 'open' });
   assert.equal(result.confirmed, false); assert.equal(result.acknowledgement, 'mqtt-broker');
   assert.equal(f.status().cover.operation.status, 'published'); assert.equal(f.status().cover.state, 'closed');
-  assert.deepEqual(f.publications, [{ topic: door.mqtt.command_topic, payload: 'open', options: { qos: 1, retain: false, noReplay: true } }]);
+  const { beforePublish, signal, ...flags } = f.publications[0].options;
+  assert.equal(typeof beforePublish, 'function'); assert(signal instanceof AbortSignal);
+  assert.deepEqual({ ...f.publications[0], options: flags }, { topic: door.mqtt.command_topic, payload: 'open', options: { qos: 1, retain: false, noReplay: true } });
   f.report('open', INITIAL); assert.equal(f.status().cover.operation.status, 'published');
   f.advance(1000); f.report('opening'); assert.equal(f.status().cover.operation.status, 'published');
   f.advance(1000); f.report('open', INITIAL + 3000, true); assert.equal(f.status().cover.operation.status, 'published');
@@ -120,7 +122,7 @@ test('broker acknowledgement and cached/opening contact do not claim observed op
 test('supported Stop can supersede an opening request before its publication completes', async t => {
   const pending = [], sent = [];
   const f = fixture(t, { ...door, mqtt: { ...door.mqtt, stop_payload: 'stop' } }, {
-    publish: (topic, payload) => new Promise(resolve => { sent.push(payload); pending.push(resolve); }),
+    publish: (topic, payload, options) => { options.beforePublish(); return new Promise(resolve => { sent.push(payload); pending.push(resolve); }); },
   });
   f.report(); f.online();
   const opening = f.capture.setCover({ deviceId: door.id, action: 'open' });
@@ -144,7 +146,7 @@ test('unobserved movement times out honestly and reconnect never repeats a manua
 });
 
 test('a failed publication exposes no broker detail and remains an unconfirmed delivery', async t => {
-  const f = fixture(t, door, { publish: async () => { throw new Error('synthetic broker internals'); } });
+  const f = fixture(t, door, { publish: async (_topic, _payload, options) => { options.beforePublish(); throw new Error('synthetic broker internals'); } });
   f.report(); f.online(); await assert.rejects(f.capture.setCover({ deviceId: door.id, action: 'open' }), /unconfirmed/);
   assert.equal(f.status().cover.operation.status, 'unconfirmed');
   assert.equal(JSON.stringify(f.status()).includes('internals'), false);

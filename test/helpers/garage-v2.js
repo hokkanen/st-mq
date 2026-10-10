@@ -9,7 +9,7 @@ export function garageV2Fixture(options = {}) {
   const publications = [], observations = [], snapshots = [];
   const adapter = createGarageAdapter({ settings: GARAGE_TEST_ADAPTER, clock: () => now, monotonicClock: () => now - GARAGE_TEST_AT,
     productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
-      publish: async (topic, payload, settings) => { publications.push({ topic, ...JSON.parse(payload), settings }); } }),
+      publish: async (topic, payload, settings) => { settings.beforePublish(); publications.push({ topic, ...JSON.parse(payload), settings }); } }),
     onObservation: row => observations.push(row), onState: value => snapshots.push(value), ...options });
   const state = { schema: SHELLY_CN105_CONTRACT, deviceId: 'synthetic-pill', bootId: 'boot-one',
     control: { targetC: 10, externalEnabled: true, effectiveTargetC: 10, status: 'active',

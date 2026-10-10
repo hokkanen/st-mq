@@ -226,8 +226,11 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     if (typeof output === 'boolean') {
       if (scalar(at)) {
         if (!older) { device.state = output; emit(device, signal, Number(output), 'state', at); }
+        if (device.generation === 1 && !older) device.observationOrder = ++sequence;
         if (readback) for (const waiter of [...device.waiters])
-          if (waiter.at <= at && waiter.output === output && (device.generation === 1 || waiter.commandId === commandId)) reception.afterCommit(() => waiter.resolve());
+          if (waiter.at <= at && waiter.output === output && (device.generation === 1
+            ? waiter.dispatched && device.observationOrder > waiter.revision && receivedNow() >= waiter.at
+            : waiter.commandId === commandId)) reception.afterCommit(() => waiter.resolve());
       }
     } else if (full) { device.state = null; emit(device, signal, null, 'state', at, ['missing']); }
     if (older || !metered(device)) return;
@@ -319,8 +322,8 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     if (!connected || closed || !canControl()) throw error('control authority unavailable');
     const identity = device.identity;
     await new Promise((resolve, reject) => {
-      const cancellation = new AbortController();
-      const waiter = { output, commandId: ++commandSequence, at: engine.clock(),
+      const cancellation = new AbortController(), deadline = performance.now() + readbackTimeoutMs;
+      const waiter = { output, commandId: ++commandSequence, at: engine.clock(), dispatched: false, revision: device.observationOrder,
         resolve: () => finish(canControl() && connected && !closed ? null : error('control authority unavailable')), reject: reason => finish(reason) };
       let done = false;
       const finish = reason => { if (done) return; done = true; clearTimeout(timer); device.waiters.delete(waiter);
@@ -329,15 +332,16 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       device.waiters.add(waiter);
       const beforePublish = () => {
         if (done || closed || !connected || !canControl()) throw error('control authority unavailable');
+        if (performance.now() >= deadline) throw error('relay readback timed out; delivery unconfirmed');
         if (device.identity !== identity) throw error('device identity unavailable');
         if (device.id === 'dhwr' && output && !available(device, engine.clock())) throw error('circulation feedback unavailable');
-        validate(); waiter.at = engine.clock();
+        validate(); waiter.at = engine.clock(); waiter.revision = device.observationOrder; waiter.dispatched = true;
       };
       const action = device.generation === 1
-        // Gen1 feedback has no command identity. Keep immediate dispatch: a
-        // queued pre-command state must never confirm an unsent request.
+        // Gen1 feedback has no command identity. Capture the state boundary only
+        // after storage admission, then require a newly committed live report.
         ? publish(`${device.prefix}/relay/${device.switchId}/command`, output ? 'on' : 'off',
-          { qos: 1, retain: false, noReplay: true, beforePublish }).then(() => requestStatus(device))
+          { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal }).then(() => requestStatus(device))
         : send(device, 'Switch.Set', { id: device.switchId, on: output },
           { purpose: 'write', commandId: waiter.commandId, beforePublish, signal: cancellation.signal });
       action.catch(cause => finish(heatingErrorCode(cause?.code) ? cause : error('relay command failed; delivery unconfirmed')));
@@ -535,10 +539,14 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       }))]);
       return api.status();
     },
-    async setSwitch(deviceId, on) {
+    async setSwitch(deviceId, on, { beforePublish: validate = () => {}, restoring = false } = {}) {
       const device = devices.find(row => row.id === deviceId);
       if (!device?.controlsSwitch) throw error('switch control is not configured');
-      return switchDevice(device, on);
+      const previous = device.state;
+      return switchDevice(device, on, { beforePublish: () => {
+        validate();
+        if (restoring !== true && (!available(device, engine.clock()) || device.state !== previous)) throw error('relay readback unavailable');
+      } });
     },
     async publishHeating(commands, options) {
       if (!Array.isArray(commands) || !commands.length || commands.some(command => !['reduction', 'normal'].includes(command))) throw error('invalid heating command');

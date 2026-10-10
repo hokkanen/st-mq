@@ -297,7 +297,7 @@ try {
   const decoder = createH66Decoder({ deviceId });
   const readback = (register, value) => h66.ingest(decoder.decode({ topic: `${deviceId}/HP/${register}`, payload: String(value), receivedAt: now }));
   h66 = createH66Controller({ deviceId, store: app.store, clock: () => now, config: { writeEnabled: true },
-    publish: async (topic, value) => { publications.push({ topic, value }); readback(topic.slice(-4), Number(value)); } });
+    publish: async (topic, value, options) => { options.beforePublish(); publications.push({ topic, value }); readback(topic.slice(-4), Number(value)); } });
   h66.setConnected(true);
   for (const [register, value] of [['0203', 20], ['0212', 40], ['0208', 55], ['2201', 1], ['3104', 0], ['1A01', 1], ['1A07', 0], ['1A06', 1], ['0005', 4.5], ['0006', 1.2], ['3110', 80]]) readback(register, value);
   app.engine.setH66(h66); app.engine.tick();

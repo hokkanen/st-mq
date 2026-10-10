@@ -39,7 +39,8 @@ function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, 
   const decoder = createH66Decoder({ deviceId: 'synthetic' });
   const receive = (index, value) => h66.ingest(decoder.decode({ topic: `synthetic/HP/${index}`, payload: String(value), receivedAt: now }));
   const h66 = native ? createH66Controller({ deviceId: 'synthetic', store, clock: () => now,
-    config: { writeEnabled: true, readbackTimeoutMs: 30 }, publish: async (topic, payload) => {
+    config: { writeEnabled: true, readbackTimeoutMs: 30 }, publish: async (topic, payload, options) => {
+      options.beforePublish();
       const index = topic.split('/').at(-1);
       assert.ok(saved.get('h66:control:synthetic').obligations[index], 'native restoration saved before publishing');
       log.push({ native: index, value: Number(payload), now }); values[index] = Number(payload);

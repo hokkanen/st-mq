@@ -6,6 +6,7 @@ import { vehicleObservationAdmissionStatus } from './vehicle-feed-status.js';
 import { TEMPERATURE_SENSORS } from '../src/domain/indoor-sensors.js';
 import { FLOOR_PREHEAT_DEVICE, FLOOR_PREHEAT_CIRCUITS } from '../src/domain/floor-circuits.js';
 import { createCaravanContents, dehumidifierCommandAllowed, temperatureControlAllowed, temperatureControlValueAllowed } from './caravan.js';
+import { EQUIPMENT_COMMAND_ERRORS } from '../src/domain/equipment-command-errors.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
@@ -171,10 +172,11 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
     try {
       const result = await request(path, body);
       status = result; messageAt = result.now ?? Date.now(); message = success; onStatus(result); return true;
-    } catch {
+    } catch (failure) {
       error = true;
       message = path.endsWith('/recheck') ? 'Could not recheck devices. Existing readings are retained.'
-        : 'Could not confirm the control request. Check the reported device state before trying again.';
+        : Object.hasOwn(EQUIPMENT_COMMAND_ERRORS, failure?.code) ? EQUIPMENT_COMMAND_ERRORS[failure.code]
+          : 'Could not confirm the control request. Check the reported device state before trying again.';
       return false;
     } finally { busy = false; emit(); }
   }
@@ -253,13 +255,15 @@ export function equipmentControlReceipt(status, device) {
   const last = status.equipmentControls?.lastResult, now = status.now ?? Date.now();
   if (last?.deviceId !== device.id || typeof last.on !== 'boolean' || !recentResult(last.at, now)) return null;
   const reading = equipmentStateReading(device, now);
-  const fresh = reading && reading.observedAt >= (last.requestedAt ?? last.at);
+  const fresh = reading && last.status !== 'pending' && last.sent !== false
+    && reading.observedAt >= (last.requestedAt ?? last.at);
   return { ...last, evidenceAt: fresh ? reading.observedAt : null, observedValue: fresh ? reading.value : null,
     confirmed: fresh ? reading.value === Number(last.on) : last.confirmed === true,
     superseded: Boolean(fresh && reading.value !== Number(last.on)) };
 }
 function controlReceiptText(last) {
   if (!last) return '';
+  if (Object.hasOwn(EQUIPMENT_COMMAND_ERRORS, last.code)) return EQUIPMENT_COMMAND_ERRORS[last.code];
   const outcome = last.superseded ? `latest device report: ${last.observedValue ? 'On' : 'Off'}; request superseded`
     : last.confirmed ? 'device confirmed' : last.status === 'pending' ? 'sending…'
       : ['failed', 'unconfirmed'].includes(last.status) ? 'no confirming device report'
@@ -273,7 +277,8 @@ export function equipmentCoverReceipt(device, now) {
   const operation = device.cover?.operation;
   if (!operation || !['open', 'close', 'stop'].includes(operation.action) || !recentResult(operation.requestedAt, now)) return null;
   const reading = equipmentStateReading(device, now);
-  const fresh = reading && reading.observedAt > operation.requestedAt && ['open', 'closed'].includes(reading.coverState);
+  const fresh = reading && Number.isFinite(operation.dispatchedAt) && reading.observedAt > operation.dispatchedAt
+    && ['open', 'closed'].includes(reading.coverState);
   const matches = fresh && (operation.action === 'stop' || reading.coverState === (operation.action === 'open' ? 'open' : 'closed'));
   return { ...operation, pending: operation.status === 'publishing' || operation.status === 'published' && now - operation.requestedAt < 60_000,
     evidenceAt: fresh ? reading.observedAt : null, observedValue: fresh ? reading.coverState : null,
@@ -282,6 +287,7 @@ export function equipmentCoverReceipt(device, now) {
 }
 function coverReceiptText(operation) {
   if (!operation) return '';
+  if (Object.hasOwn(EQUIPMENT_COMMAND_ERRORS, operation.code)) return EQUIPMENT_COMMAND_ERRORS[operation.code];
   const result = operation.status === 'published' && !operation.pending && !operation.confirmed ? 'no new position report' : operation.superseded ? `latest device report: ${operation.observedValue}; request superseded`
     : operation.confirmed ? `state reported${operation.observedValue ? `: ${operation.observedValue}` : ''}`
       : { publishing: 'sending…', published: 'sent; position unconfirmed', observed: 'state reported',

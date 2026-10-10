@@ -48,7 +48,9 @@ test('v2 requires fresh native readback and retained state never grants authorit
   f.update(); assert.equal(f.adapter.status().controlAvailable, true);
   await f.adapter.setControl({ targetC: 5, externalEnabled: true });
   assert.equal(f.publications.length, 1);
-  assert.deepEqual(f.publications[0].settings, { qos: 0, retain: false, noReplay: true });
+  const { beforePublish, signal, ...wireSettings } = f.publications[0].settings;
+  assert.equal(typeof beforePublish, 'function'); assert(signal instanceof AbortSignal);
+  assert.deepEqual(wireSettings, { qos: 0, retain: false, noReplay: true });
   assert.equal(f.publications[0].action, 'control');
   assert.equal(f.adapter.status().control.targetC, 10, 'published request is separate from actual target');
   assert.equal(f.adapter.status().lastCommand.status, 'published');
@@ -214,7 +216,7 @@ test('a late publication failure preserves device confirmation and its original 
   for (const action of ['control', 'set']) {
     const publications = [];
     const f = garageV2Fixture({ productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
-      publish: (_topic, payload) => new Promise((resolve, reject) => publications.push({ ...JSON.parse(payload), resolve, reject })) }) });
+      publish: (_topic, payload, options) => { options.beforePublish(); return new Promise((resolve, reject) => publications.push({ ...JSON.parse(payload), resolve, reject })); } }) });
     f.update();
     const first = action === 'control' ? f.adapter.setControl({ targetC: 5, externalEnabled: true })
       : f.adapter.setNativeSetting({ setting: 'power', value: 'off' });
@@ -255,7 +257,7 @@ test('a final rejection or disconnect cannot turn publication failure into succe
   for (const outcome of ['rejected', 'failed', 'disconnected']) {
     let command, reject;
     const f = garageV2Fixture({ productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
-      publish: (_topic, payload) => { command = JSON.parse(payload); return new Promise((_resolve, fail) => { reject = fail; }); } }) });
+      publish: (_topic, payload, options) => { options.beforePublish(); command = JSON.parse(payload); return new Promise((_resolve, fail) => { reject = fail; }); } }) });
     f.update();
     const request = f.adapter.setControl({ targetC: 5, externalEnabled: true });
     if (outcome === 'disconnected') f.adapter.setConnected(false);
@@ -391,4 +393,52 @@ test('disconnect and restart preserve original recorded readback without restori
   assert.equal(restarted.status().health.pumpCommunicating, false);
   assert.deepEqual(restarted.snapshot().native, before.native);
   await restarted.close();
+});
+
+function waitingGarageFixture(options = {}) {
+  let release, publication;
+  const sent = [];
+  const f = garageV2Fixture({ ...options, productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
+    publish: (_topic, payload, flags) => new Promise((resolve, reject) => {
+      publication = flags;
+      flags.signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+      release = () => { try { flags.beforePublish(); sent.push(JSON.parse(payload)); resolve(); } catch (error) { reject(error); } };
+    }) }) });
+  return { ...f, sent, release: () => release(), flags: () => publication };
+}
+
+test('Garage commands wait for storage while preserving current challenge and native checks', async () => {
+  for (const action of ['control', 'set']) {
+    const f = waitingGarageFixture(); f.update();
+    const request = action === 'control' ? f.adapter.setControl({ targetC: 5, externalEnabled: true })
+      : f.adapter.setNativeSetting({ setting: 'power', value: 'on' });
+    assert.equal(f.sent.length, 0);
+    f.release(); await request;
+    assert.equal(f.sent.length, 1); assert.equal(f.adapter.status().lastCommand.status, 'published');
+    await f.adapter.close();
+  }
+});
+
+test('Garage storage wait rejects stale, superseded or revoked actions and cannot confirm unsent edits', async () => {
+  for (const scenario of ['challenge', 'native-change', 'control-change', 'capability', 'expiry', 'clock-rollback', 'disconnect', 'close', 'authority']) {
+    let allowed = true;
+    const f = waitingGarageFixture({ canControl: () => allowed }); f.update();
+    const request = f.adapter.setNativeSetting({ setting: 'power', value: 'on' });
+    const rejected = assert.rejects(request);
+    const challenge = { value: 'challenge-1', expiresInMs: 15_000 };
+    if (scenario === 'challenge') f.update();
+    if (scenario === 'native-change') f.update({ challenge, native: { power: { value: 'on', measuredAt: f.now() } },
+      result: { commandId: f.adapter.status().lastCommand.commandId, status: 'native-confirmed' } });
+    if (scenario === 'control-change') f.update({ challenge, control: { targetC: 6 } });
+    if (scenario === 'capability') f.update({ challenge, capabilities: { manualControls: [] } });
+    if (scenario === 'expiry') f.at(GARAGE_TEST_AT + 14_000);
+    if (scenario === 'clock-rollback') f.at(GARAGE_TEST_AT - 1);
+    if (scenario === 'disconnect') { f.adapter.setConnected(false); f.adapter.setConnected(true); f.update(); }
+    if (scenario === 'close') await f.adapter.close();
+    if (scenario === 'authority') allowed = false;
+    assert.notEqual(f.adapter.status().lastCommand.status, 'native-confirmed');
+    f.release(); await rejected;
+    assert.equal(f.sent.length, 0, scenario);
+    await f.adapter.close();
+  }
 });

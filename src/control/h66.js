@@ -188,21 +188,34 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     if (!Number.isFinite(scale) || scale === 0 || !Number.isFinite(offset)) throw failure('H66_SCALE_INVALID', 'The H66 MQTT scale is invalid.');
     return String(Number(((value - offset) / scale).toFixed(6)));
   }
-  function publishAndReadback(index, value, now) {
+  function publishAndReadback(index, value, validate) {
     return new Promise((resolve, reject) => {
       let settled = false;
+      const cancellation = new AbortController();
+      const deadline = clock() + timeoutMs, elapsedEnd = monotonicClock() + timeoutMs;
       const finish = (error, reading) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         pending.delete(index);
+        cancellation.abort();
         if (error) reject(error); else resolve(reading);
       };
       const timer = setTimeout(() => finish(failure('H66_READBACK_TIMEOUT', 'H66 did not publish matching setting readback.')), timeoutMs);
-      pending.set(index, { value, after: now, finish });
+      const waiter = { value, after: Infinity, revision: Infinity, finish };
+      pending.set(index, waiter);
+      const beforePublish = () => {
+        if (settled || clock() >= deadline || monotonicClock() >= elapsedEnd)
+          throw failure('H66_READBACK_TIMEOUT', 'The H66 command deadline has passed.');
+        validate();
+        // An observation admitted while this request waits is not its readback.
+        waiter.after = clock(); waiter.revision = revision;
+      };
       try {
-        Promise.resolve(publish(`${deviceId}/HP/SET/${index}`, wireValue(index, value), { qos: 0, retain: false }))
-          .then(() => requestSnapshot()).catch(() => finish(failure('H66_WRITE_FAILED', 'The H66 write could not be confirmed.')));
+        Promise.resolve(publish(`${deviceId}/HP/SET/${index}`, wireValue(index, value),
+          { qos: 0, retain: false, noReplay: true, beforePublish, signal: cancellation.signal }))
+          .then(() => { if (!settled) return requestSnapshot(); })
+          .catch(() => finish(failure('H66_WRITE_FAILED', 'The H66 write could not be confirmed.')));
       } catch { finish(failure('H66_WRITE_FAILED', 'The H66 write could not be confirmed.')); }
     });
   }
@@ -266,10 +279,13 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       if (!writtenObligation) continue;
       // Admission can outlive evidence or permission. Committed intent alone
       // does not authorize a command on a replaced connection or changed value.
-      check(index);
-      if (state.obligations[index] !== writtenObligation)
-        throw failure('H66_SETTING_CHANGED', 'The saved native-setting obligation was superseded.');
-      const readback = await publishAndReadback(index, value, clock());
+      const beforePublish = () => {
+        check(index);
+        if (state.obligations[index] !== writtenObligation)
+          throw failure('H66_SETTING_CHANGED', 'The saved native-setting obligation was superseded.');
+      };
+      beforePublish();
+      const readback = await publishAndReadback(index, value, beforePublish);
       await writeState(() => {
         if (state.obligations[index] === writtenObligation) {
           if (restoring) delete state.obligations[index];
@@ -385,7 +401,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       armExpiry();
       try {
         check();
-        const readback = changed ? await publishAndReadback(register, value, clock()) : previous;
+        const readback = changed ? await publishAndReadback(register, value, check) : previous;
         await writeState(() => {
           supersede();
           state.lastManual = { ...requested, status: 'confirmed', confirmed: true, sent: changed,
@@ -494,7 +510,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       persist();
     }
     const waiter = pending.get(reading.register);
-    if (waiter && reading.usableForControl && reading.receivedAt >= waiter.after && equal(reading.value, waiter.value)) {
+    if (waiter && reading.usableForControl && reading.revision > waiter.revision
+      && reading.receivedAt >= waiter.after && equal(reading.value, waiter.value)) {
       afterCommit(() => waiter.finish(null, reading));
       return;
     }

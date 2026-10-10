@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Garage doors, switches and heat-pump commands wait briefly for received readings
+  to finish saving instead of failing immediately during a recording backlog.
+  They recheck device state and authority before sending, retain their original
+  deadlines and never replay cancelled requests. Doors and ordinary MQTT switches
+  distinguish a request that was not sent from an unconfirmed delivery.
 - Click or tap a chart data-point popup to dismiss it; selecting another data
   point moves the popup to that point.
 - Charging currents keeps Charger 2 fallback periods in its allowance line and

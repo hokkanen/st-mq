@@ -9,7 +9,7 @@ function fixture(options = {}) {
   const config = garageSettings().protection;
   const sender = createGarageSender({ settings: { stateTopic: 'test/sender/state', commandTopic: 'test/sender/command' },
     enabled: true,
-    clock: () => now, publish: async (topic, payload, settings) => publications.push({ topic, ...JSON.parse(payload), settings }),
+    clock: () => now, publish: async (topic, payload, settings) => { settings.beforePublish(); publications.push({ topic, ...JSON.parse(payload), settings }); },
     onState: value => snapshots.push(value), onObservation: row => observations.push(row), ...options });
   sender.setConnected(true);
   const receive = (overrides = {}, packet = {}) => sender.receive('test/sender/state', JSON.stringify({
@@ -33,7 +33,9 @@ test('loaded configuration reconciles on fresh status and only matching readback
   assert.equal(f.sender.status().result.status, 'published');
   assert.equal(f.sender.status().configuration.status, 'pending');
   assert.deepEqual(f.publications[0].config, desired);
-  assert.deepEqual(f.publications[0].settings, { qos: 0, retain: false, noReplay: true });
+  const { beforePublish, signal, ...wireSettings } = f.publications[0].settings;
+  assert.equal(typeof beforePublish, 'function'); assert(signal instanceof AbortSignal);
+  assert.deepEqual(wireSettings, { qos: 0, retain: false, noReplay: true });
   await f.sender.reconcile();
   assert.equal(f.publications.length, 1);
   f.receive({ result: { commandId: f.publications[0].commandId, status: 'applied' } });
@@ -196,4 +198,26 @@ test('closed sender cannot reconcile from late status or reconnect callbacks', a
   await f.sender.reconcile();
   assert.equal(f.publications.length, 0);
   assert.equal(f.sender.status().configuration.status, 'unknown');
+});
+
+test('sender configuration waits and revalidates identity, challenge and authority before dispatch', async () => {
+  for (const scenario of ['success', 'challenge', 'reboot', 'disconnect', 'close', 'authority', 'expiry']) {
+    let release, flags, sent = 0, allowed = true;
+    const f = fixture({ protection: { ...garageSettings().protection, approved: true }, canControl: () => allowed,
+      publish: (_topic, _payload, options) => new Promise((resolve, reject) => {
+        flags = options; options.signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+        release = () => { try { options.beforePublish(); sent++; resolve(); } catch (error) { reject(error); } };
+      }) });
+    f.receive(); assert.equal(sent, 0); assert(flags.signal instanceof AbortSignal);
+    const releaseOriginal = release;
+    if (scenario === 'challenge') f.receive();
+    if (scenario === 'reboot') f.receive({ bootId: 'other-boot' });
+    if (scenario === 'disconnect') { f.sender.setConnected(false); f.sender.setConnected(true); }
+    if (scenario === 'close') await f.sender.close();
+    if (scenario === 'authority') allowed = false;
+    if (scenario === 'expiry') f.at(base + 30_000);
+    releaseOriginal(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(sent, scenario === 'success' ? 1 : 0, scenario);
+    await f.sender.close();
+  }
 });

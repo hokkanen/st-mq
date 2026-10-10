@@ -11,6 +11,7 @@ import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 import { CARAVAN_DEHUMIDIFIER_STATES } from '../domain/history-series.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
 import { createCaravanProbe, advanceCaravanProbe, abortCaravanProbe } from './caravan-location.js';
+import { unsentEquipmentCommand } from '../domain/equipment-command-errors.js';
 
 const scalar = value => typeof value === 'number' && Number.isFinite(value);
 const property = (object, path) => path?.split('.').reduce((value, key) => value && typeof value === 'object' && Object.hasOwn(value, key) ? value[key] : undefined, object);
@@ -70,6 +71,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       probe: null, meterSignature: null, sessionActive: false, restoration: null,
       qualified: false, boundIdentity: null }, recordingLocation: false }));
   const admission = createMqttAdmission();
+  const coverDispatches = new Map();
   const temperatures = devices.filter(canonicalTemperature);
   for (const device of temperatures) {
     const garage = ['garage_temperature', 'garage_temperature_2'].includes(device.temperatureSignal);
@@ -169,6 +171,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     return true;
   }
   function unavailable(device, reason, receivedAt = engine.clock()) {
+    coverDispatches.get(device)?.cancellation.abort();
     dehumidifierDispatches.get(device)?.cancellation.abort();
     pendingTime.removeWhere(row => row.device === device);
     if (store.runWrite && !store.transactionDepth) {
@@ -454,11 +457,15 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         signature: signature(device.id), reading });
     }
     const operation = device.coverOperation, main = device.readings[device.stateSignal];
-    if (operation && operation.action !== 'stop' && !['failed', 'observed'].includes(operation.status)
-      && main.receivedAt >= operation.requestedAt && main.observedAt >= operation.requestedAt
+    if (operation && scalar(operation.dispatchedAt) && operation.action !== 'stop' && !['failed', 'observed'].includes(operation.status)
+      && main.revision > operation.dispatchedRevision
+      && main.receivedAt >= operation.dispatchedAt && main.observedAt >= operation.dispatchedAt
       && main.coverState === (operation.action === 'open' ? 'open' : 'closed')) {
-      operation.observedAt = main.observedAt;
-      if (operation.acknowledgedAt !== undefined) { operation.status = 'observed'; delete operation.error; }
+      reception.afterCommit(() => {
+        if (device.coverOperation !== operation) return;
+        operation.observedAt = main.observedAt;
+        if (operation.acknowledgedAt !== undefined) { operation.status = 'observed'; delete operation.error; }
+      });
     }
   }
   function confirmDehumidifier(device, now) {
@@ -721,24 +728,33 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       controlTemperature(appliance, now);
     }
   }
-  async function switchDevice(device, on) {
+  async function switchDevice(device, on, { beforePublish: validate = () => {} } = {}) {
     if (!device || typeof on !== 'boolean') throw fail('invalid switch selection');
     if (!device.brokerConnected || closed || !canControl()) throw fail('control authority unavailable');
     if (device.waiters.size) throw fail('switch operation already in progress');
+    const deadline = engine.clock() + readbackTimeoutMs, monotonicDeadline = performance.now() + readbackTimeoutMs;
+    const cancellation = new AbortController();
     await new Promise((resolve, reject) => {
       let completed = false;
-      const waiter = { id: ++sequence, at: engine.clock(), on, observed: false, published: false, dispatched: false, revision: sequence, finish: reason => {
+      const waiter = { id: ++sequence, at: engine.clock(), on, observed: false, published: false, dispatched: false, revision: sequence, finish: (reason, expired = false) => {
         if (completed) return;
         if (!reason && (!canControl() || !device.brokerConnected || closed)) reason = fail('control authority unavailable');
-        completed = true; clearTimeout(timer); device.waiters.delete(waiter); reason ? reject(reason) : resolve();
+        completed = true; clearTimeout(timer); device.waiters.delete(waiter); cancellation.abort();
+        reason ? reject(waiter.dispatched ? fail('switch publication or state confirmation failed; delivery unconfirmed')
+          : unsentEquipmentCommand(reason, expired)) : resolve();
       } };
-      const timer = setTimeout(() => waiter.finish(fail('state confirmation timed out; delivery unconfirmed')), readbackTimeoutMs);
+      const timer = setTimeout(() => waiter.finish(fail('state confirmation timed out; delivery unconfirmed'), true), readbackTimeoutMs);
       device.waiters.add(waiter);
-      Promise.resolve().then(() => {
-        if (!canControl() || !device.brokerConnected || closed) throw fail('control authority unavailable');
+      const beforePublish = () => {
+        validate();
+        if (completed || cancellation.signal.aborted || engine.clock() >= deadline || performance.now() >= monotonicDeadline
+          || !canControl() || !device.brokerConnected || closed)
+          throw fail('switch control is unavailable');
         waiter.dispatched = true; waiter.at = engine.clock(); waiter.revision = sequence;
-        return publish(device.mqtt.commandTopic, on ? device.mqtt.onPayload : device.mqtt.offPayload, { qos: 1, retain: false, noReplay: true }, device.broker);
-      }).then(() => { waiter.published = true; if (waiter.observed) waiter.finish(); }, () => waiter.finish(fail('switch publication failed; delivery unconfirmed')));
+      };
+      Promise.resolve().then(() => publish(device.mqtt.commandTopic, on ? device.mqtt.onPayload : device.mqtt.offPayload,
+        { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal }, device.broker))
+        .then(() => { waiter.published = true; if (waiter.observed) waiter.finish(); }, error => waiter.finish(error));
     });
     return { confirmed: true, status: 'confirmed', deviceId: device.id, on, sent: true, acknowledgement: 'mqtt-live-state' };
   }
@@ -1002,22 +1018,51 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       const payload = device?.mqtt[`${input.action}Payload`];
       if (!device?.controlsCover || !payload) throw fail('door action is not configured');
       if (closed || !canControl() || !healthy(device, engine.clock())) throw fail('door control is unavailable');
+      const previousDispatch = coverDispatches.get(device);
+      // Cancellation reaches the byte-write gate too: an earlier publication
+      // may have passed preflight but still be in MQTT's outgoing store.
+      previousDispatch?.cancellation.abort();
       const operation = { action: input.action, status: 'publishing', requestedAt: engine.clock() };
       device.coverOperation = operation;
-      // Publish immediately in request order. Do not hold a movement-wide lock:
-      // an explicitly supported Stop must remain usable while opening/closing.
-      // Each callback belongs to this request, so older replies cannot replace
-      // the visible result of a later command. Nothing is replayed on restart.
+      const previous = device.readings[device.stateSignal];
+      const startingState = { value: previous?.value, coverState: previous?.coverState };
+      const deadline = operation.requestedAt + readbackTimeoutMs, monotonicDeadline = performance.now() + readbackTimeoutMs;
+      const cancellation = new AbortController();
+      const dispatch = { operation, cancellation };
+      coverDispatches.set(device, dispatch);
+      let expired = false;
+      const timer = setTimeout(() => { expired = true; cancellation.abort(); }, readbackTimeoutMs);
+      // Storage waits belong to this request only. A newer action cancels an
+      // unsent movement; already dispatched outcomes remain uncertain until
+      // acknowledged/read back. No command is retried or replayed.
+      const beforePublish = () => {
+        const now = engine.clock(), reading = device.readings[device.stateSignal];
+        if (cancellation.signal.aborted || now >= deadline || performance.now() >= monotonicDeadline || closed || !canControl()
+          || device.coverOperation !== operation || !healthy(device, now)) throw fail('door control is unavailable');
+        if (input.action !== 'stop' && (reading?.value !== startingState.value || reading?.coverState !== startingState.coverState))
+          throw fail('door state changed before dispatch');
+        operation.dispatchedAt = now; operation.dispatchedRevision = sequence;
+      };
       try {
-        await publish(device.mqtt.commandTopic, payload, { qos: 1, retain: false, noReplay: true }, device.broker);
+        await publish(device.mqtt.commandTopic, payload,
+          { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal }, device.broker);
         operation.acknowledgedAt = engine.clock();
         if (operation.status === 'publishing') operation.status = operation.observedAt !== undefined ? 'observed' : 'published';
         if (closed || !canControl() || !device.brokerConnected) {
           operation.status = 'unconfirmed'; operation.error = 'Control connection changed. Check the door live state.';
         }
-      } catch {
+      } catch (error) {
+        if (!scalar(operation.dispatchedAt)) {
+          const failure = unsentEquipmentCommand(error, expired);
+          operation.status = 'failed'; operation.error = failure.message; operation.code = failure.code;
+          throw failure;
+        }
         operation.status = 'unconfirmed'; operation.error = 'Door command delivery is unconfirmed. Check its live state before trying again.';
         throw fail('door command delivery is unconfirmed; check its live state');
+      } finally {
+        clearTimeout(timer);
+        if (coverDispatches.get(device) === dispatch) coverDispatches.delete(device);
+        cancellation.abort();
       }
       return { ...operation, deviceId: device.id, acknowledgement: 'mqtt-broker', confirmed: operation.status === 'observed' };
     },
@@ -1080,10 +1125,16 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       }));
       await Promise.all(tasks); return api.status();
     },
-    async setSwitch(deviceId, on) {
+    async setSwitch(deviceId, on, { beforePublish: validate = () => {}, restoring = false } = {}) {
       const config = enabled.find(row => row.id === deviceId);
       if (!config?.controlsSwitch) throw fail('switch control is not configured');
-      return config.protocol === 'shelly' ? native.setSwitch(deviceId, on) : switchDevice(devices.find(row => row.id === deviceId), on);
+      if (config.protocol === 'shelly') return native.setSwitch(deviceId, on, { beforePublish: validate, restoring });
+      const device = devices.find(row => row.id === deviceId), previous = device.readings[device.stateSignal]?.value;
+      return switchDevice(device, on, { beforePublish: () => {
+        validate();
+        if (restoring !== true && (!healthy(device, engine.clock()) || device.readings[device.stateSignal]?.value !== previous))
+          throw fail('switch state changed or became unavailable before dispatch');
+      } });
     },
     async publishHeating(commands, options) {
       if (!Array.isArray(commands) || !commands.length || commands.some(command => !['reduction', 'normal'].includes(command))) throw fail('invalid heating command');
@@ -1092,7 +1143,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       heatingBusy = true;
       try {
         if (native?.hasHeating) await native.publishHeating(commands, options);
-        for (const command of commands) for (const device of devices.filter(row => row.controlsHeat)) await switchDevice(device, command === 'reduction' ? device.reductionOn : !device.reductionOn);
+        for (const command of commands) for (const device of devices.filter(row => row.controlsHeat))
+          await switchDevice(device, command === 'reduction' ? device.reductionOn : !device.reductionOn, options);
         return { confirmed: true, status: 'confirmed', sent: true, commands: [...commands], acknowledged: commands.length, acknowledgement: 'equipment-state-readback' };
       } finally { heatingBusy = false; }
     },

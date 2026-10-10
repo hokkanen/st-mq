@@ -31,7 +31,7 @@ async function fixture(t, { holdStore = false, timeoutMs = 1000 } = {}) {
   const gate = gateMqttPublications(client, { canControl: () => allowed, timeoutMs });
   t.after(async () => { gate.revoke(); await client.endAsync(true); });
   await once(client, 'connect');
-  const publish = (topic = 'invented/switch/set') => new Promise((resolve, reject) => client.publish(topic, 'ON', { qos: 1, retain: false }, error => error ? reject(error) : resolve()));
+  const publish = (topic = 'invented/switch/set', { signal } = {}) => new Promise((resolve, reject) => client.publish(topic, 'ON', { qos: 1, retain: false, signal }, error => error ? reject(error) : resolve()));
   return { client, gate, wire, streams, delayed, store, publish,
     authority: value => { allowed = value; }, acknowledge: value => { acknowledge = value; },
     pendingCount: () => store._inflights.size };
@@ -81,4 +81,31 @@ test('installed MQTT.js: timeout and failed entry authority leave no command que
   assert.equal(f.wire.length, 0); assert.equal(f.pendingCount(), 0);
   f.authority(false); await assert.rejects(f.publish(), /unconfirmed/);
   assert.equal(f.delayed.length, 0); assert.equal(f.pendingCount(), 0);
+});
+
+test('installed MQTT.js: an already cancelled command never enters the outgoing store', async t => {
+  const f = await fixture(t, { holdStore: true }), cancellation = new AbortController();
+  cancellation.abort();
+  await assert.rejects(f.publish(undefined, { signal: cancellation.signal }), /unconfirmed/);
+  assert.equal(f.delayed.length, 0); assert.equal(f.pendingCount(), 0); assert.equal(f.wire.length, 0);
+});
+
+test('installed MQTT.js: the caller deadline cancels delayed dispatch before the transport deadline', async t => {
+  const f = await fixture(t, { holdStore: true, timeoutMs: 1000 }), cancellation = new AbortController();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const rejected = assert.rejects(f.publish(undefined, { signal: cancellation.signal }), /unconfirmed/);
+  setTimeout(() => cancellation.abort(), 20);
+  t.mock.timers.tick(19);
+  assert.equal(f.pendingCount(), 1); assert.equal(f.wire.length, 0);
+  t.mock.timers.tick(1); await rejected;
+  assert.equal(f.pendingCount(), 0, 'The original request deadline owns cancellation after a storage wait');
+  t.mock.timers.reset(); f.delayed.shift()(); await flush();
+  assert.equal(f.wire.length, 0); assert.equal(f.pendingCount(), 0);
+});
+
+test('installed MQTT.js: caller cancellation at packetsend prevents the first byte reaching the stream', async t => {
+  const f = await fixture(t), cancellation = new AbortController();
+  f.client.on('packetsend', packet => { if (packet.cmd === 'publish') cancellation.abort(); });
+  await assert.rejects(f.publish(undefined, { signal: cancellation.signal }), /unconfirmed/);
+  assert.equal(f.wire.length, 0); assert.equal(f.pendingCount(), 0);
 });

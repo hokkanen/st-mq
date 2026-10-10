@@ -48,6 +48,15 @@ late dispatch after expiry, authority/identity changes, disconnect, shutdown,
 stale feedback, timeout or a failed save. Controller event tests check that safe
 error codes survive without exposing raw transport details.
 
+`test/mqtt-equipment-dispatch.test.js` holds a real SQLite writer lock across
+door and generic switch requests. It checks one dispatch after storage admission,
+post-dispatch committed feedback, Stop supersession, changed-state cancellation
+and no delayed command after expiry, disconnect, shutdown, lost authority or a
+failed save. Gen1 relay tests apply the same wait while requiring newly admitted
+state after dispatch. H66 and Garage adapter tests exercise original deadlines,
+identity/challenge changes and native readback across delayed publication. The
+installed MQTT.js tests also cancel a request while its outgoing store is delayed.
+
 Startup rejection tests exercise the real application constructor and snapshot
 workers with unsupported charging state. Compare original database bytes, state
 and interrupted WAL companions, not only the thrown error. Current saved state

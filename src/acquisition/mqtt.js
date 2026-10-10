@@ -233,7 +233,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       }
       if (noReplay) client.on?.('packetsend', capturePacket);
       const previousId = noReplay ? client.getLastMessageId?.() : null;
-      try { client.publish(topic, payload, publicationOptions, finish); } catch { finish(new Error('MQTT publication failed')); }
+      try { client.publish(topic, payload, { ...publicationOptions, signal }, finish); } catch { finish(new Error('MQTT publication failed')); }
       if (noReplay) {
         const allocatedId = client.getLastMessageId?.();
         if (Number.isInteger(allocatedId) && allocatedId !== previousId) {

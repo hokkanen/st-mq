@@ -16,6 +16,7 @@ import { start } from '../src/main.js';
 import { CONTROL_SCOPE } from '../src/control/authority.js';
 import { idleIdentityClient, identityConnection } from './helpers/identity-mqtt.js';
 import { bluHtEquipment } from '../integrations/shelly/blu-ht.js';
+import { EQUIPMENT_COMMAND_ERRORS } from '../src/domain/equipment-command-errors.js';
 
 const INITIAL = Date.parse('2026-09-13T10:00:00Z');
 const KEY = 'equipment-tests:v1', TOKEN = 'synthetic-equipment-api-access-token';
@@ -79,6 +80,23 @@ test('all equipment HTTP actions require authenticated same-origin JSON before d
     assert.equal((await f.post(path, input, { body: '{invalid' })).status, 400);
   }
   assert.deepEqual(f.calls, []); assert.deepEqual(f.checks, []); assert.equal(f.store.getState(KEY), null);
+});
+
+test('known unsent door and switch requests retain their safe cause through HTTP and manual receipts', async t => {
+  const f = await serverFixture(t);
+  for (const [code, message] of Object.entries(EQUIPMENT_COMMAND_ERRORS)) {
+    const reject = async () => { throw Object.assign(new Error('synthetic transport internals'), { code, sent: false }); };
+    f.engine.equipment.setCover = reject;
+    f.engine.equipment.setSwitch = reject;
+    for (const [path, input] of [['/api/equipment/cover', { deviceId: 'garage_door1', action: 'open' }],
+      ['/api/equipment/switch', { deviceId: 'caravan', on: true }]]) {
+      const result = await f.post(path, input);
+      assert.equal(result.status, 409);
+      assert.deepEqual(result.body, { code, error: message });
+    }
+    assert.equal(f.engine.equipmentTests.manualStatus().lastResult.sent, false);
+    assert.equal(f.engine.equipmentTests.manualStatus().lastResult.code, code);
+  }
 });
 
 test('replicas, protected controllers and paired standbys reject equipment actions before dispatch', async t => {
@@ -145,7 +163,8 @@ test('native H66 HTTP changes confirm readback and remain permanent across the f
   const feed = (register, value) => h66.ingest(decoder.decode({ topic: `${deviceId}/HP/${register}`,
     payload: String(value), receivedAt: f.engine.clock() }));
   h66 = createH66Controller({ deviceId, store: f.store, clock: f.engine.clock,
-    config: { writeEnabled: true, readbackTimeoutMs: 30 }, publish: async (topic, payload) => {
+    config: { writeEnabled: true, readbackTimeoutMs: 30 }, publish: async (topic, payload, options) => {
+      options.beforePublish();
       sent.push({ topic, payload }); queueMicrotask(() => feed(topic.split('/').at(-1), Number(payload)));
     } });
   h66.setConnected(true);

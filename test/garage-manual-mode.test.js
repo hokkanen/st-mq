@@ -49,7 +49,7 @@ test('negative controller receipts arriving before publication completion cannot
   for (const status of ['rejected', 'failed', 'uncertain']) for (const request of [{ mode: 'away' }, { mode: 'normal', targetC: 12 }]) {
     let command, finish;
     const f = fixture(t, { adapter: { productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
-      publish: (_topic, payload) => new Promise(resolve => { command = JSON.parse(payload); finish = resolve; }) }) } });
+      publish: (_topic, payload, options) => { options.beforePublish(); return new Promise(resolve => { command = JSON.parse(payload); finish = resolve; }); } }) } });
     const previous = f.store.getState(f.runtime.keys.mode);
     const pending = f.runtime.setHeating(request);
     while (!command) await new Promise(resolve => setImmediate(resolve));
@@ -69,7 +69,7 @@ test('negative controller receipts arriving before publication completion cannot
 test('disconnect followed by a late publication failure leaves the previous mode durable', async t => {
   let reject;
   const f = fixture(t, { adapter: { productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
-    publish: () => new Promise((_resolve, failed) => { reject = failed; }) }) } });
+    publish: (_topic, _payload, options) => { options.beforePublish(); return new Promise((_resolve, failed) => { reject = failed; }); } }) } });
   const previous = f.store.getState(f.runtime.keys.mode);
   const pending = f.runtime.setHeating({ mode: 'away' });
   while (!reject) await new Promise(resolve => setImmediate(resolve));
@@ -87,7 +87,7 @@ test('disconnect followed by a late publication failure leaves the previous mode
 test('durable controller confirmation still permits the mode edit after a late publication failure', async t => {
   let reject;
   const f = fixture(t, { adapter: { productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
-    publish: () => new Promise((_resolve, failed) => { reject = failed; }) }) } });
+    publish: (_topic, _payload, options) => { options.beforePublish(); return new Promise((_resolve, failed) => { reject = failed; }); } }) } });
   const pending = f.runtime.setHeating({ mode: 'away' });
   while (!reject) await new Promise(resolve => setImmediate(resolve));
   f.update({ control: { targetC: 5, effectiveTargetC: 5 } });

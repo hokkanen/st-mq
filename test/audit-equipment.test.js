@@ -13,7 +13,7 @@ function fixture(t, devices = [relay]) {
   const store = new Store(':memory:'); let now = START;
   const sent = [], engine = { clock: () => now, ingest: row => store.observation(row) };
   const capture = createEquipmentCapture({ store, engine, settings: equipmentConfiguration({ devices }),
-    readbackTimeoutMs: 100, publish: async (topic, payload, options) => { sent.push({ topic, payload, options }); } });
+    readbackTimeoutMs: 100, publish: async (topic, payload, options) => { options.beforePublish?.(); sent.push({ topic, payload, options }); } });
   const find = method => sent.findLast(row => row.payload.startsWith('{') && JSON.parse(row.payload).method === method);
   const reply = (publication, result, extra = {}) => {
     const request = JSON.parse(publication.payload);
@@ -76,34 +76,34 @@ test('A06-004 validates complete query/write ownership while allowing shared ava
   assert.doesNotThrow(() => equipmentConfiguration({ devices: [a, { ...b, enabled: false }] }));
 });
 
-test('A06-005 switch confirmation needs a new main revision and required health, in either arrival order', async t => {
+test('A06-005 switch restoration confirmation needs a new main revision and required health, in either arrival order', async t => {
   const device = { id: 'relay', kind: 'switch', connection: 'mqtt:invented/state', switch_control: true,
     mqtt: { command_topic: 'invented/set', on_payload: 'ON', off_payload: 'OFF', timestamp_path: 'timestamp', availability_topic: 'invented/online' },
     readings: [{ key: 'aux', topic: 'invented/aux', path: 'value', unit: 'W' }] };
   const f = fixture(t, [device]);
   const report = (topic, value, timestamp = f.engine.clock()) => f.capture.receive(topic, JSON.stringify({ value, timestamp }));
-  report('invented/state', 0); const pending = f.capture.setSwitch('relay', true); let done = false;
+  report('invented/state', 0); const pending = f.capture.setSwitch('relay', true, { restoring: true }); let done = false;
   pending.then(() => { done = true; }); await flush();
   report('invented/state', 1); await flush(); assert.equal(done, false, 'equal source-time contradiction rejected');
   report('invented/aux', 4); f.capture.receive('invented/online', 'online'); await flush(); assert.equal(done, false);
   f.now(START + 1); report('invented/state', 1); await pending; assert.equal(done, true);
   const second = f.capture.setSwitch('relay', false); await flush();
-  f.capture.receive('invented/online', 'offline'); await assert.rejects(second, /unavailable/);
+  f.capture.receive('invented/online', 'offline'); await assert.rejects(second, /unconfirmed/);
 });
 
-test('A06-005 main before availability waits; cached same-millisecond main plus auxiliary report cannot confirm', async t => {
+test('A06-005 restoration main before availability waits; cached same-millisecond main plus auxiliary report cannot confirm', async t => {
   const device = { id: 'relay', kind: 'switch', connection: 'mqtt:invented/state', switch_control: true,
     mqtt: { command_topic: 'invented/set', on_payload: 'ON', off_payload: 'OFF', availability_topic: 'invented/online' },
     readings: [{ key: 'aux', topic: 'invented/aux', unit: 'W' }] };
   const f = fixture(t, [device]);
   f.capture.receive('invented/state', 'ON');
-  const pending = f.capture.setSwitch('relay', true); let done = false;
+  const pending = f.capture.setSwitch('relay', true, { restoring: true }); let done = false;
   pending.then(() => { done = true; }); await flush();
   f.capture.receive('invented/aux', '4'); f.capture.receive('invented/online', 'online');
   await flush(); assert.equal(done, false);
   f.capture.receive('invented/state', 'ON'); await pending;
   f.capture.setConnected(false); f.capture.setConnected(true);
-  const next = f.capture.setSwitch('relay', false); let confirmed = false;
+  const next = f.capture.setSwitch('relay', false, { restoring: true }); let confirmed = false;
   next.then(() => { confirmed = true; }); await flush();
   f.capture.receive('invented/state', 'OFF'); await flush(); assert.equal(confirmed, false);
   f.capture.receive('invented/online', 'online'); await flush(); assert.equal(confirmed, false, 'subscriptions are also required');

@@ -512,7 +512,7 @@ newer panel setting or acquire permission from a replacement connection.
 Native restoration still requires admitted, current readback; unavailable storage
 or device evidence leaves that duty visibly pending.
 
-Modern native heating and circulation relay commands can wait within their existing
+Native heating and circulation relay commands can wait within their existing
 readback timeout for queued MQTT observations to commit. The wait does not renew
 the action deadline or grant authority: the relay identity, connection, current
 permission and applicable circulation feedback are checked again before dispatch.
@@ -521,8 +521,10 @@ that input commits. Timeout, disconnect and shutdown cancel an unsent command;
 later storage recovery cannot send it. Native readback must itself commit before
 the action is confirmed. Execution events retain allowlisted failure codes and
 public explanations, never raw transport errors.
-Gen1 relay feedback has no command correlation, so those commands retain
-immediate publication or rejection while observations are queued.
+Gen1 relay feedback has no command correlation. Its confirmation boundary is
+captured at dispatch, after queued observations commit; only a newly accepted
+live state report can confirm the command. Reports received before dispatch
+cannot confirm it merely because saving them was delayed.
 
 While the authorized runtime remains running, timed circulation has a narrower
 independent OFF path: an already committed,

@@ -82,6 +82,7 @@ export function createGarageSender({ settings: input = {}, protection = garageSe
   validateGarageSenderSnapshot(persisted);
   let connected = false, closed = false, state = null, usedChallenge = null, lastCommand = null;
   let pending = null, attempts = 0, stoppedReason = null, matched = false;
+  const publications = new Set();
   let stateDeadline = -Infinity;
   let pendingSequence = 0;
   const pendingTime = createSourceTimePending({ clock, monotonicClock, dispatch: defer, ordered: true,
@@ -125,17 +126,29 @@ export function createGarageSender({ settings: input = {}, protection = garageSe
       || attempts >= CONFIGURATION_ATTEMPTS || usedChallenge === state.challenge) return;
     const command = { schema: GARAGE_SENDER_CONTRACT, bootId: state.bootId, challenge: state.challenge,
       commandId: randomUUID(), action: 'configure', config: structuredClone(configuredSettings) };
+    const deviceId = state.deviceId, elapsedEnd = monotonicClock() + CONFIGURATION_TIMEOUT_MS;
+    const cancellation = new AbortController();
     usedChallenge = state.challenge; attempts++;
     pending = { commandId: command.commandId, requestedAt: now, deviceId: state.deviceId, bootId: state.bootId };
     lastCommand = { commandId: command.commandId, requestedAt: now, status: 'published', reason: null };
     onState(snapshot());
-    try { await publish(settings.commandTopic, JSON.stringify(command), { qos: 0, retain: false, noReplay: true }); }
+    publications.add(cancellation);
+    const timer = setTimeout(() => cancellation.abort(), CONFIGURATION_TIMEOUT_MS);
+    const beforePublish = () => {
+      if (cancellation.signal.aborted || closed || !fresh(clock()) || pendingTime.size || writeReason()
+        || clock() - now >= CONFIGURATION_TIMEOUT_MS || monotonicClock() >= elapsedEnd
+        || pending?.commandId !== command.commandId || state.deviceId !== deviceId
+        || state.bootId !== command.bootId || state.challenge !== command.challenge || matching())
+        throw new Error('Local frost-protection configuration authority changed while waiting.');
+    };
+    try { await publish(settings.commandTopic, JSON.stringify(command),
+      { qos: 0, retain: false, noReplay: true, beforePublish, signal: cancellation.signal }); }
     catch {
       // A delayed publish failure cannot overwrite a newer command or readback.
       if (pending?.commandId !== command.commandId) return;
       lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Local frost-protection configuration delivery is unconfirmed.' };
       onState(snapshot());
-    }
+    } finally { clearTimeout(timer); publications.delete(cancellation); cancellation.abort(); }
   }
   function receive(topicName, payload, packet = {}, receivedAt = clock(), admittedAt) {
     if (!connected || topicName !== settings.stateTopic) return false;
@@ -195,8 +208,8 @@ export function createGarageSender({ settings: input = {}, protection = garageSe
     return true;
   }
   return { topics: settings.stateTopic ? [settings.stateTopic] : [], receive, snapshot, status, reconcile, tick: now => pendingTime.drain(now),
-    setConnected(value) { pendingTime.clear(); connected = !closed && Boolean(value); state = null; usedChallenge = null; },
-    subscriptionFailed() { pendingTime.clear(); connected = false; },
-    async close() { pendingTime.clear(); closed = true; connected = false; pending = null; },
+    setConnected(value) { pendingTime.clear(); for (const publication of publications) publication.abort(); connected = !closed && Boolean(value); state = null; usedChallenge = null; },
+    subscriptionFailed() { pendingTime.clear(); connected = false; for (const publication of publications) publication.abort(); },
+    async close() { pendingTime.clear(); closed = true; connected = false; for (const publication of publications) publication.abort(); pending = null; },
   };
 }

@@ -47,7 +47,7 @@ function setup(t, { automationEnabled = true, delayed = false, store = new Store
     native(){const values={'0203':19,'0212':47,'0208':62,'2201':1},decoder=createH66Decoder({deviceId:'synthetic'});
       const receive=(index,value)=>{values[index]=value;const decoded=decoder.decode({topic:`synthetic/HP/${index}`,payload:String(value),receivedAt:now});
         h66.ingest(decoded);engine.ingest({source:'husdata-h66',device:'synthetic',signal:decoded.signal,value:decoded.value,unit:decoded.unit,sourceTime:now,receivedAt:now,quality:decoded.issues,raw:{usableForControl:decoded.usableForControl,verified:true}});};
-      const h66=createH66Controller({deviceId:'synthetic',store,clock:()=>now,config:{writeEnabled:true,readbackTimeoutMs:30},publish:async(topic,payload)=>queueMicrotask(()=>receive(topic.split('/').at(-1),Number(payload)))});
+      const h66=createH66Controller({deviceId:'synthetic',store,clock:()=>now,config:{writeEnabled:true,readbackTimeoutMs:30},publish:async(topic,payload,options)=>{options.beforePublish();queueMicrotask(()=>receive(topic.split('/').at(-1),Number(payload)));}});
       h66.setConnected(true);for(const[index,value]of Object.entries(values))receive(index,value);engine.setH66(h66);
       return {values,receive,h66}; }
   };

@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createEquipmentTests } from '../src/app/equipment-tests.js';
 import { Store } from '../src/storage/store.js';
 import { validateEquipmentTestState } from '../src/domain/equipment-test-state.js';
+import { unsentEquipmentCommand } from '../src/domain/equipment-command-errors.js';
 
 const KEY = 'equipment-tests:v1', INITIAL = Date.parse('2026-09-13T10:00:00Z');
 const digest = 'a'.repeat(64);
@@ -71,6 +72,19 @@ test('direct manual switches have live confirmation and no timer, shutdown rever
   await restarted.tick();
   assert.deepEqual(f.calls.map(row => row.on), [true]);
   assert.equal(restarted.manualStatus().lastResult.confirmed, true);
+});
+
+test('a timed test cancelled before publication clears its unissued duty without later restoration', async t => {
+  const f = fixture(t, { command: () => { throw unsentEquipmentCommand(null, true); } });
+  await assert.rejects(f.manager.start(request()), { code: 'EQUIPMENT_TEST_NOT_STARTED' });
+  assert.equal(f.manager.status().active, null);
+  assert.equal(f.manager.status().lastResult.sent, false);
+  assert.equal(f.store.getState(KEY).active, null);
+  f.advance(120_000); await f.manager.tick(); await f.manager.close();
+  const restarted = createEquipmentTests(f.options);
+  t.after(() => restarted.close());
+  await restarted.tick();
+  assert.equal(f.calls.length, 1, 'Only the initial unsent attempt reached the adapter');
 });
 
 test('direct manual switches reject unsafe inputs, stale states, tariff outputs and missing authority', async t => {

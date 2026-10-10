@@ -7,6 +7,14 @@ challenge authorize a bounded command attempt. Retained state may be displayed
 as recorded evidence but does not authorize a write. Reconnect never replays an
 old ordinary command. Read-only replicas cannot publish commands.
 
+Pump commands and protection-sender configuration can wait briefly for received
+MQTT observations to finish saving. The wait retains the original command and
+challenge deadlines. Dispatch rechecks the connection, device/boot/challenge,
+authority and relevant native state or control ownership. Expired, disconnected
+or superseded attempts are cancelled and cannot run after recording recovers.
+Matching telemetry received while a pump command is still unsent cannot confirm
+that command. Device readback and broker delivery retain their separate meanings.
+
 ## Target and native commands
 
 A `control` command supplies the durable real target and external-control enable.

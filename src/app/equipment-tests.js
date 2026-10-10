@@ -1,5 +1,6 @@
 import { createWriteScope } from '../storage/write-scope.js';
 import { validateEquipmentTestState } from '../domain/equipment-test-state.js';
+import { EQUIPMENT_COMMAND_ERRORS } from '../domain/equipment-command-errors.js';
 
 const KEY = 'equipment-tests:v1';
 const MINUTE = 60_000, RETRY_MS = 5000;
@@ -7,6 +8,7 @@ const timestamp = value => Number.isSafeInteger(value) && value >= 0;
 const signatureValid = value => typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
 const idValid = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value);
 const messages = {
+  ...EQUIPMENT_COMMAND_ERRORS,
   EQUIPMENT_TEST_CLOSED: 'Equipment control is closed.',
   EQUIPMENT_TEST_BUSY: 'An equipment operation is already in progress.',
   EQUIPMENT_TEST_ACTIVE: 'Restore the current equipment test before starting another.',
@@ -146,7 +148,8 @@ export function createEquipmentTests({ store, clock = Date.now, getEquipment, ca
       const superseded = active.on === active.previousOn && current !== null && current !== active.on;
       let sent = false;
       if (current !== active.previousOn && !superseded) {
-        const result = await equipment.setSwitch(active.deviceId, active.previousOn);
+        const result = await equipment.setSwitch(active.deviceId, active.previousOn,
+          { restoring: true, beforePublish: () => checkRoute(active, adapter()) });
         if (result?.confirmed !== true) throw failure('EQUIPMENT_TEST_RESTORE');
         sent = true;
       }
@@ -187,7 +190,12 @@ export function createEquipmentTests({ store, clock = Date.now, getEquipment, ca
           checkRoute({ deviceId: input.deviceId, signature }, adapter());
           if (freshState(devices(adapter()).find(row => row.id === input.deviceId), clock()) !== previousOn)
             throw failure('EQUIPMENT_TEST_STATE');
-          const result = await equipment.setSwitch(input.deviceId, input.on);
+          const result = await equipment.setSwitch(input.deviceId, input.on, { beforePublish: () => {
+            if (closed || closing || stopping) throw failure('EQUIPMENT_TEST_CLOSED');
+            checkRoute({ deviceId: input.deviceId, signature }, adapter());
+            if (freshState(devices(adapter()).find(row => row.id === input.deviceId), clock()) !== previousOn)
+              throw failure('EQUIPMENT_TEST_STATE');
+          } });
           sent = result?.sent;
           if (result?.confirmed !== true) throw failure('EQUIPMENT_SWITCH_UNCONFIRMED');
           checkRoute({ deviceId: input.deviceId, signature }, adapter());
@@ -196,7 +204,9 @@ export function createEquipmentTests({ store, clock = Date.now, getEquipment, ca
           await persist({ ...state, lastManual });
           return publicManual(lastManual);
         } catch (error) {
-          const code = ['EQUIPMENT_TEST_AUTHORITY', 'EQUIPMENT_TEST_CLOSED'].includes(error?.code) ? error.code
+          if (error?.sent === false) sent = false;
+          const code = Object.hasOwn(EQUIPMENT_COMMAND_ERRORS, error?.code) ? error.code
+            : ['EQUIPMENT_TEST_AUTHORITY', 'EQUIPMENT_TEST_CLOSED'].includes(error?.code) ? error.code
             : error?.code === 'EQUIPMENT_TEST_ROUTE' ? 'EQUIPMENT_SWITCH_ROUTE' : 'EQUIPMENT_SWITCH_UNCONFIRMED';
           const next = { ...state, lastManual: { ...requested, status: 'unconfirmed', confirmed: false, sent, code } };
           try { await persist(next); } catch { state = next; }
@@ -242,7 +252,7 @@ export function createEquipmentTests({ store, clock = Date.now, getEquipment, ca
         try {
           ready();
           unissued = null;
-          const result = await equipment.setSwitch(active.deviceId, active.on);
+          const result = await equipment.setSwitch(active.deviceId, active.on, { beforePublish: ready });
           if (result?.confirmed !== true) throw failure('EQUIPMENT_TEST_UNCONFIRMED');
           checkRoute(active, adapter());
           const confirmedAt = clock();
@@ -252,6 +262,7 @@ export function createEquipmentTests({ store, clock = Date.now, getEquipment, ca
           startupRestore = false; retryAt = 0; notify(lastResult);
           return lastResult;
         } catch (error) {
+          if (error?.sent === false && Object.hasOwn(EQUIPMENT_COMMAND_ERRORS, error?.code)) unissued = active;
           if (unissued) {
             await discardUnissued();
             throw failure('EQUIPMENT_TEST_NOT_STARTED');
