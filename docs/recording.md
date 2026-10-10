@@ -918,6 +918,8 @@ each value. An original sensor observation time or model-update time is a
 different event and keeps its explicit provenance label. Text wraps to the
 available chart width. Desktop popups work in both views; touch devices show
 them only in fullscreen, in portrait and landscape, and clear them on exit.
+Click or tap the popup itself to hide it. Selecting another data point moves
+the popup to that point.
 
 **Eligible for learning** means that a *saved learning input* passed the original
 recorded quality checks. It does not claim that a fit used it or changed the model.

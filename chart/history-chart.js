@@ -3,7 +3,7 @@ import { Interaction } from 'chart.js';
 import { color } from 'chart.js/helpers';
 import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historySeriesAt, selectedRange, shiftDate, dateSelection, visible } from './history-model.js';
 import { createDatePicker } from './date-picker.js';
-import { historyTooltipCallbacks, historyTooltipsEnabled, historyTooltipInteraction } from './history-tooltips.js';
+import { historyTooltipCallbacks, historyTooltipsEnabled, historyTooltipInteraction, historyTooltipDismissPlugin } from './history-tooltips.js';
 export { historyTooltipLabel, historyTooltipTitle } from './history-tooltips.js';
 import { createComparisonRange } from './comparison-range.js';
 import { selectedChartView, chartSelectionKey, readChartPreferences, chartViewPreferences, setChartVisibility, chartSubjectAvailability, CHART_PREFERENCES_KEY } from './chart-views.js';
@@ -354,7 +354,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       graph.update();
     } else {
       graph = new Chart(canvas, {
-        type: 'line', data: { datasets }, plugins: [powerFillPlugin, overlays.plugin],
+        type: 'line', data: { datasets }, plugins: [powerFillPlugin, overlays.plugin, historyTooltipDismissPlugin],
         options: {
           animation: false, responsive: true, maintainAspectRatio: false, parsing: false, normalized: false,
           interaction: { mode: 'historyPoint', axis: 'x', intersect: false }, scales,

@@ -6,6 +6,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Click or tap a chart data-point popup to dismiss it; selecting another data
+  point moves the popup to that point.
 - Charging currents keeps Charger 2 fallback periods in its allowance line and
   adds a bar explaining full, priority-constrained, property-constrained and
   fallback allowance. A second bar identifies the highest property phase using

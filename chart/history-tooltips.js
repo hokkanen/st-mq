@@ -167,6 +167,25 @@ export function historyTooltipsEnabled({ fullscreen, coarsePointer }) {
   return Boolean(fullscreen || !coarsePointer);
 }
 
+export const historyTooltipDismissPlugin = {
+  id: 'historyTooltipDismiss',
+  beforeEvent(chart, { event }) {
+    const tooltip = chart.tooltip;
+    if (!tooltip?.options.enabled || !tooltip.opacity
+      || !['click', 'mousemove', 'mousedown'].includes(event.type)
+      || event.x < tooltip.x || event.x > tooltip.x + tooltip.width
+      || event.y < tooltip.y || event.y > tooltip.y + tooltip.height) return;
+    if (event.type === 'click') {
+      chart.setActiveElements([]);
+      tooltip.setActiveElements([], event);
+      chart.render();
+    }
+    // Keep the popup still while the pointer enters it, and consume dismissal
+    // before the same click can select a point underneath it.
+    return false;
+  },
+};
+
 /** Large report markers own their generous hit targets even beside dense price
  * points. Other genuine points use XY distance, so vertically aligned readings
  * cannot steal a direct hit. Outside all targets retain shared nearest-time hover. */
