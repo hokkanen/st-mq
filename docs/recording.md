@@ -448,14 +448,23 @@ fallback boundaries are never averaged into a misleading continuous allowance.
 The two allowance histories do not expire with unsaved charging-session reports.
 They participate in ordinary current-format backup, recovery and inventory.
 
-The **Charging currents** view plots both allowances as step lines. Charger 2
-fallback occupies a separate purple dash-dot display series, derived from the
-same stored observations. Its normal line stops for fallback and unknown periods.
+The **Charging currents** view plots both allowances as step lines, independently
+of actual charger draw. Charger 2 fallback periods remain in its single line.
+Its allowance bar distinguishes Full allowance, Priority constrained, Property
+load constrained, Fallback, Unknown and Inactive from recorded decision evidence.
+The top-level allowance reason records the capacity constraint; the nested
+limiter reason retains any tighter native or vehicle setting. Ambiguous recorded
+reasons remain Unknown in the bar without discarding a known numeric allowance.
+Missing allowance evidence leaves a gap in the line.
 The property line is the maximum of its three existing phase-current histories
 at each timestamp. Native historical currents retain their reconstructed
 interval-average meaning; supported imported current snapshots retain their own
 basis. All three phases are required. This derived maximum adds no property
-recording stream. Temperature context keeps its existing right axis.
+recording stream. A matching bar identifies the highest phase using the existing
+L1/L2/L3 colours. It uses original phase groups before display reduction, retains
+voltage-change boundaries, and shows the lowest phase number for ties with all
+tied phases in its details. Missing evidence and omitted detail remain gaps.
+Temperature context keeps its existing right axis.
 
 Both charger cards show the same compact allowance beside their footer status.
 Full allowance is green, a reduced positive allowance blue, ordinary zero red

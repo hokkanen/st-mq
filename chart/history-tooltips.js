@@ -99,7 +99,7 @@ export function historyTooltipLabel(item) {
   else if (raw.chargingAllowance) {
     const native = raw.source === 'easee-equalizer';
     details.push(native ? 'native Equalizer allowance' : raw.mode === 'fallback'
-      ? 'controller fallback cap; verified load headroom unavailable' : 'controller load-balancing allowance');
+      ? 'fallback allowance; usable load evidence unavailable' : 'controller available current allowance');
     details.push('not measured draw or charging permission');
     if (raw.reason) details.push(raw.reason.replaceAll('-', ' '));
     if (Number.isFinite(raw.measuredAt)) details.push(`${native ? 'oldest phase source time' : 'decision time'} ${dateTime.format(raw.measuredAt)}`);
@@ -112,6 +112,9 @@ export function historyTooltipLabel(item) {
   else if (key.endsWith('_energy') || /_energy_l[123]$/.test(key)) details.push('recorded interval energy');
   else if (key === 'solar_radiation') details.push('historical solar estimate from the forecast available at the time');
   else if (key.endsWith('_forecast')) details.push('forecast');
+  if (raw.maximumPhase && Array.isArray(raw.phases) && raw.phases.length)
+    details.push(raw.phases.length > 1 ? `${raw.phases.map(phase => `L${phase}`).join(' / ')} tied; L${raw.phases[0]} shown`
+      : `L${raw.phases[0]}`);
   if (raw.basis === 'native-meter-counter-phase-allocation') details.push('estimated phase allocation; three-phase sum preserves measured meter energy');
   if (raw.basis === 'native-meter-counter-delta') details.push('measured meter energy summed from three phases');
   if (raw.assumedPrice) details.push('assumed price');

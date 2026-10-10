@@ -63,10 +63,13 @@ export function easeeAllowanceStatus({ enabled = true, telemetry = {}, now = Dat
 
 /** Keep observed capacity separate from the effective setting and confirmed
  * readback. An unplugged capacity observation grants no instruction to apply. */
-export function shellyAllowanceStatus({ limiter, maximumCurrentA, evaluatedAt = null, sourceEpoch = null } = {}) {
+export function shellyAllowanceStatus({ limiter, limit, maximumCurrentA, evaluatedAt = null, sourceEpoch = null } = {}) {
   const known = limiter && ['unrestricted', 'limited', 'paused-by-balancing', 'fallback'].includes(limiter.mode)
     && current(limiter.loadAllowanceA) !== null;
-  return { ...unknown(limiter?.reason ?? 'limiter-unavailable'),
+  // The allowance and the effective setting have independent reasons. A car
+  // or native setting below the available capacity must not replace its basis.
+  const allowanceReason = known ? reasonCode(limiter.mode === 'fallback' ? limit?.fallbackReason : limit?.loadReason) : null;
+  return { ...unknown(known ? allowanceReason ?? 'allowance-reason-unavailable' : limiter?.reason ?? 'limiter-unavailable'),
     mode: known ? limiter.mode === 'paused-by-balancing' ? 'limited' : limiter.mode : limiter?.mode === 'inactive' ? 'inactive' : 'unknown',
     allowanceA: known ? limiter.loadAllowanceA : null, maximumCurrentA: current(maximumCurrentA),
     source: 'st-mq-load-balancing', sourceEpoch, measuredAt: timestamp(evaluatedAt), receivedAt: timestamp(evaluatedAt),

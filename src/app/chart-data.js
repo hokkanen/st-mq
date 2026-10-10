@@ -21,6 +21,7 @@ import { addFireplaceInputs, addFirewoodOutcomes, FIREPLACE_INPUT_NAMES, FIREWOO
 import { getFirewoodBenefit } from './firewood-benefit.js';
 import { forecastIntervals } from '../control/planner.js';
 import { addRecordedEnergy } from './chart-energy.js';
+import { propertyMaximum, PropertyHighestPhaseHistory } from './chart-property-phase.js';
 import { createChartQueryContext } from './chart-query-context.js';
 import { mergeCoverageRows } from './chart-coverage.js';
 import { addHistoricalHeatPump } from './chart-heat-pump.js';
@@ -483,6 +484,9 @@ export function getChartData({ store, input = 'offline', contract = null, market
   // narrower than their source cadence. Context never crosses selected dates.
   const queryTo = Math.min(detail ? Math.min(selection.to, range.to + 3 * HOUR) : range.to, now + 1);
   const shading = Object.fromEntries(['heatOff', 'compressorGarage', 'dhwr', 'fireplace'].map(key => [key, new ShadeEnvelope(range, points)])), warnings = [];
+  const propertyHighestPhase = maximumPropertyCurrent && !projecting
+    ? new PropertyHighestPhaseHistory(range, now, Math.min(4000, points * 2)) : null;
+  if (propertyHighestPhase) shading.propertyHighestPhase = propertyHighestPhase;
   // Daily outcomes retain their selected calendar-day meaning at every zoom.
   // Only their selected series needs this calculation on detail requests.
   const firewoodRange = detail && selectedHas(FIREWOOD_OUTCOME_NAMES) ? { ...range,
@@ -721,10 +725,16 @@ export function getChartData({ store, input = 'offline', contract = null, market
       }
       for (const [prefix, group] of candidates) {
         if (time >= energyStarts[prefix]) continue;
-        if (prefix === 'property') lines.property_current_max?.add(time,
-          group.complete ? Math.max(...group.values) : null,
-          { source: group.source ?? (group.imported ? 'csv:easee' : undefined), transport: group.transport,
-            maximumPhase: true, basis: 'recorded-phase-currents' });
+        if (prefix === 'property' && lines.property_current_max) {
+          const line = lines.property_current_max, maximum = propertyMaximum(group.values), previous = line.previous;
+          // Snapshot curves connect only complete neighbouring observations
+          // inside their existing continuity bound. No inferred final tail.
+          if (previous && Number.isFinite(previous.y) && maximum.currentA !== null && time - previous.x <= line.gap)
+            propertyHighestPhase?.add(previous.x, time, previous.phases);
+          line.add(time, maximum.currentA,
+            { source: group.source ?? (group.imported ? 'csv:easee' : undefined), transport: group.transport,
+              maximumPhase: true, phases: maximum.phases, basis: 'recorded-phase-currents' });
+        }
         const line = lines[prefix === 'property' ? 'property_power' : 'charger_power'];
         const previous = currentPowerHistory.get(prefix);
         if (line && previous && time - previous.at <= 30 * 60_000) {
@@ -879,13 +889,18 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const energyProgress = traversalProgress('reading-energy');
   const recordedEnergy = !drawingOnly || names.some(name => ENERGY_SIGNALS.includes(name) || PHASES.includes(name)
     || ['property_power', 'property_current_max', 'charger_power', 'charger2_power', 'caravan_power'].includes(name))
-    ? addRecordedEnergy({store,range,now,input,envelopes,timing,voltageReader,queryContext,onProgress:energyProgress}) : { rows: 0, intervals: 0 };
+    ? addRecordedEnergy({store,range,now,input,envelopes,timing,voltageReader,queryContext,onProgress:energyProgress,propertyHighestPhase,
+      propertySnapshot: lines.property_current_max?.previous
+        ? { ...lines.property_current_max.previous, gap: lines.property_current_max.gap } : null }) : { rows: 0, intervals: 0 };
   energyProgress?.(range.to, true);
   onProgress?.({ stage: 'preparing-chart' });
   const chargingAllowances = addChargingAllowanceHistory({ store, range, now, input, envelopes,
+    ...(envelopes.ev2_current_allowance ? { shading } : {}),
     maxSpans: Math.min(4000, points * 2) });
   if (chargingAllowances && Object.values(chargingAllowances).some(row => row.truncated))
     warnings.push('Earlier charging allowance detail is omitted in this dense selection. Zoom in to inspect its exact changes.');
+  if (propertyHighestPhase?.truncated)
+    warnings.push('Earlier highest-phase detail is omitted in this dense selection. Zoom in to inspect its exact changes.');
   if (names.some(name => VOLTAGE_SIGNALS.includes(name)))
     for (const segment of voltageSegments(voltageReader, range.from, Math.min(range.to, now)))
       for (const [phase, signal] of VOLTAGE_SIGNALS.entries()) {
@@ -1033,7 +1048,9 @@ export function getChartData({ store, input = 'offline', contract = null, market
     garageTiming: getGarageTimingBenefit({ store, input, range, now, prices: priced }) });
   return { range, now, input, ...(view === undefined ? { left } : { view }), series, shading, operatingModes,
     ...(detail ? { selection } : { timingBenefit, heatingBenefit, heatingSavings, firewoodBenefit: firewood.summary }),
-    meta: { ...(detail ? { detail: true } : {}), ...(relatedSampling ? { relatedSampling } : {}), ...(chargingAllowances ? { chargingAllowances } : {}), warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',
+    meta: { ...(detail ? { detail: true } : {}), ...(relatedSampling ? { relatedSampling } : {}), ...(chargingAllowances ? { chargingAllowances } : {}),
+    ...(propertyHighestPhase ? { propertyHighestPhase: { truncated: propertyHighestPhase.truncated } } : {}),
+    warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,
     powerEstimate: powerNames.length ? 'Recorded phase or total energy divided by its interval duration. Current snapshots use historical per-phase voltage estimates and assume unity power factor. CSV history before voltage records uses the first usable estimates retrospectively. Missing voltage leaves derived values unavailable; measured energy is unchanged.' : null,

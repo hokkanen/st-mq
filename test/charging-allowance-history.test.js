@@ -18,7 +18,8 @@ const at = Date.parse('2026-10-05T06:00:00Z'), DAY = 86_400_000;
 const limiter = (extra = {}) => shellyLimiterStatus({ enabled: true, connected: true, online: true,
   maximumCurrentA: 16, limit: { currentA: 16, loadCurrentA: 16, reason: 'property-headroom', loadReason: 'property-headroom' },
   appliedCurrentA: 16, applicationStatus: 'confirmed', ...extra });
-const decision = (extra = {}, metadata = {}) => shellyAllowanceStatus({ limiter: limiter(extra), maximumCurrentA: 16, evaluatedAt: at, ...metadata });
+const decision = (extra = {}, metadata = {}) => shellyAllowanceStatus({ limiter: limiter(extra),
+  limit: extra.limit ?? { loadReason: 'hardware-restriction' }, maximumCurrentA: 16, evaluatedAt: at, ...metadata });
 const native = (values = [16, 16, 16], extra = {}) => easeeChargerTelemetry({ online: true, readAt: at,
   pluggedIn: true, externalLoadBalancing: true,
   observations: Object.fromEntries([230, 231, 232].map((id, index) => [id, { value: values[index], at: at - 3000 + index * 1000 }])),
@@ -47,6 +48,22 @@ test('shared Shelly allowance reports load entitlement independently of setting,
   assert.equal(decision({ connected: undefined }).mode, 'unknown');
   assert.equal(decision({ connected: false, enabled: false }).mode, 'inactive');
   assert.equal(decision({ online: false, connected: false }).mode, 'unknown');
+});
+
+test('allowance reason stays independent of a lower native or vehicle setting and requires admitted capacity', () => {
+  for (const reason of ['native-current-limit', 'vehicle-current-limit']) {
+    const limit = { currentA: 5, loadCurrentA: 12, loadReason: 'priority-allocation', reason };
+    const status = decision({ limit, appliedCurrentA: 5 });
+    assert.equal(status.allowanceA, 12);
+    assert.equal(status.reason, 'priority-allocation');
+    assert.equal(status.limiter.allowanceA, 5);
+    assert.equal(status.limiter.reason, reason);
+    assert.equal(decision({ limit: { ...limit, loadReason: 'fuse-limit' } }).reason, 'fuse-limit');
+    assert.equal(decision({ limit: { ...limit, loadCurrentA: 16, loadReason: 'hardware-restriction' } }).mode, 'unrestricted');
+    assert.equal(decision({ limit: { ...limit, fallback: true, fallbackReason: 'feed-unavailable' } }).reason, 'feed-unavailable');
+    assert.equal(decision({ limit, online: false }).reason, 'charger-unavailable');
+    assert.equal(decision({ limit: { ...limit, loadReason: undefined } }).reason, 'allowance-reason-unavailable');
+  }
 });
 
 test('Equalizer allowance remains observable without a connected vehicle, retaining zero and source loss', () => {
@@ -187,7 +204,7 @@ test('malformed status and identity fail before writing; recovery exclusions and
   other.observe({ chargerId: 'charger2', association, status: decision({ appliedCurrentA: 12 }) }, at + 10_000);
   other.observe({ chargerId: 'charger2', association, status: decision({ appliedCurrentA: 12 }) }, at + 20_000);
   assert.deepEqual(read(at, at + 25_000).charger2.spans.map(row => [row.start - at, row.end - at, row.reason]),
-    [[0, 10000, 'property-headroom'], [10000, 25000, 'overlapping-history']]);
+    [[0, 10000, 'hardware-restriction'], [10000, 25000, 'overlapping-history']]);
   for (const row of store.observations()) store.db.prepare("INSERT INTO recovery_exclusions(generation,table_name,record_key) VALUES('original','observations',?)").run(String(row.id));
   assert.deepEqual(read().charger2.spans, []);
 });

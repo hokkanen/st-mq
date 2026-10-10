@@ -1699,7 +1699,7 @@ export class ChargingRuntime {
       pausedByLimiter: limit?.pausedByLimiter === true && fresh(permission) && permission.value === false && control.ownedPause });
   }
   allowanceStatus(id, control, now) {
-    if (id === 'charger2') return shellyAllowanceStatus({ limiter: this.limiterStatus(control, now),
+    if (id === 'charger2') return shellyAllowanceStatus({ limiter: this.limiterStatus(control, now), limit: control.limiter,
       maximumCurrentA: this.configuration.chargers.charger2.maximumCurrentA, evaluatedAt: control.limiter?.evaluatedAt,
       sourceEpoch: control.limiter?.scope ? digest([control.limiter.scope, control.limiter.sourceEpochs]) : null });
     const item = this.chargers[id], normalize = item.adapter?.normalize ?? easeeChargerTelemetry;

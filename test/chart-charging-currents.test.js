@@ -11,6 +11,7 @@ import { explorerSelection } from '../chart/series-explorer.js';
 import { activityTracks } from '../chart/chart-overlays.js';
 import { historyDatasets, historySeriesAt, defaultPalette } from '../chart/history-model.js';
 import { historyTooltipLabel } from '../chart/history-tooltips.js';
+import { charger2AllowanceState } from '../src/app/chart-charging-allowances.js';
 
 const start = Date.parse('2026-10-05T06:00:00Z'), MINUTE = 60_000;
 const query = (store, extra = {}) => getChartData({ store, input: 'providers', now: start + 60 * MINUTE,
@@ -29,14 +30,16 @@ const status = (chargerId, mode, allowanceA, at) => ({ mode, allowanceA, maximum
 const put = (history, chargerId, mode, allowanceA, offset) => history.observe({ chargerId,
   association: (chargerId === 'charger1' ? 'a' : 'b').repeat(64), status: status(chargerId, mode, allowanceA, start + offset) }, start + offset);
 
-test('charging currents replaces the session view while All series preserves C1 native checks and no balancing strips', t => {
+test('charging currents has allowance and phase bars while All series preserves C1 native checks', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const view = selectedChartView({ view: 'charging_currents' });
-  assert.deepEqual(view.leftSignals, ['property_current_max', 'ev1_current_allowance', 'ev2_current_allowance', 'ev2_current_fallback']);
+  assert.deepEqual(view.leftSignals, ['property_current_max', 'ev1_current_allowance', 'ev2_current_allowance']);
   assert.equal(view.unit, 'A'); assert(view.rightSignals.includes('model_indoor_temperature'));
-  assert.deepEqual(view.tracks, []);
+  assert.deepEqual(view.tracks, ['propertyHighestPhase', 'charger2Allowance']);
+  assert(view.tracks.every(key => view.defaults[key] === true));
   assert(!Object.hasOwn(CHART_VIEW_BY_KEY, 'session_checks'));
   assert.throws(() => query(store, { view: 'session_checks' }), /Unknown chart view/);
+  assert.throws(() => query(store, { view: undefined, left: 'ev2_current_fallback' }), /Unknown left axis/);
   assert.throws(() => selectedChartView({ view: 'session_checks' }), /Choose a chart view/);
   const preferences = readChartPreferences({ getItem: () => JSON.stringify({ view: 'session_checks', views: { session_checks: {} } }) });
   assert.equal(preferences.view, 'power'); assert(!Object.hasOwn(preferences.views, 'session_checks'));
@@ -95,35 +98,68 @@ test('allowance series preserve zero and fallback zero, exact transitions, gaps 
   put(history, 'charger2', 'fallback', 12, 30_000); put(history, 'charger2', 'fallback', 12, 35_000);
   put(history, 'charger2', 'unknown', null, 40_000); put(history, 'charger2', 'unknown', null, 45_000);
   put(history, 'charger2', 'limited', 8, 50_000); put(history, 'charger2', 'limited', 8, 55_000);
-  const chart = query(store, { points: 100 }), { ev1_current_allowance: first, ev2_current_allowance: second, ev2_current_fallback: fallback } = chart.series;
+  const chart = query(store, { points: 100 }), { ev1_current_allowance: first, ev2_current_allowance: second } = chart.series;
   assert(first.some(point => point.y === 10.5));
   assert(second.some(point => point.x === start + 10_000 && point.y === 0));
-  assert(second.some(point => point.x === start + 20_000 && point.y === null));
-  assert(fallback.some(point => point.x === start + 20_000 && point.y === 0));
-  assert(fallback.some(point => point.x === start + 30_000 && point.y === 12));
-  assert(second.filter(point => point.x >= start + 20_000 && point.x < start + 50_000).every(point => point.y === null));
-  assert(fallback.filter(point => point.x < start + 20_000 || point.x >= start + 35_000).every(point => point.y === null));
+  assert(second.some(point => point.x === start + 20_000 && point.y === 0 && point.mode === 'fallback'));
+  assert(second.some(point => point.x === start + 30_000 && point.y === 12 && point.mode === 'fallback'));
+  assert(second.filter(point => point.x >= start + 40_000 && point.x < start + 50_000).every(point => point.y === null));
+  assert(!Object.hasOwn(chart.series, 'ev2_current_fallback'));
+  assert.deepEqual(chart.shading.charger2Allowance.filter(row => row.value === 5).map(row => [row.start - start, row.end - start, row.allowanceA]),
+    [[20_000, 30_000, 0], [30_000, 35_000, 12]]);
   assert(!JSON.stringify(chart.series).includes('a'.repeat(64)));
   assert(!Object.hasOwn(chart, 'limiterHistory'));
   assert.equal(chart.meta.chargingAllowances.charger2.truncated, false);
   assert.deepEqual(historySeriesAt(chart, chart.now + MINUTE).ev2_current_allowance, second, 'Browser never extends allowance beyond observed coverage');
-  const point = fallback.find(point => point.y === 12);
-  const text = historyTooltipLabel({ dataset: { key: 'ev2_current_fallback', label: 'Charger 2 fallback', unit: 'A' }, parsed: point, raw: point });
-  assert.match(text, /fallback cap.*not measured draw or charging permission.*decision time.*received/);
+  const point = second.find(point => point.mode === 'fallback' && point.y === 12);
+  const text = historyTooltipLabel({ dataset: { key: 'ev2_current_allowance', label: 'Charger 2 allowance', unit: 'A' }, parsed: point, raw: point });
+  assert.match(text, /fallback allowance.*not measured draw or charging permission.*decision time.*received/);
   assert.doesNotMatch(text, /st-mq|source measured/i);
 });
 
-test('charging allowance styles remain stepped and unfilled, with purple dash-dot fallback and temperature context', () => {
+test('charging allowance styles remain stepped and unfilled with temperature context', () => {
   const view = selectedChartView({ view: 'charging_currents' });
   for (const interpolation of [true, false]) {
     const datasets = historyDatasets({}, view, view.defaults, defaultPalette, { interpolation });
     for (const key of view.leftSignals) {
       const row = datasets.find(row => row.key === key);
       assert.equal(row.stepped, true); assert.equal(row.fill, false); assert.equal(row.spanGaps, false); assert.equal(row.yAxisID, 'left');
-      assert.deepEqual(row.borderDash, key === 'ev2_current_fallback' ? [8, 3, 2, 3] : []);
+      assert.deepEqual(row.borderDash, []);
     }
-    assert.equal(datasets.find(row => row.key === 'ev2_current_fallback').borderColor, defaultPalette.learning);
     assert.notEqual(datasets.find(row => row.key === 'ev1_current_allowance').borderColor, datasets.find(row => row.key === 'ev2_current_allowance').borderColor);
     assert.equal(datasets.find(row => row.key === 'model_indoor_temperature').yAxisID, 'right');
   }
+});
+
+test('allowance bar classifies capacity independently of draw or native and vehicle restrictions', () => {
+  const capacity = { mode: 'limited', allowanceA: 12, measuredCurrentA: 5,
+    limiter: { reason: 'vehicle-current-limit', allowanceA: 5 } };
+  assert.equal(charger2AllowanceState({ ...capacity, reason: 'priority-allocation' }), 3);
+  assert.equal(charger2AllowanceState({ ...capacity, reason: 'fuse-limit' }), 4);
+  assert.equal(charger2AllowanceState({ ...capacity, mode: 'unrestricted', allowanceA: 16 }), 2);
+  assert.equal(charger2AllowanceState({ ...capacity, mode: 'fallback', allowanceA: 0, reason: 'priority-allocation' }), 5);
+  for (const reason of ['native-current-limit', 'vehicle-current-limit', 'allowance-reason-unavailable'])
+    assert.equal(charger2AllowanceState({ ...capacity, reason }), 0);
+  assert.equal(charger2AllowanceState({ mode: 'unknown', allowanceA: null }), 0);
+  assert.equal(charger2AllowanceState({ mode: 'inactive', allowanceA: null }), 1);
+});
+
+test('recorded allowance bar preserves reason changes at unchanged amperes and unknown gaps', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const history = new ChargingAllowanceHistory({ store, input: 'providers' });
+  const save = (offset, reason, mode = 'limited', allowanceA = 12) => history.observe({ chargerId: 'charger2',
+    association: 'b'.repeat(64), status: { ...status('charger2', mode, allowanceA, start + offset), reason,
+      limiter: { mode, allowanceA: allowanceA === null ? null : 5, loadAllowanceA: allowanceA,
+        reason: 'vehicle-current-limit', appliedCurrentA: 5, applicationStatus: 'confirmed' } } }, start + offset);
+  save(0, 'priority-allocation'); save(5000, 'priority-allocation');
+  save(10_000, 'fuse-limit'); save(15_000, 'fuse-limit');
+  save(20_000, 'vehicle-current-limit'); save(25_000, 'vehicle-current-limit');
+  save(30_000, 'hardware-restriction', 'unrestricted', 16); save(35_000, 'hardware-restriction', 'unrestricted', 16);
+  save(40_000, 'limiter-disabled', 'inactive', null); save(45_000, 'limiter-disabled', 'inactive', null);
+  const result = query(store);
+  const bars = result.shading.charger2Allowance.filter(row => row.start >= start && row.end <= start + 45_000);
+  assert.deepEqual(bars.map(row => [row.start - start, row.end - start, row.value]),
+    [[0, 10_000, 3], [10_000, 20_000, 4], [20_000, 30_000, 0], [30_000, 40_000, 2], [40_000, 45_000, 1]]);
+  assert(result.series.ev2_current_allowance.some(row => row.x === start + 20_000 && row.y === 12));
+  assert(bars.slice(0, 3).every(row => row.allowanceA === 12));
 });

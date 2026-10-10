@@ -59,8 +59,41 @@ test('an idle processing hold respects a tighter vehicle ceiling without confirm
   f.runtime.recordLimiterHistory();
   const row = f.store.observations({ signal: 'charger2_current_allowance' }).at(-1);
   assert.equal(row.value, 14);
+  assert.equal(row.raw.allowance.reason, 'fuse-limit', 'The recorded allowance keeps its property-load basis');
+  assert.equal(row.raw.allowance.limiter.allowanceA, 8);
+  assert.equal(row.raw.allowance.limiter.reason, 'vehicle-current-limit', 'The lower effective setting retains its independent restriction');
   assert.equal(row.raw.allowance.limiter.applicationStatus, 'blocked');
+
+  f.household.feedsSynchronized = false; f.advance(5000);
+  await controller.update({ enabled: true, plan: item.plan });
+  f.runtime.recordLimiterHistory();
+  const fallback = f.store.observations({ signal: 'charger2_current_allowance' }).at(-1);
+  assert.equal(fallback.value, 12);
+  assert.equal(fallback.raw.allowance.mode, 'fallback');
+  assert.equal(fallback.raw.allowance.reason, 'feed-unsynchronized');
+  assert.equal(fallback.raw.allowance.limiter.allowanceA, 8);
+  assert.equal(fallback.raw.allowance.limiter.reason, 'vehicle-current-limit');
   assert.equal(f.commands.length, commands);
+});
+
+test('allowance classification cannot borrow a reason from a stale or replaced limiter decision', async t => {
+  const f = await fixture(t);
+  await f.connect('charger2'); await f.priority('charger2'); await f.plan();
+  f.household.currentA = 2; f.advance(5000); await f.settle();
+  const control = f.runtime.chargers.charger2.controller.status();
+  assert.equal(f.runtime.allowanceStatus('charger2', control, f.now).reason, 'fuse-limit');
+  for (const invalid of [
+    { ...control, snapshot: { ...control.snapshot, generation: control.snapshot.generation + 1 } },
+    { ...control, snapshot: { ...control.snapshot, session: { ...control.snapshot.session,
+      sessionId: 'synthetic-replaced-session', connectedAt: f.now + 1 } } },
+    { ...control, limiter: { ...control.limiter, evaluatedAt: f.now - 30_001 } },
+    { ...control, limiter: { ...control.limiter, evaluatedAt: f.now + 1 } },
+  ]) {
+    const allowance = f.runtime.allowanceStatus('charger2', invalid, f.now);
+    assert.equal(allowance.mode, 'unknown');
+    assert.equal(allowance.allowanceA, null);
+    assert.equal(allowance.reason, 'limiter-unavailable');
+  }
 });
 
 for (const changed of ['generation', 'permission', 'physical-evidence'])

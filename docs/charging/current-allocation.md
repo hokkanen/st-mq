@@ -280,13 +280,29 @@ plots the highest property phase current at each timestamp and both charger
 allowances on the ampere axis, retaining temperature context on the right axis.
 Property current is derived from existing phase history; its reconstructed
 interval-average meaning remains explicit. Allowance lines use steps; Charger 2
-fallback is a separate purple dash-dot display series derived from the same
-nonnegative value and explicit mode. Missing or unknown periods remain gaps.
+includes fallback periods in its single allowance line, including zero. Neither
+line reports actual draw: a vehicle drawing 5 A can have a 16 A allowance.
+A time-aligned **Charger 2 allowance** bar identifies Full allowance, Priority
+constrained, Property load constrained, Fallback, Unknown and Inactive. Fallback
+takes precedence; otherwise the binding recorded allocation/headroom constraint
+defines the state. A lower native or vehicle setting does not replace the
+allowance's reason. A known allowance with an ambiguous recorded reason keeps
+its numeric line and an Unknown bar; no historical cause is invented.
+Unknown allowance periods remain gaps in the line.
+
+A second time-aligned **Property highest phase** bar identifies L1, L2 or L3
+using the same phase colours as Phase loading. It is calculated from the same
+original phase group and historical voltage segment as the maximum, before
+display reduction. Ties show the lowest numbered tied phase and name all tied
+phases in the details. Missing phase evidence leaves a gap. Both bars retain
+exact intervals within a bounded detail budget; omitted earlier detail is
+identified and can be inspected by zooming in.
 Charger 1's native session-check points remain available in **All series**.
 There is no Charger 2 session-check calculation or recording.
 
-The old Shelly-only bars are removed from electrical, phase-loading and individual
-charger charts. The [change-only recorder](../recording.md#charger-current-allowances)
+The two new bars belong to Charging currents. The old Shelly-only bars remain
+removed from electrical, phase-loading and individual charger charts.
+The [change-only recorder](../recording.md#charger-current-allowances)
 retains both chargers' allowance histories independently of charging-session
 report expiry. Charger 1 is recorded when its Easee connection is configured;
 Charger 2 uses its configured integration enablement. Neither history depends

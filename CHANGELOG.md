@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Charging currents keeps Charger 2 fallback periods in its allowance line and
+  adds a bar explaining full, priority-constrained, property-constrained and
+  fallback allowance. A second bar identifies the highest property phase using
+  the same L1/L2/L3 colours as Phase loading. Actual draw remains separate.
 - Large firewood and sensor corrections, history recovery, revert and restore
   publish their complete model in a worker. The controller adopts the committed
   model before queued updates resume; failed publication retains the previous

@@ -1,6 +1,7 @@
 import { recordedEnergyGroups } from '../storage/energy-history.js';
 import { createVoltageReader } from '../storage/voltage.js';
 import { voltageMetadata, voltageSegments } from './chart-voltage.js';
+import { propertyMaximum } from './chart-property-phase.js';
 export { recordedEnergyStart, recordedEnergyGroups } from '../storage/energy-history.js';
 
 const HOUR = 3_600_000;
@@ -8,7 +9,7 @@ const totalOnly = prefix => prefix === 'caravan';
 
 /** Original phase or total-energy intervals supply every history range. Drawing points
  * may be reduced in memory, but never determine energy or tariff comparisons. */
-export function addRecordedEnergy({store,range,now,input,envelopes,timing,voltageReader,queryContext,onProgress}) {
+export function addRecordedEnergy({store,range,now,input,envelopes,timing,voltageReader,queryContext,onProgress,propertyHighestPhase,propertySnapshot}) {
   voltageReader ??= createVoltageReader(store, { input, from: range.from, to: Math.min(range.to, now), now });
   const stats = {rows:0,intervals:0};
   const lastEnd = new Map();
@@ -60,9 +61,17 @@ export function addRecordedEnergy({store,range,now,input,envelopes,timing,voltag
         }
         // Reduce a complete original phase group before display decimation.
         // Independent phase envelopes can retain extrema from different times.
-        if (prefix === 'property') project('property_current_max', segment.start, segment.end,
-          currents.every(Number.isFinite) ? Math.max(...currents) : null,
-          { ...phaseMetadata, ...voltageMetadata(segment.estimate), equivalentCurrent: true, maximumPhase: true });
+        if (prefix === 'property') {
+          const maximum = propertyMaximum(currents);
+          if (propertySnapshot && maximum.currentA !== null && Number.isFinite(propertySnapshot.y)
+            && segment.start - propertySnapshot.x <= propertySnapshot.gap)
+            propertyHighestPhase?.add(propertySnapshot.x, segment.start, propertySnapshot.phases);
+          propertySnapshot = null;
+          project('property_current_max', segment.start, segment.end, maximum.currentA,
+            { ...phaseMetadata, ...voltageMetadata(segment.estimate), equivalentCurrent: true, maximumPhase: true,
+              phases: maximum.phases });
+          propertyHighestPhase?.add(segment.start, segment.end, maximum.phases);
+        }
       }
     for (let phase=0;phase<3;phase++) {
       const value = values[phase] ?? null;

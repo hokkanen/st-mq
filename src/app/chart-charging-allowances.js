@@ -1,22 +1,37 @@
 import { readChargingAllowanceHistory } from '../charging/allowance-history.js';
 
-export const CHARGING_ALLOWANCE_SERIES = Object.freeze(['ev1_current_allowance', 'ev2_current_allowance', 'ev2_current_fallback']);
-const normal = span => ['unrestricted', 'limited'].includes(span.mode);
+export const CHARGING_ALLOWANCE_SERIES = Object.freeze(['ev1_current_allowance', 'ev2_current_allowance']);
+const numeric = span => ['unrestricted', 'limited', 'fallback'].includes(span.mode);
+
+/** Classify recorded capacity, never draw or an independently tighter setting.
+ * Missing/ambiguous causes remain unknown even when the ampere value is known. */
+export function charger2AllowanceState(span) {
+  if (span.mode === 'inactive') return 1;
+  if (!numeric(span) || !Number.isFinite(span.allowanceA) || span.allowanceA < 0) return 0;
+  if (span.mode === 'fallback') return 5;
+  if (span.mode === 'unrestricted') return 2;
+  if (span.reason === 'priority-allocation') return 3;
+  if (span.reason === 'fuse-limit') return 4;
+  return 0;
+}
 
 /** The reader bounds exact decision spans. Keep their original boundaries
- * rather than averaging states or joining normal allowance across fallback.
+ * and fallback metadata while sharing one numeric allowance line per charger.
  * Equipment identifiers and native-setting diagnostics stay out of chart data. */
-export function addChargingAllowanceHistory({ store, range, now, input, envelopes, maxSpans }) {
+export function addChargingAllowanceHistory({ store, range, now, input, envelopes, shading, maxSpans }) {
   if (!CHARGING_ALLOWANCE_SERIES.some(signal => envelopes[signal])) return null;
   const history = readChargingAllowanceHistory({ store, range, now, input, maxSpans });
   const metadata = {};
-  for (const [id, signals] of [['charger1', ['ev1_current_allowance']], ['charger2', ['ev2_current_allowance', 'ev2_current_fallback']]]) {
+  if (shading) shading.charger2Allowance = { values: () => history.charger2.spans.map(span => ({
+    start: span.start, end: span.end, value: charger2AllowanceState(span), reason: span.reason, allowanceA: span.allowanceA,
+  })) };
+  for (const [id, signals] of [['charger1', ['ev1_current_allowance']], ['charger2', ['ev2_current_allowance']]]) {
     const record = history[id];
     metadata[id] = { records: record.spans.length, truncated: record.truncated };
     for (const signal of signals) {
       if (!envelopes[signal]) continue;
-      const points = [], fallback = signal.endsWith('_fallback');
-      const accepted = span => (fallback ? span?.mode === 'fallback' : span && normal(span))
+      const points = [];
+      const accepted = span => span && numeric(span)
         && Number.isFinite(span.allowanceA) && span.allowanceA >= 0;
       for (const [index, span] of record.spans.entries()) {
         const start = Math.max(range.from, span.start), end = Math.min(range.to, now, span.end);

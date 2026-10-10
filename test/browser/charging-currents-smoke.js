@@ -28,15 +28,20 @@ try {
   app = await start({ config, clock: () => now, installSignalHandlers: false });
   seedChartFixture(app.store, now);
   const recorder = new ChargingAllowanceHistory({ store: app.store, input: 'simulated' });
-  const states = [['unrestricted', 16], ['limited', 8], ['limited', 0], ['fallback', 12], ['fallback', 0], ['unknown', null]];
-  for (let at = now - 6 * 3600_000; at <= now; at += 20_000) {
-    const index = Math.min(5, Math.floor((at - now + 6 * 3600_000) / 3600_000));
+  const states = [
+    ['unrestricted', 16, 'hardware-restriction'], ['limited', 8, 'priority-allocation'], ['limited', 0, 'fuse-limit'],
+    ['fallback', 12, 'feed-unavailable'], ['fallback', 0, 'feed-unavailable'],
+    ['inactive', null, 'limiter-disabled'], ['unknown', null, 'allowance-unavailable'],
+  ];
+  for (let at = now - 7 * 3600_000; at <= now; at += 20_000) {
+    const index = Math.min(6, Math.floor((at - now + 7 * 3600_000) / 3600_000));
     for (const chargerId of ['charger1', 'charger2']) {
       if (chargerId === 'charger1' && at >= outage.from && at < outage.to) continue;
-      const [mode, allowanceA] = chargerId === 'charger1' ? index < 3 ? ['unrestricted', 16] : ['limited', 10.5] : states[index];
+      const [mode, allowanceA, reason] = chargerId === 'charger1'
+        ? index < 3 ? ['unrestricted', 16, 'equalizer-allowance'] : ['limited', 10.5, 'equalizer-allowance'] : states[index];
       recorder.observe({ chargerId, association: (chargerId === 'charger1' ? 'a' : 'b').repeat(64), status: {
         mode, allowanceA, maximumCurrentA: 16, reportedAllowanceA: null,
-        reason: mode === 'fallback' ? 'feed-unavailable' : 'property-headroom',
+        reason,
         source: chargerId === 'charger1' ? 'easee-equalizer' : 'st-mq-load-balancing',
         measuredAt: at, receivedAt: at, sourceTimes: [], sourceEpoch: null, limiter: null,
       } }, at);
@@ -123,14 +128,18 @@ try {
   })();` });
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
   await until("document.getElementById('history')?.dataset.view === 'charging_currents' && document.getElementById('history').dataset.ready === 'true'");
-  await until("window.currentCharts.some(row => row.series?.ev2_current_fallback?.some(point => point.y === 12))");
+  await until("window.currentCharts.some(row => row.series?.ev2_current_allowance?.some(point => point.y === 12 && point.mode === 'fallback'))");
   assert.equal(await evaluate("document.querySelector('[data-activity-key=shellyLimiter]') !== null"), false);
-  const payload = await evaluate("window.currentCharts.find(row => row.view === 'charging_currents' && row.series?.ev2_current_fallback?.some(point => point.y === 12))");
-  for (const key of ['property_current_max','ev1_current_allowance','ev2_current_allowance','ev2_current_fallback'])
+  assert.equal(await evaluate("document.querySelector('[data-chart-key=ev2_current_fallback]') !== null"), false);
+  const payload = await evaluate("window.currentCharts.find(row => row.view === 'charging_currents' && row.series?.ev2_current_allowance?.some(point => point.y === 12 && point.mode === 'fallback'))");
+  for (const key of ['property_current_max','ev1_current_allowance','ev2_current_allowance'])
     assert(payload.series[key].some(point => Number.isFinite(point.y)), `${key}: real chart response has recorded evidence`);
-  assert(payload.series.ev2_current_allowance.some(point => point.y === 0));
-  assert(payload.series.ev2_current_fallback.some(point => point.y === 0));
-  assert(payload.series.ev2_current_fallback.every(point => point.y === null || point.y >= 0));
+  assert.equal(Object.hasOwn(payload.series, 'ev2_current_fallback'), false);
+  assert(payload.series.ev2_current_allowance.some(point => point.y === 0 && point.mode === 'limited'));
+  assert(payload.series.ev2_current_allowance.some(point => point.y === 0 && point.mode === 'fallback'));
+  assert(payload.series.ev2_current_allowance.every(point => point.y === null || point.y >= 0));
+  assert.deepEqual([...new Set(payload.shading.charger2Allowance.map(span => span.value))].sort(), [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual([...new Set(payload.shading.propertyHighestPhase.map(span => span.value))].sort(), [1, 2, 3]);
   const firstAllowance = payload.series.ev1_current_allowance;
   assert(firstAllowance.some(point => point.y === 16));
   assert(firstAllowance.some(point => point.y === 10.5 && point.x < outage.from));
@@ -138,10 +147,8 @@ try {
   assert(firstAllowance.some(point => point.y === null && point.x >= outage.from && point.x < outage.to));
   assert(firstAllowance.filter(point => point.x >= outage.from && point.x < outage.to).every(point => point.y === null),
     'Charger 1 source outage cannot be bridged by its allowance');
-  for (const signal of ['ev2_current_allowance', 'ev2_current_fallback']) {
-    const missing = payload.series[signal].filter(point => point.x >= now - 3600_000);
-    assert(missing.length > 0 && missing.every(point => point.y === null), `${signal}: unknown source evidence remains a gap`);
-  }
+  const missing = payload.series.ev2_current_allowance.filter(point => point.x >= now - 2 * 3600_000);
+  assert(missing.length > 0 && missing.every(point => point.y === null), 'Unknown and inactive source evidence remains a gap');
   assert(!Object.keys(payload.series).some(key => key.includes('session')));
   assert(Object.hasOwn(payload.series, 'outdoor_temperature'));
   assert.equal(payload.limiterHistory, undefined);
@@ -160,12 +167,11 @@ try {
     await evaluate(`window.homeEnergyTheme.setTheme('${theme}'); document.querySelector('.history-panel').scrollIntoView({block:'center'}); true`);
     await settle();
     const style = await evaluate(`(() => {
-      const key='ev2_current_fallback', swatch=document.querySelector('[data-chart-key='+key+'] .chart-legend-swatch');
-      const context=document.createElement('canvas').getContext('2d'); context.strokeStyle=getComputedStyle(swatch).color;
-      const matching=window.currentStrokes.filter(row=>row.color===context.strokeStyle);
-      context.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--chart-learning').trim();
-      return {pattern:swatch.dataset.pattern,color:getComputedStyle(swatch).color,purple:context.strokeStyle,
-        stroke:matching.some(row=>JSON.stringify(row.dash)==='[8,3,2,3]'),
+      const css=getComputedStyle(document.documentElement);
+      const normalize=value=> { const ctx=document.createElement('canvas').getContext('2d'); ctx.fillStyle=value; return ctx.fillStyle; };
+      const phases=document.querySelector('[data-activity-key=propertyHighestPhase]');
+      const allowance=document.querySelector('[data-activity-key=charger2Allowance]');
+      return {
         ordinary:['property_current_max','ev1_current_allowance','ev2_current_allowance'].map(key=> {
           const item=document.querySelector('[data-chart-key='+key+'] .chart-legend-swatch');
           const line=document.createElement('canvas').getContext('2d'); line.strokeStyle=getComputedStyle(item).color;
@@ -173,14 +179,28 @@ try {
             stroke:window.currentStrokes.some(row=>row.color===line.strokeStyle&&row.dash.length===0)};
         }),
         temperature:document.querySelector('[data-chart-key=outdoor_temperature]').dataset.axis,
-        colorMatch:matching.some(row=>row.color===context.strokeStyle)};
+        phaseColors:[...phases.querySelectorAll('.mode-segment')].every(item=>
+          normalize(item.style.backgroundColor)===normalize(css.getPropertyValue('--chart-phase-'+item.dataset.value).trim()) && item.style.opacity==='1'),
+        phaseLabels:[...phases.querySelectorAll('.mode-segment')].every(item=>item.getAttribute('aria-label').startsWith('L'+item.dataset.value)),
+        allowanceColors:[...allowance.querySelectorAll('.mode-segment[data-value="5"]')].every(item=>
+          normalize(item.style.backgroundColor)===normalize(css.getPropertyValue('--chart-learning').trim())),
+        allowanceStates:[...new Set([...allowance.querySelectorAll('.mode-segment')].map(item=>Number(item.dataset.value)))].sort(),
+        fallbackZero:[...allowance.querySelectorAll('.mode-segment')].some(item=>item.getAttribute('aria-label').includes('Fallback · 0 A allowance')),
+        visible:!phases.hidden && !allowance.hidden,
+        aligned:Math.abs(phases.querySelector('.mode-track').getBoundingClientRect().left-allowance.querySelector('.mode-track').getBoundingClientRect().left)<1,
+      };
     })()`);
-    assert.equal(style.pattern, 'dash-dot'); assert.equal(style.stroke, true, `${theme} ${width}: fallback is drawn dash-dot`);
-    assert.equal(style.colorMatch, true, `${theme} ${width}: fallback uses theme purple`);
     assert.deepEqual(style.ordinary.map(row => row.pattern), ['solid','solid','solid']);
     assert(style.ordinary.every(row => row.stroke), `${theme} ${width}: property and both allowance lines are drawn`);
     assert.equal(new Set(style.ordinary.map(row => row.color)).size, 3, 'Both chargers and property have distinct line colors');
     assert.equal(style.temperature, 'right');
+    assert.equal(style.visible, true, `${theme} ${width}: both categorical bars are visible by default`);
+    assert.equal(style.aligned, true, `${theme} ${width}: bars share their time axis`);
+    assert.equal(style.phaseColors, true, `${theme} ${width}: highest phase uses exact phase-chart colours`);
+    assert.equal(style.phaseLabels, true, `${theme} ${width}: highest phase has textual labels`);
+    assert.equal(style.allowanceColors, true, `${theme} ${width}: fallback bar uses theme purple`);
+    assert.deepEqual(style.allowanceStates, [0, 1, 2, 3, 4, 5]);
+    assert.equal(style.fallbackZero, true, `${theme} ${width}: zero fallback remains explicitly labelled`);
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${theme} ${width}px fits`);
     assert.equal(await evaluate("document.querySelector('[data-activity-key=shellyLimiter]') !== null"), false);
     const shot=await send('Page.captureScreenshot',{format:'png'});
@@ -197,7 +217,7 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-chart-key=ev1_current_allowance]').getAttribute('aria-pressed')"), 'true');
   assert.equal(await evaluate("document.querySelector('[data-chart-key=ev2_current_allowance]').getAttribute('aria-pressed')"), 'true');
   assert.deepEqual(errors, []);
-  console.log(`Charging currents browser checks passed: native and controller allowances, zero and fallback zero, purple dash-dot canvas strokes, temperature context, retired strips absent, C1 All series session check, 320/390/1440px dark and light. Synthetic screenshots: ${artifacts}`);
+  console.log(`Charging currents browser checks passed: unified native and controller allowance lines, zero and fallback zero, allowance-basis and phase bars, exact phase colours, temperature context, retired strips absent, C1 All series session check, 320/390/1440px dark and light. Synthetic screenshots: ${artifacts}`);
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   await app?.close();

@@ -636,8 +636,9 @@ run by the installation user.
 The charging-currents browser suite seeds actual allowance observations and
 compact coverage in a fresh synthetic database, then reads them through the
 chart API. It checks the property maximum, both chargers' allowance lines,
-separate purple dash-dot fallback including zero, missing coverage, unchanged
-right-axis meaning and removal of old load-balancing strips. The runtime allowance
+fallback including zero within Charger 2's allowance line, both allowance-basis
+and highest-phase bars, matching phase colours, missing coverage, unchanged
+right-axis meaning and removal of the separate fallback series. The runtime allowance
 regression also runs both production charger adapters with synthetic devices,
 records Charger 1 with Automatic off and verifies both histories reach the chart.
 It covers native zero, unknown evidence and replica/configuration fencing.

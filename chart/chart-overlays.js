@@ -52,6 +52,37 @@ export const activityTracks = Object.freeze([
     missingLabel: 'No model burn window at this time; stored heat may still be released',
     legend: [{ label: 'Model burn window', color: 'fireplace' },
       { label: 'No interval', color: 'muted', pattern: 'blank', description: 'No model burn window at this time; this does not rule out stored heat.' }] },
+  { key: 'propertyHighestPhase', label: 'Property highest phase', color: 'property',
+    detail: 'Phase represented by the property highest-phase current line, using the same colours as the phase chart. Ties use the lowest phase number; inspection lists every tied phase. Missing phase evidence stays blank.',
+    missingLabel: 'Unknown highest phase; complete phase evidence is unavailable',
+    values: { 1: 'L1', 2: 'L2', 3: 'L3' },
+    colors: { 1: 'phase1', 2: 'phase2', 3: 'phase3' }, opacities: { 1: 1, 2: 1, 3: 1 },
+    valueLabel: interval => Array.isArray(interval.phases) && interval.phases.length > 1
+      ? `${interval.phases.map(phase => `L${phase}`).join(' / ')} tied · L${interval.value} shown`
+      : `L${interval.value}`,
+    legend: [
+      { label: 'L1', color: 'phase1', opacity: 1 },
+      { label: 'L2', color: 'phase2', opacity: 1 },
+      { label: 'L3', color: 'phase3', opacity: 1 },
+      { label: 'Unknown', color: 'muted', pattern: 'blank', description: 'Complete phase evidence is unavailable.' },
+    ] },
+  { key: 'charger2Allowance', label: 'Charger 2 allowance basis', color: 'outdoor',
+    detail: 'Why Charger 2 has its recorded available current allowance. Fallback periods remain in the allowance line. Actual draw, a lower charger or vehicle setting, and permission to charge are separate. Unknown means the allowance basis cannot be established.',
+    missingLabel: 'Unknown allowance basis; no recorded evidence at this time',
+    values: { 0: 'Unknown', 1: 'Inactive', 2: 'Full allowance', 3: 'Priority constrained', 4: 'Property load constrained', 5: 'Fallback' },
+    colors: { 0: 'muted', 1: 'muted', 2: 'indoor', 3: 'outdoor', 4: 'property', 5: 'learning' },
+    patterns: { 0: 'unknown' }, opacities: { 1: .28 },
+    showValueCode: false,
+    intervalDetail: interval => [Number.isFinite(interval.allowanceA) ? `${Number(interval.allowanceA.toFixed(2))} A allowance` : '',
+      interval.reason ? interval.reason.replaceAll('-', ' ') : ''].filter(Boolean).join(' · '),
+    legend: [
+      { label: 'Full allowance', color: 'indoor', description: 'The full configured current allowance is available.' },
+      { label: 'Priority constrained', color: 'outdoor', description: 'Shared charger allocation reduces the allowance.' },
+      { label: 'Property load constrained', color: 'property', description: 'Household demand reduces the allowance.' },
+      { label: 'Fallback', color: 'learning', description: 'The configured fallback applies because required evidence is unusable; known tighter limits still apply.' },
+      { label: 'Inactive', color: 'muted', opacity: .28, description: 'Current adjustment is disabled.' },
+      { label: 'Unknown', color: 'muted', pattern: 'unknown', description: 'The allowance basis is unavailable or ambiguous; missing periods are blank.' },
+    ] },
 ]);
 
 /** Scalar display envelopes are not occupancy summaries. Retain missing breaks
@@ -93,8 +124,11 @@ export function activityIntervals(descriptor, payload) {
 }
 
 export function activityIntervalLabel(descriptor, interval) {
-  const state = Number.isFinite(interval.value)
-    ? descriptor.values?.[interval.value] ? `${descriptor.values[interval.value]} (${interval.value})` : `Value ${interval.value}` : descriptor.label;
+  const value = descriptor.valueLabel?.(interval) ?? descriptor.values?.[interval.value];
+  const detail = descriptor.intervalDetail?.(interval);
+  const state = (Number.isFinite(interval.value) ? value
+    ? `${value}${descriptor.showValueCode === false || descriptor.valueLabel ? '' : ` (${interval.value})`}`
+    : `Value ${interval.value}` : descriptor.label) + (detail ? ` · ${detail}` : '');
   if (interval.pointOnly) return `${state} · ${dateTime.format(interval.start)} · recorded sample; duration unknown`;
   const occupancy = interval.aggregated ? ` · ${Math.round(Math.min(1, Math.max(0, interval.fraction ?? 0)) * 100)}% of this display interval` : '';
   const sample = interval.sampled ? ' · between displayed samples; intermediate changes may be omitted' : '';
@@ -303,7 +337,7 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
         item.style.backgroundColor = descriptor.colors?.[interval.value] ? palette[descriptor.colors[interval.value]]
           : Number.isFinite(interval.value) && interval.value === 0 ? palette.muted : palette[descriptor.color ?? descriptor.key] ?? palette.muted;
         item.title = `${activityIntervalLabel(descriptor, interval)}\n${descriptor.detail}`;
-        item.setAttribute('aria-label', item.title); track.append(item);
+        item.setAttribute('role', 'img'); item.setAttribute('aria-label', item.title); track.append(item);
       }
       if (!track.children.length) {
         const empty = document.createElement('span'); empty.className = 'activity-empty'; empty.textContent = 'No intervals';
