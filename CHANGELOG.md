@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Recording details adds a folded Storage performance view with memory-only
+  summaries for the past day or week. It separates queue delay, successful write
+  duration, contention, peak backlog and failed saves, and labels the observed
+  period. The summaries reset when storage reopens and add no database writes.
+
 - Charging saves changing evidence separately from accepted plans and control
   intent. Plans and their scenario context are stored once; replica reports read
   their existing history instead of repeatedly copying completed reports into

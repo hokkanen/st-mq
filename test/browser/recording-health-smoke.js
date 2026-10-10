@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createWriteHealthHistory } from '../../src/storage/write-health-history.js';
 
 const profile = mkdtempSync(join(tmpdir(), 'stmq-health-browser-'));
 const artifacts = mkdtempSync(join(tmpdir(), 'stmq-health-screenshots-'));
@@ -21,6 +22,28 @@ assert(headerStart >= 0 && mainStart > headerStart && controllersStart > mainSta
 assert(dashboardContext.includes('id="recording-status"'), 'Fixture includes the production recording status in its dashboard context');
 assert(recordingStart >= 0 && recording.endsWith('    '));
 const now = Date.parse('2026-10-07T12:00:00Z');
+// Build populated evidence through the production memory aggregator. The clock,
+// durations and failures are synthetic; no database or live service is opened.
+let fixtureElapsed = 0;
+const performanceRuntime = createWriteHealthHistory({ clock: () => now - 8 * 3600_000 + fixtureElapsed,
+  monotonic: () => fixtureElapsed });
+for (let index = 0; index < 12680; index++) {
+  fixtureElapsed = index * (8 * 3600_000 / 12680);
+  const priority = index % 24 === 0 ? 'control' : 'normal';
+  performanceRuntime.queue({ type: 'accepted' });
+  performanceRuntime.queue({ type: 'pending', pending: index % 3000 === 0 ? 9 : 1 });
+  if ([1000, 4000, 7000, 10000].includes(index)) {
+    performanceRuntime.queue({ type: 'waiting' });
+    fixtureElapsed += index === 1000 ? 600 : 300;
+    performanceRuntime.queue({ type: 'ready' });
+  }
+  performanceRuntime.queue({ type: 'completed', priority, delayMs: index % 5000 === 0 ? 612 : priority === 'control' ? 1.6 : 3.3 });
+  performanceRuntime.queue({ type: 'pending', pending: 0 });
+  if (index < 11320) performanceRuntime.transaction({ committed: true,
+    totalMs: index % 3000 === 0 ? 540 : 17.2, commitMs: index % 3000 === 0 ? 410 : 12.1 });
+}
+fixtureElapsed = 8 * 3600_000;
+const performanceHistory = performanceRuntime.status({ queued: 0, activeJobs: 0, oldestPendingMs: null });
 const measurement = (signal, streamId, extra = {}) => ({ signal, streamId, source: 'simulation',
   unit: 'degC', policy: 'adaptive-value', observedThisRun: true, lastPollAt: now - 10000,
   lastSourceTime: now - 12000, lastSavedAt: now - 60000, threshold: .15,
@@ -32,7 +55,7 @@ const status = { recordingHealth: { version: 2, checkedAt: now, scope: 'live',
   disk: { state: 'critical', totalBytes: 128e9, freeBytes: 2.1e9, checkedAt: now,
     detail: 'Free space is critically low. Recordings and backup copies share this filesystem.' },
   recording: { state: 'write-failed', lastSourceCheckAt: now - 180000, lastFailureAt: now - 60000,
-    detail: 'The last write failed. New observations may not have been recorded.' },
+    detail: 'The last write failed. New observations may not have been recorded.', history: performanceHistory },
   backup: { state: 'available', latestAt: now - 2 * 86400_000, latestKind: 'saved-copy', latestVerifiedAt: null,
     detail: 'A saved copy is listed on this computer. Keep an independent copy on separate storage.' },
   attention: [{ id: 'disk-space', severity: 'critical', title: 'Disk space is critically low', detail: 'Only 2.1 GB is available on this computer.' },
@@ -85,11 +108,37 @@ window.setScenario = state => {
   const health = structuredClone(initialHealth);
   if(state !== 'critical') {
     health.recording = {state:state === 'sources' ? 'source-unavailable' : 'ok', lastSourceCheckAt:${now},
-      detail:state === 'sources' ? 'Check source connections.' : 'Source monitoring is active.'};
+      detail:state === 'sources' ? 'Check source connections.' : 'Source monitoring is active.', history: structuredClone(initialHealth.recording.history)};
     health.disk = {state:'ok', totalBytes:128e9, freeBytes:80e9, checkedAt:${now}, detail:'Local disk space is available.'};
     health.attention = state === 'sources' ? [{id:'recording', severity:'warning', title:'Recording sources are unavailable', detail:'Check source connections.'}] : [];
   }
   payload.recordingHealth = health;
+  panel.update(payload);
+};
+window.setPerformance = state => {
+  setScenario('healthy');
+  const health = payload.recordingHealth, history = health.recording.history;
+  if(state === 'busy') {
+    history.current = {pending:6, oldestPendingMs:850, waitingMs:600, activeJobs:1};
+    for(const window of Object.values(history.windows)) window.contention.active=true;
+    health.recording.state='write-waiting';
+    health.attention=[{id:'recording',severity:'warning',title:'Waiting for storage',detail:'Observations are waiting to be saved.'}];
+  }
+  if(state === 'failed') for(const window of Object.values(history.windows)) {
+    window.failedWrites=2; window.queueRejected=1; window.failedJobs=2; window.postCommitFailures=1;
+  }
+  if(state === 'empty' || state === 'reset') {
+    history.startedAt=${now}; history.elapsedMs=state === 'reset' ? 0 : 5000;
+    for(const window of Object.values(history.windows)) {
+      window.coveredMs=history.elapsedMs;
+      window.monitoredMs=history.elapsedMs;
+      for(const metric of ['queueDelay','controlQueueDelay','normalQueueDelay','transactionDuration','commitDuration'])
+        window[metric]={count:0,meanMs:null,p95Ms:null,maxMs:null};
+      window.contention={episodes:0,totalMs:0,maxMs:0,active:false};
+      for(const metric of ['peakPending','failedWrites','queueRejected','cancelledJobs','failedJobs','postCommitFailures','transactionAttempts','committedTransactions']) window[metric]=0;
+    }
+  }
+  if(state === 'snapshot') { health.scope='snapshot'; health.recording={state:'read-only',history:null}; }
   panel.update(payload);
 };
 window.failRefresh = false; window.failInventory = false; window.requestCount = 0;
@@ -138,6 +187,7 @@ function addModule(path) {
   }
 }
 addModule('/chart/recording.js');
+addModule('/chart/storage-health.js');
 const server = createServer((request, response) => {
   const path = new URL(request.url, 'http://fixture').pathname, asset = assets.get(path);
   response.writeHead(asset || path === '/' ? 200 : 404, { 'Content-Type': asset?.[0] ?? 'text/html; charset=utf-8' });
@@ -186,7 +236,7 @@ try {
   };
   const checkLayout = async label => {
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${label}: page fits`);
-    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-dataset')).filter(node => {
+    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-dataset, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-facts')).filter(node => {
       if(!node.checkVisibility()) return false;
       const b = node.getBoundingClientRect(); return b.width <= 0 || b.left < 0 || b.right > innerWidth + 1 || node.scrollWidth > node.clientWidth + 1;
     }).map(node => ({id: node.id || node.className, left:node.getBoundingClientRect().left, right:node.getBoundingClientRect().right,
@@ -274,8 +324,44 @@ try {
       await settle(); await checkLayout(`${width}/${theme}/adaptive`); await capture(`adaptive-${width}-${theme}`);
       await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=true)");
       await settle(); await checkLayout(`${width}/${theme}/expanded`); await capture(`expanded-${width}-${theme}`);
+      await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=false); document.getElementById('recording-performance-details').open=true; setPerformance('healthy')");
+      await settle(); await checkLayout(`${width}/${theme}/performance`); await capture(`performance-${width}-${theme}`);
+      for(const state of ['busy','failed','empty','reset','snapshot']) {
+        await evaluate(`setPerformance('${state}')`); await settle();
+        await checkLayout(`${width}/${theme}/performance-${state}`); await capture(`performance-${state}-${width}-${theme}`);
+      }
+      await evaluate("setScenario('critical')");
     }
   }
+  await evaluate("setPerformance('healthy'); document.getElementById('recording-details').open=true; document.getElementById('recording-performance-details').open=true; window.beforePerformanceRequests=requestCount; document.getElementById('recording-performance-week').click(); document.getElementById('recording-performance-week').focus(); panel.update(payload)");
+  assert.equal(await evaluate("document.getElementById('recording-performance-week').getAttribute('aria-pressed')"), 'true', 'Period choice survives status updates');
+  assert.match(await evaluate("document.getElementById('recording-performance-coverage').textContent"), /Past week.*8 h monitored.*partial run/);
+  assert.equal(await evaluate('requestCount'), await evaluate('beforePerformanceRequests'), 'Window selection makes no extra request');
+  assert.equal(await evaluate("document.activeElement === document.getElementById('recording-performance-week') && document.getElementById('recording-performance-details').open"), true, 'Performance polling preserves focus and disclosure');
+  assert.match(await evaluate("document.getElementById('recording-performance-current').textContent"), /^No queued operations$/);
+  await evaluate("setPerformance('busy')");
+  assert.match(await evaluate("document.getElementById('recording-performance-current').textContent"), /6 queued.*oldest 850 ms.*1 running/);
+  assert.match(await evaluate("document.getElementById('recording-performance-waiting').textContent"), /writer lock.*600 ms so far/);
+  assert.match(await evaluate("document.getElementById('recording-performance-contentionDetail').textContent"), /active wait/);
+  await evaluate("setPerformance('failed')");
+  assert.equal(await evaluate("document.getElementById('recording-performance-failed').textContent"), '2');
+  assert.equal(await evaluate("document.getElementById('recording-performance-rejected').textContent"), '1');
+  await evaluate("failRefresh=true; panel.refresh()");
+  assert.match(await evaluate("document.getElementById('recording-performance-notice').textContent"), /Refresh failed.*last known/);
+  assert.equal(await evaluate("document.getElementById('recording-performance-failed').textContent"), '2');
+  assert.equal(await evaluate("document.getElementById('recording-performance-week').getAttribute('aria-pressed')"), 'true');
+  await capture('performance-stale-1440-dark');
+  await evaluate("failRefresh=false; setPerformance('empty')");
+  assert.equal(await evaluate("document.getElementById('recording-performance-queue-mean').textContent"), 'No samples');
+  assert.equal(await evaluate("document.getElementById('recording-performance-failed').textContent"), '0', 'Zero is observed only in covered time');
+  await evaluate("setPerformance('reset')");
+  assert.equal(await evaluate("document.getElementById('recording-performance-failed').textContent"), 'Not monitored');
+  assert.match(await evaluate("document.getElementById('recording-performance-coverage').textContent"), /0 ms monitored.*partial run/);
+  await evaluate("setPerformance('snapshot')");
+  assert.equal(await evaluate("document.getElementById('recording-performance-data').hidden"), true);
+  assert.match(await evaluate("document.getElementById('recording-performance-notice').textContent"), /memory.*not included.*snapshot/);
+  assert.equal(await evaluate("document.activeElement === document.querySelector('#recording-performance-details > summary')"), true, 'Changing to a snapshot retains a keyboard focus target');
+  await evaluate("setScenario('critical'); document.querySelectorAll('#recording-details details').forEach(node=>node.open=true)");
   await evaluate("document.getElementById('recording-status-disk').click()");
   assert.equal(await evaluate("document.getElementById('recording-disk-card').open && document.activeElement === document.querySelector('#recording-disk-card > summary')"), true,
     'Storage summary opens and focuses disk details');
@@ -291,6 +377,8 @@ try {
   await evaluate('panel.update(payload)');
   assert.equal(await evaluate("document.getElementById('recording-status').hidden"), true,
     'Routine successful updates do not restart the startup presentation');
+  await evaluate("setPerformance('failed')");
+  assert.equal(await evaluate("document.getElementById('recording-status').hidden"), true, 'Historical performance counts do not create a new permanent banner');
   await evaluate("setScenario('sources')");
   assert.equal(await evaluate("document.getElementById('recording-status').hidden"), false, 'A new warning remains visible after startup');
   await evaluate("document.querySelector('#recording-status-issues [data-recording-open=recording-recording-card]').focus(); setScenario('healthy')");
@@ -376,7 +464,7 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-status').checkVisibility()"), false);
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.history-panel')).display"), 'none');
   assert.deepEqual(errors, []);
-  console.log(`Recording details browser smoke passed: 320/390/768/1440, light/dark, dashboard spacing, startup/source/critical states, startup expiry and recovery, collapsed/storage/adaptive/all-open layouts, production tables, disclosure and focus preservation, targeted navigation, inventory and health failures, stale health, snapshot, auth fallback and logout fencing. Screenshots: ${artifacts}`);
+  console.log(`Recording details browser smoke passed: 320/390/768/1440, light/dark, dashboard spacing, startup/source/critical states, startup expiry and recovery, collapsed/storage/adaptive/all-open layouts, memory performance populated/busy/failed/empty/reset/snapshot, local period choice, production tables, disclosure and focus preservation, targeted navigation, inventory and health failures, stale health, snapshot, auth fallback and logout fencing. Screenshots: ${artifacts}`);
 } finally {
   socket?.close(); browser?.kill('SIGTERM');
   await new Promise(resolve => server.close(resolve));

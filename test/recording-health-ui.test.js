@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRecordingHealth, recordingHealthView, storageBytes } from '../chart/recording-health.js';
+import { storagePerformanceView, storageDuration } from '../chart/storage-health.js';
 
 const now = Date.parse('2026-10-07T12:00:00Z');
 const health = (overrides = {}) => ({ version: 2, checkedAt: now, scope: 'live',
@@ -215,9 +216,13 @@ test('annualized database growth names its settling period and does not claim a 
 function panelFixture(request = async () => health()) {
   const elements = new Map();
   function node() {
+    const listeners = new Map(), attributes = new Map();
     return {
       textContent: '', dataset: {}, hidden: false, children: [],
-      style: { setProperty() {} }, setAttribute() {}, addEventListener() {},
+      style: { setProperty() {} }, setAttribute(name, value) { attributes.set(name, value); },
+      getAttribute(name) { return attributes.get(name); },
+      addEventListener(name, callback) { listeners.set(name, callback); },
+      click() { listeners.get('click')?.({ button: 0, preventDefault() {} }); },
       get firstElementChild() { return this.children[0]; },
       contains(child) { return child === this || this.children.some(item => item.contains(child)); },
       append(...children) { for (const child of children) this.insertBefore(child, null); },
@@ -241,6 +246,110 @@ function panelFixture(request = async () => health()) {
     panel: createRecordingHealth({ document, request, now: () => at,
       setTimer(callback) { expire = callback; return 1; }, clearTimer() { expire = undefined; } }) };
 }
+
+function performanceHistory(overrides = {}) {
+  const timing = { count: 820, meanMs: 8.5, p95Ms: 20, maxMs: 540 };
+  const day = { requestedMs: 86400_000, monitoredMs: 6 * 3600_000, coveredMs: 6 * 3600_000, complete: false,
+    queueDelay: timing, transactionDuration: { ...timing, count: 640, meanMs: 18, maxMs: 780 },
+    commitDuration: { ...timing, count: 640, meanMs: 12, maxMs: 520 },
+    controlQueueDelay: { ...timing, count: 60 }, normalQueueDelay: { ...timing, count: 760 },
+    contention: { episodes: 3, totalMs: 925, maxMs: 600, active: false },
+    peakPending: 8, failedWrites: 0, queueRejected: 0, committedTransactions: 640,
+    transactionAttempts: 645, failedJobs: 1, cancelledJobs: 2, postCommitFailures: 1 };
+  return { version: 1, retentionMs: 7 * 86400_000, resolutionMs: 300_000,
+    startedAt: now - 6 * 3600_000, checkedAt: now, elapsedMs: 6 * 3600_000,
+    current: { pending: 0, oldestPendingMs: null, waitingMs: null, activeJobs: 0 },
+    windows: { day, week: { ...day, requestedMs: 7 * 86400_000, failedWrites: 2, peakPending: 18 } }, ...overrides };
+}
+
+test('storage performance names run coverage and separates queue, transaction, commit and unsuccessful operations', () => {
+  const value = health({ recording: { history: performanceHistory() } });
+  const view = storagePerformanceView(value, 'day', { now });
+  assert.match(view.coverage, /Past day.*6 h monitored.*partial run/);
+  assert.match(view.scope, /This storage run started.*Earlier time is not monitored/);
+  assert.equal(view.current, 'No queued operations');
+  assert.equal(view.queue.mean, '8.5 ms');
+  assert.equal(view.queue.p95, '20 ms');
+  assert.equal(view.queue.worst, '540 ms');
+  assert.equal(view.transaction.worst, '780 ms');
+  assert.equal(view.commit.worst, '520 ms');
+  assert.equal(view.queue.samples, '820 completed queued operations');
+  assert.equal(view.transaction.samples, '640 committed transactions');
+  assert.equal(view.contention, '3');
+  assert.equal(view.contentionDetail, '925 ms total · 600 ms worst');
+  assert.equal(view.failed, '0');
+  assert.equal(view.postCommit, '1');
+  assert.equal(storagePerformanceView(value, 'week', { now }).failed, '2');
+  value.recording.history.current.waitingMs = 0;
+  assert.equal(storagePerformanceView(value, 'day', { now }).waiting, 'Waiting for the writer lock · 0 ms so far');
+  assert.equal(storageDuration(0), '0 ms');
+  assert.equal(storageDuration(null), 'Unknown');
+});
+
+test('storage performance absence, zero samples, zero coverage and unsupported scope do not become healthy history', () => {
+  const history = performanceHistory();
+  const value = health({ recording: { history } });
+  history.windows.day.coveredMs = 0;
+  history.windows.day.monitoredMs = 0;
+  history.windows.day.queueDelay = { count: 0, meanMs: null, p95Ms: null, maxMs: null };
+  let view = storagePerformanceView(value, 'day', { now });
+  assert.equal(view.queue.mean, 'No samples');
+  assert.equal(view.failed, 'Not monitored');
+  assert.match(view.coverage, /0 ms monitored.*partial run/);
+  history.windows.day.queueDelay = undefined;
+  view = storagePerformanceView(value, 'day', { now });
+  assert.equal(view.queue.mean, 'Unknown');
+  assert.equal(view.queue.samples, 'Sample count unknown');
+  for (const invalid of [undefined, null, { version: 0 }, { version: 1 }]) {
+    assert.equal(storagePerformanceView(health({ recording: { history: invalid } }), 'day', { now }).available, false);
+  }
+  for (const scope of ['snapshot', 'history']) {
+    view = storagePerformanceView(health({ scope, recording: { history } }), 'day', { now });
+    assert.equal(view.available, false);
+    assert.match(view.notice, scope === 'snapshot' ? /live controller.*memory.*not included.*snapshot/ : /not monitored.*history viewer/);
+  }
+  assert.doesNotThrow(() => storagePerformanceView(health({ recording: { history: performanceHistory({ startedAt: Number.MAX_VALUE }) } }), 'day', { now }));
+});
+
+test('mature rolling storage coverage distinguishes a summarized boundary from an unmonitored pre-run period', () => {
+  const history = performanceHistory({ elapsedMs: 3 * 86400_000 });
+  history.windows.day.monitoredMs = 86400_000;
+  history.windows.day.coveredMs = 86400_000 - 240_000;
+  const view = storagePerformanceView(health({ recording: { history } }), 'day', { now });
+  assert.equal(view.coverage, 'Past day · 24 h monitored');
+  assert.equal(view.precision, '23 h 56 min summarized. The oldest partial five-minute interval is excluded.');
+  assert.doesNotMatch(view.scope, /Earlier time is not monitored/);
+  history.windows.week.monitoredMs = 7 * 86400_000;
+  history.windows.week.coveredMs = 7 * 86400_000 - 240_000;
+  const week = storagePerformanceView(health({ recording: { history } }), 'week', { now });
+  assert.equal(week.coverage, 'Past week · 7 d monitored');
+  assert.equal(week.precision, '6 d 23 h 56 min summarized. The oldest partial five-minute interval is excluded.');
+});
+
+test('storage performance period stays local across polling and failed refresh while restart replaces history and logout clears it', async () => {
+  const view = panelFixture(async () => { throw Error('Private fixture failure'); });
+  const value = health({ recording: { history: performanceHistory() } });
+  view.panel.update({ recordingHealth: value });
+  view.element('recording-performance-week').click();
+  assert.equal(view.element('recording-performance-week').getAttribute('aria-pressed'), 'true');
+  assert.match(view.element('recording-performance-coverage').textContent, /Past week/);
+  assert.equal(view.element('recording-performance-failed').textContent, '2');
+  view.panel.update({ recordingHealth: value });
+  assert.equal(view.element('recording-performance-week').getAttribute('aria-pressed'), 'true');
+  await view.panel.refresh();
+  assert.match(view.element('recording-performance-notice').textContent, /Refresh failed.*last known/);
+  assert.match(view.element('recording-performance-current').textContent, /^Last known: No queued operations/);
+  assert.equal(view.element('recording-performance-failed').textContent, '2');
+  const reset = performanceHistory({ startedAt: now, elapsedMs: 0 });
+  reset.windows.week = { ...reset.windows.week, coveredMs: 0, monitoredMs: 0, failedWrites: 0, queueDelay: { count: 0 } };
+  view.panel.update({ recordingHealth: health({ recording: { history: reset } }) });
+  assert.equal(view.element('recording-performance-failed').textContent, 'Not monitored');
+  assert.equal(view.element('recording-performance-queue-mean').textContent, 'No samples');
+  assert.equal(view.element('recording-performance-week').getAttribute('aria-pressed'), 'true');
+  view.panel.clear();
+  assert.equal(view.element('recording-performance-data').hidden, true);
+  assert.equal(view.element('recording-performance-day').getAttribute('aria-pressed'), 'true');
+});
 
 test('control responses without health preserve dated warnings, failed-refresh state and retained inventory', async () => {
   const view = panelFixture(async () => { throw Error('Synthetic unavailable health'); });

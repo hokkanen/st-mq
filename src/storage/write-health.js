@@ -1,5 +1,7 @@
 // Runtime evidence must remain readable when the database cannot accept writes.
 // Never retain SQLite messages: they can contain private paths or input values.
+import { createWriteHealthHistory } from './write-health-history.js';
+
 export function storageFailureCode(error) {
   if (error?.code === 'STORAGE_QUEUE_FULL') return 'write-queue-full';
   if (error?.code === 'ENOSPC' || error?.code === 'EDQUOT') return 'disk-full';
@@ -9,8 +11,17 @@ export function storageFailureCode(error) {
     26: 'database-corrupt' })[code] ?? null;
 }
 
-export function createWriteHealth(clock = Date.now, queueStatus = null) {
+export function createWriteHealth(clock = Date.now, queueStatus = null, { monotonic = () => performance.now() } = {}) {
   const seen = new WeakSet();
+  const followupsSeen = new WeakSet();
+  const history = createWriteHealthHistory({ clock, monotonic });
+  function postCommitFailure(error) {
+    if (error && typeof error === 'object') {
+      if (followupsSeen.has(error)) return;
+      followupsSeen.add(error);
+    }
+    history.postCommitFailure();
+  }
   const state = { startedAt: clock(), lastWriteAt: null, lastFailureAt: null,
     errorCode: null, failures: 0, failing: false };
   const recent = [], limit = 128;
@@ -25,6 +36,7 @@ export function createWriteHealth(clock = Date.now, queueStatus = null) {
   return {
     success() { state.lastWriteAt = clock(); state.failing = false; },
     failure(error) {
+      if (error?.committed === true) { postCommitFailure(error); return; }
       const code = storageFailureCode(error);
       if (!code) return;
       if (error && typeof error === 'object') {
@@ -33,13 +45,20 @@ export function createWriteHealth(clock = Date.now, queueStatus = null) {
       }
       state.lastFailureAt = clock(); state.errorCode = code;
       state.failures++; state.failing = true;
+      history.failure(code);
     },
     transaction(value) {
       if (typeof value?.committed !== 'boolean'
         || ['beginMs', 'bodyMs', 'commitMs', 'totalMs'].some(key => !Number.isFinite(value[key]) || value[key] < 0)) return;
       transactionCount++; committedCount += Number(value.committed); lastTransactionAt = clock();
       recent.push({ ...value }); if (recent.length > limit) recent.shift();
+      history.transaction(value);
     },
-    status() { return { ...state, transactions: timings(), ...(queueStatus ? { queue: queueStatus() } : {}) }; },
+    queue(event) { history.queue(event); },
+    postCommitFailure,
+    status() {
+      const queue = queueStatus?.();
+      return { ...state, transactions: timings(), ...(queue ? { queue } : {}), history: history.status(queue) };
+    },
   };
 }

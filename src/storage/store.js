@@ -219,7 +219,7 @@ export class Store {
     this.path = path === ':memory:' ? path : resolve(path);
     this.readOnly = readOnly;
     this.writeQueue = new WriteQueue({ transaction: fn => this._transaction(fn, true),
-      onFailure: error => this.writeHealth.failure(error) });
+      onFailure: error => this.writeHealth.failure(error), onHealth: event => this.writeHealth.queue(event) });
     this.writeHealth = createWriteHealth(Date.now, () => this.writeQueue.status());
     if (path !== ':memory:') validateWalHeader(this.path);
     if (!readOnly && path !== ':memory:') mkdirSync(dirname(this.path), { recursive: true });
@@ -402,8 +402,12 @@ export class Store {
     }
     // Persistence succeeded. Never roll back, retry the body or strand a later
     // callback merely because a consumer failed after that durable boundary.
-    if (failures.length) throw Object.assign(new AggregateError(failures, 'A saved operation could not finish its follow-up.'),
-      { code: 'STORAGE_COMMIT_EFFECT_FAILED', committed: true });
+    if (failures.length) {
+      const error = Object.assign(new AggregateError(failures, 'A saved operation could not finish its follow-up.'),
+        { code: 'STORAGE_COMMIT_EFFECT_FAILED', committed: true });
+      try { this.writeHealth.postCommitFailure(error); } catch {}
+      throw error;
+    }
     return result;
   }
 

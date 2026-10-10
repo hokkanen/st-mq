@@ -149,10 +149,11 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
     const writes = store?.writeHealth?.status();
     const base = { pendingWrites: writes?.queue?.pending ?? 0, waitingSince: writes?.queue?.waitingSince ?? null,
       storageTimings: writes?.transactions ?? null,
+      history: writes?.history ?? null,
       lastSourceCheckAt: null, lastFailureAt: writes?.lastFailureAt ?? null, errorCode: writes?.errorCode ?? null };
     if (readOnly || store?.readOnly || current?.input === 'offline' || engine?.config?.input === 'offline') {
       recordingRun = null; recordingScopeSeen = true;
-      return { ...base, state: 'read-only', detail: 'This computer is showing recorded history. Live recording health must be checked on the active master.' };
+      return { ...base, history: null, state: 'read-only', detail: 'This computer is showing recorded history. Live recording health must be checked on the active master.' };
     }
     if (!recordingRun || recordingRun.engine !== engine || recordingRun.store !== store) {
       recordingRun = { engine, store, startedAt: recordingScopeSeen ? now : startedAt, usableSourceSeen: false };

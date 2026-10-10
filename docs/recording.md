@@ -1982,6 +1982,40 @@ call; it is not an isolated fsync measurement. Queue depth and `waitingSince`
 remain separate asynchronous-admission evidence. Slow successful writes do not
 prove corruption, and these timings do not grant device authority.
 
+### Storage performance
+
+Recording details includes a folded **Storage performance** view. It uses the
+existing authenticated health responses and updates with ordinary dashboard
+refreshes. Its summaries are held solely in memory for at most seven days;
+opening a new Store, including application restart, starts a new monitoring
+period. Nothing is saved to SQLite, a file, browser storage, backups or replicas.
+An earlier period is unavailable, not a period with zero failures. Snapshot and
+history viewers cannot report the active master's memory-only history.
+
+The past-day and past-week views distinguish the duration monitored in this run
+from the duration included in the summaries. The oldest partly overlapping
+five-minute bucket is omitted, so the summarized span can be up to five minutes
+shorter than the selected period. Bounded summaries supply averages,
+approximate 95th percentiles and worst
+durations. Queue delay measures how long successfully completed queued work
+waited before admission; writing measures successful committed transaction
+duration, including SQLite journal, checkpoint and filesystem work performed by
+that transaction. Commit time is part of writing, not an additional delay to add
+to it. Neither measures the complete delay of a physical device
+action or isolates an fsync. Live pending count, oldest queued work, contention
+episodes and time, and peak backlog describe pressure separately from successful
+write timings. Durations use a monotonic clock; wall times only date evidence.
+
+Recognized storage failures and queue-full rejections remain distinct from
+successful lock retries, intentional cancellation and stale-work rejection. A
+failure after a confirmed commit is a follow-up failure, not proof that the save
+was lost. These counters describe this Store's observed operations; they do not
+count every household reading, establish who held a competing writer lock, or
+prove missed equipment actions. Independent workers' transaction durations are
+outside this Store's timings, although their contention can delay its queue.
+Current recording and storage warnings retain their existing behavior. Reading
+the summaries never runs a database check or grants control authority.
+
 The web API accepts no destination path: authenticated `POST /api/database-export`
 with an empty JSON object saves in the configured server folder, and authenticated
 `GET /api/database-export` downloads a temporary snapshot. Temporary files are removed

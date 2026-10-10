@@ -1,3 +1,5 @@
+import { createStoragePerformance } from './storage-health.js';
+
 const finite = value => Number.isFinite(value) && value >= 0;
 const validTime = value => Number.isFinite(value) && value >= 0;
 const healthFreshnessMs = 3 * 60_000;
@@ -88,6 +90,7 @@ export function recordingHealthView(health, recording, now = Date.now()) {
 
 export function createRecordingHealth({ document, request, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout }) {
   const $ = id => document.getElementById(id);
+  const performance = createStoragePerformance({ document, now });
   let health, recording, inventory, inventoryPhase = 'idle', revision = 0, pending = false, unavailable = false;
   let introStarted = false, introVisible = false, introTimer;
   const issueNodes = new Map();
@@ -143,6 +146,7 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
   }
   function draw() {
     const view = recordingHealthView(health, recording, now());
+    performance.update(health, unavailable);
     const strip = $('recording-status'), dated = view.known && (view.outdated || view.clockMismatch || unavailable);
     const needsAttention = view.attention.length > 0 || dated;
     strip.hidden = !view.known || !(introVisible || needsAttention || !view.settled || strip.contains(document.activeElement));
@@ -269,6 +273,7 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
       ++revision; pending = false; unavailable = false; health = recording = inventory = undefined; inventoryPhase = 'idle';
       clearTimer(introTimer); introTimer = undefined; introStarted = introVisible = false;
       document.body.dataset.recordingHealth = 'false'; draw();
+      performance.clear();
     },
   };
 }

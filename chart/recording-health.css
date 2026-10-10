@@ -104,6 +104,54 @@
 .recording-storage-facts dt { color: var(--muted); }
 .recording-storage-facts dd { margin: 0; font-variant-numeric: tabular-nums; }
 .recording-storage-note { margin: 12px 0 0; font-size: 11px; line-height: 1.6; color: var(--muted); }
+.recording-performance { margin: 16px 0 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.recording-performance > .recording-section-body { padding-bottom: 16px; }
+.recording-performance-notice { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 0 0 12px; }
+.recording-performance-notice[data-tone="warning"] { color: var(--stale); }
+.recording-performance-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px 20px; margin-bottom: 12px; }
+.recording-performance-toolbar > div:first-child { min-width: 0; }
+.recording-performance-coverage { margin: 0; font-size: 12px; line-height: 1.5; font-weight: 550; }
+.recording-performance-period { display: flex; flex-shrink: 0; align-items: stretch; padding: 3px; gap: 3px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 7px; }
+.recording-performance-period > button { margin: 0; padding: 7px 10px; min-height: 34px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 500; white-space: nowrap; }
+.recording-performance-period > button[aria-pressed="true"] { background: var(--surface); color: var(--text); border-color: var(--border); }
+.recording-performance-period > button:hover { color: var(--accent); }
+.recording-performance-period > button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.recording-performance-current { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 12px 0 4px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+#recording-performance-waiting { color: var(--stale); }
+.recording-performance-timings { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; text-align: left; font-variant-numeric: tabular-nums; }
+.recording-performance-timings > .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.recording-performance-timings thead th { font-size: 11px; color: var(--muted); font-weight: 400; padding: 12px 8px 8px; }
+.recording-performance-timings th:first-child { width: 40%; padding-left: 0; }
+.recording-performance-timings th, .recording-performance-timings td { padding: 12px 8px; vertical-align: top; overflow-wrap: anywhere; border-bottom: 1px solid var(--border); }
+.recording-performance-timings td:last-child, .recording-performance-timings thead th:last-child { padding-right: 0; }
+.recording-performance-timings tbody th { font-weight: 550; }
+.recording-performance-timings small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.5; font-weight: 400; }
+.recording-performance-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 20px; margin: 18px 0; }
+.recording-performance-facts > div { min-width: 0; }
+.recording-performance-facts dt { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.recording-performance-facts dd { margin: 5px 0 0; font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.recording-performance-facts small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.5; }
+.recording-performance [data-tone="warning"] { color: var(--stale); }
+.recording-performance-explanation { margin: 0; }
+.recording-performance-explanation > summary { font-size: 11px; padding: 7px 0; }
+.recording-performance-explanation p { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 10px 0; max-width: 85ch; }
+.recording-performance-priority { margin-top: 14px; }
+.recording-performance-priority caption { font-size: 11px; font-weight: 550; text-align: left; margin-bottom: 4px; }
+@media (max-width: 800px) {
+  .recording-performance-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .recording-performance-toolbar { flex-direction: column; gap: 12px; }
+  .recording-performance-timings, .recording-performance-timings tbody { display: block; }
+  .recording-performance-timings thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .recording-performance-timings tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 13px 0; border-bottom: 1px solid var(--border); }
+  .recording-performance-timings th, .recording-performance-timings td { display: block; padding: 0; border: 0; }
+  .recording-performance-timings th:first-child { grid-column: 1 / -1; width: auto; }
+  .recording-performance-timings th small { margin-top: 3px; }
+  .recording-performance-timings td::before { display: block; content: attr(data-label); margin-bottom: 5px; font-size: 10px; color: var(--muted); }
+  .recording-performance-facts { gap: 16px; }
+  .recording-performance-facts dd { font-size: 18px; }
+}
 @media (max-width: 640px) {
   .recording-health-cards { grid-template-columns: 1fr; gap: 8px; }
   .recording-health-card > summary { min-height: 0; padding: 12px 32px 12px 12px; }
