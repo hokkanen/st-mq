@@ -32,6 +32,18 @@ Live learning and reconstruction must use the same ordered entry function.
 Checkpoints are replaceable caches with integrity digests and journal cursors;
 they are not the only source of model history.
 
+Ordinary controller updates retain one final model cache for their ordered
+learning work. Small caches can commit with the update; larger caches are saved
+in a worker only after the immutable learning inputs and control intent commit.
+The worker preserves the complete current checkpoint, validates its journal
+boundary and source selection, and never rewinds a valid cache of the same
+interpretation. A correct cache may lag the current journal head; restart replays that tail.
+One active save and one replacement candidate bound pending work. A failed cache
+save retains the previous cache and all committed inputs, reports reduced restart
+acceleration, and does not roll back an already committed controller update.
+Correction and recovery publication keep their separate exact-head and atomic
+source-selection checks.
+
 Preserve a consistent backup of the full SQLite database and the corresponding
 software version. The journal contains resolved learning inputs, configuration and
 seed information; fireplace and sensor-correction events preserve the selected

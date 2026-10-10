@@ -166,6 +166,8 @@ export function learningDisplay(learning = {}, context = {}) {
     coefficientEvidence.push(detail);
     coefficientEvidenceRows.push({ key: title, title, value, detail });
   };
+  if (learning.checkpointCache?.error) record('Model restart cache', 'Save needs attention',
+    'The latest model cache could not be saved. Recorded learning inputs remain available, and control continues with the current model. Restart may require more replay; a later model update retries the cache save.');
   if (finite(health.usableSamples)) record('Retained observations', `${health.usableSamples} intervals`, `${health.usableSamples} retained usable temperature intervals; ${health.acceptedFits ?? 0} accepted model updates and ${health.rejectedFits ?? 0} attempts without an accepted update. Interval counts describe the retained learning window, not lifetime sensor reports.`);
   if (health.phaseSamples) record('Control-phase coverage', 'Retained fitting window', `Retained intervals by control phase: ${Object.entries(health.phaseSamples).map(([phase, count]) => `${words(phase)} ${count}`).join(', ')}. These counts do not establish independent completed-cycle evidence.`);
   const horizon = finite(validation?.horizonHours) ? `${number(validation.horizonHours, 1)}${finite(validation.maximumHorizonHours) && validation.maximumHorizonHours !== validation.horizonHours ? `–${number(validation.maximumHorizonHours, 1)}` : ''} hours` : 'the saved forecast horizon';

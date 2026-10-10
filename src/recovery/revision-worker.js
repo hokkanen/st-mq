@@ -193,6 +193,8 @@ async function checkOtherInputs() {
 }
 
 async function invalidateAssessments() {
+  // Catch-up can revisit this scan while learning keeps advancing. Previously
+  // invalidated assessments need no further batch or yield in this generation.
   const earliest = db.prepare(`SELECT MIN(e.at) at FROM recovery_exclusions x
     JOIN learning_journal_entries e ON e.id=CAST(x.record_key AS INTEGER)
     WHERE x.generation=? AND x.table_name='learning_journal' AND e.input=?`).get(generation,input).at;
@@ -208,7 +210,9 @@ async function invalidateAssessments() {
       UNION SELECT id FROM learning_cycles WHERE input=? AND ? IS NOT NULL
         AND ${RECOVERY_MODEL_TIME}>=? AND json_type(payload,'$.plan.model')='object')
       SELECT c.id FROM affected a JOIN learning_cycles c ON c.id=a.id
-      WHERE c.input=? AND c.id>? ORDER BY c.id LIMIT 64`).all(generation,generation,input,earliest,earliest,input,after);
+      WHERE c.input=? AND c.id>? AND NOT EXISTS(SELECT 1 FROM recovery_exclusions done
+        WHERE done.generation=? AND done.table_name='cycle_assessments' AND done.record_key=c.id)
+      ORDER BY c.id LIMIT 64`).all(generation,generation,input,earliest,earliest,input,after,generation);
     if (!rows.length) break;
     store.transaction(() => { for (const row of rows) { exclude.run(generation,'cycle_assessments',row.id); after=row.id; } });
     await yieldTurn();

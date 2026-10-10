@@ -141,6 +141,32 @@ test('standalone upload, explicit source review, recovery publication and retry 
   assert.equal(f.calls.filter(([kind]) => kind === 'recover').length, 1);
 });
 
+test('recovery and reversal with unchanged learning preserve a newer live model while its cache lags', async t => {
+  const saved = { journalCursor: 10, model: { coefficient: 1 } };
+  const live = { journalCursor: 12, model: { coefficient: 2 } };
+  const unchanged = async value => {
+    value.onPublish({ report: { model: { status: 'unchanged' } }, checkpoint: saved });
+    return { report: { status: 'complete', model: { status: 'unchanged' } } };
+  };
+  const f = await fixture(t, { module: { recoverHistory: unchanged, reviseRecovery: unchanged } });
+  f.store.setState('adaptive:mqtt', saved);
+  f.engine.checkpoint = live;
+  const source = await (await f.upload(await f.backup())).json();
+  assert.equal((await f.post(request('check', { sourceId: source.sourceId, installationConfirmed: true }))).status, 202);
+  await f.coordinator.settled();
+  assert.equal((await f.post(request('recover', { previewId: 'a'.repeat(64), confirmed: true }))).status, 202);
+  await f.coordinator.settled();
+  assert.equal(f.engine.checkpoint, live);
+  for (const action of ['revert', 'restore']) {
+    assert.equal((await f.post(request(`review-${action}`, { operationId: 'fixture' }))).status, 202);
+    await f.coordinator.settled();
+    assert.equal((await f.post(request(action, { previewId: 'b'.repeat(64), confirmed: true }))).status, 202);
+    await f.coordinator.settled();
+    assert.equal(f.engine.checkpoint, live, `${action} does not replace live learning with its older cache`);
+  }
+  assert.deepEqual(f.store.getState('adaptive:mqtt'), saved, 'the fixture keeps the cache delayed throughout');
+});
+
 test('upload rejects arbitrary paths, non-SQLite data, WAL files, size excess and family access', async t => {
   const f = await fixture(t, { coordinator: { maxUploadBytes: 1024 }, server: { token: 'synthetic-admin', familyToken: 'synthetic-family' } });
   const admin = { headers: { authorization: 'Bearer synthetic-admin', 'content-type': 'application/vnd.sqlite3' } };

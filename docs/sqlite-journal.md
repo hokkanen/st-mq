@@ -140,10 +140,20 @@ transaction log expired.
 
 ## Learning recovery and reversal
 
-Sparse supported checkpoints are saved atomically with learning, initially for a
-new epoch/source revision and then after at least 256 input entries or six hours
+Sparse supported checkpoints are saved atomically with their validated model
+cache, initially for a new epoch/source revision and then after at least 256 input entries or six hours
 of source time. They are indexed by input, source revisions, time and cursor and
 replicate as ordinary cache rows. This is not a per-minute model snapshot stream.
+
+For ordinary live learning, caches above 128 KiB (including replacement of an
+already larger cache) save through a worker after the controller transaction.
+Their sparse checkpoint and active cache publish together at the same validated
+journal boundary, which may precede newer committed inputs. The existing worker
+transaction limit still applies. A failed cache save leaves the previous cache
+and immutable journal intact; it cannot undo committed charging intent or stop
+the controller update loop. Shutdown joins the cache writer before releasing the
+database. Recovery and source corrections retain atomic selection and caught-up
+model publication.
 
 Recovery and reversal select a validated checkpoint before the earliest affected
 input and reuse the unchanged immutable prefix as indexed ranges. Ordered replay

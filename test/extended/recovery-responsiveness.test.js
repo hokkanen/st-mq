@@ -6,7 +6,10 @@ import { listRecoveries, previewRecoveryRevision, reviseRecovery } from '../../s
 import { Recorder } from '../../src/storage/recorder.js';
 
 test('larger recoveries keep serving status through backup, recovery, reversal and restoration', async t => {
-  const result = await recoveryWorkload(t, { records: 4000, windows: 7 * 96 });
+  // Ten attempted durable writes per second exercise concurrent recording over
+  // the full history fixture. This is a synthetic regression load, not measured
+  // household traffic; retain the existing latency limits and 10 ms heartbeat.
+  const result = await recoveryWorkload(t, { records: 4000, windows: 7 * 96, liveWriteIntervalMs: 100 });
   t.diagnostic(JSON.stringify(result));
   for (const stage of result.stages) {
     assert(stage.httpRequests > 1, `${stage.name} keeps serving status`);

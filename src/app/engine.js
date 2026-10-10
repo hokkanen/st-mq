@@ -7,6 +7,7 @@ import { dhwrEligible } from '../control/dhwr.js';
 import { restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
 import { evaluateCycle, economicAdmission, forecastIntervals, cycleForecastCovered, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope, preheatRoomRequest, effectiveComfortDropC } from '../control/planner.js';
 import { HeatingPlanning } from './heating-planning.js';
+import { LearningCheckpointCache } from './learning-checkpoint-cache.js';
 import { CycleTracker } from './cycles.js';
 import { controlObservations } from './control-observations.js';
 import { heatingFeedback } from './heating-feedback.js';
@@ -47,6 +48,9 @@ import { HeatingExplorer, validateHeatingTrialState } from './heating-explorer.j
 import { applyExplorerOverrides } from '../control/heating-explorer.js';
 
 const OBSERVATION_MAX_AGE_MS = OUTDOOR_MAX_AGE_MS;
+// Larger replaceable model caches are saved separately from the controller's
+// journal inputs and device intent. Leave ordinary transaction admission intact.
+const INLINE_LEARNING_CHECKPOINT_BYTES = 128 * 1024;
 const pauseIdentity = override => override?.id ?? null;
 const activeDeadline = (deadline, now) => deadline === null || Number.isFinite(deadline) && deadline > now;
 function manualHeatingHeld(executor, native, pause, now) {
@@ -189,7 +193,8 @@ export class Engine {
     if (!result.repeated && affectsThermalLearning(result.signal, this.control)) {
       this.pendingPlan = null; this.lastSample = null; this.fireplaceReserveOverride = null;
     }
-    // The source and complete checkpoint are durable before follow-up control.
+    // The source boundary and control invalidation are durable before follow-up
+    // control. The complete model remains reconstructible if its cache lags.
     this.latestStatus = null;
   }
   finishSensorChange() {
@@ -335,9 +340,26 @@ export class Engine {
   replayLearning(checkpoint, { persistCheckpoint = true } = {}) {
     const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
     const updating = ['pending', 'running', 'ready', 'failed'].includes(job?.status);
-    return replayCommittedLearning(this.store, this.config.input, checkpoint,
-      { persistCheckpoint, ...(updating && checkpoint ? { fireplaceRevision: checkpoint.fireplaceRevision ?? 0,
+    const next = replayCommittedLearning(this.store, this.config.input, checkpoint,
+      { persistCheckpoint: false, ...(updating && checkpoint ? { fireplaceRevision: checkpoint.fireplaceRevision ?? 0,
         sensorRevision: checkpoint.sensorRevision ?? 0 } : {}) });
+    if (persistCheckpoint && next !== checkpoint && next?.journalCursor) this.persistLearningCheckpoint(next);
+    return next;
+  }
+  persistLearningCheckpoint(checkpoint) {
+    if (this.collectingLearningCheckpoint) {
+      this.pendingLearningCheckpoint = checkpoint;
+      return;
+    }
+    const key = `adaptive:${this.config.input}`;
+    const bytes = Buffer.byteLength(JSON.stringify(checkpoint));
+    const previousBytes = this.store.db.prepare('SELECT length(CAST(value AS BLOB)) AS bytes FROM state WHERE key=?')
+      .get(key)?.bytes ?? 0;
+    if (this.store.path !== ':memory:' && Math.max(bytes, previousBytes) > INLINE_LEARNING_CHECKPOINT_BYTES) {
+      this.learningCheckpointCache ??= new LearningCheckpointCache({ store: this.store, input: this.config.input,
+        canWrite: () => !this.suspended && this.canControl() });
+      this.learningCheckpointCache.save(checkpoint);
+    } else this.store.setState(key, checkpoint);
   }
   fireplaceManager() {
     return this.fireplaceRebuild ??= new FireplaceRebuildManager({ store: this.store, input: this.config.input });
@@ -421,6 +443,7 @@ export class Engine {
   }
   beginShutdown({ restore = true } = {}) {
     this.suspended = true;
+    this.learningCheckpointCache?.beginShutdown();
     // Revocation cancels obsolete publication immediately. Orderly shutdown
     // still saves command outcomes, with bounded waiting if storage is blocked.
     this.writes.beginShutdown({ restore });
@@ -429,7 +452,8 @@ export class Engine {
     if (!restore) this.charging?.beginShutdown?.();
     this.garage?.beginShutdown?.();
   }
-  async closeFireplace() { await Promise.all([this.fireplaceRebuild?.close(), this.heatingExplorer?.close(), this.heatingPlanning?.close()]); }
+  async closeFireplace() { await Promise.all([this.fireplaceRebuild?.close(), this.heatingExplorer?.close(),
+    this.heatingPlanning?.close(), this.learningCheckpointCache?.close()]); }
   constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true }) {
     validateVoltageState(store, config.input);
     validateHeatingTrialState(store.getState(`heating-explorer:trial:${config.input}`));
@@ -1048,6 +1072,21 @@ export class Engine {
   }
   tick() {
     if (this.suspended) return structuredClone(this.latestStatus);
+    // Ordered learning may advance for context, completed windows and cycles in
+    // one update. Keep its full RAM result, but persist only the final cache.
+    this.collectingLearningCheckpoint = true;
+    this.pendingLearningCheckpoint = null;
+    try {
+      const result = this.tickUpdate();
+      this.collectingLearningCheckpoint = false;
+      if (this.pendingLearningCheckpoint) this.persistLearningCheckpoint(this.pendingLearningCheckpoint);
+      return result;
+    } finally {
+      this.collectingLearningCheckpoint = false;
+      this.pendingLearningCheckpoint = null;
+    }
+  }
+  tickUpdate() {
     if (this.store.transactionDepth) {
       const fields = ['checkpoint', 'settings', 'pendingPlan', 'applied', 'lastSample',
         'latestStatus', 'fireplaceReserveOverride', 'startupRestorationPending'];
@@ -1219,7 +1258,7 @@ export class Engine {
       checkpoint = this.replayLearning(checkpoint, { persistCheckpoint: false });
       this.checkpoint = checkpoint;
     }
-    if (checkpoint !== beforeWindows) this.store.setState(`adaptive:${input}`, checkpoint);
+    if (checkpoint !== beforeWindows) this.persistLearningCheckpoint(checkpoint);
     if ((checkpoint.fireplaceRevision ?? 0) !== fireplaceContext.fireplaceRevision && fireplaceContext.fireplaceExcludedRanges.length) {
       const corrected = checkpoint.samples.map(row => withFireplaceInputs(row, fireplaceContext));
       this.fireplaceReserveOverride = evaluateThermalModel(checkpoint.model, corrected,
@@ -1572,6 +1611,7 @@ export class Engine {
       if (!this.latestStatus) throw Object.assign(new Error('Waiting for the first controller update to commit.'), { statusCode: 503 });
     }
     const result = structuredClone(this.latestStatus);
+    if (this.learningCheckpointCache) result.learning.checkpointCache = this.learningCheckpointCache.status();
     const now = this.clock();
     result.now = now;
     result.automation = this.automationStatus();

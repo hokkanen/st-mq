@@ -6,6 +6,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Growing Home learning checkpoints no longer make ordinary controller updates
+  exceed the recording transaction limit. Large restart caches save in a worker
+  after learning inputs and control intent commit; charging keeps its existing
+  persistence and command ordering. Cache failures retain recorded learning and
+  are shown separately in the model details.
+- Reverting recovered history skips cycle assessments already invalidated by the
+  same revision, allowing catch-up to progress while learning continues.
 - Charging identification explains its actual blocking condition. Charging cost
   labels distinguish the remaining estimate from the whole connection, and cost
   details disclose energy inferred during recording gaps.

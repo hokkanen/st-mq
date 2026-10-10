@@ -14,7 +14,7 @@ const round = value => Math.round(value * 100) / 100;
 /** Real current-schema operations with unrelated live writes and HTTP polling.
  * The fixture never opens household configuration or databases. Descriptive
  * timing is kept separate from correctness so benchmarks can run on slow hosts. */
-export async function recoveryWorkload(t, { records = 1024, windows = 32, payloadBytes = 128,
+export async function recoveryWorkload(t, { records = 1024, windows = 32, payloadBytes = 128, liveWriteIntervalMs = 10,
   onStage = value => t.diagnostic?.(JSON.stringify(value)) } = {}) {
   const f = fixture(t), stages = [];
   sample(f.master, start + W);
@@ -72,8 +72,12 @@ export async function recoveryWorkload(t, { records = 1024, windows = 32, payloa
         slowWrites.sort((a, b) => b.elapsedMs - a.elapsedMs); slowWrites.length = Math.min(slowWrites.length, 5);
       }
     };
-    const timer = setInterval(() => { beat(); if (!pendingWrite) pendingWrite = record().finally(() => { pendingWrite = null; }); }, 10);
-    const stop = () => { clearInterval(timer); polling = false; };
+    // Sample event-loop progress independently of the offered write load.
+    const heartbeatTimer = setInterval(beat, 10);
+    const writeTimer = setInterval(() => {
+      if (!pendingWrite) pendingWrite = record().finally(() => { pendingWrite = null; });
+    }, liveWriteIntervalMs);
+    const stop = () => { clearInterval(heartbeatTimer); clearInterval(writeTimer); polling = false; };
     f.signal.addEventListener('abort', stop, { once: true });
     const pollingTask = (async () => {
       while (polling) {
@@ -96,7 +100,7 @@ export async function recoveryWorkload(t, { records = 1024, windows = 32, payloa
       return value;
     } finally {
       stop(); f.signal.removeEventListener('abort', stop); await pollingTask; await pendingWrite;
-      const metric = { name, elapsedMs: round(performance.now() - then), heartbeatTicks,
+      const metric = { name, liveWriteIntervalMs, elapsedMs: round(performance.now() - then), heartbeatTicks,
         maxHeartbeatGapMs: round(maxHeartbeatGapMs), maxHeartbeatGapPhase, writes, maxLiveWriteMs: round(maxLiveWriteMs), slowWrites,
         httpRequests, maxHttpMs: round(maxHttpMs), peakRssBytes, phases: [...phases] };
       stages.push(metric); onStage(metric);

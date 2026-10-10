@@ -238,6 +238,16 @@ Mosquitto brokers and transport proxies. Install `mosquitto` to run them; set
 mocked transport validation stays in the routine suite. These tests use synthetic
 data and local processes; they make no paid model or provider API calls.
 
+The larger recovery responsiveness case uses 4,000 observations, 672 learning
+windows and one attempted concurrent event write every 100 ms. Its heartbeat
+still samples every 10 ms, and its 1.5-second write and 2-second heartbeat/HTTP
+limits remain unchanged. This is a bounded synthetic regression workload, not a
+measured household traffic profile. The shared helper defaults to the heavier
+10 ms write interval for the routine workload and optional benchmark. Retain
+actual write overlap, replay, backup and historical-evidence assertions when
+changing these fixtures; reducing write frequency must not reduce heartbeat
+sampling or manufacture overlap after an operation has finished.
+
 A failed latency guard remains a failed check even when the baseline also shows
 slow storage. Compare the same workload and runtime, separating writer admission,
 transaction execution and event-loop delay. Syscall tracing can attribute a wait

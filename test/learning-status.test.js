@@ -3,6 +3,19 @@ import assert from 'node:assert/strict';
 import { learningDisplay, modelCoefficientDescriptions, h66Control, h66ReadingValue, h66ReadingStatus, h66HomeSummary, h66EquipmentSummary } from '../chart/learning-status.js';
 import { initialAdaptiveModel, thermalEvidenceReady } from '../src/control/adaptive-learning.js';
 
+test('a failed model cache save is distinct from stopped recording and stays quiet when healthy', () => {
+  const failed = learningDisplay({ checkpointCache: { status: 'failed', error: 'Save failed' } });
+  const row = failed.evidenceRows.find(item => item.key === 'Model restart cache');
+  assert.equal(row.value, 'Save needs attention');
+  assert.match(row.detail, /Recorded learning inputs remain available/);
+  assert.match(row.detail, /control continues with the current model/);
+  for (const status of ['saving', 'idle'])
+    assert(learningDisplay({ checkpointCache: { status, error: 'Save failed' } }).evidenceRows
+      .some(item => item.key === 'Model restart cache'), 'retry or stale work cannot clear failure evidence');
+  for (const status of ['idle', 'saving', 'current'])
+    assert(!learningDisplay({ checkpointCache: { status } }).evidenceRows.some(item => item.key === 'Model restart cache'));
+});
+
 test('heat-pump equipment shows observed run duration and qualified hot water and room settings', () => {
   const now = Date.parse('2026-09-14T12:00:00Z');
   const reading = value => ({ value, available: true, observedAt: now });
