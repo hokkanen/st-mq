@@ -169,7 +169,22 @@ test('managed immutable pairing generations retain pins through restart and cata
   const restarted = new SnapshotRepository({ directory });
   await restarted.init();
   await access(join(directory, `export-${pinned.generation}.pin`));
-  const catalog = await listBackupCatalog({ ...f.config, pair: {} }, { clock: f.clock });
+  const manifestPath = join(directory, `export-${pinned.generation}.json`);
+  const manifest = await readFile(manifestPath);
+  const snapshotPath = join(directory, `export-${pinned.generation}.sqlite`);
+  const snapshot = await readFile(snapshotPath);
+  const future = await listBackupCatalog({ ...f.config, pair: {} }, { clock: () => pinned.sourceAt - 1 });
+  assert.equal(future.complete, false);
+  assert.deepEqual(future.reasons, ['invalid-copy-time']);
+  assert.equal(future.copies.length, 1);
+  assert.equal(future.copies[0].createdAt, null);
+  assert.equal(future.copies[0].verification.state, 'not-checked');
+  await access(join(directory, `export-${pinned.generation}.pin`));
+  assert.deepEqual(await readFile(manifestPath), manifest, 'Future-time discovery cannot rewrite snapshot provenance');
+  assert.deepEqual(await readFile(snapshotPath), snapshot, 'Future-time discovery cannot modify protected history');
+  // Native snapshot workers capture real wall time. Evaluate this integration
+  // with the catalog's real clock, independently of the synthetic export fixture.
+  const catalog = await listBackupCatalog({ ...f.config, pair: {} });
   assert.equal(catalog.complete, true);
   assert.equal(catalog.copies.length, 1);
   assert.equal(catalog.copies[0].kind, 'protected');
@@ -179,7 +194,7 @@ test('managed immutable pairing generations retain pins through restart and cata
   assert.equal(Object.hasOwn(publicBackupCatalog(catalog).copies[0], 'checkpoint'), false);
   const operational = await restarted.create({ dbPath: f.store.path, claim: { ...claim, role: 'master' }, sequence: 5,
     force: true, pin: true });
-  assert.equal((await listBackupCatalog(f.config, { clock: f.clock })).copies.length, 1,
+  assert.equal((await listBackupCatalog(f.config)).copies.length, 1,
     'An active peer-transfer seed does not become a retained household backup');
   await access(join(directory, `export-${operational.generation}.pin`));
   assert.equal(catalog.copies[0].createdAt, pinned.sourceAt);
@@ -194,5 +209,5 @@ test('managed immutable pairing generations retain pins through restart and cata
   await access(join(directory, `export-${pinned.generation}.pin`));
   await restarted.unpin(pinned.generation);
   await restarted.prune(null);
-  assert.equal((await listBackupCatalog(f.config, { clock: f.clock })).copies.length, 0);
+  assert.equal((await listBackupCatalog(f.config)).copies.length, 0);
 });
