@@ -313,12 +313,19 @@ node scripts/benchmarks/sensor-queries.js
 
 Storage health and durability changes have focused offline checks in
 `test/recording-health.test.js`, `test/storage-publication.test.js`,
-`test/database-export.test.js` and `test/recorder.test.js`. They cover actual
+`test/database-export.test.js`, `test/backup-catalog.test.js`,
+`test/backup-inspection.test.js` and `test/recorder.test.js`. They cover actual
 SQLite full/busy failures, unchanged readings, read-only replicas, authenticated
 health fallback, flush failures and adaptive-budget isolation from unrelated
 writes. `node test/browser/recording-health-smoke.js` checks the real dashboard
 health elements at narrow and wide widths in both themes, including focus,
-stale status, sign-out fencing and the health-only failure view.
+stale status, sign-out fencing and the health-only failure view. Consolidated
+storage and backup inventory checks also cover separate source/loop/write clocks,
+partial discovery, file replacement, selected-copy verification, admin-only
+inventory/downloads and inspection from a read-only server. Reset and pairing
+tests retain current archive retry paths, immutable export generations and pins
+under the configured persistent backup root. These offline fixtures do not test
+household copies, Supervisor restore or Raspberry Pi storage.
 
 `node scripts/benchmarks/recorder-budget.js` compares synthetic adaptive scalar
 and phase-energy traces under the default annual target and a smaller stress

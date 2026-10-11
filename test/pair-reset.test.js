@@ -268,7 +268,7 @@ test('a linked data directory supports keep, explicit promotion, then fresh rese
   assert.equal(fresh.state, 'complete', fresh.error);
   assert.equal(app.status().role, 'slave');
   assert.equal(app.status().bootstrapPending, true);
-  assert.equal(fresh.result.archiveDirectory.startsWith(join(physical, 'reset-archives') + '/'), true);
-  assert.equal((await readdir(join(alias, 'reset-archives'))).length, 2);
+  assert.equal(fresh.result.archiveDirectory.startsWith(join(physical, 'backups', 'reset-archives') + '/'), true);
+  assert.equal((await readdir(join(alias, 'backups', 'reset-archives'))).length, 2);
   await assert.rejects(readFile(f.config.dbPath), { code: 'ENOENT' });
 });

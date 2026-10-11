@@ -328,8 +328,8 @@ export function renderRecordingOverview(overview,root) {
 
 export function recordingOverviewRefresh({request,root,details,parent,message,button,clock=Date.now,isVisible=()=>document.visibilityState!=='hidden',render=renderRecordingOverview,onState=()=>{}}) {
   let fetchedAt=null,busy=false,loaded=false,refreshAfterMs=300000;
-  const refresh=async({force=false,summary=false}={})=>{
-    if(busy||(!summary&&!details.some(fold=>fold.open))||!parent.open||!isVisible()||!force&&fetchedAt!==null&&clock()-fetchedAt<refreshAfterMs)return;
+  const refresh=async({force=false}={})=>{
+    if(busy||!details.some(fold=>fold.open)||!parent.open||!isVisible()||!force&&fetchedAt!==null&&clock()-fetchedAt<refreshAfterMs)return;
     busy=true;button.disabled=true;root.setAttribute('aria-busy','true');
     message.classList.remove('form-error');message.textContent=loaded?'Refreshing recorded-data overview…':'Loading recorded-data overview…';
     onState('loading');

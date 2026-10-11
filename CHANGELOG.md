@@ -13,13 +13,24 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   recovery as the explicit alternative. Verification failures remain separate,
   and changed donors or uncertain release replies retain their existing checks.
 
-- Recording details reorganizes At a glance into balanced Recording, Storage
-  health, Disk space and Backups summaries. Storage health shows current backlog,
-  average and worst queue wait, failed saves, queue-full refusals and commands
-  on MQTT known not to have been sent because recording blocked them. Recent problems
-  distinguish original-update retry recovery from ordinary resumed saving;
-  technical timings stay folded. The day/week summaries live only in memory,
-  label monitored coverage, reset when storage reopens and add no database writes.
+- Recording details groups Recording, Storage health, Storage & growth and
+  Backups under Recording & storage, with explicit server and live/simulated/
+  replica/history scope. Storage & growth combines free space and database sizes;
+  Recorded data no longer repeats it. Recording shows observed source exceptions
+  and loop evidence; Storage health dates successful writes separately.
+- Backups lists managed copies, sizes, snapshot/modification dates and verification
+  evidence, with selected-copy download, full verification and history-review actions.
+  Browser transfers stay separate from saved copies. The persistent default backup
+  folder is beside the database; `recording.backup_directory` replaces the retired
+  export setting and requires restart when changed. Manual copies, complete reset
+  bundles and paired exports share that root; existing files are never relocated.
+  Listing stays bounded, reports incomplete results and preserves dated failed-refresh
+  evidence. Routine replication exports do not count as retained backups.
+- Storage health shows current backlog, average and worst queue wait, failed saves,
+  queue-full refusals and monitored MQTT commands known not to have been sent
+  because recording blocked them. Recent problems distinguish original-update retry
+  recovery from ordinary resumed saving; technical timings stay folded. Day/week
+  summaries live in memory, label monitored coverage and add no database writes.
 
 - Charging saves changing evidence separately from accepted plans and control
   intent. Plans and their scenario context are stored once; replica reports read

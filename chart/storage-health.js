@@ -75,7 +75,7 @@ function incidentView(value, lastWriteAt) {
 }
 
 export function storagePerformanceView(health, period = 'day', { unavailable = false, now = Date.now() } = {}) {
-  const history = health?.version === 2 && health.scope === 'live' && health.recording?.history?.version === 2
+  const history = health?.version === 2 && ['live', 'simulated'].includes(health.scope) && health.recording?.history?.version === 2
     ? health.recording.history : null;
   const window = history?.windows?.[period];
   const monitored = finite(window?.coveredMs) && window.coveredMs > 0;

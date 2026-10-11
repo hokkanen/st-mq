@@ -151,8 +151,11 @@ try {
   await until("document.body.dataset.authenticated === 'true'");
   assert.equal(await evaluate(`${$('history-recovery-open')}.checkVisibility()`), false, 'Recovery does not escape the closed recording fold');
   await evaluate(`${$('recording-details')}.open = true; true`);
+  assert.equal(await evaluate(`${$('recording-growth-retained')}.textContent`), 'Not checked', 'Opening Recording details alone leaves the full inventory lazy');
+  await evaluate(`${$('recording-disk-card')}.open = true; true`);
   await until(`${$('recording-growth-inventoryAt')}.textContent.includes('Retained adaptive payload estimate')`);
-  assert.equal(await evaluate(`${$('recording-overview-details')}.open`), false, 'Recording summary measures retained adaptive size without unfolding other recorded data');
+  await evaluate(`${$('recording-disk-card')}.open = false; true`);
+  assert.equal(await evaluate(`${$('recording-overview-details')}.open`), false, 'Storage inventory does not unfold Other recorded data');
   assert.equal(await evaluate(`${$('history-recovery-open')}.checkVisibility()`), false, 'Opening recording details leaves recovery inside its own closed fold');
   assert.equal(await evaluate(`${$('history-recovery-open')}.closest('details').id`), 'history-recovery-details');
   for (const width of [1440, 320]) {
@@ -161,14 +164,14 @@ try {
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Folded recording tools fit the viewport');
     await capture(`recording-folded-${width}`);
   }
-  await evaluate(`${$('database-export-details')}.open = true; ${$('database-verification-details')}.open = true; ${$('history-recovery-details')}.open = true; ${$('history-recovery-open')}.focus(); true`);
+  await evaluate(`${$('recording-backup-card')}.open = true; ${$('database-export-details')}.open = true; ${$('database-verification-details')}.open = true; ${$('history-recovery-details')}.open = true; ${$('history-recovery-open')}.focus(); true`);
   for (const width of [1440, 768, 390, 320]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
     await evaluate(`${$('history-recovery-details')}.scrollIntoView({block:'center'});true`);
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Expanded recovery launcher fits');
     assert.equal(await evaluate("(() => { const body=document.querySelector('#history-recovery-details .recording-section-body'), description=body.firstElementChild.getBoundingClientRect(), button=body.querySelector('button').getBoundingClientRect(); return Math.abs(button.left-description.left)<2 && button.top>=description.bottom; })()"), true, 'Recovery uses the same left-aligned action placement as the export tools');
-    assert.equal(await evaluate("(() => { const buttons=['database-export-save','history-recovery-open','database-verification-start'].map(id=>document.getElementById(id).getBoundingClientRect()); return buttons.every(b=>Math.abs(b.left-buttons[0].left)<2 && Math.abs(b.height-buttons[0].height)<2); })()"), true, 'Export, recovery and verification share button alignment and height');
+    assert.equal(await evaluate("(() => { const buttons=['database-export-save','history-recovery-open','database-verification-start'].map(id=>document.getElementById(id)); const first=buttons[0].getBoundingClientRect(); return buttons.every(button=>{const b=button.getBoundingClientRect(),body=button.closest('.recording-section-body').getBoundingClientRect();return Math.abs(b.left-body.left)<2 && Math.abs(b.height-first.height)<2;}); })()"), true, 'Export, recovery and verification share button height and align within their owning folds');
     await capture(`recording-recovery-expanded-${width}-${theme}`);
   }
   assert.equal(await evaluate('document.activeElement.id'), 'history-recovery-open', 'Recording opener receives keyboard focus');
@@ -312,7 +315,7 @@ try {
   assert.equal(await evaluate(`${$('history-recovery-installation-confirm')}.checked`), false);
   assert.equal(await evaluate(`${$('history-recovery-check')}.disabled`), true);
   await click('history-recovery-close');
-  await evaluate(`${$('database-export-details')}.open=true;true`);
+  await evaluate(`${$('recording-backup-card')}.open=true;${$('database-export-details')}.open=true;true`);
   await click('database-export-save');
   await until(`!${$('database-export-progress')}.hidden && ${$('database-export-detail')}.textContent.includes('Elapsed')`);
   assert.equal(await evaluate(`${$('database-export-progress')}.hasAttribute('value')`), false);

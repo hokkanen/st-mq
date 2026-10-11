@@ -1,7 +1,8 @@
 import { weatherAcquisitionIdentity } from './acquisition/weather-identity.js';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { backupDirectory } from './storage/backup-directory.js';
+import { createBackupCatalog } from './storage/backup-catalog.js';
 import { isDeepStrictEqual } from 'node:util';
 import { Store } from './storage/store.js';
 import { loadConfig, configurationReader, configurationSource, configurationLoader } from './app/config.js';
@@ -487,15 +488,12 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     // A duplicate launch must fail without touching equipment. API requests are
     // held by settingsReloadStatus().busy until startup has completed.
     chartService = createChartService({ store });
+    const backupCatalog = createBackupCatalog({ getConfig: () => config, clock });
     historyRecovery = createHistoryRecovery({ store, getEngine: () => engine, canControl,
       ready: () => !closed && !starting && !reloadPending && runtimeUsable,
-      getExportDirectory: () => config.recording?.exportDirectory ?? homedir(), pairContext, clock,
-      getResetBackups: async () => {
-        const { listResetBackups } = await import('./pairing/reset-storage.js');
-        return listResetBackups(config);
-      }, ...historyRecoveryOptions });
+      getBackupCatalog: options => backupCatalog.list(options), pairContext, clock, ...historyRecoveryOptions });
     webAccess = createWebAccess({ config, clock, topology: config.topology, role: config.role, getEngine: () => engine, store, chartService,
-      getDatabaseExportDirectory: () => config.recording?.exportDirectory ?? homedir(),
+      getDatabaseExportDirectory: () => backupDirectory(config), backupCatalog,
       syncStatus: () => replication?.status() ?? null,
       pairContext,
       historyRecovery,

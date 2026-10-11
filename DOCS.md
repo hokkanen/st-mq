@@ -366,11 +366,12 @@ with the devices. Include **Share** separately if its imports/exports also need
 backing up. Restore ST-MQ together with its options and private data. Database
 exports alone do not include provider tokens or Supervisor options.
 
-For a browser download, use **Recording details → Export database → Download
-database**. For **Save local copy**, configure `recording.export_directory` as
-`/config/st-mq/exports` (included with the app) or `/share/st-mq` (separate Share
-backup). The shared default `"~"` resolves inside the container and is not a
-persistent backup location there.
+For a browser download, use **Recording details → Backups → Export database → Download
+database**. For **Save local copy**, configure `recording.backup_directory` as
+`/config/st-mq/backups` (included with the app) or `/share/st-mq/backups` (separate
+Share backup). The empty shared default already selects `/config/st-mq/backups`.
+Changing the folder requires restart; existing files remain in their original
+locations. Manual copies, reset bundles and pinned paired exports share this root.
 
 These commands run **inside the ST-MQ container**, where Node and the history
 administration script are installed:

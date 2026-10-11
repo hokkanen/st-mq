@@ -1,7 +1,6 @@
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { resolve, extname } from 'node:path';
 import { getChartData, chartRequestRange } from './chart-data.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
@@ -9,6 +8,9 @@ import { simulatedOutlook } from './simulator.js';
 import { createChartService } from './chart-service.js';
 import { createDatabaseExport, databaseExportErrorMessage } from './database-export.js';
 import { createRecordingHealth } from './recording-health.js';
+import { createBackupCatalog } from '../storage/backup-catalog.js';
+import { backupDirectory } from '../storage/backup-directory.js';
+import { createBackupInspection } from './backup-inspection.js';
 import { familyRouteAllowed, familyActionAllowed, fireplaceAccess, FAMILY_FIREWOOD_REMOVAL_MS } from './web-permissions.js';
 import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
 import { electricityForecastView } from './electricity-forecast-view.js';
@@ -91,7 +93,8 @@ function chargingReportQuery(url, kind) {
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '', familyToken = '',
   getAccess, ingress = false, role = 'master', topology = 'standalone', getReadContext, syncStatus,
-  pairContext, controlAuthority, historyRecovery, recordingHealth, databaseExport, databaseVerification, getDatabaseExportDirectory = homedir,
+  pairContext, controlAuthority, historyRecovery, recordingHealth, databaseExport, databaseVerification,
+  backupCatalog, backupInspection, getDatabaseExportDirectory,
   reloadSettings, previewSettings, settingsReloadStatus = () => ({ available: false, busy: false,
     reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
   const overviewService = getReadContext ? null : chartService?.overview ? chartService : createChartService({ store });
@@ -99,9 +102,15 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
     throw new Error('Family access requires a separate admin web token.');
   const fixedAccess = { enabled: true, token, familyToken, tokenRequired: false };
   const access = getAccess ?? (() => fixedAccess);
-  recordingHealth ??= createRecordingHealth({ getConfig: () => ({ dbPath: store?.path,
-    recording: getEngine()?.config?.recording }) });
-  const exportDatabase = databaseExport ?? createDatabaseExport({ getDirectory: getDatabaseExportDirectory,
+  const backupConfig = () => ({ ...getEngine()?.config, dbPath: getEngine()?.config?.dbPath ?? store?.path,
+    recording: { ...getEngine()?.config?.recording,
+      backupDirectory: getDatabaseExportDirectory?.() ?? backupDirectory(getEngine()?.config ?? { dbPath: store?.path }) } });
+  backupCatalog ??= createBackupCatalog({ getConfig: backupConfig });
+  recordingHealth ??= createRecordingHealth({ getConfig: backupConfig, backupCatalog });
+  const ownInspection = !backupInspection;
+  backupInspection ??= createBackupInspection({ catalog: backupCatalog,
+    onDownloadEvent: event => recordingHealth.backupEvent(event, store) });
+  const exportDatabase = databaseExport ?? createDatabaseExport({ getDirectory: () => backupDirectory(backupConfig()),
     onBackupEvent: (event, sourceStore) => recordingHealth.backupEvent(event, sourceStore ?? store) });
   const writesBlocked = () => role === 'slave' || Boolean(pairContext && !pairContext.canControl())
     || Boolean(controlAuthority && !controlAuthority.canControl());
@@ -180,6 +189,31 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
             return json(400, { error: 'Start database verification with an empty JSON object.' });
           return json(202, databaseVerification.start());
+        }
+        if (url.pathname === '/api/recording-backups' && req.method === 'GET') {
+          if ([...url.searchParams.keys()].some(key => key !== 'refresh') || url.searchParams.getAll('refresh').length > 1
+            || url.searchParams.has('refresh') && !['true', 'false'].includes(url.searchParams.get('refresh')))
+            return json(400, { error: 'Refresh the backup list with a supported query.' });
+          return json(200, await backupInspection.list({ force: url.searchParams.get('refresh') === 'true' }));
+        }
+        if (url.pathname === '/api/recording-backups/verify' && req.method === 'POST') {
+          const input = await body(req);
+          if (!stillAuthorized()) return;
+          if (settingsReloadStatus().busy || settingsReloadStatus().stopping)
+            return json(409, { error: 'Wait for configuration work to finish before checking a saved copy.' });
+          if (!input || typeof input !== 'object' || Array.isArray(input)
+            || Object.keys(input).join(',') !== 'sourceId') return json(400, { error: 'Select one saved copy to verify.' });
+          return json(202, backupInspection.start(input.sourceId));
+        }
+        if (url.pathname === '/api/recording-backups/download' && req.method === 'GET') {
+          if ([...url.searchParams.keys()].some(key => key !== 'sourceId') || url.searchParams.getAll('sourceId').length !== 1)
+            return json(400, { error: 'Select one saved copy to download.' });
+          return await backupInspection.download({ sourceId: url.searchParams.get('sourceId'), response: res,
+            authorized: () => {
+              const current = access();
+              return current.enabled && (ingress || current === acceptedAccess)
+                && webIdentity(req, current, ingress)?.role === 'admin';
+            } });
         }
         const saveDatabase = req.method === 'POST' && url.pathname === '/api/database-export';
         // Pair management and read-only verification above are explicit standby exceptions. Even
@@ -327,7 +361,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           } catch (error) {
             if (error.statusCode === 409) throw error;
             return json(503, { error: databaseExportErrorMessage(error.code)
-              ?? 'Could not save the database copy. Check that the configured export folder is writable and has enough free space.' });
+              ?? 'Could not save the database copy. Check that the configured backup folder is writable and has enough free space.' });
           }
           return;
         }
@@ -610,6 +644,12 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
       }
     } catch (error) {
       if (!res.destroyed) {
+        if (/^\/api\/recording-backups(?:[/?]|$)/.test(req.url)) {
+          if (res.headersSent) { res.destroy(); return; }
+          return json(error.statusCode ?? (error instanceof SyntaxError ? 400 : 503), {
+            code: /^backup_[a-z_]+$/.test(error.code ?? '') ? error.code : 'backup_inspection_unavailable',
+            error: 'The saved copy or backup list is unavailable. Refresh the list and retry.' });
+        }
         if (/^\/api\/database-verification(?:\?|$)/.test(req.url))
           return json(error.statusCode ?? (error instanceof SyntaxError ? 400 : 503),
             error.code === 'full_verification_unavailable'
@@ -645,5 +685,6 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
     } finally { readContext?.release?.(); }
   });
   if (overviewService && overviewService !== chartService) server.once('close', () => { void overviewService.close(); });
+  if (ownInspection) server.once('close', () => { void backupInspection.close(); });
   return server;
 }

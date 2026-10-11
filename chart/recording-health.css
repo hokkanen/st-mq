@@ -68,6 +68,26 @@
 .recording-health-body > :first-child { margin-top: 0; }
 .recording-health-evidence { display: block; font-size: 11px; line-height: 1.5; color: var(--muted); margin: 7px 0 0; overflow-wrap: anywhere; }
 .recording-health-evidence:empty { display: none; }
+.recording-storage-inventory { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 16px; min-width: 0; }
+.recording-source-facts, .recording-backup-folder { max-width: none; grid-template-columns: minmax(130px, .35fr) minmax(0, 1fr); }
+.recording-source-facts dd, .recording-backup-folder dd { overflow-wrap: anywhere; }
+.recording-source-exceptions { list-style: none; padding: 0; margin: 14px 0; display: grid; gap: 12px; }
+.recording-source-exceptions strong { display: block; font-size: 12px; line-height: 1.5; font-weight: 550; }
+.recording-source-exceptions span { display: block; font-size: 11px; color: var(--muted); line-height: 1.6; margin-top: 3px; }
+.recording-evidence-links { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 14px; }
+.recording-evidence-links a { color: var(--text); font-size: 11px; text-underline-offset: 3px; }
+.recording-backup-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-top: 16px; }
+.recording-backup-toolbar p { margin: 0; min-width: 0; }
+.recording-backup-toolbar button { min-height: 36px; font-size: 11px; flex-shrink: 0; }
+.recording-backup-list { list-style: none; padding: 0; margin: 14px 0; }
+.recording-backup-list > li { border-top: 1px solid var(--border); padding: 14px 0; min-width: 0; }
+.recording-backup-list h4 { font-size: 12px; font-weight: 550; line-height: 1.6; overflow-wrap: anywhere; margin: 0; }
+.recording-backup-list p { font-size: 11px; line-height: 1.6; color: var(--muted); margin: 5px 0; overflow-wrap: anywhere; }
+.recording-backup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 9px; }
+.recording-backup-actions button { min-height: 34px; font-size: 11px; }
+.recording-backup-list [data-tone="warning"] { color: var(--stale); }
+#recording-backup-card .recording-section { border-top: 1px solid var(--border); margin: 18px 0 0; }
+#recording-backup-card .recording-section-body { padding-bottom: 0; }
 .storage-meter { height: 6px; background: var(--border); border-radius: 8px; overflow: hidden; }
 .storage-meter > span { display: block; width: var(--free-space, 0%); height: 100%; background: var(--accent); border-radius: inherit; }
 .storage-meter[data-tone="warning"] > span { background: var(--stale); }
@@ -174,6 +194,9 @@
   .recording-health-body { padding: 12px; }
   .recording-health-heading { align-items: flex-start; }
   .recording-health-heading button { padding: 8px 10px; }
+  .recording-source-facts, .recording-backup-folder { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .recording-source-facts dd, .recording-backup-folder dd { margin-bottom: 8px; }
+  .recording-backup-toolbar { flex-direction: column; }
   .recording-storage-table, .recording-storage-table tbody { display: block; }
   .recording-storage-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .recording-storage-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; padding: 16px 0; border-bottom: 1px solid var(--border); }
@@ -191,4 +214,7 @@
 body[data-authenticated="false"][data-recording-health="true"] #recording-status { margin-top: 24px; }
 body[data-authenticated="false"][data-recording-health="true"] .history-panel > :not(#recording-details),
 body[data-authenticated="false"][data-recording-health="true"] #recording-details > :not(summary):not(#recording-health),
-body[data-authenticated="false"][data-recording-health="true"] #recording-health a { display: none !important; }
+body[data-authenticated="false"][data-recording-health="true"] #recording-health a,
+body[data-authenticated="false"][data-recording-health="true"] #recording-storage-details,
+body[data-authenticated="false"][data-recording-health="true"] #database-export-details,
+body[data-authenticated="false"][data-recording-health="true"] .recording-backup-actions { display: none !important; }

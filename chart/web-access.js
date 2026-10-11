@@ -9,7 +9,7 @@ const signedOut = () => Object.assign(new Error('Enter your password to continue
 export function webRequestAllowed(access, path, data, status) {
   if (access?.role === 'admin') return true;
   if (access?.role !== 'family') return data === undefined && ['/api/status', '/api/pair', '/api/recording-health'].includes(path);
-  if (data === undefined) return !/^\/api\/(?:database-export|downloads)(?:[/?]|$)/.test(path);
+  if (data === undefined) return !/^\/api\/(?:database-export|recording-backups|downloads)(?:[/?]|$)/.test(path);
   if (['/api/fireplace', '/api/fireplace/remove', '/api/temporary', '/api/dhwr/stop',
     '/api/charging/settings', '/api/automation', '/api/heating/explorer/simulate'].includes(path)) return true;
   if (path === '/api/heating-test') return ['normal', 'reduction', 'preheat', 'circulation'].includes(data.command);

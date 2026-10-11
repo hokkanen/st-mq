@@ -4,7 +4,7 @@ import { loadConfig as readConfig, configurationSource, validateSettings, record
 import { chargingConfiguration } from '../src/charging/config.js';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const loadConfig = (env = {}, cwd) => readConfig({ HOME: '/missing-stmq-test-home', ...env }, cwd);
 
@@ -55,8 +55,8 @@ test('Finnish price predictions support explicit opt-out and reject invalid inte
   }
 });
 test('recording and acquisition options are independent, configurable and validated',()=>{
-  assert.deepEqual(recordingConfiguration(),{annualBudgetBytes:10000000000,exportDirectory:homedir(),fullVerificationIntervalMs:0});
-  assert.deepEqual(recordingConfiguration({annual_budget_gb:4}),{annualBudgetBytes:4000000000,exportDirectory:homedir(),fullVerificationIntervalMs:0});
+  assert.deepEqual(recordingConfiguration(),{annualBudgetBytes:10000000000,backupDirectory:resolve('.', 'backups'),fullVerificationIntervalMs:0});
+  assert.deepEqual(recordingConfiguration({annual_budget_gb:4}),{annualBudgetBytes:4000000000,backupDirectory:resolve('.', 'backups'),fullVerificationIntervalMs:0});
   assert.equal(recordingConfiguration({full_verification_interval_hours:24}).fullVerificationIntervalMs,86400000);
   for (const full_verification_interval_hours of [-1, '24', 8761, true]) assert.throws(() => recordingConfiguration({full_verification_interval_hours}));
   assert.equal(acquisitionConfiguration().easeeIntervalMs,15000);
@@ -67,28 +67,31 @@ test('recording and acquisition options are independent, configurable and valida
   for(const options of [{max_interval_minutes:5},{unknown:1},{annual_budget_gb:-1},{annual_budget_gb:'10'}])assert.throws(()=>recordingConfiguration(options));
   assert.throws(()=>acquisitionConfiguration({easee_poll_seconds:1}));
 });
-test('recording export directory uses the server account home and accepts only explicit destinations', () => {
-  assert.equal(loadConfig({}, '/missing-repository').recording.exportDirectory, homedir());
-  assert.equal(recordingConfiguration({ export_directory: '~' }).exportDirectory, homedir());
-  assert.equal(recordingConfiguration({ export_directory: '~/database copies' }).exportDirectory, join(homedir(), 'database copies'));
-  assert.equal(recordingConfiguration({ export_directory: '~//database-copies/' }).exportDirectory, join(homedir(), 'database-copies'));
-  assert.equal(recordingConfiguration({ export_directory: '/invented/database-copies/' }).exportDirectory, '/invented/database-copies');
-  for (const export_directory of [null, false, 1, [], {}, '', ' ', 'database-copies', '~another-user', '~another-user/copies', '/invented/\ncopy', '/invented/\0copy'])
-    assert.throws(() => recordingConfiguration({ export_directory }), /export_directory/);
+test('recording backup directory defaults to persistent database storage and validates explicit destinations', () => {
+  assert.equal(loadConfig({}, '/missing-repository').recording.backupDirectory, '/missing-repository/var/backups');
+  assert.equal(loadConfig({ STMQ_ADDON: '1' }, '/missing-repository').recording.backupDirectory, '/config/st-mq/backups');
+  assert.equal(recordingConfiguration({ backup_directory: '' }, { databaseDir: '/invented/data' }).backupDirectory, '/invented/data/backups');
+  assert.throws(() => recordingConfiguration({ export_directory: '/invented/copies' }), /Unsupported recording/);
+  assert.equal(recordingConfiguration({ backup_directory: '~' }).backupDirectory, homedir());
+  assert.equal(recordingConfiguration({ backup_directory: '~/database copies' }).backupDirectory, join(homedir(), 'database copies'));
+  assert.equal(recordingConfiguration({ backup_directory: '~//database-copies/' }).backupDirectory, join(homedir(), 'database-copies'));
+  assert.equal(recordingConfiguration({ backup_directory: '/invented/database-copies/' }).backupDirectory, '/invented/database-copies');
+  for (const backup_directory of [null, false, 1, [], {}, ' ', 'database-copies', '~another-user', '~another-user/copies', '/invented/\ncopy', '/invented/\0copy'])
+    assert.throws(() => recordingConfiguration({ backup_directory }), /backup_directory/);
 });
 test('sparse recording destination overrides preserve public budget defaults and reject invalid sources', t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-export-config-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'fixture.json');
-  const source = JSON.stringify({ recording: { export_directory: '~/database-copies' } });
+  const source = JSON.stringify({ recording: { backup_directory: '~/database-copies' } });
   writeFileSync(path, source, { mode: 0o600 });
   const config = loadConfig({ STMQ_CONFIG: path }, directory);
-  assert.deepEqual(config.recording, { annualBudgetBytes: 10_000_000_000, exportDirectory: join(homedir(), 'database-copies'), fullVerificationIntervalMs: 0 });
+  assert.deepEqual(config.recording, { annualBudgetBytes: 10_000_000_000, backupDirectory: join(homedir(), 'database-copies'), fullVerificationIntervalMs: 0 });
   assert.equal(readFileSync(path, 'utf8'), source);
-  for (const export_directory of [null, false, '', 'relative/copies']) {
-    const invalid = JSON.stringify({ recording: { export_directory } });
+  for (const backup_directory of [null, false, 'relative/copies']) {
+    const invalid = JSON.stringify({ recording: { backup_directory } });
     writeFileSync(path, invalid, { mode: 0o600 });
-    assert.throws(() => loadConfig({ STMQ_CONFIG: path }, directory), /export_directory/);
+    assert.throws(() => loadConfig({ STMQ_CONFIG: path }, directory), /backup_directory/);
     assert.equal(readFileSync(path, 'utf8'), invalid);
   }
 });

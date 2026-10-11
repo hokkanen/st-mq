@@ -2,6 +2,7 @@ import { resolve, isAbsolute } from 'node:path';
 import { isIP } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { lookup } from 'node:dns/promises';
+import { backupDirectory } from '../storage/backup-directory.js';
 
 const invalid = name => new Error(`Invalid pair setting: ${name}`);
 
@@ -24,6 +25,7 @@ export function pairConfiguration(input = {}, env = {}, config = {}) {
   const directory = resolve(text(env.STMQ_PAIR_DIR ?? (input.directory || resolve(config.dataDir ?? '.', 'pairing')), 'directory'));
   const settings = {
     directory,
+    snapshotExportDirectory: resolve(backupDirectory(config), 'pair-exports'),
     snapshotDirectory: resolve(text(env.STMQ_PAIR_SNAPSHOT_DIR
       ?? (input.snapshot_directory || resolve(config.databaseDir ?? '.', 'pair-snapshots')), 'snapshot_directory')),
     databasePath: config.dbPath, sourceDirectory: resolve(directory, 'work'),

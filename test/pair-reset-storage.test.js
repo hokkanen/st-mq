@@ -325,7 +325,7 @@ test('reset storage rejects symlinks, unsafe nesting and active paths outside co
     await file(join(outside, 'untouched'), 'unrelated file');
     if (kind === 'file-symlink') await symlink(join(outside, 'untouched'), join(config.pair.directory, 'suspicious.sqlite'));
     if (kind === 'directory-symlink') await symlink(outside, join(config.pair.directory, 'nested'));
-    if (kind === 'archive-symlink') await symlink(outside, archiveRoot(config));
+    if (kind === 'archive-symlink') { await mkdir(dirname(archiveRoot(config)), { recursive: true }); await symlink(outside, archiveRoot(config)); }
     if (kind === 'nested-roots') config.pair.snapshotDirectory = join(config.pair.directory, 'snapshots');
     if (kind === 'outside-active') state.activeDbPath = join(outside, 'untouched');
     await assert.rejects(create('fresh'), { code: 'pair_reset_unsafe_storage' });
@@ -359,7 +359,7 @@ test('explicit configured storage ancestors may be symlinks for both reset choic
     assert.equal(plan.databasePath, actualDatabase);
     assert.equal(plan.pairDirectory, join(physical, 'pairing'));
     assert.equal(plan.snapshotDirectory, join(physical, 'pair-snapshots'));
-    assert.equal(plan.archiveRoot, join(physical, 'reset-archives'));
+    assert.equal(plan.archiveRoot, join(physical, 'backups', 'reset-archives'));
     assert.equal(plan.selectedDbPath, actualDatabase);
     const result = await resume(plan, config);
     assert.equal(await readFile(archived(plan, actualDatabase), 'utf8'), 'history behind configured alias');
@@ -408,7 +408,7 @@ test('configured aliases do not permit symlinks inside pairing storage', async t
   await assert.rejects(create('fresh'), { code: 'pair_reset_unsafe_storage' });
   assert.equal(await readFile(unrelated, 'utf8'), 'unrelated history');
   assert.equal(await readFile(join(physical, 'st-mq.sqlite'), 'utf8'), 'history behind configured alias');
-  await absent(join(physical, 'reset-archives'));
+  await absent(join(physical, 'backups', 'reset-archives'));
 });
 
 test('different configured root spellings cannot resolve to the same physical storage', async t => {
@@ -487,7 +487,7 @@ test('reset request identity, choice, and current configuration fence every retr
     if (kind === 'database-config') expected.config.dbPath = join(root, 'different.sqlite');
     if (kind === 'pair-config') expected.config.pair.directory = join(root, 'different-pair');
     if (kind === 'snapshot-config') expected.config.pair.snapshotDirectory = join(root, 'different-snapshots');
-    if (kind === 'archive-config') expected.config.dataDir = join(root, 'different-data');
+    if (kind === 'archive-config') expected.config.recording = { backupDirectory: join(root, 'different-backups') };
     const before = await readdir(plan.archiveDirectory);
     await assert.rejects(resumeResetArchive(plan.archiveDirectory, expected), { code: 'pair_reset_unsafe_storage' });
     assert.deepEqual(await readdir(plan.archiveDirectory), before);
@@ -496,7 +496,7 @@ test('reset request identity, choice, and current configuration fence every retr
 });
 
 test('Home Assistant archives use the accessible app-config root', () => {
-  assert.equal(archiveRoot({ addon: true, dataDir: '/data/st-mq', databaseDir: '/config/st-mq' }), '/config/reset-archives');
+  assert.equal(archiveRoot({ addon: true, dataDir: '/data/st-mq', databaseDir: '/config/st-mq' }), '/config/st-mq/backups/reset-archives');
 });
 
 test('cross-filesystem archive verifies and commits the copy before retiring the source', async t => {

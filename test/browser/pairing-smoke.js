@@ -415,7 +415,7 @@ try {
       assert.equal(await evaluate(`${selector}.checkVisibility()`), true, `${role} keeps ${id} visible`);
     }
     assert.equal(await evaluate("[...document.querySelectorAll('[data-write-control]')].flatMap(node => node.matches('button,input,select,textarea') ? [node] : [...node.querySelectorAll('button,input,select,textarea')]).every(node => node.disabled)"), true, `${role} disables every mutation control`);
-    await evaluate("document.getElementById('connections-details').open = true; document.getElementById('controls-details').open = true; document.getElementById('recording-details').open = true; document.getElementById('database-export-details').open = true; true");
+    await evaluate("document.getElementById('connections-details').open = true; document.getElementById('controls-details').open = true; document.getElementById('recording-details').open = true; document.getElementById('recording-backup-card').open = true; document.getElementById('database-export-details').open = true; true");
     assert.equal(await evaluate(`${$('settings-reload')}.disabled`), true);
     assert.equal(await evaluate(`${$('database-export-save')}.disabled`), true);
     assert.equal(await evaluate(`${$('database-export-download')}.disabled`), false, 'Read-only database download stays available');

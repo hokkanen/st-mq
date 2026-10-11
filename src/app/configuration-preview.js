@@ -23,6 +23,7 @@ const effectiveFields = [
   ['controller.web_family_token', c => c.familyToken],
   ['controller.max_drop_c', c => c.settings?.comfort?.maxDropC],
   ['controller.h66_device', c => c.deviceId], ['controller.h66_verification_file', c => c.h66Verification],
+  ['recording.backup_directory', c => c.recording?.backupDirectory],
   ...Object.entries({ directory: 'directory', ssh_host: 'sshHost', ssh_config: 'sshConfigPath', remote_directory: 'remoteDirectory',
     receiver_path: 'receiverPath', node_path: 'nodePath', rsync_path: 'rsyncPath', remote_rsync_path: 'remoteRsyncPath' })
     .map(([field, key]) => [`mirror.${field}`, c => c.mirror?.[key]]),
@@ -37,7 +38,9 @@ const effectiveFields = [
 ];
 const startupKeys = ['topology', 'role', 'input', 'host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'addon', 'mirror', 'pair'];
 export function configurationRestartRequired(before, after) {
-  return startupKeys.filter(key => !isDeepStrictEqual(before[key], after[key]));
+  const keys = startupKeys.filter(key => !isDeepStrictEqual(before[key], after[key]));
+  if (!isDeepStrictEqual(before.recording?.backupDirectory, after.recording?.backupDirectory)) keys.push('recording.backup_directory');
+  return keys;
 }
 const effectiveSnapshot = config => {
   const { configuration: _information, ...runtime } = config;

@@ -490,7 +490,7 @@ export class Engine {
     this.config = config;
     this.clock = clock;
     this.canControl = canControl;
-    const { exportDirectory, fullVerificationIntervalMs, ...recorderConfig } = config.recording ?? {};
+    const { backupDirectory, fullVerificationIntervalMs, ...recorderConfig } = config.recording ?? {};
     this.recorder = new Recorder(store, { config: recorderConfig, clock });
     const easeeVoltage = config.connections?.easee ?? {};
     const voltageSources = ['mqtt', 'providers'].includes(config.input) ? {

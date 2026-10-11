@@ -183,7 +183,35 @@ function showError(error, { connection = true } = {}) {
   $('error').hidden = false;
   if (connection) $('connection').textContent = 'Connection needs attention';
 }
-const recordingHealth = createRecordingHealth({ document, request: api });
+const recordingHealth = createRecordingHealth({ document, request: api,
+  reviewBackup: options => historyRecovery.open(options), downloadBackup });
+async function downloadBackup(copy) {
+  const path = `/api/recording-backups/download?sourceId=${encodeURIComponent(copy.id)}`;
+  assertWebRequest(webAccess, path, undefined, lastStatus);
+  let output;
+  try {
+    const handle = window.showSaveFilePicker ? await window.showSaveFilePicker({ suggestedName: copy.filename,
+      types: [{ description: 'SQLite database', accept: { 'application/vnd.sqlite3': ['.sqlite'] } }] }) : null;
+    return await session.run(async ({ headers, signal }) => {
+      const response = await fetch(applicationUrl(path), { headers, signal });
+      if (response.status === 401) { lockScreen({ authenticationFailed: true }); throw new Error(authenticationMessage(ingress)); }
+      if (!response.ok) throw new Error('The saved copy could not be downloaded. Refresh the list and try again.');
+      if (handle) {
+        output = await handle.createWritable();
+        await response.body.pipeTo(output); output = undefined;
+        return 'Saved copy downloaded to the selected file.';
+      }
+      const blob = await response.blob(), url = window.URL.createObjectURL(blob), link = document.createElement('a');
+      try { link.href = url; link.download = copy.filename; document.body.append(link); link.click(); }
+      finally { link.remove(); window.setTimeout(() => window.URL.revokeObjectURL(url), 60_000); }
+      return 'Download sent to the browser. Check this device to confirm it was saved.';
+    });
+  } catch (error) {
+    try { await output?.abort(); } catch {}
+    if (error.name === 'AbortError') return 'Download cancelled.';
+    throw error;
+  }
+}
 const fireplacePanel = createFireplacePanel({ document, request: api, storage: sessionStorage,
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh() });
 const heatingExplorer = createHeatingExplorerPanel({ document, request: api,
@@ -959,7 +987,7 @@ async function refresh({ forceChart = false, background = false } = {}) {
     const replaced = snapshot !== lastReplicaSnapshot;
     if (replaced) {
       eventStream.reset(snapshot); auditFetchedAt = 0;
-      void refreshRecordingOverview({ force: true, summary: true });
+      void refreshRecordingOverview({ force: true });
     }
     lastReplicaSnapshot = snapshot;
     if (replica && !replica.available) return;
@@ -1148,12 +1176,13 @@ $('h66-test-form').addEventListener('submit', async event => {
   await refresh();
 });
 const refreshRecordingOverview=recordingOverviewRefresh({request:api,root:$('recording-overview-content'),
-  details:[$('recording-overview-details'),$('recording-storage-details')],parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh'),
+  details:[$('recording-overview-details'),$('recording-disk-card')],parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh'),
+  isVisible: () => dashboardStatusReceived && document.body.dataset.authenticated === 'true' && document.visibilityState !== 'hidden',
   render: (overview, root) => { renderRecordingOverview(overview, root); recordingHealth.inventory(overview); },
   onState: state => recordingHealth.inventoryStatus(state) });
 bindDatabaseExport({ saveButton: $('database-export-save'), downloadButton: $('database-export-download'),
   message: $('database-export-message'), progress: $('database-export-progress'), detail: $('database-export-detail'),
-  window, document, onSettled: () => recordingHealth.refresh(),
+  window, document, onSettled: () => { void recordingHealth.refresh(); void recordingHealth.refreshCopies({ force: true, scan: true }); },
   request: method => {
     assertWebRequest(webAccess, '/api/database-export', method === 'POST' ? {} : undefined, lastStatus);
     assertDashboardWrite('/api/database-export', method === 'POST' ? {} : undefined, lastStatus);
@@ -1183,7 +1212,7 @@ for (const [id, path, filename] of [
     $('floor-download-message').textContent = 'Download ready.';
   } catch (error) { $('floor-download-message').textContent = error.message; }
 });
-for (const id of ['recording-overview-details','recording-storage-details']) $(id).addEventListener('toggle',()=>void refreshRecordingOverview());
+for (const id of ['recording-overview-details','recording-disk-card']) $(id).addEventListener('toggle',()=>void refreshRecordingOverview());
 $('recording-overview-refresh').addEventListener('click',()=>void refreshRecordingOverview({force:true}));
 setInterval(refreshRecordingOverview,60_000);
 let auditFetchedAt = 0, auditBusy = false, auditLoaded = false;
@@ -1203,7 +1232,7 @@ async function refreshAudits() {
   finally { auditBusy=false; }
 }
 $('recording-details').addEventListener('toggle',()=>{
-  if ($('recording-details').open) { renderRecording(lastStatus,$('recording-content')); void refreshRecordingOverview({ summary: true }); void refreshAudits(); }
+  if ($('recording-details').open) { renderRecording(lastStatus,$('recording-content')); void refreshRecordingOverview(); void refreshAudits(); }
 });
 $('energy-audit-details').addEventListener('toggle',refreshAudits);
 setInterval(refreshAudits,60_000);
@@ -1216,7 +1245,7 @@ setInterval(() => { if (!session.locked) historyRecovery.tick(); }, 2000);
 window.addEventListener('online', () => void refresh());
 document.addEventListener('visibilitychange', () => {
   checkCommunication();
-  if (!document.hidden) { void refresh(); void refreshRecordingOverview({ summary: true }); }
+  if (!document.hidden) { void refresh(); void refreshRecordingOverview(); }
 });
 if (session.locked) { $('auth').hidden = ingress; $('connection').textContent = 'Signed out'; if (!ingress) $('token').focus(); }
 else void refresh();

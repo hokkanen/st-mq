@@ -84,17 +84,18 @@ function interval(value, fallback, minimum, maximum, name) {
   return number;
 }
 
-export function recordingConfiguration(input = {}) {
+export function recordingConfiguration(input = {}, { databaseDir = '.' } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('Recording settings must be an object');
-  for (const key of Object.keys(input)) if (!['annual_budget_gb', 'export_directory', 'full_verification_interval_hours'].includes(key))
-    throw new Error(`Unsupported recording setting: ${key}. Recording has no maximum interval.`);
-  const directory = input.export_directory === undefined ? '~' : input.export_directory;
-  if (typeof directory !== 'string' || !directory.trim() || /[\u0000-\u001f\u007f]/.test(directory)
-    || !(directory === '~' || directory.startsWith('~/') || isAbsolute(directory)))
-    throw new Error('Invalid recording setting: export_directory must be an absolute path, ~ or ~/ followed by a directory.');
+  for (const key of Object.keys(input)) if (!['annual_budget_gb', 'backup_directory', 'full_verification_interval_hours'].includes(key))
+    throw new Error('Unsupported recording setting. Use annual_budget_gb, backup_directory or full_verification_interval_hours.');
+  const directory = input.backup_directory === undefined ? '' : input.backup_directory;
+  if (typeof directory !== 'string' || directory !== '' && !directory.trim() || /[\u0000-\u001f\u007f]/.test(directory)
+    || !(directory === '' || directory === '~' || directory.startsWith('~/') || isAbsolute(directory)))
+    throw new Error('Invalid recording setting: backup_directory must be empty for the database backups folder, an absolute path, ~ or ~/ followed by a directory.');
   return {
     annualBudgetBytes: Math.round(interval(input.annual_budget_gb, 10, 0.01, 10000, 'annual_budget_gb') * 1_000_000_000),
-    exportDirectory: directory.startsWith('~') ? resolve(`${homedir()}${directory.slice(1)}`) : resolve(directory),
+    backupDirectory: directory === '' ? resolve(databaseDir, 'backups')
+      : directory.startsWith('~') ? resolve(`${homedir()}${directory.slice(1)}`) : resolve(directory),
     fullVerificationIntervalMs: Math.round(interval(input.full_verification_interval_hours, 0, 0, 8760, 'full_verification_interval_hours') * 3_600_000),
   };
 }
@@ -344,7 +345,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     floorPreheat,
     control: { ...controlConfiguration(options.controller),
       indoorSensorWeights: indoorSensorWeightsConfiguration(options.controller?.indoor_sensor_weights, options) },
-    recording: recordingConfiguration(options.recording),
+    recording: recordingConfiguration(options.recording, { databaseDir }),
     acquisition: acquisitionConfiguration(options.acquisition),
     h66: { enabled: !mirrorSlave && Boolean(env.STMQ_H66_DEVICE ?? options.controller?.h66_device), writeEnabled: !mirrorSlave,
       maxAgeMs: H66_MAX_AGE_MS, readbackTimeoutMs: 10000, snapshotIntervalMs: 60000,

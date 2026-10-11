@@ -259,24 +259,25 @@ test('recording presentation keeps different units, policies and ambiguous curre
 });
 
 
-test('opening the recording summary measures retained size through the same bounded inventory request',async()=>{
+test('opening Recording details leaves inventory idle until a data fold is expanded',async()=>{
   let calls=0,resolve;
   const view=fixture(()=>{calls++;return new Promise(done=>{resolve=done;});});
-  await view.refresh({summary:true});assert.equal(calls,0,'closed outer summary never requests inventory');
-  view.parent.open=true;view.visibility(false);
-  await view.refresh({summary:true});assert.equal(calls,0,'hidden page never scans for a summary');
+  view.parent.open=true;
+  await view.refresh();assert.equal(calls,0,'the outer section alone does not scan retained data');
+  view.storage.open=true;view.visibility(false);
+  await view.refresh();assert.equal(calls,0,'hidden pages do not scan expanded storage');
   view.visibility(true);
-  const pending=view.refresh({summary:true});
-  assert.equal(calls,1);assert.equal(view.details.open,false,'summary does not open the full inventory');
+  const pending=view.refresh();assert.equal(calls,1);
   assert.deepEqual(view.states,['loading']);
-  await view.refresh({summary:true,force:true});assert.equal(calls,1,'summary and full inventory share the in-flight gate');
+  view.details.open=true;
+  await view.refresh({force:true});assert.equal(calls,1,'storage and dataset folds share the in-flight gate');
   const overview={generatedAt:0,groups:[],database:{adaptiveEstimatedBytes:1234},refreshAfterMs:300000};
   resolve(overview);await pending;
   assert.deepEqual(view.renders,[overview]);assert.deepEqual(view.states,['loading','ready']);
-  await view.refresh({summary:true});assert.equal(calls,1,'reopening uses the five-minute cache');
-  view.details.open=true;await view.refresh();assert.equal(calls,1,'opening the other-data fold reuses the same measured inventory');
-  view.details.open=false;view.advance(300001);
-  await view.refresh();assert.equal(calls,1,'routine refresh does not scan for a closed inventory');
-  const next=view.refresh({summary:true});assert.equal(calls,2,'an explicit later summary opening refreshes expired evidence');
+  await view.refresh();assert.equal(calls,1,'expanded folds reuse the five-minute cache');
+  view.details.open=false;view.storage.open=false;view.advance(300001);
+  await view.refresh({force:true});assert.equal(calls,1,'even an explicit refresh does not scan closed inventory');
+  view.details.open=true;
+  const next=view.refresh();assert.equal(calls,2,'reopening an evidence fold refreshes expired inventory');
   resolve(overview);await next;
 });

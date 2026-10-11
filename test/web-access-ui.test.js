@@ -23,6 +23,8 @@ test('family requests allow household controls and reads while all other writes 
   ]) assert.equal(webRequestAllowed(family, path, data, status), true, path);
   for (const [path, data] of [
     ['/api/database-export'], ['/api/database-export', {}], ['/api/downloads/floor-preheat-guide'],
+    ['/api/recording-backups'], ['/api/recording-backups?refresh=true'], ['/api/recording-backups/download?sourceId=example'],
+    ['/api/recording-backups/verify', { sourceId: 'a'.repeat(64) }],
     ['/api/settings/preview', {}], ['/api/settings/reload', {}], ['/api/sensor-changes', {}], ['/api/sensor-changes/retry-rebuild', {}],
     ['/api/equipment/switch', { deviceId: 'door', on: true }], ['/api/equipment/test', {}], ['/api/equipment/dehumidifier', {}],
     ['/api/equipment/h66', {}], ['/api/garage/native', {}], ['/api/pair/action', {}], ['/api/charging/ocpp-setup', {}],

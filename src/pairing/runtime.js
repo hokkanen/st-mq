@@ -11,6 +11,7 @@ import { databaseCheckpoint } from '../replication/incremental.js';
 import { peerOperation } from '../replication/coalesced.js';
 import { adoptJournalDatabase, checkpointMetadata } from '../replication/journal-publication.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
+import { backupDirectory } from '../storage/backup-directory.js';
 import { requireLocalBroker } from './config.js';
 import { PairManager, startupFailureDiagnostic } from './manager.js';
 import { ocppHandoverHooks } from './ocpp.js';
@@ -342,7 +343,8 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
         source: { id: 'peer', kind: 'peer', label: 'Paired computer' }, requestId, verifyWithFullSnapshot });
     },
   };
-  const makeManager = state => managerFactory({ config: config.pair, hooks, clock, ...managerOptions, ...(state ? { state } : {}) });
+  const makeManager = state => managerFactory({ config: { ...config.pair,
+    snapshotExportDirectory: join(backupDirectory(config), 'pair-exports') }, hooks, clock, ...managerOptions, ...(state ? { state } : {}) });
   manager = makeManager();
 
   function assertReset(input) {

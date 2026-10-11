@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -14,6 +14,7 @@ test('keep reset preserves an interrupted seed as evidence and starts a new peer
   const config = { ...loadConfig({ XDG_CONFIG_HOME: root, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, root),
     input: 'mqtt', role: 'slave', topology: 'pair', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
   config.charging.vehicles.bmw.mqttTopic = '';
+  config.recording = { ...config.recording, backupDirectory: join(root, 'managed-copies') };
   config.garage = { ...config.garage, enabled: false, adapter: {}, sender: {} };
   config.pair = { directory: join(directory, 'pairing'), databasePath: config.dbPath,
     snapshotDirectory: join(directory, 'pair-snapshots'), platform: 'ubuntu', pairId: 'synthetic-reset-peer',
@@ -44,7 +45,12 @@ test('keep reset preserves an interrupted seed as evidence and starts a new peer
   assert.equal(app.pair.canControl(), false);
   const archive = result.result.archiveDirectory, plan = JSON.parse(await readFile(join(archive, 'reset.json'), 'utf8'));
   const archived = source => join(archive, plan.entries.find(entry => entry.source === source).destination);
-  assert.deepEqual(await readFile(archived(previous.pending.sourcePath)), sourceBytes);
+  assert.equal(previous.pending.sourcePath.startsWith(join(config.recording.backupDirectory, 'pair-exports') + '/'), true);
+  assert.equal(plan.entries.some(entry => entry.source === previous.pending.sourcePath), false,
+    'The managed immutable repository remains separate from raw reset storage');
+  assert.deepEqual(await readFile(previous.pending.sourcePath), sourceBytes,
+    'Reset preserves the pinned seed at its captured immutable generation');
+  await access(previous.pending.sourcePath.replace(/\.sqlite$/, '.pin'));
   assert.deepEqual(await readFile(archived(previous.pending.path)), spoolBytes);
   const kept = await peerOperation('anchor', { dbPath: app.pair.state.value.activeDbPath });
   assert.equal(kept.pending, null, 'the kept copy belongs to the reset pairing, not the archived pending delivery');

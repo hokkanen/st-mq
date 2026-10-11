@@ -181,11 +181,11 @@ test('reviewed apply rejects changes on disk and baseline replacements before re
   assert.doesNotMatch(JSON.stringify(app.store.events()), new RegExp(`${old.reviewId}|${fresh.reviewId}|${first.reviewId}`));
 });
 
-test('database saves use the latest configured directory after reload and retain it when validation fails', async t => {
+test('managed backup folder changes require restart and preserve existing destinations', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-export-reload-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const first = join(directory, 'first'), second = join(directory, 'second');
-  const { app, base, headers, write, post } = await setup(t, { recording: { export_directory: first } });
+  const { app, base, headers, write, post } = await setup(t, { recording: { backup_directory: first } });
   const listener = app.server;
   const save = async destination => {
     const response = await fetch(`${base}/api/database-export`, { method: 'POST', headers, body: '{}' });
@@ -193,18 +193,20 @@ test('database saves use the latest configured directory after reload and retain
     const saved = await response.json();
     assert.equal(saved.path, join(destination, saved.filename));
     assert.equal(existsSync(saved.path), true);
-    assert.equal(Object.hasOwn(app.engine.recorder.config, 'exportDirectory'), false);
+    assert.equal(Object.hasOwn(app.engine.recorder.config, 'backupDirectory'), false);
     return saved;
   };
   const original = await save(first);
-  write({ recording: { export_directory: second } });
-  assert.equal((await post()).status, 200);
+  write({ recording: { backup_directory: second } });
+  const blocked = await post();
+  assert.equal(blocked.status, 400);
+  assert.match((await blocked.json()).error, /restart/i);
   assert.equal(app.server, listener);
-  await save(second);
+  await save(first);
   assert.equal(existsSync(original.path), true);
-  write({ recording: { export_directory: 'relative/directory' } });
+  write({ recording: { backup_directory: 'relative/directory' } });
   assert.equal((await post()).status, 400);
-  await save(second);
+  await save(first);
 });
 
 function fakeMqtt() {

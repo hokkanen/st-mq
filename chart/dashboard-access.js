@@ -8,6 +8,8 @@ export const readOnlyMessage = 'View only: database edits, settings changes and 
 export function assertDashboardWrite(path, data, status) {
   if (data === undefined || isPairManagementRequest(path, data, status)) return;
   if (status && path === '/api/database-verification' && data && typeof data === 'object' && !Array.isArray(data) && !Object.keys(data).length) return;
+  if (status && path === '/api/recording-backups/verify' && data && typeof data === 'object' && !Array.isArray(data)
+    && Object.keys(data).join(',') === 'sourceId' && /^[a-f0-9]{64}$/.test(data.sourceId ?? '')) return;
   if (!status || isReadOnlyReplica(status)) throw Object.assign(new Error(status ? readOnlyMessage
     : 'Wait for the installation status before making changes.'), { status: 403 });
 }

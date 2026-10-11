@@ -7,7 +7,7 @@ export const recordKey = (table, row) => table === 'import_rows' ? `${row.import
 export function recoverySource(source) {
   if (!source || typeof source !== 'object' || Array.isArray(source)
     || Object.keys(source).some(key => !['kind', 'label'].includes(key))
-    || !['peer', 'upload', 'backup', 'reset'].includes(source.kind)
+    || !['peer', 'upload', 'backup', 'reset', 'protected'].includes(source.kind)
     || typeof source.label !== 'string' || !source.label.trim() || source.label.length > 160 || /[\x00-\x1f\x7f\\/]/.test(source.label))
     throw new TypeError('Recovery source metadata is invalid');
   return { kind: source.kind, label: source.label };

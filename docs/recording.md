@@ -1345,9 +1345,8 @@ heating, hot-water, ground-loop, settings, equipment, runtime, electricity, weat
 and learning groups.
 Recorded and calculated roles are separate from model roles.
 
-**Recording details describes stored database contents.** Its compact **At a
-glance** rows show **Recording**, **Storage health**, **Disk space** and
-**Backups**. Each opens its own evidence
+**Recording details describes stored database contents.** Its upper **Recording & storage**
+rows show **Recording**, **Storage health**, **Storage & growth** and **Backups**. Each opens its own evidence
 and explanation; status labels, attention states and the live or recorded-snapshot
 scope remain visible without expanding those details. Opening one status does not
 open the others. Refreshes preserve expanded sections and keyboard focus.
@@ -1360,8 +1359,8 @@ shows **Still settling** during its first week and then names its seven-day
 smoothing. It explicitly excludes forecasting report expiry or next year's
 database size. The adaptive target remains
 next to adaptive growth, never beside total growth as if it were a total cap.
-The prospective adaptive byte counter names its start date. Opening Recording
-details requests the existing cached, read-only inventory in a worker;
+The prospective adaptive byte counter names its start date. Opening **Storage & growth** or **Other recorded data** requests the shared
+cached, read-only inventory in a worker;
 its dated estimate covers all retained adaptive observations, including imported
 or recovered rows and currently excluded recovery evidence. It excludes shared
 indexes, page slack and other tables, so it cannot be subtracted from physical
@@ -1390,12 +1389,17 @@ not physical identity, provenance, control permission or energy accounting.
 
 ### Recording and backup health
 
-**At a glance** groups four expandable summaries: **Recording**, **Storage
-health**, **Disk space** and **Backups**. Each shows a concise state and its
+**Recording & storage** groups four expandable summaries: **Recording**, **Storage
+health**, **Storage & growth** and **Backups**. Each shows a concise state and its
 evidence; explanations stay inside the corresponding fold. Storage health
 describes the current writer and observed delays or failures, while disk space
 describes filesystem capacity. Database allocation and growth figures have their
-single home in **Storage & growth** below the health overview.
+single home in the upper **Storage & growth** fold, alongside available disk space.
+**Recorded data** contains Adaptive measurements, Other recorded data and Recorded
+energy checks; it does not repeat a storage fold. The subtitle names this server
+and distinguishes live recording, simulation, a read-only replica and a history
+viewer. Local disk and saved-copy information describe this server, even when
+its recorded history came from another computer.
 
 The dashboard shows a compact **Recording and storage** summary below its context
 line for 15 seconds after the first successful health response. It then disappears
@@ -1442,24 +1446,55 @@ hides write failures or a stalled loop. **Monitoring active** means some observe
 recording evidence is usable; individual missing sources remain visible in the
 recording details. **Last source check** dates a source polling attempt, including
 an unavailable result, and does not claim a saved measurement or successful write.
-This summary is an early warning, not an integrity check or proof that every
-measurement was physically correct or that every expected source was recorded.
+The expanded Recording fold shows the last completed loop update and any
+unavailable, stale, failed, unknown or held-attention streams observed in this run.
+Counts describe observed streams, not all configured sources: a never-seen source
+can be absent. Source checks retain their own timestamps; unchanged readings and
+open energy intervals need no new observation rows. Storage health separately dates
+the last successful storage write, which can save settings or events as well as
+measurements. This summary is an early warning, not an integrity check or proof
+that every measurement was physically correct or every expected source recorded.
 
-Backup status lists known saved exports and completed reset-archive backups using
-bounded metadata discovery, cached for five minutes. Listing a file does not verify
-its current contents. Manual export progress and failures are reported separately;
-completion receipts persist when the writable database permits, while an in-memory
-receipt remains available if persistence fails. Download completion proves transfer
-to the browser, not durable saving or continued availability on the receiving device.
-Copies elsewhere and separately invoked CLI backups may be unknown to this panel.
-There is no scheduled backup, age-based overdue rule or automatic retry. Backup age
-is shown so the owner can assess the history since that copy.
+The **Backups** fold lists managed local copies, their filenames, sizes and dates,
+with the configured folder and the list's own check time. One shared bounded catalog
+also supplies History recovery. Manual exports and complete reset bundles use
+`recording.backup_directory`; pinned protected rejoin exports live in that root's
+`pair-exports` repository. Only pinned protected exports count as retained copies; routine
+rolling pairing snapshots and inactive working databases are not portable backups.
+The catalog is cached for five minutes. **Refresh list** explicitly requests new
+metadata discovery. Limits, unavailable locations or changed files produce an
+incomplete-list notice; failed refreshes retain the previous list with its date.
+SQLite exporter metadata is read in a bounded worker, without scanning full history.
+Export dates, original reset-start dates, protected snapshot dates and filesystem
+modification times have different labels. An interrupted reset retains its original
+date when resumed; this date is not the later verification or snapshot clock.
+
+Listing does not recheck a file's integrity. **Verified during creation** describes
+exporter or reset-publication evidence, not the bytes today; the exact creation-check
+time is not recorded. **Verify** checks the
+selected copy with the shared full verifier, retaining a dated result for that file
+identity; replacement or modification invalidates the displayed result. A check
+never imports history or grants control authority. **Download** transfers the
+selected file; **Review history** opens the existing source review before recovery.
+The folder and file inventory, verification and downloads require admin access.
+Verification and downloads of existing copies remain available on a read-only
+server. Recovery and saving a new local copy retain their active-master checks.
+
+Manual export progress and failures are separate from the inventory. Completion
+receipts persist when the writable database permits; an in-memory receipt remains
+available if persistence fails. Browser download activity never replaces the latest
+saved-copy date or count. A completed download proves transfer to the browser,
+not durable saving or continued availability on its device. Files elsewhere,
+arbitrary CLI output names and Home Assistant-managed backups are not silently
+claimed by the catalog. Existing files are never moved into the new backup root.
+Use explicit file selection for supported copies outside it. There is no scheduled
+backup, automatic retry, age-based overdue rule or automatic deletion.
 
 Ordinary history recovery does **not** create a retained full backup of the master
 first. Recovery preserves imported evidence and reversal provenance. Pairing uses
 rolling snapshots and protects divergent history; neither is an independent dated
 backup. Reset archives and explicit manual exports retain portable copies under
-their existing workflows. Keep an independent copy on separate storage to protect
+their owning workflows. Keep an independent copy on separate storage to protect
 against failure of the database disk.
 
 `GET /api/recording-health` is an authenticated read-only endpoint independent of
@@ -1469,9 +1504,9 @@ without claiming zero free bytes or blocking ordinary control. A stopped process
 unreachable dashboard or complete host failure cannot report its own condition.
 
 The **Other recorded data** fold appears immediately after **Adaptive measurements**,
-followed by **Recorded energy checks**. **Export database** and **History recovery**
-are grouped separately as history tools. Each tool retains its own fold, with
-its explanation and actions inside. The data inventory describes the remaining
+followed by **Recorded energy checks**. **Export database** lives inside **Backups**, alongside the copy list.
+**History recovery** and **Verify database** remain under **History tools**, with
+their explanations and actions inside their own folds. The data inventory describes the remaining
 datasets using field lists, counts, available dates and the way each dataset is
 updated; database size figures stay in **Storage & growth**. Groups cover:
 
@@ -1506,8 +1541,8 @@ to the selected complete model epoch; other retained epochs have their own count
 No recovery names, private source paths, fingerprints or record payloads are exposed
 by this inventory.
 
-Database inventory queries are read-only. Opening Recording details requests the
-cached inventory; it refreshes while **Storage & growth** or **Other recorded data**
+Database inventory queries are read-only. Opening the outer Recording details
+fold alone performs no full inventory query. The shared cached inventory refreshes while **Storage & growth** or **Other recorded data**
 is open. Both folds share one request and cache. A bounded worker query keeps large inventories out of the live
 control loop. Expand/collapse state survives updates. Meter-accuracy details
 show the property cumulative-meter check and the Charger 1 session summary
@@ -1912,15 +1947,14 @@ results do not grant device authority or replace an independent dated backup.
 
 ## Single-file database export
 
-Open **Recording details → Export database** and choose:
+Open **Recording details → Backups → Export database** and choose:
 
-- **Save local copy** saves on the server, in `recording.export_directory`.
-  The default `"~"` means the home folder of the operating-system account running
-  the application, including inside a Home Assistant app/container. Set an absolute path or
-  a home-relative path such as `"~/database-exports"` in configuration to choose
-  another location. For Home Assistant, use `/config/st-mq/exports` or
-  `/share/st-mq`; the container account's home is not a persistent app mount.
-  The saved file's full path is shown after success.
+- **Save local copy** saves on the server, in `recording.backup_directory`.
+  Its default empty setting selects `<database directory>/backups`, including
+  `/config/st-mq/backups` on Home Assistant. An explicitly configured absolute or
+  home-relative directory selects another root. The folder also contains reset
+  bundles and the paired export repository; changing it requires restart. Existing
+  copies stay intact in their original locations. The saved path is shown after success.
 - **Download database** saves to the browser's computer. Supporting browsers
   prompt for a destination and stream directly to the selected file. Other
   browsers buffer the response and use their usual download settings.
@@ -2010,7 +2044,7 @@ prove corruption, and these timings do not grant device authority.
 
 ### Storage health
 
-The **Storage health** summary belongs to **At a glance**. Opening it shows the
+The **Storage health** summary belongs to **Recording & storage**. Opening it shows the
 current backlog, average and worst queue wait, failed save attempts, queue-full
 refusals and MQTT device commands known not to have been sent because recording
 blocked them. It uses the existing authenticated health responses and updates with

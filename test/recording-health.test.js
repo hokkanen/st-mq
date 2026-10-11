@@ -22,9 +22,14 @@ function fixture(options = {}) {
   const parameter = { observedThisRun: true, signal: 'indoor_temperature', lastPollAt: now,
     freshness: { status: 'held', sourceObservedAt: now, maxAgeMs: null } };
   const current = { input: 'mqtt', recording: { parameters: [], exactParameters: [parameter] } };
-  const config = { dbPath: store.path, recording: { exportDirectory: '/invented/exports' } };
-  const health = createRecordingHealth({ clock: () => now, getConfig: () => config,
-    filesystem: async () => capacity(), savedBackups: async () => [], ...options });
+  const config = { dbPath: store.path, recording: { backupDirectory: '/invented/backups' } };
+  const { listBackups = async () => [], ...healthOptions } = options;
+  const backupCatalog = { invalidate() {}, async list() {
+    return { copies: (await listBackups()).map(row => ({ kind: 'backup', fileModifiedAt: row.createdAt, ...row })),
+      complete: true, reasons: [], checkedAt: now };
+  } };
+  const health = createRecordingHealth({ clock: () => now, getConfig: () => config, backupCatalog,
+    filesystem: async () => capacity(), ...healthOptions });
   return { health, store, engine, current, parameter, config, state,
     status: (overrides = {}) => health.status({ store, engine, current, ...overrides }),
     advance: ms => { now += ms; }, now: () => now };
@@ -113,6 +118,62 @@ test('source checks do not imply saved observations or complete source coverage'
   result = await f.status();
   assert.equal(result.recording.state, 'source-unavailable', 'historical-only evidence cannot keep live recording healthy');
   assert.equal(result.recording.lastSourceCheckAt, start, 'a source check can report unavailable evidence');
+});
+
+test('source exceptions describe observed streams without exposing private identities or inventing complete coverage', async () => {
+  const f = fixture();
+  f.current.recording.parameters = [{ observedThisRun: true, signal: 'outdoor_temperature', unit: '°C',
+    source: 'private-device-identity', device: 'private-device-identity', lastPollAt: start,
+    freshness: { status: 'unavailable', sourceObservedAt: null } }];
+  f.parameter.freshness.status = 'held-attention';
+  const { recording } = await f.status();
+  assert.equal(recording.state, 'ok');
+  assert.equal(recording.lastLoopCompletedAt, start);
+  assert.equal(recording.sources.observedStreams, 2);
+  assert.equal(recording.sources.usableStreams, 1);
+  assert.equal(recording.sources.attentionStreams, 2);
+  assert.equal(recording.sources.complete, false);
+  assert.deepEqual(recording.sources.issues.map(row => row.status), ['unavailable', 'held-attention']);
+  assert.equal(recording.sources.issues[0].label, 'Outdoor temperature');
+  assert(!JSON.stringify(recording).includes('private-device-identity'));
+  f.current.recording.parameters[0].signal = 'private_household_label';
+  f.current.recording.parameters[0].unit = 'private-unit';
+  f.current.recording.parameters[0].freshness = { status: 'recorded-interval', sourceObservedAt: start };
+  f.advance(6 * MINUTE); f.engine.latestStatus.now = f.now();
+  const expired = (await f.status()).recording.sources.issues[0];
+  assert.equal(expired.status, 'stale');
+  assert.equal(expired.label, 'Recorded measurement');
+  assert(!JSON.stringify(expired).includes('private'));
+  const replica = await f.status({ readOnly: true });
+  assert.equal(replica.recording.sources, null);
+  assert.equal(replica.recording.lastLoopCompletedAt, null);
+});
+
+test('simulated input is explicitly distinguished from live recording', async () => {
+  const f = fixture(); f.current.input = 'simulated';
+  assert.equal((await f.status()).scope, 'simulated');
+  assert.equal((await f.status({ readOnly: true })).scope, 'snapshot');
+});
+
+test('a newer download cannot replace a saved-copy date, and failed catalog refresh preserves dated evidence', async () => {
+  let broken = false;
+  const old = start - 86_400_000;
+  const f = fixture({ backupCatalog: { invalidate() {}, async list() {
+    if (broken) throw new Error('private storage path');
+    return { copies: [{ kind: 'backup', createdAt: old, bytes: 7 }], complete: true, reasons: [], checkedAt: start };
+  } } });
+  const original = await f.status();
+  f.health.backupEvent({ operationId: 'download', phase: 'complete', kind: 'download', at: start }, f.store);
+  const downloaded = await f.status();
+  assert.equal(downloaded.backup.latestAt, old);
+  assert.equal(downloaded.backup.downloadAt, start);
+  assert.equal(downloaded.backup.count, 1);
+  broken = true;
+  const stale = await f.status();
+  assert.equal(stale.backup.state, 'unknown');
+  assert.equal(stale.backup.latestAt, old);
+  assert.equal(stale.backup.catalogCheckedAt, original.backup.catalogCheckedAt);
+  assert(!JSON.stringify(stale).includes('private storage path'));
 });
 
 test('replacement engines and resumed local recording receive their own initial source wait', async () => {
@@ -206,13 +267,14 @@ test('nullable source clocks, unavailable diagnostics and supported freshness po
 test('disk and catalog refreshes are coalesced and failed filesystem checks do not become zero bytes', async () => {
   let diskCalls = 0, catalogCalls = 0;
   const f = fixture({ filesystem: async () => { diskCalls++; throw new Error('/private/path'); },
-    savedBackups: async () => { catalogCalls++; return []; } });
+    listBackups: async () => { catalogCalls++; return []; } });
   const results = await Promise.all([f.status(), f.status(), f.status()]);
   assert.equal(diskCalls, 1); assert.equal(catalogCalls, 1);
   assert.equal(results[0].disk.state, 'unknown'); assert.equal(results[0].disk.freeBytes, null);
   assert(!JSON.stringify(results).includes('/private/path'));
   await f.status(); assert.equal(diskCalls, 1);
-  f.advance(MINUTE); await f.status(); assert.equal(diskCalls, 2); assert.equal(catalogCalls, 1);
+  f.advance(MINUTE); await f.status(); assert.equal(diskCalls, 2);
+  assert.equal(catalogCalls, 3, 'the shared catalog owns metadata caching, independently of health');
 });
 
 test('a hung filesystem refresh cannot relabel old free-space evidence as a current healthy check', async () => {
@@ -227,7 +289,7 @@ test('a hung filesystem refresh cannot relabel old free-space evidence as a curr
 
 test('backup discovery is not verification and no age-based schedule or automatic copy is invented', async () => {
   const old = start - 365 * 86_400_000;
-  const f = fixture({ savedBackups: async () => [{ path: '/private/household.sqlite', createdAt: old, bytes: 7 }] });
+  const f = fixture({ listBackups: async () => [{ path: '/private/household.sqlite', createdAt: old, bytes: 7 }] });
   const result = await f.status();
   assert.equal(result.backup.state, 'available'); assert.equal(result.backup.latestAt, old);
   assert.equal(result.backup.latestVerifiedAt, null); assert.equal(result.attention.length, 0);
@@ -237,7 +299,7 @@ test('backup discovery is not verification and no age-based schedule or automati
 
 test('backup completion, cancellation, failure and browser transfer remain separate evidence', async () => {
   const f = fixture();
-  const event = (phase, more = {}) => f.health.backupEvent({ phase, kind: 'download', at: f.now(), ...more }, f.store);
+  const event = (phase, more = {}) => f.health.backupEvent({ operationId: 'download', phase, kind: 'download', at: f.now(), ...more }, f.store);
   event('start'); assert.equal((await f.status()).backup.state, 'running');
   assert.equal(f.state.size, 0, 'a pending backup is not copied into its own snapshot as interrupted');
   event('cancelled'); assert.equal((await f.status()).backup.state, 'none-known');
@@ -246,24 +308,39 @@ test('backup completion, cancellation, failure and browser transfer remain separ
   assert.equal(f.state.get('storage:backup-health').failure.errorCode, 'disk-full');
   f.advance(1); event('start'); event('complete');
   const completed = await f.status();
-  assert.equal(completed.backup.state, 'available'); assert.equal(completed.backup.latestVerifiedAt, null);
-  assert.match(completed.backup.detail, /browser.*cannot be verified/);
+  assert.equal(completed.backup.state, 'none-known'); assert.equal(completed.backup.latestVerifiedAt, null);
+  assert.equal(completed.backup.downloadAt, f.now());
+  assert.equal(completed.backup.count, 0, 'a browser transfer does not become a saved server copy');
 });
 
 test('backup failure survives restart but an empty replacement store cannot inherit it', async () => {
   const f = fixture();
-  f.health.backupEvent({ phase: 'failed', kind: 'saved-copy', at: start, errorCode: 'database_publication_unconfirmed' }, f.store);
-  const restarted = createRecordingHealth({ clock: f.now, savedBackups: async () => [], filesystem: async () => capacity() });
+  f.health.backupEvent({ operationId: 'save', phase: 'failed', kind: 'saved-copy', at: start, errorCode: 'database_publication_unconfirmed' }, f.store);
+  const restarted = createRecordingHealth({ clock: f.now, backupCatalog: { async list() { return { copies: [], reasons: [], complete: true, checkedAt: f.now() }; } }, filesystem: async () => capacity() });
   assert.equal((await restarted.status({ store: f.store })).backup.state, 'failed');
   const fresh = { ...f.store, getState: () => null };
   assert.equal((await restarted.status({ store: fresh })).backup.state, 'none-known');
+});
+
+test('concurrent downloads and repeated cleanup failures cannot clear another still-running copy operation', async () => {
+  const f = fixture();
+  const event = (operationId, kind, phase) => f.health.backupEvent({ operationId, kind, phase, at: f.now() }, f.store);
+  event('save', 'saved-copy', 'start'); f.advance(1);
+  event('download-1', 'download', 'start'); event('download-2', 'download', 'start');
+  event('download-1', 'download', 'complete');
+  event('download-1', 'download', 'failed');
+  assert.equal((await f.status()).backup.state, 'running');
+  event('save', 'saved-copy', 'complete');
+  assert.equal((await f.status()).backup.state, 'running', 'the other download remains active');
+  event('download-2', 'download', 'cancelled');
+  assert.equal((await f.status()).backup.state, 'failed', 'all work ended, while the known transfer failure remains visible');
 });
 
 test('failed write evidence survives broken receipt persistence without exposing SQL or private paths', async () => {
   const f = fixture();
   f.store.writeHealth.failure({ errcode: 13, message: 'private values in /secret/path' });
   f.store.setState = () => { throw new Error('database full'); };
-  f.health.backupEvent({ phase: 'failed', kind: 'saved-copy', at: start, errorCode: '/private/path' }, f.store);
+  f.health.backupEvent({ operationId: 'save', phase: 'failed', kind: 'saved-copy', at: start, errorCode: '/private/path' }, f.store);
   const result = await f.status();
   assert.equal(result.recording.state, 'write-failed'); assert.equal(result.backup.state, 'failed');
   assert(!JSON.stringify(result).includes('/private/path')); assert(!JSON.stringify(result).includes('/secret/path'));

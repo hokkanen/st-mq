@@ -4,6 +4,7 @@ import { chmod, copyFile, lstat, mkdir, mkdtemp, open, opendir, readFile, readdi
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { durableJson, readReplicaPublication, syncDirectory } from '../replication/publication.js';
 import { createDatabaseBackup } from '../storage/backup.js';
+import { backupDirectory } from '../storage/backup-directory.js';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const SHA = /^[a-f0-9]{64}$/;
@@ -29,7 +30,7 @@ const checked = async operation => {
 
 /** Archive storage is accessible through app_config on Home Assistant. */
 export function archiveRoot(config) {
-  return resolve(config.addon ? dirname(config.databaseDir) : config.dataDir, 'reset-archives');
+  return join(backupDirectory(config), 'reset-archives');
 }
 
 /** Resolve only the configured directory boundary, including an absent suffix.
@@ -426,45 +427,58 @@ function resetResult(plan) {
 
 /** Discover only completed current-manifest backups in the configured private
  * archive root. Clients receive opaque IDs; absolute paths remain server-side. */
-export async function listResetBackups(config) {
+export async function scanResetBackups(config, { maxEntries = 4096, maxCopies = 100 } = {}) {
   // Discovery uses only the current archive root. A standalone installation has
   // no pair paths, and changing topology must not hide completed local backups.
   const configuredRoot = archiveRoot(config);
   const root = join(await configuredDirectory(dirname(configuredRoot)), basename(configuredRoot));
   await safeParents(root);
   const info = await present(root);
-  if (!info) return [];
+  if (!info) return { copies: [], complete: true, reasons: [] };
   if (!info.isDirectory() || info.isSymbolicLink()) throw failure('pair_reset_unsafe_storage');
   const result = [];
   const names = [];
-  let examined = 0;
+  let examined = 0, complete = true;
+  const reasons = new Set();
   for await (const entry of await opendir(root)) {
-    if (++examined > 4096) break;
-    if (entry.isDirectory() && /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-f0-9-]{36}$/.test(entry.name)) names.push(entry.name);
+    if (++examined > maxEntries) { complete = false; reasons.add('entry-limit'); break; }
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-f0-9-]{36}$/.test(entry.name)) {
+      if (entry.isDirectory()) names.push(entry.name);
+      else { complete = false; reasons.add('unavailable-archives'); }
+    }
   }
-  for (const name of names.sort().reverse().slice(0, 100)) {
+  if (names.length > maxCopies) { complete = false; reasons.add('copy-limit'); }
+  for (const name of names.sort().reverse().slice(0, maxCopies)) {
     const archiveDirectory = join(root, name);
     try {
       await safeParents(archiveDirectory);
       const manifest = join(archiveDirectory, MANIFEST), info = await lstat(manifest);
-      if (!info.isFile() || info.isSymbolicLink() || info.size > 16 * 1024 * 1024) continue;
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 16 * 1024 * 1024) throw failure();
       const plan = JSON.parse(await readFile(manifest, 'utf8'));
       validatePlan(plan, archiveDirectory);
-      if (!plan.complete || plan.archiveRoot !== root) continue;
+      if (!plan.complete || plan.archiveRoot !== root) { complete = false; reasons.add('unavailable-archives'); continue; }
       for (const item of plan.recoveryBackups) {
         if (item.status !== 'complete') continue;
         const path = join(archiveDirectory, item.destination);
         await safeParents(dirname(path));
         const info = await lstat(path);
-        if (!info.isFile() || info.isSymbolicLink() || info.size !== item.bytes) continue;
+        if (!info.isFile() || info.isSymbolicLink() || info.size !== item.bytes) throw failure();
         result.push({ id: createHash('sha256').update(`${plan.requestId}/${item.destination}`).digest('hex'), path,
           label: `Reset archive · ${new Date(plan.createdAt).toISOString()} · ${basename(item.destination)}`,
-          createdAt: plan.createdAt, bytes: item.bytes, kind: 'reset', digest: item.digest });
-        if (result.length >= 100) return result;
+          createdAt: plan.createdAt, fileModifiedAt: info.mtimeMs, bytes: item.bytes, kind: 'reset', digest: item.digest,
+          verification: { state: 'verified-when-created', at: null } });
+        if (result.length > maxCopies) {
+          return { copies: result.slice(0, maxCopies), complete: false, reasons: [...reasons, 'copy-limit'] };
+        }
       }
-    } catch { /* An invalid or interrupted archive never becomes a donor. */ }
+    } catch { complete = false; reasons.add('unavailable-archives'); /* An invalid archive never becomes a donor. */ }
   }
-  return result;
+  return { copies: result, complete, reasons: [...reasons] };
+}
+
+/** Current-format reset copies remain directly usable by offline callers. */
+export async function listResetBackups(config, options) {
+  return (await scanResetBackups(config, options)).copies;
 }
 
 /** Explicit retry only. Trusted configuration and the persisted reset request

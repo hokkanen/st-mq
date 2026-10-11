@@ -92,7 +92,8 @@ export class PairManager {
     this.peer = peer ?? new PairPeer({ ...config, clock, timeoutMs: Math.min(config.timeoutMs ?? 10000, 10000),
       reportHandlerFailure: (error, operation) => reportPeerFailure(peerFailureDiagnostic(error, operation)),
       handler: (operation, body) => this.handlePeer(operation, body) });
-    this.snapshots = snapshots ?? new SnapshotRepository({ directory: join(config.directory, 'exports'), clock });
+    this.snapshots = snapshots ?? new SnapshotRepository({ directory: config.snapshotExportDirectory
+      ?? join(config.databasePath ? dirname(config.databasePath) : dirname(config.directory), 'backups', 'pair-exports'), clock });
     this.peerTransfers = new PeerTransfers(join(config.directory, 'peer-exports'));
     this.announcementsFactory = announcements ?? createControllerAnnouncements;
     this.activeAllowed = false;
@@ -117,6 +118,10 @@ export class PairManager {
     // An interrupted explicit reset has no usable publication or authority.
     // Only another confirmed reset may resume its archive operation.
     if (this.state.invalid || this.state.value.reset) return this.status();
+    // A captured generation cannot follow a configuration change to another
+    // repository. Check its retained artifact before initialization can prune
+    // exports or acknowledge any new local pairing state.
+    if (this.state.value.release?.preservedSnapshot) await this.preservedReleaseSnapshot();
     await this.snapshots.init();
     await ownedDirectory(this.config.snapshotDirectory, '.st-mq-replica');
     const marker = await open(join(this.config.snapshotDirectory, '.st-mq-paired-receiver'), 'a', 0o600);
@@ -798,6 +803,10 @@ export class PairManager {
       || metadata.claim.epoch !== local.epoch || metadata.digest !== identity?.donorDigest
       || metadata.bytes !== identity?.donorBytes) throw pairError('invalid_pair_state');
     const dbPath = join(this.snapshots.directory, `export-${metadata.generation}.sqlite`);
+    let pin;
+    try { pin = await lstat(join(this.snapshots.directory, `export-${metadata.generation}.pin`)); }
+    catch { throw pairError('snapshot_unavailable'); }
+    if (!pin.isFile() || pin.isSymbolicLink()) throw pairError('snapshot_unavailable');
     await verifySnapshot(dbPath, metadata, this.abort.signal);
     return { ...metadata, dbPath };
   }

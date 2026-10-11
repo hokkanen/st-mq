@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { randomUUID } from 'node:crypto';
 import { publishDatabaseFile } from '../storage/publication.js';
 
 const errors = {
@@ -19,6 +20,7 @@ export function createDatabaseExport({ getDirectory, onBackupEvent = () => {} })
   return async ({ store, response, authorized, save = false }) => {
     if (busy) throw Object.assign(new Error('A database export is already in progress. Retry when it finishes.'), { statusCode: 409 });
     busy = true;
+    const operationId = randomUUID();
     const cancellation = new AbortController();
     const disconnected = () => cancellation.abort();
     response.once?.('close', disconnected);
@@ -26,7 +28,7 @@ export function createDatabaseExport({ getDirectory, onBackupEvent = () => {} })
     const notify = (phase, extra = {}) => {
       backupPhase = phase;
       // Health reporting cannot turn a completed backup into a failed operation.
-      try { onBackupEvent({ phase, kind: save ? 'saved-copy' : 'download', at: Date.now(), ...extra }, store); } catch {}
+      try { onBackupEvent({ operationId, phase, kind: save ? 'saved-copy' : 'download', at: Date.now(), ...extra }, store); } catch {}
     };
     const fail = error => {
       if (response.headersSent || response.destroyed) { response.destroy(); return; }

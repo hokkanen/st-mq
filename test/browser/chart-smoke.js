@@ -89,8 +89,8 @@ let app, ws, command, ownsBrowser=false;
 const pending = new Map(), errors = [], timings = [];
 let id = 0;
 try {
-  const exportDirectory = join(directory, 'database-exports');
-  writeFileSync(join(directory, 'options.json'), JSON.stringify({ recording: { export_directory: exportDirectory } }));
+  const backupDirectory = join(directory, 'database-exports');
+  writeFileSync(join(directory, 'options.json'), JSON.stringify({ recording: { backup_directory: backupDirectory } }));
   const config = loadConfig({ STMQ_CONFIG: join(directory, 'options.json'), STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
   config.priceSettings = { ...config.priceSettings, effectiveDate: '2020-01-01' };
   // Seed this temporary simulation before startup writes its current context,
@@ -275,13 +275,16 @@ try {
     return true;
   })()`);
   await evaluate("document.getElementById('recording-details').open=true; true");
+  assert.equal(await evaluate("window.recordingFixture.requests"),0,'opening Recording details alone leaves full inventory lazy');
+  await evaluate("document.getElementById('recording-disk-card').open=true; true");
   await until("document.getElementById('recording-growth-inventoryAt').textContent.includes('Retained adaptive payload estimate')");
-  assert.equal(await evaluate("document.getElementById('recording-overview-details').open"),false,'opening recording details measures retained adaptive size without opening the complete inventory');
+  await evaluate("document.getElementById('recording-disk-card').open=false; true");
+  assert.equal(await evaluate("document.getElementById('recording-overview-details').open"),false,'opening Storage & growth leaves Other recorded data folded');
   await evaluate("document.getElementById('recording-adaptive-details').open=true; true");
   await until("document.querySelectorAll('#recording-content tr[data-stream-id]').length>0");
   assert.match(await evaluate("document.getElementById('recording-content').textContent"),/How recording is counted/);
   assert.match(await evaluate("document.getElementById('recording-storage-details').textContent"),/Soft target/);
-  assert.equal(await evaluate("document.getElementById('recording-storage-details').open"),false,
+  assert.equal(await evaluate("document.getElementById('recording-disk-card').open"),false,
     'storage detail remains folded when viewing adaptive measurements');
   for(const label of ['Garage rear temperature','Garage front temperature','maximum interval'])
     assert(!await evaluate(`document.getElementById('recording-content').textContent.includes(${JSON.stringify(label)})`));
@@ -305,10 +308,10 @@ try {
   assert.equal(await evaluate("document.activeElement.closest('details').dataset.streamId"),focusedReading);
   assert.equal(await evaluate(`document.querySelector('#recording-content details[data-stream-id="${focusedReading}"]').open`),true,
     'fresh status rendering preserves source disclosure and keyboard focus');
-  assert.equal(await evaluate("window.recordingFixture.requests"),1,'the recording summary measures inventory once; opening the adaptive table and rerendering reuse it');
+  assert.equal(await evaluate("window.recordingFixture.requests"),1,'the merged storage fold measures inventory once; opening the adaptive table and rerendering reuse it');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#recording-details > .recording-section-group')].map(group=>({title:group.querySelector('h3').textContent,folds:[...group.querySelectorAll(':scope > details')].map(node=>node.id)}))"),[
-    {title:'Recorded data',folds:['recording-storage-details','recording-adaptive-details','recording-overview-details','energy-audit-details']},
-    {title:'History tools',folds:['database-export-details','history-recovery-details']},
+    {title:'Recorded data',folds:['recording-adaptive-details','recording-overview-details','energy-audit-details']},
+    {title:'History tools',folds:['history-recovery-details','database-verification-details']},
   ],'recorded data and history actions have distinct, consistent sections');
   await until("!document.getElementById('database-export-download').disabled && !document.getElementById('database-export-save').disabled");
   await evaluate(`(() => {
@@ -316,6 +319,7 @@ try {
     window.showSaveFilePicker = undefined;
     URL.createObjectURL = blob => { window.exportFixture.blob = blob; return window.exportFixture.create(blob); };
     HTMLAnchorElement.prototype.click = function () { if (this.download) window.exportFixture.name = this.download; else window.exportFixture.click.call(this); };
+    document.getElementById('recording-backup-card').open = true;
     document.getElementById('database-export-details').open = true;
     document.getElementById('database-export-download').click(); return true;
   })()`);
@@ -326,10 +330,10 @@ try {
   assert.match(await evaluate("document.getElementById('database-export-message').textContent"), /Download ready/);
   await evaluate("URL.createObjectURL=window.exportFixture.create; HTMLAnchorElement.prototype.click=window.exportFixture.click; window.showSaveFilePicker=window.exportFixture.picker; document.getElementById('database-export-save').click(); true");
   await until("!document.getElementById('database-export-save').disabled && document.getElementById('database-export-message').textContent.startsWith('Database copy saved on the server:')");
-  const savedFiles = readdirSync(exportDirectory);
+  const savedFiles = readdirSync(backupDirectory);
   assert.equal(savedFiles.length, 1);
   assert.match(savedFiles[0], exportFilename);
-  const savedDatabase = new Store(join(exportDirectory, savedFiles[0]), { readOnly: true });
+  const savedDatabase = new Store(join(backupDirectory, savedFiles[0]), { readOnly: true });
   try { assert.equal(savedDatabase.getState('settings:browser-fixture').input, 'simulated'); }
   finally { savedDatabase.close(); }
   await evaluate("document.getElementById('database-export-details').open=false; true");
@@ -363,7 +367,7 @@ try {
   assert.match(await evaluate("document.querySelector('[data-dataset-id=state-settings] > summary').textContent"),/Current state · overwritten/);
   assert.match(await evaluate("document.querySelector('[data-dataset-id=csv-easee] > summary').textContent"),/No records yet/);
   await evaluate("document.querySelector('[data-recording-open=recording-storage-details]').click(); true");
-  assert.equal(await evaluate("document.getElementById('recording-storage-details').open && document.activeElement===document.querySelector('#recording-storage-details > summary')"),true,
+  assert.equal(await evaluate("document.getElementById('recording-disk-card').open && document.activeElement===document.querySelector('#recording-disk-card > summary')"),true,
     'inventory links to the single storage and refresh location');
   await evaluate("window.recordingFixture.hold=true; document.getElementById('recording-overview-refresh').click(); document.querySelector('[data-dataset-id=weather-snapshots] > summary').focus(); true");
   await until("Boolean(window.recordingFixture.release)");

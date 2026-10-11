@@ -2,7 +2,9 @@ import { createAppServer } from './server.js';
 import { createRecordingHealth } from './recording-health.js';
 import { createDatabaseExport } from './database-export.js';
 import { createDatabaseVerification } from './database-verification.js';
-import { homedir } from 'node:os';
+import { createBackupCatalog } from '../storage/backup-catalog.js';
+import { backupDirectory } from '../storage/backup-directory.js';
+import { createBackupInspection } from './backup-inspection.js';
 
 const loopback = host => ['127.0.0.1', '::1', 'localhost'].includes(host);
 const directEnabled = config => !config.addon || config.token.length >= 24;
@@ -51,21 +53,21 @@ async function listen(server, port, host, setting = 'STMQ_PORT') {
 export function createWebAccess({ config: initialConfig, ...serverOptions }) {
   validate(initialConfig);
   let config = initialConfig, ingressServer, direct, started = false, closed = false, pending;
+  const backupConfig = () => ({ ...config, recording: { ...config.recording,
+    backupDirectory: serverOptions.getDatabaseExportDirectory?.() ?? backupDirectory(config) } });
+  serverOptions.backupCatalog ??= createBackupCatalog({ getConfig: backupConfig, clock: serverOptions.clock ?? Date.now });
   // Both ingress and direct access report the same local backup/runtime evidence.
   serverOptions.recordingHealth ??= createRecordingHealth({
     clock: serverOptions.clock ?? Date.now,
-    getConfig: () => ({ ...config, recording: { ...config.recording,
-      exportDirectory: serverOptions.getDatabaseExportDirectory?.() ?? config.recording?.exportDirectory } }),
-    resetBackups: async candidate => {
-      if (!(candidate.addon ? candidate.databaseDir : candidate.dataDir)) return [];
-      const { listResetBackups } = await import('../pairing/reset-storage.js');
-      return listResetBackups(candidate);
-    },
+    getConfig: backupConfig, backupCatalog: serverOptions.backupCatalog,
   });
   serverOptions.databaseExport ??= createDatabaseExport({
-    getDirectory: () => serverOptions.getDatabaseExportDirectory?.() ?? config.recording?.exportDirectory ?? homedir(),
+    getDirectory: () => backupDirectory(backupConfig()),
     onBackupEvent: (event, store) => serverOptions.recordingHealth.backupEvent(event, store),
   });
+  serverOptions.backupInspection ??= createBackupInspection({ catalog: serverOptions.backupCatalog,
+    clock: serverOptions.clock ?? Date.now,
+    onDownloadEvent: event => serverOptions.recordingHealth.backupEvent(event, serverOptions.store) });
   serverOptions.databaseVerification ??= createDatabaseVerification({
     clock: serverOptions.clock ?? Date.now,
     getIntervalMs: () => config.recording?.fullVerificationIntervalMs ?? 0,
@@ -192,6 +194,7 @@ export function createWebAccess({ config: initialConfig, ...serverOptions }) {
       ingressAccess.enabled = false;
       if (direct) direct.state = { enabled: false, token: '', tokenRequired: true };
       await serverOptions.databaseVerification.close();
+      await serverOptions.backupInspection.close();
       // Shutdown cancels remaining requests so streams cannot retain the app.
       await Promise.all([...new Set([ingressServer, direct?.server, pending?.server, ...draining.keys()])]
         .filter(Boolean).map(server => drain(server, true)));

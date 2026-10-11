@@ -1,6 +1,6 @@
 import { TIME_ZONE } from '../domain/prices.js';
 import { resolve, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { backupDirectory } from '../storage/backup-directory.js';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../storage/store.js';
 import { readReplicaPublication, configurePublicationRoots } from '../replication/publication.js';
@@ -318,7 +318,7 @@ export async function startReplica({ config, clock = Date.now,
   }
 
   const webAccess = createWebAccess({ config, clock, topology: config.topology, role: 'slave', getReadContext, pairContext, controlAuthority,
-    getDatabaseExportDirectory: () => config.recording?.exportDirectory ?? homedir(),
+    getDatabaseExportDirectory: () => backupDirectory(config),
     settingsReloadStatus: () => ({ available: false, busy: false, reason: unavailable }),
     staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../../dist') });
   function close() {

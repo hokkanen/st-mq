@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, opendir, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -8,7 +8,6 @@ import { validBackupMetadata } from '../storage/backup-metadata.js';
 import { RECOVERABLE_TABLES } from '../storage/schema.js';
 import { RECOVERY_ERROR_CODES, recoveryErrorMessage, recoveryFailure } from '../recovery/errors.js';
 import { validRecoveryCoverageReport, validRecoverySourceSummary } from '../recovery/coverage-report.js';
-import { listSavedBackups } from '../storage/backup-catalog.js';
 import { verifyDatabase } from '../storage/full-verifier.js';
 import { validCheckpoint } from '../storage/journal.js';
 import { validRecoveryRevisionImpact } from '../recovery/impact-report.js';
@@ -17,7 +16,6 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const ACTIONS = new Set(['check', 'recover', 'review-revert', 'revert', 'review-restore', 'restore']);
 const fail = (code, statusCode = 409) => Object.assign(new Error(recoveryErrorMessage(code)), { code, statusCode });
 const publicSource = ({ id, kind, label, createdAt, bytes, available = true }) => ({ id, kind, label, createdAt, bytes, available });
-const sourceId = path => createHash('sha256').update(path).digest('hex');
 const fields = (value, allowed) => value !== null && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).every(field => allowed.includes(field));
 const count = value => Number.isSafeInteger(value) && value >= 0;
@@ -30,7 +28,8 @@ const validProgress = value => fields(value, ['phase', 'processed', 'total', 'un
 const token = value => typeof value === 'string' && /^[a-zA-Z0-9:_-]{1,160}$/.test(value);
 const labels = { upload: /^Uploaded database$/, peer: /^Paired computer$/,
   backup: /^Saved backup · \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/,
-  reset: /^Reset archive · \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z · [a-zA-Z0-9_-]+\.sqlite$/ };
+  reset: /^Reset archive · \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z · [a-zA-Z0-9_-]+\.sqlite$/,
+  protected: /^Protected copy · \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/ };
 function validSource(value) {
   return fields(value, ['id', 'kind', 'label', 'createdAt', 'bytes', 'available'])
     && Object.hasOwn(labels, value.kind) && labels[value.kind].test(value.label)
@@ -104,7 +103,7 @@ const safeError = error => recoveryFailure({ code: error?.code, errcode: error?.
  * Paths remain private; browser requests identify sources issued by this owner.
  * Durable receipts distinguish an interrupted job from permission to resume it. */
 export function createHistoryRecovery({ store, getEngine, canControl = () => true, ready = () => true,
-  getExportDirectory, getResetBackups = async () => [], pairContext, clock = Date.now,
+  getBackupCatalog, pairContext, clock = Date.now,
   recoveryModule = () => import('../recovery/service.js'), directory = join(dirname(store.path), 'history-recovery'),
   maxUploadBytes = 8 * 1024 ** 3, timeoutMs, uploadTimeoutMs = 3_600_000, fullVerifier = verifyDatabase } = {}) {
   const key = 'history-recovery:coordinator';
@@ -141,7 +140,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       }
     }, { signal: lifetime.signal });
   }
-  async function scanSources() {
+  async function scanSources(forceCatalog = false) {
     const found = new Map();
     for (const source of state.sources) {
       if (!UUID.test(source.id) || source.kind !== 'upload') continue;
@@ -149,17 +148,15 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       const info = await lstat(path).catch(() => null);
       if (info?.isFile() && !info.isSymbolicLink()) found.set(source.id, { ...source, path });
     }
-    if (getExportDirectory) {
-      let copies;
-      try { copies = await listSavedBackups(getExportDirectory()); }
+    if (getBackupCatalog) {
+      let catalog;
+      try { catalog = await getBackupCatalog({ force: forceCatalog }); }
       catch { throw fail('recovery_backups_unavailable'); }
-      for (const { path, createdAt, bytes } of copies) {
-        const id = sourceId(path);
-        found.set(id, { id, path, kind: 'backup', label: `Saved backup · ${new Date(createdAt).toISOString()}`,
-          createdAt, bytes });
+      if (catalog.stale) throw fail('recovery_backups_unavailable');
+      for (const copy of catalog.copies) {
+        found.set(copy.id, { ...copy, createdAt: copy.createdAt ?? copy.fileModifiedAt });
       }
     }
-    for (const source of await getResetBackups()) found.set(source.id, source);
     return found;
   }
   async function refreshSources(force = false) {
@@ -170,7 +167,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
     }
     if (closed) throw fail('recovery_stopped');
     const generation = sourceGeneration;
-    const task = scanSources().then(found => {
+    const task = scanSources(force).then(found => {
       if (generation === sourceGeneration && !closed) {
         known = found;
         sourceCache = { rows: [...found.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, 100).map(publicSource), at: clock(), error: null };

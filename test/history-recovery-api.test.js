@@ -8,6 +8,7 @@ import { PassThrough } from 'node:stream';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
 import { createDatabaseBackup } from '../src/storage/backup.js';
+import { createBackupCatalog, listBackupCatalog } from '../src/storage/backup-catalog.js';
 import { createHistoryRecovery } from '../src/app/history-recovery.js';
 import { createAppServer } from '../src/app/server.js';
 import { apiResponseError } from '../chart/network.js';
@@ -57,7 +58,7 @@ async function fixture(t, options = {}) {
     ...options.module,
   };
   const coordinatorOptions = { store, getEngine: () => currentEngine, canControl: () => control,
-    getExportDirectory: () => join(root, 'exports'), recoveryModule: async () => module, ...options.coordinator };
+    getBackupCatalog: () => listBackupCatalog({ recording: { backupDirectory: join(root, 'exports') } }), recoveryModule: async () => module, ...options.coordinator };
   let coordinator = createHistoryRecovery(coordinatorOptions);
   await coordinator.initialize();
   const server = createAppServer({ engine, store, chartService: { overview() {} }, historyRecovery: coordinator,
@@ -426,7 +427,7 @@ test('real backup upload recovers, reverts and restores an old contribution whil
   assert.equal(view.preview.counts, undefined);
   assert.equal(view.preview.tables.find(row => row.name === 'observations').count, 1);
   assert.equal(view.preview.coverage.categories.find(row => row.name === 'temperatures').source.count, 1);
-  const reportReader = createHistoryRecovery({ store: f.store,getEngine: () => f.engine,getExportDirectory: () => join(f.root,'exports') });
+  const reportReader = createHistoryRecovery({ store: f.store,getEngine: () => f.engine,getBackupCatalog: () => listBackupCatalog({ recording: { backupDirectory: join(f.root,'exports') } }) });
   try { assert.equal((await reportReader.view()).preview.coverage.categories.find(row => row.name === 'temperatures').source.count, 1,
     'The bounded read-only report survives coordinator reopening'); } finally { await reportReader.close(); }
   await f.post(request('recover', { previewId: view.preview.previewId, confirmed: true }));
@@ -445,7 +446,7 @@ test('real backup upload recovers, reverts and restores an old contribution whil
     view = await f.coordinator.view();
     assert.equal(view.job.status, 'complete', JSON.stringify(view.job));
     assert.equal(view.preview.impact.direct, 1);
-    const reviewReader = createHistoryRecovery({ store: f.store,getEngine: () => f.engine,getExportDirectory: () => join(f.root,'exports') });
+    const reviewReader = createHistoryRecovery({ store: f.store,getEngine: () => f.engine,getBackupCatalog: () => listBackupCatalog({ recording: { backupDirectory: join(f.root,'exports') } }) });
     try { assert.equal((await reviewReader.view()).preview.impact.categories[0].from, at,
       'Exact bounded revision impact survives coordinator reopening'); } finally { await reviewReader.close(); }
     await f.post(request(action, { previewId: view.preview.previewId, confirmed: true })); await f.coordinator.settled();
@@ -457,4 +458,33 @@ test('real backup upload recovers, reverts and restores an old contribution whil
   assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM observations').get().n, 2, 'original rows remain immutable');
   const reopened = await f.restartCoordinator();
   assert.equal((await reopened.view()).job.status, 'complete');
+});
+
+test('routine recovery source polling uses the shared cached catalog and explicit selection refreshes missing copies', async t => {
+  let catalog, now = Date.now();
+  const forces = [];
+  const f = await fixture(t, { coordinator: { clock: () => now, getBackupCatalog: options => {
+    forces.push(options.force); return catalog.list(options);
+  } } });
+  const backupDirectory = join(f.root, 'exports');
+  catalog = createBackupCatalog({ getConfig: () => ({ recording: { backupDirectory } }), clock: () => now });
+  const first = join(backupDirectory, 'stmq-2026-10-11T00-00-00-001Z.sqlite');
+  await createDatabaseBackup({ sourcePath: f.store.path, destination: first });
+  const initial = await settledView(f.coordinator);
+  assert.equal(initial.sources.length, 1);
+  assert.deepEqual(forces, [false]);
+  const second = join(backupDirectory, 'stmq-2026-10-11T00-00-00-002Z.sqlite');
+  await createDatabaseBackup({ sourcePath: f.store.path, destination: second });
+  now += 5001;
+  await f.coordinator.view();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const routine = await f.coordinator.view();
+  assert.deepEqual(forces, [false, false]);
+  assert.equal(routine.sources.length, 1, 'Ordinary five-second polling does not rescan the shared five-minute inventory');
+  await rm(first);
+  await assert.rejects(f.coordinator.action(request('check', { sourceId: initial.sources[0].id, installationConfirmed: true })),
+    { code: 'recovery_source_missing' });
+  assert.equal(forces.at(-1), true);
+  assert.equal(f.calls.length, 0, 'Fresh source discovery refuses the removed file before starting a source worker');
+  assert.equal((await f.coordinator.view()).sources.length, 1);
 });

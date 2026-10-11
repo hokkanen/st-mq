@@ -694,9 +694,10 @@ transfer its master's physical obligations to the slave.
 
 Archives use private permissions and are named by time and operation ID:
 
-- Home Assistant: `/config/reset-archives/<archive>/` inside the app, normally
-  accessible as `/addon_configs/<actual-app-slug>/reset-archives/<archive>/`.
-- Ubuntu: `<dataDir>/reset-archives/<archive>/`.
+- The configured `recording.backup_directory`, under `reset-archives/<archive>/`.
+- With the empty default, Home Assistant uses `/config/st-mq/backups/reset-archives/<archive>/`
+  inside the app, normally accessible under `/addon_configs/<actual-app-slug>/st-mq/backups/`.
+- Linux uses `<database directory>/backups/reset-archives/<archive>/`.
 
 Pending replication spools, partial spools and their SQLite lock/sidecars beside
 the selected or configured database are archived with their original bytes.
@@ -1014,7 +1015,12 @@ originally reviewed donor and target checkpoints even if the source keeps writin
 Independent donor histories without a shared configured-peer anchor require
 exceptional full replacement. That path
 retains the original former-master database and its SQLite sidecars; a protected
-snapshot-only donor retains a pinned self-contained export. These exceptional
+snapshot-only donor retains a pinned self-contained export in the configured
+backup root's `pair-exports` repository. That repository also owns rolling exports,
+but only protected donor pins appear in Backups; pending ordinary transfer pins
+remain protocol work. Its generation, metadata and pin
+lifetimes stay together; changing the backup root requires restart and never
+relocates existing preservation files. These exceptional
 copies can each be database-sized and have no automatic expiry. The confirmation
 discloses that storage cost. Missing or invalid retained evidence blocks completion.
 

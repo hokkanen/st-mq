@@ -347,35 +347,48 @@ adaptive measurement additions. Exact records, learning history, imports and
 SQLite overhead are additional; this is neither a whole-database cap nor a
 retention limit. **Recording details → Storage & growth** separates current
 size, adaptive and total growth projections, retained adaptive history and
-prospective adaptive additions. The compact Recording, Disk space and Backups
-statuses open their own dated evidence. The on-demand inventory supplies the
+prospective adaptive additions. The upper Recording, Storage health, Storage & growth and Backups
+folds open their own dated evidence. The on-demand inventory supplies the
 retained adaptive estimate without repeating storage figures in the data folds. See
 [recording and storage](recording.md#recording-optimizer-and-storage) for the
 measurement basis and limits. Low disk space never authorizes automatic deletion.
 
-### Database export destination
+### Database backup folder
 
-In **Export database**, **Save local copy** writes to the server directory in
-`recording.export_directory`. Its shared default, `"~"`, means the home folder
-of the operating-system account running the server. In an app or container,
-this is that account's home inside the container. Choose a persistent directory
-available to the server when copies must survive container replacement.
-For Home Assistant, use `/config/st-mq/exports` to include local exports with the
-ST-MQ app backup, or `/share/st-mq` and back up Share separately. `"~"` and
-`"~/database-copies"` point inside the container and are not persistent app mounts.
+`recording.backup_directory` owns the local managed-database backup root. Its shared
+empty default selects `<database directory>/backups`; Home Assistant therefore uses
+`/config/st-mq/backups`, a persistent app-configuration mount included in app backups.
+Manual **Save local copy**, complete reset archive bundles under `reset-archives`,
+and the immutable paired export repository under `pair-exports` use that root.
+Only pinned protected exports are listed as retained backups; routine replication
+exports and pending master/slave transfer pins keep their owning protocol lifetime.
+Browser downloads, inactive working
+WAL databases and private configuration backups retain their separate owners.
 
-To change the destination, merge an override such as
-`"recording": { "export_directory": "~/database-copies" }` into the existing
-configuration and choose **Apply reviewed configuration**. Use an absolute path, `"~"`,
-or a path beginning with `"~/"`; other relative paths and `~user` paths are
-rejected. The server account needs write permission to the destination.
+Merge an override such as
+`"recording": { "backup_directory": "/invented/persistent/database-copies" }`
+into configuration, review it and restart to apply the new location. Accepted values
+are the empty default, an absolute path, `"~"`, or a path beginning with `"~/"`.
+Other relative paths and `~user` are rejected. The server account needs write access.
+The empty default follows the configured database directory, never a rotating
+replica snapshot or a service account's container home. A home-relative override
+inside a container is not automatically a persistent mount; `/share/st-mq/backups`
+is another Home Assistant choice if Share is backed up separately.
 
-**Download database** saves a copy through the browser. Both actions create a
-complete SQLite snapshot with the same timestamped filename format. See
-[database exports](recording.md#single-file-database-export) for details.
-Neither setting schedules backups. Health reports actual copy age and known
-failures; a listed file or successful browser transfer is not proof of a tested
-independent backup.
+The retired `recording.export_directory` is rejected, without translation.
+Existing backups, reset bundles and protocol exports are never relocated. Select
+supported external files explicitly for history review. An unfinished reset or
+protected preservation operation must resolve its captured paths; changing the
+root does not authorize bypassing those obligations.
+
+**Recording details → Backups** lists copies with their purpose, size, snapshot or
+file-modification date and dated verification evidence. **Verify** rechecks a selected
+file in the bounded full-verification queue; **Download** transfers it to the browser;
+**Review history** opens source assessment before recovery. **Export database**
+inside this fold offers **Save local copy** and **Download database**. Neither the
+folder setting nor this inventory schedules backups or deletes retained history.
+A listed file or browser transfer is not proof of a tested independent backup.
+See [database exports](recording.md#single-file-database-export).
 
 ## Heating automation and manual controls
 

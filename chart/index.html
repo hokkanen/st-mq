@@ -920,17 +920,25 @@ G_warming = G / 2</code>
         <summary><span>Recording details</span><span id="recording-health-badge" class="recording-health-badge" hidden></span></summary>
         <section id="recording-health" class="recording-health" aria-labelledby="recording-health-title">
           <div class="recording-health-heading">
-            <div><h3 id="recording-health-title">At a glance</h3><p id="recording-health-scope">This computer</p></div>
+            <div><h3 id="recording-health-title">Recording &amp; storage</h3><p id="recording-health-scope">On this server · scope unknown</p></div>
             <button id="recording-health-refresh" type="button" class="secondary-button">Refresh health</button>
           </div>
           <div class="recording-health-cards">
             <details id="recording-recording-card" class="recording-health-card">
               <summary><span class="recording-health-label">Recording</span><strong id="recording-recording-state" class="recording-health-state">Recording unknown</strong><span id="recording-recording-evidence" class="recording-health-evidence"></span></summary>
-              <div class="recording-health-body"><p id="recording-recording-detail" class="recording-health-detail"></p></div>
+              <div class="recording-health-body">
+                <p id="recording-recording-detail" class="recording-health-detail"></p>
+                <dl class="recording-storage-facts recording-source-facts"><dt>Last completed update</dt><dd id="recording-recording-loop">Not known</dd><dt>Last source polling attempt</dt><dd id="recording-recording-sourceCheck">Not known</dd></dl>
+                <p id="recording-recording-coverage" class="recording-health-evidence"></p>
+                <ul id="recording-recording-sources" class="recording-source-exceptions" hidden></ul>
+                <p class="recording-health-evidence">A polling attempt can return unavailable data. A completed update or usable source reading does not prove that every configured source was recorded.</p>
+                <div class="recording-evidence-links"><a href="#recording-adaptive-details" data-recording-open="recording-adaptive-details">Measurement details →</a><a href="#recording-overview-details" data-recording-open="recording-overview-details">Other recorded data →</a></div>
+              </div>
             </details>
             <details id="recording-performance-details" class="recording-health-card recording-performance">
               <summary><span class="recording-health-label">Storage health</span><strong id="recording-performance-state" class="recording-health-state">Storage status unknown</strong><span id="recording-performance-evidence" class="recording-health-evidence"></span></summary>
               <div class="recording-health-body">
+                <p id="recording-performance-lastWrite" class="recording-health-evidence"></p>
                 <p id="recording-performance-notice" class="recording-performance-notice">Waiting for storage health information.</p>
                 <div id="recording-performance-data" hidden>
                   <div class="recording-performance-current"><span id="recording-performance-current"></span><span id="recording-performance-waiting" hidden></span></div>
@@ -992,30 +1000,13 @@ G_warming = G / 2</code>
               </div>
             </details>
             <details id="recording-disk-card" class="recording-health-card">
-              <summary><span class="recording-health-label">Disk space</span><strong id="recording-disk-state" class="recording-health-state">Disk space unknown</strong><span class="recording-health-evidence"><span id="recording-disk-free">Unknown</span> available</span></summary>
+              <summary><span class="recording-health-label">Storage &amp; growth</span><strong id="recording-disk-state" class="recording-health-state">Disk space unknown</strong><span class="recording-health-evidence"><span id="recording-disk-free">Unknown</span> available · Database <span id="recording-disk-database">Unknown</span></span></summary>
               <div class="recording-health-body">
                 <div id="recording-disk-meter" class="storage-meter" role="meter" aria-label="Disk space available" aria-valuemin="0" aria-valuemax="100" hidden><span></span></div>
                 <p id="recording-disk-capacity" class="recording-health-evidence"></p>
                 <p id="recording-disk-detail" class="recording-health-detail"></p>
-              </div>
-            </details>
-            <details id="recording-backup-card" class="recording-health-card">
-              <summary><span class="recording-health-label">Backups</span><strong id="recording-backup-state" class="recording-health-state">Backup status unknown</strong><span id="recording-backup-evidence" class="recording-health-evidence"></span></summary>
-              <div class="recording-health-body">
-                <p id="recording-backup-detail" class="recording-health-detail"></p>
-                <p id="recording-backup-activity" class="recording-health-evidence" hidden></p>
-                <p id="recording-backup-verification" class="recording-health-evidence"></p>
-                <a href="#database-export-details" data-recording-open="database-export-details" class="recording-backup-link">Export database <span aria-hidden="true">→</span></a>
-              </div>
-            </details>
-          </div>
-          <p id="recording-health-checked" class="recording-health-checked" role="status"></p>
-        </section>
-        <section class="recording-section-group" aria-labelledby="recording-data-title">
-          <h3 id="recording-data-title" class="recording-group-title">Recorded data</h3>
-          <details id="recording-storage-details" class="recording-section">
-            <summary><span>Storage &amp; growth<small>Retained sizes, recent growth and the adaptive target</small></span></summary>
-            <div class="recording-section-body">
+                <p id="recording-disk-evidence" class="recording-health-evidence"></p>
+            <div id="recording-storage-details" class="recording-storage-inventory">
               <div class="recording-overview-toolbar">
                 <p id="recording-overview-message" class="muted" role="status" aria-live="polite">Open Recording details to inspect the database.</p>
                 <button id="recording-overview-refresh" class="secondary-button" type="button">Refresh inventory</button>
@@ -1056,7 +1047,47 @@ G_warming = G / 2</code>
               </table>
               <p class="recording-storage-note">The soft target guides adaptive measurement detail. It is not a limit on total database growth and does not delete history.</p>
             </div>
+
+              </div>
+            </details>
+            <details id="recording-backup-card" class="recording-health-card">
+              <summary><span class="recording-health-label">Backups</span><strong id="recording-backup-state" class="recording-health-state">Backup status unknown</strong><span id="recording-backup-evidence" class="recording-health-evidence"></span></summary>
+              <div class="recording-health-body">
+                <p id="recording-backup-detail" class="recording-health-detail"></p>
+                <p id="recording-backup-activity" class="recording-health-evidence" hidden></p>
+                <p id="recording-backup-download" class="recording-health-evidence" hidden></p>
+                <dl class="recording-storage-facts recording-backup-folder"><dt>Backup folder</dt><dd id="recording-backup-folder">Not known</dd><dt>Listed copies</dt><dd id="recording-backup-size">Not checked</dd></dl>
+                <div class="recording-backup-toolbar"><p id="recording-backup-catalogStatus" class="recording-health-evidence" role="status"></p><button id="recording-backup-refresh" type="button" class="secondary-button">Refresh list</button></div>
+                <ul id="recording-backup-list" class="recording-backup-list"></ul>
+                <p id="recording-backup-verification" class="recording-health-evidence">A copy on the same disk does not protect against disk failure. Keep an independent copy on separate storage.</p>
+          <details id="database-export-details" class="recording-section">
+            <summary><span>Export database<small>Save or download a complete copy</small></span></summary>
+            <div class="recording-section-body">
+              <p class="muted">Export a complete copy of the recorded history and saved state. Recording continues during export. Filenames include the export date and time in UTC.</p>
+              <p class="family-access-note">Admin access is required to save or download a database copy.</p>
+              <div class="recording-tool-actions">
+                <div>
+                  <button id="database-export-save" data-write-control data-admin-only type="button" class="secondary-button" aria-describedby="database-export-save-help">Save local copy</button>
+                  <p id="database-export-save-help" class="muted">Save on the server in its configured backup folder. The default is a backups folder beside the database.</p>
+                </div>
+                <div>
+                  <button id="database-export-download" data-admin-only type="button" class="secondary-button" aria-describedby="database-export-download-help">Download database</button>
+                  <p id="database-export-download-help" class="muted">Save to this device. Choose a location when prompted, or use your browser’s download folder.</p>
+                </div>
+              </div>
+              <p id="database-export-message" class="muted" role="status" aria-live="polite"></p>
+              <progress id="database-export-progress" class="background-work-progress" aria-label="Database export progress" hidden></progress>
+              <p id="database-export-detail" class="muted background-work-detail" hidden></p>
+            </div>
           </details>
+
+              </div>
+            </details>
+          </div>
+          <p id="recording-health-checked" class="recording-health-checked" role="status"></p>
+        </section>
+        <section class="recording-section-group" aria-labelledby="recording-data-title">
+          <h3 id="recording-data-title" class="recording-group-title">Recorded data</h3>
           <details id="recording-adaptive-details" class="recording-section">
             <summary><span>Adaptive measurements<small>Saving intervals, change thresholds and source history</small></span></summary>
             <div id="recording-content" class="recording-section-body"></div>
@@ -1079,26 +1110,6 @@ G_warming = G / 2</code>
         </section>
         <section class="recording-section-group recording-tools" aria-labelledby="recording-tools-title">
           <h3 id="recording-tools-title" class="recording-group-title">History tools</h3>
-          <details id="database-export-details" class="recording-section">
-            <summary><span>Export database<small>Save or download a complete copy</small></span></summary>
-            <div class="recording-section-body">
-              <p class="muted">Export a complete copy of the recorded history and saved state. Recording continues during export. Filenames include the export date and time in UTC.</p>
-              <p class="family-access-note">Admin access is required to save or download a database copy.</p>
-              <div class="recording-tool-actions">
-                <div>
-                  <button id="database-export-save" data-write-control data-admin-only type="button" class="secondary-button" aria-describedby="database-export-save-help">Save local copy</button>
-                  <p id="database-export-save-help" class="muted">Save on the server in its configured export folder, which defaults to the server account’s home folder.</p>
-                </div>
-                <div>
-                  <button id="database-export-download" data-admin-only type="button" class="secondary-button" aria-describedby="database-export-download-help">Download database</button>
-                  <p id="database-export-download-help" class="muted">Save to this device. Choose a location when prompted, or use your browser’s download folder.</p>
-                </div>
-              </div>
-              <p id="database-export-message" class="muted" role="status" aria-live="polite"></p>
-              <progress id="database-export-progress" class="background-work-progress" aria-label="Database export progress" hidden></progress>
-              <p id="database-export-detail" class="muted background-work-detail" hidden></p>
-            </div>
-          </details>
           <details id="history-recovery-details" class="recording-section">
             <summary><span>History recovery<small>Recover missing entries or undo an earlier recovery</small></span></summary>
             <div class="recording-section-body">

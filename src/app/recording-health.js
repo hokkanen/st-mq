@@ -1,7 +1,8 @@
 import { statfs } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { listSavedBackups } from '../storage/backup-catalog.js';
+import { createBackupCatalog } from '../storage/backup-catalog.js';
 import { storageFailureCode } from '../storage/write-health.js';
+import { recordedSignalInfo } from '../domain/recording-policy.js';
 
 const MINUTE = 60_000, DAY = 86_400_000, GIB = 1024 ** 3;
 const RECEIPT_KEY = 'storage:backup-health';
@@ -41,6 +42,38 @@ function recordingParameters(recording, now) {
   return active;
 }
 
+function usableSource(row, now) {
+  const freshness = row.freshness;
+  if (!freshness) return false;
+  if (['last-reported', 'held', 'held-attention'].includes(freshness.status)) return true;
+  if (freshness.status === 'recorded-interval') return Number.isFinite(row.lastPollAt) && now - row.lastPollAt <= 5 * MINUTE;
+  return freshness.status === 'fresh' && (freshness.maxAgeMs === null
+    || Number.isFinite(freshness.sourceObservedAt) && now - freshness.sourceObservedAt < freshness.maxAgeMs);
+}
+
+/** Observed streams only. This is not a census of configured or never-seen sources.
+ * Signal labels are from the public catalogue; arbitrary device identities and
+ * provider strings never leave this independent health endpoint. */
+function sourceSummary(parameters, now) {
+  if (parameters === null) return null;
+  const issues = parameters.filter(row => !usableSource(row, now) || row.freshness?.status === 'held-attention');
+  return { observedStreams: parameters.length, usableStreams: parameters.filter(row => usableSource(row, now)).length,
+    attentionStreams: issues.length, unknownStreams: parameters.filter(row => !row.freshness).length,
+    complete: false, truncated: issues.length > 50,
+    issues: issues.slice(0, 50).map((row, index) => {
+      const info = typeof row.signal === 'string' ? recordedSignalInfo(row.signal) : null;
+      const publicLabel = info && info.label !== row.signal.replaceAll('_', ' ');
+      return {
+        id: typeof row.streamId === 'string' && /^[a-f0-9]{12}$/.test(row.streamId) ? row.streamId : `observed-${index}`,
+        label: publicLabel ? info.label : 'Recorded measurement',
+        status: ['fresh', 'recorded-interval'].includes(row.freshness?.status) && !usableSource(row, now)
+          ? 'stale' : row.freshness?.status ?? 'unknown',
+        lastCheckedAt: receiptTime(row.lastPollAt) ? row.lastPollAt : null,
+        sourceObservedAt: sourceTime(row.freshness?.sourceObservedAt) ? row.freshness.sourceObservedAt : null,
+      };
+    }) };
+}
+
 export function diskSpaceStatus(stats, checkedAt) {
   const totalBytes = Number(stats.blocks) * Number(stats.bsize);
   // bavail is the space available to this application, excluding reserved blocks.
@@ -67,15 +100,16 @@ function validReceipt(value) {
  * Filesystem discovery is bounded, cached and asynchronous; no history scans,
  * new backups, integrity rewrites or automatic cleanup are performed here. */
 export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now,
-  filesystem = statfs, savedBackups = listSavedBackups, resetBackups = async () => [],
-  refreshMs = MINUTE, catalogRefreshMs = 5 * MINUTE } = {}) {
+  filesystem = statfs, backupCatalog = createBackupCatalog({ getConfig, clock }),
+  refreshMs = MINUTE } = {}) {
   const startedAt = clock();
   let disk = { state: 'unknown', totalBytes: null, freeBytes: null, checkedAt: null,
     detail: 'Disk space has not been checked yet.' };
   let diskKey, diskAttemptAt = null, diskPending;
-  let catalog = { copies: [], error: false, checkedAt: null }, catalogKey, catalogPending;
+  let catalog = { copies: [], complete: false, error: false, checkedAt: null }, catalogPending;
   let receipt = { version: 1, complete: null, failure: null }, receiptStore, receiptInvalid = false;
-  let pendingBackup = null, backupRevision = 0;
+  const pendingBackups = new Map();
+  let backupRevision = 0;
   let recordingRun = null, recordingScopeSeen = false;
 
   function loadReceipt(store) {
@@ -92,9 +126,14 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
 
   function backupEvent(event, store) {
     loadReceipt(store);
-    if (!backupKinds.includes(event.kind) || !instant(event.at)) return;
-    if (event.phase === 'start') { pendingBackup = { kind: event.kind, at: event.at }; return; }
-    pendingBackup = null;
+    if (!backupKinds.includes(event.kind) || !instant(event.at)
+      || typeof event.operationId !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(event.operationId)) return;
+    if (event.phase === 'start') {
+      pendingBackups.set(event.operationId, { kind: event.kind, at: event.at });
+      return;
+    }
+    if (!['cancelled', 'complete', 'failed'].includes(event.phase)) return;
+    pendingBackups.delete(event.operationId);
     if (event.phase === 'cancelled') return;
     if (event.phase === 'complete') receipt.complete = { kind: event.kind, at: event.at };
     else if (event.phase === 'failed') receipt.failure = { kind: event.kind, at: event.at,
@@ -102,6 +141,7 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
     else return;
     backupRevision++;
     catalog.checkedAt = null;
+    backupCatalog.invalidate?.();
     // The health receipt must not turn a completed backup into a failed backup.
     // A full/unavailable database still leaves the in-memory result visible.
     if (store && !store.readOnly && !receiptInvalid) {
@@ -128,20 +168,24 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
     return diskPending;
   }
 
-  function refreshCatalog(config, now) {
-    const key = JSON.stringify([config.recording?.exportDirectory ?? null, config.dataDir ?? null]);
-    if (catalogKey !== key) { catalogKey = key; catalog = { copies: [], error: false, checkedAt: null }; }
-    if (catalogPending || catalog.checkedAt !== null && now - catalog.checkedAt >= 0 && now - catalog.checkedAt < catalogRefreshMs) return catalogPending;
+  function refreshCatalog() {
+    if (catalogPending) return catalogPending;
     const revision = backupRevision;
-    catalogPending = Promise.allSettled([
-      config.recording?.exportDirectory ? savedBackups(config.recording.exportDirectory) : [], resetBackups(config),
-    ]).then(results => {
-      if (key !== catalogKey || revision !== backupRevision) return;
-      const copies = results.flatMap((result, i) => result.status === 'fulfilled'
-        ? result.value.filter(row => instant(Math.floor(row.createdAt)) && row.createdAt <= clock())
-          .map(row => ({ at: row.createdAt, kind: i ? 'reset-archive' : 'saved-copy' })) : []);
-      catalog = { copies: copies.sort((a, b) => b.at - a.at), error: results.some(result => result.status === 'rejected'), checkedAt: clock() };
-    }).finally(() => { catalogPending = null; });
+    catalogPending = backupCatalog.list().then(result => {
+      if (revision !== backupRevision) return;
+      const copies = result.copies.filter(row => {
+        const at = row.createdAt ?? row.fileModifiedAt;
+        return instant(Math.floor(at)) && at <= clock();
+      }).map(row => ({ at: row.createdAt ?? row.fileModifiedAt, dateBasis: row.createdAt === null ? 'file-modified' : 'snapshot',
+        kind: row.kind === 'reset' ? 'reset-archive' : row.kind === 'protected' ? 'protected-copy' : 'saved-copy',
+        bytes: row.bytes, verifiedAt: row.verification?.at ?? null }));
+      const failed = result.reasons?.some(reason => /unavailable|changed/.test(reason));
+      if (failed && !copies.length && catalog.copies.length) {
+        catalog = { ...catalog, error: true, complete: false };
+      } else catalog = { copies: copies.sort((a, b) => b.at - a.at), complete: result.complete,
+        error: Boolean(failed), checkedAt: result.checkedAt };
+    }).catch(() => { catalog = { ...catalog, error: true, complete: false }; })
+      .finally(() => { catalogPending = null; });
     return catalogPending;
   }
 
@@ -150,6 +194,7 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
     const base = { pendingWrites: writes?.queue?.pending ?? 0, waitingSince: writes?.queue?.waitingSince ?? null,
       storageTimings: writes?.transactions ?? null,
       history: writes?.history ?? null,
+      lastLoopCompletedAt: null, sources: null,
       lastSourceCheckAt: null, lastWriteAt: writes?.lastWriteAt ?? null,
       lastFailureAt: writes?.lastFailureAt ?? null, errorCode: writes?.errorCode ?? null };
     if (readOnly || store?.readOnly || current?.input === 'offline' || engine?.config?.input === 'offline') {
@@ -162,16 +207,11 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
     }
     const tickAt = engine?.latestStatus?.now;
     const parameters = recordingParameters(current?.recording, now);
+    base.lastLoopCompletedAt = receiptTime(tickAt) && tickAt <= now ? tickAt : null;
+    base.sources = sourceSummary(parameters, now);
     base.lastSourceCheckAt = parameters?.reduce((latest, row) => receiptTime(row.lastPollAt) && row.lastPollAt <= now
       ? Math.max(latest ?? 0, row.lastPollAt) : latest, null) ?? null;
-    const healthy = parameters?.some(row => {
-      const freshness = row.freshness;
-      if (!freshness) return false;
-      if (['last-reported', 'held', 'held-attention'].includes(freshness.status)) return true;
-      if (freshness.status === 'recorded-interval') return Number.isFinite(row.lastPollAt) && now - row.lastPollAt <= 5 * MINUTE;
-      return freshness.status === 'fresh' && (freshness.maxAgeMs === null
-        || Number.isFinite(freshness.sourceObservedAt) && now - freshness.sourceObservedAt < freshness.maxAgeMs);
-    });
+    const healthy = parameters?.some(row => usableSource(row, now));
     if (healthy) recordingRun.usableSourceSeen = true;
     if (writes?.failing) return { ...base, state: 'write-failed', detail: 'A database write failed. New history may be missing; check disk space and storage access.' };
     if (writes?.queue?.waitingSince != null) return { ...base, state: 'write-waiting',
@@ -195,20 +235,24 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
   }
 
   function backupStatus(now) {
+    const pendingBackup = [...pendingBackups.values()].find(row => row.kind === 'saved-copy')
+      ?? pendingBackups.values().next().value;
     const complete = receipt.complete?.at <= now ? receipt.complete : null;
-    const latest = [catalog.copies[0], complete?.kind === 'download' ? complete : null].filter(Boolean).sort((a, b) => b.at - a.at)[0];
+    const latest = catalog.copies[0];
     const failure = receipt.failure?.at <= now ? receipt.failure : null;
     const failed = failure && (!complete || failure.at >= complete.at);
     const state = pendingBackup ? 'running' : failed ? 'failed' : receiptInvalid || catalog.error ? 'unknown' : latest ? 'available' : 'none-known';
-    const detail = pendingBackup ? 'A requested database copy is being prepared. It is not complete yet.'
+    const detail = pendingBackup ? 'A requested database copy or download is still in progress.'
       : failed ? 'The last requested database copy failed. Retry after checking storage space and access.'
         : receiptInvalid || catalog.error ? 'Some backup information could not be read. Available copies are not proof that the latest backup succeeded.'
-          : latest?.kind === 'download' ? 'The last download was sent to the browser. Its saved file and continued availability cannot be verified here.'
-            : latest ? 'A saved copy was found. Its contents have not been rechecked; a copy on the same disk does not protect against disk failure.'
-              : 'No saved copy is known in the configured export folder or reset archives. Backups are taken by explicit actions, with no schedule.';
+          : latest ? 'Saved database copies are listed from this server. Listing does not verify their current contents; expand Backups to view dated checks.'
+            : 'No saved database copy is known on this server. There is no automatic backup schedule.';
     return { state, detail, latestAt: latest?.at ?? null, latestKind: latest?.kind ?? null,
       // Listing metadata and a past action receipt cannot validate today's bytes.
-      latestVerifiedAt: null,
+      latestVerifiedAt: latest?.verifiedAt ?? null, latestDateBasis: latest?.dateBasis ?? null,
+      count: catalog.copies.length, totalBytes: catalog.copies.reduce((total, row) => total + (Number.isSafeInteger(row.bytes) && row.bytes >= 0 ? row.bytes : 0), 0),
+      complete: catalog.complete, catalogCheckedAt: catalog.checkedAt,
+      downloadAt: complete?.kind === 'download' ? complete.at : null,
       startedAt: pendingBackup?.at ?? null, lastFailureAt: failure?.at ?? null };
   }
 
@@ -217,7 +261,7 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
     async status({ store, engine, current, readOnly = false } = {}) {
       const config = getConfig(), now = clock();
       loadReceipt(store);
-      const operations = [refreshDisk(store?.path ?? config.dbPath, now), refreshCatalog(config, now)].filter(Boolean);
+      const operations = [refreshDisk(store?.path ?? config.dbPath, now), refreshCatalog()].filter(Boolean);
       // A slow/unavailable mount must not hold the dashboard request indefinitely.
       if (operations.length) {
         let timeout;
@@ -242,7 +286,8 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
         attention.push({ id: 'recording-resumed', severity: 'warning', title: 'A database write failed earlier', detail: recording.detail });
       if (backup.state === 'failed') attention.push({ id: 'backup', severity: 'warning', title: 'The last backup failed', detail: backup.detail });
       return { version: 2, checkedAt: now, scope: readOnly || store?.readOnly ? 'snapshot'
-        : (current?.input ?? engine?.config?.input) === 'offline' ? 'history' : 'live',
+        : (current?.input ?? engine?.config?.input) === 'offline' ? 'history'
+          : (current?.input ?? engine?.config?.input) === 'simulated' ? 'simulated' : 'live',
         disk: diskView, recording, backup, attention };
     },
   };

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createReadOnlyControls } from '../chart/dashboard-access.js';
+import { createReadOnlyControls, assertDashboardWrite } from '../chart/dashboard-access.js';
 
 function fixture() {
   const listeners = new Map(), scopes = [];
@@ -44,4 +44,12 @@ test('read-only permissions survive renderer updates and synthetic events while 
   assert.equal(view.unsupported.disabled, true, 'native capability checks still apply after promotion');
   assert.deepEqual(view.event('submit', view.apply), { stopped: false, prevented: false });
   access.close();
+});
+
+test('saved-copy verification is an explicit read-only inspection with a bounded source identifier', () => {
+  const status = { role: 'slave' };
+  assert.doesNotThrow(() => assertDashboardWrite('/api/recording-backups/verify', { sourceId: 'a'.repeat(64) }, status));
+  for (const input of [{}, { sourceId: '/private/path' }, { sourceId: 'a'.repeat(64), path: '/private/path' }])
+    assert.throws(() => assertDashboardWrite('/api/recording-backups/verify', input, status), { status: 403 });
+  assert.throws(() => assertDashboardWrite('/api/recording-backups/verify', { sourceId: 'a'.repeat(64) }, null), { status: 403 });
 });

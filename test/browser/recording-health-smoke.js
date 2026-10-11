@@ -51,12 +51,12 @@ const measurement = (signal, streamId, extra = {}) => ({ signal, streamId, sourc
   hour: { records: 12, averageIntervalMs: 300000 }, day: { records: 248, estimatedBytes: 16000, averageIntervalMs: 348000 },
   week: { records: 1800, averageIntervalMs: 336000 },
   freshness: { status: 'fresh', sourceObservedAt: now - 12000, maxAgeMs: 120000, reasons: [] }, ...extra });
-const status = { recordingHealth: { version: 2, checkedAt: now, scope: 'live',
+const status = { webAccess: { role: 'admin' }, recordingHealth: { version: 2, checkedAt: now, scope: 'live',
   disk: { state: 'critical', totalBytes: 128e9, freeBytes: 2.1e9, checkedAt: now,
     detail: 'Free space is critically low. Recordings and backup copies share this filesystem.' },
-  recording: { state: 'write-failed', lastSourceCheckAt: now - 180000, lastFailureAt: now - 60000,
+  recording: { state: 'write-failed', lastLoopCompletedAt: now - 1000, lastSourceCheckAt: now - 180000, lastFailureAt: now - 60000,
     detail: 'The last write failed. New observations may not have been recorded.', history: performanceHistory },
-  backup: { state: 'available', latestAt: now - 2 * 86400_000, latestKind: 'saved-copy', latestVerifiedAt: null,
+  backup: { state: 'available', count: 3, totalBytes: 12288000, complete: true, latestAt: now - 2 * 86400_000, latestKind: 'saved-copy', latestVerifiedAt: null,
     detail: 'A saved copy is listed on this computer. Keep an independent copy on separate storage.' },
   attention: [{ id: 'disk-space', severity: 'critical', title: 'Disk space is critically low', detail: 'Only 2.1 GB is available on this computer.' },
     { id: 'recording', severity: 'critical', title: 'Recording write failed', detail: 'New observations may not have been recorded.' }],
@@ -107,7 +107,8 @@ window.initialHealth = structuredClone(payload.recordingHealth);
 window.setScenario = state => {
   const health = structuredClone(initialHealth);
   if(state !== 'critical') {
-    health.recording = {state:state === 'sources' ? 'source-unavailable' : 'ok', lastSourceCheckAt:${now}, lastWriteAt:${now - 1000},
+    health.recording = {state:state === 'sources' ? 'source-unavailable' : 'ok', lastSourceCheckAt:${now}, lastLoopCompletedAt:${now - 1000}, lastWriteAt:${now - 1000},
+      sources:{observedStreams:3,usableStreams:state==='sources'?2:3,attentionStreams:state==='sources'?1:0,unknownStreams:0,complete:false,issues:state==='sources'?[{id:'synthetic-temperature',label:'Outdoor temperature',unit:'°C',status:'stale',sourceObservedAt:${now-900000},lastCheckedAt:${now}}]:[]},
       detail:state === 'sources' ? 'Check source connections.' : 'Source monitoring is active.', history: structuredClone(initialHealth.recording.history)};
     health.disk = {state:'ok', totalBytes:128e9, freeBytes:80e9, checkedAt:${now}, detail:'Local disk space is available.'};
     health.attention = state === 'sources' ? [{id:'recording', severity:'warning', title:'Recording sources are unavailable', detail:'Check source connections.'}] : [];
@@ -157,9 +158,22 @@ window.setPerformance = state => {
   if(state === 'snapshot') { health.scope='snapshot'; health.recording={state:'read-only',history:null}; }
   panel.update(payload);
 };
-window.failRefresh = false; window.failInventory = false; window.requestCount = 0;
+window.failRefresh = false; window.failInventory = false; window.requestCount = 0; window.catalogRequests = 0; window.failCatalog = false;
+window.copies = {directory:'/synthetic/recording/backups',checkedAt:${now-60000},complete:true,limit:100,reasons:[],copies:[
+{id:'backup:synthetic',kind:'backup',filename:'stmq-2026-10-06T12-00-00-000Z.sqlite',createdAt:${now-86400_000},fileModifiedAt:${now-86400_000},bytes:4096000,verification:{state:'verified-when-created',at:null}},
+{id:'reset:synthetic',kind:'reset',filename:'reset-recording-backup.sqlite',createdAt:${now-2*86400_000},fileModifiedAt:${now-2*86400_000},bytes:4096000,verification:{state:'not-checked',at:null}},
+{id:'protected:synthetic',kind:'protected',filename:'protected-pairing-copy.sqlite',createdAt:null,fileModifiedAt:${now-3*86400_000},bytes:4096000,verification:{state:'verified-when-created',at:null}}]};
 window.panel = createRecordingHealth({document, now: () => ${now},
-setTimer: callback => { window.expireIntro = callback; return 1; }, clearTimer: () => {}, request: async path => {
+setTimer: (callback,ms) => { if(ms===15000) window.expireIntro = callback; return 1; }, clearTimer: () => {},
+reviewBackup: value => { window.reviewedBackup = value.sourceId; }, downloadBackup: async copy => 'Download sent to the browser. Check this device to confirm it was saved.',
+request: async (path,body) => {
+  if(path.startsWith('/api/recording-backups')) {
+    window.catalogRequests++;
+    if(window.deferCatalog) return new Promise(resolve=>window.resolveCatalog=resolve);
+    if(window.failCatalog) throw Error('Private catalog failure');
+    if(path.endsWith('/verify')) {window.copies.copies.find(copy=>copy.id===body.sourceId).recheck={state:'queued',startedAt:${now}}; return {state:'queued'};}
+    return structuredClone(window.copies);
+  }
   if(path !== '/api/recording-health') throw Error('Unexpected request'); window.requestCount++;
   if(window.deferred) return new Promise(resolve => window.resolveHealth = resolve);
   if(window.failRefresh) throw Error('private fixture error'); return window.payload.recordingHealth;
@@ -184,12 +198,12 @@ window.inventoryRefresh = recordingOverviewRefresh({
     window.inventoryRequests++;
     if(window.failInventory) throw Error('Private inventory failure');
     return window.inventory;
-  }, root:element('recording-overview-content'), details:[element('recording-overview-details'), element('recording-storage-details')],
+  }, root:element('recording-overview-content'), details:[element('recording-overview-details'), element('recording-disk-card')],
   parent:element('recording-details'), message:element('recording-overview-message'), button:element('recording-overview-refresh'),
   render:(overview, root) => { renderRecordingOverview(overview, root); panel.inventory(overview); }, onState:state => panel.inventoryStatus(state),
 });
-element('recording-details').addEventListener('toggle', () => { if(element('recording-details').open) void inventoryRefresh({summary:true}); });
-for(const id of ['recording-overview-details','recording-storage-details']) element(id).addEventListener('toggle', () => void inventoryRefresh());
+element('recording-details').addEventListener('toggle', () => { if(element('recording-details').open) void inventoryRefresh(); });
+for(const id of ['recording-overview-details','recording-disk-card']) element(id).addEventListener('toggle', () => void inventoryRefresh());
 element('recording-overview-refresh').addEventListener('click', () => void inventoryRefresh({force:true}));
 window.ready = true;</script></body></html>`;
 const assets = new Map(['monitor.css', 'recording-health.css', 'recording-health.js'].map(name => [`/chart/${name}`,
@@ -257,7 +271,7 @@ try {
   };
   const checkLayout = async label => {
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${label}: page fits`);
-    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-dataset, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents')).filter(node => {
+    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-backup-list, .recording-backup-toolbar, .recording-backup-actions, .recording-source-exceptions, .recording-storage-inventory, .recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-dataset, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents')).filter(node => {
       if(!node.checkVisibility()) return false;
       const b = node.getBoundingClientRect(); return b.width <= 0 || b.left < 0 || b.right > innerWidth + 1 || node.scrollWidth > node.clientWidth + 1;
     }).map(node => ({id: node.id || node.className, left:node.getBoundingClientRect().left, right:node.getBoundingClientRect().right,
@@ -300,12 +314,17 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-details').open && document.activeElement === document.querySelector('#recording-details > summary')"), true,
     'Status opens recording details and transfers keyboard focus');
   await settle();
-  assert.equal(await evaluate('inventoryRequests'),1,'Opening recording details requests the cached inventory once');
+  assert.equal(await evaluate('inventoryRequests'),0,'Opening recording details leaves the full inventory lazy');
+  assert.equal(await evaluate('catalogRequests'),0,'A collapsed backup list does not scan files');
+  await evaluate("document.getElementById('recording-disk-card').open=true"); await settle();
+  assert.equal(await evaluate('inventoryRequests'),1,'Opening merged Storage & growth requests the bounded inventory');
+  await evaluate("document.getElementById('recording-disk-card').open=false"); await settle();
   assert.equal(await evaluate("document.getElementById('recording-overview-details').open"),false);
-  assert.equal(await evaluate("document.getElementById('recording-storage-details').open"),false);
+  assert.equal(await evaluate("document.getElementById('recording-storage-details').closest('.recording-health-card').id"),'recording-disk-card');
+  assert.equal(await evaluate("document.querySelectorAll('#recording-data-title ~ #recording-storage-details').length"),0,'Recorded data has no duplicate storage fold');
   assert.equal(await evaluate("document.querySelectorAll('.recording-health-card[open]').length"),0,'Health explanations start folded');
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.recording-health-card > summary > .recording-health-label'),node=>node.textContent)"),
-    ['Recording','Storage health','Disk space','Backups'],'Four health areas share the same hierarchy');
+    ['Recording','Storage health','Storage & growth','Backups'],'Four health areas share the same hierarchy');
   assert.equal(await evaluate("document.getElementById('recording-growth-retained').textContent"),'6 GB');
   assert.equal(await evaluate("document.getElementById('recording-growth-file').textContent"),'82 GB');
   assert.equal(await evaluate("document.getElementById('recording-growth-wal').textContent"),'1 GB');
@@ -343,12 +362,18 @@ try {
         'Unavailable sources are presented separately from failed database writes');
       await capture(`sources-${width}-${theme}`);
       await evaluate("setScenario('critical'); document.getElementById('recording-details').open=true");
-      await evaluate("document.getElementById('recording-storage-details').open=true; document.querySelectorAll('.recording-storage-evidence').forEach(node => node.open=true)");
+      await evaluate("document.getElementById('recording-disk-card').open=true; document.querySelectorAll('.recording-storage-evidence').forEach(node => node.open=true)");
       await settle(); await checkLayout(`${width}/${theme}/storage`); await capture(`storage-${width}-${theme}`);
-      await evaluate("document.getElementById('recording-storage-details').open=false; document.getElementById('recording-adaptive-details').open=true; document.querySelector('[data-signal=outdoor_temperature] .recording-source-history').open=true");
+      await evaluate("document.getElementById('recording-disk-card').open=false; document.getElementById('recording-adaptive-details').open=true; document.querySelector('[data-signal=outdoor_temperature] .recording-source-history').open=true");
       await settle(); await checkLayout(`${width}/${theme}/adaptive`); await capture(`adaptive-${width}-${theme}`);
       await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=true)");
       await settle(); await checkLayout(`${width}/${theme}/expanded`); await capture(`expanded-${width}-${theme}`);
+      assert.equal(await evaluate("document.querySelectorAll('#recording-backup-list > li').length"),3,'Backups lists individual saved copies');
+      assert.match(await evaluate("document.getElementById('recording-backup-folder').textContent"),/synthetic\/recording\/backups/);
+      await evaluate("setScenario('sources'); document.getElementById('recording-recording-card').open=true");
+      await settle(); await checkLayout(`${width}/${theme}/source-details`);
+      assert.match(await evaluate("document.getElementById('recording-recording-sources').textContent"),/Outdoor temperature.*Out of date.*Source observation/);
+      assert.match(await evaluate("document.getElementById('recording-recording-coverage').textContent"),/never reported are outside/);
       await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=false); document.getElementById('recording-performance-details').open=true; setPerformance('healthy')");
       await settle(); await checkLayout(`${width}/${theme}/performance`); await capture(`performance-${width}-${theme}`); await captureGlance(`glance-storage-${width}-${theme}`);
       for(const state of ['busy','failed','recovered','unknown','empty','reset','snapshot']) {
@@ -364,6 +389,25 @@ try {
       await evaluate("setScenario('critical')");
     }
   }
+  await evaluate("setScenario('healthy'); document.getElementById('recording-details').open=true; document.getElementById('recording-backup-card').open=true"); await settle();
+  await evaluate("window.copyReview=document.querySelector('#recording-backup-list > li .recording-backup-actions button:last-child'); copyReview.focus(); panel.refreshCopies({force:true})"); await settle();
+  assert.equal(await evaluate('document.activeElement===copyReview'),true,'Metadata refresh preserves copy action identity and keyboard focus');
+  await evaluate('copyReview.click()');
+  assert.equal(await evaluate('reviewedBackup'),'backup:synthetic','Review history selects the saved copy in the existing workflow');
+  await evaluate("document.querySelector('#recording-backup-list .recording-backup-actions button:first-child').click()"); await settle();
+  assert.match(await evaluate("document.querySelector('#recording-backup-list > li').textContent"),/Download sent.*confirm it was saved/);
+  await evaluate("document.querySelector('#recording-backup-list .recording-backup-actions button:nth-child(2)').click()"); await settle();
+  assert.equal(await evaluate("document.querySelector('#recording-backup-list .recording-backup-actions button:nth-child(2)').disabled"),true,'An active verification cannot be submitted twice');
+  assert.match(await evaluate("document.querySelector('#recording-backup-list > li').textContent"),/Waiting for the full verifier/);
+  await evaluate(`copies.copies[0].recheck={state:'complete',startedAt:${now-1000},finishedAt:${now}}; panel.refreshCopies({force:true})`); await settle();
+  assert.match(await evaluate("document.querySelector('#recording-backup-list > li').textContent"),/Full check passed.*file state/);
+  await evaluate("failCatalog=true; panel.refreshCopies({force:true,scan:true})"); await settle();
+  assert.match(await evaluate("document.getElementById('recording-backup-catalogStatus').textContent"),/Could not refresh.*last successful list.*1 min ago/);
+  assert.equal(await evaluate("document.querySelectorAll('#recording-backup-list > li').length"),3,'A failed list refresh retains previous metadata');
+  assert.doesNotMatch(await evaluate('document.body.innerText'),/Private catalog failure/);
+  await evaluate("failCatalog=false; document.querySelector('#recording-backup-list .recording-backup-actions button:first-child').focus(); copies.copies.shift(); panel.refreshCopies({force:true})"); await settle();
+  assert.equal(await evaluate("document.activeElement===document.querySelector('#recording-backup-card > summary')"),true,'Removing a focused saved-copy row restores a stable focus target');
+  assert.equal(await evaluate("document.getElementById('recording-backup-state').textContent"),'2 saved copies','The folded count follows the newest catalog rather than older health metadata');
   await evaluate("setPerformance('healthy'); document.getElementById('recording-details').open=true; document.getElementById('recording-performance-details').open=true; window.beforePerformanceRequests=requestCount; document.getElementById('recording-performance-week').click(); document.getElementById('recording-performance-week').focus(); panel.update(payload)");
   assert.equal(await evaluate("document.getElementById('recording-performance-week').getAttribute('aria-pressed')"), 'true', 'Period choice survives status updates');
   assert.match(await evaluate("document.getElementById('recording-performance-coverage').textContent"), /Past week.*8 h monitored.*partial run/);
@@ -454,8 +498,8 @@ try {
   assert.doesNotMatch(await evaluate('document.body.innerText'),/Private inventory failure/);
   await evaluate("failInventory=false; inventoryRefresh({force:true})");
   assert.equal(await evaluate("document.getElementById('recording-overview-notice').hidden"),true,'A successful retry clears inventory attention');
-  await evaluate("document.getElementById('recording-storage-details').open=false; document.querySelector('[data-recording-open=recording-storage-details]').click()");
-  assert.equal(await evaluate("document.getElementById('recording-storage-details').open && document.activeElement === document.querySelector('#recording-storage-details > summary')"),true,
+  await evaluate("document.getElementById('recording-disk-card').open=false; document.querySelector('[data-recording-open=recording-storage-details]').click()");
+  assert.equal(await evaluate("document.getElementById('recording-disk-card').open && document.activeElement === document.querySelector('#recording-disk-card > summary')"),true,
     'Other recorded data links to the shared storage and refresh disclosure');
   await evaluate('panel.inventory(inventory)');
   assert.equal(await evaluate("document.getElementById('recording-growth-retained').textContent"), '6 GB');
@@ -463,21 +507,21 @@ try {
   await evaluate("document.querySelector('#recording-backup-card > summary').focus(); payload.recordingHealth.backup.state = 'running'; payload.recordingHealth.backup.startedAt = payload.recordingHealth.checkedAt; panel.update(payload)");
   assert.equal(await evaluate("document.activeElement === document.querySelector('#recording-backup-card > summary') && document.getElementById('recording-backup-card').open"),true,
     'Health updates preserve disclosure state and keyboard focus');
-  assert.equal(await evaluate("document.getElementById('recording-backup-state').textContent"), 'Creating a copy');
-  await evaluate("document.querySelector('[data-recording-open=database-export-details]').click()");
+  assert.equal(await evaluate("document.getElementById('recording-backup-state').textContent"), 'Copy in progress');
+  await evaluate("document.querySelector('#database-export-details > summary').focus(); document.getElementById('database-export-details').open=false; document.querySelector('#database-export-details > summary').click()");
   assert.equal(await evaluate("document.getElementById('database-export-details').open && document.activeElement === document.querySelector('#database-export-details > summary')"), true);
   await evaluate("failRefresh = true; document.getElementById('recording-health-refresh').click()"); await settle();
   assert.match(await evaluate("document.getElementById('recording-health-checked').textContent"), /Refresh failed/);
   assert.equal(await evaluate("document.getElementById('recording-status-freshness').hidden"), false);
   assert.match(await evaluate("document.getElementById('recording-status-freshness').textContent"), /Refresh failed/);
-  assert.equal(await evaluate("document.getElementById('recording-backup-state').textContent"), 'Last known: Creating a copy', 'Failure retains dated evidence');
+  assert.equal(await evaluate("document.getElementById('recording-backup-state').textContent"), 'Last known: Copy in progress', 'Failure retains dated evidence');
   assert.doesNotMatch(await evaluate('document.body.innerText'), /private fixture error/);
   await evaluate("failRefresh = false; payload.recordingHealth.scope = 'snapshot'; payload.recordingHealth.recording = {state:'read-only', detail:'This computer reads the recorded snapshot.'}; payload.recordingHealth.attention = []; payload.recordingHealth.disk.state = 'ok'; payload.recordingHealth.disk.freeBytes = 80e9; payload.recordingHealth.backup = {state:'none-known'}; panel.update(payload)");
   assert.equal(await evaluate("document.getElementById('recording-status').hidden"), true, 'A healthy recorded snapshot has no persistent startup strip');
   assert.equal(await evaluate("document.getElementById('recording-status-issues').hidden"), true);
   assert.equal(await evaluate("document.getElementById('recording-status-freshness').hidden"), true);
   assert.equal(await evaluate("document.getElementById('recording-recording-state').textContent"), 'Read-only history');
-  assert.match(await evaluate("document.getElementById('recording-health-scope').textContent"), /Recorded snapshot/);
+  assert.match(await evaluate("document.getElementById('recording-health-scope').textContent"), /On this server.*Read-only replica/);
   assert.match(await evaluate("document.getElementById('recording-status-disk').textContent"), /this computer|local disk/i,
     'Snapshot storage identifies the local computer rather than the source of the recording');
   await evaluate(`payload.recordingHealth.checkedAt = ${now - 86400_000}; panel.update(payload)`);
@@ -513,7 +557,7 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-status').checkVisibility()"), false);
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.history-panel')).display"), 'none');
   assert.deepEqual(errors, []);
-  console.log(`Recording details browser smoke passed: 320/390/768/1440, light/dark, dashboard spacing, startup/source/critical states, startup expiry and recovery, four balanced health rows, collapsed/storage/all-open layouts, storage populated/busy/failed/recovered/unknown/empty/reset/snapshot, local period choice, safe incidents, production tables, disclosure and focus preservation, source/storage navigation transitions, stale labels in all rows, inventory and health failures, snapshot, auth fallback and logout fencing. Screenshots: ${artifacts}`);
+  console.log(`Recording details browser smoke passed: 320/390/768/1440, light/dark, dashboard spacing, startup/source/critical states, startup expiry and recovery, four balanced health rows, merged storage, backup inventory/actions/failed-list/focus, source exceptions, collapsed/storage/all-open layouts, storage populated/busy/failed/recovered/unknown/empty/reset/snapshot, local period choice, safe incidents, production tables, disclosure and focus preservation, source/storage navigation transitions, stale labels in all rows, inventory and health failures, snapshot, auth fallback and logout fencing. Screenshots: ${artifacts}`);
 } finally {
   socket?.close(); browser?.kill('SIGTERM');
   await new Promise(resolve => server.close(resolve));

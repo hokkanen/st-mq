@@ -7,20 +7,17 @@ import { storagePerformanceView, storageDuration } from '../chart/storage-health
 const now = Date.parse('2026-10-07T12:00:00Z');
 const health = (overrides = {}) => ({ version: 2, checkedAt: now, scope: 'live',
   disk: { state: 'ok', totalBytes: 100e9, freeBytes: 60e9 },
-  recording: { state: 'ok', lastSourceCheckAt: now - 60000 },
-  backup: { state: 'available', latestKind: 'saved-copy', latestAt: now - 100 * 86400_000 }, attention: [], ...overrides });
+  recording: { state: 'ok', lastSourceCheckAt: now - 60000, lastLoopCompletedAt: now - 1000 },
+  backup: { state: 'available', count: 1, totalBytes: 1000, complete: true, latestKind: 'saved-copy', latestAt: now - 100 * 86400_000 }, attention: [], ...overrides });
 
 test('backup age is factual, not an invented schedule or present verification', () => {
   const view = recordingHealthView(health(), undefined, now);
-  assert.equal(view.backup.label, 'Copy available');
+  assert.equal(view.backup.label, '1 saved copy');
   assert.match(view.backup.evidence, /100 d ago/);
-  assert.match(view.backup.verification, /not verified by this status check/);
   assert.deepEqual(view.attention, []);
   assert.doesNotMatch(JSON.stringify(view), /overdue|safe backup|verified copy/);
-  const download = recordingHealthView(health({ backup: { state: 'available', latestKind: 'download', latestAt: now } }), undefined, now);
-  assert.equal(download.backup.label, 'Download sent');
-  assert.doesNotMatch(download.backup.evidence, /completed|saved/i);
-  assert.match(download.backup.verification, /retention.*unknown/);
+  const incomplete = recordingHealthView(health({ backup: { state: 'available', count: 3, complete: false, latestAt: now } }), undefined, now);
+  assert.equal(incomplete.backup.label, '3 saved copies listed');
   const failed = recordingHealthView(health({ backup: { state: 'failed', latestAt: now - 86400_000, lastFailureAt: now } }), undefined, now);
   assert.equal(failed.backup.label, 'Last backup failed');
   assert.match(failed.backup.evidence, /1 d ago/);
@@ -29,11 +26,212 @@ test('backup age is factual, not an invented schedule or present verification', 
 
 test('snapshot has local disk evidence and read-only recording without inferred stalls', () => {
   const view = recordingHealthView(health({ scope: 'snapshot', recording: { state: 'read-only', lastSourceCheckAt: now - 7 * 86400_000 } }), undefined, now);
-  assert.match(view.scope, /Recorded snapshot.*this computer/);
+  assert.equal(view.scope, 'On this server · Read-only replica');
+  assert.match(view.recording.coverage, /recorded history.*not acquiring/);
   assert.equal(view.recording.label, 'Read-only history');
   assert.equal(view.disk.free, '60 GB');
   assert.equal(view.disk.fraction, .6);
   assert.deepEqual(view.attention, []);
+});
+
+test('recording separates completed updates, attempted source checks, observed coverage and successful storage writes', () => {
+  const view = panelFixture();
+  view.panel.update({ recordingHealth: health({ scope: 'simulated', recording: {
+    state: 'ok', lastLoopCompletedAt: now - 1000, lastSourceCheckAt: now - 60000, lastWriteAt: now - 120000,
+    history: performanceHistory(), sources: { observedStreams: 5, usableStreams: 4, attentionStreams: 2, unknownStreams: 1,
+      complete: false, truncated: false, issues: [{ id: 'synthetic-stream', label: 'Outdoor temperature', unit: '°C',
+        status: 'stale', lastCheckedAt: now - 60000, sourceObservedAt: now - 900000 }] },
+  } }) });
+  assert.equal(view.element('recording-health-scope').textContent, 'On this server · Simulated recording');
+  assert.match(view.element('recording-recording-evidence').textContent, /2 observed measurement streams need attention/);
+  assert.match(view.element('recording-recording-loop').textContent, /just now/);
+  assert.match(view.element('recording-recording-sourceCheck').textContent, /1 min ago/);
+  assert.match(view.element('recording-recording-coverage').textContent, /5 measurement streams observed.*4 with usable.*1 unknown.*never reported are outside/);
+  assert.match(view.element('recording-performance-lastWrite').textContent, /successful storage write.*2 min ago.*settings and event writes/);
+  assert.equal(view.element('recording-recording-sources').children.length, 1);
+  assert.match(view.element('recording-recording-sources').children[0].children[1].textContent, /Source observation.*15 min ago/);
+  assert.equal(view.element('recording-performance-state').textContent, 'Caught up', 'Simulation monitors its own writer');
+});
+
+const savedCatalog = (overrides = {}) => ({ directory: '/synthetic/recording/backups', checkedAt: now - 60000,
+  complete: true, limit: 100, reasons: [], copies: [{ id: 'backup:synthetic', kind: 'backup', filename: 'stmq-synthetic.sqlite',
+    label: 'Saved copy', createdAt: now - 86400_000, fileModifiedAt: now - 120000, bytes: 2048,
+    verification: { state: 'verified-when-created', at: null } }], ...overrides });
+
+test('backup catalog loads only for an expanded visible admin view and retains dated inventory on failure', async () => {
+  let calls = 0, fail = false;
+  const view = panelFixture(async path => {
+    assert.match(path, /^\/api\/recording-backups/); ++calls;
+    if (fail) throw Error('Synthetic private error');
+    return savedCatalog();
+  });
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'family' } });
+  view.element('recording-details').open = view.element('recording-backup-card').open = true;
+  await view.panel.refreshCopies(); assert.equal(calls, 0);
+  view.document.visibilityState = 'hidden';
+  view.panel.update({ webAccess: { role: 'admin' } });
+  await view.panel.refreshCopies({ force: true }); assert.equal(calls, 0);
+  view.document.visibilityState = 'visible';
+  await view.panel.refreshCopies(); assert.equal(calls, 1);
+  assert.equal(view.element('recording-backup-folder').textContent, '/synthetic/recording/backups');
+  assert.match(view.element('recording-backup-size').textContent, /1 copy listed.*2 kB/);
+  const row = view.element('recording-backup-list').children[0];
+  assert.match(row.children[2].textContent, /Export dated.*1 d ago/);
+  assert.match(row.children[3].textContent, /Verified during creation.*verification time not recorded.*No later check is available/);
+  fail = true; await view.panel.refreshCopies({ force: true, scan: true });
+  assert.match(view.element('recording-backup-catalogStatus').textContent, /Could not refresh.*last successful list.*1 min ago/);
+  assert.equal(view.element('recording-backup-list').children[0], row);
+  assert.doesNotMatch(view.element('recording-backup-catalogStatus').textContent, /private/);
+  view.panel.update({ webAccess: { role: 'family' } });
+  assert.equal(view.element('recording-backup-list').children.length, 0);
+  assert.doesNotMatch(view.element('recording-backup-folder').textContent, /synthetic/);
+});
+
+test('backup verification, incomplete metadata, file dates and history review keep separate evidence', async () => {
+  let verifying = false, reviewed;
+  const view = panelFixture(async (path, body) => {
+    if (path.endsWith('/verify')) { assert.deepEqual(body, { sourceId: 'backup:synthetic' }); verifying = true; return { state: 'queued' }; }
+    const result = savedCatalog({ complete: false, reasons: ['copy-limit'] });
+    result.copies[0].createdAt = null;
+    if (verifying) result.copies[0].recheck = { state: 'queued', startedAt: now };
+    return result;
+  }, { reviewBackup: value => { reviewed = value; } });
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'admin' } });
+  view.element('recording-details').open = view.element('recording-backup-card').open = true;
+  await view.panel.refreshCopies();
+  const row = view.element('recording-backup-list').children[0];
+  assert.match(view.element('recording-backup-catalogStatus').textContent, /Listing is incomplete.*limit of 100 copies/);
+  assert.match(row.children[2].textContent, /Creation time not recorded.*file modified.*2 min ago/);
+  await row.children[5].children[2].click();
+  assert.equal(reviewed.sourceId, 'backup:synthetic');
+  await row.children[5].children[1].click();
+  assert.equal(row.children[5].children[1].disabled, true, 'The verification action stays unavailable while queued');
+  assert.match(row.children[4].textContent, /Waiting for the full verifier/);
+  assert.doesNotMatch(row.children[3].textContent, /Full check passed/);
+});
+
+test('logout fences late catalogs and download receipts, clearing private paths and filenames', async () => {
+  let resolveCatalog, resolveDownload;
+  const view = panelFixture(() => new Promise(resolve => { resolveCatalog = resolve; }),
+    { downloadBackup: () => new Promise(resolve => { resolveDownload = resolve; }) });
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'admin' } });
+  const pending = view.panel.refreshCopies({ force: true });
+  view.panel.clear(); resolveCatalog(savedCatalog()); await pending;
+  assert.equal(view.element('recording-backup-list').children.length, 0);
+  assert.doesNotMatch(view.element('recording-backup-folder').textContent, /synthetic/);
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'admin' } });
+  const next = view.panel.refreshCopies({ force: true }); resolveCatalog(savedCatalog()); await next;
+  const row = view.element('recording-backup-list').children[0], download = row.children[5].children[0].click();
+  assert.equal(row.children[5].children[0].disabled, true);
+  view.panel.clear(); resolveDownload('Saved synthetic copy'); await download;
+  assert.equal(view.element('recording-backup-list').children.length, 0);
+});
+
+test('ordinary health polling cannot unlock an unconfirmed verification request', async () => {
+  let resolveVerify, calls = 0;
+  const view = panelFixture((path) => {
+    if (path.endsWith('/verify')) { ++calls; return new Promise(resolve => { resolveVerify = resolve; }); }
+    return Promise.resolve(savedCatalog());
+  });
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'admin' } });
+  await view.panel.refreshCopies({ force: true });
+  const verify = view.element('recording-backup-list').children[0].children[5].children[1];
+  const pending = verify.click();
+  view.panel.update({ recordingHealth: health() });
+  assert.equal(verify.disabled, true);
+  await verify.click(); assert.equal(calls, 1);
+  resolveVerify({ state: 'queued' }); await pending;
+});
+
+test('a stale catalog preserves its original check date and explicitly dates the failed refresh attempt', async () => {
+  const view = panelFixture(async () => savedCatalog({ stale: true, lastAttemptAt: now, complete: false, reasons: ['folder-unavailable'] }));
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'admin' } });
+  await view.panel.refreshCopies({ force: true });
+  assert.equal(view.element('recording-backup-state').textContent, 'Last listed: 1 saved copy listed');
+  assert.match(view.element('recording-backup-catalogStatus').textContent, /last successful list.*List checked.*1 min ago.*Last list refresh failed.*just now.*backup folder could not be read/);
+  assert.doesNotMatch(view.element('recording-backup-catalogStatus').textContent, /limit of 100/);
+});
+
+test('a rejected verification keeps its safe receipt through health and catalog refreshes until a newer action', async () => {
+  let fail = true;
+  const view = panelFixture(async path => {
+    if (path.endsWith('/verify')) {
+      if (fail) throw Error('Synthetic private verifier detail');
+      return { sourceId: 'backup:synthetic', state: 'queued', startedAt: now };
+    }
+    return savedCatalog();
+  });
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'admin' } });
+  await view.panel.refreshCopies({ force: true });
+  const row = view.element('recording-backup-list').children[0], verify = row.children[5].children[1];
+  await verify.click();
+  const text = row.children[4].textContent;
+  assert.match(text, /check could not be started or confirmed/);
+  assert.doesNotMatch(text, /private/);
+  view.advance(3600_000); view.panel.update({ recordingHealth: health() });
+  await view.panel.refreshCopies({ force: true });
+  assert.equal(row.children[4].textContent, text);
+  fail = false; await verify.click();
+  assert.notEqual(row.children[4].textContent, text);
+});
+
+test('accepted verification survives an older held catalog and triggers an immediate follow-up request', async () => {
+  let calls = 0, releaseCatalog;
+  const view = panelFixture(path => {
+    if (path.endsWith('/verify')) return Promise.resolve({ sourceId: 'backup:synthetic', state: 'queued', startedAt: now });
+    ++calls;
+    if (calls === 2) return new Promise(resolve => { releaseCatalog = resolve; });
+    const result = savedCatalog();
+    if (calls > 2) result.copies[0].recheck = { sourceId: 'backup:synthetic', state: 'running', startedAt: now };
+    return Promise.resolve(result);
+  });
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'admin' } });
+  view.element('recording-details').open = view.element('recording-backup-card').open = true;
+  await view.panel.refreshCopies({ force: true });
+  const row = view.element('recording-backup-list').children[0], verify = row.children[5].children[1];
+  const earlier = view.panel.refreshCopies({ force: true });
+  await verify.click();
+  assert.match(row.children[4].textContent, /Waiting for the full verifier/);
+  assert.equal(verify.disabled, true);
+  const old = savedCatalog(); old.copies[0].recheck = { state: 'complete', startedAt: now - 1000, finishedAt: now - 500 };
+  releaseCatalog(old); await earlier;
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(calls, 3, 'The held response dispatches the requested follow-up immediately');
+  assert.match(row.children[4].textContent, /Checking the complete copy/);
+  assert.doesNotMatch(row.children[3].textContent, /Full check passed/);
+});
+
+test('a vanished verification row keeps polling its top-level active operation until a terminal result', async () => {
+  let state = 'running', calls = 0;
+  const view = panelFixture(async () => { ++calls; return savedCatalog({ copies: [],
+    recheck: { sourceId: 'backup:synthetic', state, startedAt: now, finishedAt: state === 'changed' ? now : null } }); });
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'admin' } });
+  view.element('recording-details').open = view.element('recording-backup-card').open = true;
+  await view.panel.refreshCopies({ force: true });
+  assert.match(view.element('recording-backup-catalogStatus').textContent, /no longer listed.*full check is still in progress/);
+  assert([...view.timers.values()].some(timer => timer.ms === 2000));
+  state = 'changed'; view.fireTimer(2000); await Promise.resolve(); await Promise.resolve();
+  assert.equal(calls, 2);
+  assert(![...view.timers.values()].some(timer => timer.ms === 2000));
+});
+
+test('fresh server changed or missing rechecks withdraw an older local verification result', async () => {
+  let check = null;
+  const view = panelFixture(async path => {
+    if (path.endsWith('/verify')) { check = { sourceId: 'backup:synthetic', state: 'complete', startedAt: now - 1000, finishedAt: now }; return check; }
+    const result = savedCatalog(); if (check) result.copies[0].recheck = check;
+    return result;
+  });
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'admin' } });
+  await view.panel.refreshCopies({ force: true });
+  const row = view.element('recording-backup-list').children[0];
+  await row.children[5].children[1].click();
+  assert.match(row.children[3].textContent, /Full check passed/);
+  check = { ...check, state: 'changed' }; await view.panel.refreshCopies({ force: true });
+  assert.doesNotMatch(row.children[3].textContent, /Full check passed/);
+  assert.match(row.children[4].textContent, /file changed/);
+  check = null; await view.panel.refreshCopies({ force: true });
+  assert.equal(row.children[4].textContent, '');
 });
 
 test('unknown and malformed capacity do not become zero free space or a healthy status', () => {
@@ -230,7 +428,7 @@ test('annualized database growth names its settling period and does not claim a 
 });
 
 
-function panelFixture(request = async () => health()) {
+function panelFixture(request = async () => health(), options = {}) {
   const elements = new Map();
   function node() {
     const listeners = new Map(), attributes = new Map();
@@ -239,7 +437,10 @@ function panelFixture(request = async () => health()) {
       style: { setProperty() {} }, setAttribute(name, value) { attributes.set(name, value); },
       getAttribute(name) { return attributes.get(name); },
       addEventListener(name, callback) { listeners.set(name, callback); },
-      click() { listeners.get('click')?.({ button: 0, preventDefault() {} }); },
+      click() { return listeners.get('click')?.({ button: 0, preventDefault() {} }); },
+      emit(name) { return listeners.get(name)?.(); },
+      focus() { document.activeElement = this; },
+      querySelector() { return this.children[0] ?? null; },
       get firstElementChild() { return this.children[0]; },
       contains(child) { return child === this || this.children.some(item => item.contains(child)); },
       append(...children) { for (const child of children) this.insertBefore(child, null); },
@@ -251,17 +452,24 @@ function panelFixture(request = async () => health()) {
     };
   }
   const document = {
-    body: { dataset: {} }, querySelectorAll: () => [], createElement: node,
+    body: { dataset: { authenticated: 'true' } }, visibilityState: 'visible', querySelectorAll: () => [], createElement: node,
     getElementById(id) {
       if (!elements.has(id)) elements.set(id, node());
       return elements.get(id);
     },
   };
-  let at = now, expire;
+  let at = now, expire, introId, timerSequence = 0;
+  const timers = new Map();
   return { document, element: id => document.getElementById(id), advance: ms => { at += ms; },
     expireIntro: () => expire?.(),
-    panel: createRecordingHealth({ document, request, now: () => at,
-      setTimer(callback) { expire = callback; return 1; }, clearTimer() { expire = undefined; } }) };
+    timers,
+    fireTimer(ms) {
+      const [id, timer] = [...timers].reverse().find(([, item]) => item.ms === ms) ?? [];
+      if (timer) { timers.delete(id); return timer.callback(); }
+    },
+    panel: createRecordingHealth({ document, request, ...options, now: () => at,
+      setTimer(callback, ms) { const id = ++timerSequence; timers.set(id, { callback, ms }); if (ms === 15000) { expire = callback; introId = id; } return id; },
+      clearTimer(id) { timers.delete(id); if (id === introId) expire = undefined; } }) };
 }
 
 function performanceHistory(overrides = {}) {
@@ -500,7 +708,7 @@ test('an independent health refresh clears inventory when its source scope chang
 
 
 test('epoch zero is a valid health, backup, recording and adaptive accounting timestamp', () => {
-  const view=recordingHealthView(health({checkedAt:0,recording:{state:'ok',lastSourceCheckAt:0},
+  const view=recordingHealthView(health({checkedAt:0,recording:{state:'ok',lastSourceCheckAt:0,lastLoopCompletedAt:0},
     backup:{state:'available',latestKind:'saved-copy',latestAt:0}}),
     {adaptiveEstimatedBytes:0,adaptiveAccountingStartedAt:0},0);
   assert.match(view.checked,/1 Jan 1970.*just now/);

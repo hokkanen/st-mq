@@ -210,15 +210,15 @@ test('replica does not substitute priors for missing, unsupported or post-public
 
 test('replica refuses server-side database saves without changing the verified snapshot', async t => {
   const directory = fixture(t), publication = snapshot(directory, 'export-source');
-  const exportDirectory = join(directory, 'local-copies');
+  const backupDirectory = join(directory, 'local-copies');
   const { request } = await viewer(t, directory, async () => publication, {
-    config: { ...configuration(directory), recording: { exportDirectory } },
+    config: { ...configuration(directory), recording: { backupDirectory } },
   });
   const result = await request('/api/database-export', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
   });
   assert.equal(result.status, 405);
-  assert.equal(existsSync(exportDirectory), false);
+  assert.equal(existsSync(backupDirectory), false);
   assert.equal(digest(publication.dbPath), publication.digest);
 });
 
