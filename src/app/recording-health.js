@@ -70,12 +70,16 @@ function sourceSummary(parameters, now) {
       const status = ['fresh', 'recorded-interval'].includes(row.freshness?.status) && !usableSource(row, now)
         ? 'stale' : row.freshness?.status ?? 'unknown';
       const policy = Object.hasOwn(RECORDING_POLICIES, row.policy ?? '') ? row.policy : null;
+      const caravanReason = row.signal === 'caravan_dehumidifier_state' && Array.isArray(row.freshness?.reasons)
+        ? row.freshness.reasons.find(reason => ['location-unconfirmed', 'state-evidence-unavailable'].includes(reason)) : null;
       return {
         id: typeof row.streamId === 'string' && /^[a-f0-9]{12}$/.test(row.streamId) ? row.streamId : `observed-${index}`,
         label: publicLabel ? info.label : 'Recorded measurement',
         status, policy, unit: publicUnits.has(row.unit) ? row.unit : '',
         destination: policy && RECORDING_POLICIES[policy].adaptive ? 'adaptive' : 'inventory',
-        reason: { unavailable: 'The observed source is unavailable.', stale: 'The observed source has not reported within its freshness limit.',
+        reason: { 'location-unconfirmed': 'The Caravan power check and fresh appliance/meter reports have not confirmed recording readiness.',
+          'state-evidence-unavailable': 'Fresh power reports, and a fresh fan report while On, are required to record the state.' }[caravanReason]
+          ?? { unavailable: 'The observed source is unavailable.', stale: 'The observed source has not reported within its freshness limit.',
           failed: 'The last source check failed.', waiting: 'Waiting for another usable source report.',
           'held-attention': 'The last reported value is retained, with a source warning.' }[status]
           ?? 'Usable source evidence is not available.',
@@ -227,7 +231,10 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
       recordingScopeSeen = true;
     }
     const tickAt = engine?.latestStatus?.now;
-    const parameters = recordingParameters(current?.recording, now);
+    let recording = current?.recording;
+    try { if (engine?.recordingSourceStatus) recording = engine.recordingSourceStatus(now) ?? null; }
+    catch { recording = null; }
+    const parameters = recordingParameters(recording, now);
     base.lastLoopCompletedAt = receiptTime(tickAt) && tickAt <= now ? tickAt : null;
     base.sources = sourceSummary(parameters, now);
     base.lastSourceCheckAt = parameters?.reduce((latest, row) => receiptTime(row.lastPollAt) && row.lastPollAt <= now
@@ -289,16 +296,19 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
   return {
     backupEvent,
     async status({ store, engine, current, readOnly = false, verification = null } = {}) {
-      const config = getConfig(), now = clock();
+      const config = getConfig(), refreshAt = clock();
       if (store && !contexts.has(store)) contexts.set(store, randomUUID());
       loadReceipt(store);
-      const operations = [refreshDisk(store?.path ?? config.dbPath, now), refreshCatalog()].filter(Boolean);
+      const operations = [refreshDisk(store?.path ?? config.dbPath, refreshAt), refreshCatalog()].filter(Boolean);
       // A slow/unavailable mount must not hold the dashboard request indefinitely.
       if (operations.length) {
         let timeout;
         await Promise.race([Promise.allSettled(operations), new Promise(resolve => { timeout = setTimeout(resolve, 150); })]);
         clearTimeout(timeout);
       }
+      // Acquisition can commit while filesystem checks are awaited. Evaluate
+      // that current source evidence against the clock after the wait.
+      const now = clock();
       const recording = recordingStatus({ store, engine, current, readOnly, now }), backup = backupStatus(now);
       const diskStale = disk.checkedAt !== null && now - disk.checkedAt > 2 * refreshMs;
       const diskView = diskStale ? { ...disk, state: 'unknown', freeBytes: null, totalBytes: null,

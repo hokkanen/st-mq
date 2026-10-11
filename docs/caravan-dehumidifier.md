@@ -243,12 +243,22 @@ Qualification is never filled backwards into the test or an earlier reporting
 gap. Device control authority is required for the
 test and restoration; read-only replicas cannot send these commands.
 
-A bounded wait for a slightly early source timestamp pauses test advancement
-and recording without creating a new connection or restarting a failed check.
+A bounded wait for a slightly early required appliance or meter timestamp pauses
+test advancement and recording without creating a new connection or restarting a failed check.
 The original phase deadline continues to run. With previously fresh, qualified
 evidence, automatic power holds its existing demand during this brief wait;
 cold or missing air evidence still protects Off. Actual stale evidence,
 connection loss and rejected timestamps still invalidate the check.
+
+A partial native Shelly notification containing only the energy counter waits
+for its timestamp independently. It does not pause recording or the power check
+while previously admitted switch, power and current readings remain fresh.
+Those readings keep their original clocks and expiry. A required custom reading
+on the same switch component, a mixed/full report or a fault keeps the required
+evidence gate; a later required notification cannot bypass the ordered queue.
+Rejecting or expiring an ancillary counter supplies no new measurement and does
+not invalidate independent fresh readings. Actual meter expiry or connection
+loss still invalidates qualification.
 
 ## Recording
 

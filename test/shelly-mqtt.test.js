@@ -48,6 +48,98 @@ const pairedGarage = { id: 'garage', kind: 'temperature', connection: 'shelly:in
     { key: 'front', signal: 'garage_temperature_2', component: 'temperature:101', unit: 'degC', required: true }] };
 const heat = { id: 'heat_savings', kind: 'switch', connection: 'shelly:invented-mini', tariff_control: true };
 
+function counterFixture(t, device = caravan) {
+  const f = fixture(t, [device]); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: true, apower: 575, current: 2.5, aenergy: { total: 12000 } } });
+  f.now(initial + 10_000);
+  return { ...f, notify: (status, { method = 'NotifyStatus', extra = {}, lead = 578, packet = {} } = {}) =>
+    f.capture.receive('invented-caravan/events/rpc', JSON.stringify({ src: 'fixture-invented-caravan', method,
+      params: { ts: (initial + 10_000 + lead) / 1000, 'switch:0': status, ...extra } }), packet) };
+}
+
+test('a required custom switch reading retains the pending source availability fence', t => {
+  const f = counterFixture(t, { ...caravan, readings: [
+    { key: 'counter', signal: 'caravan_aux', component: 'switch:0', path: 'aenergy.total', unit: 'Wh', required: true },
+  ] });
+  assert.equal(f.capture.status().devices[0].available, true);
+  f.notify({ id: 0, aenergy: { total: 12001 } });
+  assert.equal(f.capture.status().devices[0].available, false);
+  assert.equal(f.capture.sourceTimePending('caravan'), true);
+  assert.equal(f.capture.status().devices[0].readings.caravan_aux.value, 12000);
+  f.now(initial + 10_578); f.capture.tick();
+  assert.equal(f.capture.status().devices[0].available, true);
+  assert.equal(f.capture.status().devices[0].readings.caravan_aux.value, 12001);
+});
+
+for (const [name, status, options] of [
+  ['power field', { id: 0, aenergy: { total: 12001 }, apower: 600 }, {}],
+  ['switch field', { id: 0, aenergy: { total: 12001 }, output: false }, {}],
+  ['full status', { id: 0, aenergy: { total: 12001 } }, { method: 'NotifyFullStatus' }],
+  ['error field', { id: 0, aenergy: { total: 12001 }, errors: [] }, {}],
+  ['unknown field', { id: 0, aenergy: { total: 12001 }, unknown: true }, {}],
+  ['another component', { id: 0, aenergy: { total: 12001 } }, { extra: { 'input:0': { id: 0, state: true } } }],
+  ['different switch id', { id: 1, aenergy: { total: 12001 } }, {}],
+  ['non-object component', [], {}],
+]) test(`a counter packet with ${name} keeps the required evidence fence`, t => {
+  const f = counterFixture(t);
+  f.notify(status, options);
+  assert.equal(f.capture.status().devices[0].available, false);
+  if (options.method === 'NotifyFullStatus')
+    assert.equal(f.capture.status().devices[0].readings.caravan_power.value, null, 'Missing required fields in a full report are unavailable');
+  else assert.equal(f.capture.sourceTimePending('caravan'), true);
+});
+
+test('a real fault accompanying an early counter invalidates required evidence immediately', t => {
+  const f = counterFixture(t);
+  f.notify({ id: 0, aenergy: { total: 12001 }, errors: ['overpower'] });
+  const row = f.capture.status().devices[0];
+  assert.equal(row.available, false);
+  assert.equal(row.readings.caravan_power.value, null);
+  assert(row.readings.caravan_power.quality.includes('device-error'));
+});
+
+for (const counterOnly of [true, false]) test(`expired ${counterOnly ? 'ancillary counter' : 'required power'} quarantine preserves the appropriate evidence boundary`, t => {
+  let elapsed = 0;
+  t.mock.method(performance, 'now', () => elapsed);
+  const f = counterFixture(t);
+  const before = structuredClone(f.capture.status().devices[0].readings);
+  f.notify(counterOnly ? { id: 0, aenergy: { total: 12001 } } : { id: 0, apower: 600 });
+  elapsed = 5000; f.capture.tick();
+  const row = f.capture.status().devices[0];
+  assert.equal(row.available, counterOnly);
+  if (counterOnly) {
+    assert.deepEqual(row.readings, before);
+    assert.equal(f.store.getState('shelly:caravan-energy:v2').previous.counterKwh, 12);
+  } else {
+    assert.equal(row.readings.caravan_active.value, null);
+    assert(row.readings.caravan_active.quality.includes('invalid-source-time'));
+  }
+});
+
+test('counter quarantine overflow preserves fresh fields but required overflow invalidates them', t => {
+  const f = counterFixture(t);
+  const before = structuredClone(f.capture.status().devices[0].readings);
+  for (let i = 0; i < 129; i++) f.notify({ id: 0, aenergy: { total: 12001 + i } });
+  assert.equal(f.capture.status().devices[0].available, true);
+  assert.deepEqual(f.capture.status().devices[0].readings, before);
+  f.notify({ id: 0, output: false });
+  const row = f.capture.status().devices[0];
+  assert.equal(row.available, false);
+  assert.equal(row.readings.caravan_active.value, null);
+  assert(row.readings.caravan_active.quality.includes('invalid-source-time'));
+});
+
+test('retained, duplicate and rejected counter reports cannot renew required fields or energy', t => {
+  const f = counterFixture(t);
+  const before = structuredClone(f.capture.status().devices[0].readings);
+  for (const options of [{ packet: { retain: true } }, { packet: { dup: true } }, { lead: 1001 }])
+    f.notify({ id: 0, aenergy: { total: 12001 } }, options);
+  assert.equal(f.capture.status().devices[0].available, true);
+  assert.deepEqual(f.capture.status().devices[0].readings, before);
+  assert.equal(f.store.getState('shelly:caravan-energy:v2').previous.counterKwh, 12);
+  assert.equal(f.capture.sourceTimePending('caravan'), false);
+});
+
 test('native Shelly preserves both pending probe updates and original clocks across a tiny source lead', t => {
   const f = fixture(t, [pairedGarage]); f.capture.setConnected(true);
   f.status({ 'temperature:100': { tC: 9 }, 'temperature:101': { tC: 10 } });

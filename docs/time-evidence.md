@@ -32,6 +32,16 @@ permission fenced. Neither repeated packets nor wall-clock rollback extend a
 queued report's lifetime. A correlated read waits only for its own reply; this
 does not retry a device command.
 
+For a native metered Shelly switch, a partial `NotifyStatus` containing only
+`ts` and that switch's `id`/`aenergy` leaves independently admitted required
+switch, power and current readings available until their original expiry. The
+counter remains quarantined and keeps its source timestamp; its receipt cannot
+renew those readings. Required custom mappings on the same switch component,
+mixed/full reports, faults and later required packets retain the availability
+fence and device queue order. Rejecting or expiring a counter-only packet does
+not withdraw unrelated fresh evidence. An actual connection loss or required
+reading expiry still withdraws availability.
+
 Native evidence carries optional `admittedAt`. Canonical observations retain an
 exact `raw.timeAdmission` object containing `sourceTime`, `receivedAt` and
 `admittedAt`. Its original clocks must match the observation, and its admission

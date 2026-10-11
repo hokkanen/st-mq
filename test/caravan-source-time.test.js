@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
+import { Recorder } from '../src/storage/recorder.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 
@@ -12,6 +13,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 function fixture(t, { failOn = false, genericMeter = false } = {}) {
   const store = new Store(':memory:'), publications = [], commands = [];
   let now = START;
+  const recorder = new Recorder(store, { clock: () => now });
   const settings = equipmentConfiguration({ devices: [
     { id: 'air', kind: 'temperature', area: 'garage', signal: 'caravan_temperature', connection: 'mqtt:fixture/air' },
     genericMeter ? { id: 'caravan', kind: 'power', area: 'garage', connection: 'mqtt:fixture/caravan/power',
@@ -22,7 +24,7 @@ function fixture(t, { failOn = false, genericMeter = false } = {}) {
       dehumidifier_control: true, temperature_control: { sensor_device_id: 'air' }, max_age_seconds: 180,
       mqtt: { timestamp_path: 'timestamp', availability_topic: 'fixture/dryer/online', command_topic: 'fixture/dryer/set' } },
   ] });
-  const capture = createEquipmentCapture({ store, settings, engine: { clock: () => now, ingest() {} },
+  const capture = createEquipmentCapture({ store, settings, engine: { clock: () => now, ingest: row => recorder.record(row) },
     publish: async (topic, payload, options) => {
       publications.push({ topic, payload });
       if (topic !== 'fixture/dryer/set') return;
@@ -47,7 +49,12 @@ function fixture(t, { failOn = false, genericMeter = false } = {}) {
     reply('Shelly.GetStatus', { 'switch:0': { id: 0, output: true, apower: 100, current: 0.5, aenergy: { total: 1000 } } });
   };
   meterConnect();
-  const f = { capture, commands, now: () => now, advance: ms => { now += ms; },
+  const f = { capture, commands, store, now: () => now, advance: ms => { now += ms; },
+    recording: () => recorder.status(now).exactParameters.find(row => row.signal === 'caravan_dehumidifier_state'),
+    native: () => capture.status().devices.find(row => row.id === 'caravan'),
+    counter: (lead = 578) => capture.receive('fixture/caravan/events/rpc', JSON.stringify({
+      src: METER, method: 'NotifyStatus', params: { ts: (now + lead) / 1000,
+        'switch:0': { id: 0, aenergy: { total: 1001, by_minute: [0, 0, 1], minute_ts: (now + lead) / 1000 } } } })),
     state: () => capture.status().devices.find(row => row.id === 'caravan_dehumidifier').dehumidifier.temperatureControl,
     air: temperature => capture.receive('fixture/air', JSON.stringify({ value: temperature, timestamp: now })),
     dryer: power => capture.receive('fixture/dryer', JSON.stringify({ identity: IDENTITY, power, fanSpeed: 'low',
@@ -82,6 +89,62 @@ function fixture(t, { failOn = false, genericMeter = false } = {}) {
   };
   return f;
 }
+
+test('a slightly early counter-only Caravan report preserves qualified state recording and original meter clocks', async t => {
+  const f = fixture(t); await f.qualifyManaged();
+  assert.equal(f.recording().freshness.status, 'fresh');
+  const before = structuredClone(f.native().readings);
+  const lastSavedAt = f.recording().lastSavedAt;
+  const gaps = () => f.store.db.prepare("SELECT count(*) n FROM observations WHERE signal='caravan_dehumidifier_state' AND value IS NULL").get().n;
+  const gapCount = gaps(), commands = structuredClone(f.commands);
+  f.advance(1000); f.counter(); f.capture.tick(); await settle();
+  assert.equal(f.native().available, true);
+  assert.deepEqual(f.native().readings, before, 'Counter receipt cannot renew power, current or switch clocks');
+  assert.equal(f.state().recording, true);
+  assert.equal(f.state().qualified, true);
+  assert.equal(f.recording().freshness.status, 'fresh');
+  assert.equal(f.recording().lastSavedAt, lastSavedAt, 'No fabricated state observation');
+  assert.equal(f.store.getState('shelly:caravan-energy:v2').previous.counterKwh, 1, 'Future counter remains quarantined');
+  f.advance(578); f.capture.tick(); await settle();
+  assert.equal(f.store.getState('shelly:caravan-energy:v2').previous.at, f.now());
+  assert.equal(f.store.getState('shelly:caravan-energy:v2').previous.counterKwh, 1.001);
+  assert.deepEqual(f.native().readings, before);
+  assert.equal(f.state().recording, true, 'Fresh appliance clocks predating counter admission remain valid');
+  assert.equal(f.recording().freshness.status, 'fresh');
+  assert.equal(gaps(), gapCount, 'Ancillary clock wait creates no false historical gap');
+  assert.deepEqual(f.commands, commands);
+});
+
+test('required Caravan power queued behind a counter still pauses recording until admission', async t => {
+  const f = fixture(t); await f.qualifyManaged();
+  f.advance(1000); f.counter(); f.meter(110, 500); f.capture.tick(); await settle();
+  assert.equal(f.native().available, false);
+  assert.equal(f.state().recording, false);
+  assert.equal(f.recording().freshness.status, 'unavailable');
+  f.advance(500); f.capture.tick(); await settle();
+  assert.equal(f.native().available, false, 'A required report cannot jump the preceding counter packet');
+  f.advance(78); f.capture.tick(); await settle();
+  assert.equal(f.native().available, true);
+  assert.equal(f.native().readings.caravan_power.observedAt, f.now() - 78);
+  assert.equal(f.state().recording, false, 'Qualification recovery cannot backfill an actual recording gap');
+  f.dryer('on');
+  assert.equal(f.state().recording, true);
+  assert.equal(f.recording().freshness.status, 'fresh');
+  assert.deepEqual(f.commands.map(row => row.power), ['on', 'off', 'on']);
+});
+
+test('counter-only receipts cannot keep expired required Caravan meter evidence qualified', async t => {
+  const f = fixture(t); await f.qualifyManaged();
+  f.advance(179900); f.air(10); f.dryer('on'); f.counter();
+  assert.equal(f.native().available, true);
+  f.advance(100); f.capture.tick(); await settle();
+  assert.equal(f.native().available, false);
+  assert.equal(f.state().qualified, false);
+  assert.equal(f.state().recording, false);
+  assert.equal(f.recording().freshness.status, 'unavailable');
+  f.advance(478); f.capture.tick(); await settle();
+  assert.equal(f.state().qualified, false, 'Expiry discards a pending packet from the ended evidence session');
+});
 
 for (const genericMeter of [false, true]) test(`a failed Caravan check does not retry after a bounded ${genericMeter ? 'MQTT' : 'native'} meter clock lead`, async t => {
   const f = fixture(t, { failOn: true, genericMeter }); await f.fail();
