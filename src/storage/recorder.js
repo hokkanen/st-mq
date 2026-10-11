@@ -73,7 +73,8 @@ const sourceAge = o => voltageEstimate(o) ? Infinity
 
 const DIAGNOSTIC_QUALITY = new Set(['missing', 'invalid-value', 'invalid-numeric', 'invalid-unit', 'invalid-payload',
   'retained', 'source-time-unknown', 'future-source-time', 'out-of-order-source-time', 'conflicting-duplicate',
-  'disconnected', 'mqtt-disconnected', 'subscription-failed', 'provider-error', 'implausible-temperature', 'suspect-zero-indoor']);
+  'disconnected', 'mqtt-disconnected', 'subscription-failed', 'provider-error', 'implausible-temperature', 'suspect-zero-indoor',
+  'location-unconfirmed', 'state-evidence-unavailable']);
 
 /** Explain the recorded acquisition and its current deadline without writing a
  * new observation, extending coverage, or changing historical classification. */
@@ -113,6 +114,15 @@ function recordingFreshness(state, coverage, now) {
     ...(periodicAge !== null ? { reportIntervalMs: state.reportPolicy.reportIntervalMs,
       reportGraceMs: state.reportPolicy.reportGraceMs ?? 0 } : {}),
     ...(held ? { attentionAfterMs: INDOOR_ATTENTION_MS } : {}) };
+}
+
+function sourceParameter(state, coverage, now, observedStreams) {
+  return { signal:state.signal,source:state.source,unit:state.unit,status:state.status,
+    lastSavedAt:state.last?.receivedAt ?? null,observedThisRun:observedStreams.has(state.key),
+    ...(state.source === 'easee' ? {transport:recordedTransport({raw:state.last?.semanticQuality,quality:state.last?.quality})} : {}),
+    streamId:createHash('sha256').update(state.key).digest('hex').slice(0,12),
+    policy:recordingPolicy(state).id,lastSourceTime:state.lastSourceTime,lastPollAt:state.lastPollAt,
+    freshness:recordingFreshness(state,coverage,now) };
 }
 
 /** Acquisition may be fast; only this persisted, causal approximation trains.
@@ -730,6 +740,19 @@ export class Recorder {
 
   latestCommitted(signal) { return this.committedAt(signal,this.clock()); }
 
+  /** Current committed source evidence only. No statistics/history scans,
+   * storage accounting, acquisition or coverage writes run in health reads. */
+  sourceStatus(now = this.clock()) {
+    const states = this.store.db.prepare("SELECT value FROM state WHERE key LIKE 'recorder:signal:%'").all()
+      .map(row=>JSON.parse(row.value)).filter(isRecordedDataset);
+    const latestCoverage = this.store.db.prepare('SELECT source_time FROM recorder_coverage WHERE id=?');
+    const parameters = states.map(state=>sourceParameter(state,
+      state.coverageId ? latestCoverage.get(state.coverageId) : null,now,this.observedStreams))
+      .sort((a,b)=>a.signal.localeCompare(b.signal));
+    return {parameters:parameters.filter(row=>row.policy.startsWith('adaptive-')),
+      exactParameters:parameters.filter(row=>!row.policy.startsWith('adaptive-'))};
+  }
+
   status(now = this.clock()) {
     const g = readStorageMetrics(this.store.db) ?? this.storageMetrics(now);
     const recordedBudget = this.adaptiveBudgetState(), budget = recordedBudget ?? initialBudget(now);
@@ -803,15 +826,10 @@ export class Recorder {
       const powerFloor = policy.id==='adaptive-energy' && /^ev[12]_energy_l[123]$/.test(s.signal) ? CHARGER_POWER_FLOOR_KW : 0;
       const voltage = voltageStatuses.get(s.device)?.[s.signal];
       const first = firstSaved.get(...stream,now), last = lastSaved.get(...stream,now);
-      return {signal:s.signal,source:s.source,unit:s.unit,status:s.status,lastSavedAt:s.last?.receivedAt ?? null,
-        observedThisRun:this.observedStreams.has(s.key),
+      return {...sourceParameter(s,s.coverageId ? latestCoverage.get(s.coverageId) : null,now,this.observedStreams),
         recordedPeriod:{firstSavedAt:first?.received_at ?? null,lastSavedAt:last?.received_at ?? null},
-        ...(s.source === 'easee' ? {transport:recordedTransport({raw:s.last?.semanticQuality,quality:s.last?.quality})} : {}),
         ...(voltage ? {voltage} : {}),
-        streamId:createHash('sha256').update(s.key).digest('hex').slice(0,12),
-        policy:policy.id,openInterval:openEnergy.get(s.key) ?? null,
-        lastSourceTime:s.lastSourceTime,lastPollAt:s.lastPollAt,scale:s.scale,
-        freshness:recordingFreshness(s,s.coverageId ? latestCoverage.get(s.coverageId) : null,now),
+        openInterval:openEnergy.get(s.key) ?? null,scale:s.scale,
         threshold:exact ? null : Math.max(powerFloor,valueFloor(s),s.scale*budget.tolerance),thresholdUnit:grouped || totalEnergy ? 'kW' : s.unit,
         optimizedQuantity:grouped ? 'phase-power' : totalEnergy ? 'total-power' : 'value',grouped,...stats};
     }).sort((a,b)=>a.signal.localeCompare(b.signal));

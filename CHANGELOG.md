@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Caravan dehumidifier recording stays active when a slightly early Shelly
+  energy-counter notification arrives while required readings remain fresh.
+  Required reports, faults and actual outages retain their evidence checks.
+  Recording warnings now reflect current source recovery between controller
+  updates and explain missing Caravan power-check or appliance reports.
+
 - Paired history checks hide Recover history when a validated source has no
   changes since the exact shared checkpoint. Resume mirroring then verifies and
   catches up the other computer without suggesting that history is skipped.

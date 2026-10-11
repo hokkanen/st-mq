@@ -56,14 +56,15 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
   let admittedReceptionAt, pendingSequence = 0;
   const receivedNow = () => receptionAt ?? engine.clock();
   const pendingFor = device => pendingTime.some(row => row.device === device);
+  const pendingAvailability = device => pendingTime.some(row => row.device === device && row.blocksAvailability);
   const pendingTime = createSourceTimePending({ clock: engine.clock, ordered: row => row.device.id,
     dispatch: action => {
       const apply = () => (store.transaction ?? (fn => fn())).call(store, () => { const checkpoint = pendingTime.checkpoint();
         store.afterRollback?.(() => pendingTime.restore(checkpoint)); return action(); });
       return store.runWrite && !store.transactionDepth ? store.runWrite(apply) : apply();
     },
-    onReject({ device }, reason) {
-      if (reason !== 'cleared' && device.stateName) unavailable(device, 'invalid-source-time');
+    onReject({ device, blocksAvailability }, reason) {
+      if (reason !== 'cleared' && blocksAvailability && stateName(device)) unavailable(device, 'invalid-source-time');
     },
     onReady({ topic, body, packet }, receivedAt, admittedAt) {
       if (closed || !connected) return;
@@ -310,7 +311,19 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     }
     return false;
   }
-  const available = (device, now, allowPendingTime = false) => connected && device.available && (allowPendingTime || !stateName(device) || !pendingFor(device))
+  // A partial counter report supplies no switch/power/current evidence. Its
+  // clock wait must not withdraw those independently admitted, still-fresh
+  // readings. Other pending reports retain the existing availability fence.
+  const energyOnlyNotification = (device, frame) => {
+    const component = `switch:${device.switchId}`, status = frame.params?.[component];
+    return metered(device) && frame.method === 'NotifyStatus' && status !== null
+      && typeof status === 'object' && !Array.isArray(status) && status.id === device.switchId
+      && status.aenergy !== null && typeof status.aenergy === 'object' && !Array.isArray(status.aenergy)
+      && !device.customReadings.some(row => row.required && row.component === component)
+      && Object.keys(frame.params).every(key => key === 'ts' || key === component)
+      && Object.keys(status).every(key => ['id', 'aenergy'].includes(key));
+  };
+  const available = (device, now, allowPendingTime = false) => connected && device.available && (allowPendingTime || !stateName(device) || !pendingAvailability(device))
     && device.lastAt <= now && (maxAge(device) === 0 || now - device.lastAt < maxAge(device))
     && definitions(device).filter(row => row.required).every(row => scalar(device.readings[row.signal]?.value)
       && device.readings[row.signal].observedAt <= now
@@ -358,7 +371,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     // loss. Existing evidence must still be fresh and the device connected.
     sourceTimePending(id, now = engine.clock()) {
       const device = devices.find(row => row.id === id);
-      return Boolean(device && pendingFor(device) && available(device, now, true));
+      return Boolean(device && pendingAvailability(device) && available(device, now, true));
     },
     receptionKey(topic, payload) {
       if (topic === replyTopic) {
@@ -488,7 +501,9 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
           const timing = classifySourceTime({ sourceTime: at, receivedAt, now: admittedReceptionAt ?? receivedAt });
           if ((timing.status === 'pending' || timing.status === 'ready' && pendingFor(device)) && admittedReceptionAt === undefined) {
             const queuedSourceTime = at;
-            reception.afterCommit(() => pendingTime.defer(++pendingSequence, { device, topic, body, packet }, { sourceTime: queuedSourceTime, receivedAt }));
+            const blocksAvailability = !energyOnlyNotification(device, frame);
+            reception.afterCommit(() => pendingTime.defer(++pendingSequence,
+              { device, topic, body, packet, blocksAvailability }, { sourceTime: queuedSourceTime, receivedAt }));
             at = null;
           }
           // Reject this source clock without erasing unrelated, still-bounded

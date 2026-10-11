@@ -1611,6 +1611,9 @@ export class Engine {
       savings:{status:'estimated',explanation:'Completed-cycle differences use a modelled alternative. Daily chart timing benchmarks keep the observed energy fixed.'} };
     return this.latestStatus;
   }
+  recordingSourceStatus(now = this.clock()) {
+    return this.recorder.sourceStatus(now);
+  }
   status() {
     const checkTime = this.clock();
     if (!this.latestStatus || Number.isFinite(this.latestStatus.override?.expiresAt) && this.latestStatus.override.expiresAt <= checkTime
@@ -1628,6 +1631,14 @@ export class Engine {
     if (this.learningCheckpointCache) result.learning.checkpointCache = this.learningCheckpointCache.status();
     const now = this.clock();
     result.now = now;
+    const recordingSources = this.recordingSourceStatus(now);
+    const recordedParameters = new Map([...result.recording.parameters,...result.recording.exactParameters]
+      .map(row=>[row.streamId,row]));
+    // New detail rows await their first real statistics snapshot. Independent
+    // recording health already includes every currently observed source.
+    result.recording = {...result.recording,...Object.fromEntries(Object.entries(recordingSources)
+      .map(([key,rows])=>[key,rows.filter(row=>recordedParameters.has(row.streamId))
+        .map(row=>({...recordedParameters.get(row.streamId),...row}))]))};
     result.automation = this.automationStatus();
     result.override = structuredClone(this.automation.features.home.pause);
     result.runtimeTiming = this.runtimeTiming?.() ?? null;

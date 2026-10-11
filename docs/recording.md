@@ -1458,6 +1458,16 @@ the last successful storage write, which can save settings or events as well as
 measurements. This summary is an early warning, not an integrity check or proof
 that every measurement was physically correct or every expected source recorded.
 
+Live source warnings and existing measurement rows read current committed source
+evidence between controller updates. Recovery or loss therefore appears without
+waiting for the next minute's loop; refreshing source evidence runs no control or
+recording work and does not renew observation clocks. Recording counts and storage estimates
+retain their last completed statistics snapshot. A newly observed stream enters
+health immediately and gets a detailed row at its first statistics snapshot.
+Caravan state warnings distinguish an unconfirmed power check from missing
+appliance evidence; Off requires fresh power, while On also requires a fresh fan
+report.
+
 The **Backups** fold lists managed local copies, their filenames, sizes and dates,
 with the configured folder and the list's own check time. One shared bounded catalog
 also supplies History recovery. Manual exports and complete reset bundles use
