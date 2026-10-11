@@ -826,9 +826,9 @@ Owning the master role does not enable automatic equipment control by itself.
 Protected recovery and transitions are shown separately from normal roles.
 Open **Paired computers**, just above **Event log**, for connection and snapshot details,
 recovery controls, handover or manual promotion. **Review history** opens the
-same [Recover history window](recording.md#recover-history-from-a-backup-or-paired-computer)
+same [History recovery window](recording.md#recover-history-from-a-backup-or-paired-computer)
 as the **History recovery** fold in **Recording details**, with the peer preselected
-in the **Recover history** view. It uses the same aligned action layout as
+in the **Review source** view. It uses the same aligned action layout as
 handover and reset; protected history receives attention emphasis. The section
 stays compact when closed and still shows important progress or attention messages. Slaves use
 the same layout, with recovery and handover performed from the master's UI.
@@ -893,9 +893,14 @@ For a computer in **Protected recovery**:
    and inventory as an exceptional repair. These are potential coverage, never a
    promise of recoverable entries. Sparse measurements do not establish outages.
    Checking does not copy the master database, run a trial
-   import or change the master's history. Missing entries, conflicts and model
-   changes remain unknown until recovery.
-2. Review the source check, then **Recover history**. The request
+   import or change the master's history. For a nonempty source, missing entries,
+   conflicts and model changes remain unknown until recovery. A validated empty
+   incremental source at the exact shared checkpoint instead shows **No additional
+   history to recover from this checked source** and hides **Recover history**.
+   Counts of zero in supported categories alone do not establish an empty source;
+   unsupported records, omitted learning inputs, an incomplete result or different
+   source checkpoints cannot authorize that conclusion.
+2. When changes exist, review the source check, then **Recover history**. The request
    identifies the checked donor snapshot. One merge compares and imports history
    against the current master. Existing master history wins
    overlaps. The importer accepts supported gaps with their provenance;
@@ -917,6 +922,15 @@ If you stop after recovery, protection stays active. Waiting, closing the
 dashboard or restarting does not resume mirroring. A repeated check of the same
 unchanged donor keeps the completed recovery result; it does not turn
 **Resume mirroring** into a request to skip recovery.
+
+For a validated empty source, choose **Resume mirroring** directly. Its confirmation
+verifies the other computer and brings it up to date with the master; it does not
+ask to skip recovery or claim that unmatched history was found. No import or model
+rebuild runs, and the saved outcome records that no recovery was needed. This
+result does not mean the source database is empty or that mirroring has caught up.
+A previous verification failure stays visible independently until verified
+mirroring succeeds. A version difference is not a confirmed cause of that failure.
+
 New donor history requires a fresh review. Handover remains unavailable while
 the other computer is protected. Recovery and rejoin recheck the donor's role
 and identity before acting, so a preview cannot authorize a different computer
@@ -941,8 +955,8 @@ recovery does not add their energy again. If resumed live integration straddles 
 recovered interval, that local interval is skipped without prorating; any
 uncovered remainder stays unknown and later readings resume normally.
 
-Recovery is optional after a successful protected-history check. To keep the master's history
-and model as they are, choose **Skip recovery and resume mirroring** after reviewing the preview
+Recovery is optional after a successful nonempty protected-history check. To keep the master's history
+and model as they are, choose **Resume without recovery** after reviewing the preview
 and confirm that the other computer's unrecovered history will not be merged.
 The source check does not establish whether any history is missing on the master.
 This does not import gaps or rebuild the model. The other database is replaced
@@ -954,7 +968,9 @@ Unknown gap counts never authorize skipping recovery without that explicit disca
 confirmation. After a successful recovery, **Resume mirroring** still requires
 confirmation before replacing protected history. If a release response is lost,
 retry the saved request. A new check cannot replace an unresolved release and
-silently abandon its outcome.
+silently abandon its outcome. The empty-source request retains its exact checked
+preview, request identity and verification choice across retries and restart, and
+does not acquire permission to discard newly changed donor history.
 
 Accepted historical entries are imported in bounded transactions and may
 become visible before the model rebuild finishes. An interruption can leave

@@ -16,6 +16,11 @@ const standby = (overrides = {}) => primary({ role: 'slave', canControl: false, 
   mqttFrontend: { listening: false, ready: false, connections: 0, error: null },
   actions: { promote: true }, ...overrides });
 const preview = () => ({ previewId, status: 'checked', tables: [{ name: 'observations', count: 24 }], model: { status: 'not-assessed' } });
+const emptyPreview = () => {
+  const checkpoint = { databaseId: id, sequence: 15, hash: 'a'.repeat(64) };
+  return { ...preview(), donorDigest: checkpoint.hash, incremental: { records: 0, base: checkpoint, checkpoint },
+    tables: [{ name: 'observations', count: 0 }], sourceSummary: { checkedAt: now, categories: [{ name: 'temperatures', count: 0 }] } };
+};
 const completedReport = () => ({ status: 'complete', counts: { missing: 12, conflicts: 3, duplicates: 4, skipped: 5 },
   period: { from: now - 2 * 86400_000, to: now - 86400_000 }, model: { status: 'rebuilt', unsupported: 2 } });
 const checked = () => primary({ peer: { reachable: true, role: 'protected' }, recovery: { state: 'ready', donorRole: 'protected', preview: preview() },
@@ -723,6 +728,76 @@ test('skip recovery requires its own warning and sends the exact checked preview
   assert.deepEqual(sent[0], { action: 'rejoin', requestId: id, confirmed: true, discardUnrecovered: true, previewId });
 });
 
+test('checked empty protected history offers plain resume, preserves verification failure, and sends no discard consent', async () => {
+  const source = emptyPreview(), view = { ...checked(), peer: { reachable: true, role: 'protected', reason: 'snapshot_verification_failed' },
+    recovery: { state: 'ready', donorRole: 'protected', preview: source } };
+  const sent = [], warnings = [];
+  const actions = createPairActions({ requestId: () => id, confirm: message => { warnings.push(message); return true; },
+    request: async (_path, body) => { sent.push(body); return { status: operation(primary(), 'running', 'rejoin') }; } });
+  actions.update(view);
+  assert.equal(pairActionAllowed(view, 'recover'), false, 'even a stale positive server capability cannot show empty recovery');
+  assert.equal(await actions.run('recover'), false);
+  assert.equal(await actions.run('rejoin', { verifyWithFullSnapshot: true }), true);
+  assert.deepEqual(sent, [{ action: 'rejoin', requestId: id, confirmed: true, previewId, verifyWithFullSnapshot: true }]);
+  assert.match(warnings[0], /No additional history needs recovery.*Verify the other computer.*transaction checkpoint is confirmed/);
+  assert.match(warnings[0], /Full history verification is selected/);
+  assert.doesNotMatch(warnings[0], /skip|discard|unmatched|divergent|retained|must be complete/i);
+  const { document, $ } = fixture(); createPairPanel({ document, request: async () => {}, now: () => now }).update(view);
+  assert.equal($('pairing-history-recovery').textContent, 'Review history');
+  assert.equal($('pairing-rejoin').textContent, 'Resume mirroring');
+  assert.equal($('pairing-rejoin').disabled, false);
+  assert.equal($('pairing-rejoin').dataset.tone, 'neutral');
+  assert.equal($('pairing-rejoin-help').textContent, 'Verify the other computer and bring it up to date with this master.');
+  assert.match($('pairing-sync').textContent, /paused after a verification failure/);
+  assert.match($('pairing-recovery').textContent, /No additional history to recover/);
+  assert.doesNotMatch($('pairing-recovery').textContent, /not yet been assessed/);
+});
+
+test('an empty resume cancelled by a changed source cannot turn into an unconfirmed discard', async () => {
+  let answer, sent = 0;
+  const actions = createPairActions({ confirm: () => new Promise(resolve => { answer = resolve; }), request: async () => { sent++; } });
+  actions.update({ ...checked(), recovery: { state: 'ready', donorRole: 'protected', preview: emptyPreview() } });
+  const request = actions.run('rejoin');
+  actions.update(checked()); answer(true);
+  assert.equal(await request, false); assert.equal(sent, 0);
+  assert.match(actions.snapshot().message, /preview changed/);
+});
+
+test('empty resume preserves preview and full verification through browser reload and a saved release retry', async () => {
+  const storage = memoryStorage(), sent = [];
+  const view = { ...checked(), recovery: { state: 'ready', donorRole: 'protected', preview: emptyPreview() } };
+  const first = createPairActions({ storage, requestId: () => id, confirm: () => true,
+    request: async (_path, body) => { sent.push(body); throw new TypeError('response lost'); } });
+  first.update(view); await first.run('rejoin', { verifyWithFullSnapshot: true });
+  const second = createPairActions({ storage, request: async (_path, body) => { sent.push(body); return { status: operation(primary(), 'complete', 'rejoin') }; } });
+  second.update(primary()); assert.equal(await second.retry(), true);
+  assert.deepEqual(sent[1], sent[0]); assert.equal(sent[1].previewId, previewId); assert.equal(sent[1].discardUnrecovered, undefined);
+  const third = createPairActions({ requestId: () => { throw Error('Use original request'); }, confirm: () => { throw Error('Already confirmed'); },
+    request: async (_path, body) => { sent.push(body); return { status: operation(primary(), 'complete', 'rejoin') }; } });
+  third.update(primary({ recovery: { state: 'ready', donorRole: 'protected', preview: { ...preview(), previewId: 'b'.repeat(64) },
+    pendingRelease: { requestId: id, previewId, discardUnrecovered: false, verifyWithFullSnapshot: true } }, actions: { rejoin: true } }));
+  assert.equal(await third.run('rejoin'), true); assert.deepEqual(sent[2], sent[0]);
+});
+
+test('malformed saved empty-resume consent cannot be translated into an authorized request', () => {
+  for (const fields of [{ previewId: 'invalid' }, { previewId, discardUnrecovered: false }, { previewId, discardUnrecovered: 'false' }]) {
+    const storage = memoryStorage(); storage.setItem('stmq-pair-pending-v1', JSON.stringify({ action: 'rejoin', requestId: id, confirmed: true, ...fields }));
+    assert.equal(createPairActions({ storage, request: async () => {} }).snapshot().pending, null);
+  }
+});
+
+test('uncertain or unsupported-only inventories cannot silently resume without recovery consent', async () => {
+  for (const source of [{ ...emptyPreview(), unsupported: [{ name: 'charging_reports', count: 1 }] },
+    { ...emptyPreview(), sourceSummary: { checkedAt: now, categories: [] } }, { ...emptyPreview(), incremental: { records: 0 } }]) {
+    const view = { ...checked(), recovery: { state: 'ready', donorRole: 'protected', preview: source } };
+    const sent = [];
+    const actions = createPairActions({ confirm: () => true, request: async (_path, body) => { sent.push(body); return { status: operation(primary(), 'complete', 'rejoin') }; } });
+    actions.update(view); await actions.run('rejoin');
+    assert.equal(sent[0].discardUnrecovered, true);
+    assert.doesNotMatch(pairActionHelp(view).rejoin, /No additional history|Verify the other computer and bring it/);
+  }
+});
+
 test('a replaced preview cancels recovery or discard confirmation before sending a request', async () => {
   for (const action of ['recover', 'rejoin']) {
     let resolve;
@@ -793,7 +868,7 @@ test('the pair panel hides outside pair mode, shows promotion only on a slave, a
   assert.equal($('pairing-promote').hidden, true);
   assert.equal($('pairing-history-recovery').disabled, false);
   assert.equal($('pairing-history-recovery').textContent, 'Recover history');
-  assert.equal($('pairing-rejoin').textContent, 'Skip recovery and resume mirroring');
+  assert.equal($('pairing-rejoin').textContent, 'Resume without recovery');
   assert.equal($('pairing-rejoin').disabled, false);
   panel.update(primary());
   assert.equal($('pairing-rejoin').disabled, true);
@@ -904,7 +979,7 @@ test('unassessed checks require recovery or discard consent while completed reco
   const panel = createPairPanel({ document, request: async () => {}, now: () => now });
   const view = checked();
   panel.update(view);
-  assert.equal($('pairing-rejoin').textContent, 'Skip recovery and resume mirroring');
+  assert.equal($('pairing-rejoin').textContent, 'Resume without recovery');
   assert.match($('pairing-recovery').textContent, /Gaps, conflicts and model changes have not yet been assessed/);
   assert.match(pairConfirmation('rejoin', { discardUnrecovered: true }), /does not determine how much history is missing/);
   panel.update({ ...view, recovery: { ...view.recovery, state: 'complete', report: { imported: 12, counts: {}, model: { status: 'rebuilt' } } } });
@@ -942,7 +1017,7 @@ test('an uncertain release remains verifiable after peer became slave and browse
     const requests = [], storage = memoryStorage();
     const recovery = { state: discardUnrecovered ? 'ready' : 'complete', donorRole: 'protected',
       preview: { previewId, counts: { missing: 12 }, model: { status: 'rebuild-required' } },
-      pendingRelease: { requestId: id, discardUnrecovered, previewId } };
+      pendingRelease: { requestId: id, discardUnrecovered, ...(discardUnrecovered ? { previewId } : {}) } };
     const saved = { action: 'rejoin', requestId: id, confirmed: true,
       ...(discardUnrecovered ? { discardUnrecovered: true, previewId } : {}) };
     storage.setItem('stmq-pair-pending-v1', JSON.stringify(saved));

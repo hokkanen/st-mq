@@ -18,6 +18,8 @@ import { PeerTransfers, peerOperation, receivePeerTransfer } from '../replicatio
 import { adoptJournalDatabase, acceptPeerPublication, applyPeerPublication, checkpointMetadata, publishCheckpointMetadata, recoverJournalPublication } from '../replication/journal-publication.js';
 import { acquireReceiverLock } from '../replication/receiver.js';
 import { installJournal } from '../storage/journal.js';
+import { checkedRecoverySource as checkedSource, emptyRecoverySource } from '../recovery/source-check.js';
+import { learningVersion } from '../app/committed-learning.js';
 
 const ACTIONS = new Set(['handover', 'promote', 'check-recovery', 'recover', 'rejoin']);
 const PEER_OPERATIONS = new Set(['status', 'snapshot', 'checkpoint', 'verify-checkpoint', 'peer-anchor',
@@ -31,9 +33,12 @@ const canBootstrap = local => local.bootstrapPending === true && !local.everWrit
 const sameDonor = (left, right) => left && right && left.claim.nodeId === right.claim.nodeId
   && left.claim.epoch === right.claim.epoch && left.claim.role === right.claim.role
   && left.digest === right.digest && left.bytes === right.bytes;
-const checkedSource = preview => preview?.status === 'checked' && preview.model?.status === 'not-assessed'
-  && typeof preview.previewId === 'string' && /^[a-f0-9]{64}$/.test(preview.previewId)
-  && preview.counts === undefined;
+const checkedEmptyDonor = recovery => {
+  const preview = recovery?.preview;
+  if (!emptyRecoverySource(preview) || !sameCheckpoint(preview.incremental.checkpoint, recovery.metadata?.checkpoint)) return false;
+  const { previewId, ...checked } = preview;
+  return previewId === learningVersion(checked);
+};
 
 // Peer status is observation only. Never copy private diagnostics or use it as
 // permission to replace history or acquire equipment control.
@@ -370,7 +375,9 @@ export class PairManager {
       donorBytes: Number.isSafeInteger(recovery.metadata?.bytes) && recovery.metadata.bytes >= 0 ? recovery.metadata.bytes : null,
       error: recovery.error ?? null,
       pendingRelease: recovery.releaseOperation ? { requestId: recovery.releaseOperation.requestId,
-        discardUnrecovered: recovery.releaseOperation.skipRecovery, previewId: recovery.preview?.previewId,
+        discardUnrecovered: recovery.releaseOperation.skipRecovery,
+        ...(recovery.releaseOperation.noRecoveryNeeded === true ? { previewId: recovery.releaseOperation.previewId }
+          : recovery.releaseOperation.skipRecovery ? { previewId: recovery.preview?.previewId } : {}),
         verifyWithFullSnapshot: recovery.releaseOperation.verifyWithFullSnapshot === true } : null };
   }
 
@@ -394,7 +401,8 @@ export class PairManager {
           || local.role === 'protected' && local.everWritten && !!local.activeDbPath),
         'check-recovery': free && primary && !recovery.pendingRelease && this.peerState.reachable && this.peerState.role !== 'master',
         recover: free && primary && protectedDonor && this.peerState.reachable
-          && recovery.state === 'ready' && checkedSource(recovery.preview),
+          && !recovery.pendingRelease && recovery.state === 'ready' && checkedSource(recovery.preview)
+          && !emptyRecoverySource(recovery.preview),
         rejoin: free && primary && (protectedDonor || Boolean(recovery.pendingRelease))
           && (Boolean(recovery.pendingRelease) || recovery.state === 'complete' || recovery.state === 'ready' && checkedSource(recovery.preview))
           && this.peerState.reachable } };
@@ -1028,7 +1036,8 @@ export class PairManager {
     if (!this.canControl()) throw pairError('not_master');
     const recovery = this.state.value.recovery;
     if (recovery?.state !== 'ready' || recovery.metadata?.claim?.role !== 'protected'
-      || !checkedSource(recovery.preview) || body.previewId !== recovery.preview.previewId) throw pairError('invalid_transition');
+      || recovery.releaseOperation || !checkedSource(recovery.preview) || emptyRecoverySource(recovery.preview)
+      || body.previewId !== recovery.preview.previewId) throw pairError('invalid_transition');
     if (!this.hooks.recoveryApply) throw pairError('recovery_unavailable');
     await this.recoveryFiles(recovery);
     await this.assertRecoveryDonor(recovery);
@@ -1118,16 +1127,23 @@ export class PairManager {
     const recoveryFiles = await this.recoveryFiles(recovery);
     const skipRecovery = body.discardUnrecovered === true;
     let operation = recovery.releaseOperation;
+    let noRecoveryNeeded = false;
     if (operation) {
       // A saved release is an already authorized replacement with an uncertain
       // result. Verify exactly that request even after the source-check UI
       // contract changes; an old preview alone grants no new permission.
       if (operation.requestId !== body.requestId || operation.skipRecovery !== skipRecovery
         || operation.verifyWithFullSnapshot !== (body.verifyWithFullSnapshot === true)
-        || skipRecovery && body.previewId !== recovery.preview?.previewId) throw pairError('invalid_transition');
+        || skipRecovery && body.previewId !== recovery.preview?.previewId
+        || operation.noRecoveryNeeded !== undefined && operation.noRecoveryNeeded !== true
+        || operation.noRecoveryNeeded === true && (skipRecovery || !/^[a-f0-9]{64}$/.test(operation.previewId ?? '')
+          || body.previewId !== operation.previewId)) throw pairError('invalid_transition');
     } else if (skipRecovery) {
       if (recovery?.state !== 'ready' || !checkedSource(recovery.preview)) throw pairError('recovery_required');
+      if (emptyRecoverySource(recovery.preview) || body.previewId !== recovery.preview.previewId) throw pairError('invalid_transition');
+    } else if (recovery?.state === 'ready' && checkedEmptyDonor(recovery)) {
       if (body.previewId !== recovery.preview.previewId) throw pairError('invalid_transition');
+      noRecoveryNeeded = true;
     } else if (recovery?.state !== 'complete') throw pairError('recovery_required');
     if (!operation) {
       await this.assertRecoveryDonor(recovery);
@@ -1151,6 +1167,7 @@ export class PairManager {
           join(this.snapshots.directory,`export-${metadata.generation}.sqlite`),metadata.checkpoint);
       }
       operation = { requestId: body.requestId, donor: recovery.metadata, metadata, skipRecovery,
+        ...(noRecoveryNeeded ? { noRecoveryNeeded: true, previewId: recovery.preview.previewId } : {}),
         verifyWithFullSnapshot: body.verifyWithFullSnapshot === true, ...(verification ? { verification } : {}) };
       await this.state.update({ recovery: { ...recovery, releaseOperation: operation } });
     }
@@ -1169,7 +1186,8 @@ export class PairManager {
     if (result.role !== 'slave' || result.releaseReceipt?.digest !== metadata.digest
       || result.releaseReceipt?.generation !== metadata.generation || result.releaseReceipt?.requestId !== operation.requestId)
       throw pairError('verification_failed');
-    const report = skipRecovery ? { ...recovery.preview, status: 'skipped', recoverySkipped: true,
+    const report = operation.noRecoveryNeeded === true ? { ...recovery.preview, status: 'no-recovery-needed',
+      imported: 0, model: { status: 'unchanged' } } : skipRecovery ? { ...recovery.preview, status: 'skipped', recoverySkipped: true,
       imported: 0, model: { status: 'unchanged' } } : recovery.report;
     await this.state.update({ recovery: { state: 'resolved', report } });
     if (metadata.digestAlgorithm !== JOURNAL_DIGEST) await this.snapshots.unpin(metadata.generation).catch(() => {});

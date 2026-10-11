@@ -1737,7 +1737,7 @@ Open the **History recovery** fold within **Recording details**, then choose
 launcher stay inside that fold. Standalone controllers and active paired masters
 use this same window.
 **Paired computers → Review history** opens it with the other computer selected.
-The **Recover history** view holds source selection, the source check and its
+The **Review source** view holds source selection, the source check and its
 action. **Previous recoveries** holds earlier operations and their revert/restore
 reviews. The window follows the Fireplace dialog's open/close behavior; closing
 it does not cancel work already running on the server. Admin access is required, and
@@ -1774,6 +1774,17 @@ that unchanged shared history is not counted, instead of listing all-zero totals
 A populated source can therefore report no changed history, and the result does
 not establish whether the slave has received newer master records. These dates
 do not establish continuous coverage or missing entries.
+
+For a protected paired source, a validated empty incremental check at the exact
+shared/source checkpoint hides **Recover history** and offers **Resume mirroring**
+to verify and bring the other computer up to date with the master. The result says
+**No additional history to recover from this checked source**. All actual changed
+records, supported-table counts and available source categories must be zero;
+unsupported records, skipped learning inputs or an incomplete result cannot be
+presented as nothing to recover. A previous mirroring verification failure remains
+separate and visible until mirroring succeeds. Nonempty checks retain their category
+counts, recorded date ranges, checked time, details and limitations.
+
 Availability reports have a separate collapsed
 diagnostics fold: a point event has one timestamp and unknown duration, while a
 report period ends at the last saved evidence, not a confirmed recovery time.
@@ -1786,8 +1797,9 @@ Category totals and omitted counts refer to evidence records, not inferred incid
 Sparse observations never establish gaps,
 and relevant source records do not prove continuous coverage, physical identity
 or import acceptance. The check uses pinned read-only snapshots and does not run
-a trial import or change recorded history. Missing entries, conflicts and model changes remain
-unknown until you confirm **Recover history**. Recovery compares and imports
+a trial import or change recorded history. For a nonempty source, missing entries,
+conflicts and model changes remain unknown until you confirm **Recover history**.
+Recovery compares and imports
 history once, then rebuilds the model only when accepted history affects learning.
 Its result reports imported, conflicting, already present and skipped entries
 and the recovered period. Existing local history takes
@@ -1799,6 +1811,12 @@ the separate [resume-mirroring decision](pairing.md#protected-history-and-manual
 The paired source shows the current paired operation and its saved outcome;
 an earlier backup recovery cannot stand in for that status. A normal slave
 source check does not offer gap recovery or imply that it is needed.
+
+When protected changes exist, the alternative **Resume without recovery** retains
+the explicit warning that unrecovered source history will not be merged. A proven
+empty source uses **Resume mirroring** without suggesting that history is skipped;
+its successful outcome records that no recovery was needed. Both decisions retain
+the existing donor identity, freshness, authority and verification checks.
 
 Switch to **Previous recoveries** for later review of a recovery. Select
 **Review revert**, inspect its effect, then confirm **Revert recovery** to exclude

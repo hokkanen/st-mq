@@ -6,6 +6,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Paired history checks hide Recover history when a validated source has no
+  changes since the exact shared checkpoint. Resume mirroring then verifies and
+  catches up the other computer without suggesting that history is skipped.
+  Nonempty checks retain record counts, dates and details, with Resume without
+  recovery as the explicit alternative. Verification failures remain separate,
+  and changed donors or uncertain release replies retain their existing checks.
+
 - Recording details adds a folded Storage performance view with memory-only
   summaries for the past day or week. It separates queue delay, successful write
   duration, contention, peak backlog and failed saves, and labels the observed

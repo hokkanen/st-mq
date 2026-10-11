@@ -7,6 +7,11 @@ import { backgroundProgress } from '../chart/background-progress.js';
 const id = '11111111-1111-4111-8111-111111111111', previewId = 'a'.repeat(64);
 const source = { id: 'saved-backup', kind: 'backup', label: 'Saved backup', available: true };
 const preview = { previewId, status: 'checked', tables: [{ name: 'observations', count: 19 }], model: { status: 'not-assessed' } };
+const emptyPreview = () => {
+  const checkpoint = { databaseId: id, sequence: 15, hash: 'a'.repeat(64) };
+  return { ...preview, donorDigest: checkpoint.hash, incremental: { records: 0, base: checkpoint, checkpoint },
+    tables: [{ name: 'observations', count: 0 }], sourceSummary: { checkedAt: 9000, categories: [{ name: 'temperatures', count: 0 }] } };
+};
 const view = changes => ({ available: true, readOnly: false, busy: false, sources: [source], operations: [],
   preview, job: { kind: 'check', status: 'complete', source }, ...changes });
 const admin = { topology: 'standalone', role: 'master', webAccess: { role: 'admin' } };
@@ -149,6 +154,38 @@ test('peer recovery uses its checked preview after reviewing an unrelated previo
     job: { kind: 'review-revert', status: 'complete' } }));
   assert.equal(await actions.run('recover', { sourceId: 'peer', previewId: peerPreview }), true);
   assert.equal(calls[0].previewId, peerPreview);
+});
+
+test('an empty protected source hides recovery and divergent-storage warnings while keeping verification distinct', async () => {
+  const { document, $ } = fixture(), source = emptyPreview();
+  const peer = { role: 'master', canControl: true, peer: { role: 'protected', reachable: true, reason: 'snapshot_verification_failed' },
+    actions: { recover: true, rejoin: true, 'check-recovery': true }, recovery: { state: 'ready', donorRole: 'protected', preview: source } };
+  const panel = createHistoryRecoveryPanel({ document, request: async () => view({ sources: [{ id: 'peer', kind: 'peer', label: 'Paired computer', available: true }], peer }) });
+  panel.update({ ...admin, topology: 'pair', pair: peer }); await panel.open({ sourceId: 'peer' });
+  assert.equal($('history-recovery-apply').hidden, true);
+  assert.equal($('history-recovery-peer').hidden, false);
+  assert.equal($('pairing-rejoin-storage').hidden, true); assert.equal($('pairing-rejoin-storage').textContent, '');
+  assert.match(text($('history-recovery-preview')), /No additional history to recover from this checked source/);
+  assert.doesNotMatch(text($('history-recovery-preview')), /unmatched|skipped history|not yet been assessed/);
+  assert.match($('history-recovery-status').textContent, /verification failure/);
+  const actions = createHistoryRecoveryActions({ request: async () => { throw Error('Must not request empty recovery'); }, confirm: () => { throw Error('No recovery confirmation'); } });
+  actions.update(view({ preview: source, peer: { recovery: { preview: source } } }));
+  assert.equal(await actions.run('recover', { sourceId: 'peer', previewId }), false);
+  assert.match(recoveryJobText(view({ preview: source, job: { kind: 'check', status: 'complete', source: { id: 'peer' } } })), /No additional history to recover/);
+});
+
+test('a shared empty backup retains its separate recovery action and contract', async () => {
+  const checked = emptyPreview(), calls = [];
+  const actions = createHistoryRecoveryActions({ confirm: () => true,
+    request: async (_path, body) => { calls.push(body); return view(); } });
+  actions.update(view({ preview: checked }));
+  assert.equal(await actions.run('recover', { sourceId: source.id, previewId }), true);
+  assert.equal(calls[0].action, 'recover');
+  const { document, $ } = fixture();
+  const panel = createHistoryRecoveryPanel({ document, request: async () => view({ preview: checked }) });
+  panel.update(admin); await panel.open({ sourceId: source.id });
+  assert.equal($('history-recovery-apply').hidden, false);
+  assert.doesNotMatch(text($('history-recovery-preview')), /No additional history to recover/);
 });
 
 function fixture() {

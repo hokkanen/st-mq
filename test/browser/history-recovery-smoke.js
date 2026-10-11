@@ -50,6 +50,16 @@ try {
     try {
       if (request.url === '/favicon.ico') { response.writeHead(204).end(); return; }
       if (request.url === '/api/pair') return json(200, peer);
+      if (request.url === '/api/pair/action' && request.method === 'POST') {
+        const chunks = []; for await (const chunk of request) chunks.push(chunk);
+        const body = JSON.parse(Buffer.concat(chunks).toString()); requests.push(body);
+        assert.equal(body.action, 'rejoin'); assert.equal(body.confirmed, true);
+        assert.equal(body.previewId, peer.recovery.preview.previewId); assert.equal(body.discardUnrecovered, undefined);
+        peer = { ...peer, peer: { ...peer.peer, role: 'slave', reason: undefined }, actions: { 'check-recovery': true, recover: false, rejoin: false },
+          recovery: { ...peer.recovery, state: 'resolved', report: { status: 'no-recovery-needed', imported: 0, model: { status: 'unchanged' } } },
+          uiOperation: { id: body.requestId, action: 'rejoin', state: 'complete' } };
+        return json(202, { status: peer });
+      }
       if (request.url === '/api/database-verification' && request.method === 'GET') verificationReads++;
       if (request.url === '/api/database-export' && request.method === 'POST') {
         await new Promise(resolve => { finishExport = resolve; });
@@ -344,7 +354,7 @@ try {
   await reviewLayouts('incremental-source-check');
   peer = { ...peer, recovery: { ...peer.recovery, preview: { ...peer.recovery.preview,
     tables: preview.tables.map(row => ({ ...row, count: 0 })),
-    incremental: { records: 0, base: checkpoint(15), checkpoint: checkpoint(15) },
+    donorDigest: checkpoint(15).hash, incremental: { records: 0, base: checkpoint(15), checkpoint: checkpoint(15) },
     sourceSummary: { checkedAt: now, categories: [{ name: 'temperatures', count: 0 }, { name: 'energy', count: 0 }] } } } };
   await click('history-recovery-refresh');
   await until(`${$('history-recovery-preview')}.textContent.includes('This result does not mean the database is empty')`);
@@ -352,6 +362,50 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-recovery-section=inventory]') === null"), true, 'An empty incremental check does not show a misleading zero database inventory');
   await reviewLayouts('unchanged-slave-check');
   await click('history-recovery-close');
+  const normalPeer = peer;
+  peer = { ...normalPeer, peer: { reachable: true, role: 'protected' }, actions: { 'check-recovery': true, recover: true, rejoin: true },
+    recovery: { ...normalPeer.recovery, donorRole: 'protected', preview: { ...normalPeer.recovery.preview,
+      donorDigest: 'b'.repeat(64), incremental: { records: 0, base: checkpoint(15), checkpoint: { ...checkpoint(16), hash: 'b'.repeat(64) } } } } };
+  await send('Page.reload'); await until(`${$('pairing-panel')} && !${$('pairing-panel')}.hidden`);
+  await evaluate(`${$('pairing-details')}.open=true;${$('pairing-history-recovery')}.click();true`);
+  await until(`${$('history-recovery-preview')}.textContent.includes('Changes can include deletions')`);
+  assert.equal(await evaluate(`${$('history-recovery-apply')}.hidden`), false, 'Deletion-only changes still require an explicit recovery decision');
+  assert.equal(await evaluate(`${$('pairing-rejoin')}.textContent`), 'Resume without recovery');
+  assert.doesNotMatch(await evaluate(`${$('history-recovery-preview')}.textContent`), /No additional history to recover|counts are unavailable|Check the source again/);
+  await reviewLayouts('deletion-only-protected-check');
+  await click('history-recovery-close');
+  peer = { ...normalPeer, peer: { reachable: true, role: 'protected', reason: 'snapshot_verification_failed' },
+    recovery: { ...normalPeer.recovery, donorRole: 'protected' }, actions: { 'check-recovery': true, recover: false, rejoin: true } };
+  await send('Page.reload'); await until(`${$('pairing-panel')} && !${$('pairing-panel')}.hidden`);
+  await evaluate(`${$('pairing-details')}.open=true;${$('pairing-history-recovery')}.click();true`);
+  await until(`${$('history-recovery-preview')}.textContent.includes('No additional history to recover')`);
+  assert.equal(await evaluate(`${$('history-recovery-tab-recover')}.textContent`), 'Review source');
+  assert.equal(await evaluate("[...document.querySelectorAll('#history-recovery-dialog button, #pairing-panel button')].some(button => button.checkVisibility() && button.textContent.trim() === 'Recover history')"), false, 'A checked empty source has no visible Recover history button');
+  assert.equal(await evaluate(`${$('pairing-history-recovery')}.textContent`), 'Review history');
+  assert.equal(await evaluate(`${$('history-recovery-apply')}.hidden`), true);
+  assert.equal(await evaluate(`${$('pairing-rejoin')}.textContent`), 'Resume mirroring');
+  assert.equal(await evaluate(`${$('pairing-rejoin')}.disabled`), false);
+  assert.equal(await evaluate(`${$('pairing-rejoin-storage')}.hidden`), true);
+  assert.match(await evaluate(`${$('pairing-sync')}.textContent`), /paused after a verification failure/);
+  assert.match(await evaluate(`${$('history-recovery-status')}.textContent`), /paused after a verification failure/);
+  assert.doesNotMatch(await evaluate(`${$('history-recovery-review')}.textContent+${$('history-recovery-peer')}.textContent`), /unmatched|divergent|skipped|discard|not yet been assessed/i);
+  await evaluate(`${$('pairing-rejoin')}.focus();true`);
+  await pause(2400);
+  assert.equal(await evaluate('document.activeElement.id'), 'pairing-rejoin', 'Quiet polling keeps focus on empty-source resume');
+  assert.equal(await evaluate(`${$('pairing-rejoin')}.textContent`), 'Resume mirroring');
+  await reviewLayouts('unchanged-protected-check');
+  await click('pairing-rejoin'); await until("document.querySelector('.confirmation-dialog[open]') !== null");
+  const message = await evaluate("document.querySelector('.confirmation-dialog[open]').textContent");
+  assert.match(message, /No additional history needs recovery.*Verify the other computer.*transaction checkpoint is confirmed/);
+  assert.doesNotMatch(message, /skip|discard|unmatched|divergent|retained/i);
+  await capture('unchanged-protected-resume-confirmation');
+  await accept();
+  await until(`${$('history-recovery-preview')}.textContent.includes('Mirroring resumed')`);
+  assert.equal(requests.at(-1).action, 'rejoin'); assert.equal(requests.at(-1).discardUnrecovered, undefined);
+  assert.doesNotMatch(await evaluate(`${$('history-recovery-preview')}.textContent`), /unmatched|divergent|skipped|discard/i);
+  await reviewLayouts('unchanged-protected-resumed');
+  await click('history-recovery-close');
+  peer = normalPeer;
   peer = { ...peer, peer: { reachable: true, role: 'slave', sync: { state: 'error', error: 'database_algorithm_mismatch' } } };
   await send('Page.reload'); await until(`${$('pairing-panel')} && !${$('pairing-panel')}.hidden`);
   await evaluate(`${$('pairing-details')}.open=true; ${$('pairing-history-recovery')}.click();true`);
@@ -392,6 +446,8 @@ try {
       'nested recording fold', 'aligned export/recovery/verification actions', 'quiet verification polls', 'stable reload dimensions during automatic refresh', 'energy gaps separate from 28 retained-message diagnostics', 'point duration unknown', 'grouped signal disclosure and focus preserved on refresh',
       'separate recovery/history views', 'close and reopen running job', 'complete result', 'whole operation revert and restore', 'old interrupted recovery', 'earlier pages', 'upload', 'keyboard focus and escape', '320/390/768/1440 both themes', 'short-screen header and scrolled review', 'family restriction',
       'normal slave no-recovery visual cue', 'failed recheck clears prior success', 'incompatible algorithm keeps mirroring blocked', 'exporter version provenance', 'slave-first upgrade guidance',
+      'unchanged protected source hides recovery', 'neutral resume confirmation and no discard request', 'verification failure separate from zero changes', 'changed source dates retained', 'quiet empty-source polling keeps focus',
+      'deletion-only changes keep known zero history counts and explicit recovery decision',
       'phase counts and elapsed time without ETA', 'navigation during running phases', 'reload discovers server work', 'export preparation stays responsive', 'retained database size and no automatic expiry'] }));
   await send('Browser.close');
 } finally {

@@ -1288,7 +1288,7 @@ G_warming = G / 2</code>
     <div class="history-recovery-header">
       <div class="history-recovery-heading"><div><h2 id="history-recovery-title">History recovery</h2><p id="history-recovery-help" class="muted">Check a history source or manage an earlier recovery.</p></div><button id="history-recovery-close" class="secondary-button" type="button">Close</button></div>
       <div id="history-recovery-mode" class="history-recovery-mode" role="group" aria-label="History recovery view">
-        <button id="history-recovery-tab-recover" type="button" aria-pressed="true" aria-controls="history-recovery-source-section">Recover history</button>
+        <button id="history-recovery-tab-recover" type="button" aria-pressed="true" aria-controls="history-recovery-source-section">Review source</button>
         <button id="history-recovery-tab-history" type="button" aria-pressed="false" aria-controls="history-recovery-history">Previous recoveries</button>
       </div>
     </div>
@@ -1343,7 +1343,7 @@ G_warming = G / 2</code>
       </div>
     </section>
     <section id="history-recovery-peer" class="history-recovery-peer" hidden>
-      <div id="pairing-rejoin-step" hidden><div><h3>Resume mirroring</h3><p>Catch up to this master’s confirmed checkpoint. The other computer’s unmatched history is retained inactive and is never reused automatically.</p></div><button id="pairing-rejoin" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-rejoin-help" disabled>Resume mirroring</button><p id="pairing-rejoin-help" class="muted"></p></div>
+      <div id="pairing-rejoin-step" hidden><div><h3>Resume mirroring</h3><p id="pairing-rejoin-intro">Verify the other computer and bring it up to date with this master.</p></div><button id="pairing-rejoin" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-rejoin-help" disabled>Resume mirroring</button><p id="pairing-rejoin-help" class="muted"></p></div>
       <p id="pairing-rejoin-storage" class="muted"></p>
     </section>
     <div class="history-recovery-footer"><div><p id="history-recovery-refresh-help" class="muted">Updates automatically. Check backup runs a new source check.</p><p id="history-recovery-refreshed-at" class="muted" hidden></p></div><button id="history-recovery-refresh" class="secondary-button" type="button" aria-describedby="history-recovery-refresh-help">Reload results</button></div>

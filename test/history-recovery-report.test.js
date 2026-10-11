@@ -13,6 +13,13 @@ function fixture() {
 }
 const text = node => [node.textContent, ...node.children.map(text)].join(' ');
 const options = { formatTime: value => `time ${value}` };
+const emptySource = changes => {
+  const checkpoint = { databaseId: '11111111-1111-4111-8111-111111111111', sequence: 15, hash: 'a'.repeat(64) };
+  return { previewId: 'a'.repeat(64), status: 'checked', model: { status: 'not-assessed' }, donorDigest: checkpoint.hash,
+    incremental: { records: 0, base: checkpoint, checkpoint },
+    sourceSummary: { checkedAt: 9000, categories: [{ name: 'temperatures', count: 0 }] },
+    tables: [{ name: 'observations', count: 0 }, { name: 'events', count: 0 }], ...changes };
+};
 
 test('changed source report restores category dates without claiming full history or recoverable counts', () => {
   const { document, root } = fixture();
@@ -50,20 +57,85 @@ test('normal slave report keeps mirroring guidance in its outcome without recove
 
 test('empty changed history does not imply an empty database or list redundant zero totals', () => {
   const { document, root } = fixture();
-  renderRecoveryReport(document, root, { status: 'checked', incremental: { records: 0 },
-    sourceSummary: { checkedAt: 9000, categories: [] },
-    tables: [{ name: 'observations', count: 0 }, { name: 'events', count: 0 }] }, options);
+  renderRecoveryReport(document, root, emptySource(), options);
+  assert.match(text(root), /No additional history to recover from this checked source/);
   assert.match(text(root), /No changed history records to review/);
   assert.match(text(root), /Unchanged shared history is not counted again.*does not mean the database is empty/);
-  assert.doesNotMatch(text(root), /record counts|record inventory|Observations: 0|Events: 0|Dates unavailable|undefined|Invalid Date/);
+  assert.doesNotMatch(text(root), /record counts|record inventory|Observations: 0|Events: 0|Dates unavailable|undefined|Invalid Date|not yet been assessed|unmatched|skipped history/);
 });
 
-test('known zero summary counts establish an empty change set without an inventory', () => {
+test('zero category counts alone cannot establish a checked empty source', () => {
   const { document, root } = fixture();
   renderRecoveryReport(document, root, { status: 'checked', incremental: { records: 0 },
     sourceSummary: { checkedAt: 9000, categories: [{ name: 'temperatures', count: 0 }, { name: 'events', count: 0 }] } }, options);
-  assert.match(text(root), /No changed history records to review/);
-  assert.doesNotMatch(text(root), /counts are unavailable/);
+  assert.match(text(root), /counts are unavailable/);
+  assert.doesNotMatch(text(root), /No changed history records|No additional history to recover/);
+});
+
+test('contradictory unsupported records and stale checkpoints do not show no-recovery wording', () => {
+  for (const preview of [emptySource({ unsupported: [{ name: 'charging_reports', count: 2 }] }),
+    emptySource({ incremental: { records: 0, base: { databaseId: '11111111-1111-4111-8111-111111111111', sequence: 14, hash: 'a'.repeat(64) },
+      checkpoint: { databaseId: '11111111-1111-4111-8111-111111111111', sequence: 15, hash: 'a'.repeat(64) } } }),
+    emptySource({ sourceSummary: { checkedAt: 9000, categories: [] } })]) {
+    const { document, root } = fixture(); renderRecoveryReport(document, root, preview, options);
+    assert.doesNotMatch(text(root), /No additional history to recover|No changed history records to review/);
+    assert.match(text(root), /Missing entries, conflicts and model changes have not yet been assessed/);
+  }
+});
+
+test('verified mirroring after an empty source check has a neutral result without skipped history claims', () => {
+  const { document, root } = fixture();
+  renderRecoveryReport(document, root, { status: 'no-recovery-needed', imported: 0, model: { status: 'unchanged' } }, { ...options, report: true });
+  assert.match(text(root), /Mirroring resumed.*No additional history needed recovery.*transaction checkpoint was verified/);
+  assert.match(text(root), /master’s history and learned model are unchanged/);
+  assert.doesNotMatch(text(root), /Recovered entries: 0|recovery skipped|unmatched|divergent|skipped|Gap recovery/);
+});
+
+test('a paired empty-source presentation does not change backup recovery semantics', () => {
+  const { document, root } = fixture(); renderRecoveryReport(document, root, emptySource(), { ...options, source: 'backup' });
+  assert.doesNotMatch(text(root), /No additional history to recover/);
+  assert.match(text(root), /Missing entries, conflicts and model changes have not yet been assessed/);
+});
+
+test('unsupported-only changes keep their known scope instead of promising an empty source or requesting an unnecessary recheck', () => {
+  const { document, root } = fixture(); renderRecoveryReport(document, root,
+    emptySource({ unsupported: [{ name: 'charging_reports', count: 2 }] }), options);
+  assert.match(text(root), /No supported history records in the checked changes.*Other changed records remain in the source/);
+  assert.match(text(root), /Kept only in the source: 2 saved charging reports/);
+  assert.doesNotMatch(text(root), /No additional history to recover|counts are unavailable|Check the source again/);
+});
+
+test('deletion-only changes retain known zero history counts without claiming an empty source or unavailable counts', () => {
+  const { document, root } = fixture(), source = emptySource();
+  renderRecoveryReport(document, root, { ...source,
+    incremental: { ...source.incremental, records: 0, checkpoint: { ...source.incremental.checkpoint, sequence: 16, hash: 'b'.repeat(64) } },
+    donorDigest: 'b'.repeat(64) }, options);
+  assert.match(text(root), /No supported history records in the checked changes.*Changes can include deletions or other records outside this history summary/);
+  assert.match(text(root), /Missing entries, conflicts and model changes have not yet been assessed/);
+  assert.match(text(root), /Changed source record counts.*Observations: 0.*Events: 0/);
+  assert.doesNotMatch(text(root), /No additional history to recover|No changed history records to review|counts are unavailable|Check the source again/);
+});
+
+test('positive raw change counts do not turn malformed or incomplete history inventory into known zero counts', () => {
+  for (const changes of [{ tables: [{ name: 'observations', count: null }] }, { tables: [] },
+    { sourceSummary: { checkedAt: 9000, categories: [] } },
+    { sourceSummary: { checkedAt: 9000, categories: [{ name: 'temperatures', count: '0' }] } },
+    { sourceSummary: { checkedAt: 9000, categories: [{ name: '/private/unsupported', count: 0 }] } }]) {
+    const { document, root } = fixture(); renderRecoveryReport(document, root,
+      emptySource({ incremental: { records: 1 }, ...changes }), options);
+    assert.match(text(root), /Changed history counts are unavailable. Check the source again/);
+    assert.doesNotMatch(text(root), /No supported history records|No additional history to recover|private/);
+  }
+});
+
+test('malformed checkpoints cannot turn zero supported counts into a known changed scope', () => {
+  for (const changes of [{ incremental: { records: 0 } }, { incremental: { records: 1 } },
+    { incremental: { ...emptySource().incremental, checkpoint: { sequence: 16 } } },
+    { donorDigest: 'c'.repeat(64) }]) {
+    const { document, root } = fixture(); renderRecoveryReport(document, root, emptySource(changes), options);
+    assert.match(text(root), /Changed history counts are unavailable. Check the source again/);
+    assert.doesNotMatch(text(root), /No supported history records|No additional history to recover/);
+  }
 });
 
 test('missing, invalid and unsupported summary counts remain unknown rather than an empty change set', () => {

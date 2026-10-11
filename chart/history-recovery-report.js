@@ -1,5 +1,6 @@
 import { recordedSignalInfo } from '../src/domain/recording-policy.js';
 import { SIGNAL_INFO } from '../src/domain/history-series.js';
+import { emptyRecoverySource, recoveryCheckpointChanged } from '../src/recovery/source-check.js';
 
 const stamp = value => Number.isSafeInteger(value) && value > 0 && value <= 8640000000000000 ? value : null;
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -32,7 +33,7 @@ function reportTable(document, parent, labels) {
   return body;
 }
 
-function renderSourceSummary(document, root, data, { formatTime, tables }) {
+function renderSourceSummary(document, root, data, { formatTime, tables, unsupported, changedCheckpoint, empty }) {
   const categories = Array.isArray(data?.categories) ? data.categories : [];
   const section = document.createElement('section'); section.className = 'history-recovery-coverage';
   const heading = document.createElement('h4'); heading.textContent = 'Changes since the shared checkpoint'; section.append(heading);
@@ -50,11 +51,16 @@ function renderSourceSummary(document, root, data, { formatTime, tables }) {
   } else {
     const inventory = (Array.isArray(tables) ? tables : []).filter(row => Object.hasOwn(sourceTables, row?.name));
     const hasInventoryRecords = inventory.some(row => count(row.count) > 0);
-    const knownEmpty = !hasInventoryRecords && (categories.length > 0 && categories.every(row => Object.hasOwn(coverageCategories, row?.name) && count(row?.count) === 0)
-      || inventory.length > 0 && inventory.every(row => count(row.count) === 0));
+    const knownZeroHistory = inventory.length > 0 && inventory.every(row => count(row.count) === 0)
+      && categories.length > 0 && categories.every(row => Object.hasOwn(coverageCategories, row?.name) && count(row?.count) === 0);
+    const unsupportedOnly = knownZeroHistory
+      && (Array.isArray(unsupported) ? unsupported : []).some(row => Object.hasOwn(coverageCategories, row?.name) && count(row?.count) > 0);
     paragraph(document, section, hasInventoryRecords ? 'Changed source records are listed in the counts below.'
-      : knownEmpty ? 'No changed history records to review.' : 'Changed history counts are unavailable. Check the source again.');
-    paragraph(document, section, `Unchanged shared history is not counted again.${knownEmpty ? ' This result does not mean the database is empty.' : ''}`, 'muted');
+      : empty ? 'No changed history records to review.'
+        : unsupportedOnly ? 'No supported history records in the checked changes. Other changed records remain in the source.'
+          : knownZeroHistory && changedCheckpoint ? 'No supported history records in the checked changes. Changes can include deletions or other records outside this history summary.'
+          : 'Changed history counts are unavailable. Check the source again.');
+    paragraph(document, section, `Unchanged shared history is not counted again.${empty ? ' This result does not mean the database is empty.' : ''}`, 'muted');
   }
   root.append(section);
 }
@@ -228,7 +234,9 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
   root.replaceChildren(); root.hidden = !data;
   if (!data) return;
   const checked = data.status === 'checked';
-  const heading = document.createElement('h3'); heading.textContent = data.recoverySkipped ? 'Mirroring resumed without recovery'
+  const empty = source === 'peer' && checked && emptyRecoverySource(data), noRecoveryNeeded = source === 'peer' && data.status === 'no-recovery-needed';
+  const heading = document.createElement('h3'); heading.textContent = noRecoveryNeeded ? 'Mirroring resumed'
+    : data.recoverySkipped ? 'Mirroring resumed without recovery'
     : checked && comparison ? comparisonStale ? 'Review the current pairing problem' : 'No recovery needed'
       : checked ? 'History source checked' : report ? 'Recovery result' : 'Recovery preview';
   if (checked && comparison) {
@@ -239,6 +247,9 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
       : 'Valid slave snapshot. Mirroring applies the master’s changes automatically. This does not prove that the latest changes have arrived.';
     outcome.append(icon, heading, detail); root.append(outcome);
   } else root.append(heading);
+  if ((empty && !comparison) || noRecoveryNeeded) paragraph(document, root,
+    noRecoveryNeeded ? 'No additional history needed recovery from the checked source. The other computer’s transaction checkpoint was verified before mirroring resumed.'
+      : 'No additional history to recover from this checked source.');
   const software = data.sourceSoftware;
   if (software?.format === 1 && typeof software.applicationVersion === 'string' && software.applicationVersion.length <= 80
     && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(software.applicationVersion)
@@ -257,7 +268,7 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
     if (attention) item.dataset.tone = 'attention';
     item.append(label, number); counts.append(item);
   }
-  appendCount('Recovered entries', data.imported);
+  if (!noRecoveryNeeded) appendCount('Recovered entries', data.imported);
   if (data.incremental && !data.sourceSummary) {
     const scope = document.createElement('p'); scope.className = 'muted';
     scope.textContent = 'Changed source records since the shared checkpoint and their required references only. Unchanged shared history is not counted again.';
@@ -265,12 +276,12 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
   }
   const checkedAt = stamp(data.sourceSummary?.checkedAt ?? data.coverage?.checkedAt);
   if (checkedAt) paragraph(document, root, `Checked ${formatTime(checkedAt)}${data.incremental ? '' : ' · Complete source inventory'}`, 'history-recovery-provenance');
-  if (checked && data.sourceSummary) renderSourceSummary(document, root, data.sourceSummary, { formatTime, tables: data.tables });
+  if (checked && data.sourceSummary) renderSourceSummary(document, root, data.sourceSummary,
+    { formatTime, tables: data.tables, unsupported: data.unsupported, changedCheckpoint: recoveryCheckpointChanged(data), empty });
   if (checked) renderCoverage(document, root, data.coverage, { formatTime, source, expanded });
   if (checked) {
     const rows = (data.tables ?? []).filter(row => Object.hasOwn(sourceTables, row.name));
-    const emptyChanges = data.incremental && rows.length > 0 && rows.every(row => count(row.count) === 0);
-    if (!emptyChanges) for (const row of rows) appendCount(sourceTables[row.name], row.count);
+    if (!empty) for (const row of rows) appendCount(sourceTables[row.name], row.count);
   } else for (const [key, title] of fields) appendCount(title, totals[key], !comparison && key !== 'duplicates' && totals[key] > 0);
   if (counts.children.length) {
     if (checked && (data.coverage || data.sourceSummary)) {
@@ -282,7 +293,7 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
       details.append(counts); root.append(details);
     } else root.append(counts);
   }
-  if (checked && !comparison) {
+  if (checked && !comparison && !empty) {
     const line = document.createElement('p');
     line.textContent = 'Missing entries, conflicts and model changes have not yet been assessed.';
     root.append(line);
@@ -319,7 +330,8 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
     const line = document.createElement('p'); line.textContent = 'The rebuilt model has caught up and is published.'; root.append(line);
   }
   if (report && data.model?.status === 'unchanged' && !data.recoverySkipped)
-    paragraph(document, root, 'The learned model is unchanged; no accepted learning inputs required a rebuild.');
+    paragraph(document, root, noRecoveryNeeded ? 'The master’s history and learned model are unchanged.'
+      : 'The learned model is unchanged; no accepted learning inputs required a rebuild.');
   if (count(data.model?.unsupported) > 0) {
     const line = document.createElement('p'); line.textContent = `Unsupported learning entries skipped: ${data.model.unsupported}.`; root.append(line);
   }
@@ -328,7 +340,7 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
     line.textContent = `${data.sourceAssessment.skippedLearningRecords} learning records use another input and are skipped. Their original history remains separate.`;
     root.append(line);
   }
-  if (!comparison) {
+  if (!comparison && !empty && !noRecoveryNeeded) {
     const policy = document.createElement('p'); policy.className = 'muted';
     policy.textContent = data.recoverySkipped ? 'Gap recovery was deliberately skipped. The master history and model were kept. The other computer’s unmatched history remains inactive while mirroring uses the master history; it is never reused automatically.'
       : source === 'backup' ? 'Existing history takes precedence. The source backup stays unchanged. Conflicting or unsupported entries are skipped; recorded gaps remain unknown where no usable evidence exists.'

@@ -3,6 +3,7 @@ import { pairActionAllowed, pairDisplay, pairIssueCode, pairIssueHelp } from './
 import { renderRecoveryReport, renderRecoveryRevision, recoveryOperationSummary } from './history-recovery-report.js';
 import { backgroundProgress, renderProgressBar } from './background-progress.js';
 import { RECOVERY_ERROR_CODES, recoveryErrorMessage } from '../src/recovery/errors.js';
+import { checkedRecoverySource, emptyRecoverySource } from '../src/recovery/source-check.js';
 
 const pendingKey = 'stmq-history-recovery-pending';
 const actions = new Set(['check', 'recover', 'review-revert', 'revert', 'review-restore', 'restore']);
@@ -75,8 +76,7 @@ export function createHistoryRecoveryActions({ request, storage, onChange = () =
       const checkedPreview = () => {
         const checked = body.action === 'recover' && body.sourceId === 'peer'
           ? view.peer?.recovery?.preview ?? (view.job?.source?.id === 'peer' ? view.preview : undefined) : view.preview;
-        if (body.action === 'recover' && (checked?.status !== 'checked' || checked.model?.status !== 'not-assessed'
-          || checked.counts !== undefined)) return undefined;
+        if (body.action === 'recover' && (!checkedRecoverySource(checked) || body.sourceId === 'peer' && emptyRecoverySource(checked))) return undefined;
         return checked?.previewId;
       };
       const checkedId = checkedPreview();
@@ -135,6 +135,7 @@ export function recoveryJobText(view, now = Date.now()) {
   if (job.status === 'error') return recoveryErrorMessage(job.errorCode) ?? (sourceErrors.has(job.error) ? job.error
     : 'Recovery could not finish. The previous model remains available. Open Previous recoveries to review any accepted history before retrying.');
   if (job.status === 'complete' && Number.isFinite(job.finishedAt) && now - job.finishedAt >= 86_400_000) return '';
+  if (job.status === 'complete' && job.kind === 'check' && job.source?.id === 'peer' && emptyRecoverySource(view.preview ?? job.result)) return 'Source check complete. No additional history to recover from this checked source.';
   if (job.status === 'complete') return { check: 'Source check complete. Review the result before recovering.', recover: 'History recovery complete.',
     'review-revert': 'Review complete. Reverting excludes this recovery’s accepted history.', revert: 'Recovery reverted.',
     'review-restore': 'Review complete. Restoring includes this recovery’s accepted history again.', restore: 'Recovery restored.' }[job.kind] ?? 'Operation complete.';
@@ -174,6 +175,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     selector.value = selected; selector.disabled = blocked;
     const choice = source(state), peer = selected === 'peer';
     const currentPair = pair(state), peerRecovery = currentPair?.recovery;
+    const noRecoveryNeeded = peer && peerRecovery?.state === 'ready' && emptyRecoverySource(peerRecovery.preview);
     const peerView = peer && mode === 'recover' ? pairDisplay(currentPair, { formatTime }) : null;
     const job = state.view?.job, revisionJob = ['review-revert', 'review-restore', 'revert', 'restore'].includes(job?.kind);
     if (revision && !revision.id && revisionJob) {
@@ -210,7 +212,8 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
       : running ? recoveryJobText(state.view, now())
       : peerView?.error ? pairIssueHelp(currentPair) || peerView.recovery
       : peerView && currentPair.peer?.reachable !== true ? 'The other computer is unavailable. Reconnect it before checking its history. Any earlier result describes the previously checked snapshot.'
-      : peerView?.syncTone === 'attention' ? peerView.attention || peerView.sync
+      : peerView?.syncTone === 'attention' ? currentPair.peer?.role === 'protected' && currentPair.peer.reason === 'snapshot_verification_failed'
+        ? peerView.sync : peerView.attention || peerView.sync
       : normalCheck ? 'Valid slave snapshot. Newer master changes may still be waiting to sync.'
       : peerView ? peerView.recovery || (currentPair.peer?.reachable !== true ? 'The other computer is unavailable. Reconnect it before checking its history.'
         : choice?.available === false ? 'History checking is unavailable. Review the paired computers’ status before retrying.' : '')
@@ -263,7 +266,8 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     $('history-recovery-source-help').textContent = !peer && state.view?.sourcesError ? 'Backup sources are unavailable. Reload results to retry.'
       : !peer && state.view?.sourcesLoading ? 'Loading available backups…' : peer
       ? currentPair?.peer?.role === 'slave' ? 'Inspect the other computer’s saved history and dates. Normal mirroring continues automatically.'
-        : 'Review preserved history before recovering missing entries. Checking leaves recorded history unchanged.'
+        : noRecoveryNeeded ? 'No additional history to recover from the checked source. Verify the other computer before resuming mirroring.'
+          : 'Review preserved history to assess whether recovery is needed. Checking leaves recorded history unchanged.'
       : selected === 'upload' ? 'Choose a self-contained database backup. Keep your original file; the uploaded copy is temporary.'
         : 'Confirm that this backup contains this household’s history. The check shows the source’s evidence and dates; it leaves recorded history unchanged.';
     const comparison = peer && peerRecovery?.donorRole === 'slave';
@@ -293,7 +297,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     }
     const canRecover = mode === 'recover' && !sourceDirty && (peer ? pairActionAllowed(currentPair, 'recover')
       : selectedJob && !!checked?.previewId && state.view?.job?.kind === 'check' && state.view?.job?.status === 'complete'
-        && checked.status === 'checked' && checked.model?.status === 'not-assessed' && checked.counts === undefined);
+        && checkedRecoverySource(checked));
     $('history-recovery-apply').hidden = !canRecover || comparison;
     $('history-recovery-apply').disabled = blocked || !canRecover;
     $('history-recovery-revision-apply').hidden = !isRevision;
@@ -305,7 +309,8 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
       || peerRecovery?.donorRole === 'protected' && ['ready', 'recovering', 'complete', 'error'].includes(peerRecovery?.state));
     const bytes = total(peerRecovery?.donorBytes);
     const incrementalRejoin = peerRecovery?.preview?.incremental || peerRecovery?.retainedStorage === 'journal-branch';
-    $('pairing-rejoin-storage').textContent = incrementalRejoin
+    $('pairing-rejoin-storage').hidden = noRecoveryNeeded;
+    $('pairing-rejoin-storage').textContent = noRecoveryNeeded ? '' : incrementalRejoin
       ? 'Storage retained: divergent changes remain as an inactive journal branch in the other database. Size depends on changed records; there is no automatic expiry.'
       : `Storage retained: a full database copy${bytes === null ? ' (size not yet available)'
         : ` of approximately ${(bytes / 1024 / 1024).toLocaleString('en', { maximumFractionDigits: 1 })} MiB`}. Copies can accumulate; there is no automatic expiry.`;
