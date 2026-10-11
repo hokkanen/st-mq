@@ -16,6 +16,7 @@ import { teslamateConfiguration } from '../app/config.js';
 import { createShellyEvseAdapter } from '../charging/shelly-evse.js';
 import { createChargingTeslaCapture, decodeChargingTeslaField } from '../charging/teslamate.js';
 import { mqttRouting } from './mqtt-routing.js';
+import { storageFailureCode } from '../storage/write-health.js';
 
 export { decodeMqttTemperature } from './mqtt-temperature.js';
 
@@ -109,6 +110,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       connected: false, generation: 0, ready: false, subscriptionsReady: false, readinessFailed: false, readinessWaiters: new Set(),
       vehicleSubscriptions: new Map(), equipmentSubscriptionBuffer: null, teslaSubscriptionBuffer: null, teslaSubscriptionOverflow: false,
       pendingPublications: new Set(), pendingSubscriptions: new Set(), pendingReceipts: 0, receptionFailed: false,
+      recordingPending: 0,
       receiptSequence: 0, receptionOutcomes: new Map(), pendingVehicleReceipts: new Map(), admittingVehicleReceipt: null,
       admittingVehicleReplay: null });
   }
@@ -175,11 +177,15 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     if (!channel?.connected || stopped) { reject(new Error('MQTT unavailable')); return; }
     if (!canControl()) { reject(new Error('This instance no longer owns device control')); return; }
     const { client, pendingPublications } = channel;
-    const { noReplay = false, beforePublish, signal, ...publicationOptions } = options ?? {};
+    const { noReplay = false, beforePublish, signal, recordingContext, recordingDeadlineExpired,
+      ...publicationOptions } = options ?? {};
     const generation = channel.generation;
     const readRequest = decoder && topic === `${deviceId}/HP/CMD` && payload === 'GETALL'
       || equipment?.isReadRequest(topic, payload, broker);
-    let finished = false, failed = false, outgoingId = null, outgoingRemoved = false;
+    let finished = false, failed = false, outgoingId = null, outgoingRemoved = false, dispatched = false;
+    const recordingPending = () => [...channels.values()].some(row => row.recordingPending > 0);
+    const recordingFailed = () => [...channels.values()].some(row =>
+      [...row.receptionOutcomes.values()].some(outcome => !outcome.successful && outcome.recordingFailed));
     const removeOutgoing = () => {
       if (!failed || !noReplay || outgoingRemoved || !Number.isInteger(outgoingId)) return;
       outgoingRemoved = true; client.removeOutgoingMessage?.(outgoingId);
@@ -189,8 +195,17 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       outgoingId = packet.messageId;
       client.off?.('packetsend', capturePacket);
     };
-    const finish = error => {
+    const finish = (error, recordingExpired = false) => {
       if (finished) return;
+      // This is a count of witnessed unsent attempts, never a command-success
+      // tracker. Source-clock/subscription waits and ordinary cancellation do
+      // not establish that storage prevented dispatch.
+      if (error && !readRequest && !dispatched) {
+        const reason = error.code === 'MQTT_STORAGE_FAILED' && recordingFailed() ? 'recording-failed'
+          : recordingExpired && waitingPublications.has(attempt) && recordingPending() ? 'recording-wait-expired' : null;
+        if (reason) try { store.writeHealth?.commandNotSent?.(recordingContext, reason); }
+        catch { /* Diagnostic failure cannot change the command outcome. */ }
+      }
       finished = true; failed = Boolean(error); clearTimeout(timer); pendingPublications.delete(finish);
       waitingPublications.delete(attempt); signal?.removeEventListener('abort', cancelled);
       client.off?.('packetsend', capturePacket);
@@ -202,10 +217,14 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         reject(code ? publicationFailure(code, heatingErrorMessage(code)) : new Error('MQTT publication failed'));
       } else resolve();
     };
-    const cancelled = () => finish(new Error('The pending device command was cancelled.'));
+    const cancelled = () => {
+      let expired = false;
+      try { expired = recordingDeadlineExpired?.() === true; } catch { /* Diagnostic only. */ }
+      finish(new Error('The pending device command was cancelled.'), expired);
+    };
     const timer = setTimeout(() => finish(waitingPublications.has(attempt)
       ? publicationFailure('MQTT_STORAGE_PENDING', 'Device control is waiting for received observations to reach storage')
-      : new Error('MQTT timeout')), settings.readbackTimeoutMs ?? 10_000);
+      : new Error('MQTT timeout'), true), settings.readbackTimeoutMs ?? 10_000);
     pendingPublications.add(finish);
     function attempt() {
       if (finished) return;
@@ -233,6 +252,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       }
       if (noReplay) client.on?.('packetsend', capturePacket);
       const previousId = noReplay ? client.getLastMessageId?.() : null;
+      dispatched = true;
       try { client.publish(topic, payload, { ...publicationOptions, signal }, finish); } catch { finish(new Error('MQTT publication failed')); }
       if (noReplay) {
         const allocatedId = client.getLastMessageId?.();
@@ -696,6 +716,9 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       if (vehicleReceipt) channel.pendingVehicleReceipts.set(sequence, vehicleReceipt);
       const currentReceipt = () => !stopped && !stopping && canControl() && channel.connected && channel.generation === generation;
       channel.pendingReceipts++;
+      // This diagnostic counter ends with the storage promise. Deferred source
+      // admission can keep pendingReceipts open after storage has completed.
+      if (key !== null) channel.recordingPending++;
       let released = false;
       const release = () => { if (!released) {
         released = true; channel.pendingReceipts--; channel.pendingVehicleReceipts.delete(sequence);
@@ -747,9 +770,20 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         // Executed vehicle attempts publish rollback outcomes synchronously.
         // This rejection handler only supplies a missing pre-execution failure;
         // it cannot overwrite a later retry of the same quarantined receipt.
-        onFailure: error => { if (error?.committed !== true && currentReceipt() && !vehicleReceipt?.attempt)
-          for (const key of keys) receptionOutcome(key, sequence, false); },
-      }).finally(() => { release(); resumePublications(); });
+        onFailure: error => {
+          if (error?.committed !== true && currentReceipt() && !vehicleReceipt?.attempt)
+            for (const key of keys) receptionOutcome(key, sequence, false);
+          if (key !== null && error?.committed !== true && storageFailureCode(error)) {
+            for (const key of keys) {
+              const outcome = channel.receptionOutcomes.get(key);
+              if (outcome?.sequence === sequence && !outcome.successful) outcome.recordingFailed = true;
+            }
+            try { store.writeHealth?.failure?.(error, { context: 'mqtt-input',
+              outcome: vehicleReceipt?.deferred ? 'save-failed' : 'not-retained-for-retry' }); }
+            catch { /* Diagnostic failure cannot alter received input admission. */ }
+          }
+        },
+      }).finally(() => { if (key !== null) channel.recordingPending--; release(); resumePublications(); });
       // An ordinary synchronous accepted report has already cleared its receipt
       // here. Only a real admission gap cancels selected work, so healthy traffic
       // cannot perpetually restart a slow native preflight.

@@ -141,6 +141,8 @@ for (const device of ['door', 'switch']) for (const interruption of ['timeout', 
     if (interruption === 'recording-failure') failNextCommit(f.store);
     f.unlock(); await rejected; await until(() => f.store.writeQueueStatus().pending === 0); await delay(20);
     assert.equal(f.mutations(device).length, 0, 'An obsolete request cannot be dispatched when storage recovers');
+    assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, interruption === 'timeout' ? 1 : 0,
+      'only the witnessed storage-wait timeout qualifies; generic cancellation and unclassified rollback do not');
     if (device === 'door') {
       const operation = f.status(device).cover.operation;
       assert.equal(operation.status, 'failed'); assert.equal(operation.code, failure.code);

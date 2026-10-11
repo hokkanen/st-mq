@@ -178,13 +178,14 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         emit(device, definition.signal, null, definition.unit, null, [reason], { usableForControl: false });
     } finally { receptionAt = before; }
   };
-  const send = async (device, method, params = {}, { purpose = 'status', commandId = null, complete = null, beforePublish, signal } = {}) => {
+  const send = async (device, method, params = {}, { purpose = 'status', commandId = null, complete = null,
+    beforePublish, signal, recordingDeadlineExpired } = {}) => {
     if (!connected || closed || !canControl()) throw error('MQTT unavailable');
     const id = ++sequence;
     if (purpose === 'write') device.writeOrder = id;
     requests.set(id, { device, method, at: engine.clock(), purpose, commandId, complete });
     try { await publish(`${device.prefix}/rpc`, JSON.stringify({ id, src: source, method, params }), { qos: 1, retain: false,
-      ...(purpose === 'write' ? { noReplay: true, signal, beforePublish: () => {
+      ...(purpose === 'write' ? { noReplay: true, signal, recordingContext: 'switch-command', recordingDeadlineExpired, beforePublish: () => {
         beforePublish?.(); requests.get(id).at = engine.clock();
       } } : {}) }); }
     catch (cause) { requests.delete(id); throw heatingErrorCode(cause?.code) ? cause : error('publication failed'); }
@@ -325,10 +326,11 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       const cancellation = new AbortController(), deadline = performance.now() + readbackTimeoutMs;
       const waiter = { output, commandId: ++commandSequence, at: engine.clock(), dispatched: false, revision: device.observationOrder,
         resolve: () => finish(canControl() && connected && !closed ? null : error('control authority unavailable')), reject: reason => finish(reason) };
-      let done = false;
+      let done = false, recordingDeadlineExpired = false;
       const finish = reason => { if (done) return; done = true; clearTimeout(timer); device.waiters.delete(waiter);
         cancellation.abort(); reason ? reject(reason) : resolve(); };
-      const timer = setTimeout(() => finish(error('relay readback timed out; delivery unconfirmed')), readbackTimeoutMs);
+      const timer = setTimeout(() => { recordingDeadlineExpired = true;
+        finish(error('relay readback timed out; delivery unconfirmed')); }, readbackTimeoutMs);
       device.waiters.add(waiter);
       const beforePublish = () => {
         if (done || closed || !connected || !canControl()) throw error('control authority unavailable');
@@ -341,9 +343,11 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         // Gen1 feedback has no command identity. Capture the state boundary only
         // after storage admission, then require a newly committed live report.
         ? publish(`${device.prefix}/relay/${device.switchId}/command`, output ? 'on' : 'off',
-          { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal }).then(() => requestStatus(device))
+          { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal,
+            recordingContext: 'switch-command', recordingDeadlineExpired: () => recordingDeadlineExpired }).then(() => requestStatus(device))
         : send(device, 'Switch.Set', { id: device.switchId, on: output },
-          { purpose: 'write', commandId: waiter.commandId, beforePublish, signal: cancellation.signal });
+          { purpose: 'write', commandId: waiter.commandId, beforePublish, signal: cancellation.signal,
+            recordingDeadlineExpired: () => recordingDeadlineExpired });
       action.catch(cause => finish(heatingErrorCode(cause?.code) ? cause : error('relay command failed; delivery unconfirmed')));
     });
     return { confirmed: true, status: 'confirmed', sent: true, deviceId: device.id, on: output,

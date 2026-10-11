@@ -156,6 +156,23 @@ test('issues retain their own explanation and destination, with critical failure
   assert.equal(issues[0].firstElementChild.children[1].textContent, ' · Make room on this disk.');
 });
 
+test('both summary and a retained recording issue follow source and storage transitions', () => {
+  const view = panelFixture();
+  const recordingIssue = [{ id: 'recording', severity: 'warning', title: 'Recording needs attention', detail: 'Synthetic reason.' }];
+  let originalIssue;
+  for (const [state, target] of [['source-unavailable', 'recording-recording-card'], ['write-waiting', 'recording-performance-details'],
+    ['write-failed', 'recording-performance-details'], ['stalled', 'recording-recording-card'], ['source-unavailable', 'recording-recording-card']]) {
+    view.panel.update({ recordingHealth: health({ recording: { state }, attention: recordingIssue }) });
+    const issue = view.element('recording-status-issues').children[0];
+    if (!originalIssue) originalIssue = issue;
+    assert.equal(issue, originalIssue, 'Updating the target does not replace the focusable issue');
+    assert.equal(issue.firstElementChild.dataset.recordingOpen, target);
+    assert.equal(issue.firstElementChild.href, `#${target}`);
+    assert.equal(view.element('recording-status-recording').dataset.recordingOpen, target);
+    assert.equal(view.element('recording-status-recording').href, `#${target}`);
+  }
+});
+
 test('unsupported health updates preserve the last known warning instead of clearing it', () => {
   const view = panelFixture();
   view.panel.update({ recordingHealth: health({ recording: { state: 'write-failed' }, attention: [
@@ -254,9 +271,9 @@ function performanceHistory(overrides = {}) {
     commitDuration: { ...timing, count: 640, meanMs: 12, maxMs: 520 },
     controlQueueDelay: { ...timing, count: 60 }, normalQueueDelay: { ...timing, count: 760 },
     contention: { episodes: 3, totalMs: 925, maxMs: 600, active: false },
-    peakPending: 8, failedWrites: 0, queueRejected: 0, committedTransactions: 640,
+    peakPending: 8, failedWrites: 0, queueRejected: 0, commandsNotSent: 0, incidents: [], committedTransactions: 640,
     transactionAttempts: 645, failedJobs: 1, cancelledJobs: 2, postCommitFailures: 1 };
-  return { version: 1, retentionMs: 7 * 86400_000, resolutionMs: 300_000,
+  return { version: 2, retentionMs: 7 * 86400_000, resolutionMs: 300_000,
     startedAt: now - 6 * 3600_000, checkedAt: now, elapsedMs: 6 * 3600_000,
     current: { pending: 0, oldestPendingMs: null, waitingMs: null, activeJobs: 0 },
     windows: { day, week: { ...day, requestedMs: 7 * 86400_000, failedWrites: 2, peakPending: 18 } }, ...overrides };
@@ -349,6 +366,77 @@ test('storage performance period stays local across polling and failed refresh w
   view.panel.clear();
   assert.equal(view.element('recording-performance-data').hidden, true);
   assert.equal(view.element('recording-performance-day').getAttribute('aria-pressed'), 'true');
+});
+
+test('storage summary distinguishes current queue work from historical save and MQTT-command outcomes', () => {
+  const history = performanceHistory();
+  const value = health({ recording: { state: 'ok', history } });
+  history.windows.day.postCommitFailures = 0;
+  let view = storagePerformanceView(value, 'day', { now });
+  assert.equal(view.state, 'Caught up');
+  assert.match(view.evidence, /no failures observed.*6 h monitored/);
+  assert.equal(view.stateTone, 'neutral');
+  history.windows.day.failedWrites = 2;
+  history.windows.day.queueRejected = 1;
+  history.windows.day.commandsNotSent = 3;
+  view = storagePerformanceView(value, 'day', { now });
+  assert.equal(view.state, 'Caught up', 'A past failure does not imply current backlog');
+  assert.match(view.evidence, /Past day.*problems observed.*6 h monitored/);
+  assert.equal(view.failed, '2'); assert.equal(view.rejected, '1'); assert.equal(view.commandsNotSent, '3');
+  assert.equal(view.evidenceTone, 'warning');
+  history.current = { pending: 6, oldestPendingMs: 850, waitingMs: 600, activeJobs: 1 };
+  view = storagePerformanceView(value, 'day', { now });
+  assert.equal(view.state, 'Waiting for storage');
+  assert.match(view.current, /6 queued.*oldest 850 ms.*1 running/);
+  history.current.waitingMs = null;
+  assert.equal(storagePerformanceView(value, 'day', { now }).state, '6 operations queued');
+  history.current = { pending: 0, oldestPendingMs: null, waitingMs: null, activeJobs: 1 };
+  assert.equal(storagePerformanceView(value, 'day', { now }).state, 'Writing');
+  value.recording.state = 'write-failed';
+  assert.equal(storagePerformanceView(value, 'day', { now }).state, 'Save failed');
+  assert.equal(storagePerformanceView(value, 'day', { now, unavailable: true }).state, 'Last known: Save failed');
+  history.windows.day.commandsNotSent = null;
+  history.windows.day.failedWrites = 0; history.windows.day.queueRejected = 0;
+  assert.doesNotMatch(storagePerformanceView(value, 'day', { now }).evidence, /no failures observed/);
+});
+
+test('storage problems use safe labels, preserve blocked commands and distinguish original recovery from resumed saving', () => {
+  const history = performanceHistory();
+  const value = health({ recording: { state: 'ok', lastWriteAt: now - 1000, history } });
+  const incident = { category: 'save-failed', at: now - 60_000, context: 'mqtt-input',
+    reason: 'database-io', outcome: 'not-retained-for-retry', recoveredAt: null };
+  history.windows.day.incidents = [incident];
+  let view = storagePerformanceView(value, 'day', { now });
+  assert.match(view.incidents[0].detail, /not retained for retry.*Saving resumed.*does not establish recovery/);
+  incident.context = 'charging-input'; incident.outcome = 'original-update-saved'; incident.recoveredAt = now - 10000;
+  view = storagePerformanceView(value, 'day', { now });
+  assert.match(view.incidents[0].detail, /original update was saved on retry 7 Oct/);
+  assert.doesNotMatch(view.incidents[0].detail, /Saving resumed/);
+  history.windows.day.incidents = [{ ...incident, category: 'command-not-sent', context: 'heat-pump-command',
+    outcome: 'command-not-sent', reason: 'recording-wait-expired', recoveredAt: null }];
+  view = storagePerformanceView(value, 'day', { now });
+  assert.match(view.incidents[0].detail, /deadline expired while waiting for recording.*command was not sent/);
+  assert.doesNotMatch(view.incidents[0].detail, /resumed|recovered/);
+  history.windows.day.incidents.push({ ...incident, context: 'private secret content' }, { ...incident, reason: '__proto__' });
+  assert.equal(storagePerformanceView(value, 'day', { now }).incidents.length, 1);
+  assert.equal(storagePerformanceView(value, 'week', { now }).incidents.length, 0, 'Use the selected monotonic window, not wall-clock filtering');
+  const dashboard = panelFixture();
+  dashboard.panel.update({ recordingHealth: value });
+  assert.equal(dashboard.element('recording-performance-incident-list').children.length, 1);
+  history.windows.day.incidents = [];
+  dashboard.panel.update({ recordingHealth: value });
+  assert.equal(dashboard.element('recording-performance-incidents').hidden, true);
+});
+
+test('all four collapsed health areas explicitly label retained evidence after a failed or stale check', async () => {
+  const view = panelFixture(async () => { throw Error('Synthetic unavailable health'); });
+  view.panel.update({ recordingHealth: health({ recording: { state: 'ok', history: performanceHistory() } }) });
+  await view.panel.refresh();
+  for (const area of ['recording', 'disk', 'backup', 'performance'])
+    assert.match(view.element(`recording-${area}-state`).textContent, /^Last known:/);
+  view.panel.update({ recordingHealth: health({ recording: { state: 'ok', history: performanceHistory() } }) });
+  for (const area of ['recording', 'disk', 'backup', 'performance'])
+    assert.doesNotMatch(view.element(`recording-${area}-state`).textContent, /^Last known:/);
 });
 
 test('control responses without health preserve dated warnings, failed-refresh state and retained inventory', async () => {

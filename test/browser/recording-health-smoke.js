@@ -107,7 +107,7 @@ window.initialHealth = structuredClone(payload.recordingHealth);
 window.setScenario = state => {
   const health = structuredClone(initialHealth);
   if(state !== 'critical') {
-    health.recording = {state:state === 'sources' ? 'source-unavailable' : 'ok', lastSourceCheckAt:${now},
+    health.recording = {state:state === 'sources' ? 'source-unavailable' : 'ok', lastSourceCheckAt:${now}, lastWriteAt:${now - 1000},
       detail:state === 'sources' ? 'Check source connections.' : 'Source monitoring is active.', history: structuredClone(initialHealth.recording.history)};
     health.disk = {state:'ok', totalBytes:128e9, freeBytes:80e9, checkedAt:${now}, detail:'Local disk space is available.'};
     health.attention = state === 'sources' ? [{id:'recording', severity:'warning', title:'Recording sources are unavailable', detail:'Check source connections.'}] : [];
@@ -125,7 +125,22 @@ window.setPerformance = state => {
     health.attention=[{id:'recording',severity:'warning',title:'Waiting for storage',detail:'Observations are waiting to be saved.'}];
   }
   if(state === 'failed') for(const window of Object.values(history.windows)) {
-    window.failedWrites=2; window.queueRejected=1; window.failedJobs=2; window.postCommitFailures=1;
+    window.failedWrites=2; window.queueRejected=1; window.failedJobs=2; window.postCommitFailures=1; window.commandsNotSent=3;
+    window.incidents=[
+      {category:'save-failed',at:${now - 60000},context:'mqtt-input',reason:'database-io',outcome:'not-retained-for-retry',recoveredAt:null},
+      {category:'queue-refused',at:${now - 55000},context:'provider-input',reason:'write-queue-full',outcome:'queue-refused',recoveredAt:null},
+      {category:'command-not-sent',at:${now - 40000},context:'heat-pump-command',reason:'recording-wait-expired',outcome:'command-not-sent',recoveredAt:null},
+      {category:'follow-up-failed',at:${now - 30000},context:'storage',reason:'follow-up-failed',outcome:'saved-follow-up-failed',recoveredAt:null}];
+  }
+  if(state === 'recovered') for(const window of Object.values(history.windows)) {
+    window.failedWrites=1;
+    window.incidents=[{category:'save-failed',at:${now - 60000},context:'charging-input',reason:'database-io',outcome:'original-update-saved',recoveredAt:${now - 10000}}];
+  }
+  if(state === 'unknown') {
+    health.disk={state:'unknown',detail:'Local disk space could not be checked.'};
+    health.backup={state:'unknown',detail:'Available backups could not be checked.'};
+    history.current={pending:null,oldestPendingMs:null,waitingMs:null,activeJobs:null};
+    for(const window of Object.values(history.windows)) window.commandsNotSent=null;
   }
   if(state === 'empty' || state === 'reset') {
     history.startedAt=${now}; history.elapsedMs=state === 'reset' ? 0 : 5000;
@@ -135,7 +150,8 @@ window.setPerformance = state => {
       for(const metric of ['queueDelay','controlQueueDelay','normalQueueDelay','transactionDuration','commitDuration'])
         window[metric]={count:0,meanMs:null,p95Ms:null,maxMs:null};
       window.contention={episodes:0,totalMs:0,maxMs:0,active:false};
-      for(const metric of ['peakPending','failedWrites','queueRejected','cancelledJobs','failedJobs','postCommitFailures','transactionAttempts','committedTransactions']) window[metric]=0;
+      for(const metric of ['peakPending','failedWrites','queueRejected','cancelledJobs','failedJobs','postCommitFailures','transactionAttempts','committedTransactions','commandsNotSent']) window[metric]=0;
+      window.incidents=[];
     }
   }
   if(state === 'snapshot') { health.scope='snapshot'; health.recording={state:'read-only',history:null}; }
@@ -234,9 +250,14 @@ try {
       clip:{x:0, y:0, width:dimensions.width, height:dimensions.height, scale:1} });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(result.data, 'base64'));
   };
+  const captureGlance = async name => {
+    const clip = await evaluate("(() => { const box=document.getElementById('recording-health').getBoundingClientRect(); return {x:box.left,y:box.top+scrollY,width:box.width,height:box.height,scale:1}; })()");
+    const result = await send('Page.captureScreenshot', {format:'png',captureBeyondViewport:true,clip});
+    writeFileSync(join(artifacts, `${name}.png`), Buffer.from(result.data,'base64'));
+  };
   const checkLayout = async label => {
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${label}: page fits`);
-    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-dataset, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-facts')).filter(node => {
+    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-dataset, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents')).filter(node => {
       if(!node.checkVisibility()) return false;
       const b = node.getBoundingClientRect(); return b.width <= 0 || b.left < 0 || b.right > innerWidth + 1 || node.scrollWidth > node.clientWidth + 1;
     }).map(node => ({id: node.id || node.className, left:node.getBoundingClientRect().left, right:node.getBoundingClientRect().right,
@@ -273,7 +294,7 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('#recording-status-issues .recording-status-issue').length"), 2,
     'Concurrent recording and storage problems remain separate');
   assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#recording-status-issues [data-recording-open]'), node=>node.dataset.recordingOpen).sort()"),
-    ['recording-disk-card', 'recording-recording-card']);
+    ['recording-disk-card', 'recording-performance-details']);
   assert.equal(await evaluate("document.getElementById('recording-details').open"), false);
   await evaluate("document.querySelector('[data-recording-open=recording-details]').click()");
   assert.equal(await evaluate("document.getElementById('recording-details').open && document.activeElement === document.querySelector('#recording-details > summary')"), true,
@@ -283,6 +304,8 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-overview-details').open"),false);
   assert.equal(await evaluate("document.getElementById('recording-storage-details').open"),false);
   assert.equal(await evaluate("document.querySelectorAll('.recording-health-card[open]').length"),0,'Health explanations start folded');
+  assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('.recording-health-card > summary > .recording-health-label'),node=>node.textContent)"),
+    ['Recording','Storage health','Disk space','Backups'],'Four health areas share the same hierarchy');
   assert.equal(await evaluate("document.getElementById('recording-growth-retained').textContent"),'6 GB');
   assert.equal(await evaluate("document.getElementById('recording-growth-file').textContent"),'82 GB');
   assert.equal(await evaluate("document.getElementById('recording-growth-wal').textContent"),'1 GB');
@@ -305,6 +328,8 @@ try {
       assert.equal(await evaluate("document.getElementById('recording-growth-total').textContent"), '32 GB/year');
       assert.equal(await evaluate("document.getElementById('recording-growth-adaptiveStored').textContent"), '40 MB');
       await capture(`baseline-${width}-${theme}`);
+      await evaluate("setPerformance('healthy'); document.querySelectorAll('.recording-health-card').forEach(node=>node.open=false)");
+      await settle(); await checkLayout(`${width}/${theme}/glance-collapsed`); await captureGlance(`glance-collapsed-${width}-${theme}`);
       await evaluate("setScenario('healthy'); document.getElementById('recording-details').open=false; scrollTo(0,0)");
       await settle(); await checkLayout(`${width}/${theme}/startup`); await checkDashboardSpacing(`${width}/${theme}/startup`);
       assert.equal(await evaluate("document.getElementById('recording-status').hidden"), false, 'Healthy startup briefly shows recording and storage');
@@ -325,10 +350,16 @@ try {
       await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=true)");
       await settle(); await checkLayout(`${width}/${theme}/expanded`); await capture(`expanded-${width}-${theme}`);
       await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=false); document.getElementById('recording-performance-details').open=true; setPerformance('healthy')");
-      await settle(); await checkLayout(`${width}/${theme}/performance`); await capture(`performance-${width}-${theme}`);
-      for(const state of ['busy','failed','empty','reset','snapshot']) {
+      await settle(); await checkLayout(`${width}/${theme}/performance`); await capture(`performance-${width}-${theme}`); await captureGlance(`glance-storage-${width}-${theme}`);
+      for(const state of ['busy','failed','recovered','unknown','empty','reset','snapshot']) {
         await evaluate(`setPerformance('${state}')`); await settle();
         await checkLayout(`${width}/${theme}/performance-${state}`); await capture(`performance-${state}-${width}-${theme}`);
+        if(state==='failed') {
+          await captureGlance(`glance-problems-${width}-${theme}`);
+          await evaluate("document.querySelectorAll('.recording-health-card').forEach(node=>node.open=true); document.getElementById('recording-performance-technical').open=true");
+          await settle(); await checkLayout(`${width}/${theme}/glance-all-open`); await captureGlance(`glance-all-open-${width}-${theme}`);
+          await evaluate("document.querySelectorAll('.recording-health-card').forEach(node=>node.open=false); document.getElementById('recording-performance-details').open=true; document.getElementById('recording-performance-technical').open=false");
+        }
       }
       await evaluate("setScenario('critical')");
     }
@@ -346,10 +377,19 @@ try {
   await evaluate("setPerformance('failed')");
   assert.equal(await evaluate("document.getElementById('recording-performance-failed').textContent"), '2');
   assert.equal(await evaluate("document.getElementById('recording-performance-rejected').textContent"), '1');
+  assert.equal(await evaluate("document.getElementById('recording-performance-commandsNotSent').textContent"),'3');
+  assert.equal(await evaluate("document.querySelectorAll('#recording-performance-incident-list > li').length"),4);
+  assert.match(await evaluate("document.getElementById('recording-performance-incident-list').textContent"),/not retained for retry.*Saving resumed.*does not establish recovery/);
+  assert.equal(await evaluate("document.getElementById('recording-performance-state').textContent"),'Caught up','Historical problems remain distinct from the live queue');
+  await evaluate("document.getElementById('recording-performance-technical').open=true; document.querySelector('#recording-performance-technical > summary').focus(); panel.update(payload)");
+  assert.equal(await evaluate("document.activeElement===document.querySelector('#recording-performance-technical > summary') && document.getElementById('recording-performance-technical').open"),true,'Polling preserves technical disclosure and focus');
+  await evaluate("document.getElementById('recording-performance-week').focus()");
   await evaluate("failRefresh=true; panel.refresh()");
   assert.match(await evaluate("document.getElementById('recording-performance-notice').textContent"), /Refresh failed.*last known/);
   assert.equal(await evaluate("document.getElementById('recording-performance-failed').textContent"), '2');
   assert.equal(await evaluate("document.getElementById('recording-performance-week').getAttribute('aria-pressed')"), 'true');
+  for(const area of ['recording','disk','backup','performance'])
+    assert.match(await evaluate(`document.getElementById('recording-${area}-state').textContent`),/^Last known:/,'Each health row dates retained status after refresh failure');
   await capture('performance-stale-1440-dark');
   await evaluate("failRefresh=false; setPerformance('empty')");
   assert.equal(await evaluate("document.getElementById('recording-performance-queue-mean').textContent"), 'No samples');
@@ -365,8 +405,8 @@ try {
   await evaluate("document.getElementById('recording-status-disk').click()");
   assert.equal(await evaluate("document.getElementById('recording-disk-card').open && document.activeElement === document.querySelector('#recording-disk-card > summary')"), true,
     'Storage summary opens and focuses disk details');
-  await evaluate("document.querySelector('#recording-status-issues [data-recording-open=recording-recording-card]').click()");
-  assert.equal(await evaluate("document.getElementById('recording-recording-card').open && document.activeElement === document.querySelector('#recording-recording-card > summary')"), true,
+  await evaluate("document.querySelector('#recording-status-issues [data-recording-open=recording-performance-details]').click()");
+  assert.equal(await evaluate("document.getElementById('recording-performance-details').open && document.activeElement === document.querySelector('#recording-performance-details > summary')"), true,
     'Each issue opens and focuses its relevant details');
   await evaluate("setScenario('healthy'); document.getElementById('recording-status-recording').focus(); expireIntro()");
   assert.equal(await evaluate("document.getElementById('recording-status').hidden"), false,
@@ -381,6 +421,15 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-status').hidden"), true, 'Historical performance counts do not create a new permanent banner');
   await evaluate("setScenario('sources')");
   assert.equal(await evaluate("document.getElementById('recording-status').hidden"), false, 'A new warning remains visible after startup');
+  await evaluate("window.sameIssueLink=document.querySelector('#recording-status-issues [data-recording-open=recording-recording-card]'); sameIssueLink.focus(); payload.recordingHealth.recording.state='write-waiting'; payload.recordingHealth.attention[0].title='Waiting for storage'; panel.update(payload)");
+  assert.equal(await evaluate("document.activeElement===sameIssueLink && sameIssueLink.dataset.recordingOpen==='recording-performance-details' && document.getElementById('recording-status-recording').dataset.recordingOpen==='recording-performance-details'"),true,
+    'Source to storage updates both destinations without replacing the focused issue');
+  await evaluate("sameIssueLink.click()");
+  assert.equal(await evaluate("document.getElementById('recording-performance-details').open && document.activeElement===document.querySelector('#recording-performance-details > summary')"),true,
+    'A storage issue opens its corresponding health evidence');
+  await evaluate("sameIssueLink.focus(); payload.recordingHealth.recording.state='source-unavailable'; payload.recordingHealth.attention[0].title='Recording sources are unavailable'; panel.update(payload)");
+  assert.equal(await evaluate("document.activeElement===sameIssueLink && sameIssueLink.dataset.recordingOpen==='recording-recording-card' && document.getElementById('recording-status-recording').dataset.recordingOpen==='recording-recording-card'"),true,
+    'Storage to source restores both destinations without losing focus');
   await evaluate("document.querySelector('#recording-status-issues [data-recording-open=recording-recording-card]').focus(); setScenario('healthy')");
   assert.equal(await evaluate("document.activeElement === document.getElementById('recording-status-recording')"), true,
     'Resolving a focused issue transfers focus to its stable status link');
@@ -421,7 +470,7 @@ try {
   assert.match(await evaluate("document.getElementById('recording-health-checked').textContent"), /Refresh failed/);
   assert.equal(await evaluate("document.getElementById('recording-status-freshness').hidden"), false);
   assert.match(await evaluate("document.getElementById('recording-status-freshness').textContent"), /Refresh failed/);
-  assert.equal(await evaluate("document.getElementById('recording-backup-state').textContent"), 'Creating a copy', 'Failure retains dated evidence');
+  assert.equal(await evaluate("document.getElementById('recording-backup-state').textContent"), 'Last known: Creating a copy', 'Failure retains dated evidence');
   assert.doesNotMatch(await evaluate('document.body.innerText'), /private fixture error/);
   await evaluate("failRefresh = false; payload.recordingHealth.scope = 'snapshot'; payload.recordingHealth.recording = {state:'read-only', detail:'This computer reads the recorded snapshot.'}; payload.recordingHealth.attention = []; payload.recordingHealth.disk.state = 'ok'; payload.recordingHealth.disk.freeBytes = 80e9; payload.recordingHealth.backup = {state:'none-known'}; panel.update(payload)");
   assert.equal(await evaluate("document.getElementById('recording-status').hidden"), true, 'A healthy recorded snapshot has no persistent startup strip');
@@ -464,7 +513,7 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-status').checkVisibility()"), false);
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.history-panel')).display"), 'none');
   assert.deepEqual(errors, []);
-  console.log(`Recording details browser smoke passed: 320/390/768/1440, light/dark, dashboard spacing, startup/source/critical states, startup expiry and recovery, collapsed/storage/adaptive/all-open layouts, memory performance populated/busy/failed/empty/reset/snapshot, local period choice, production tables, disclosure and focus preservation, targeted navigation, inventory and health failures, stale health, snapshot, auth fallback and logout fencing. Screenshots: ${artifacts}`);
+  console.log(`Recording details browser smoke passed: 320/390/768/1440, light/dark, dashboard spacing, startup/source/critical states, startup expiry and recovery, four balanced health rows, collapsed/storage/all-open layouts, storage populated/busy/failed/recovered/unknown/empty/reset/snapshot, local period choice, safe incidents, production tables, disclosure and focus preservation, source/storage navigation transitions, stale labels in all rows, inventory and health failures, snapshot, auth fallback and logout fencing. Screenshots: ${artifacts}`);
 } finally {
   socket?.close(); browser?.kill('SIGTERM');
   await new Promise(resolve => server.close(resolve));

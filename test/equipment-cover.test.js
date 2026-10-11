@@ -109,8 +109,10 @@ test('broker acknowledgement and cached/opening contact do not claim observed op
   const result = await f.capture.setCover({ deviceId: door.id, action: 'open' });
   assert.equal(result.confirmed, false); assert.equal(result.acknowledgement, 'mqtt-broker');
   assert.equal(f.status().cover.operation.status, 'published'); assert.equal(f.status().cover.state, 'closed');
-  const { beforePublish, signal, ...flags } = f.publications[0].options;
+  const { beforePublish, signal, recordingContext, recordingDeadlineExpired, ...flags } = f.publications[0].options;
   assert.equal(typeof beforePublish, 'function'); assert(signal instanceof AbortSignal);
+  assert.equal(recordingContext, 'cover-command');
+  assert.equal(typeof recordingDeadlineExpired, 'function'); assert.equal(recordingDeadlineExpired(), false);
   assert.deepEqual({ ...f.publications[0], options: flags }, { topic: door.mqtt.command_topic, payload: 'open', options: { qos: 1, retain: false, noReplay: true } });
   f.report('open', INITIAL); assert.equal(f.status().cover.operation.status, 'published');
   f.advance(1000); f.report('opening'); assert.equal(f.status().cover.operation.status, 'published');

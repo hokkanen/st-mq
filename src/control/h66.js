@@ -190,7 +190,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   }
   function publishAndReadback(index, value, validate) {
     return new Promise((resolve, reject) => {
-      let settled = false;
+      let settled = false, recordingDeadlineExpired = false;
       const cancellation = new AbortController();
       const deadline = clock() + timeoutMs, elapsedEnd = monotonicClock() + timeoutMs;
       const finish = (error, reading) => {
@@ -201,7 +201,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         cancellation.abort();
         if (error) reject(error); else resolve(reading);
       };
-      const timer = setTimeout(() => finish(failure('H66_READBACK_TIMEOUT', 'H66 did not publish matching setting readback.')), timeoutMs);
+      const timer = setTimeout(() => { recordingDeadlineExpired = true;
+        finish(failure('H66_READBACK_TIMEOUT', 'H66 did not publish matching setting readback.')); }, timeoutMs);
       const waiter = { value, after: Infinity, revision: Infinity, finish };
       pending.set(index, waiter);
       const beforePublish = () => {
@@ -213,7 +214,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       };
       try {
         Promise.resolve(publish(`${deviceId}/HP/SET/${index}`, wireValue(index, value),
-          { qos: 0, retain: false, noReplay: true, beforePublish, signal: cancellation.signal }))
+          { qos: 0, retain: false, noReplay: true, beforePublish, signal: cancellation.signal,
+            recordingContext: 'heat-pump-command', recordingDeadlineExpired: () => recordingDeadlineExpired }))
           .then(() => { if (!settled) return requestSnapshot(); })
           .catch(() => finish(failure('H66_WRITE_FAILED', 'The H66 write could not be confirmed.')));
       } catch { finish(failure('H66_WRITE_FAILED', 'The H66 write could not be confirmed.')); }

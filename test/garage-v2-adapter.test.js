@@ -48,8 +48,10 @@ test('v2 requires fresh native readback and retained state never grants authorit
   f.update(); assert.equal(f.adapter.status().controlAvailable, true);
   await f.adapter.setControl({ targetC: 5, externalEnabled: true });
   assert.equal(f.publications.length, 1);
-  const { beforePublish, signal, ...wireSettings } = f.publications[0].settings;
+  const { beforePublish, signal, recordingContext, recordingDeadlineExpired, ...wireSettings } = f.publications[0].settings;
   assert.equal(typeof beforePublish, 'function'); assert(signal instanceof AbortSignal);
+  assert.equal(recordingContext, 'garage-command');
+  assert.equal(typeof recordingDeadlineExpired, 'function'); assert.equal(recordingDeadlineExpired(), false);
   assert.deepEqual(wireSettings, { qos: 0, retain: false, noReplay: true });
   assert.equal(f.publications[0].action, 'control');
   assert.equal(f.adapter.status().control.targetC, 10, 'published request is separate from actual target');

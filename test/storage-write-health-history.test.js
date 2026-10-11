@@ -9,6 +9,7 @@ import { createWriteHealthHistory } from '../src/storage/write-health-history.js
 import { createWriteHealth } from '../src/storage/write-health.js';
 import { WriteQueue } from '../src/storage/write-queue.js';
 import { Store } from '../src/storage/store.js';
+import { Recorder } from '../src/storage/recorder.js';
 
 const DAY = 86_400_000, BIN = 300_000, start = Date.parse('2026-10-10T12:00:00Z');
 function fixture() {
@@ -219,4 +220,63 @@ test('rolled-back storage writes deduplicate failure counts and postcommit failu
   assert.equal(completed.postCommitFailures, 1); assert.equal(completed.queueDelay.count, 1);
   assert.equal(store.getState('saved'), true);
   assert.equal(store.writeHealth.status().failing, false);
+});
+
+test('bounded incidents preserve precise recovery and expire by elapsed time despite clock changes', () => {
+  const f = fixture(), health = createWriteHealth(f.wall, null, { monotonic: f.mono });
+  const error = Object.assign(new Error('private path, payload and topic'), { errcode: 10 });
+  const first = health.failure(error, { context: 'charging-input', outcome: 'retained-for-retry', payload: 'private' });
+  health.failure(error);
+  health.commandNotSent('switch-command', 'recording-wait-expired');
+  health.commandNotSent('private device identifier', 'recording-failed');
+  health.failure(Object.assign(new Error('private consumer error'), { committed: true }));
+  health.failure({ code: 'STORAGE_QUEUE_FULL' });
+  let status = health.status().history;
+  assert.equal(status.incidents.length, 4);
+  assert.equal(status.windows.day.commandsNotSent, 1);
+  assert.equal(status.windows.day.failedWrites, 1);
+  assert.equal(status.windows.day.postCommitFailures, 1);
+  f.advance(20); health.success();
+  assert.equal(health.status().history.incidents.find(row => row.category === 'save-failed').outcome, 'retained-for-retry');
+  health.recovered(first);
+  const recovered = health.status().history.incidents.find(row => row.category === 'save-failed');
+  assert.equal(recovered.outcome, 'original-update-saved'); assert.equal(recovered.recoveredAt, f.wall());
+  const newer = health.failure(Object.assign(new Error('second failure'), { errcode: 13 }));
+  health.recovered(first); health.failure(error, { context: 'mqtt-input', outcome: 'not-retained-for-retry' });
+  assert.equal(health.status().history.incidents.find(row => row.category === 'save-failed').reason, 'disk-full');
+  health.failure(Object.assign(new Error('malicious data'), { errcode: 10 }), { context: '/private/path', outcome: 'private-secret' });
+  f.adjustWall(40 * DAY);
+  status = health.status().history;
+  assert.equal(status.incidents.length, 4, 'wall-clock jump must not expire recent evidence');
+  assert.equal(JSON.stringify(status).includes('private'), false);
+  assert.equal(JSON.stringify(status).includes('"elapsed"'), false, 'internal incident clock marker is not exposed');
+  f.advance(2 * DAY);
+  assert.equal(health.status().history.windows.day.incidents.length, 0);
+  assert.equal(health.status().history.windows.week.incidents.length, 4);
+  f.advance(6 * DAY);
+  assert.deepEqual(health.status().history.incidents, []);
+  health.recovered(newer); assert.deepEqual(health.status().history.incidents, []);
+});
+
+test('two observations rolled back together are one failed save attempt, without a lost-reading claim', async t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const recorder = new Recorder(store, { clock: () => start });
+  const exec = store.db.exec.bind(store.db);
+  store.db.exec = sql => {
+    if (sql === 'COMMIT') throw Object.assign(new Error('private synthetic commit fault'), { errcode: 10 });
+    return exec(sql);
+  };
+  try {
+    await assert.rejects(store.runWrite(() => {
+      for (const [device, value] of [['synthetic-first', 20], ['synthetic-second', 21]])
+        recorder.record({ source: 'mqtt-temperature', device, signal: 'indoor_temperature', value,
+          unit: 'degC', sourceTime: start, receivedAt: start, quality: [], raw: {} });
+      assert.equal(store.observations().length, 2, 'both planned rows exist before the outer commit');
+    }), { errcode: 10 });
+  } finally { store.db.exec = exec; }
+  assert.equal(store.observations().length, 0);
+  const history = store.writeHealth.status().history;
+  assert.equal(history.windows.day.failedWrites, 1);
+  assert.equal(history.incidents[0].outcome, 'save-failed');
+  assert.equal(Object.hasOwn(history.windows.day, 'lostReadings'), false);
 });

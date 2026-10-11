@@ -157,7 +157,9 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     }
     const publication = { cancellation, receipt };
     publications.add(publication);
-    const timer = setTimeout(() => cancellation.abort(), Math.max(0, Math.min(expiresAt - clock(), elapsedEnd - monotonicClock())));
+    let recordingDeadlineExpired = false;
+    const timer = setTimeout(() => { recordingDeadlineExpired = true; cancellation.abort(); },
+      Math.max(0, Math.min(expiresAt - clock(), elapsedEnd - monotonicClock())));
     const beforePublish = () => {
       const blocked = blockers(clock(), receipt);
       if (cancellation.signal.aborted || lastCommand !== receipt || receipt.status !== 'published'
@@ -175,7 +177,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         throw Object.assign(new Error('The native setting or control ownership changed while the command was waiting.'), { statusCode: 409 });
       dispatched.add(receipt);
     };
-    try { await transport.send(command, { beforePublish, signal: cancellation.signal }); }
+    try { await transport.send(command, { beforePublish, signal: cancellation.signal,
+      recordingDeadlineExpired: () => recordingDeadlineExpired }); }
     catch {
       // Device results and matching durable readback outrank a late transport
       // error. Never replace their receipt or mutate a newer explicit request.

@@ -8,7 +8,14 @@ const EDGES = [0, .1, .25, .5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512,
   1800000, 3600000, 10800000, DAY, RETENTION, Infinity];
 const METRICS = ['queueDelay', 'controlQueueDelay', 'normalQueueDelay', 'transactionDuration', 'commitDuration'];
 const COUNTERS = ['acceptedJobs', 'failedWrites', 'queueRejected', 'cancelledJobs', 'failedJobs',
-  'postCommitFailures', 'transactionAttempts', 'committedTransactions'];
+  'postCommitFailures', 'transactionAttempts', 'committedTransactions', 'commandsNotSent'];
+const CATEGORIES = new Set(['save-failed', 'queue-refused', 'command-not-sent', 'follow-up-failed']);
+const CONTEXTS = new Set(['storage', 'mqtt-input', 'provider-input', 'charging-input',
+  'heat-pump-command', 'switch-command', 'cover-command', 'garage-command']);
+const REASONS = new Set(['write-queue-full', 'disk-full', 'database-busy', 'database-read-only',
+  'database-io', 'database-corrupt', 'database-unavailable', 'recording-failed', 'recording-wait-expired', 'follow-up-failed']);
+const OUTCOMES = new Set(['save-failed', 'not-retained-for-retry', 'retained-for-retry',
+  'original-update-saved', 'queue-refused', 'command-not-sent', 'saved-follow-up-failed']);
 const metric = () => ({ count: 0, total: 0, max: 0, histogram: new Float64Array(EDGES.length) });
 const bucket = index => ({ index, peakPending: 0, episodes: 0, waitMs: 0, maxWaitMs: 0,
   leadingWaitMs: 0, trailingWaitMs: 0, leadingCarried: false,
@@ -37,6 +44,11 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
   let elapsed = 0, previousWall = startedAt, previousMono = origin, clockChanged = false;
   let pending = 0, waitingAt = null;
   const bins = new Map([[0, bucket(0)]]);
+  // One latest incident per fixed category; tokens never contain operation data.
+  const incidents = new Map();
+  const describeIncidents = from => [...incidents.values()].filter(row => row.elapsed >= from)
+    .sort((a, b) => b.elapsed - a.elapsed).map(row => ({ category: row.category, at: row.at,
+      context: row.context, reason: row.reason, outcome: row.outcome, recoveredAt: row.recoveredAt }));
 
   function advance() {
     const mono = monotonic(), wall = clock();
@@ -64,6 +76,7 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
       }
     }
     elapsed = now;
+    for (const [category, row] of incidents) if (row.elapsed < oldest * RESOLUTION) incidents.delete(category);
     return bins.get(last);
   }
 
@@ -75,6 +88,7 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
       coveredMs: elapsed - from, complete: elapsed - from === requestedMs,
       peakPending: 0, contention: { episodes: 0, totalMs: 0, maxMs: 0, active: waitingAt !== null },
       ...Object.fromEntries(COUNTERS.map(key => [key, 0])) };
+    result.incidents = describeIncidents(from);
     const metrics = Object.fromEntries(METRICS.map(key => [key, metric()]));
     let carry = 0, first = true;
     for (const bin of bins.values()) {
@@ -99,6 +113,32 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
   }
 
   return {
+    incident(value) {
+      advance();
+      if (!CATEGORIES.has(value?.category) || !CONTEXTS.has(value.context)
+        || !REASONS.has(value.reason) || !OUTCOMES.has(value.outcome)) return null;
+      const token = { category: value.category, at: previousWall, context: value.context,
+        reason: value.reason, outcome: value.outcome, recoveredAt: null, elapsed };
+      incidents.set(value.category, token);
+      return token;
+    },
+    describeFailure(token, { context, outcome } = {}) {
+      advance();
+      if (!token || incidents.get(token.category) !== token) return;
+      if (CONTEXTS.has(context)) token.context = context;
+      if (OUTCOMES.has(outcome)) token.outcome = outcome;
+    },
+    recovered(token) {
+      advance();
+      if (!token || incidents.get(token.category) !== token || token.outcome !== 'retained-for-retry') return;
+      token.outcome = 'original-update-saved'; token.recoveredAt = previousWall;
+    },
+    commandNotSent(context, reason) {
+      if (!['heat-pump-command', 'switch-command', 'cover-command', 'garage-command'].includes(context)
+        || !['recording-failed', 'recording-wait-expired'].includes(reason)) return;
+      advance().commandsNotSent++;
+      this.incident({ category: 'command-not-sent', context, reason, outcome: 'command-not-sent' });
+    },
     queue(event) {
       const bin = advance();
       if (event.type === 'pending') { pending = event.pending; bin.peakPending = Math.max(bin.peakPending, pending); }
@@ -123,8 +163,9 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
     },
     status(queue = {}) {
       advance();
-      return { version: 1, retentionMs: RETENTION, resolutionMs: RESOLUTION,
+      return { version: 2, retentionMs: RETENTION, resolutionMs: RESOLUTION,
         percentileMethod: 'histogram-upper-bound', startedAt, elapsedMs: elapsed, checkedAt: previousWall, clockChanged,
+        incidents: describeIncidents(0),
         current: { pending: queue.queued ?? queue.pending ?? 0, activeJobs: queue.activeJobs ?? 0,
           oldestPendingMs: queue.oldestPendingMs ?? null, waitingMs: waitingAt === null ? null : elapsed - waitingAt },
         windows: { day: window(DAY), week: window(RETENTION) } };

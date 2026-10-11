@@ -735,10 +735,11 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const deadline = engine.clock() + readbackTimeoutMs, monotonicDeadline = performance.now() + readbackTimeoutMs;
     const cancellation = new AbortController();
     await new Promise((resolve, reject) => {
-      let completed = false;
+      let completed = false, recordingDeadlineExpired = false;
       const waiter = { id: ++sequence, at: engine.clock(), on, observed: false, published: false, dispatched: false, revision: sequence, finish: (reason, expired = false) => {
         if (completed) return;
         if (!reason && (!canControl() || !device.brokerConnected || closed)) reason = fail('control authority unavailable');
+        recordingDeadlineExpired = expired;
         completed = true; clearTimeout(timer); device.waiters.delete(waiter); cancellation.abort();
         reason ? reject(waiter.dispatched ? fail('switch publication or state confirmation failed; delivery unconfirmed')
           : unsentEquipmentCommand(reason, expired)) : resolve();
@@ -753,7 +754,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         waiter.dispatched = true; waiter.at = engine.clock(); waiter.revision = sequence;
       };
       Promise.resolve().then(() => publish(device.mqtt.commandTopic, on ? device.mqtt.onPayload : device.mqtt.offPayload,
-        { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal }, device.broker))
+        { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal,
+          recordingContext: 'switch-command', recordingDeadlineExpired: () => recordingDeadlineExpired }, device.broker))
         .then(() => { waiter.published = true; if (waiter.observed) waiter.finish(); }, error => waiter.finish(error));
     });
     return { confirmed: true, status: 'confirmed', deviceId: device.id, on, sent: true, acknowledgement: 'mqtt-live-state' };
@@ -1045,7 +1047,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       };
       try {
         await publish(device.mqtt.commandTopic, payload,
-          { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal }, device.broker);
+          { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal,
+            recordingContext: 'cover-command', recordingDeadlineExpired: () => expired }, device.broker);
         operation.acknowledgedAt = engine.clock();
         if (operation.status === 'publishing') operation.status = operation.observedAt !== undefined ? 'observed' : 'published';
         if (closed || !canControl() || !device.brokerConnected) {

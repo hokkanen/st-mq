@@ -12,15 +12,18 @@ export function storageFailureCode(error) {
 }
 
 export function createWriteHealth(clock = Date.now, queueStatus = null, { monotonic = () => performance.now() } = {}) {
-  const seen = new WeakSet();
-  const followupsSeen = new WeakSet();
+  const seen = new WeakMap();
+  const followupsSeen = new WeakMap();
   const history = createWriteHealthHistory({ clock, monotonic });
   function postCommitFailure(error) {
     if (error && typeof error === 'object') {
-      if (followupsSeen.has(error)) return;
-      followupsSeen.add(error);
+      if (followupsSeen.has(error)) return followupsSeen.get(error);
     }
     history.postCommitFailure();
+    const token = history.incident({ category: 'follow-up-failed', context: 'storage',
+      reason: 'follow-up-failed', outcome: 'saved-follow-up-failed' });
+    if (error && typeof error === 'object') followupsSeen.set(error, token);
+    return token;
   }
   const state = { startedAt: clock(), lastWriteAt: null, lastFailureAt: null,
     errorCode: null, failures: 0, failing: false };
@@ -35,17 +38,23 @@ export function createWriteHealth(clock = Date.now, queueStatus = null, { monoto
     })) });
   return {
     success() { state.lastWriteAt = clock(); state.failing = false; },
-    failure(error) {
-      if (error?.committed === true) { postCommitFailure(error); return; }
+    failure(error, details) {
+      if (error?.committed === true) return postCommitFailure(error);
       const code = storageFailureCode(error);
       if (!code) return;
       if (error && typeof error === 'object') {
-        if (seen.has(error)) return;
-        seen.add(error);
+        if (seen.has(error)) {
+          const token = seen.get(error); history.describeFailure(token, details); return token;
+        }
       }
       state.lastFailureAt = clock(); state.errorCode = code;
       state.failures++; state.failing = true;
       history.failure(code);
+      const token = history.incident({ category: code === 'write-queue-full' ? 'queue-refused' : 'save-failed',
+        context: 'storage', reason: code, outcome: code === 'write-queue-full' ? 'queue-refused' : 'save-failed' });
+      history.describeFailure(token, details);
+      if (error && typeof error === 'object') seen.set(error, token);
+      return token;
     },
     transaction(value) {
       if (typeof value?.committed !== 'boolean'
@@ -56,6 +65,8 @@ export function createWriteHealth(clock = Date.now, queueStatus = null, { monoto
     },
     queue(event) { history.queue(event); },
     postCommitFailure,
+    recovered(token) { history.recovered(token); },
+    commandNotSent(context, reason) { history.commandNotSent(context, reason); },
     status() {
       const queue = queueStatus?.();
       return { ...state, transactions: timings(), ...(queue ? { queue } : {}), history: history.status(queue) };

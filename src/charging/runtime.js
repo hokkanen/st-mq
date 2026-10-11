@@ -38,6 +38,7 @@ import { createSourceTimePending } from '../acquisition/source-time-pending.js';
 import { classifySourceTime } from '../domain/time-evidence.js';
 import { socMeasurementTime } from './soc.js';
 import { identificationControlBlocker, identificationBlockerDetail } from './identification-readiness.js';
+import { storageFailureCode } from '../storage/write-health.js';
 
 const MINUTE = 60_000;
 const noRecordedEnergy = () => null;
@@ -208,6 +209,7 @@ export class ChargingRuntime {
     this.settings = chargingSettingsFromConfiguration(this.configuration);
     this.streamAssociation = digest(config.connections?.easee?.charger_id ?? null);
     this.streamPending = new Set(); this.streamPersistencePending = false;
+    this.streamEvidenceRevision = 0; this.streamFailureIncident = null;
     this.vehicleFeeds = Object.fromEntries(Object.entries(this.configuration.vehicles).filter(([, definition]) => definition.provider === 'bmw-cardata').map(([id, definition]) => {
       const previous = saved.vehicleFeeds?.[id];
       const broker = mqttSourceIdentity(config, 'ha');
@@ -864,6 +866,7 @@ export class ChargingRuntime {
     // this event and cannot be asked to deliver it again. Authority stays blocked
     // until the boundary and evidence are durable.
     this.streamPersistencePending = true;
+    this.streamEvidenceRevision++; this.streamFailureIncident = null;
     item.streamEvidence = accepted.evidence;
     const boundary = accepted.evidence.boundary;
     if (boundary && (!item.vehicleDisconnect || boundary.measuredAt >= item.vehicleDisconnect.measuredAt)) {
@@ -876,24 +879,49 @@ export class ChargingRuntime {
     this.streamPending.add('charger1');
     // The native event immediately fences commands. Its original source clock
     // remains in the retained evidence while writer admission waits.
-    void this.write(() => this.flushStreamEvidence(), { priority: 'control' })
+    void this.writeStreamEvidence()
       .catch(() => { this.error = 'charging-stream-save-unavailable'; });
     this.scheduleStreamReconcile();
     return true;
   }
   flushStreamEvidence() {
     if (!this.streamPersistencePending) return true;
+    const revision = this.streamEvidenceRevision;
     try {
-      this.persist(); this.store.afterCommit(() => { this.streamPersistencePending = false; });
+      this.persist(); this.store.afterCommit(() => {
+        this.streamPersistencePending = false;
+        if (this.streamFailureIncident?.revision === revision) {
+          try { this.store.writeHealth?.recovered?.(this.streamFailureIncident.token); }
+          catch { /* Diagnostics do not affect retained evidence publication. */ }
+          this.streamFailureIncident = null;
+        }
+      });
       return true;
-    } catch { this.error = 'charging-stream-save-unavailable'; return false; }
+    } catch (error) {
+      this.noteStreamSaveFailure(error, revision);
+      this.error = 'charging-stream-save-unavailable'; return false;
+    }
+  }
+  noteStreamSaveFailure(error, revision) {
+    if (error?.committed === true || !storageFailureCode(error)) return;
+    try {
+      const token = this.store.writeHealth?.failure?.(error, { context: 'charging-input', outcome: 'retained-for-retry' });
+      if (token && revision === this.streamEvidenceRevision) this.streamFailureIncident = { token, revision };
+    } catch { /* Diagnostics cannot interrupt the existing retry. */ }
+  }
+  writeStreamEvidence() {
+    let revision = this.streamEvidenceRevision;
+    const pending = this.write(() => { revision = this.streamEvidenceRevision; return this.flushStreamEvidence(); }, { priority: 'control' });
+    // Observe rejection without inserting a new settlement into control waits.
+    void pending.catch(error => { this.noteStreamSaveFailure(error, revision); });
+    return pending;
   }
   scheduleStreamReconcile(delay = 100) {
     if (this.closed || this.streamTimer || this.streamFlight) return;
     this.streamTimer = setTimeout(() => {
       this.streamTimer = null;
       this.streamFlight = (async () => {
-        if (!await this.write(() => this.flushStreamEvidence(), { priority: 'control' })) return;
+        if (!await this.writeStreamEvidence()) return;
         const pending = [...this.streamPending]; this.streamPending.clear();
         for (const id of pending) {
           try { await this.reconcile(id); }
@@ -2685,7 +2713,7 @@ export class ChargingRuntime {
     if (takeover && (!item.takeoverAttempt || item.takeoverAttempt.token !== takeover
       || !this.takeoverCurrent(item, item.takeoverAttempt)))
       throw new Error('Charging controls or connection changed before takeover. Refresh and try again.');
-    if (!await this.write(() => this.flushStreamEvidence(), { priority: 'control' })) { this.scheduleStreamReconcile(1000); return; }
+    if (!await this.writeStreamEvidence()) { this.scheduleStreamReconcile(1000); return; }
     if (this.closed || !this.canControl()) return;
     const controller = item.controller, settings = this.views().find(view => view.id === id).settings;
     if (takeover && (!item.takeoverAttempt || item.takeoverAttempt.token !== takeover

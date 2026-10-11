@@ -12,6 +12,7 @@ import { resolveMarketIntervals } from '../domain/market-authority.js';
 import { fetchWeather, fetchOutdoorTemperature } from './weather.js';
 import { ElectricityAccumulator } from '../domain/electricity.js';
 import { recordEaseeSessionChecks } from './easee-session-checks.js';
+import { storageFailureCode } from '../storage/write-health.js';
 
 const MINUTE = 60_000;
 const present = value => typeof value === 'string' && value.trim().length > 0;
@@ -476,6 +477,10 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       if (readings) state.currentReadings = readings;
       state.status = failure || issues.some(flag => flag !== 'charger_stale') ? 'degraded' : state.acquisition?.fallbackUsed ? 'fallback' : 'ok';
     } catch (error) {
+      if (completedAt !== null && error?.committed !== true && storageFailureCode(error)) {
+        try { store.writeHealth?.failure?.(error, { context: 'provider-input', outcome: 'not-retained-for-retry' }); }
+        catch { /* Failed diagnostics must not interrupt provider recovery. */ }
+      }
       if (closed || !canControl()) return;
       noteAcquisition(state, error?.acquisition, clock());
       retryAfterMs = boundedDelay(error?.retryAfterMs);

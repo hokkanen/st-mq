@@ -928,6 +928,69 @@ G_warming = G / 2</code>
               <summary><span class="recording-health-label">Recording</span><strong id="recording-recording-state" class="recording-health-state">Recording unknown</strong><span id="recording-recording-evidence" class="recording-health-evidence"></span></summary>
               <div class="recording-health-body"><p id="recording-recording-detail" class="recording-health-detail"></p></div>
             </details>
+            <details id="recording-performance-details" class="recording-health-card recording-performance">
+              <summary><span class="recording-health-label">Storage health</span><strong id="recording-performance-state" class="recording-health-state">Storage status unknown</strong><span id="recording-performance-evidence" class="recording-health-evidence"></span></summary>
+              <div class="recording-health-body">
+                <p id="recording-performance-notice" class="recording-performance-notice">Waiting for storage health information.</p>
+                <div id="recording-performance-data" hidden>
+                  <div class="recording-performance-current"><span id="recording-performance-current"></span><span id="recording-performance-waiting" hidden></span></div>
+                  <div class="recording-performance-toolbar">
+                    <div><p id="recording-performance-coverage" class="recording-performance-coverage"></p><p class="recording-health-evidence">Held in memory · clears on restart or storage reopen</p></div>
+                    <div class="recording-performance-period" role="group" aria-label="Storage health period">
+                      <button id="recording-performance-day" type="button" aria-pressed="true">Past day</button>
+                      <button id="recording-performance-week" type="button" aria-pressed="false">Past week</button>
+                    </div>
+                  </div>
+                  <p id="recording-performance-clock" class="recording-health-evidence" hidden></p>
+                  <p id="recording-performance-precision" class="recording-health-evidence" hidden></p>
+                  <div class="recording-performance-measures">
+                    <div class="recording-performance-measure">
+                      <h4>Queue wait</h4>
+                      <dl class="recording-performance-waits"><div><dt>Average</dt><dd id="recording-performance-queue-mean"></dd></div><div><dt>Worst</dt><dd id="recording-performance-queue-worst"></dd></div></dl>
+                      <p id="recording-performance-queue-samples" class="recording-health-evidence"></p>
+                      <p class="recording-health-evidence">Waiting before successful queued work starts. Pending and failed operations are excluded.</p>
+                    </div>
+                    <div class="recording-performance-measure">
+                      <h4>Observed outcomes</h4>
+                      <dl class="recording-performance-outcomes">
+                        <div><dt>Failed save attempts</dt><dd id="recording-performance-failed"></dd></div>
+                        <div><dt>Queue-full refusals</dt><dd id="recording-performance-rejected"></dd></div>
+                        <div><dt>MQTT commands not sent</dt><dd id="recording-performance-commandsNotSent"></dd></div>
+                      </dl>
+                      <p class="recording-health-evidence">Only confirmed recording blocks on monitored MQTT commands. Charging commands are outside this count. Saves count operations, not individual readings.</p>
+                    </div>
+                  </div>
+                  <div id="recording-performance-incidents" class="recording-performance-incidents" hidden>
+                    <h4>Recent problems</h4><ul id="recording-performance-incident-list"></ul>
+                  </div>
+                  <details id="recording-performance-technical" class="recording-performance-explanation">
+                    <summary>Technical details</summary>
+                    <p id="recording-performance-scope" class="recording-health-evidence"></p>
+                    <p>Write + commit is the time spent performing and committing a successful transaction. Commit only is included in that time; do not add the two. Approx. p95 estimates the duration that 95% of measured operations stayed within.</p>
+                    <table class="recording-performance-timings">
+                      <caption class="sr-only">Successful transaction timings for the selected monitored period</caption>
+                      <thead><tr><th scope="col">Timing</th><th scope="col">Average</th><th scope="col">Approx. p95</th><th scope="col">Worst</th></tr></thead>
+                      <tbody>
+                        <tr><th scope="row">Write + commit<small id="recording-performance-transaction-samples"></small></th><td data-label="Average" id="recording-performance-transaction-mean"></td><td data-label="Approx. p95" id="recording-performance-transaction-p95"></td><td data-label="Worst" id="recording-performance-transaction-worst"></td></tr>
+                        <tr><th scope="row">Commit only<small id="recording-performance-commit-samples"></small></th><td data-label="Average" id="recording-performance-commit-mean"></td><td data-label="Approx. p95" id="recording-performance-commit-p95"></td><td data-label="Worst" id="recording-performance-commit-worst"></td></tr>
+                      </tbody>
+                    </table>
+                    <table class="recording-performance-timings recording-performance-priority">
+                      <caption>Queue wait by priority</caption>
+                      <thead><tr><th scope="col">Queue</th><th scope="col">Average</th><th scope="col">Approx. p95</th><th scope="col">Worst</th></tr></thead>
+                      <tbody>
+                        <tr><th scope="row">Control priority<small id="recording-performance-controlQueue-samples"></small></th><td data-label="Average" id="recording-performance-controlQueue-mean"></td><td data-label="Approx. p95" id="recording-performance-controlQueue-p95"></td><td data-label="Worst" id="recording-performance-controlQueue-worst"></td></tr>
+                        <tr><th scope="row">Normal priority<small id="recording-performance-normalQueue-samples"></small></th><td data-label="Average" id="recording-performance-normalQueue-mean"></td><td data-label="Approx. p95" id="recording-performance-normalQueue-p95"></td><td data-label="Worst" id="recording-performance-normalQueue-worst"></td></tr>
+                      </tbody>
+                    </table>
+                    <dl class="recording-storage-facts"><dt>Queue wait · approx. p95</dt><dd id="recording-performance-queue-p95"></dd><dt>Writer-lock wait episodes</dt><dd id="recording-performance-contention"></dd><dt>Writer-lock wait time</dt><dd id="recording-performance-contentionDetail"></dd><dt>Peak queued operations</dt><dd id="recording-performance-peak"></dd><dt>Committed transactions</dt><dd id="recording-performance-committed"></dd><dt>Transaction attempts, including retries</dt><dd id="recording-performance-attempts"></dd><dt>Failed queued operations</dt><dd id="recording-performance-failedJobs"></dd><dt>Cancelled queued operations</dt><dd id="recording-performance-cancelled"></dd><dt>Errors after commit</dt><dd id="recording-performance-postCommit"></dd></dl>
+                    <p>Measurements cover at most seven days in this storage run. Earlier time is unknown. Five-minute summaries omit the oldest partial interval when it crosses the selected period’s boundary.</p>
+                    <p>Writer-lock time includes retries and any active wait. Queued-operation failures can include application errors. Errors after commit do not undo the save. Control priority describes queue scheduling, not device delivery. The command count covers monitored heat-pump, switch, door/cover and Garage MQTT requests. Charging adapters and work rolled back before publication are outside this count. Unrelated cancellations and unconfirmed device readbacks are also excluded.</p>
+                    <p>These observations cannot count every lost reading or prove that every expected device action happened. Saving resumed does not mean missing history was recovered.</p>
+                  </details>
+                </div>
+              </div>
+            </details>
             <details id="recording-disk-card" class="recording-health-card">
               <summary><span class="recording-health-label">Disk space</span><strong id="recording-disk-state" class="recording-health-state">Disk space unknown</strong><span class="recording-health-evidence"><span id="recording-disk-free">Unknown</span> available</span></summary>
               <div class="recording-health-body">
@@ -947,55 +1010,6 @@ G_warming = G / 2</code>
             </details>
           </div>
           <p id="recording-health-checked" class="recording-health-checked" role="status"></p>
-          <details id="recording-performance-details" class="recording-section recording-performance">
-            <summary><span>Storage performance<small>This run · clears on restart or storage reopen</small></span></summary>
-            <div class="recording-section-body">
-              <p id="recording-performance-notice" class="recording-performance-notice">Waiting for storage performance information.</p>
-              <div id="recording-performance-data" hidden>
-                <div class="recording-performance-toolbar">
-                  <div><p id="recording-performance-coverage" class="recording-performance-coverage"></p><p id="recording-performance-scope" class="recording-health-evidence"></p></div>
-                  <div class="recording-performance-period" role="group" aria-label="Storage performance period">
-                    <button id="recording-performance-day" type="button" aria-pressed="true">Past day</button>
-                    <button id="recording-performance-week" type="button" aria-pressed="false">Past week</button>
-                  </div>
-                </div>
-                <p id="recording-performance-clock" class="recording-health-evidence" hidden></p>
-                <p id="recording-performance-precision" class="recording-health-evidence" hidden></p>
-                <div class="recording-performance-current"><span id="recording-performance-current"></span><span id="recording-performance-waiting" hidden></span></div>
-                <table class="recording-performance-timings">
-                  <caption class="sr-only">Storage delays and successful write timings for the selected monitored period</caption>
-                  <thead><tr><th scope="col">Timing</th><th scope="col">Average</th><th scope="col">Approx. p95</th><th scope="col">Worst</th></tr></thead>
-                  <tbody>
-                    <tr><th scope="row">Queue delay<small id="recording-performance-queue-samples"></small></th><td data-label="Average" id="recording-performance-queue-mean"></td><td data-label="Approx. p95" id="recording-performance-queue-p95"></td><td data-label="Worst" id="recording-performance-queue-worst"></td></tr>
-                    <tr><th scope="row">Write + commit<small id="recording-performance-transaction-samples"></small></th><td data-label="Average" id="recording-performance-transaction-mean"></td><td data-label="Approx. p95" id="recording-performance-transaction-p95"></td><td data-label="Worst" id="recording-performance-transaction-worst"></td></tr>
-                    <tr><th scope="row">Commit only<small id="recording-performance-commit-samples"></small></th><td data-label="Average" id="recording-performance-commit-mean"></td><td data-label="Approx. p95" id="recording-performance-commit-p95"></td><td data-label="Worst" id="recording-performance-commit-worst"></td></tr>
-                  </tbody>
-                </table>
-                <dl class="recording-performance-facts">
-                  <div><dt>Writer-lock waits</dt><dd><span id="recording-performance-contention"></span><small id="recording-performance-contentionDetail"></small></dd></div>
-                  <div><dt>Peak queue</dt><dd><span id="recording-performance-peak"></span><small>Queued operations</small></dd></div>
-                  <div><dt>Failed writes</dt><dd><span id="recording-performance-failed"></span><small>Observed storage failures</small></dd></div>
-                  <div><dt>Queue-full rejections</dt><dd><span id="recording-performance-rejected"></span><small>Rejected before running</small></dd></div>
-                </dl>
-                <details class="recording-performance-explanation">
-                  <summary>What these measures mean</summary>
-                  <p>Measurements stay in memory for up to seven days in this storage run. Restarting or reopening storage clears them. A partial run excludes earlier time; it does not mean that earlier writes succeeded. Five-minute summaries omit the oldest partial interval when it crosses the selected period’s boundary.</p>
-                  <p>Queue delay measures how long successful queued operations waited before running. Pending, cancelled and failed operations are excluded from those timings. Write + commit covers successful transactions; Commit only is part of that duration, so the two must not be added. Approx. p95 estimates the delay that 95% of measured operations stayed within.</p>
-                  <p>Writer-lock waits include retries and any active wait. Failure counts describe observed operations, not a count of lost readings or missed device actions. Queue-full rejections are separate from failed writes.</p>
-                  <table class="recording-performance-timings recording-performance-priority">
-                    <caption>Queue delay by priority</caption>
-                    <thead><tr><th scope="col">Queue</th><th scope="col">Average</th><th scope="col">Approx. p95</th><th scope="col">Worst</th></tr></thead>
-                    <tbody>
-                      <tr><th scope="row">Control priority<small id="recording-performance-controlQueue-samples"></small></th><td data-label="Average" id="recording-performance-controlQueue-mean"></td><td data-label="Approx. p95" id="recording-performance-controlQueue-p95"></td><td data-label="Worst" id="recording-performance-controlQueue-worst"></td></tr>
-                      <tr><th scope="row">Normal priority<small id="recording-performance-normalQueue-samples"></small></th><td data-label="Average" id="recording-performance-normalQueue-mean"></td><td data-label="Approx. p95" id="recording-performance-normalQueue-p95"></td><td data-label="Worst" id="recording-performance-normalQueue-worst"></td></tr>
-                    </tbody>
-                  </table>
-                  <dl class="recording-storage-facts"><dt>Committed transactions</dt><dd id="recording-performance-committed"></dd><dt>Transaction attempts, including retries</dt><dd id="recording-performance-attempts"></dd><dt>Failed queued operations</dt><dd id="recording-performance-failedJobs"></dd><dt>Cancelled queued operations</dt><dd id="recording-performance-cancelled"></dd><dt>Errors after commit</dt><dd id="recording-performance-postCommit"></dd></dl>
-                  <p>Queued-operation failures can include application errors. Errors after commit do not undo a committed transaction. Control priority describes queue scheduling; these measurements do not prove device-command delivery.</p>
-                </details>
-              </div>
-            </div>
-          </details>
         </section>
         <section class="recording-section-group" aria-labelledby="recording-data-title">
           <h3 id="recording-data-title" class="recording-group-title">Recorded data</h3>

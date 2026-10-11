@@ -13,10 +13,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   recovery as the explicit alternative. Verification failures remain separate,
   and changed donors or uncertain release replies retain their existing checks.
 
-- Recording details adds a folded Storage performance view with memory-only
-  summaries for the past day or week. It separates queue delay, successful write
-  duration, contention, peak backlog and failed saves, and labels the observed
-  period. The summaries reset when storage reopens and add no database writes.
+- Recording details reorganizes At a glance into balanced Recording, Storage
+  health, Disk space and Backups summaries. Storage health shows current backlog,
+  average and worst queue wait, failed saves, queue-full refusals and commands
+  on MQTT known not to have been sent because recording blocked them. Recent problems
+  distinguish original-update retry recovery from ordinary resumed saving;
+  technical timings stay folded. The day/week summaries live only in memory,
+  label monitored coverage, reset when storage reopens and add no database writes.
 
 - Charging saves changing evidence separately from accepted plans and control
   intent. Plans and their scenario context are stored once; replica reports read

@@ -108,8 +108,12 @@ test('circulation timeout cancels an unsent command before a later storage recov
   const f = await relayFixture(t);
   f.lock(); f.send('0203', 21);
   await assert.rejects(f.transport.publishDhwr(true), { code: 'SHELLY_READBACK_TIMEOUT' });
+  const failed = f.store.writeHealth.status().history.windows.day;
+  assert.equal(failed.commandsNotSent, 1);
+  assert.equal(failed.incidents.find(row => row.category === 'command-not-sent').reason, 'recording-wait-expired');
   f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0); await delay(20);
   assert.equal(f.requests('Switch.Set').length, 0, 'An expired request cannot escape after storage recovers');
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, 1, 'recovery cannot repeat or erase the blocked attempt');
 });
 
 test('a failed observation retains its specific dispatch failure and no raw transport error', async t => {
@@ -166,8 +170,87 @@ test('Gen1 timeout cancels the unsent command before later storage recovery', as
   f.client.emit('message', 'shellies/fixture-relay/relay/0', Buffer.from('on'), {});
   f.lock(); f.send('0203', 21);
   await assert.rejects(f.reader.equipment.setSwitch('relay', false), { code: 'SHELLY_READBACK_TIMEOUT' });
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, 1);
   f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0); await delay(20);
   assert.equal(f.commands.some(row => row.topic.endsWith('/relay/0/command')), false);
+});
+
+test('recognized recording failure counts one blocked attempt and a newer reading only resumes recording', async t => {
+  const f = await relayFixture(t), exec = f.store.db.exec.bind(f.store.db);
+  let armed = true;
+  f.store.db.exec = sql => {
+    if (sql === 'COMMIT' && armed) { armed = false; throw Object.assign(new Error('synthetic private storage fault'), { errcode: 10 }); }
+    return exec(sql);
+  };
+  f.send('0203', 21); await delay(0); f.store.db.exec = exec;
+  await assert.rejects(f.transport.publishDhwr(true), { code: 'MQTT_STORAGE_FAILED' });
+  let history = f.store.writeHealth.status().history;
+  assert.equal(history.windows.day.commandsNotSent, 1);
+  const incident = history.incidents.find(row => row.category === 'save-failed');
+  assert.equal(incident.context, 'mqtt-input'); assert.equal(incident.outcome, 'not-retained-for-retry');
+  assert.equal(incident.recoveredAt, null);
+  f.at(START + 1000); f.send('0203', 22); await delay(0);
+  history = f.store.writeHealth.status().history;
+  assert.equal(history.windows.day.commandsNotSent, 1);
+  assert.equal(history.incidents.find(row => row.category === 'save-failed').outcome, 'not-retained-for-retry');
+  assert.equal(history.incidents.find(row => row.category === 'save-failed').recoveredAt, null);
+  assert.equal(f.requests('Switch.Set').length, 0);
+});
+
+test('failed command diagnostics cannot change a recording-fenced device outcome', async t => {
+  const f = await relayFixture(t), exec = f.store.db.exec.bind(f.store.db);
+  let armed = true;
+  f.store.db.exec = sql => {
+    if (sql === 'COMMIT' && armed) { armed = false; throw Object.assign(new Error('synthetic storage fault'), { errcode: 10 }); }
+    return exec(sql);
+  };
+  f.send('0203', 21); await delay(0); f.store.db.exec = exec;
+  f.store.writeHealth.commandNotSent = () => { throw new Error('synthetic diagnostic failure'); };
+  await assert.rejects(f.transport.publishDhwr(true), { code: 'MQTT_STORAGE_FAILED' });
+  assert.equal(f.requests('Switch.Set').length, 0);
+});
+
+test('non-storage input rejection does not become a recorded storage-blocked command', async t => {
+  const f = await relayFixture(t);
+  failNextCommit(f.store); f.send('0203', 21); await delay(0);
+  await assert.rejects(f.transport.publishDhwr(true), { code: 'MQTT_STORAGE_FAILED' });
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, 0);
+});
+
+test('a vehicle source-clock wait does not turn an unconfirmed device request into a storage-blocked command', async t => {
+  const f = await relayFixture(t);
+  const route = f.engine.charging.mqttRoutes().find(row => row.id === 'bmw'); assert(route);
+  f.client.emit('message', route.topic, Buffer.from(JSON.stringify({ provider: 'bmw-cardata', soc: 51,
+    measuredAt: START + 400, readingId: 'synthetic-clock-admission' })), {});
+  await delay(0);
+  assert.equal(f.store.writeQueueStatus().pending, 0);
+  assert.equal(f.engine.charging.vehicleFeeds.bmw.sourcePending.size > 0, true);
+  await assert.rejects(f.transport.publishDhwr(true));
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, 0);
+  assert.equal(f.requests('Switch.Set').length, 1, 'this request was dispatched; absent readback is not a storage-blocked action');
+});
+
+test('a rejected deferred vehicle clock does not become a storage-failure consequence', async t => {
+  const f = await relayFixture(t), route = f.engine.charging.mqttRoutes().find(row => row.id === 'bmw');
+  f.client.emit('message', route.topic, Buffer.from(JSON.stringify({ provider: 'bmw-cardata', soc: 51,
+    measuredAt: START + 400, readingId: 'synthetic-rejected-clock' })), {});
+  await delay(0);
+  // A local clock reversal makes the original receipt inadmissible. That is a
+  // source-evidence rejection even though the old storage gate uses one code.
+  f.engine.charging.vehicleFeeds.bmw.sourcePending.drain(START - 1);
+  await assert.rejects(f.transport.publishDhwr(true), { code: 'MQTT_STORAGE_FAILED' });
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, 0);
+  assert.equal(f.store.writeHealth.status().history.windows.day.failedWrites, 0);
+  assert.equal(f.requests('Switch.Set').length, 0);
+});
+
+test('unrelated cancellation while awaiting recording does not count as a blocked storage command', async t => {
+  const f = await relayFixture(t);
+  f.lock(); f.send('0203', 21);
+  const rejected = assert.rejects(f.transport.publishDhwr(true));
+  await delay(10); f.reader.revoke(); await rejected;
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, 0);
+  f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0);
 });
 
 test('Gen1 saved restoration can wait and dispatch with unknown starting state but still needs new readback', async t => {
@@ -455,6 +538,31 @@ test('a completed provider observation survives a contended save with its origin
   assert.equal(f.store.getState('providers:health').temperatures.status, 'ok');
   assert.equal(f.store.writeHealth.status().failing, false);
   await providers.close();
+});
+
+test('a failed provider observation batch reports discard without claiming later polls recover the original', async t => {
+  const f = await fixture(t, 'providers');
+  let finish;
+  const providers = startProviders({ engine: f.engine, store: f.store, config: f.config, clock: f.clock,
+    automatic: false, http: { close() {} }, devices: { temperatures: () => new Promise(resolve => { finish = resolve; }) } });
+  t.after(() => providers.close());
+  const flight = providers.runDue(), exec = f.store.db.exec.bind(f.store.db);
+  let armed = true;
+  f.store.db.exec = sql => {
+    if (sql === 'COMMIT' && armed && f.store.observations().length) {
+      armed = false; throw Object.assign(new Error('synthetic private provider save fault'), { errcode: 10 });
+    }
+    return exec(sql);
+  };
+  finish([{ source: 'mqtt-temperature', device: 'synthetic-provider-room', signal: 'indoor_temperature', value: 21,
+    unit: 'degC', sourceTime: START, receivedAt: START, quality: [] }]);
+  try { await flight; } finally { f.store.db.exec = exec; }
+  assert.equal(f.store.observations().length, 0);
+  const history = f.store.writeHealth.status().history;
+  assert.equal(history.windows.day.failedWrites, 1);
+  const incident = history.incidents.find(row => row.category === 'save-failed');
+  assert.equal(incident.context, 'provider-input'); assert.equal(incident.outcome, 'not-retained-for-retry');
+  assert.equal(incident.recoveredAt, null);
 });
 
 test('provider shutdown cancels a waiting observation without hanging on the writer lock', async t => {

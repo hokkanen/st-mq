@@ -31,8 +31,9 @@ const backupLabels = { available: 'Copy available', 'none-known': 'No known copy
 const diskLabels = { ok: 'Space available', low: 'Low disk space', critical: 'Critically low space', unknown: 'Disk space unknown' };
 const tone = state => ['write-failed', 'critical', 'failed', 'stalled'].includes(state) ? 'critical'
   : ['low', 'interrupted', 'source-unavailable', 'write-waiting'].includes(state) ? 'warning' : 'neutral';
-const issueTarget = id => ['disk-space', 'disk-check'].includes(id) ? 'recording-disk-card'
-  : id === 'backup' ? 'recording-backup-card' : 'recording-recording-card';
+const issueTarget = (id, recordingState) => ['disk-space', 'disk-check'].includes(id) ? 'recording-disk-card'
+  : id === 'backup' ? 'recording-backup-card'
+    : ['write-failed', 'write-waiting'].includes(recordingState) ? 'recording-performance-details' : 'recording-recording-card';
 
 export function recordingHealthView(health, recording, now = Date.now()) {
   const current = health?.version === 2 ? health : {};
@@ -68,6 +69,8 @@ export function recordingHealthView(health, recording, now = Date.now()) {
       capacity: hasSpace ? `${decimal(diskFraction * 100)}% free of ${storageBytes(disk.totalBytes)}` : 'Capacity is not available',
       detail: disk.detail || 'Free space on the filesystem that holds this computer’s database.' },
     recording: { label: recordingLabels[recorder.state] ?? recordingLabels.unknown, tone: tone(recorder.state),
+      cardLabel: recorder.state === 'write-waiting' ? 'Recording delayed'
+        : recorder.state === 'write-failed' ? 'Recording interrupted' : recordingLabels[recorder.state] ?? recordingLabels.unknown,
       detail: recorder.detail || 'Waiting for recording health information.',
       evidence: validTime(recorder.lastSourceCheckAt) ? `Last source check · ${recordingEvidenceTime(recorder.lastSourceCheckAt, now)}` : 'Last source check is not known.' },
     backup: { label: backup.state === 'available' && backup.latestKind === 'download' ? 'Download sent' : backupLabels[backup.state] ?? backupLabels.unknown, tone: tone(backup.state),
@@ -113,7 +116,7 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
     const ids = new Set(items.map(item => item.id));
     const retainFocus = (id, node) => {
       if (node.contains(document.activeElement)) {
-        const target = issueTarget(id);
+        const target = issueTarget(id, health?.recording?.state);
         $(target === 'recording-disk-card' ? 'recording-status-disk'
           : target === 'recording-backup-card' ? 'recording-status-details' : 'recording-status-recording').focus({ preventScroll: true });
       }
@@ -126,10 +129,12 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
       if (!node) {
         node = document.createElement('li'); node.className = 'recording-status-issue';
         const link = document.createElement('a');
-        link.dataset.recordingOpen = issueTarget(item.id); link.href = `#${link.dataset.recordingOpen}`;
         link.append(document.createElement('strong'), document.createElement('span'));
         bindLink(link); node.append(link); issueNodes.set(item.id, node);
       }
+      const link = node.firstElementChild;
+      link.dataset.recordingOpen = issueTarget(item.id, health?.recording?.state);
+      link.href = `#${link.dataset.recordingOpen}`;
       node.dataset.tone = item.severity;
       const [title, detail] = node.firstElementChild.children;
       // The recording state is already the summary heading. Keep its guidance
@@ -154,6 +159,9 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
     set('recording-status-label', view.recordingScope);
     set('recording-status-state', `${dated ? 'Last known: ' : ''}${view.recording.label}`);
     $('recording-status-recording').dataset.tone = view.recording.tone;
+    const recordingLink = $('recording-status-recording');
+    recordingLink.dataset.recordingOpen = issueTarget('recording', health?.recording?.state);
+    recordingLink.href = `#${recordingLink.dataset.recordingOpen}`;
     set('recording-status-free', `${dated ? 'Last known: ' : ''}${view.disk.fraction === null ? 'Space unknown' : `${view.disk.free} free`}`);
     set('recording-status-capacity', view.disk.fraction === null ? 'Open details to check storage' : `of ${view.disk.total}${view.disk.tone === 'neutral' ? '' : ` · ${view.disk.label}`}`);
     $('recording-status-disk').dataset.tone = view.disk.tone;
@@ -178,7 +186,7 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
     set('recording-health-badge', view.attention.length ? 'Needs attention' : '');
     $('recording-health-badge').hidden = view.attention.length === 0;
     for (const section of ['disk', 'recording', 'backup']) {
-      set(`recording-${section}-state`, view[section].label);
+      set(`recording-${section}-state`, `${dated ? 'Last known: ' : ''}${view[section].cardLabel ?? view[section].label}`);
       $(`recording-${section}-card`).dataset.tone = view[section].tone;
       set(`recording-${section}-detail`, view[section].detail);
     }

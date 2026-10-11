@@ -328,8 +328,10 @@ test('generic switch requires explicit publication plus fresh state, rejects ret
   let settled = false; pending.then(() => { settled = true; });
   f.capture.receive('invented/state', 'on', { retain: true }); await Promise.resolve(); assert.equal(settled, false);
   f.now(initial + 1); f.capture.receive('invented/state', 'on'); assert.equal((await pending).confirmed, true);
-  const { beforePublish, signal, ...flags } = f.publications[0].options;
+  const { beforePublish, signal, recordingContext, recordingDeadlineExpired, ...flags } = f.publications[0].options;
   assert.equal(typeof beforePublish, 'function'); assert(signal instanceof AbortSignal);
+  assert.equal(recordingContext, 'switch-command');
+  assert.equal(typeof recordingDeadlineExpired, 'function'); assert.equal(recordingDeadlineExpired(), false);
   assert.deepEqual({ ...f.publications[0], options: flags }, { topic: 'invented/command', payload: 'ON', options: { qos: 1, retain: false, noReplay: true } });
   f.authority(false); await assert.rejects(f.capture.setSwitch('relay', false), /authority/);
 });

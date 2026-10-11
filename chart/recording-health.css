@@ -45,19 +45,25 @@
 .recording-health-heading h3, .recording-group-title { margin: 0; font-size: 12px; font-weight: 600; }
 .recording-health-heading p { margin: 4px 0 0; font-size: 11px; color: var(--muted); line-height: 1.5; }
 .recording-health-heading button { min-height: 36px; font-size: 11px; flex-shrink: 0; }
-.recording-health-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; gap: 10px; }
-.recording-health-cards > .recording-health-card { min-width: 0; margin: 0; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-soft); }
-.recording-health-card > summary { position: relative; display: flex; flex-direction: column; padding: 14px 32px 14px 14px; min-height: 118px; box-sizing: border-box; list-style: none; }
+.recording-health-cards { display: grid; grid-template-columns: minmax(0, 1fr); border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+.recording-health-cards > .recording-health-card { min-width: 0; margin: 0; border: 0; border-radius: 0; background: transparent; }
+.recording-health-card + .recording-health-card { border-top: 1px solid var(--border); }
+.recording-health-card > summary { position: relative; display: grid; grid-template-columns: minmax(95px, .65fr) minmax(160px, 1fr) minmax(0, 2fr); align-items: baseline; gap: 8px 20px; padding: 16px 38px 16px 16px; min-height: 70px; box-sizing: border-box; list-style: none; }
+.recording-health-card > summary:hover { background: var(--surface-soft); }
+.recording-health-card[open] > summary { background: var(--surface-soft); }
+.recording-health-card:first-child > summary { border-radius: 8px 8px 0 0; }
+.recording-health-card:last-child:not([open]) > summary { border-radius: 0 0 8px 8px; }
 .recording-health-card > summary::-webkit-details-marker, .recording-section > summary::-webkit-details-marker { display: none; }
 .recording-health-card > summary::after, .recording-section > summary::after { content: '›'; color: var(--muted); font-size: 19px; font-weight: 400; line-height: 1; }
-.recording-health-card > summary::after { position: absolute; top: 14px; right: 13px; }
+.recording-health-card > summary::after { position: absolute; top: 19px; right: 15px; }
 .recording-health-card[open] > summary::after, .recording-section[open] > summary::after { transform: rotate(90deg); color: var(--accent); }
-.recording-health-label { font-size: 11px; color: var(--muted); }
-.recording-health-state { font-size: 14px; font-weight: 550; line-height: 1.45; margin-top: 6px; overflow-wrap: anywhere; }
+.recording-health-label { font-size: 12px; color: var(--muted); font-weight: 500; }
+.recording-health-state { font-size: 14px; font-weight: 550; line-height: 1.5; overflow-wrap: anywhere; }
+.recording-health-card > summary > .recording-health-evidence { margin: 0; }
 .recording-health-card[data-tone="warning"] .recording-health-state { color: var(--stale); }
-.recording-health-card[data-tone="critical"] { border-color: var(--error-text); }
+.recording-health-card[data-tone="critical"] > summary { box-shadow: inset 3px 0 var(--error-text); }
 .recording-health-card[data-tone="critical"] .recording-health-state { color: var(--error-text); }
-.recording-health-body { padding: 0 14px 14px; }
+.recording-health-body { padding: 14px 16px 18px; }
 .recording-health-detail { font-size: 12px; line-height: 1.6; margin: 10px 0 0; overflow-wrap: anywhere; }
 .recording-health-body > :first-child { margin-top: 0; }
 .recording-health-evidence { display: block; font-size: 11px; line-height: 1.5; color: var(--muted); margin: 7px 0 0; overflow-wrap: anywhere; }
@@ -104,11 +110,10 @@
 .recording-storage-facts dt { color: var(--muted); }
 .recording-storage-facts dd { margin: 0; font-variant-numeric: tabular-nums; }
 .recording-storage-note { margin: 12px 0 0; font-size: 11px; line-height: 1.6; color: var(--muted); }
-.recording-performance { margin: 16px 0 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.recording-performance > .recording-section-body { padding-bottom: 16px; }
+/* Storage is one peer in the health overview; expanded evidence stays inside it. */
 .recording-performance-notice { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 0 0 12px; }
 .recording-performance-notice[data-tone="warning"] { color: var(--stale); }
-.recording-performance-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px 20px; margin-bottom: 12px; }
+.recording-performance-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px 20px; padding: 14px 0; border-bottom: 1px solid var(--border); }
 .recording-performance-toolbar > div:first-child { min-width: 0; }
 .recording-performance-coverage { margin: 0; font-size: 12px; line-height: 1.5; font-weight: 550; }
 .recording-performance-period { display: flex; flex-shrink: 0; align-items: stretch; padding: 3px; gap: 3px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 7px; }
@@ -116,8 +121,26 @@
 .recording-performance-period > button[aria-pressed="true"] { background: var(--surface); color: var(--text); border-color: var(--border); }
 .recording-performance-period > button:hover { color: var(--accent); }
 .recording-performance-period > button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
-.recording-performance-current { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 12px 0 4px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.recording-performance-current { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 #recording-performance-waiting { color: var(--stale); }
+.recording-performance-measures { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px 36px; padding: 18px 0; }
+.recording-performance h4 { font-size: 12px; font-weight: 550; margin: 0 0 12px; }
+.recording-performance-waits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin: 0 0 10px; }
+.recording-performance-waits dt { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.recording-performance-waits dd { margin: 4px 0 0; font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.recording-performance-outcomes { margin: 0; font-size: 12px; line-height: 1.6; }
+.recording-performance-outcomes > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 3px 0; }
+.recording-performance-outcomes dt { color: var(--muted); }
+.recording-performance-outcomes dd { margin: 0; font-weight: 550; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.recording-performance [data-tone="warning"] { color: var(--stale); }
+.recording-performance-incidents { padding: 16px 0; border-top: 1px solid var(--border); }
+.recording-performance-incidents ul { margin: 0; padding: 0; list-style: none; }
+.recording-performance-incidents li + li { margin-top: 12px; }
+.recording-performance-incidents strong { display: block; font-size: 12px; font-weight: 550; line-height: 1.5; }
+.recording-performance-incidents p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.recording-performance-explanation { margin: 0; border-top: 1px solid var(--border); }
+.recording-performance-explanation > summary { font-size: 12px; padding: 12px 0; color: var(--muted); }
+.recording-performance-explanation p { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 10px 0; max-width: 85ch; }
 .recording-performance-timings { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; text-align: left; font-variant-numeric: tabular-nums; }
 .recording-performance-timings > .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .recording-performance-timings thead th { font-size: 11px; color: var(--muted); font-weight: 400; padding: 12px 8px 8px; }
@@ -126,22 +149,17 @@
 .recording-performance-timings td:last-child, .recording-performance-timings thead th:last-child { padding-right: 0; }
 .recording-performance-timings tbody th { font-weight: 550; }
 .recording-performance-timings small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.5; font-weight: 400; }
-.recording-performance-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 20px; margin: 18px 0; }
-.recording-performance-facts > div { min-width: 0; }
-.recording-performance-facts dt { color: var(--muted); font-size: 11px; line-height: 1.5; }
-.recording-performance-facts dd { margin: 5px 0 0; font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.recording-performance-facts small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.5; }
-.recording-performance [data-tone="warning"] { color: var(--stale); }
-.recording-performance-explanation { margin: 0; }
-.recording-performance-explanation > summary { font-size: 11px; padding: 7px 0; }
-.recording-performance-explanation p { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 10px 0; max-width: 85ch; }
 .recording-performance-priority { margin-top: 14px; }
 .recording-performance-priority caption { font-size: 11px; font-weight: 550; text-align: left; margin-bottom: 4px; }
 @media (max-width: 800px) {
-  .recording-performance-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .recording-health-card > summary { grid-template-columns: minmax(90px, .65fr) minmax(0, 2fr); gap: 4px 16px; }
+  .recording-health-card > summary > .recording-health-label { grid-row: 1 / 3; padding-top: 1px; }
+  .recording-health-card > summary > .recording-health-evidence { grid-column: 2; }
 }
 @media (max-width: 640px) {
   .recording-performance-toolbar { flex-direction: column; gap: 12px; }
+  .recording-performance-measures { grid-template-columns: minmax(0, 1fr); gap: 22px; }
+  .recording-performance-waits dd { font-size: 18px; }
   .recording-performance-timings, .recording-performance-timings tbody { display: block; }
   .recording-performance-timings thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .recording-performance-timings tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 13px 0; border-bottom: 1px solid var(--border); }
@@ -149,15 +167,11 @@
   .recording-performance-timings th:first-child { grid-column: 1 / -1; width: auto; }
   .recording-performance-timings th small { margin-top: 3px; }
   .recording-performance-timings td::before { display: block; content: attr(data-label); margin-bottom: 5px; font-size: 10px; color: var(--muted); }
-  .recording-performance-facts { gap: 16px; }
-  .recording-performance-facts dd { font-size: 18px; }
 }
 @media (max-width: 640px) {
-  .recording-health-cards { grid-template-columns: 1fr; gap: 8px; }
-  .recording-health-card > summary { min-height: 0; padding: 12px 32px 12px 12px; }
-  .recording-health-state { margin-top: 4px; }
-  .recording-health-card .recording-health-evidence { margin-top: 4px; }
-  .recording-health-body { padding: 0 12px 12px; }
+  .recording-health-card > summary { display: flex; flex-direction: column; align-items: stretch; gap: 4px; min-height: 0; padding: 12px 32px 12px 12px; }
+  .recording-health-card > summary::after { top: 14px; right: 12px; }
+  .recording-health-body { padding: 12px; }
   .recording-health-heading { align-items: flex-start; }
   .recording-health-heading button { padding: 8px 10px; }
   .recording-storage-table, .recording-storage-table tbody { display: block; }

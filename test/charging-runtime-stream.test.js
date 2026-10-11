@@ -5,6 +5,7 @@ import { ChargingRuntime } from '../src/charging/runtime.js';
 import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import { createChargingController } from '../src/charging/controller.js';
 import { chargingSnapshot, normalizeScheduleState, delayedScheduleFor } from '../src/charging/easee.js';
+import { createWriteHealth } from '../src/storage/write-health.js';
 
 const START = Date.parse('2026-09-22T08:00:00Z'), SECOND = 1000;
 const row = (id, value, at) => ({ id, value, timestamp: new Date(at).toISOString() });
@@ -14,10 +15,11 @@ function fixture(t) {
   const h = { now: START, reads: 0, writes: [], saved: new Map(), failSave: false,
     observed: { mode: 2, pilot: 'B', at: START }, schedule: normalizeScheduleState({ enabled: 'none' }) };
   const store = { getState: key => structuredClone(h.saved.get(key)), setState: (key, value) => {
-    if (h.failSave) throw new Error('synthetic database unavailable');
+    if (h.failSave) throw Object.assign(new Error('synthetic database unavailable'), { errcode: 10 });
     h.saved.set(key, structuredClone(value));
   } };
   withReportDatabase(store, t, h.saved);
+  store.writeHealth = createWriteHealth(() => h.now);
   const snapshot = () => chargingSnapshot([
     row(250, true, h.now), row(31, true, h.now), row(109, h.observed.mode, h.observed.at),
     row(100, h.observed.pilot, h.observed.at), row(96, h.schedule.enabled === 'none' ? 0 : 54, h.now),
@@ -130,6 +132,8 @@ test('failed stream persistence retains evidence, blocks control and retries wit
   const boundary = structuredClone(runtime.chargers.charger1.vehicleDisconnect);
   assert.equal(runtime.streamPersistencePending, true); assert.equal(h.canControl(), false);
   assert.equal(runtime.error, 'charging-stream-save-unavailable');
+  const initialIncident = runtime.store.writeHealth.status().history.incidents.find(row => row.category === 'save-failed');
+  assert.equal(initialIncident.context, 'charging-input'); assert.equal(initialIncident.outcome, 'retained-for-retry');
   await h.flush(runtime);
   assert.equal(h.reads, initialReads, 'No controller work runs until the evidence is durable');
   assert.deepEqual(runtime.chargers.charger1.vehicleDisconnect, boundary);
@@ -139,6 +143,8 @@ test('failed stream persistence retains evidence, blocks control and retries wit
   assert.equal(h.canControl(), true);
   assert.equal(view(runtime).control.session.connectedAt, null);
   assert.equal(readChargingRuntime(runtime.store, runtime.key).chargers.charger1.vehicleDisconnect.readingId, boundary.readingId);
+  const recoveredIncident = runtime.store.writeHealth.status().history.incidents.find(row => row.category === 'save-failed');
+  assert.equal(recoveredIncident.outcome, 'original-update-saved'); assert.equal(recoveredIncident.recoveredAt, h.now);
 });
 
 test('a stream cycle delivered during an in-flight read is retained for the queued reconciliation', async t => {

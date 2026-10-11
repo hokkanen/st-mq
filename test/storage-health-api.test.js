@@ -43,9 +43,12 @@ test('memory storage summaries use existing authenticated health access without 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
     const result = await response.json();
-    assert.equal(result.recording.history.version, 1);
+    assert.equal(result.recording.history.version, 2);
     assert(result.recording.history.windows.day.committedTransactions > 0);
     assert.equal(result.recording.history.windows.day.failedWrites, 0);
+    assert.equal(result.recording.history.windows.day.commandsNotSent, 0);
+    assert.deepEqual(result.recording.history.windows.day.incidents, []);
+    assert(Number.isSafeInteger(result.recording.lastWriteAt));
     assert.equal(result.recording.history.windows.day.complete, false, 'a new run is partial coverage');
   }
   assert.deepEqual(f.store.checkpoint(), checkpoint, 'health reads add no recorded state or diagnostics');

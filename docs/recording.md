@@ -1345,8 +1345,9 @@ heating, hot-water, ground-loop, settings, equipment, runtime, electricity, weat
 and learning groups.
 Recorded and calculated roles are separate from model roles.
 
-**Recording details describes stored database contents.** A compact status row
-shows **Recording**, **Disk space** and **Backups**. Each opens its own evidence
+**Recording details describes stored database contents.** Its compact **At a
+glance** rows show **Recording**, **Storage health**, **Disk space** and
+**Backups**. Each opens its own evidence
 and explanation; status labels, attention states and the live or recorded-snapshot
 scope remain visible without expanding those details. Opening one status does not
 open the others. Refreshes preserve expanded sections and keyboard focus.
@@ -1388,6 +1389,13 @@ periods and the separate accepted source timestamp. Grouping changes presentatio
 not physical identity, provenance, control permission or energy accounting.
 
 ### Recording and backup health
+
+**At a glance** groups four expandable summaries: **Recording**, **Storage
+health**, **Disk space** and **Backups**. Each shows a concise state and its
+evidence; explanations stay inside the corresponding fold. Storage health
+describes the current writer and observed delays or failures, while disk space
+describes filesystem capacity. Database allocation and growth figures have their
+single home in **Storage & growth** below the health overview.
 
 The dashboard shows a compact **Recording and storage** summary below its context
 line for 15 seconds after the first successful health response. It then disappears
@@ -2000,22 +2008,25 @@ call; it is not an isolated fsync measurement. Queue depth and `waitingSince`
 remain separate asynchronous-admission evidence. Slow successful writes do not
 prove corruption, and these timings do not grant device authority.
 
-### Storage performance
+### Storage health
 
-Recording details includes a folded **Storage performance** view. It uses the
-existing authenticated health responses and updates with ordinary dashboard
-refreshes. Its summaries are held solely in memory for at most seven days;
-opening a new Store, including application restart, starts a new monitoring
-period. Nothing is saved to SQLite, a file, browser storage, backups or replicas.
-An earlier period is unavailable, not a period with zero failures. Snapshot and
-history viewers cannot report the active master's memory-only history.
+The **Storage health** summary belongs to **At a glance**. Opening it shows the
+current backlog, average and worst queue wait, failed save attempts, queue-full
+refusals and MQTT device commands known not to have been sent because recording
+blocked them. It uses the existing authenticated health responses and updates with
+ordinary dashboard refreshes. Its summaries are held solely in memory for at
+most seven days; opening a new Store, including application restart, starts a
+new monitoring period. Nothing is saved to SQLite, a file, browser storage,
+backups or replicas. An earlier period is unavailable, not a period with zero
+failures. Snapshot and history viewers cannot report the active master's
+memory-only history.
 
 The past-day and past-week views distinguish the duration monitored in this run
 from the duration included in the summaries. The oldest partly overlapping
 five-minute bucket is omitted, so the summarized span can be up to five minutes
 shorter than the selected period. Bounded summaries supply averages,
 approximate 95th percentiles and worst
-durations. Queue delay measures how long successfully completed queued work
+durations. Queue wait measures how long successfully completed queued work
 waited before admission; writing measures successful committed transaction
 duration, including SQLite journal, checkpoint and filesystem work performed by
 that transaction. Commit time is part of writing, not an additional delay to add
@@ -2031,8 +2042,40 @@ was lost. These counters describe this Store's observed operations; they do not
 count every household reading, establish who held a competing writer lock, or
 prove missed equipment actions. Independent workers' transaction durations are
 outside this Store's timings, although their contention can delay its queue.
-Current recording and storage warnings retain their existing behavior. Reading
-the summaries never runs a database check or grants control authority.
+The command count covers explicitly instrumented MQTT device requests. It
+includes only a known pre-dispatch recording failure or an existing command
+deadline that expires while explicitly awaiting the storage write for a received
+input. Source-clock admission waits and input-validation failures are excluded.
+Unrelated cancellation, changed authority or device identity, unconfirmed
+readback and generic execution failures are excluded. The count describes
+attempted commands, not missed schedules or physical actions that never became
+a command. The monitored boundaries cover heat-pump, switch, cover and Garage
+requests through the shared MQTT publisher. Charging command paths, including
+OCPP and the Shelly EVSE's direct MQTT publisher, and outer transaction rollbacks
+before that shared publisher starts are outside this count. Zero does not prove
+all expected actions succeeded. An expired attempt remains counted even if later
+control succeeds.
+
+Recent problems retain at most the latest incident of each of four kinds: failed
+save, queue refusal, command not sent and follow-up failure after a successful
+commit. Context and reasons use fixed safe categories, without private device
+identifiers, topics, payloads or raw error messages. A failed transaction may
+contain several readings, so failed saves cannot be relabelled as lost readings.
+Where an input is discarded, its incident can say that the update was not
+retained for retry. Where an existing retained-update retry proves the original
+update was saved, the incident can show that recovery. A later successful save
+means saving resumed; a newer reading cannot prove recovery of missing history.
+Historical failure counts remain after recovery and are separate from current
+writer status.
+
+**Technical details** holds full transaction and commit timings, approximate
+95th percentiles, priority-specific waits, writer-lock statistics, peak backlog
+and other operation counters. Commit is part of the full transaction duration;
+these durations must not be added. No new delay threshold changes warnings or
+command deadlines. Current recording and storage warnings retain their existing
+behavior. Reading the summaries never runs a database check or grants control
+authority. The current memory-history API has version 2; earlier history shapes
+are unsupported rather than translated.
 
 The web API accepts no destination path: authenticated `POST /api/database-export`
 with an empty JSON object saves in the configured server folder, and authenticated
