@@ -1735,6 +1735,13 @@ temperature evidence arrives. An independent native power change supersedes
 the test's captured setting; restoration respects that newer choice.
 Humidity is not a qualification requirement. Coverage stops at the earliest
 required evidence expiry; testing and unresolved restoration remain gaps.
+A bounded required-report timestamp wait also remains a gap. For an already
+recorded state in the same qualified connection, admission resumes coverage
+prospectively with a separate availability event and the original native clocks;
+it does not require an additional unchanged appliance report. Electrical power
+or meter expiry and actual feed loss still invalidate qualification and require
+the normal fresh check. Fan-history expiry requires fresh fan evidence without
+repeating a still-valid electrical check.
 This gate does not suppress the independent BLU or Caravan energy series.
 Both Caravan views and the series explorer show the same four categorical labels;
 retired dehumidifier series have no alias or

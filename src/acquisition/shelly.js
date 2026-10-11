@@ -40,7 +40,8 @@ const protectsGarage = device => definitions(device).some(row => ['garage_temper
 
 /** Native protocol is selected by configuration; no host detection or fallback.
  * Modern command readbacks retain the exact command identity through both RPCs. */
-export function createShellyCapture({ engine, store, settings, publish, canControl = () => true, readbackTimeoutMs = 10_000, brokerIdentity = null, topicGroups = [] }) {
+export function createShellyCapture({ engine, store, settings, publish, canControl = () => true, readbackTimeoutMs = 10_000, brokerIdentity = null, topicGroups = [],
+  onSourceTimeChanged = null }) {
   const devices = settings.devices.filter(config => config.enabled !== false).map(config => ({ ...config,
     customReadings: config.readings, connected: false,
     available: false, lastAt: null, lastPollAt: -Infinity, readings: {}, state: null, identity: null, identityPending: null,
@@ -64,14 +65,28 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       return store.runWrite && !store.transactionDepth ? store.runWrite(apply) : apply();
     },
     onReject({ device, blocksAvailability }, reason) {
-      if (reason !== 'cleared' && blocksAvailability && stateName(device)) unavailable(device, 'invalid-source-time');
+      if (reason !== 'cleared' && blocksAvailability && stateName(device)) {
+        reception.run(() => unavailable(device, 'invalid-source-time'));
+        onSourceTimeChanged?.(engine.clock());
+      }
     },
     onReady({ topic, body, packet }, receivedAt, admittedAt) {
       if (closed || !connected) return;
       const previous = admittedReceptionAt; admittedReceptionAt = admittedAt;
-      try { api.receive(topic, body, packet, receivedAt); }
+      try {
+        api.receive(topic, body, packet, receivedAt);
+        // The deferred meter and its dependent recording gate publish together.
+        // This runs inside the queue's writer transaction, including rollback.
+        onSourceTimeChanged?.(admittedAt);
+      }
       finally { admittedReceptionAt = previous; }
     } });
+  function drainPending(now) {
+    if (!pendingTime.size) return;
+    const checkpoint = pendingTime.checkpoint();
+    store.afterRollback?.(() => pendingTime.restore(checkpoint));
+    pendingTime.drain(now);
+  }
   const energyFor = device => {
     if (!metered(device) || device.generation > 1 && !device.identity) return null;
     const lineage = equipmentMeterIdentity({ ...device, readings: device.customReadings }, { brokerIdentity, nativeIdentity: device.identity });
@@ -412,7 +427,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       const device = devices.find(row => topic.startsWith(`${row.prefix}/`));
       if (!device && topic !== replyTopic) return false;
       if (!connected || closed) return true;
-      if (admittedReceptionAt === undefined) pendingTime.drain(engine.clock());
+      if (admittedReceptionAt === undefined) drainPending(engine.clock());
       const body = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
       if (body.length > 65536) return true;
       let delivery; try { delivery = JSON.parse(body); } catch { delivery = null; }
@@ -531,7 +546,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     },
     tick(now = engine.clock()) {
       if (closed) return;
-      pendingTime.drain(now);
+      drainPending(now);
       for (const energy of energies.values()) energy.tick(now);
       for (const [id, request] of requests) if (now - request.at > readbackTimeoutMs) { requests.delete(id); request.complete?.('timeout'); }
       for (const device of devices) if (device.available && maxAge(device) > 0 && now - device.lastAt >= maxAge(device)) unavailable(device, 'missing-report');

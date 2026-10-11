@@ -4,7 +4,7 @@ import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, learningVersion, assertCurrentL
 import { originalSensorSample } from '../app/sensor-samples.js';
 import { pendingEnergyObservations } from '../storage/pending-energy.js';
 import { isRecordedEnergyGap, recordedEnergyGroups, validEnergyQuality } from '../storage/energy-history.js';
-import { Recorder, RECORDING_VERSION } from '../storage/recorder.js';
+import { Recorder, RECORDING_VERSION, isCaravanRecordingRecovery, isCaravanRecordingAdmission } from '../storage/recorder.js';
 import { readStorageMetrics } from '../storage/recording-metrics.js';
 import { recordingPolicy, recordingStreamKey, RECORDING_POLICIES } from '../domain/recording-policy.js';
 import { ENERGY_SIGNALS } from '../domain/history-series.js';
@@ -37,14 +37,27 @@ const sameObservation = (a, b) => a && b
   && same(decode(a.quality), decode(b.quality)) && same(decode(a.raw), decode(b.raw));
 const PENDING_ENERGY = 'recorder_pending_energy';
 const HOUR = 3_600_000;
-// These are receipt-time availability events about an existing measurement.
-// Their source timestamp deliberately repeats; it is not a conflicting sample.
+const caravanBoundary = (row, raw) => {
+  const observation = { source: row.source, device: row.device,
+    signal: row.signal, unit: row.unit, value: row.value, sourceTime: row.source_time,
+    receivedAt: row.received_at, quality: decode(row.quality), raw };
+  return isCaravanRecordingRecovery(observation) || isCaravanRecordingAdmission(observation);
+};
+const matchingRecordingWait = (gap, raw) => {
+  const gapRaw = decode(gap.raw), quality = decode(gap.quality);
+  return gap.value === null && gap.received_at === raw.sourceTimeWait.startedAt
+    && same(gapRaw?.sourceTimeWait, raw.sourceTimeWait) && quality.includes('location-unconfirmed')
+    && quality.every(flag => ['location-unconfirmed', 'missing', 'unavailable'].includes(flag));
+};
+// These receipt-time boundaries retain the genuine measurement clock. A held
+// value deliberately repeats its source timestamp; admission may add a new one.
 const reportBoundary = (row, raw) => raw?.recorder?.version === RECORDING_VERSION
   && Object.hasOwn(RECORDING_POLICIES, raw.recorder.policy) && ['fresh', 'unavailable'].includes(raw.recorder.status)
   && (raw.recorder.temporalBasis === 'policy-change' && raw.recorder.reason === 'report-policy-change'
     && raw.timeBasis === 'report-policy-change' && raw.reportPolicyChangedAt === row.received_at
     || raw.recorder.temporalBasis === 'transport-recovery' && raw.recorder.reason === 'mqtt-transport-recovery'
-    && raw.timeBasis === 'mqtt-transport-recovery' && raw.transportRecoveredAt === row.received_at)
+    && raw.timeBasis === 'mqtt-transport-recovery' && raw.transportRecoveredAt === row.received_at
+    || caravanBoundary(row, raw))
   && temperatureReportMaxAge({ raw }) !== null
   && instant(raw.originalReportSourceTime) && instant(raw.originalReportReceivedAt)
   && observationTimeAdmitted({ sourceTime: raw.originalReportSourceTime, receivedAt: raw.originalReportReceivedAt,
@@ -229,7 +242,31 @@ export class HistoryMerge {
       const latest = db.prepare(`SELECT * FROM active_observations AS observations WHERE source=? AND device=? AND signal=?
         AND received_at>=? AND received_at<? ORDER BY received_at DESC,id DESC LIMIT 1`)
         .get(row.source, row.device, row.signal, raw.originalReportReceivedAt, row.received_at);
-      if (latest && !usable(latest)) return latest;
+      const caravan = caravanBoundary(row, raw);
+      if (latest && !usable(latest) && !(caravan && matchingRecordingWait(latest, raw))) return latest;
+      if (caravan) {
+        const newReport = raw.recorder.temporalBasis === 'source-admission';
+        const previousSource = newReport ? raw.recorder.previousSourceTime : row.source_time;
+        let since = newReport ? raw.recorder.previousReportReceivedAt : raw.originalReportReceivedAt;
+        for (const restored of db.prepare(`SELECT * FROM active_observations WHERE source=? AND device=? AND signal=?
+          AND source_time=? AND received_at>=? AND received_at<? ORDER BY received_at DESC,id DESC`)
+          .iterate(row.source, row.device, row.signal, previousSource, since, raw.sourceTimeWait.startedAt)) {
+          const restoredRaw = decode(restored.raw);
+          if ((newReport || restored.value === row.value) && restored.unit === row.unit && caravanBoundary(restored, restoredRaw)
+            && restoredRaw.identity === raw.identity && restoredRaw.locationEvidence.meterSignature === raw.locationEvidence.meterSignature) {
+            since = restored.received_at; break;
+          }
+        }
+        // Importing the donor's own wait gap must not hide an earlier master
+        // fault or outage, even when the new report arrived after that gap.
+        // A previously accepted availability recovery repairs
+        // its own earlier wait, while retaining the original measurement clocks.
+        for (const attempt of db.prepare(`SELECT * FROM active_observations WHERE source=? AND device=? AND signal=?
+          AND received_at>=? AND received_at<? ORDER BY received_at,id`)
+          .iterate(row.source, row.device, row.signal, since, row.received_at)) {
+          if (!usable(attempt) && !matchingRecordingWait(attempt, raw)) return attempt;
+        }
+      }
       const newer = firstUsable(db.prepare(`SELECT * FROM active_observations AS observations WHERE source=? AND device=? AND signal=?
         AND source_time>? AND received_at<=? ORDER BY source_time DESC,id DESC`)
         .iterate(row.source, row.device, row.signal, raw.originalReportSourceTime, row.received_at));
@@ -374,6 +411,9 @@ export class HistoryMerge {
     this.require([row.source, row.device, row.signal, row.unit].every(text) && (row.value === null || finite(row.value))
       && (row.source_time === null || instant(row.source_time)) && instant(row.received_at) && flags(quality)
       && (raw === null || object(raw)));
+    if (['recording-availability-recovery', 'recording-source-admission'].includes(raw?.timeBasis)
+      || ['availability-recovery', 'source-admission'].includes(raw?.recorder?.temporalBasis))
+      this.require(caravanBoundary(row, raw));
     if (row.unit === 'kWh' && raw && ('intervalStart' in raw || 'intervalEnd' in raw))
       this.require(instant(raw.intervalStart) && instant(raw.intervalEnd) && raw.intervalEnd > raw.intervalStart
         && raw.intervalEnd === row.source_time

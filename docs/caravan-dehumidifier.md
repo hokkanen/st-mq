@@ -249,6 +249,14 @@ The original phase deadline continues to run. With previously fresh, qualified
 evidence, automatic power holds its existing demand during this brief wait;
 cold or missing air evidence still protects Off. Actual stale evidence,
 connection loss and rejected timestamps still invalidate the check.
+When an already recorded, qualified state survives only this bounded wait,
+recording resumes as soon as the required report is admitted. The recorder saves
+a separate availability event at that time, retaining the original appliance
+measurement and receipt clocks. Coverage starts at recovery, so the brief wait
+remains a gap. This does not renew an expired reading, carry qualification across
+a real outage, or waive the first state report required after the power test.
+New healthy meter reports also update the remaining recording deadline
+prospectively; the original appliance power/fan clocks still cap its lifetime.
 
 A partial native Shelly notification containing only the energy counter waits
 for its timestamp independently. It does not pause recording or the power check

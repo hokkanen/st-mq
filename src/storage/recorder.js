@@ -25,6 +25,62 @@ const flags = quality => [...new Set(quality ?? [])].sort();
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const stateKey = key => `recorder:signal:${key}`;
 const finiteTime = at => Number.isSafeInteger(at) && Math.abs(at) <= 8640000000000000;
+const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const caravanState = o => o?.source === 'mqtt-equipment' && o.device === 'caravan_dehumidifier'
+  && o.signal === 'caravan_dehumidifier_state' && o.unit === 'state';
+const validRecordingWait = wait => wait && Object.keys(wait).length === 5
+  && ['startedAt', 'recordingSince', 'deadline'].every(key => finiteTime(wait[key]) && wait[key] >= 0)
+  && wait.recordingSince <= wait.startedAt && wait.deadline > wait.startedAt
+  && digest(wait.identity) && digest(wait.meterSignature);
+
+/** A recording boundary resumes only from this receipt. Original native report
+ * clocks remain distinct from the prospective availability boundary. */
+function caravanRecordingBoundary(o, newReport) {
+  const raw = o?.raw, wait = raw?.sourceTimeWait, evidence = raw?.locationEvidence;
+  const age = temperatureReportMaxAge(o), at = o?.receivedAt;
+  const fields = o?.value === 0 ? ['power'] : ['power', 'fanSpeed'];
+  const basis = newReport ? 'recording-source-admission' : 'recording-availability-recovery';
+  return caravanState(o) && [0, 1, 2, 3].includes(o.value) && finiteTime(at)
+    && raw?.timeBasis === basis && raw.availabilityRecoveredAt === at
+    && raw.recorder?.version === VERSION && raw.recorder.temporalBasis === (newReport ? 'source-admission' : 'availability-recovery')
+    && raw.recorder.reason === basis && raw.recorder.status === 'fresh'
+    && raw.recorder.policy === recordingPolicy(o).id && raw.recorder.originalSourceTime === o.sourceTime
+    && validRecordingWait(wait) && wait.startedAt <= at && at < wait.deadline
+    && raw.identity === wait.identity && o.sourceTime === raw.originalReportSourceTime
+    && o.sourceTime >= wait.recordingSince
+    && (newReport ? finiteTime(raw.recorder.previousSourceTime)
+      && raw.recorder.previousSourceTime >= wait.recordingSince && raw.recorder.previousSourceTime <= wait.startedAt
+      && raw.recorder.previousSourceTime < o.sourceTime
+      && observationTimeAdmitted({ sourceTime: raw.recorder.previousSourceTime, receivedAt: raw.recorder.previousReportReceivedAt,
+        raw: { timeAdmission: raw.recorder.previousReportTimeAdmission } }, wait.startedAt)
+      : raw.originalReportReceivedAt <= wait.startedAt)
+    && raw.originalReportTimeBasis === 'mqtt-live-status' && raw.timeAdmission === undefined
+    && observationTimeAdmitted({ sourceTime: o.sourceTime, receivedAt: raw.originalReportReceivedAt,
+      raw: { timeAdmission: raw.originalReportTimeAdmission } }, newReport ? at : wait.startedAt)
+    && (o.quality ?? []).every(flag => flag === 'good') && !raw.retained && !raw.cached
+    && !raw.auditOnly && !raw.acquisitionOnly
+    && age !== null && Number.isSafeInteger(raw.maxAgeMs) && raw.maxAgeMs > 0 && age <= raw.maxAgeMs
+    && fields.every(field => finiteTime(raw.fieldTimestamps?.[field]) && raw.fieldTimestamps[field] >= 0
+      && raw.fieldTimestamps[field] <= at && at < raw.fieldTimestamps[field] + raw.maxAgeMs)
+    && wait.deadline <= Math.min(...fields.map(field => raw.fieldTimestamps[field])) + raw.maxAgeMs
+    && o.sourceTime === Math.max(...fields.map(field => raw.fieldTimestamps[field])) && at < o.sourceTime + age
+    && evidence?.method === 'native-power-cycle-v1' && evidence.meterSignature === wait.meterSignature
+    && ['startedAt', 'completedAt', 'meterObservedAt'].every(key => finiteTime(evidence[key]) && evidence[key] >= 0)
+    && evidence.startedAt <= evidence.completedAt && evidence.completedAt <= wait.recordingSince
+    && evidence.meterObservedAt >= evidence.startedAt && evidence.meterObservedAt <= at
+    && ['powerRiseW', 'powerFallW'].every(key => Number.isFinite(evidence[key]) && evidence[key] >= evidence.minimumChangeW)
+    && Number.isFinite(evidence.minimumChangeW) && evidence.minimumChangeW >= 3
+    && ['baseline', 'on', 'off'].every(phase => {
+      const row = evidence.phases?.[phase];
+      return row && (finiteTime(row.commandAt) || phase === 'baseline' && row.commandAt === null)
+        && finiteTime(row.firstPowerObservedAt) && row.firstPowerObservedAt >= 0
+        && finiteTime(row.lastPowerObservedAt) && row.lastPowerObservedAt >= row.firstPowerObservedAt
+        && row.lastPowerObservedAt <= evidence.completedAt
+        && (row.commandAt === null || row.commandAt >= 0 && row.firstPowerObservedAt >= row.commandAt);
+    });
+}
+export const isCaravanRecordingRecovery = o => caravanRecordingBoundary(o, false);
+export const isCaravanRecordingAdmission = o => caravanRecordingBoundary(o, true);
 // Correlated contact replies and live timestamp-free MQTT contact reports use
 // the host receipt clock. Ordered replies can share a millisecond; observation
 // IDs preserve their order. A device's repeated measurement clock cannot do so.
@@ -197,6 +253,86 @@ export class Recorder {
       signal: observation.signal, unit: observation.unit, startedAt: now, last: null, lastPollAt: null,
       lastSourceTime: null, mean: null, variance: 0, step: 0, scale: 0, previousValue: null,
       lastFreshAt: null, coverageId: null, status: null };
+  }
+
+  /** Resume an already recorded connection after its bounded source-clock wait.
+   * A held state is an availability event; a newly admitted native report retains
+   * its own clocks and measurement count. Neither can repair an ordinary outage. */
+  resumeCaravanRecording(reading, at = this.clock()) {
+    if (!caravanState(reading) || !finiteTime(at) || !validRecordingWait(reading.raw?.sourceTimeWait))
+      return { changed: false };
+    return this.store.transaction(() => {
+      const s = this.signalState(reading, at), wait = reading.raw.sourceTimeWait;
+      // A queued writer can save the pause after the new source clock. Native
+      // ordering and its actual admission proof govern the report, not gap time.
+      const newReport = Number.isSafeInteger(reading.sourceTime) && reading.sourceTime > s.lastSourceTime;
+      if (s.status !== 'unavailable' || !s.last || s.lastPollAt > at
+        || !newReport && (s.lastSourceTime !== reading.sourceTime || s.previousValue !== reading.value)
+        || newReport && !observationTimeAdmitted(reading, at)
+        || !s.last.quality.includes('location-unconfirmed')
+        || !s.last.quality.every(flag => ['location-unconfirmed', 'missing', 'unavailable'].includes(flag)))
+        return { changed: false };
+      const gap = this.store.db.prepare('SELECT * FROM active_observations WHERE id=?').get(s.last.id);
+      const gapRaw = gap?.raw ? JSON.parse(gap.raw) : null;
+      if (gap?.value !== null || gap.received_at !== wait.startedAt || !same(gapRaw?.sourceTimeWait, wait))
+        return { changed: false };
+      const prior = this.store.db.prepare(`SELECT c.source_time,c.end_at,o.raw,o.value FROM active_recorder_coverage c
+        JOIN active_observations o ON o.id=c.observation_id WHERE c.source=? AND c.device=? AND c.signal=?
+        AND c.status='fresh' AND c.end_at<=? ORDER BY c.id DESC LIMIT 1`)
+        .get(reading.source, reading.device, reading.signal, wait.startedAt);
+      const priorRaw = prior?.raw ? JSON.parse(prior.raw) : null;
+      const probe = evidence => evidence && Object.fromEntries(['method', 'meterSignature', 'startedAt', 'completedAt',
+        'powerRiseW', 'powerFallW', 'minimumChangeW', 'phases'].map(key => [key, evidence[key]]));
+      const fields = reading.value === 0 ? ['power'] : ['power', 'fanSpeed'];
+      if (!prior || prior.source_time !== s.lastSourceTime || prior.value !== s.previousValue
+        || priorRaw?.identity !== wait.identity || !same(probe(priorRaw.locationEvidence), probe(reading.raw.locationEvidence))
+        || fields.some(field => priorRaw.fieldTimestamps?.[field] !== undefined
+          && (!finiteTime(priorRaw.fieldTimestamps[field]) || reading.raw.fieldTimestamps?.[field] < priorRaw.fieldTimestamps[field])))
+        return { changed: false };
+      const previousReport = s.lastReportTime;
+      if (!previousReport || previousReport.sourceTime !== s.lastSourceTime) return { changed: false };
+      for (const attempt of this.store.db.prepare(`SELECT value,quality,raw,received_at FROM active_observations
+        WHERE source=? AND device=? AND signal=? AND received_at>=? AND received_at<=? ORDER BY received_at,id`)
+        .iterate(reading.source, reading.device, reading.signal, Math.max(previousReport.receivedAt, prior.end_at), at)) {
+        const raw = attempt.raw ? JSON.parse(attempt.raw) : {}, quality = JSON.parse(attempt.quality);
+        const fresh = attempt.value !== null && raw.recorder?.status === 'fresh' && quality.every(flag => flag === 'good');
+        const waiting = attempt.value === null && attempt.received_at === wait.startedAt && same(raw.sourceTimeWait, wait)
+          && quality.includes('location-unconfirmed')
+          && quality.every(flag => ['location-unconfirmed', 'missing', 'unavailable'].includes(flag));
+        if (!fresh && !waiting) return { changed: false };
+      }
+      const report = newReport ? { sourceTime: reading.sourceTime, receivedAt: reading.receivedAt,
+        ...(reading.raw.timeAdmission ? { admittedAt: reading.raw.timeAdmission.admittedAt } : {}) } : previousReport;
+      const admission = newReport ? reading.raw.timeAdmission : report.admittedAt === undefined ? undefined : sourceTimeAdmission({
+        sourceTime: report.sourceTime, receivedAt: report.receivedAt, now: report.admittedAt, deferred: true });
+      const previousAdmission = previousReport.admittedAt === undefined ? undefined : sourceTimeAdmission({
+        sourceTime: previousReport.sourceTime, receivedAt: previousReport.receivedAt, now: previousReport.admittedAt, deferred: true });
+      const basis = newReport ? 'recording-source-admission' : 'recording-availability-recovery';
+      const raw = compactRaw({ ...reading.raw, timeAdmission: undefined,
+        timeBasis: basis, availabilityRecoveredAt: at,
+        originalReportSourceTime: report.sourceTime, originalReportReceivedAt: report.receivedAt,
+        originalReportTimeBasis: 'mqtt-live-status', originalReportTimeAdmission: admission }, reading);
+      raw.recorder = { version: VERSION, policy: recordingPolicy(reading).id, status: 'fresh',
+        reason: basis, originalSourceTime: report.sourceTime, temporalBasis: newReport ? 'source-admission' : 'availability-recovery',
+        ...(newReport ? { previousSourceTime: s.lastSourceTime, previousReportReceivedAt: previousReport.receivedAt,
+          ...(previousAdmission ? { previousReportTimeAdmission: previousAdmission } : {}) } : {}) };
+      const observation = { source: reading.source, device: reading.device, signal: reading.signal, unit: reading.unit,
+        value: reading.value, sourceTime: reading.sourceTime, receivedAt: at, quality: flags(reading.quality), raw };
+      if (!(newReport ? isCaravanRecordingAdmission(observation) : isCaravanRecordingRecovery(observation))) return { changed: false };
+      observation.id = this.store.observation(observation);
+      s.last = { id: observation.id, value: observation.value, sourceTime: observation.sourceTime, receivedAt: at,
+        quality: observation.quality, semanticQuality: semanticQuality(raw) };
+      s.reportPolicy = { reportIntervalMs: raw.reportIntervalMs, reportGraceMs: raw.reportGraceMs ?? 0 };
+      s.status = 'fresh'; s.recordingPolicy = raw.recorder.policy; s.lastPollAt = at; s.reportUnavailableSince = null;
+      s.coverageId = Number(this.store.db.prepare(`INSERT INTO recorder_coverage
+        (source,device,signal,status,start_at,end_at,source_time,observation_id,samples) VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run(reading.source, reading.device, reading.signal, 'fresh', at, at, reading.sourceTime, observation.id, Number(newReport)).lastInsertRowid);
+      s.coverageObservationId = observation.id;
+      if (newReport) { this.scale(s, reading.value, reading.sourceTime); s.lastSourceTime = reading.sourceTime; s.lastReportTime = report; }
+      this.count(s, at, { saved: true, bytes: Buffer.byteLength(JSON.stringify(observation)), polls: Number(newReport) });
+      this.store.setState(stateKey(s.key), s);
+      return { changed: true, observation };
+    });
   }
 
   /** A successful subscription repairs a transport outage, not a sensor's age.
@@ -457,10 +593,17 @@ export class Recorder {
           const report = this.store.db.prepare(`SELECT c.end_at,c.source_time,o.source_time AS original_source_time,o.raw
             FROM active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id WHERE c.id=?`).get(s.coverageId);
           const previousRaw = report?.raw ? JSON.parse(report.raw) : {};
+          const original = s.lastReportTime?.sourceTime === o.sourceTime ? s.lastReportTime : null;
+          const originalReceivedAt = original?.receivedAt ?? (report?.source_time === report?.original_source_time
+            ? previousRaw.originalReportReceivedAt ?? previousRaw.timeAdmission?.receivedAt ?? prior.receivedAt : report?.end_at ?? prior.receivedAt);
+          const originalAdmission = original ? original.admittedAt === undefined ? undefined : sourceTimeAdmission({
+            sourceTime: original.sourceTime, receivedAt: original.receivedAt, now: original.admittedAt, deferred: true })
+            : previousRaw.originalReportTimeAdmission ?? previousRaw.timeAdmission;
+          delete raw.timeAdmission;
           Object.assign(raw, { timeBasis: 'report-policy-change', reportPolicyChangedAt: o.receivedAt,
             originalReportSourceTime: o.sourceTime,
-            originalReportReceivedAt: report?.source_time === report?.original_source_time
-              ? previousRaw.originalReportReceivedAt ?? previousRaw.timeAdmission?.receivedAt ?? prior.receivedAt : report?.end_at ?? prior.receivedAt,
+            originalReportReceivedAt: originalReceivedAt,
+            originalReportTimeAdmission: originalAdmission,
             originalReportTimeBasis: previousRaw.originalReportTimeBasis ?? previousRaw.timeBasis ?? o.raw?.timeBasis });
         }
         raw.recorder = { version: VERSION, policy: policy.id, reason: cachedPolicyChange ? 'report-policy-change' : reason,
@@ -865,6 +1008,8 @@ function compactRaw(raw, observation) {
   // Caravan appliance history stores one power/fan state. Keep its physical
   // identity and evidence clocks without retaining sensor or setting values.
   if (observation?.source === 'mqtt-equipment' && observation.signal === 'caravan_dehumidifier_state' && observation.unit === 'state') {
+    if (validRecordingWait(raw.sourceTimeWait)) result.sourceTimeWait = { ...raw.sourceTimeWait };
+    if (finiteTime(raw.availabilityRecoveredAt)) result.availabilityRecoveredAt = raw.availabilityRecoveredAt;
     if (typeof raw.identity === 'string' && /^[a-f0-9]{64}$/.test(raw.identity)) result.identity = raw.identity;
     if (finiteTime(raw.fieldTimestamps?.power)) {
       result.fieldTimestamps = { power: raw.fieldTimestamps.power };

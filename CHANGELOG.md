@@ -16,6 +16,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Caravan dehumidifier recording stays active when a slightly early Shelly
   energy-counter notification arrives while required readings remain fresh.
   Required reports, faults and actual outages retain their evidence checks.
+  After a brief required-report timestamp wait, an already qualified state
+  resumes recording at admission without waiting for another appliance update;
+  the brief history gap and original measurement clocks are preserved.
+  Fresh meter reports update the recording deadline while preserving appliance
+  expiry, so recording and the Caravan card use the same current evidence.
   Recording warnings now reflect current source recovery between controller
   updates and explain missing Caravan power-check or appliance reports.
 
