@@ -33,6 +33,7 @@ import { jointTeslaComparisonScope } from './joint-identification.js';
 import { validateChargingRuntimeState } from './runtime-state.js';
 import { readChargingRuntime, writeChargingRuntime } from './runtime-storage.js';
 import { chargingFlexibility, consumeChargingFlexibility, changeChargingFlexibility, flexibilityUnavailable, nextLocalChargingDay } from './flexibility.js';
+import { chargingFlexibilityReason } from '../domain/charging-flexibility-status.js';
 import { forecastPriceOutlook } from '../acquisition/electricity-forecast.js';
 import { createSourceTimePending } from '../acquisition/source-time-pending.js';
 import { classifySourceTime } from '../domain/time-evidence.js';
@@ -1968,7 +1969,8 @@ export class ChargingRuntime {
         || saved?.lastTransition?.id === input.actionId && saved.lastTransition.action === input.action) return false;
       this.checkedSession(id, input);
       if (input.action === 'allow' && !view.flexibility.eligible)
-        throw new Error(`One-day flexibility is unavailable (${view.flexibility.reason ?? 'control-unavailable'}).`);
+        throw new Error(chargingFlexibilityReason(view.flexibility.reason)
+          ?? 'One-day flexibility is unavailable. Review the current charger status and charging request before trying again.');
       changeChargingFlexibility(item.request, input, this.clock());
       if (input.action === 'cancel') { item.plan = null; item.replan = true; }
       this.revision++;

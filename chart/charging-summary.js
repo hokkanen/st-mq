@@ -1,4 +1,4 @@
-import { chargingControlReason, chargingIdentificationInProgress, chargingTransactionWaiting } from './charging-status.js';
+import { chargingControlReason, chargingConfirmationMissing, chargingUnconfirmedDetail, chargingRecordedDetail, chargingIdentificationInProgress, chargingTransactionWaiting } from './charging-status.js';
 
 const finite = Number.isFinite;
 const timestamp = value => value == null || value === '' || !finite(new Date(value).getTime()) ? null : new Date(value).getTime();
@@ -44,6 +44,12 @@ export function chargingFlexibility(charger, { now = Date.now(), comparison = ch
 
 /** A bounded summary notice; its full explanation remains available on demand. */
 export function chargingNotice(charger, view, summary) {
+  const notice = chargingNoticeContent(charger, view, summary);
+  const paragraphs = [notice.detail, chargingRecordedDetail(charger)].filter(Boolean).flatMap(value => value.split('\n\n'));
+  return { ...notice, detail: [...new Set(paragraphs)].join('\n\n') };
+}
+
+function chargingNoticeContent(charger, view, summary) {
   const detail = [view.problem, view.priority, view.readiness, ...view.notes].filter(Boolean).join('\n\n');
   if (view.identification?.recovery) return { label: view.identification.label, detail: view.identification.detail, state: 'attention' };
   if (view.problem || summary.roleState === 'uncertain') return { label: 'Charger needs attention',
@@ -130,7 +136,7 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   const handoverUnconfirmed = supported && !enabled && control.handoverConfirmed === false;
   const currentAdjustmentOnly = control.scheduleConfirmed === true && control.currentAdjustment?.pending === true;
   const uncertain = (enabled || chargeNow || identificationActive) && ((!currentAdjustmentOnly && ['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed', 'unconfirmed'].includes(phase))
-    || control.confirmed === false || !currentAdjustmentOnly && Boolean(control.errorCode) || unknownInstruction
+    || chargingConfirmationMissing(charger) || !currentAdjustmentOnly && Boolean(control.errorCode) || unknownInstruction
     || view.state === 'Pause unconfirmed' || /update awaiting confirmation/.test(view.event ?? ''));
   let roleLabel = enabled ? 'Controlled' : 'Observed', roleState = enabled ? 'controlled' : 'observed';
   let roleDetail = enabled ? 'Automatic charging chooses charging periods for the ready-by time.'
@@ -148,7 +154,7 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   } else if (handoverUnconfirmed || handoverPending || uncertain) {
     roleLabel = handoverUnconfirmed || takeoverUnconfirmed ? 'Handover unconfirmed' : handoverPending ? 'Handover pending' : 'Control unconfirmed';
     roleState = 'uncertain';
-    roleDetail = (view.state === 'Pause unconfirmed' ? view.problem : chargingControlReason(control.reason)) || (handoverUnconfirmed ? 'Automatic charging is off, but the charger has not confirmed the handover.'
+    roleDetail = (view.state === 'Pause unconfirmed' ? view.problem : chargingUnconfirmedDetail(charger)) || (handoverUnconfirmed ? 'Automatic charging is off, but the charger has not confirmed the handover.'
       : handoverPending ? `Manual priority has ended. Waiting for charger confirmation.${enabled ? '' : ' Automatic charging remains off.'}`
         : chargeNow ? 'The immediate charging instruction is awaiting confirmation.' : 'The charger’s current automatic instruction is awaiting confirmation.');
   } else if ((identificationInProgress || identificationActive && !enabled && !chargeNow) && !yielded) {
@@ -214,6 +220,7 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   else if (!connected && !activity.startsWith(view.state ?? '')) activity = `${view.state}${activity ? ` · ${activity}` : ''}`;
   if (['Monitoring', 'Automatic charging OFF'].includes(activity)) activity = view.state || 'Waiting for readings';
   activity ||= view.state || 'Waiting for readings';
+  roleDetail = [roleDetail, chargingRecordedDetail(charger)].filter(Boolean).join('\n\n');
   const compactSummary = [roleLabel, activity, reached && !/target (?:already )?(?:met|reached)/i.test(activity) ? 'Target reached' : ''].filter(Boolean).join(' · ');
   return { roleLabel, roleDetail, roleState, activity, completion, compactSummary };
 }

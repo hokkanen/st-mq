@@ -94,8 +94,7 @@ function chargingSnapshot(snapshot) {
     const ownership = record.association ? snapshot.store.getState(`charging:${snapshot.input}:${id}:${record.association}:ownership`) : null;
     const recorded = saved.view?.chargers?.find(charger => charger.id === id);
     const control = { ...(ownership ?? recorded?.control ?? { phase: 'unavailable', released: false }),
-      enabled: settings.chargers[id].enabled, readOnly: true, snapshotAt, snapshot: null,
-      reason: `${ownership?.reason ? `${ownership.reason} ` : ''}Recorded master status; live charger health is unavailable on this read-only slave.` };
+      enabled: settings.chargers[id].enabled, readOnly: true, snapshotAt, snapshot: null };
     // A published view already contains the master's selected vehicle, battery
     // facts and energy assumption. Rebuilding it with this viewer's code would
     // reinterpret historical decisions and discard independently stored feeds.

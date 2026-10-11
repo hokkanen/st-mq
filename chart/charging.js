@@ -8,8 +8,8 @@ import { vehicleObservationAdmissionStatus } from './vehicle-feed-status.js';
 import { chargerSummary, chargingCost, chargingNotice } from './charging-summary.js';
 import { createChargingPriority } from './charging-priority.js';
 import { createChargingTime } from './charging-time.js';
-import { createChargingFlexibility } from './charging-flexibility.js';
-import { chargingControlLabel, chargingControlReason, chargingIdentificationInProgress, chargingTransactionWaiting, chargingPauseConfirmedForPeriod } from './charging-status.js';
+import { createChargingFlexibility, chargingFlexibilityError } from './charging-flexibility.js';
+import { chargingControlLabel, chargingControlReason, chargingConfirmationMissing, chargingUnconfirmedDetail, chargingRecordedDetail, chargingVehicleFeedReason, chargingIdentificationInProgress, chargingTransactionWaiting, chargingPauseConfirmedForPeriod } from './charging-status.js';
 import { CHARGING_LOSS_FRACTION, CHARGING_EFFICIENCY } from '../src/domain/charging-energy.js';
 import { identificationBlockerDetail } from '../src/charging/identification-readiness.js';
 
@@ -179,7 +179,7 @@ function vehiclePresentation(charger, { now, timezone } = {}) {
     detail: `Configured defaults cover unidentified vehicles, including visitors. You can change current charge, target and usable battery capacity for this session below. BMW or Tesla readings take over only after identification.${homeDetail}` };
   return { label: 'Any vehicle', detail: 'This charger accepts any vehicle. Configured defaults are available for visitors; BMW and Tesla readings are used only after identification.' };
 }
-const notices = value => (Array.isArray(value) ? value : value ? [value] : []).map(item => human(item?.message ?? item?.reason ?? item));
+const notices = value => (Array.isArray(value) ? value : value ? [value] : []).map(item => chargingControlReason(item?.message ?? item?.reason ?? item));
 const settingId = (id, key) => `${id}-setting-${key.replaceAll('.', '-')}`;
 const get = (object, path) => path.split('.').reduce((value, key) => value?.[key], object);
 // One field definition and one renderer serve every charger. The server supplies
@@ -240,7 +240,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const takeoverUnconfirmed = manual?.kind === 'takeover-unconfirmed';
   const currentAdjustmentOnly = control.scheduleConfirmed === true && control.currentAdjustment?.pending === true;
   const uncertain = (enabled || chargeNow || identificationActive) && ((!currentAdjustmentOnly && ['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed'].includes(phase))
-    || control.confirmed === false || phase === 'unconfirmed' && (chargeNow || identificationActive || control.owned || control.execution)
+    || chargingConfirmationMissing(charger) || phase === 'unconfirmed' && (chargeNow || identificationActive || control.owned || control.execution)
     || !currentAdjustmentOnly && Boolean(control.errorCode) || unknownInstruction);
   const yielded = (enabled || chargeNow || identificationActive) && (['yielded', 'manual'].includes(phase) || Boolean(manual));
   const activeManual = yielded && !unknownInstruction;
@@ -416,7 +416,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const shortfallNote = risk && finite(shortfall) && shortfall > 0 && finite(minimum) && deadline
     ? `Forecast is ${shortfall < 0.1 ? 'less than 0.1 kWh' : number(shortfall, 'kWh')} short of the ${number(minimum, '%')} target by ${deadline.replace(/^Ready by /, '')}.` : '';
   const notes = enabled && showMetrics && !yielded && !uncertain
-    ? [...notices(plan.warnings), ...notices(forecast.warnings)].filter(note => !fallbackNotice.test(note)
+    ? [...new Set([...notices(plan.warnings), ...notices(forecast.warnings)])].filter(note => !fallbackNotice.test(note)
       && !(shortfallNote && /predicted charging capacity cannot deliver/i.test(note))
       && !(targetReached && /cannot deliver|insufficient.*time|target at risk/i.test(note))
       && !(currentForecast !== plan && currentForecast.feasible !== false && /cannot deliver|insufficient.*time|target at risk/i.test(note))) : [];
@@ -425,14 +425,17 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     notes.push('The forecast assumes maximum available charging current within shared property capacity. Actual delivery and completion remain estimates.');
   if (showPlan && estimateOnly)
     notes.push('These periods are proposed. Charger control must be confirmed before the schedule can be applied.');
-  let problem = uncertain || handoverUnconfirmed ? chargingControlReason(control.reason) || 'The charger instruction could not be confirmed. Another reading will be requested.' : '';
+  let problem = uncertain || handoverUnconfirmed ? chargingUnconfirmedDetail(charger) || 'The charger instruction could not be confirmed. Another reading will be requested.' : '';
   if (pauseUnconfirmed) problem = 'The pause between charging periods has not been confirmed. Waiting for a fresh charger instruction and reading.';
   if (control.reason === 'identification-resume-required') problem = 'Review the charger pause under Identification below.';
-  if (charger.error) problem ||= ({ 'charging-adapter-unavailable': supported
+  if (charger.error) {
+    const errors = { 'charging-adapter-unavailable': supported
     ? 'The charger connection is unavailable. Automatic control is waiting for a connection.'
     : 'The vehicle connection is unavailable. Waiting for fresh charging readings.',
     'charging-reconciliation-unavailable': 'The charger schedule could not be confirmed. The last instruction may still be active; another reading will be requested.',
-    'charging-planning-unavailable': 'The charging forecast could not be updated. The last confirmed instruction remains in effect; planning will retry.' })[charger.error] ?? chargingControlReason(charger.error);
+    'charging-planning-unavailable': 'The charging forecast could not be updated. The last confirmed instruction remains in effect; planning will retry.' };
+    problem ||= Object.hasOwn(errors, charger.error) ? errors[charger.error] : chargingControlReason(charger.error);
+  }
   const missed = control.lastMissedTransition;
   if (enabled && showMetrics && !yielded && validTime(missed?.pauseAt) && validTime(missed?.resumeAt))
     notes.push(`Planned pause ${window(missed.pauseAt, missed.resumeAt, true)} was not confirmed; charging may have continued.`);
@@ -440,14 +443,14 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const recordedVehicleFeed = charger.readOnly === true && charger.recorded === true || charger.mqtt?.reason === 'read-only-snapshot';
   const storage = vehicleObservationAdmissionStatus(charger.mqtt?.reason);
   const feedReason = charger.mqtt?.reason && !['awaiting-mqtt', 'awaiting-subscription', 'awaiting-report', 'idle', 'asleep'].includes(charger.mqtt.reason)
-    ? storage?.cause ?? ({ 'mqtt-disconnected': 'MQTT is disconnected', 'mqtt-subscription-failed': 'the MQTT subscription failed',
-      'vehicle-feed-stale': 'no recent vehicle report' })[charger.mqtt.reason] ?? human(charger.mqtt.reason) : '';
+    ? storage?.cause ?? chargingVehicleFeedReason(charger.mqtt.reason) : '';
   if (showMetrics && recordedVehicleFeed) vehicleNotes.push('Recorded vehicle snapshot. Readings retain their original times; estimates are shown as recorded.');
   else if (showMetrics && retainedVehicleReference) vehicleNotes.push(`Vehicle readings are unavailable${feedReason ? ` (${feedReason})` : ''}. The estimate uses the last vehicle charge and measured energy for this connection. Edit Current charge in Session settings to set a new reference.`);
   else if (showMetrics && storage) vehicleNotes.push(storage.detail);
   else if (showMetrics && feedReason) vehicleNotes.push(`Vehicle feed: ${feedReason}. The last valid reading keeps its original timestamp.`);
   if (showMetrics && progress.basis?.energyCoverageIncomplete) vehicleNotes.push('Some charging energy was not measured. The charge estimate may be low until a new vehicle reading arrives.');
-  notes.push(...vehicleNotes);
+  // Recorded scope is informational; missing energy remains a limitation.
+  notes.push(...(recordedVehicleFeed ? vehicleNotes.slice(1) : vehicleNotes));
   const controlDetail = !supported ? 'This integration supports monitoring only.'
     : activeManual ? `Automatic charging remains ${enabled ? 'on' : 'off'} while another charger instruction has priority.${resumption ? ` ${resumption}` : ''}`
       : provisional ? 'Charging is allowed for now. The forecast is being updated; economical periods can still be scheduled when it improves.'
@@ -543,7 +546,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     energyLabel: hasProgress ? 'Grid remaining' : 'Grid to target',
     energyNote: requiredGridKwh === 0 ? hasProgress ? 'Target energy delivered' : 'Target already met' : 'Includes losses', problem,
     rows, notes: [...new Set(notes)].filter(note => note !== event), vehicleNotes, recordedVehicleFeed, explanations, yielded: activeManual, supported, controlDetail,
-    controlReason: chargingControlReason(manual?.reason || control.reason) };
+    controlReason: [chargingControlReason(manual?.reason || control.reason), chargingRecordedDetail(charger)].filter(Boolean).join('\n\n') };
 }
 
 export function chargingDisplay(charging, now = Date.now()) {
@@ -844,7 +847,10 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       beforeRequest(); const result = await request(path, payload); saved(); update(result); onStatus(result);
       actionMessage(message, typeof success === 'function' ? success() : success);
       return true;
-    } catch (error) { actionMessage(message, chargingControlReason(error.message) || 'Could not save charging settings.', { error: true }); return false; }
+    } catch (error) {
+      const detail = path.endsWith('/flexibility') ? chargingFlexibilityError(error) : chargingControlReason(error.code || error.message);
+      actionMessage(message, detail || 'Could not save charging settings.', { error: true }); return false;
+    }
     finally { actionMessages.set(message, status?.now ?? Date.now()); busy = false; refreshControls(); afterRequest(); }
   }
   function updateFields(group, settings, charger) {
@@ -948,9 +954,10 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       && replicaSnapshotKey(next) === replicaSnapshotKey(status)) return;
     status = next;
     const charging = next?.charging;
-    const globalError = (({ 'charging-planning-unavailable': 'The charging plan could not be updated. The last charger instructions remain in effect.',
-      'charging-reconciliation-unavailable': 'The current charging instructions could not be confirmed.' })[charging?.error] ?? chargingControlReason(charging?.error))
-      || charging?.limiterHistoryError || '';
+    const globalErrors = { 'charging-planning-unavailable': 'The charging plan could not be updated. The last charger instructions remain in effect.',
+      'charging-reconciliation-unavailable': 'The current charging instructions could not be confirmed.' };
+    const globalError = (Object.hasOwn(globalErrors, charging?.error) ? globalErrors[charging.error] : chargingControlReason(charging?.error))
+      || chargingControlReason(charging?.limiterHistoryError) || '';
     const globalStatus = $('charging-status');
     const globalTrigger = setStatusDetail(globalStatus, { label: globalError ? 'Charging needs attention' : '',
       title: 'Charging status', detail: globalError, key: 'charging-status' });

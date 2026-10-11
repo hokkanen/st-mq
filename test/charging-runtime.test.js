@@ -592,7 +592,11 @@ test('one-day flexibility is durable, revision-fenced, consumes exactly once thr
   await runtime.setFlexibility('charger1', input);
   assert.equal(chargerView(runtime).request.revision, revision);
   await assert.rejects(runtime.setFlexibility('charger1', { ...input, actionId: 'different-click' }), /changed/);
-  await assert.rejects(runtime.setFlexibility('charger1', flexibilityInput(runtime, 'allow', 'stacked')), /unavailable/);
+  await assert.rejects(runtime.setFlexibility('charger1', flexibilityInput(runtime, 'allow', 'stacked')), error => {
+    assert.match(error.message, /already allowed.*Review the active allowance/);
+    assert.doesNotMatch(error.message, /already-allowed|unavailable \(/);
+    return true;
+  });
   assert.equal(readChargingRuntime(f.store, 'charging:mqtt').chargers.charger1.request.deadlineAt, original + 24 * HOUR);
   await runtime.close(); f.setNow(original + HOUR); runtime = f.create(); adapter = fakeAdapter(f.clock);
   assert.equal(runtime.chargers.charger1.request.deadlineAt, original + 24 * HOUR);

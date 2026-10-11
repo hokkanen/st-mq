@@ -146,6 +146,8 @@ is identified as such and does not imply a live vehicle connection.
 
 | What you see | Meaning |
 | --- | --- |
+| Ready for the next connection | The charger reports no vehicle plugged in. No session charging permission needs confirmation; the saved Automatic choice remains in effect. |
+| Charger needs attention | Open the status popup for the actual connection, instruction or recovery problem and next check. Unplugging does not confirm that an earlier command or temporary setting was restored. |
 | Proposed charging periods | The current economic plan; they may still be awaiting native acceptance. |
 | Forecast prices in the plan | Estimated all-in prices selected with the same uncertainty allowance used by One extra day. They can change and are replaced by published prices. |
 | Charging is allowed | The applicable instruction permits charging. A car timer, target or other restriction can still prevent draw. |
@@ -154,6 +156,12 @@ is identified as such and does not imply a live vehicle connection.
 | Identification inconclusive | The active attempt ended unresolved. Passive evidence can still complete the match within this connection. |
 | Load balancing: Fallback | Current uses its configured fallback cap subject to known tighter limits. It is not proof of healthy household headroom. |
 | Load balancing: Unknown | Current headroom or the controller decision is unavailable. A retained charger setting does not establish available capacity. Healthy feeds use their latest values without waiting for matching timestamps. |
+
+MQTT **Available** describes communication with the charger, independently of a
+vehicle being plugged in. A healthy unplugged charger needs no attention warning.
+Connection loss, faults and unresolved instructions or restoration remain visible
+on either card, including after unplugging. An unconfirmed command may still have
+taken effect; check the actual charger state before retrying it.
 
 Normal automatic scheduling combines published prices with fresh forecast prices
 when the optional feed is enabled. It selects economical periods before the

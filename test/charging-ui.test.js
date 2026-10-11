@@ -1418,31 +1418,135 @@ test('saved manual current charge stays a manual reference as measured energy ad
   panel.close();
 });
 
-test('Charger 2 popups explain manual priority and unconfirmed instructions without internal codes', () => {
+test('both charger popups explain manual priority and unconfirmed instructions without internal codes', () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const panel = createChargingPanel({ document, request: async () => {} });
-  const item = connected('charger2'); item.settings.enabled = true;
-  for (const [reason, manual, expected] of [
-    ['manual-stop', { kind: 'stop' }, /stop instruction is preventing automatic scheduling/i],
-    ['device-permission-held', null, /charger withdrew charging permission.*no replacement Start is sent/i],
-    ['native-schedule', { kind: 'schedule' }, /charger’s own schedule has priority/i],
-    ['evse-command-unconfirmed', null, /outcome is still unknown.*fresh reading/i],
-    ['telemetry-fallback', null, /configured fallback.*usable load measurements/i],
-    ['future-control-condition', null, /Check the charger controls for details/],
-  ]) {
-    panel.update(status({ ...item, control: { phase: manual ? 'manual' : 'uncertain', reason, manual, confirmed: false } }));
-    for (const id of ['charger2-state', 'charger2-notice']) {
-      const popup = openDetail($(id)); assert.match(popup.textContent, expected);
-      assert(!popup.textContent.includes(reason));
-      assert(!($(id).querySelector('button').getAttribute('aria-label') ?? '').includes(reason));
+  for (const chargerId of ['charger1', 'charger2']) {
+    const item = connected(chargerId); item.settings.enabled = true;
+    for (const [reason, manual, expected] of [
+      ['manual-stop', { kind: 'stop' }, /stop instruction is preventing automatic scheduling/i],
+      ['device-permission-held', null, /charger withdrew charging permission.*no replacement Start is sent/i],
+      ['native-schedule', { kind: 'schedule' }, /charger’s own schedule has priority/i],
+      ['evse-command-unconfirmed', null, /outcome is still unknown.*fresh reading/i],
+      ['telemetry-fallback', null, /configured fallback.*usable load measurements/i],
+      ['future-control-condition', null, /Check the charger controls for details/],
+      ['unsupported', null, /Check the charger controls for details/],
+      ['constructor', null, /Check the charger controls for details/],
+      ['command-failed', null, /may still have taken effect.*actual state before retrying/i],
+      ['evse-input-persistence-pending', null, /readings are waiting to be saved.*New instructions wait/],
+      ['evse-source-time-pending', null, /ahead of the controller clock.*New instructions wait/],
+      ['ocpp-disconnected', null, /local charger connection was lost.*Earlier instructions may still be active/],
+    ]) {
+      panel.update(status({ ...item, control: { phase: manual ? 'manual' : 'uncertain', reason, manual, confirmed: false } }));
+      for (const id of [`${chargerId}-state`, `${chargerId}-notice`]) {
+        const popup = openDetail($(id)); assert.match(popup.textContent, expected);
+        assert(!popup.textContent.includes(reason));
+        assert(!($(id).querySelector('button').getAttribute('aria-label') ?? '').includes(reason));
+      }
+      assert(!($(`${chargerId}-event-value`).textContent ?? '').includes(reason));
+      assert(!openDetail($(`${chargerId}-event-value`)).textContent.includes(reason));
+      assert(!($(`${chargerId}-control-detail`).textContent ?? '').includes(reason));
+      assert.equal($(`${chargerId}-enabled`).getAttribute('aria-checked'), 'true', 'Manual priority preserves the Automatic preference');
+      assert.equal($(`${chargerId}-resume`), null);
     }
-    assert(!($('charger2-event-value').textContent ?? '').includes(reason));
-    assert(!openDetail($('charger2-event-value')).textContent.includes(reason));
-    assert(!($('charger2-control-detail').textContent ?? '').includes(reason));
-    assert.equal($('charger2-enabled').getAttribute('aria-checked'), 'true', 'Manual priority preserves the Automatic preference');
-    assert.equal($('charger2-resume'), null);
   }
   panel.close();
+});
+
+test('unplugged card popups describe readiness, and real MQTT loss remains an explained warning', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => {} });
+  for (const id of ['charger1', 'charger2']) {
+    const item = charger(id, { settings: { enabled: true }, values: { connected: reading(false) },
+      control: { phase: 'off', reason: 'disconnected', confirmed: false, handoverConfirmed: true,
+        snapshot: { online: true, pluggedIn: false } } });
+    panel.update(status(item));
+    assert.equal($(`${id}-notice`).textContent, 'Ready for the next connection');
+    assert.equal($(`${id}-problem`).hidden, true);
+    assert.match(openDetail($(`${id}-notice`)).textContent, /vehicle is confirmed connected/);
+    assert.match(openDetail($(`${id}-event-value`)).textContent, /no vehicle.*plugged in/);
+    assert.doesNotMatch(openDetail($(`${id}-state`)).textContent, /unconfirmed|disconnected/);
+    panel.update(status({ ...item, control: { ...item.control, phase: 'unavailable', reason: 'offline', snapshot: { online: false } } }));
+    assert.equal($(`${id}-notice`).textContent, 'Charger needs attention');
+    assert.match(openDetail($(`${id}-notice`)).textContent, /connection is unavailable.*New instructions cannot be confirmed.*Check/);
+    assert.notEqual($(`${id}-problem`).textContent, 'offline');
+  }
+  panel.close();
+});
+
+test('vehicle-feed and planning disclosures preserve clocks and authored meaning on both cards', () => {
+  for (const id of ['charger1', 'charger2']) {
+    const item = { ...connected(id), settings: { enabled: true },
+      control: { phase: 'waiting', confirmed: true, owned: { startAt } },
+      values: { ...connected(id).values, soc: reading(40, 'teslamate', { measuredAt: now - 3600_000, receivedAt: now - 3500_000 }) } };
+    for (const reason of ['vehicle-source-clock-pending', 'vehicle-source-clock-unavailable', 'vehicle-logger-unhealthy', 'unexpected-feed-code']) {
+      const result = view({ ...item, mqtt: { reason } });
+      assert.match(result.vehicleNotes.join(' '), /vehicle.*(?:clock|logger|feed)/i);
+      assert.match(result.vehicleNotes.join(' '), /original timestamp/);
+      assert(!result.vehicleNotes.join(' ').includes(reason));
+      assert.equal(item.values.soc.measuredAt, now - 3600_000);
+    }
+    const message = 'Prices do not yet cover the full ready-by period. The schedule will be reconsidered when more prices arrive.';
+    const result = view({ ...item, plan: { warnings: [message, 'unexpected-warning-code'] }, forecast: { warnings: [message] } });
+    assert.equal(result.notes.filter(note => note === message).length, 1);
+    assert(!result.notes.join(' ').includes('unexpected-warning-code'));
+    assert.match(result.notes.join(' '), /Check the charger controls/);
+  }
+});
+
+test('recorded charger popups keep status codes readable and live availability explicitly unknown', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => { assert.fail('Recorded views send no commands'); } });
+  for (const id of ['charger1', 'charger2']) {
+    const item = charger(id, { readOnly: true, recorded: true, settings: { enabled: true },
+      values: { connected: reading(false) }, control: { phase: 'off', confirmed: false, reason: 'disconnected', snapshot: null } });
+    panel.update({ ...status(item), role: 'slave', readOnly: true });
+    assert.equal($(`${id}-notice`).textContent, 'Ready for the next connection');
+    for (const key of ['notice', 'state', 'event-value']) {
+      const popup = openDetail($(`${id}-${key}`));
+      assert.match(popup.textContent, /Recorded master status.*live charger health is unavailable.*controlling computer/s);
+      assert.doesNotMatch(popup.textContent, /\bdisconnected\b/);
+    }
+    assert.equal($(`${id}-enabled`).disabled, true);
+    assert.equal($(`${id}-charge-now`).disabled, true);
+    panel.update({ ...status({ ...item, control: { ...item.control, pending: { stage: 'dispatched' } } }), role: 'slave', readOnly: true });
+    assert.equal($(`${id}-notice`).textContent, 'Charger needs attention');
+    const pendingPopup = openDetail($(`${id}-notice`)).textContent;
+    assert.match(pendingPopup, /instruction still needs reconciliation.*Recorded master status/s);
+    assert.equal(pendingPopup.split('An earlier charger instruction still needs reconciliation').length - 1, 1);
+    assert.equal(pendingPopup.split('Recorded master status').length - 1, 1);
+    const complete = { ...item, values: { connected: reading(true), soc: reading(80), minimumSoc: reading(80) },
+      progress: { remainingGridKwh: 0 }, control: { phase: 'released', confirmed: true } };
+    panel.update({ ...status(complete), role: 'slave', readOnly: true });
+    assert.match($(`${id}-notice`).textContent, /Target reached/);
+    const refreshedPopup = $('status-detail-popover');
+    assert.equal(refreshedPopup.hidden, false, 'An open explanation refreshes with its charger status');
+    assert.match(refreshedPopup.textContent, /Recorded master status.*live charger health is unavailable/s);
+    panel.update({ ...status({ ...complete, progress: { ...complete.progress, basis: { energyCoverageIncomplete: true } } }), role: 'slave', readOnly: true });
+    assert.equal($(`${id}-notice`).textContent, 'Estimate has limitations');
+    assert.match(refreshedPopup.textContent, /Some charging energy was not measured/);
+    assert.match(refreshedPopup.textContent, /Recorded master status.*live charger health is unavailable/s);
+  }
+  panel.close();
+});
+
+test('one-day comparison errors and rejected actions explain their cause without machine codes', async () => {
+  for (const id of ['charger1', 'charger2']) {
+    const document = documentFixture(), $ = name => document.getElementById(name);
+    const item = { ...flexibleCharger(), id, provider: id === 'charger1' ? 'easee' : 'shelly-evse' };
+    const panel = createChargingPanel({ document, request: async path => {
+      if (path.endsWith('/flexibility-preview')) throw new Error('unsupported');
+      throw Object.assign(new Error('A raw exception must not replace the known refusal.'), { code: 'control-unavailable' });
+    } });
+    panel.update(status(item));
+    await $(`${id}-flexibility`).listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+    assert.match($('charging-flexibility-message').textContent, /Check the charger controls/);
+    assert.doesNotMatch($('charging-flexibility-message').textContent, /unsupported/);
+    await $('charging-flexibility-apply').listeners.get('click')();
+    assert.match($('charging-flexibility-message').textContent, /confirmed charging control.*pending recovery/);
+    assert.doesNotMatch($('charging-flexibility-message').textContent, /control-unavailable|raw exception/);
+    panel.close();
+  }
 });
 
 test('both Automatic switches change only the persistent preference and preserve other charger instructions', async () => {
@@ -1964,7 +2068,7 @@ test('schedule groups separate forecast assumptions from native evidence and con
   assert.doesNotMatch(section.textContent, /Connection delivered|Charge measured/);
   assert.equal(section.textContent.split('Measured 15 Sept, 20:00').length - 1, 1, 'Original source time appears once beside the vehicle reference');
   assert.equal($('charger2-vehicle-notes').children.length, 2, 'One outage note and one distinct energy-coverage warning remain');
-  assert.match($('charger2-vehicle-notes').textContent, /Vehicle readings are unavailable \(the MQTT subscription failed\).*Edit Current charge.*Some charging energy was not measured/);
+  assert.match($('charger2-vehicle-notes').textContent, /Vehicle readings are unavailable \(the MQTT subscription failed for vehicle reports; check MQTT topic access\).*Edit Current charge.*Some charging energy was not measured/);
   assert.doesNotMatch($('charger2-notes').textContent, /Vehicle feed|Vehicle readings|charging energy was not measured/);
   for (const [reason, cause] of [
     ['vehicle-observation-storage-pending', /waiting to save a vehicle report/],

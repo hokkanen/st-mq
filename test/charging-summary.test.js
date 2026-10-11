@@ -17,6 +17,47 @@ function summary(item) {
 }
 const notice = item => chargingNotice(item, chargerDisplay(item, { now }), summary(item));
 
+test('healthy unplugged chargers need no session permission confirmation', () => {
+  for (const [id, provider] of [['charger1', 'easee'], ['charger2', 'shelly-evse']]) {
+    const item = charger({ id, provider, values: { connected: reading(false) },
+      control: { phase: 'off', confirmed: false, reason: 'disconnected', handoverConfirmed: true,
+        snapshot: { online: true, pluggedIn: false } }, plan: { state: 'disconnected', reason: 'disconnected' } });
+    assert.equal(chargerDisplay(item, { now }).problem, '');
+    assert.notEqual(summary(item).roleState, 'uncertain');
+    assert.equal(notice(item).label, 'Ready for the next connection');
+    assert.equal(notice(item).state, 'quiet');
+    assert.equal(notice({ ...item, settings: { enabled: false } }).label, 'Automatic charging is off');
+    assert.equal(item.control.confirmed, false, 'Presentation never grants charger permission');
+  }
+});
+
+test('unplugged vehicles never hide faults, uncertain instructions or physical recovery', () => {
+  for (const id of ['charger1', 'charger2']) {
+    const item = charger({ id, values: { connected: reading(false) },
+      control: { phase: 'off', confirmed: false, reason: 'disconnected', snapshot: { online: true } } });
+    for (const [patch, explanation] of [
+      [{ phase: 'unavailable', reason: 'offline' }, /connection.*unavailable/],
+      [{ errorCode: 'charger-fault', reason: 'charger-fault' }, /reports a fault/],
+      [{ pending: { stage: 'proposed' } }, /instruction still needs reconciliation/],
+      [{ pending: { stage: 'dispatched' } }, /instruction still needs reconciliation/],
+      [{ owned: { startAt } }, /still needs recovery/],
+      [{ handoverConfirmed: false }, /handover is still unconfirmed/],
+      [{ currentTest: { phase: 'restoring' } }, /still needs recovery/],
+      [{ takeover: { state: 'blocked', reason: 'evse-native-schedule-unconfirmed' } }, /previous schedule was disabled/],
+      [{ snapshot: { online: false } }, /connection.*unavailable/],
+    ]) {
+      const changed = { ...item, control: { ...item.control, ...patch } };
+      assert.equal(notice(changed).state, 'attention', `${id}: ${JSON.stringify(patch)}`);
+      assert.match(notice(changed).detail, explanation);
+      assert.doesNotMatch(notice(changed).detail, /^disconnected$|Ready for the next connection/);
+    }
+    const unknown = { ...item, values: { connected: reading(null) } };
+    assert.equal(notice(unknown).state, 'attention');
+    assert.match(notice(unknown).detail, /connection.*cannot be confirmed/);
+    assert.doesNotMatch(notice(unknown).detail, /vehicle is unplugged|earlier charger instruction/);
+  }
+});
+
 test('a failed reading explains unavailable control without claiming an uncertain command outcome', () => {
   const item = charger({ provider: 'shelly-evse', control: { phase: 'unavailable', confirmed: false,
     reason: 'evse-read-timeout', pending: null, execution: { periods: [{ startAt, endAt: null }] } } });

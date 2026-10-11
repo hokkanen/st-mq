@@ -15,7 +15,7 @@ const reasons = {
   'fuse-limit': 'Property headroom', 'priority-allocation': 'Charger priority',
   'hardware-restriction': 'Full configured ceiling', 'native-current-limit': 'Charger current choice',
   'vehicle-current-limit': 'Vehicle limit',
-  'feed-unsynchronized': 'Waiting for synchronized feeds', 'charger-current-unavailable': 'Easee current unavailable',
+  'feed-unsynchronized': 'Load-source reporting not confirmed', 'charger-current-unavailable': 'Easee current unavailable',
   'shelly-current-unavailable': 'Shelly current unavailable', 'non-additive-currents': 'Load readings disagree',
   'below-minimum-current': 'Below the minimum charging current',
   'telemetry-fallback': 'Load evidence unavailable', 'feed-unavailable': 'Load feed unavailable',

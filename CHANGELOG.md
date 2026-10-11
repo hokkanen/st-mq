@@ -6,6 +6,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Charger cards treat a healthy unplugged vehicle as ready for the next connection
+  instead of warning about missing charging permission. Both cards explain
+  connection loss, pending instructions and recovery separately; popups translate
+  internal status codes into causes and next checks without claiming an uncertain
+  command failed. Vehicle-feed and one-day comparison messages use the same clear
+  wording, and planning disclosures retain their original meaning.
+
 - Paired history checks hide Recover history when a validated source has no
   changes since the exact shared checkpoint. Resume mirroring then verifies and
   catches up the other computer without suggesting that history is skipped.

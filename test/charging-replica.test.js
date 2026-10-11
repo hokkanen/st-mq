@@ -105,6 +105,44 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   assert.equal(digest(), originalDigest, 'Replica rendering and rejected mutations leave the published database unchanged');
 });
 
+test('recorded charger control reasons retain their machine meaning and original clocks', async t => {
+  const settings = chargingSettings(), measuredAt = snapshotAt - 30_000, receivedAt = snapshotAt - 20_000;
+  const ownership = { version: 5, phase: 'off', owned: null, pending: null, manual: null,
+    released: false, reason: 'disconnected', lastReadAt: receivedAt };
+  const chargers = CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
+    settings: settings.chargers[definition.id], now: snapshotAt,
+    telemetry: { connected: { value: false, available: true, measuredAt, receivedAt, source: definition.provider } },
+    control: { phase: 'off', confirmed: false, reason: definition.id === 'charger1' ? 'within-limit' : 'disconnected',
+      snapshot: { online: true, readAt: receivedAt } },
+  }));
+  const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 7,
+    chargers: { charger1: { association: 'synthetic-association' }, charger2: { association: 'synthetic-second-association' } },
+    view: { settings, chargers },
+  }, ownership);
+  const charging = (await (await fetch(`${root}/api/status`)).json()).charging;
+  assert.equal(charging.readOnly, true);
+  assert.equal(charging.recorded, true);
+  assert.equal(charging.snapshotAt, snapshotAt);
+  assert.equal(charging.chargers[0].control.lastReadAt, receivedAt);
+  for (const charger of charging.chargers) {
+    assert.equal(charger.readOnly, true);
+    assert.equal(charger.recorded, true);
+    assert.equal(charger.snapshotAt, snapshotAt);
+    assert.equal(charger.control.readOnly, true);
+    assert.equal(charger.control.snapshotAt, snapshotAt);
+    assert.equal(charger.control.snapshot, null, 'Recorded native state cannot supply live connection health');
+    assert.equal(charger.control.reason, 'disconnected',
+      'Ownership and recorded-view reasons stay usable as codes; recorded context is presented separately');
+    assert.deepEqual(charger.values.connected, chargers.find(item => item.id === charger.id).values.connected);
+    assert.equal(charger.values.connected.measuredAt, measuredAt);
+    assert.equal(charger.values.connected.receivedAt, receivedAt);
+  }
+  advance();
+  assert.deepEqual(JSON.parse(JSON.stringify(app.status().charging)), charging,
+    'Viewer time does not rewrite recorded reasons or evidence clocks');
+  assert.equal(digest(), originalDigest, 'Recorded charging projection does not alter the published database');
+});
+
 test('replica preserves independent vehicle identification, selected values and session costs from the published view', async t => {
   const settings = chargingSettings(), automaticSoc = { source: 'bmw-cardata', soc: 85, chargeLimitSoc: 95,
     measuredAt: snapshotAt - 3600_000, receivedAt: snapshotAt - 30_000, readingId: 'published-bmw' };

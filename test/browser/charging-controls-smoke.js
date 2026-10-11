@@ -170,6 +170,11 @@ fixture.setCase = name => {
     }
     if (name === 'readonly') item.readOnly = true;
     if (name === 'disconnected') item.values.connected = reading(false);
+    if (name === 'healthy-unplugged') {
+      item.values.connected = reading(false);
+      item.control = { phase: 'off', reason: 'disconnected', confirmed: false, handoverConfirmed: true,
+        snapshot: { online: true, pluggedIn: false } };
+    }
     if (name === 'unknown-connection') item.values.connected = { value: null, available: false };
     if (name === 'missing-token') item.control.takeover.token = null;
     if (name === 'monitoring') item.capabilities.scheduling = false;
@@ -262,6 +267,16 @@ try {
   for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
+    await evaluate("chargingFixture.setCase('healthy-unplugged')");
+    for (const id of ['charger1', 'charger2']) {
+      assert.equal(await evaluate(`document.getElementById('${id}-notice').textContent`), 'Ready for the next connection');
+      assert.equal(await evaluate(`document.getElementById('${id}-problem').hidden`), true);
+      await evaluate(`document.querySelector('#${id}-event-value .status-detail-trigger').click()`);
+      const explanation = await evaluate("document.getElementById('status-detail-popover').textContent");
+      assert.match(explanation, /no vehicle.*plugged in/);
+      assert.doesNotMatch(explanation, /\bdisconnected\b|Charger needs attention/);
+      await keyPress('Escape', 'Escape', 27);
+    }
     await evaluate("chargingFixture.setCase('ordinary'); document.querySelectorAll('.charging-device').forEach(card => card.open = false)");
     const originalHeights = await evaluate("[...document.querySelectorAll('.equipment-device-summary')].map(node => node.getBoundingClientRect().height)");
     assert.equal(await evaluate("document.querySelector('.charging-disclosure') === null"), true, 'The old bottom disclosure row is removed');
