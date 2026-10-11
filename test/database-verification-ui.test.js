@@ -44,13 +44,16 @@ function fixture() {
     }
     return elements.get(id);
   };
+  element('recording-details').open = true;
   element('database-verification-details').open = true;
-  const panel = bindDatabaseVerification({ document: { getElementById: element }, formatTime: String,
+  const document = { getElementById: element, visibilityState: 'visible', listeners: {},
+    addEventListener(type, callback) { this.listeners[type] = callback; }, removeEventListener(type) { delete this.listeners[type]; } };
+  const panel = bindDatabaseVerification({ document, formatTime: String,
     request: (path, body) => new Promise((resolve, reject) => { requests.push({ path, body, resolve, reject }); }),
     setTimer: callback => { timers.set(++timerId, callback); return timerId; },
     clearTimer: id => timers.delete(id),
   });
-  return { panel, element, requests, timers,
+  return { panel, document, element, requests, timers,
     button: element('database-verification-start'),
     writes: () => [...elements.values()].flatMap(value => value.writes),
     poll: () => {
@@ -61,6 +64,42 @@ function fixture() {
     },
   };
 }
+
+test('closed parent and hidden tabs stop verification polling while server work remains independent', async () => {
+  const view = fixture(); view.panel.update(admin);
+  view.requests[0].resolve({ ...idle, state: 'running', progress: { processed: 12 } }); await settle();
+  view.element('recording-details').open = false;
+  view.element('recording-details').listeners.toggle();
+  assert.equal(view.timers.size, 0);
+  assert.equal(view.requests.length, 1, 'Closing the view sends no cancellation or mutation');
+  view.element('recording-details').open = true;
+  view.element('recording-details').listeners.toggle();
+  assert.equal(view.requests.length, 2, 'Reopening reads the accepted job');
+  view.requests[1].resolve({ ...idle, state: 'complete', lastResult: { verifiedAt: 123, checkpoint: { sequence: 42 } } }); await settle();
+  view.document.visibilityState = 'hidden'; view.document.listeners.visibilitychange();
+  assert.equal(view.timers.size, 0);
+  view.document.visibilityState = 'visible'; view.document.listeners.visibilitychange();
+  assert.equal(view.requests.length, 3);
+  view.requests[2].resolve(idle); await settle();
+  assert.equal(view.timers.size, 1);
+  view.panel.close();
+});
+
+test('verification stays lazy while folded and clears old source results across resets and logout', async () => {
+  const view = fixture(); view.element('recording-details').open = false; view.panel.update(admin);
+  assert.equal(view.requests.length, 0);
+  view.element('recording-details').open = true; view.element('recording-details').listeners.toggle();
+  view.panel.reset();
+  assert.equal(view.requests.length, 2);
+  view.requests[0].resolve({ ...idle, state: 'error', error: 'database_integrity_failed' }); await settle();
+  assert.doesNotMatch(view.element('database-verification-status').textContent, /failed its integrity/);
+  view.requests[1].resolve(idle); await settle();
+  const poll = view.poll(); view.panel.clear();
+  view.requests[2].resolve({ ...idle, state: 'error', error: 'database_integrity_failed' }); await poll;
+  assert.equal(view.timers.size, 0); assert.equal(view.button.disabled, true);
+  assert.doesNotMatch(view.element('database-verification-status').textContent, /failed its integrity/);
+  view.panel.close();
+});
 
 test('background verification polls do not flash the action or rewrite unchanged live status', async () => {
   const view = fixture();
@@ -132,6 +171,7 @@ test('known start refusals survive a successful status refresh and preserve the 
   for (const [failure, expected] of [
     [{ status: 403 }, /not started.*Admin access/],
     [{ status: 409, code: 'full_verification_unavailable' }, /not started.*database is not available/],
+    [{ status: 409, code: 'full_verification_busy' }, /not started.*Another database check is still running/],
   ]) {
     const view = fixture(), complete = { ...idle, state: 'complete', lastResult: { verifiedAt: 123, checkpoint: { sequence: 42 } } };
     view.panel.update(admin); view.requests[0].resolve(complete); await settle();

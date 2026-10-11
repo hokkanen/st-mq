@@ -18,6 +18,17 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   replica/history scope. Storage & growth combines free space and database sizes;
   Recorded data no longer repeats it. Recording shows observed source exceptions
   and loop evidence; Storage health dates successful writes separately.
+- Recording warnings include partial observed-source loss and current-database
+  verification failures. Inventory refresh explicitly fetches fresh figures,
+  clears results when the database changes and puts populated datasets before
+  folded empty entries. Adaptive measurements keeps its existing layout and
+  restores keyboard focus after opening source details.
+- Home Assistant backup locations distinguish the verified host **Folder** from
+  the path **Inside app**, matching Configuration. Saved-copy checks show their
+  latest result and failures clearly; save and download outcomes remain separate.
+  Export receipts are dated, expire after 24 hours and clear on logout, which
+  also cancels an in-progress browser transfer. Verification polling pauses in
+  closed or hidden panels while accepted checks continue.
 - Backups lists managed copies, sizes, snapshot/modification dates and verification
   evidence, with selected-copy download, full verification and history-review actions.
   Browser transfers stay separate from saved copies. The persistent default backup

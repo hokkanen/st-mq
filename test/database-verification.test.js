@@ -155,6 +155,72 @@ test('verifier failures and shutdown release the pinned source without affecting
   assert.match(verificationFailureText(service.status()), /interrupted.*interruption alone does not show database damage/);
 });
 
+test('verification evidence belongs to the acquired Store and a retry cannot erase known integrity failure', async () => {
+  const original = { path: 'same-path' }, replacement = { path: 'same-path' };
+  let store = original, code = 'database_integrity_failed', release, begin;
+  const service = createDatabaseVerification({ clock: () => 1234,
+    acquire: async () => ({ dbPath: store.path, store }),
+    verify: async () => {
+      if (code === 'gate') { begin(); await new Promise(resolve => { release = resolve; }); return { verifiedAt: 1234, rows: 3, digest: 'private-digest' }; }
+      if (code) throw Object.assign(Error('private message'), { code });
+      return { verifiedAt: 1234, rows: 3 };
+    } });
+  service.start(); await service.settled();
+  assert.equal(service.health(original).lastFailure.error, 'database_integrity_failed');
+  assert.equal(service.health(replacement), null, 'reopening the same path does not inherit a prior source check');
+  assert.equal(service.status({ store: replacement }).state, 'idle');
+  assert.equal(service.status({ store: replacement }).lastResult, null);
+  code = 'full_verification_busy'; service.start(); await service.settled();
+  assert.equal(service.health(original).lastFailure.error, 'database_integrity_failed', 'a refused retry is not evidence of repair');
+  code = 'gate'; const started = new Promise(resolve => { begin = resolve; });
+  service.start(); await started;
+  assert.equal(service.health(original).lastFailure.error, 'database_integrity_failed');
+  release(); await service.settled();
+  assert.equal(service.health(original).lastFailure, null);
+  assert.equal(service.health(original).scope, 'current-run');
+  assert(!JSON.stringify(service.health(original)).includes('private'));
+  store = replacement; code = 'database_schema_mismatch'; service.start(); await service.settled();
+  assert.equal(service.health(original).lastResult.verifiedAt, 1234, 'prior source evidence retains its own owner');
+  assert.equal(service.health(replacement).lastResult, null);
+  assert.equal(service.health(replacement).lastFailure.error, 'database_schema_mismatch');
+  await service.close();
+});
+
+test('overlapping requests cannot present another Store check and acquisition failure cannot overwrite its evidence', async () => {
+  const first = { path: 'same-path' }, second = { path: 'same-path' };
+  let store = first, acquireFailed = false, finish, begin, mode = 'failure', checks = 0, releases = 0;
+  const service = createDatabaseVerification({ acquire: async () => {
+    if (acquireFailed) throw Error('private acquisition failure');
+    return { dbPath: store.path, store, release: () => { releases++; } };
+  }, verify: async () => {
+    checks++;
+    if (mode === 'failure') throw Object.assign(Error(), { code: 'database_journal_invalid' });
+    begin(); await new Promise(resolve => { finish = resolve; }); return { verifiedAt: 25, rows: 2 };
+  } });
+  service.start('manual', { store: first }); await service.settled();
+  const known = service.health(first);
+  acquireFailed = true;
+  service.start(); await service.settled();
+  assert.deepEqual(service.health(first), known, 'an unbound failed acquisition is not a check of the previously acquired source');
+  assert.equal(service.status().error, 'full_verification_unavailable');
+  assert.equal(service.health(second), null);
+  acquireFailed = false; mode = 'gate';
+  const started = new Promise(resolve => { begin = resolve; });
+  service.start('manual', { store: first }); await started;
+  store = second;
+  assert.throws(() => service.start('manual', { store: second }), { code: 'full_verification_busy' });
+  assert.equal(service.status({ store: second }).state, 'idle');
+  assert.equal(service.status({ store: second }).lastResult, null);
+  assert.equal(service.start('manual', { store: first }).lastFailure.error, 'database_journal_invalid');
+  finish(); await service.settled();
+  service.start('manual', { store: first }); await service.settled();
+  assert.equal(service.status({ store: first }).error, 'full_verification_unavailable', 'replacement during asynchronous acquisition refuses verification');
+  assert.equal(service.health(second), null);
+  assert.equal(checks, 2, 'a request cannot silently switch to the replacement database');
+  assert.equal(releases, 3, 'even the refused acquired replacement is released');
+  await service.close();
+});
+
 test('operation and maintenance checks share admission and queued cancellation starts no scan', async t => {
   const { store } = await fixture(t);
   const first = verifyDatabase({ dbPath: store.path, origin: 'recovery' });

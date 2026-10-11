@@ -14,6 +14,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
   let nextId = 1, closed = false;
   const lanes = Object.fromEntries(['foreground', 'prefetch'].map(name => [name,
     { name, worker: null, active: null, queue: [], retiring: null, timer: null }]));
+  const overviewRequests = new Map();
   const cleanup = entry => entry.signal?.removeEventListener('abort', entry.abort);
   const settle = (entry, error, result) => { cleanup(entry); error ? entry.reject(error) : entry.resolve(result); };
   function progress(entry, value) {
@@ -110,9 +111,41 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
       lane.queue.push(entry); progress(entry, { stage: 'queued' }); pump();
     });
   }
+  // Concurrent inventory readers share one bounded worker scan. Each caller
+  // owns its cancellation; leaving the view never aborts another reader.
+  function overview({force=false,signal,...options}={}) {
+    if(typeof force!=='boolean')return Promise.reject(new TypeError('Invalid inventory refresh option'));
+    if(signal?.aborted)return Promise.reject(aborted());
+    const key=JSON.stringify([force,store.expectedCheckpoint??null]);
+    let entry=overviewRequests.get(key);
+    if(!entry) {
+      const controller=new AbortController();entry={controller,readers:0,promise:null};
+      entry.promise=query({force},{...options,signal:controller.signal,operation:'overview'}).finally(()=>{
+        if(overviewRequests.get(key)===entry)overviewRequests.delete(key);
+      });
+      overviewRequests.set(key,entry);
+    }
+    entry.readers++;
+    return new Promise((resolve,reject)=>{
+      let settled=false;
+      const finish=(error,value)=>{
+        if(settled)return;settled=true;signal?.removeEventListener('abort',cancel);entry.readers--;
+        error?reject(error):resolve(value);
+      };
+      const cancel=()=>{
+        finish(aborted());
+        if(!entry.readers) {
+          if(overviewRequests.get(key)===entry)overviewRequests.delete(key);
+          entry.controller.abort();
+        }
+      };
+      signal?.addEventListener('abort',cancel,{once:true});
+      entry.promise.then(value=>finish(null,value),error=>finish(error));
+    });
+  }
   return {
     pin(options = {}) { return query({}, { ...options, operation: 'pin' }); },
-    overview(options = {}) { return query({}, { ...options, operation: 'overview' }); },
+    overview,
     energyChecks(args = {}, options = {}) { return query(args, { ...options, operation: 'energy-checks', priority: 'foreground' }); },
     query,
     queryWire(args, options = {}) { return query(args, { ...options, wire: options.format ?? 'json' }); },

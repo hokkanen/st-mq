@@ -106,7 +106,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
     recording: { ...getEngine()?.config?.recording,
       backupDirectory: getDatabaseExportDirectory?.() ?? backupDirectory(getEngine()?.config ?? { dbPath: store?.path }) } });
   backupCatalog ??= createBackupCatalog({ getConfig: backupConfig });
-  recordingHealth ??= createRecordingHealth({ getConfig: backupConfig, backupCatalog });
+  recordingHealth ??= createRecordingHealth({ getConfig: backupConfig, backupCatalog,
+    getBackupChecks: copies => backupInspection?.health(copies) });
   const ownInspection = !backupInspection;
   backupInspection ??= createBackupInspection({ catalog: backupCatalog,
     onDownloadEvent: event => recordingHealth.backupEvent(event, store) });
@@ -183,12 +184,17 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (url.pathname === '/api/database-verification' && ['GET', 'POST'].includes(req.method)) {
           if (!databaseVerification) return json(409, { error: 'Database verification is unavailable.' });
-          if (req.method === 'GET') return json(200, databaseVerification.status());
+          if (req.method === 'GET') {
+            readContext = await getReadContext?.();
+            return json(200, databaseVerification.status({ store: readContext ? readContext.store : store }));
+          }
           const input = await body(req);
           if (!stillAuthorized()) return;
           if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
             return json(400, { error: 'Start database verification with an empty JSON object.' });
-          return json(202, databaseVerification.start());
+          readContext = await getReadContext?.();
+          if (!stillAuthorized()) return;
+          return json(202, databaseVerification.start('manual', { store: readContext ? readContext.store : store }));
         }
         if (url.pathname === '/api/recording-backups' && req.method === 'GET') {
           if ([...url.searchParams.keys()].some(key => key !== 'refresh') || url.searchParams.getAll('refresh').length > 1
@@ -313,11 +319,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         };
         if (req.method === 'GET' && url.pathname === '/api/recording-health')
           return json(200, await recordingHealth.status({ store: readerStore, engine,
-            current: engine?.latestStatus, readOnly: writesBlocked() }));
+            current: engine?.latestStatus, readOnly: writesBlocked(), verification: databaseVerification?.health(readerStore) }));
         if (req.method === 'GET' && url.pathname === '/api/status') {
           const current = status();
           return json(200, { ...current, recordingHealth: await recordingHealth.status({ store: readerStore, engine,
-            current, readOnly: writesBlocked() }) });
+            current, readOnly: writesBlocked(), verification: databaseVerification?.health(readerStore) }) });
         }
         if (readContext && !readContext.store) return json(503, { error: 'Waiting for a verified master snapshot.' });
         if (req.method === 'GET' && url.pathname === '/api/heating/explorer') {
@@ -513,11 +519,15 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (req.method === 'POST' && url.pathname === '/api/dhwr/stop')
           return await mutate(async (current, input) => { await current.stopDhwr(input); return json(200, status()); });
         if (req.method === 'GET' && url.pathname === '/api/recording-overview') {
+          if ([...url.searchParams.keys()].some(key => key !== 'refresh') || url.searchParams.getAll('refresh').length > 1
+            || url.searchParams.has('refresh') && !['true', 'false'].includes(url.searchParams.get('refresh')))
+            return json(400, { error: 'Refresh the inventory with a supported query.' });
           const cancellation = new AbortController();
           const cancel = () => cancellation.abort();
           res.once('close', cancel);
           try {
-            const result = await (readerCharts?.overview ? readerCharts : overviewService).overview({ signal: cancellation.signal });
+            const result = await (readerCharts?.overview ? readerCharts : overviewService).overview({ signal: cancellation.signal,
+              force: url.searchParams.get('refresh') === 'true' });
             if (!res.destroyed) return json(200, result);
           } finally { res.removeListener('close', cancel); }
           return;
@@ -654,6 +664,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return json(error.statusCode ?? (error instanceof SyntaxError ? 400 : 503),
             error.code === 'full_verification_unavailable'
               ? { code: error.code, error: 'Verification cannot start until a current database is available.' }
+              : error.code === 'full_verification_busy'
+                ? { code: error.code, error: 'Another database check is still running. Wait for it to finish, then retry.' }
               : { error: 'Database verification is unavailable or the request is invalid. Refresh its status before retrying.' });
         if (req.method === 'GET' && /^\/api\/database-export(?:\?|$)/.test(req.url)
           && databaseExportErrorMessage(error.code))

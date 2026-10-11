@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createRecordingHealth, recordingHealthView, storageBytes } from '../chart/recording-health.js';
+import { createRecordingHealth, recordingHealthView, recordingEvidenceTime, backupCheckFailure, storageBytes } from '../chart/recording-health.js';
 import { storagePerformanceView, storageDuration } from '../chart/storage-health.js';
 
 const now = Date.parse('2026-10-07T12:00:00Z');
@@ -402,13 +402,13 @@ test('adaptive payload target and prospective size remain separate from whole da
   assert.equal(view.growth.adaptive, '8 GB/year');
   assert.equal(view.growth.adaptiveStored, '40 MB');
   assert.match(view.growth.adaptiveSince, /recorded since/);
-  assert.equal(view.growth.database, '83 GB');
+  assert.equal(Object.hasOwn(view.growth, 'database'), false, 'Retained allocation belongs to the inventory snapshot');
   assert.equal(view.growth.total, '32 GB/year');
   assert.match(view.growth.totalWindow, /240 h.*allocation/);
   assert.match(view.growth.totalWindow, /7-day smoothing/);
   const missing = recordingHealthView(health(), { annualBudgetBytes: 10e9, adaptiveMeasurementHours: 0, adaptiveProjectedAnnualBytes: 0 }, now);
   assert.equal(missing.growth.adaptive, 'Collecting evidence');
-  assert.equal(missing.growth.database, 'Unknown');
+  assert.equal(Object.hasOwn(missing.growth, 'database'), false);
   assert.equal(missing.growth.adaptiveStored, 'Not measured yet');
 });
 
@@ -652,7 +652,7 @@ test('control responses without health preserve dated warnings, failed-refresh s
   view.panel.update({ recordingHealth: health({ attention: [
     { id: 'disk', severity: 'critical', title: 'Critically low disk space', detail: 'Make space for recording.' },
   ] }), recording: { measuredDatabaseBytes: 83e9 } });
-  view.panel.inventory({ generatedAt: now, database: { adaptiveEstimatedBytes: 6e9 } });
+  view.panel.inventory({ generatedAt: now, database: { allocatedBytes: 83e9, adaptiveEstimatedBytes: 6e9 } });
   const previousCheck = view.element('recording-health-checked').textContent;
   view.advance(3600_000);
   view.panel.update({ now: now + 3600_000, recording: { measuredDatabaseBytes: 84e9 } });
@@ -662,14 +662,14 @@ test('control responses without health preserve dated warnings, failed-refresh s
   assert.equal(view.element('recording-health-checked').textContent.split(' · ')[0], previousCheck.split(' · ')[0],
     'A control response does not renew the original health-check clock');
   assert.equal(view.element('recording-growth-retained').textContent, '6 GB');
-  assert.equal(view.element('recording-growth-database').textContent, '84 GB');
+  assert.equal(view.element('recording-growth-database').textContent, '83 GB');
   await view.panel.refresh();
   const failure = view.element('recording-health-checked').textContent;
   assert.match(failure, /Refresh failed/);
   view.panel.update({ now: now + 3600_000 });
   assert.equal(view.element('recording-health-checked').textContent, failure);
   assert.equal(view.element('recording-status-issues').hidden, false);
-  assert.equal(view.element('recording-growth-database').textContent, '84 GB');
+  assert.equal(view.element('recording-growth-database').textContent, '83 GB');
   assert.equal(view.element('recording-growth-retained').textContent, '6 GB');
   assert.equal(view.document.body.dataset.recordingHealth, 'true');
   view.panel.update({ recordingHealth: health({ checkedAt: now + 3600_000, scope: 'snapshot' }) });
@@ -677,10 +677,10 @@ test('control responses without health preserve dated warnings, failed-refresh s
   assert.match(view.element('recording-health-checked').textContent, /just now/);
   assert.equal(view.element('recording-status-issues').hidden, true);
   assert.equal(view.element('recording-growth-retained').textContent, 'Not checked');
-  assert.equal(view.element('recording-growth-database').textContent, '84 GB', 'Omitted recording metrics are not replaced');
+  assert.equal(view.element('recording-growth-database').textContent, 'Not checked', 'Allocation belongs to the inventory scope');
   view.panel.clear();
   assert.equal(view.document.body.dataset.recordingHealth, 'false');
-  assert.equal(view.element('recording-growth-database').textContent, 'Unknown');
+  assert.equal(view.element('recording-growth-database').textContent, 'Not checked');
 });
 
 test('a control response does not supersede an independent pending health refresh', async () => {
@@ -694,7 +694,7 @@ test('a control response does not supersede an independent pending health refres
   await pending;
   assert.equal(view.element('recording-disk-free').textContent, '100 MB');
   assert.equal(view.element('recording-health-refresh').disabled, false);
-  assert.equal(view.element('recording-growth-database').textContent, '4 GB');
+  assert.equal(view.element('recording-growth-database').textContent, 'Not checked');
 });
 
 test('an independent health refresh clears inventory when its source scope changes', async () => {
@@ -740,12 +740,12 @@ test('storage inventory keeps file sizes and dated retained evidence through fai
   view.panel.update({ recordingHealth: health(), recording: { measuredDatabaseBytes: 83e9 } });
   view.panel.inventoryStatus('loading');
   assert.equal(view.element('recording-growth-file').textContent, 'Measuring…');
-  view.panel.inventory({ generatedAt: now, database: { fileBytes: 80e9, walBytes: 0,
+  view.panel.inventory({ generatedAt: now, database: { allocatedBytes: 84e9, fileBytes: 80e9, walBytes: 0,
     totalFileBytes: 80e9, reusableBytes: 12e9, adaptiveEstimatedBytes: 6e9, adaptiveObservationCount: 0,
     physical: { available: true, observationBytes: 20e9, historyBytes: 30e9, currentBytes: 1e9,
       journalBytes: 10e6, peerBacklogBytes: 5e6, branchBytes: 0, indexBytes: 10e9, internalBytes: 4096 },
     journalRetention: { commits: 1024, payloadBytes: 7e6, maxCommits: 2048, maxBytes: 8e6, baseSequence: 500 } } });
-  assert.equal(view.element('recording-growth-database').textContent, '83 GB');
+  assert.equal(view.element('recording-growth-database').textContent, '84 GB');
   assert.equal(view.element('recording-growth-file').textContent, '80 GB');
   assert.equal(view.element('recording-growth-wal').textContent, '0 B');
   assert.equal(view.element('recording-growth-files').textContent, '80 GB');
@@ -773,4 +773,136 @@ test('storage inventory keeps file sizes and dated retained evidence through fai
   view.panel.inventory({ generatedAt: now, database: { walBytes: null } });
   assert.equal(view.element('recording-growth-wal').textContent, 'Unknown');
   assert.equal(view.element('recording-growth-reusable').textContent, 'Unknown');
+});
+
+
+test('health freshness is visible when the outer section is collapsed and invalid dates stay unknown', async () => {
+  const view = panelFixture(async () => { throw Error('offline'); });
+  view.panel.update({ recordingHealth: health() }); view.expireIntro();
+  assert.equal(view.element('recording-health-badge').hidden, true);
+  await view.panel.refresh();
+  assert.equal(view.element('recording-health-badge').textContent, 'Status unavailable');
+  assert.equal(view.element('recording-health-badge').hidden, false);
+  view.panel.update({ recordingHealth: health({ checkedAt: now - 180001 }) });
+  assert.equal(view.element('recording-health-badge').textContent, 'Last known');
+  for (const value of [1e20, 8_640_000_000_000_001, Infinity, -1]) {
+    assert.equal(recordingEvidenceTime(value, now), 'Not known');
+    assert.doesNotThrow(() => view.panel.update({ recordingHealth: health({ checkedAt: value }) }));
+  }
+});
+
+test('source exceptions retain distinct evidence clocks and reach the matching recording policy', () => {
+  const view = panelFixture();
+  view.panel.update({ recordingHealth: health({ recording: { state: 'ok', sources: { attentionStreams: 2,
+    issues: [{ label: 'Outdoor temperature', destination: 'adaptive', policy: 'adaptive-value', status: 'stale',
+      sourceObservedAt: now - 900000, lastCheckedAt: now, reason: 'The latest source observation is out of date.' },
+    { label: 'Bedroom temperature', destination: 'inventory', policy: 'change-only', status: 'failed', lastCheckedAt: now } ] } },
+    attention: [{ id: 'recording-sources', severity: 'warning', title: '2 observed sources need attention' }] }) });
+  view.expireIntro();
+  assert.equal(view.element('recording-status').hidden, false);
+  assert.equal(view.element('recording-health-badge').hidden, false);
+  assert.equal(view.element('recording-recording-card').dataset.tone, 'warning');
+  const [adaptive, exact] = view.element('recording-recording-sources').children;
+  assert.equal(adaptive.children[2].dataset.recordingOpen, 'recording-adaptive-details');
+  assert.equal(exact.children[2].dataset.recordingOpen, 'recording-overview-details');
+  assert.match(adaptive.children[1].textContent, /out of date.*Source observation.*15 min ago.*Last polling attempt.*just now/);
+  assert.match(exact.children[0].textContent, /Source check failed/);
+});
+
+test('a failed saved-copy recheck supersedes creation evidence and reaches collapsed warnings', async () => {
+  const catalog = savedCatalog();
+  catalog.copies[0].recheck = { state: 'error', error: 'database_schema_mismatch', finishedAt: now, scope: 'current-run' };
+  const view = panelFixture(async () => catalog);
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'admin' } }); view.expireIntro();
+  await view.panel.refreshCopies({ force: true });
+  const row = view.element('recording-backup-list').children[0];
+  assert.match(row.children[3].textContent, /Full check failed.*Verified during creation/);
+  assert.doesNotMatch(row.children[3].textContent, /No later check is available/);
+  assert.match(row.children[4].textContent, /schema does not match/);
+  assert.equal(view.element('recording-health-badge').hidden, false);
+  assert.match(view.element('recording-backup-state').textContent, /check needs attention/);
+  assert.equal(view.element('recording-backup-card').dataset.tone, 'warning');
+  assert.equal(view.element('recording-status-issues').children[0].firstElementChild.dataset.recordingOpen, 'recording-backup-card');
+  assert.equal(row.children[5].children[0].getAttribute('aria-label'), 'Download stmq-synthetic.sqlite');
+  assert.match(backupCheckFailure({ error: 'backup_verification_interrupted' }), /interruption alone does not show damage/);
+  assert.doesNotMatch(backupCheckFailure({ error: '/private/arbitrary-error' }), /private/);
+  catalog.copies[0].recheck = { state: 'complete', finishedAt: now };
+  await view.panel.refreshCopies({ force: true });
+  assert.equal(view.element('recording-health-badge').hidden, true);
+  assert.match(row.children[3].textContent, /Full check passed.*current application run/);
+});
+
+test('database verification failure stays visible while a replacement check runs', () => {
+  const view = panelFixture();
+  view.panel.update({ recordingHealth: health({ verification: { scope: 'current-run', state: 'running',
+    lastFailure: { error: 'database_integrity_failed', finishedAt: now - 60000 } }, attention: [
+      { id: 'database-verification', severity: 'critical', title: 'Database integrity check failed' } ] }) });
+  view.expireIntro();
+  assert.equal(view.element('recording-health-badge').hidden, false);
+  assert.match(view.element('database-verification-summary').textContent, /Check needs attention.*1 min ago/);
+  assert.equal(view.element('recording-status-issues').children[0].firstElementChild.dataset.recordingOpen, 'database-verification-details');
+});
+
+test('backup paths separate the verified Home Assistant host folder from the app path and clear on logout', async () => {
+  const catalog = savedCatalog({ directory: '/config/backups', location: { environment: 'home-assistant',
+    folder: '/addon_configs/synthetic_addon/backups', insideApp: '/config/backups', hostMappingKnown: true } });
+  const view = panelFixture(async () => catalog);
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'admin' } });
+  await view.panel.refreshCopies({ force: true });
+  assert.equal(view.element('recording-backup-folder').textContent, '/addon_configs/synthetic_addon/backups');
+  assert.equal(view.element('recording-backup-inside').textContent, '/config/backups');
+  assert.equal(view.element('recording-backup-inside-label').hidden, false);
+  assert.match(view.element('recording-backup-location-detail').textContent, /same folder/);
+  catalog.location.folder = null; catalog.location.hostMappingKnown = false;
+  await view.panel.refreshCopies({ force: true });
+  assert.equal(view.element('recording-backup-folder').textContent, 'Host folder mapping unavailable');
+  assert.match(view.element('recording-backup-location-detail').textContent, /host folder is not known/);
+  view.panel.clear();
+  assert.equal(view.element('recording-backup-inside-label').hidden, true);
+  assert.equal(view.element('recording-backup-inside').textContent, '');
+  assert.doesNotMatch(view.element('recording-backup-folder').textContent, /addon_configs/);
+});
+
+test('database allocation comes only from the dated inventory and never silently becomes main-file size', () => {
+  const view = panelFixture();
+  view.panel.update({ recordingHealth: health(), recording: { measuredDatabaseBytes: 80e9 } });
+  assert.equal(view.element('recording-growth-database').textContent, 'Not checked');
+  view.panel.inventory({ generatedAt: now, database: { allocatedBytes: 84e9, fileBytes: 82e9 } });
+  assert.equal(view.element('recording-growth-database').textContent, '84 GB');
+  assert.equal(view.element('recording-disk-database').textContent, '84 GB');
+  view.panel.update({ recording: { measuredDatabaseBytes: 85e9 } });
+  assert.equal(view.element('recording-growth-database').textContent, '84 GB');
+  view.panel.inventory({ generatedAt: now, database: { allocatedBytes: null, fileBytes: 82e9 } });
+  assert.equal(view.element('recording-growth-database').textContent, 'Unknown');
+  assert.equal(view.element('recording-disk-database').textContent, 'Unknown');
+  view.panel.inventoryReset();
+  assert.equal(view.element('recording-disk-database').textContent, 'Not checked');
+});
+
+
+test('health context changes reset retained evidence and notify dependent loaders exactly once', () => {
+  const changes = [];
+  const view = panelFixture(undefined, { onContextChange: value => changes.push(value) });
+  view.panel.update({ recordingHealth: health({ contextId: 'synthetic-a' }) });
+  view.panel.inventory({ generatedAt: now, database: { allocatedBytes: 84e9 } });
+  view.panel.update({ recordingHealth: health({ contextId: 'synthetic-a' }) });
+  assert.equal(changes.length, 1);
+  assert.equal(view.element('recording-growth-database').textContent, '84 GB');
+  view.panel.update({ recordingHealth: health({ contextId: 'synthetic-b' }) });
+  assert.deepEqual(changes, [{ contextId: 'synthetic-a', scope: 'live' }, { contextId: 'synthetic-b', scope: 'live' }]);
+  assert.equal(view.element('recording-growth-database').textContent, 'Not checked');
+});
+
+
+test('server-save and browser-transfer failure receipts name their independent outcomes', () => {
+  const backup = { state: 'failed', outcomes: { savedCopy: { failed: true, failedAt: now - 60000 },
+    download: { failed: false, completedAt: now } }, downloadAt: now };
+  const view = recordingHealthView(health({ backup }), undefined, now);
+  assert.equal(view.backup.label, 'Server save failed');
+  assert.match(view.backup.activity, /Server save failed.*1 min ago/);
+  assert.match(view.backup.download, /Browser transfer sent.*just now/);
+  backup.outcomes.download = { failed: true, failedAt: now };
+  const both = recordingHealthView(health({ backup }), undefined, now);
+  assert.equal(both.backup.label, 'Save and download failed');
+  assert.match(both.backup.activity, /Server save failed.*Browser transfer failed/);
 });

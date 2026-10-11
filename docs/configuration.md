@@ -358,6 +358,13 @@ measurement basis and limits. Low disk space never authorizes automatic deletion
 `recording.backup_directory` owns the local managed-database backup root. Its shared
 empty default selects `<database directory>/backups`; Home Assistant therefore uses
 `/config/st-mq/backups`, a persistent app-configuration mount included in app backups.
+In **Recording details → Backups**, **Folder** shows the host-accessible location
+using the same verified mapping as Configuration. For this default it is
+`/addon_configs/<app slug>/st-mq/backups`; **Inside app** remains
+`/config/st-mq/backups`. The app slug is discovered, never hardcoded. If that
+mapping is unavailable, or a custom directory lies outside the known `/config`
+mount, the host location is marked unavailable and the actual inside-app path
+remains visible. Standalone Linux shows the configured filesystem folder directly.
 Manual **Save local copy**, complete reset archive bundles under `reset-archives`,
 and the immutable paired export repository under `pair-exports` use that root.
 Only pinned protected exports are listed as retained backups; routine replication

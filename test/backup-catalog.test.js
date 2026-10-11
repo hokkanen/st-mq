@@ -9,9 +9,26 @@ import { createBackupCatalog, listBackupCatalog, publicBackupCatalog } from '../
 import { createResetArchive, resumeResetArchive } from '../src/pairing/reset-storage.js';
 import { SnapshotRepository } from '../src/pairing/snapshots.js';
 import { PairManager } from '../src/pairing/manager.js';
+import { backupLocation } from '../src/storage/backup-directory.js';
 
 const time = Date.parse('2026-10-11T06:00:00Z');
 const name = n => `stmq-2026-10-11T06-00-00-00${n}Z.sqlite`;
+
+test('backup locations distinguish the verified Home Assistant host folder from the app mount', () => {
+  const config = { addon: true, configuration: { environment: 'home-assistant', importPath: '/config/secrets.json',
+    externalImportPath: '/addon_configs/synthetic_st-mq/secrets.json' }, recording: { backupDirectory: '/config/history/backups' } };
+  assert.deepEqual(backupLocation(config), { environment: 'home-assistant', folder: '/addon_configs/synthetic_st-mq/history/backups',
+    insideApp: '/config/history/backups', hostMappingKnown: true });
+  assert.equal(backupLocation({ ...config, recording: { backupDirectory: '/config' } }).folder, '/addon_configs/synthetic_st-mq');
+  for (const directory of ['/data/backups', '/config-other/backups', '/config/../private/backups']) {
+    const location = backupLocation({ ...config, recording: { backupDirectory: directory } });
+    assert.equal(location.folder, null); assert.equal(location.hostMappingKnown, false);
+  }
+  assert.equal(backupLocation({ ...config, configuration: { environment: 'home-assistant' } }).folder, null);
+  assert.equal(backupLocation({ ...config, configuration: { ...config.configuration, externalImportPath: '/addon_configs/../secrets.json' } }).folder, null);
+  assert.deepEqual(backupLocation({ recording: { backupDirectory: '/srv/history/backups' } }),
+    { environment: 'standalone', folder: '/srv/history/backups', insideApp: null, hostMappingKnown: true });
+});
 async function fixture(t) {
   const root = await mkdtemp('/tmp/stmq-backup-catalog-');
   const databaseDir = join(root, 'data'), directory = join(databaseDir, 'backups');

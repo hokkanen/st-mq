@@ -1,18 +1,22 @@
 import { statfs } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { createBackupCatalog } from '../storage/backup-catalog.js';
 import { storageFailureCode } from '../storage/write-health.js';
-import { recordedSignalInfo } from '../domain/recording-policy.js';
+import { recordedSignalInfo, RECORDING_POLICIES } from '../domain/recording-policy.js';
+import { SIGNAL_INFO } from '../domain/history-series.js';
+import { verificationFailureEvidence } from './database-verification.js';
 
 const MINUTE = 60_000, DAY = 86_400_000, GIB = 1024 ** 3;
 const RECEIPT_KEY = 'storage:backup-health';
-const instant = value => Number.isSafeInteger(value) && value >= 0;
+const instant = value => Number.isSafeInteger(value) && value >= 0 && value <= 8640000000000000;
 const backupKinds = ['saved-copy', 'download'];
 const failureCodes = new Set(['disk-full', 'database-busy', 'database-read-only', 'database-io',
   'database-corrupt', 'database-unavailable', 'backup-failed', 'backup_failed', 'export_failed',
   'publication_failed', 'database_publication_unconfirmed', 'backup_cleanup_failed']);
 const usableFreshness = new Set(['fresh', 'last-reported', 'held', 'held-attention', 'recorded-interval']);
 const freshnessStates = new Set([...usableFreshness, 'waiting', 'unavailable', 'stale', 'failed']);
+const publicUnits = new Set(['degC', 'K', '°F', 'degF', ...Object.values(SIGNAL_INFO).map(info => info.unit).filter(Boolean)]);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const sourceTime = value => Number.isFinite(value) && Math.abs(value) <= 8640000000000000;
 const receiptTime = value => Number.isSafeInteger(value) && sourceTime(value);
@@ -63,11 +67,18 @@ function sourceSummary(parameters, now) {
     issues: issues.slice(0, 50).map((row, index) => {
       const info = typeof row.signal === 'string' ? recordedSignalInfo(row.signal) : null;
       const publicLabel = info && info.label !== row.signal.replaceAll('_', ' ');
+      const status = ['fresh', 'recorded-interval'].includes(row.freshness?.status) && !usableSource(row, now)
+        ? 'stale' : row.freshness?.status ?? 'unknown';
+      const policy = Object.hasOwn(RECORDING_POLICIES, row.policy ?? '') ? row.policy : null;
       return {
         id: typeof row.streamId === 'string' && /^[a-f0-9]{12}$/.test(row.streamId) ? row.streamId : `observed-${index}`,
         label: publicLabel ? info.label : 'Recorded measurement',
-        status: ['fresh', 'recorded-interval'].includes(row.freshness?.status) && !usableSource(row, now)
-          ? 'stale' : row.freshness?.status ?? 'unknown',
+        status, policy, unit: publicUnits.has(row.unit) ? row.unit : '',
+        destination: policy && RECORDING_POLICIES[policy].adaptive ? 'adaptive' : 'inventory',
+        reason: { unavailable: 'The observed source is unavailable.', stale: 'The observed source has not reported within its freshness limit.',
+          failed: 'The last source check failed.', waiting: 'Waiting for another usable source report.',
+          'held-attention': 'The last reported value is retained, with a source warning.' }[status]
+          ?? 'Usable source evidence is not available.',
         lastCheckedAt: receiptTime(row.lastPollAt) ? row.lastPollAt : null,
         sourceObservedAt: sourceTime(row.freshness?.sourceObservedAt) ? row.freshness.sourceObservedAt : null,
       };
@@ -89,11 +100,14 @@ export function diskSpaceStatus(stats, checkedAt) {
         : 'Space available to this application on the database disk. Other files also use this disk.' };
 }
 
+const emptyReceipt = () => ({ version: 2, savedCopy: { complete: null, failure: null }, download: { complete: null, failure: null } });
 function validReceipt(value) {
-  return value && value.version === 1 && Object.keys(value).every(key => ['version', 'complete', 'failure'].includes(key))
-    && [value.complete, value.failure].every(row => row === null || row && instant(row.at) && backupKinds.includes(row.kind)
-      && Object.keys(row).every(key => ['at', 'kind', 'errorCode'].includes(key))
-      && (row.errorCode === undefined || failureCodes.has(row.errorCode)));
+  return object(value) && value.version === 2 && Object.keys(value).every(key => ['version', 'savedCopy', 'download'].includes(key))
+    && [value.savedCopy, value.download].every(outcome => object(outcome)
+      && Object.keys(outcome).every(key => ['complete', 'failure'].includes(key))
+      && [outcome.complete, outcome.failure].every(row => row === null || object(row) && instant(row.at)
+        && Object.keys(row).every(key => ['at', 'errorCode'].includes(key))
+        && (row.errorCode === undefined || failureCodes.has(row.errorCode))));
 }
 
 /** Local runtime/storage evidence, independent of controller status and DB writes.
@@ -101,13 +115,16 @@ function validReceipt(value) {
  * new backups, integrity rewrites or automatic cleanup are performed here. */
 export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now,
   filesystem = statfs, backupCatalog = createBackupCatalog({ getConfig, clock }),
+  getBackupChecks = () => null,
   refreshMs = MINUTE } = {}) {
   const startedAt = clock();
+  const contexts = new WeakMap();
   let disk = { state: 'unknown', totalBytes: null, freeBytes: null, checkedAt: null,
     detail: 'Disk space has not been checked yet.' };
   let diskKey, diskAttemptAt = null, diskPending;
   let catalog = { copies: [], complete: false, error: false, checkedAt: null }, catalogPending;
-  let receipt = { version: 1, complete: null, failure: null }, receiptStore, receiptInvalid = false;
+  let checkedCopies = [];
+  let receipt = emptyReceipt(), receiptStore, receiptInvalid = false;
   const pendingBackups = new Map();
   let backupRevision = 0;
   let recordingRun = null, recordingScopeSeen = false;
@@ -115,7 +132,7 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
   function loadReceipt(store) {
     if (!store || store.readOnly || receiptStore === store) return;
     receiptStore = store;
-    receipt = { version: 1, complete: null, failure: null }; receiptInvalid = false;
+    receipt = emptyReceipt(); receiptInvalid = false;
     try {
       const saved = store.getState(RECEIPT_KEY);
       if (saved === null) return;
@@ -135,8 +152,9 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
     if (!['cancelled', 'complete', 'failed'].includes(event.phase)) return;
     pendingBackups.delete(event.operationId);
     if (event.phase === 'cancelled') return;
-    if (event.phase === 'complete') receipt.complete = { kind: event.kind, at: event.at };
-    else if (event.phase === 'failed') receipt.failure = { kind: event.kind, at: event.at,
+    const outcome = receipt[event.kind === 'saved-copy' ? 'savedCopy' : 'download'];
+    if (event.phase === 'complete') outcome.complete = { at: event.at };
+    else if (event.phase === 'failed') outcome.failure = { at: event.at,
       errorCode: storageFailureCode({ code: event.errorCode }) ?? (failureCodes.has(event.errorCode) ? event.errorCode : 'backup-failed') };
     else return;
     backupRevision++;
@@ -182,8 +200,11 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
       const failed = result.reasons?.some(reason => /unavailable|changed/.test(reason));
       if (failed && !copies.length && catalog.copies.length) {
         catalog = { ...catalog, error: true, complete: false };
-      } else catalog = { copies: copies.sort((a, b) => b.at - a.at), complete: result.complete,
-        error: Boolean(failed), checkedAt: result.checkedAt };
+      } else {
+        checkedCopies = result.copies;
+        catalog = { copies: copies.sort((a, b) => b.at - a.at), complete: result.complete,
+          error: Boolean(failed), checkedAt: result.checkedAt };
+      }
     }).catch(() => { catalog = { ...catalog, error: true, complete: false }; })
       .finally(() => { catalogPending = null; });
     return catalogPending;
@@ -235,15 +256,23 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
   }
 
   function backupStatus(now) {
+    // Verification results can change between filesystem scans. Re-evaluate
+    // their saved file identities without scanning or restarting verification.
+    const checks = getBackupChecks(checkedCopies);
     const pendingBackup = [...pendingBackups.values()].find(row => row.kind === 'saved-copy')
       ?? pendingBackups.values().next().value;
-    const complete = receipt.complete?.at <= now ? receipt.complete : null;
+    const outcomes = Object.fromEntries(['savedCopy', 'download'].map(kind => {
+      const value = receipt[kind], complete = value.complete?.at <= now ? value.complete : null;
+      const failure = value.failure?.at <= now ? value.failure : null;
+      return [kind, { completedAt: complete?.at ?? null, failedAt: failure?.at ?? null,
+        failed: Boolean(failure && (!complete || failure.at >= complete.at)) }];
+    }));
     const latest = catalog.copies[0];
-    const failure = receipt.failure?.at <= now ? receipt.failure : null;
-    const failed = failure && (!complete || failure.at >= complete.at);
+    const failed = outcomes.savedCopy.failed || outcomes.download.failed;
+    const failureAt = Math.max(outcomes.savedCopy.failedAt ?? 0, outcomes.download.failedAt ?? 0) || null;
     const state = pendingBackup ? 'running' : failed ? 'failed' : receiptInvalid || catalog.error ? 'unknown' : latest ? 'available' : 'none-known';
     const detail = pendingBackup ? 'A requested database copy or download is still in progress.'
-      : failed ? 'The last requested database copy failed. Retry after checking storage space and access.'
+      : failed ? `${outcomes.savedCopy.failed ? 'The last server save failed.' : 'The last browser transfer failed.'} Retry after checking storage space and access.`
         : receiptInvalid || catalog.error ? 'Some backup information could not be read. Available copies are not proof that the latest backup succeeded.'
           : latest ? 'Saved database copies are listed from this server. Listing does not verify their current contents; expand Backups to view dated checks.'
             : 'No saved database copy is known on this server. There is no automatic backup schedule.';
@@ -252,14 +281,16 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
       latestVerifiedAt: latest?.verifiedAt ?? null, latestDateBasis: latest?.dateBasis ?? null,
       count: catalog.copies.length, totalBytes: catalog.copies.reduce((total, row) => total + (Number.isSafeInteger(row.bytes) && row.bytes >= 0 ? row.bytes : 0), 0),
       complete: catalog.complete, catalogCheckedAt: catalog.checkedAt,
-      downloadAt: complete?.kind === 'download' ? complete.at : null,
-      startedAt: pendingBackup?.at ?? null, lastFailureAt: failure?.at ?? null };
+      downloadAt: outcomes.download.completedAt, outcomes,
+      failedChecks: checks?.failedChecks ?? 0, changedChecks: checks?.changedChecks ?? 0,
+      checkScope: 'current-run', startedAt: pendingBackup?.at ?? null, lastFailureAt: failureAt };
   }
 
   return {
     backupEvent,
-    async status({ store, engine, current, readOnly = false } = {}) {
+    async status({ store, engine, current, readOnly = false, verification = null } = {}) {
       const config = getConfig(), now = clock();
+      if (store && !contexts.has(store)) contexts.set(store, randomUUID());
       loadReceipt(store);
       const operations = [refreshDisk(store?.path ?? config.dbPath, now), refreshCatalog()].filter(Boolean);
       // A slow/unavailable mount must not hold the dashboard request indefinitely.
@@ -284,11 +315,20 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
           ? 'Database writes are failing' : recording.state === 'write-waiting' ? 'Waiting for storage' : recording.state === 'stalled' ? 'Recording needs attention' : 'Recording sources are unavailable', detail: recording.detail });
       else if (recording.state !== 'read-only' && recording.lastFailureAt !== null && now - recording.lastFailureAt < DAY)
         attention.push({ id: 'recording-resumed', severity: 'warning', title: 'A database write failed earlier', detail: recording.detail });
+      if (recording.state === 'ok' && recording.sources?.attentionStreams > 0) attention.push({ id: 'recording-sources',
+        severity: 'warning', title: `${recording.sources.attentionStreams} observed source${recording.sources.attentionStreams === 1 ? ' needs' : 's need'} attention`,
+        detail: 'Monitoring remains active, but some observed streams are unavailable or have a source warning. Review their individual evidence.' });
       if (backup.state === 'failed') attention.push({ id: 'backup', severity: 'warning', title: 'The last backup failed', detail: backup.detail });
-      return { version: 2, checkedAt: now, scope: readOnly || store?.readOnly ? 'snapshot'
+      if (backup.failedChecks || backup.changedChecks) attention.push({ id: 'backup-check', severity: 'warning',
+        title: 'Saved-copy checks need attention', detail: `${backup.failedChecks} failed check${backup.failedChecks === 1 ? '' : 's'} and ${backup.changedChecks} changed cop${backup.changedChecks === 1 ? 'y' : 'ies'} were observed in this application run. Review Backups for the dated results.` });
+      const verificationFailure = verification?.lastFailure;
+      if (instant(verificationFailure?.finishedAt) && verificationFailure.finishedAt <= now) attention.push({ id: 'database-verification',
+        ...verificationFailureEvidence(verificationFailure.error) });
+      return { version: 2, checkedAt: now, contextId: store ? contexts.get(store) : null,
+        scope: readOnly || store?.readOnly ? 'snapshot'
         : (current?.input ?? engine?.config?.input) === 'offline' ? 'history'
           : (current?.input ?? engine?.config?.input) === 'simulated' ? 'simulated' : 'live',
-        disk: diskView, recording, backup, attention };
+        disk: diskView, recording, backup, verification, attention };
     },
   };
 }

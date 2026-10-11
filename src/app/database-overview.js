@@ -64,7 +64,10 @@ function item(id, label, description, values, options = {}) {
 }
 const quote = value => `'${value.replaceAll("'", "''")}'`;
 const opaqueId = value => createHash('sha256').update(String(value)).digest('hex').slice(0, 12);
-const fileSize = path => { try { return statSync(path).size; } catch { return 0; } };
+const fileSize = (path,{missingIsZero=false}={}) => {
+  try { const file=statSync(path);return file.isFile()?file.size:null; }
+  catch(error) { return missingIsZero&&error.code==='ENOENT'?0:null; }
+};
 
 /** Aggregate metadata only: no history payloads, credentials, device identifiers,
  * import paths, state keys or free-form notes leave SQLite. Every large scan is
@@ -580,10 +583,10 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const journalRetention = { baseSequence: journalAllocation.base_sequence, headSequence: journalAllocation.sequence,
     payloadBytes: journalAllocation.retained_bytes, commits: journalAllocation.retained_commits, ...JOURNAL_RETENTION };
   const fileBytes = store.path && store.path !== ':memory:' ? fileSize(store.path) : null;
-  const walBytes = store.path && store.path !== ':memory:' ? fileSize(`${store.path}-wal`) : 0;
+  const walBytes = store.path && store.path !== ':memory:' ? fileSize(`${store.path}-wal`,{missingIsZero:true}) : 0;
   return { generatedAt: now, refreshAfterMs: OVERVIEW_REFRESH_MS,
     catalogueComplete: inventoryIssues.length === 0, inventoryIssues: [...new Set(inventoryIssues)],
-    database: { allocatedBytes, reusableBytes, physical, journalRetention, fileBytes, walBytes, totalFileBytes: fileBytes === null ? null : fileBytes + walBytes,
+    database: { allocatedBytes, reusableBytes, physical, journalRetention, fileBytes, walBytes, totalFileBytes: fileBytes === null || walBytes === null ? null : fileBytes + walBytes,
       adaptiveEstimatedBytes,adaptiveObservationCount:observations.get('adaptive')?.count ?? 0,
       description: 'Stored source counts include evidence excluded by recovery corrections; selected chart history can contain fewer records. Learning journal counts identify the selected model history separately from other retained epochs. SQLite allocated pages include records, indexes and reusable pages. Main-file plus WAL bytes include temporary journal overhead. Adaptive size estimates retained observation payload and metadata; it excludes SQLite indexes, page overhead and recorder support tables. Chart responses and point reduction use memory.' },
     groups, accounting: { tables, totalRows: tables.reduce((total, table) => total + table.rows, 0),

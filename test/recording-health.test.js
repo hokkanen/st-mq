@@ -149,10 +149,61 @@ test('source exceptions describe observed streams without exposing private ident
   assert.equal(replica.recording.lastLoopCompletedAt, null);
 });
 
+test('partial observed-source loss raises attention while monitoring continues, with safe policy navigation', async () => {
+  const f = fixture();
+  f.parameter.policy = 'change-only';
+  f.current.recording.parameters = [{ observedThisRun: true, signal: 'outdoor_temperature', policy: 'adaptive-value',
+    source: 'private-source', unit: 'private-unit', lastPollAt: start, freshness: { status: 'unavailable' } }];
+  const result = await f.status();
+  assert.equal(result.recording.state, 'ok');
+  assert(result.attention.some(item => item.id === 'recording-sources'));
+  const issue = result.recording.sources.issues[0];
+  assert.equal(issue.destination, 'adaptive');
+  assert.equal(issue.policy, 'adaptive-value');
+  assert.match(issue.reason, /source is unavailable/);
+  assert(!JSON.stringify(result).includes('private-'));
+  assert.equal(issue.unit, '', 'an arbitrary unit is omitted rather than replaced with the signal catalogue unit');
+  f.current.recording.parameters[0].unit = 'K';
+  assert.equal((await f.status()).recording.sources.issues[0].unit, 'K', 'distinct admitted units retain their meaning');
+  f.parameter.freshness.status = 'held-attention';
+  assert.equal((await f.status()).recording.sources.issues[1].destination, 'inventory');
+  f.parameter.freshness.status = 'held';
+  f.current.recording.parameters[0].observedThisRun = false;
+  assert.deepEqual((await f.status()).attention, [], 'never-observed streams do not become a configured-source census');
+});
+
+test('current-database verification failures have safe distinct attention and are independent of recorder activity', async () => {
+  const f = fixture();
+  for (const [error, category, severity] of [['database_integrity_failed', 'integrity', 'critical'],
+    ['database_journal_invalid', 'integrity', 'critical'], ['database_schema_mismatch', 'format', 'warning'],
+    ['full_verification_checkpoint_mismatch', 'checkpoint', 'warning'], ['private-worker-message', 'unknown', 'warning']]) {
+    const result = await f.status({ verification: { state: 'error', scope: 'current-run', lastFailure: { error, finishedAt: start } } });
+    const warning = result.attention.find(item => item.id === 'database-verification');
+    assert.equal(warning.category, category); assert.equal(warning.severity, severity);
+    assert(!JSON.stringify(warning).includes('private-worker-message'));
+    assert.equal(result.recording.state, 'ok');
+  }
+  assert(!(await f.status()).attention.some(item => item.id === 'database-verification'));
+  assert(!(await f.status({ verification: { lastFailure: { error: 'database_integrity_failed', finishedAt: start + 1 } } }))
+    .attention.some(item => item.id === 'database-verification'), 'future receipts do not establish a completed check');
+});
+
 test('simulated input is explicitly distinguished from live recording', async () => {
   const f = fixture(); f.current.input = 'simulated';
   assert.equal((await f.status()).scope, 'simulated');
   assert.equal((await f.status({ readOnly: true })).scope, 'snapshot');
+});
+
+test('inventory context is opaque and stable for one Store while replacement and application restart change it', async () => {
+  const f = fixture(), first = (await f.status()).contextId;
+  assert.match(first, /^[a-f0-9-]{36}$/);
+  assert.equal((await f.status()).contextId, first);
+  assert.equal((await f.status({ readOnly: true })).contextId, first);
+  assert.notEqual((await f.status({ store: { ...f.store } })).contextId, first, 'same-path replacement is a new owner');
+  assert.equal((await f.status({ store: null })).contextId, null);
+  const restarted = fixture();
+  assert.notEqual((await restarted.status({ store: f.store })).contextId, first);
+  assert(!first.includes('invented'));
 });
 
 test('a newer download cannot replace a saved-copy date, and failed catalog refresh preserves dated evidence', async () => {
@@ -305,7 +356,7 @@ test('backup completion, cancellation, failure and browser transfer remain separ
   event('cancelled'); assert.equal((await f.status()).backup.state, 'none-known');
   event('start'); event('failed', { errorCode: 'ENOSPC' });
   assert.equal((await f.status()).backup.state, 'failed');
-  assert.equal(f.state.get('storage:backup-health').failure.errorCode, 'disk-full');
+  assert.equal(f.state.get('storage:backup-health').download.failure.errorCode, 'disk-full');
   f.advance(1); event('start'); event('complete');
   const completed = await f.status();
   assert.equal(completed.backup.state, 'none-known'); assert.equal(completed.backup.latestVerifiedAt, null);
@@ -320,6 +371,59 @@ test('backup failure survives restart but an empty replacement store cannot inhe
   assert.equal((await restarted.status({ store: f.store })).backup.state, 'failed');
   const fresh = { ...f.store, getState: () => null };
   assert.equal((await restarted.status({ store: fresh })).backup.state, 'none-known');
+});
+
+test('browser completion cannot clear a failed server save across restart; only a later server save resolves it', async () => {
+  const f = fixture();
+  const event = (kind, phase) => f.health.backupEvent({ operationId: `${kind}-${phase}`, kind, phase, at: f.now() }, f.store);
+  event('saved-copy', 'failed'); f.advance(1); event('download', 'complete');
+  let result = await f.status();
+  assert.equal(result.backup.state, 'failed');
+  assert.equal(result.backup.outcomes.savedCopy.failed, true);
+  assert.equal(result.backup.outcomes.download.failed, false);
+  assert.match(result.backup.detail, /server save failed/);
+  const restart = fixture(); restart.state.set('storage:backup-health', structuredClone(f.state.get('storage:backup-health')));
+  restart.advance(1);
+  assert.equal((await restart.status()).backup.outcomes.savedCopy.failed, true);
+  f.advance(1); event('saved-copy', 'complete');
+  result = await f.status();
+  assert.equal(result.backup.state, 'none-known');
+  assert.equal(result.backup.outcomes.savedCopy.failed, false);
+  assert.equal(result.backup.count, 0, 'a receipt does not invent a discovered file');
+});
+
+test('retired and malformed backup receipts fail closed without rewriting them', async () => {
+  for (const saved of [{ version: 1, complete: null, failure: null },
+    { version: 2, savedCopy: { complete: null, failure: null } },
+    { version: 2, savedCopy: { complete: { at: 1e20 }, failure: null }, download: { complete: null, failure: null } }]) {
+    const f = fixture(); f.state.set('storage:backup-health', structuredClone(saved));
+    assert.equal((await f.status()).backup.state, 'unknown');
+    f.health.backupEvent({ operationId: 'save', kind: 'saved-copy', phase: 'complete', at: start }, f.store);
+    await Promise.resolve();
+    assert.deepEqual(f.state.get('storage:backup-health'), saved);
+    assert.equal((await f.status()).backup.state, 'unknown');
+  }
+});
+
+test('known saved-copy check failures surface without opening the admin catalog', async () => {
+  const f = fixture({ getBackupChecks: () => ({ scope: 'current-run', failedChecks: 1, changedChecks: 2 }) });
+  const result = await f.status();
+  assert.equal(result.backup.failedChecks, 1); assert.equal(result.backup.changedChecks, 2);
+  assert(result.attention.some(item => item.id === 'backup-check'));
+});
+
+test('copy-check outcomes are current even while filesystem catalog refresh is pending', async () => {
+  let failedChecks = 1, pending = false;
+  const f = fixture({ backupCatalog: { list: async () => {
+    if (pending) return new Promise(() => {});
+    return { copies: [{ id: 'synthetic-copy', createdAt: start, bytes: 3 }], checkedAt: start, complete: true, reasons: [] };
+  } }, getBackupChecks: copies => ({ failedChecks: copies.length ? failedChecks : 0, changedChecks: 0 }) });
+  assert.equal((await f.status()).backup.failedChecks, 1);
+  failedChecks = 0; pending = true;
+  const result = await f.status();
+  assert.equal(result.backup.failedChecks, 0);
+  assert.equal(result.backup.catalogCheckedAt, start, 'completion updates the cheap check summary without pretending to rescan files');
+  assert(!result.attention.some(item => item.id === 'backup-check'));
 });
 
 test('concurrent downloads and repeated cleanup failures cannot clear another still-running copy operation', async () => {

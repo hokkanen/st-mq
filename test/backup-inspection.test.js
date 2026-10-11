@@ -33,11 +33,27 @@ test('selected-copy verification independently checks complete contents without 
   assert.equal(f.inspection.status().state, 'complete');
   const list = await f.inspection.list();
   assert.equal(list.copies[0].recheck.state, 'complete');
+  assert.equal(list.copies[0].recheck.scope, 'current-run');
   assert(Number.isSafeInteger(list.copies[0].recheck.checkedAt));
   assert(!JSON.stringify(list).includes(f.path));
   assert(!JSON.stringify(list).includes('fingerprint'));
   assert.deepEqual(await readFile(f.path), before);
   assert.equal(f.store.events().length, 1);
+});
+
+test('selected-copy check warnings use current file identity and disappear after application restart', async t => {
+  const f = await fixture(t, { verify: async () => { throw Object.assign(Error('private failure'), { code: 'database_integrity_failed' }); } });
+  f.inspection.start(f.copy.id); await f.inspection.settled();
+  assert.deepEqual(f.inspection.health([f.copy]), { scope: 'current-run', failedChecks: 1, changedChecks: 0 });
+  assert.equal((await f.inspection.list()).copies[0].recheck.error, 'database_integrity_failed');
+  assert.deepEqual(f.inspection.health([{ ...f.copy, fingerprint: 'replacement' }]),
+    { scope: 'current-run', failedChecks: 0, changedChecks: 1 });
+  assert.deepEqual(f.inspection.health([]), { scope: 'current-run', failedChecks: 0, changedChecks: 0 });
+  const restarted = createBackupInspection({ catalog: f.catalog });
+  try {
+    assert.equal((await restarted.list()).copies[0].recheck, undefined);
+    assert.deepEqual(restarted.health([f.copy]), { scope: 'current-run', failedChecks: 0, changedChecks: 0 });
+  } finally { await restarted.close(); }
 });
 
 test('a file replaced while verification runs cannot inherit that verification receipt', async t => {

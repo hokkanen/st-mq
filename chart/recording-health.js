@@ -1,7 +1,8 @@
 import { createStoragePerformance } from './storage-health.js';
+import { recoveryErrorMessage } from '../src/recovery/errors.js';
 
 const finite = value => Number.isFinite(value) && value >= 0;
-const validTime = value => Number.isFinite(value) && value >= 0;
+const validTime = value => finite(value) && value <= 8_640_000_000_000_000;
 const healthFreshnessMs = 3 * 60_000;
 const dates = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki',
   day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -31,9 +32,26 @@ const backupLabels = { available: 'Copy available', 'none-known': 'No known copy
 const diskLabels = { ok: 'Space available', low: 'Low disk space', critical: 'Critically low space', unknown: 'Disk space unknown' };
 const tone = state => ['write-failed', 'critical', 'failed', 'stalled'].includes(state) ? 'critical'
   : ['low', 'interrupted', 'source-unavailable', 'write-waiting'].includes(state) ? 'warning' : 'neutral';
-const issueTarget = (id, recordingState) => ['disk-space', 'disk-check'].includes(id) ? 'recording-disk-card'
-  : id === 'backup' ? 'recording-backup-card'
-    : ['write-failed', 'write-waiting'].includes(recordingState) ? 'recording-performance-details' : 'recording-recording-card';
+const issueTarget = (id, recordingState) => {
+  if (['disk-space', 'disk-check'].includes(id)) return 'recording-disk-card';
+  if (['backup', 'backup-check'].includes(id)) return 'recording-backup-card';
+  if (id === 'database-verification') return 'database-verification-details';
+  if (id === 'recording-sources') return 'recording-recording-card';
+  return id === 'recording-resumed' || ['write-failed', 'write-waiting'].includes(recordingState)
+    ? 'recording-performance-details' : 'recording-recording-card';
+};
+
+export function backupCheckFailure(check) {
+  const messages = {
+    backup_verification_interrupted: 'The check was interrupted. Run it again; interruption alone does not show damage.',
+    backup_copy_unavailable: 'The file changed or is no longer available. Refresh the list and check the current copy.',
+    full_verification_transport_mismatch: 'The file contents did not match the expected snapshot. Keep the source intact and check a new export.',
+    full_verification_checkpoint_mismatch: 'The transaction checkpoint did not match the expected snapshot. Keep the source intact and review it before use.',
+    full_verification_busy: 'The verification queue was full. Wait for pending checks to finish, then retry.',
+  };
+  return messages[check?.error] ?? recoveryErrorMessage(check?.error)
+    ?? 'The full check did not complete. Preserve the file and review storage health before retrying.';
+}
 
 export function recordingHealthView(health, recording, now = Date.now()) {
   const current = health?.version === 2 ? health : {};
@@ -42,6 +60,12 @@ export function recordingHealthView(health, recording, now = Date.now()) {
     && finite(disk.freeBytes) && finite(disk.totalBytes) && disk.totalBytes > 0 && disk.freeBytes <= disk.totalBytes;
   const diskFraction = hasSpace ? disk.freeBytes / disk.totalBytes : null;
   const copies = Number.isSafeInteger(backup.count) && backup.count >= 0 ? backup.count : null;
+  const backupCheckWarning = backup.failedChecks > 0 || backup.changedChecks > 0;
+  const saveFailed = backup.outcomes?.savedCopy?.failed, downloadFailed = backup.outcomes?.download?.failed;
+  const backupFailureLabel = saveFailed && downloadFailed ? 'Save and download failed' : saveFailed ? 'Server save failed' : downloadFailed ? 'Download failed' : null;
+  const backupFailures = [['savedCopy', 'Server save'], ['download', 'Browser transfer']]
+    .filter(([kind]) => backup.outcomes?.[kind]?.failed)
+    .map(([kind, label]) => `${label} failed${validTime(backup.outcomes[kind].failedAt) ? ` ${recordingEvidenceTime(backup.outcomes[kind].failedAt, now)}` : ' · time not known'}.`).join(' ');
   const backupEvidence = validTime(backup.latestAt) ? `${backup.latestDateBasis === 'file-modified' ? 'Latest listed copy · file modified' : 'Latest saved copy'} · ${recordingEvidenceTime(backup.latestAt, now)}` : 'No completed server copy is known.';
   const budget = recording ?? {};
   const adaptiveMeasured = budget.adaptiveMeasurementHours > 0 && finite(budget.adaptiveProjectedAnnualBytes);
@@ -66,7 +90,8 @@ export function recordingHealthView(health, recording, now = Date.now()) {
       capacity: hasSpace ? `${decimal(diskFraction * 100)}% free of ${storageBytes(disk.totalBytes)}` : 'Capacity is not available',
       detail: disk.detail || 'Free space on the filesystem that holds this server’s database.',
       evidence: validTime(disk.checkedAt) ? `Disk space checked ${recordingEvidenceTime(disk.checkedAt, now)}` : 'Disk space check time is not known.' },
-    recording: { label: recordingLabels[recorder.state] ?? recordingLabels.unknown, tone: tone(recorder.state),
+    recording: { label: recordingLabels[recorder.state] ?? recordingLabels.unknown,
+      tone: recorder.sources?.attentionStreams > 0 && tone(recorder.state) === 'neutral' ? 'warning' : tone(recorder.state),
       cardLabel: recorder.state === 'write-waiting' ? 'Recording delayed'
         : recorder.state === 'write-failed' ? 'Recording interrupted' : recordingLabels[recorder.state] ?? recordingLabels.unknown,
       detail: recorder.detail || 'Waiting for recording health information.',
@@ -81,13 +106,13 @@ export function recordingHealthView(health, recording, now = Date.now()) {
       issues: Array.isArray(recorder.sources?.issues) ? recorder.sources.issues : [],
       truncated: recorder.sources?.truncated === true,
     },
-    backup: { label: backup.state === 'available' && copies !== null ? `${copies} saved cop${copies === 1 ? 'y' : 'ies'}${backup.complete === false ? ' listed' : ''}` : backupLabels[backup.state] ?? backupLabels.unknown, tone: tone(backup.state),
+    backup: { label: backup.state === 'available' && copies !== null ? `${copies} saved cop${copies === 1 ? 'y' : 'ies'}${backup.complete === false ? ' listed' : ''}${backupCheckWarning ? ' · check needs attention' : ''}` : backup.state === 'failed' && backupFailureLabel ? backupFailureLabel : backupLabels[backup.state] ?? backupLabels.unknown,
+      tone: backupCheckWarning && tone(backup.state) === 'neutral' ? 'warning' : tone(backup.state),
       detail: backup.detail || 'Saved database copies on this server. Listing a file does not verify its contents.', evidence: backupEvidence,
       download: validTime(backup.downloadAt) ? `Browser transfer sent ${recordingEvidenceTime(backup.downloadAt, now)}. Saving and retention on the receiving device are unknown.` : '',
       activity: backup.state === 'running' && validTime(backup.startedAt) ? `Started ${recordingEvidenceTime(backup.startedAt, now)}`
-        : ['failed', 'interrupted'].includes(backup.state) && validTime(backup.lastFailureAt) ? `Last failure ${recordingEvidenceTime(backup.lastFailureAt, now)}` : '' },
+        : backupFailures || (['failed', 'interrupted'].includes(backup.state) && validTime(backup.lastFailureAt) ? `Last failure ${recordingEvidenceTime(backup.lastFailureAt, now)}` : '') },
     growth: {
-      database: storageBytes(budget.measuredDatabaseBytes),
       adaptiveStored: finite(budget.adaptiveEstimatedBytes) && validTime(budget.adaptiveAccountingStartedAt) ? storageBytes(budget.adaptiveEstimatedBytes) : 'Not measured yet',
       adaptiveSince: validTime(budget.adaptiveAccountingStartedAt) ? `Estimated adaptive payload recorded since ${dates.format(new Date(budget.adaptiveAccountingStartedAt))}` : 'Adaptive size accounting starts with new recordings',
       adaptive: adaptiveMeasured ? `${storageBytes(budget.adaptiveProjectedAnnualBytes)}/year` : 'Collecting evidence',
@@ -99,7 +124,7 @@ export function recordingHealthView(health, recording, now = Date.now()) {
   };
 }
 
-export function createRecordingHealth({ document, request, reviewBackup, downloadBackup,
+export function createRecordingHealth({ document, request, reviewBackup, downloadBackup, onContextChange,
   now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout }) {
   const $ = id => document.getElementById(id);
   const performance = createStoragePerformance({ document, now });
@@ -114,6 +139,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
   const verificationReceipts = new Map();
   const adminCatalog = () => dashboardAccess?.role === 'admin' && document.body.dataset.authenticated === 'true';
   const issueNodes = new Map();
+  const sourceNodes = new Map();
   const set = (id, value) => { const element = $(id); if (element && element.textContent !== String(value)) element.textContent = value; };
   const open = id => {
     const target = $(id);
@@ -179,7 +205,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
               if (!['queued', 'running', 'complete', 'error', 'changed'].includes(result?.state)) throw new Error('Verification start was not confirmed');
               copyActivities.delete(copy.id);
               verificationReceipts.set(copy.id, { status: result, afterRead: catalogReadSequence });
-              renderCopies(); scheduleCatalog();
+              draw(); scheduleCatalog();
               await refreshCopies({ force: true });
             } catch {
               if (version !== catalogRevision) return;
@@ -199,16 +225,21 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
       const check = verificationReceipts.get(item.id)?.status ?? item.recheck;
       const receipt = copyActivities.get(item.id);
       if (receipt && now() - receipt.at > 86400_000) copyActivities.delete(item.id);
-      verification.textContent = check?.state === 'complete' && validTime(check.finishedAt)
-        ? `Full check passed ${recordingEvidenceTime(check.finishedAt, now())}. This check applies to that file state.`
-        : item.verification?.state === 'verified-when-created'
-          ? 'Verified during creation · verification time not recorded. No later check is available.' : 'Contents have not been checked by this list.';
+      const creation = item.verification?.state === 'verified-when-created'
+        ? 'Verified during creation · verification time not recorded.' : 'No creation check is recorded.';
+      verification.textContent = check?.state === 'complete'
+        ? `Full check passed${validTime(check.finishedAt) ? ` ${recordingEvidenceTime(check.finishedAt, now())}` : ' · completion time unknown'}. This check applies to that file state in the current application run.`
+        : check?.state === 'error' ? `Full check failed${validTime(check.finishedAt) ? ` · ${recordingEvidenceTime(check.finishedAt, now())}` : ''}. ${creation}`
+          : check?.state === 'changed' ? `Previous check no longer applies to this file. ${creation}`
+            : ['queued', 'running'].includes(check?.state) ? `${creation} A full check is in progress.`
+              : `${creation} No later check is available in this application run.`;
       if (copyActivities.has(item.id)) activity.textContent = receipt.text;
       else if (check) activity.textContent = ['queued', 'running'].includes(check.state) ? `${check.state === 'queued' ? 'Waiting for the full verifier' : 'Checking the complete copy'}${validTime(check.startedAt) ? ` · requested ${recordingEvidenceTime(check.startedAt, now())}` : ''}`
-        : check.state === 'error' ? `Full check failed${validTime(check.finishedAt) ? ` · ${recordingEvidenceTime(check.finishedAt, now())}` : ''}. Review the source before using it.`
+        : check.state === 'error' ? backupCheckFailure(check)
           : check.state === 'changed' ? 'The file changed during the check. Its current contents are not verified.' : '';
       else activity.textContent = '';
       activity.dataset.tone = ['error', 'changed'].includes(check?.state) ? 'warning' : 'neutral';
+      for (const [index, label] of ['Download', 'Verify', 'Review history from'].entries()) actions.children[index].setAttribute('aria-label', `${label} ${item.filename}`);
       actions.children[0].disabled = !downloadBackup || !adminCatalog() || receipt?.kind === 'download' && receipt.pending === true;
       actions.children[1].disabled = !adminCatalog() || verificationPending.has(item.id) || ['queued', 'running'].includes(check?.state);
       actions.children[2].disabled = !reviewBackup || !adminCatalog() || ['snapshot', 'history'].includes(health?.scope);
@@ -218,13 +249,25 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
         focused?.focus({ preventScroll: true });
       }
     });
-    set('recording-backup-folder', adminCatalog() && catalog ? catalog.directory : adminCatalog() ? 'Not checked' : 'Admin access is required to view the folder and files.');
+    const location = adminCatalog() ? catalog?.location : null;
+    set('recording-backup-folder', adminCatalog() && catalog
+      ? location?.folder ?? (location?.environment === 'home-assistant' ? 'Host folder mapping unavailable' : catalog.directory)
+      : adminCatalog() ? 'Not checked' : 'Admin access is required to view the folder and files.');
+    const insideApp = Boolean(location?.insideApp);
+    $('recording-backup-inside-label').hidden = !insideApp;
+    $('recording-backup-inside').hidden = !insideApp;
+    set('recording-backup-inside', insideApp ? location.insideApp : '');
+    set('recording-backup-location-detail', location?.environment === 'home-assistant'
+      ? location.hostMappingKnown ? 'Folder is the Home Assistant host location. Inside app is the same folder as seen by this app.'
+        : 'Inside app is the container path. Its host folder is not known; do not treat it as a Home Assistant host path.' : '');
     set('recording-backup-size', catalog && adminCatalog() ? `${catalog.copies.length} cop${catalog.copies.length === 1 ? 'y' : 'ies'} listed · ${storageBytes(catalog.copies.reduce((sum, item) => sum + item.bytes, 0))}`
       : finite(health?.backup?.totalBytes) ? `${storageBytes(health.backup.totalBytes)} in listed copies` : 'Not checked');
     const checked = validTime(catalog?.checkedAt) ? `List checked ${recordingEvidenceTime(catalog.checkedAt, now())}.` : '';
     if (adminCatalog() && catalog && ['available', 'none-known'].includes(health?.backup?.state)) {
       const dated = unavailable || !validTime(health.checkedAt) || Math.abs(now() - health.checkedAt) > healthFreshnessMs;
-      set('recording-backup-state', `${catalog.stale || catalogPhase === 'failed' ? 'Last listed: ' : dated ? 'Last known: ' : ''}${catalog.copies.length} saved cop${catalog.copies.length === 1 ? 'y' : 'ies'}${catalog.complete === false ? ' listed' : ''}`);
+      const checks = backupCheckAttention();
+      set('recording-backup-state', `${catalog.stale || catalogPhase === 'failed' ? 'Last listed: ' : dated ? 'Last known: ' : ''}${catalog.copies.length} saved cop${catalog.copies.length === 1 ? 'y' : 'ies'}${catalog.complete === false ? ' listed' : ''}${checks.length ? ' · check needs attention' : ''}`);
+      if (checks.length) $('recording-backup-card').dataset.tone = 'warning';
       const latest = catalog.copies[0];
       const at = validTime(latest?.createdAt) ? latest.createdAt : latest?.fileModifiedAt;
       set('recording-backup-evidence', validTime(at) ? `Latest listed copy${validTime(latest?.createdAt) ? '' : ' · file modified'} · ${recordingEvidenceTime(at, now())}` : 'No saved copy is listed.');
@@ -266,7 +309,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     } catch { if (version === catalogRevision) { catalogPhase = 'failed'; catalogFailureAt = now(); } }
     finally {
       if (version === catalogRevision) {
-        catalogPending = false; renderCopies(); scheduleCatalog();
+        catalogPending = false; draw(); scheduleCatalog();
         if (catalogFollowup) {
           const scan = catalogFollowupScan; catalogFollowup = catalogFollowupScan = false;
           void refreshCopies({ force: true, scan });
@@ -327,13 +370,24 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     });
     list.hidden = items.length === 0;
   }
+  function backupCheckAttention() {
+    if (!adminCatalog() || !catalog) return [];
+    const checks = catalog.copies.map(item => verificationReceipts.get(item.id)?.status ?? item.recheck);
+    if (catalog.recheck && !catalog.copies.some(item => item.id === catalog.recheck.sourceId)) checks.push(catalog.recheck);
+    const failed = checks.filter(check => check?.state === 'error').length;
+    const changed = checks.filter(check => check?.state === 'changed').length;
+    if (!failed && !changed) return [];
+    return [{ id: 'backup-check', severity: 'warning', title: 'Saved-copy checks need attention',
+      detail: [failed ? `${failed} full check${failed === 1 ? '' : 's'} failed` : '', changed ? `${changed} checked file${changed === 1 ? ' has' : 's have'} changed or is unavailable` : ''].filter(Boolean).join(' · ') + '. Open Backups for the dated result.' }];
+  }
   function draw() {
     const view = recordingHealthView(health, recording, now());
     performance.update(health, unavailable);
     const strip = $('recording-status'), dated = view.known && (view.outdated || view.clockMismatch || unavailable);
-    const needsAttention = view.attention.length > 0 || dated;
+    const attention = [...view.attention, ...backupCheckAttention().filter(item => !view.attention.some(known => known.id === item.id))];
+    const needsAttention = attention.length > 0 || dated;
     strip.hidden = !view.known || !(introVisible || needsAttention || !view.settled || strip.contains(document.activeElement));
-    strip.dataset.tone = view.attention.some(item => item.severity === 'critical') ? 'critical' : needsAttention ? 'warning' : 'neutral';
+    strip.dataset.tone = attention.some(item => item.severity === 'critical') ? 'critical' : needsAttention ? 'warning' : 'neutral';
     set('recording-status-label', view.recordingScope);
     set('recording-status-state', `${dated ? 'Last known: ' : ''}${view.recording.label}`);
     $('recording-status-recording').dataset.tone = view.recording.tone;
@@ -343,7 +397,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     set('recording-status-free', `${dated ? 'Last known: ' : ''}${view.disk.fraction === null ? 'Space unknown' : `${view.disk.free} free`}`);
     set('recording-status-capacity', view.disk.fraction === null ? 'Open details to check storage' : `of ${view.disk.total}${view.disk.tone === 'neutral' ? '' : ` · ${view.disk.label}`}`);
     $('recording-status-disk').dataset.tone = view.disk.tone;
-    renderIssues(view.attention);
+    renderIssues(attention);
     const freshness = unavailable ? `Refresh failed. ${view.checked} The last known status may be out of date.`
       : view.clockMismatch ? `The server and browser clocks differ. Check this device’s date and time and the server clock. ${view.checked}`
       : view.outdated ? `Status is out of date. ${view.checked}` : '';
@@ -361,15 +415,17 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     $('recording-health-checked').dataset.tone = unavailable || view.clockMismatch ? 'warning' : 'neutral';
     $('recording-health-refresh').disabled = pending;
     set('recording-health-refresh', pending ? 'Checking…' : 'Refresh health');
-    set('recording-health-badge', view.attention.length ? 'Needs attention' : '');
-    $('recording-health-badge').hidden = view.attention.length === 0;
+    set('recording-health-badge', attention.length ? 'Needs attention' : unavailable ? 'Status unavailable' : dated ? 'Last known' : '');
+    $('recording-health-badge').hidden = !attention.length && !unavailable && !dated;
     for (const section of ['disk', 'recording', 'backup']) {
       set(`recording-${section}-state`, `${dated ? 'Last known: ' : ''}${view[section].cardLabel ?? view[section].label}`);
       $(`recording-${section}-card`).dataset.tone = view[section].tone;
       set(`recording-${section}-detail`, view[section].detail);
     }
     set('recording-disk-free', view.disk.free);
-    set('recording-disk-database', view.growth.database !== 'Unknown' ? view.growth.database : storageBytes(inventory?.database?.fileBytes));
+    const allocation = inventory ? storageBytes(inventory.database?.allocatedBytes)
+      : inventoryPhase === 'loading' ? 'Measuring…' : inventoryPhase === 'failed' ? 'Unavailable' : 'Not checked';
+    set('recording-disk-database', allocation);
     set('recording-disk-capacity', view.disk.capacity);
     set('recording-disk-evidence', view.disk.evidence);
     set('recording-recording-evidence', view.recording.evidence);
@@ -377,15 +433,33 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     set('recording-recording-sourceCheck', view.recording.sourceCheck);
     set('recording-recording-coverage', `${view.recording.coverage}${view.recording.truncated ? ' Additional observed stream exceptions are omitted from this list.' : ''}`);
     const sourceList = $('recording-recording-sources');
-    while (sourceList.children.length > view.recording.issues.length) sourceList.children[sourceList.children.length - 1].remove();
+    const sourceIds = new Set(view.recording.issues.map((item, index) => item.id ?? `source-${index}`));
+    for (const [id, node] of sourceNodes) if (!sourceIds.has(id)) {
+      if (node.contains(document.activeElement)) $('recording-recording-card').querySelector(':scope > summary')?.focus({ preventScroll: true });
+      node.remove(); sourceNodes.delete(id);
+    }
     view.recording.issues.forEach((item, index) => {
-      let node = sourceList.children[index];
-      if (!node) { node = document.createElement('li'); node.append(document.createElement('strong'), document.createElement('span')); sourceList.append(node); }
-      const [title, evidence] = node.children;
+      const id = item.id ?? `source-${index}`;
+      let node = sourceNodes.get(id);
+      if (!node) {
+        node = document.createElement('li');
+        const link = document.createElement('a'); bindLink(link);
+        node.append(document.createElement('strong'), document.createElement('span'), link); sourceNodes.set(id, node);
+      }
+      if (sourceList.children[index] !== node) {
+        const focused = node.contains(document.activeElement) ? document.activeElement : null;
+        sourceList.insertBefore(node, sourceList.children[index] ?? null); focused?.focus({ preventScroll: true });
+      }
+      const [title, evidence, link] = node.children;
       const unit = ({ degC: '°C', 'degree-minutes': '°min' })[item.unit] ?? item.unit;
-      title.textContent = `${item.label}${unit ? ` (${unit})` : ''} · ${{ stale: 'Out of date', unavailable: 'Unavailable', 'held-attention': 'Held reading needs attention', invalid: 'Reading rejected', unknown: 'Unknown' }[item.status] ?? 'Needs attention'}`;
-      evidence.textContent = validTime(item.sourceObservedAt) ? `Source observation ${recordingEvidenceTime(item.sourceObservedAt, now())}`
-        : validTime(item.lastCheckedAt) ? `Polling attempt ${recordingEvidenceTime(item.lastCheckedAt, now())}; no usable source observation is known.` : 'No usable source observation is known.';
+      title.textContent = `${item.label}${unit ? ` (${unit})` : ''} · ${{ stale: 'Out of date', unavailable: 'Unavailable', 'held-attention': 'Held reading needs attention', failed: 'Source check failed', invalid: 'Reading rejected', unknown: 'Unknown' }[item.status] ?? 'Needs attention'}`;
+      const adaptive = item.destination === 'adaptive';
+      link.dataset.recordingOpen = adaptive ? 'recording-adaptive-details' : 'recording-overview-details';
+      link.href = `#${link.dataset.recordingOpen}`;
+      link.textContent = adaptive ? 'Adaptive measurement details' : 'Exact measurement and recorded-data details';
+      const clocks = validTime(item.sourceObservedAt) ? `Source observation ${recordingEvidenceTime(item.sourceObservedAt, now())}.`
+        : 'No usable source observation is known.';
+      evidence.textContent = [item.reason, clocks, validTime(item.lastCheckedAt) ? `Last polling attempt ${recordingEvidenceTime(item.lastCheckedAt, now())}.` : ''].filter(Boolean).join(' ');
     });
     sourceList.hidden = view.recording.issues.length === 0;
     const writeAt = health?.recording?.lastWriteAt;
@@ -397,7 +471,16 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     set('recording-backup-download', view.backup.download);
     $('recording-backup-download').hidden = !view.backup.download;
     renderCopies();
+    set('recording-growth-database', allocation);
     for (const [field, value] of Object.entries(view.growth)) set(`recording-growth-${field}`, value);
+    const verification = health?.verification;
+    const verificationFailure = verification?.lastFailure;
+    const verificationSummary = verificationFailure ? `Check needs attention${validTime(verificationFailure.finishedAt) ? ` · ${recordingEvidenceTime(verificationFailure.finishedAt, now())}` : ''}`
+      : ['queued', 'running'].includes(verification?.state) ? 'Full check in progress'
+        : verification?.state === 'complete' && validTime(verification.lastResult?.verifiedAt) ? `Last full check · ${recordingEvidenceTime(verification.lastResult.verifiedAt, now())}`
+          : 'Optional full integrity and content check';
+    set('database-verification-summary', verificationSummary);
+    $('database-verification-details').dataset.tone = verificationFailure ? 'warning' : 'neutral';
     const retained = finite(inventory?.database?.adaptiveEstimatedBytes);
     const checked = validTime(inventory?.generatedAt) ? `Retained adaptive payload estimate · checked ${recordingEvidenceTime(inventory.generatedAt, now())}` : '';
     set('recording-growth-retained', retained ? storageBytes(inventory.database.adaptiveEstimatedBytes)
@@ -432,9 +515,11 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
       : inventoryPhase === 'loading' ? 'Refreshing the recorded-data inventory…' : 'The recorded-data inventory has not been checked yet.');
   }
   function acceptHealth(result) {
-    if (health?.scope !== result?.scope) { inventory = undefined; inventoryPhase = 'idle'; clearCatalog(); }
+    const changed = health?.scope !== result?.scope || health?.contextId !== result?.contextId;
+    if (changed) { inventory = undefined; inventoryPhase = 'idle'; clearCatalog(); }
     health = result; unavailable = false;
     document.body.dataset.recordingHealth = health?.version === 2 ? 'true' : 'false';
+    if (changed) onContextChange?.({ contextId: health?.contextId ?? null, scope: health?.scope ?? null });
     if (health?.version === 2 && !introStarted) {
       introStarted = introVisible = true;
       introTimer = setTimer(() => { introVisible = false; introTimer = undefined; draw(); }, 15_000);
@@ -465,6 +550,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     refresh,
     refreshCopies,
     inventory(overview) { inventory = overview; inventoryPhase = 'ready'; draw(); },
+    inventoryReset() { inventory = undefined; inventoryPhase = 'idle'; draw(); },
     inventoryStatus(state) { inventoryPhase = state; draw(); },
     update(status) {
       if (Object.hasOwn(status ?? {}, 'webAccess')) {

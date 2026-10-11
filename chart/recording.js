@@ -124,10 +124,12 @@ export function recordingRows(status = {}) {
 export function renderRecording(status, root) {
   if (!root) return;
   const expanded=new Set([...root.querySelectorAll('details[data-stream-id][open]')].map(node=>node.dataset.streamId));
-  const focusedStream=root.contains(document.activeElement)?document.activeElement.closest('details[data-stream-id]')?.dataset.streamId:null;
+  const focused=root.contains(document.activeElement)?document.activeElement:null;
+  const focusedStream=focused?.closest('details[data-stream-id]')?.dataset.streamId;
+  const focusedSource=focused?.closest('[data-recording-source]')?.dataset.recordingSource;
   const recording=status?.recording ?? {}, rows=recordingRows(recording);
   const description=document.createElement('p');description.className='muted';
-  description.textContent=`${rows.length} ${rows.length===1?'measurement':'measurements'}. Expand a source to inspect its status or recording history. Exact states, settings and counters are under Other recorded data.`;
+  description.textContent=`${rows.length} ${rows.length===1?'measurement':'measurements'}. Expand a source to inspect its status or recording history. Exact measurements, states, settings and counters are under Other recorded data.`;
   const note=document.createElement('p');note.className='muted';
   note.textContent='Counts and approximate storage include all listed identities within 24 hours. Spacing, threshold and open interval use the current source, or the latest recorded source in a read-only snapshot.';
   const help=document.createElement('details'),helpTitle=document.createElement('summary'),helpText=document.createElement('p');
@@ -148,10 +150,10 @@ export function renderRecording(status, root) {
     const tr=document.createElement('tr'),title=document.createElement('th');title.scope='row';title.textContent=row.label;
     tr.dataset.signal=row.signal;tr.dataset.streamId=row.rowId;
     if(row.source) {const source=document.createElement('small');const name=recordingSourceLabel(row)??({ 'garage-adapter':'Garage heat pump', 'mqtt-equipment':'MQTT equipment', 'shelly-mqtt':'Shelly', simulation:'Simulation' })[row.source]??providerName(row.source)??readable(row.source);
-      if(row.source==='voltage-estimate') setStatusDetail(source, {
+      if(row.source==='voltage-estimate') { source.dataset.recordingSource=row.rowId;setStatusDetail(source, {
         key:`recording-voltage-source-${row.streamId??row.signal}`, title:`${row.label} source`, label:name,
         detail:`The label shows the latest contributing source. Earlier sources can still contribute to the smoothed estimate. Voltage is measured in volts (V).\n\n${availability.detail}`,
-      });
+      });}
       else source.textContent=`${name} · ${({degC:'°C','degree-minutes':'°min'})[row.unit]??row.unit??''}`;
       title.append(source);}
     if(row.streamQualifier) {const qualifier=document.createElement('small');qualifier.className='recording-stream-qualifier';qualifier.textContent=row.streamQualifier;title.append(qualifier);}
@@ -194,12 +196,15 @@ export function renderRecording(status, root) {
   table.append(body);
   const wrap=document.createElement('div');wrap.className='table-scroll';wrap.append(table);
   root.replaceChildren(description,help,wrap);
-  if(focusedStream) [...root.querySelectorAll('details[data-stream-id]')].find(node=>node.dataset.streamId===focusedStream)?.querySelector('summary')?.focus({preventScroll:true});
+  const restoredFocus=focusedStream?[...root.querySelectorAll('details[data-stream-id]')].find(node=>node.dataset.streamId===focusedStream)?.querySelector('summary')
+    :focusedSource?[...root.querySelectorAll('[data-recording-source]')].find(node=>node.dataset.recordingSource===focusedSource)?.querySelector('button'):null;
+  if(focused)(restoredFocus??helpTitle).focus({preventScroll:true});
 }
 
 const inventoryDateFormat=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Helsinki',dateStyle:'medium',timeStyle:'short'});
 const inventoryDayFormat=new Intl.DateTimeFormat('en-GB',{timeZone:'UTC',dateStyle:'medium'});
-const dateLabel=at=>Number.isFinite(at)?inventoryDateFormat.format(at):null;
+const validDate=at=>Number.isFinite(at)&&at>=0&&at<=8640000000000000;
+const dateLabel=at=>validDate(at)?inventoryDateFormat.format(at):null;
 const integerLabel=value=>Number.isSafeInteger(value)&&value>=0?new Intl.NumberFormat('en-GB').format(value):'Unknown';
 const retentionLabels={history:'Retained history',current:'Current state · overwritten',derived:'Stored calculations',rolling:'Rolling records',mixed:'History and current state'};
 const retentionDescriptions={
@@ -219,7 +224,7 @@ export function inventoryItemSummary(item) {
 
 export function inventoryDateSpan(item) {
   const dateOnly=item?.datePrecision==='date';
-  const format=at=>dateOnly&&Number.isFinite(at)?inventoryDayFormat.format(at):dateLabel(at);
+  const format=at=>dateOnly&&validDate(at)?inventoryDayFormat.format(at):dateLabel(at);
   const first=format(item?.firstAt),last=format(item?.lastAt);
   if(!first&&!last)return item?.status==='empty'?'No recorded dates yet':'Dates not recorded';
   const dates=first&&last&&first!==last?`${first} – ${last}`:last??first;
@@ -243,11 +248,24 @@ export function renderRecordingOverview(overview,root) {
     notice.textContent=`Inventory needs attention: ${overview.inventoryIssues.join(' ')}`;nodes.push(notice);
   }
   const accounting=document.createElement('p');accounting.className='muted';accounting.textContent='Stored source counts include retained evidence excluded by recovery corrections. Selected chart history can contain fewer records. Learning journal counts describe the selected model history. Dataset counts may overlap and should not be added together.';nodes.push(accounting);
-  for(const group of overview.groups??[]) {
+  const groups=overview.groups??[],emptyItem=item=>item.status==='empty'&&item.count===0;
+  const populated=groups.filter(group=>group.items?.some(item=>!emptyItem(item)));
+  const emptyGroups=groups.filter(group=>!populated.includes(group));
+  const totals=groups.flatMap(group=>group.items??[]);
+  const counts=document.createElement('p');counts.className='recording-inventory-counts';
+  const datasetCounts=items=>{const present=items.filter(item=>Number.isSafeInteger(item.count)&&item.count>0).length,empty=items.filter(emptyItem).length;
+    return `${present} with records${empty?` · ${empty} empty`:''}${items.length-present-empty?` · ${items.length-present-empty} counts unavailable`:''}`;};
+  counts.textContent=`Datasets: ${datasetCounts(totals)}. Empty datasets remain available below; an empty dataset alone does not establish a recording fault.`;nodes.push(counts);
+  const emptyGroupDetails=document.createElement('details');emptyGroupDetails.className='recording-empty-datasets';emptyGroupDetails.dataset.overviewKey='empty-groups';
+  const emptyGroupTitle=document.createElement('summary');emptyGroupTitle.textContent=`Show empty dataset groups · ${emptyGroups.length}`;emptyGroupDetails.append(emptyGroupTitle);
+  for(const group of [...populated,...emptyGroups]) {
     const details=document.createElement('details');details.className='recording-data-group';details.dataset.overviewKey=`group:${group.id}`;
-    const summary=document.createElement('summary');summary.textContent=group.label;details.append(summary);
+    const groupEmpty=(group.items??[]).filter(emptyItem),groupPresent=(group.items??[]).filter(item=>!emptyItem(item));
+    const summary=document.createElement('summary');summary.textContent=`${group.label} · ${datasetCounts(group.items??[])}`;details.append(summary);
     if(group.description){const description=document.createElement('p');description.className='muted';description.textContent=group.description;details.append(description);}
-    for(const item of group.items??[]) {
+    const emptyDetails=document.createElement('details');emptyDetails.className='recording-empty-datasets';emptyDetails.dataset.overviewKey=`empty:${group.id}`;
+    const emptyTitle=document.createElement('summary');emptyTitle.textContent=`Show empty datasets · ${groupEmpty.length}`;emptyDetails.append(emptyTitle);
+    for(const item of [...groupPresent,...groupEmpty]) {
       const dataset=document.createElement('details');dataset.className='recording-dataset';dataset.dataset.overviewKey=`item:${group.id}:${item.id}`;
       dataset.dataset.datasetId=item.id;dataset.dataset.retention=item.retention??'';
       const title=document.createElement('summary'),name=document.createElement('span'),state=document.createElement('small');
@@ -290,10 +308,16 @@ export function renderRecordingOverview(overview,root) {
         }
         dataset.append(fields);
       }
-      dataset.open=expanded.get(dataset.dataset.overviewKey)??false;details.append(dataset);
+      dataset.open=expanded.get(dataset.dataset.overviewKey)??false;
+      (emptyItem(item)&&groupPresent.length?emptyDetails:details).append(dataset);
+      if(dataset.open||focusedKey===dataset.dataset.overviewKey)emptyDetails.open=true;
     }
-    details.open=expanded.get(details.dataset.overviewKey)??false;nodes.push(details);
+    if(groupPresent.length&&groupEmpty.length) {emptyDetails.open=expanded.get(emptyDetails.dataset.overviewKey)??emptyDetails.open;details.append(emptyDetails);}
+    details.open=expanded.get(details.dataset.overviewKey)??false;
+    if(emptyGroups.includes(group)) {emptyGroupDetails.append(details);if(details.open||focusedKey===details.dataset.overviewKey)emptyGroupDetails.open=true;}
+    else nodes.push(details);
   }
+  if(emptyGroups.length){emptyGroupDetails.open=expanded.get('empty-groups')??emptyGroupDetails.open;nodes.push(emptyGroupDetails);}
   if(!overview.groups?.length){const empty=document.createElement('p');empty.textContent='No dataset inventory is available yet.';nodes.push(empty);}
   if(overview.accounting?.tables?.length) {
     const details=document.createElement('details');details.className='recording-storage-accounting';details.dataset.overviewKey='accounting';
@@ -323,32 +347,56 @@ export function renderRecordingOverview(overview,root) {
     details.open=expanded.get('accounting')??false;nodes.push(details);
   }
   root.replaceChildren(...nodes);
-  if(focusedKey) [...root.querySelectorAll('[data-overview-key]')].find(node=>node.dataset.overviewKey===focusedKey)?.querySelector('summary')?.focus({preventScroll:true});
+  if(focusedKey) {
+    const target=[...root.querySelectorAll('[data-overview-key]')].find(node=>node.dataset.overviewKey===focusedKey)?.querySelector('summary')??root.querySelector('summary');
+    // A dataset can move into or out of the empty disclosure between scans.
+    // Its focused summary must remain reachable after that regrouping.
+    for(let ancestor=target?.parentElement?.parentElement?.closest('details');ancestor&&root.contains(ancestor);ancestor=ancestor.parentElement?.closest('details'))ancestor.open=true;
+    target?.focus({preventScroll:true});
+  }
 }
 
 export function recordingOverviewRefresh({request,root,details,parent,message,button,clock=Date.now,isVisible=()=>document.visibilityState!=='hidden',render=renderRecordingOverview,onState=()=>{}}) {
-  let fetchedAt=null,busy=false,loaded=false,refreshAfterMs=300000;
+  let fetchedAt=null,active=null,loaded=false,refreshAfterMs=300000,generation=0,queuedForce=false;
   const refresh=async({force=false}={})=>{
-    if(busy||!details.some(fold=>fold.open)||!parent.open||!isVisible()||!force&&fetchedAt!==null&&clock()-fetchedAt<refreshAfterMs)return;
-    busy=true;button.disabled=true;root.setAttribute('aria-busy','true');
+    queuedForce ||= force;
+    if(active||!details.some(fold=>fold.open)||!parent.open||!isVisible())return;
+    force=queuedForce;
+    if(!force&&fetchedAt!==null&&clock()>=fetchedAt&&clock()-fetchedAt<refreshAfterMs)return;
+    queuedForce=false;
+    const operation={generation,controller:new AbortController()};active=operation;
+    button.disabled=true;root.setAttribute('aria-busy','true');
     message.classList.remove('form-error');message.textContent=loaded?'Refreshing recorded-data overview…':'Loading recorded-data overview…';
     onState('loading');
     try {
-      const result=await request('/api/recording-overview');
+      const result=await request(`/api/recording-overview${force?'?refresh=true':''}`,{signal:operation.controller.signal});
+      if(operation.generation!==generation)return;
       if(!result||!Array.isArray(result.groups))throw new Error('Invalid recorded-data overview');
       render(result,root);loaded=true;fetchedAt=clock();onState('ready');
       refreshAfterMs=Number.isFinite(result.refreshAfterMs)&&result.refreshAfterMs>0?result.refreshAfterMs:300000;
-      message.textContent=`Inventory: ${dateLabel(result.generatedAt)??dateLabel(fetchedAt)} · Finnish time${result.cache?.hit?' · cached':''}. Refreshes while Storage & growth or Other recorded data is open.`;
+      message.textContent=`Inventory: ${dateLabel(result.generatedAt)??'time unavailable'} · Finnish time${result.cache?.hit?' · cached':''}. Refreshes while Storage & growth or Other recorded data is open.`;
     } catch {
+      if(operation.generation!==generation)return;
       message.classList.add('form-error');
       message.textContent=loaded?'Could not refresh the overview. The last successful overview is still shown.':'The recorded-data overview could not be loaded. Use Refresh inventory to try again.';
       onState('failed');
-    } finally {busy=false;button.disabled=false;root.removeAttribute('aria-busy');}
+    } finally {
+      if(active===operation) {
+        active=null;button.disabled=false;root.removeAttribute('aria-busy');
+        if(queuedForce)await refresh();
+      }
+    }
+  };
+  refresh.reset=()=>{
+    generation++;active?.controller.abort();active=null;queuedForce=false;fetchedAt=null;loaded=false;refreshAfterMs=300000;
+    root.replaceChildren();root.removeAttribute('aria-busy');button.disabled=false;
+    message.classList.remove('form-error');message.textContent='The recorded-data inventory has not been checked yet.';
+    onState('idle');
   };
   return refresh;
 }
 
-const checkDate = value => Number.isFinite(value) ? new Intl.DateTimeFormat('en-GB', {
+const checkDate = value => validDate(value) ? new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Europe/Helsinki', dateStyle: 'medium', timeStyle: 'short',
 }).format(value) : 'Unknown';
 const checkEnergy = value => Number.isFinite(value) ? `${new Intl.NumberFormat('en-GB', {

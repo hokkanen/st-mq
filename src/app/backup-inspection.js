@@ -7,7 +7,7 @@ import { verifyDatabase } from '../storage/full-verifier.js';
 const fail = (code, message, statusCode = 409) => Object.assign(new Error(message), { code, statusCode });
 const permittedErrors = new Set(['database_schema_mismatch', 'database_schema_invalid', 'database_algorithm_mismatch',
   'database_state_incompatible', 'database_integrity_failed', 'database_journal_invalid',
-  'full_verification_transport_mismatch', 'full_verification_checkpoint_mismatch',
+  'full_verification_transport_mismatch', 'full_verification_checkpoint_mismatch', 'full_verification_content_mismatch',
   'full_verification_busy', 'backup_copy_unavailable']);
 
 /** Inspect existing immutable copies without importing their settings or acquiring
@@ -22,15 +22,16 @@ export function createBackupInspection({ catalog, verify = verifyDatabase, clock
     results.delete(value.sourceId); results.set(value.sourceId, value);
     while (results.size > 100) results.delete(results.keys().next().value);
   };
+  const checkedCopy = (copy, result) => !result ? null : !result.fingerprint || result.fingerprint === copy.fingerprint
+    ? result : { ...result, state: 'changed', error: 'backup_copy_unavailable' };
   async function list(options) {
     const privateCatalog = await catalog.list(options);
     const view = publicBackupCatalog(privateCatalog);
     view.copies = view.copies.map((copy, index) => {
       const result = results.get(copy.id);
       if (!result) return copy;
-      const matches = !result.fingerprint || result.fingerprint === privateCatalog.copies[index].fingerprint;
-      const { fingerprint, ...recheck } = result;
-      return { ...copy, recheck: matches ? recheck : { ...recheck, state: 'changed', error: 'backup_copy_unavailable' } };
+      const { fingerprint, ...recheck } = checkedCopy(privateCatalog.copies[index], result);
+      return { ...copy, recheck };
     });
     const { fingerprint, ...recheck } = latest ?? {};
     return { ...view, recheck: latest ? recheck : null };
@@ -45,7 +46,7 @@ export function createBackupInspection({ catalog, verify = verifyDatabase, clock
     }
     cancellation = new AbortController();
     const signal = cancellation.signal;
-    remember({ sourceId, state: 'queued', startedAt: clock(), finishedAt: null, error: null, progress: null });
+    remember({ sourceId, scope: 'current-run', state: 'queued', startedAt: clock(), finishedAt: null, error: null, progress: null });
     running = (async () => {
       const source = await catalog.open(sourceId);
       try {
@@ -107,6 +108,11 @@ export function createBackupInspection({ catalog, verify = verifyDatabase, clock
     } finally { await source.release(); }
   }
   return { list, start, status, download,
+    health(copies) {
+      const checks = copies.map(copy => checkedCopy(copy, results.get(copy.id))).filter(Boolean);
+      return { scope: 'current-run', failedChecks: checks.filter(check => check.state === 'error').length,
+        changedChecks: checks.filter(check => check.state === 'changed').length };
+    },
     async settled() { await running; },
     async close() { closed = true; cancellation?.abort(); await running; },
   };

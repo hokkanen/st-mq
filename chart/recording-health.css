@@ -43,8 +43,8 @@
 .recording-health { margin: 0 0 24px; }
 .recording-health-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 12px; }
 .recording-health-heading h3, .recording-group-title { margin: 0; font-size: 12px; font-weight: 600; }
-.recording-health-heading p { margin: 4px 0 0; font-size: 11px; color: var(--muted); line-height: 1.5; }
-.recording-health-heading button { min-height: 36px; font-size: 11px; flex-shrink: 0; }
+.recording-health-heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.recording-health-heading button { min-height: 44px; font-size: 12px; flex-shrink: 0; }
 .recording-health-cards { display: grid; grid-template-columns: minmax(0, 1fr); border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
 .recording-health-cards > .recording-health-card { min-width: 0; margin: 0; border: 0; border-radius: 0; background: transparent; }
 .recording-health-card + .recording-health-card { border-top: 1px solid var(--border); }
@@ -66,25 +66,25 @@
 .recording-health-body { padding: 14px 16px 18px; }
 .recording-health-detail { font-size: 12px; line-height: 1.6; margin: 10px 0 0; overflow-wrap: anywhere; }
 .recording-health-body > :first-child { margin-top: 0; }
-.recording-health-evidence { display: block; font-size: 11px; line-height: 1.5; color: var(--muted); margin: 7px 0 0; overflow-wrap: anywhere; }
+.recording-health-evidence { display: block; font-size: 12px; line-height: 1.5; color: var(--muted); margin: 7px 0 0; overflow-wrap: anywhere; }
 .recording-health-evidence:empty { display: none; }
 .recording-storage-inventory { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 16px; min-width: 0; }
 .recording-source-facts, .recording-backup-folder { max-width: none; grid-template-columns: minmax(130px, .35fr) minmax(0, 1fr); }
 .recording-source-facts dd, .recording-backup-folder dd { overflow-wrap: anywhere; }
 .recording-source-exceptions { list-style: none; padding: 0; margin: 14px 0; display: grid; gap: 12px; }
 .recording-source-exceptions strong { display: block; font-size: 12px; line-height: 1.5; font-weight: 550; }
-.recording-source-exceptions span { display: block; font-size: 11px; color: var(--muted); line-height: 1.6; margin-top: 3px; }
+.recording-source-exceptions span { display: block; font-size: 12px; color: var(--muted); line-height: 1.6; margin-top: 3px; }
 .recording-evidence-links { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 14px; }
-.recording-evidence-links a { color: var(--text); font-size: 11px; text-underline-offset: 3px; }
+.recording-evidence-links a { color: var(--text); font-size: 12px; text-underline-offset: 3px; }
 .recording-backup-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-top: 16px; }
 .recording-backup-toolbar p { margin: 0; min-width: 0; }
-.recording-backup-toolbar button { min-height: 36px; font-size: 11px; flex-shrink: 0; }
+.recording-backup-toolbar button { min-height: 44px; font-size: 12px; flex-shrink: 0; }
 .recording-backup-list { list-style: none; padding: 0; margin: 14px 0; }
 .recording-backup-list > li { border-top: 1px solid var(--border); padding: 14px 0; min-width: 0; }
 .recording-backup-list h4 { font-size: 12px; font-weight: 550; line-height: 1.6; overflow-wrap: anywhere; margin: 0; }
-.recording-backup-list p { font-size: 11px; line-height: 1.6; color: var(--muted); margin: 5px 0; overflow-wrap: anywhere; }
+.recording-backup-list p { font-size: 12px; line-height: 1.6; color: var(--muted); margin: 5px 0; overflow-wrap: anywhere; }
 .recording-backup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 9px; }
-.recording-backup-actions button { min-height: 34px; font-size: 11px; }
+.recording-backup-actions button { min-height: 44px; font-size: 12px; }
 .recording-backup-list [data-tone="warning"] { color: var(--stale); }
 #recording-backup-card .recording-section { border-top: 1px solid var(--border); margin: 18px 0 0; }
 #recording-backup-card .recording-section-body { padding-bottom: 0; }
@@ -93,15 +93,15 @@
 .storage-meter[data-tone="warning"] > span { background: var(--stale); }
 .storage-meter[data-tone="critical"] > span { background: var(--error-text); }
 .recording-backup-link { display: inline-block; margin-top: 12px; color: var(--text); font-weight: 550; font-size: 12px; text-underline-offset: 3px; }
-.recording-health-checked { color: var(--muted); font-size: 11px; margin: 10px 0 0; line-height: 1.5; }
+.recording-health-checked { color: var(--muted); font-size: 12px; margin: 10px 0 0; line-height: 1.5; }
 .recording-health-checked[data-tone="warning"] { color: var(--stale); }
-.recording-health-badge { margin-left: auto; padding: 3px 9px; border: 1px solid var(--stale); color: var(--stale); border-radius: 12px; font-size: 11px; font-weight: 550; }
+.recording-health-badge { margin-left: auto; padding: 3px 9px; border: 1px solid var(--stale); color: var(--stale); border-radius: 12px; font-size: 12px; font-weight: 550; }
 .recording-section-group { margin-top: 24px; min-width: 0; }
 .recording-group-title { color: var(--muted); margin-bottom: 10px; }
 .recording-section-group > .recording-section { margin: 0; border-top: 1px solid var(--border); }
 .recording-section > summary { display: flex; align-items: center; gap: 20px; min-height: 68px; padding: 14px 2px; list-style: none; box-sizing: border-box; font-size: 13px; font-weight: 550; }
 .recording-section > summary > span { flex: 1; min-width: 0; }
-.recording-section > summary small { display: block; margin-top: 4px; font-size: 11px; line-height: 1.5; color: var(--muted); font-weight: 400; }
+.recording-section > summary small { display: block; margin-top: 4px; font-size: 12px; line-height: 1.5; color: var(--muted); font-weight: 400; }
 .recording-section > summary::after { flex: 0 0 20px; text-align: center; margin-right: 4px; }
 .recording-section > summary:hover, .recording-health-card > summary:hover .recording-health-label { color: var(--accent); }
 .recording-section > summary:focus-visible, .recording-health-card > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 5px; }
@@ -110,26 +110,26 @@
 .recording-section-body > .muted, .recording-section-body > p, .recording-overview-toolbar p { font-size: 12px; line-height: 1.6; }
 .recording-section-body > details, #recording-overview-content > details, #recording-content > details { margin-inline-start: 0; }
 .recording-inventory-link { margin-bottom: 12px; }
-.recording-inventory-link a { font-size: 11px; color: var(--muted); text-underline-offset: 3px; }
+.recording-inventory-link a { font-size: 12px; color: var(--muted); text-underline-offset: 3px; }
 .recording-storage-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; table-layout: fixed; }
 .recording-storage-table th, .recording-storage-table td { padding: 16px; vertical-align: top; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
 .recording-storage-table th:first-child { padding-left: 0; width: 28%; }
 .recording-storage-table td:last-child { padding-right: 0; }
-.recording-storage-table thead th { padding-top: 8px; padding-bottom: 10px; font-size: 11px; font-weight: 400; color: var(--muted); }
+.recording-storage-table thead th { padding-top: 8px; padding-bottom: 10px; font-size: 12px; font-weight: 400; color: var(--muted); }
 .recording-storage-table tbody th { font-size: 12px; font-weight: 550; line-height: 1.6; }
 .recording-storage-table tbody tr:not(.recording-storage-detail-row) > * { border-bottom: 0; padding-bottom: 8px; }
 .recording-storage-table .recording-storage-detail-row > td { padding: 0 0 12px; }
-.recording-storage-table small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; margin-top: 5px; line-height: 1.6; }
+.recording-storage-table small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; margin-top: 5px; line-height: 1.6; }
 .recording-storage-value { display: block; font-size: 20px; font-weight: 500; line-height: 1.3; letter-spacing: -.3px; font-variant-numeric: tabular-nums; }
-.recording-storage-target { display: block; margin-top: 12px; font-size: 11px; line-height: 1.5; }
+.recording-storage-target { display: block; margin-top: 12px; font-size: 12px; line-height: 1.5; }
 .recording-storage-target strong { font-weight: 550; }
 .recording-storage-table .recording-storage-evidence { margin: 0; }
-.recording-storage-evidence > summary { padding: 6px 0; font-size: 11px; }
-.recording-storage-evidence p { max-width: 78ch; font-size: 11px; line-height: 1.6; color: var(--muted); margin: 8px 0; }
-.recording-storage-facts { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; max-width: 380px; margin: 12px 0; font-size: 11px; line-height: 1.5; }
+.recording-storage-evidence > summary { padding: 6px 0; font-size: 12px; }
+.recording-storage-evidence p { max-width: 78ch; font-size: 12px; line-height: 1.6; color: var(--muted); margin: 8px 0; }
+.recording-storage-facts { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; max-width: 380px; margin: 12px 0; font-size: 12px; line-height: 1.5; }
 .recording-storage-facts dt { color: var(--muted); }
 .recording-storage-facts dd { margin: 0; font-variant-numeric: tabular-nums; }
-.recording-storage-note { margin: 12px 0 0; font-size: 11px; line-height: 1.6; color: var(--muted); }
+.recording-storage-note { margin: 12px 0 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
 /* Storage is one peer in the health overview; expanded evidence stays inside it. */
 .recording-performance-notice { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 0 0 12px; }
 .recording-performance-notice[data-tone="warning"] { color: var(--stale); }
@@ -137,16 +137,16 @@
 .recording-performance-toolbar > div:first-child { min-width: 0; }
 .recording-performance-coverage { margin: 0; font-size: 12px; line-height: 1.5; font-weight: 550; }
 .recording-performance-period { display: flex; flex-shrink: 0; align-items: stretch; padding: 3px; gap: 3px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 7px; }
-.recording-performance-period > button { margin: 0; padding: 7px 10px; min-height: 34px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 500; white-space: nowrap; }
+.recording-performance-period > button { margin: 0; padding: 7px 10px; min-height: 44px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .recording-performance-period > button[aria-pressed="true"] { background: var(--surface); color: var(--text); border-color: var(--border); }
 .recording-performance-period > button:hover { color: var(--accent); }
 .recording-performance-period > button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
-.recording-performance-current { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.recording-performance-current { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 #recording-performance-waiting { color: var(--stale); }
 .recording-performance-measures { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px 36px; padding: 18px 0; }
 .recording-performance h4 { font-size: 12px; font-weight: 550; margin: 0 0 12px; }
 .recording-performance-waits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin: 0 0 10px; }
-.recording-performance-waits dt { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.recording-performance-waits dt { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .recording-performance-waits dd { margin: 4px 0 0; font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .recording-performance-outcomes { margin: 0; font-size: 12px; line-height: 1.6; }
 .recording-performance-outcomes > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 3px 0; }
@@ -157,20 +157,20 @@
 .recording-performance-incidents ul { margin: 0; padding: 0; list-style: none; }
 .recording-performance-incidents li + li { margin-top: 12px; }
 .recording-performance-incidents strong { display: block; font-size: 12px; font-weight: 550; line-height: 1.5; }
-.recording-performance-incidents p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.recording-performance-incidents p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .recording-performance-explanation { margin: 0; border-top: 1px solid var(--border); }
 .recording-performance-explanation > summary { font-size: 12px; padding: 12px 0; color: var(--muted); }
-.recording-performance-explanation p { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 10px 0; max-width: 85ch; }
+.recording-performance-explanation p { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 10px 0; max-width: 85ch; }
 .recording-performance-timings { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; text-align: left; font-variant-numeric: tabular-nums; }
 .recording-performance-timings > .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.recording-performance-timings thead th { font-size: 11px; color: var(--muted); font-weight: 400; padding: 12px 8px 8px; }
+.recording-performance-timings thead th { font-size: 12px; color: var(--muted); font-weight: 400; padding: 12px 8px 8px; }
 .recording-performance-timings th:first-child { width: 40%; padding-left: 0; }
 .recording-performance-timings th, .recording-performance-timings td { padding: 12px 8px; vertical-align: top; overflow-wrap: anywhere; border-bottom: 1px solid var(--border); }
 .recording-performance-timings td:last-child, .recording-performance-timings thead th:last-child { padding-right: 0; }
 .recording-performance-timings tbody th { font-weight: 550; }
-.recording-performance-timings small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.5; font-weight: 400; }
+.recording-performance-timings small { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.5; font-weight: 400; }
 .recording-performance-priority { margin-top: 14px; }
-.recording-performance-priority caption { font-size: 11px; font-weight: 550; text-align: left; margin-bottom: 4px; }
+.recording-performance-priority caption { font-size: 12px; font-weight: 550; text-align: left; margin-bottom: 4px; }
 @media (max-width: 800px) {
   .recording-health-card > summary { grid-template-columns: minmax(90px, .65fr) minmax(0, 2fr); gap: 4px 16px; }
   .recording-health-card > summary > .recording-health-label { grid-row: 1 / 3; padding-top: 1px; }
@@ -186,7 +186,7 @@
   .recording-performance-timings th, .recording-performance-timings td { display: block; padding: 0; border: 0; }
   .recording-performance-timings th:first-child { grid-column: 1 / -1; width: auto; }
   .recording-performance-timings th small { margin-top: 3px; }
-  .recording-performance-timings td::before { display: block; content: attr(data-label); margin-bottom: 5px; font-size: 10px; color: var(--muted); }
+  .recording-performance-timings td::before { display: block; content: attr(data-label); margin-bottom: 5px; font-size: 11px; color: var(--muted); }
 }
 @media (max-width: 640px) {
   .recording-health-card > summary { display: flex; flex-direction: column; align-items: stretch; gap: 4px; min-height: 0; padding: 12px 32px 12px 12px; }
@@ -205,9 +205,9 @@
   .recording-storage-table .recording-storage-detail-row > td { padding: 0; }
   .recording-storage-table th, .recording-storage-table td { display: block; padding: 0; border: 0; }
   .recording-storage-table th:first-child { grid-column: 1 / -1; width: auto; }
-  .recording-storage-table td[data-label]::before { display: block; content: attr(data-label); font-size: 10px; color: var(--muted); margin-bottom: 8px; }
+  .recording-storage-table td[data-label]::before { display: block; content: attr(data-label); font-size: 11px; color: var(--muted); margin-bottom: 8px; }
   .recording-storage-value { font-size: 18px; }
-  .recording-health-badge { font-size: 10px; }
+  .recording-health-badge { font-size: 11px; }
 }
 /* A separately authenticated health response remains useful when database status
    cannot load. Expose only health, never an uninitialized control dashboard. */
@@ -218,3 +218,11 @@ body[data-authenticated="false"][data-recording-health="true"] #recording-health
 body[data-authenticated="false"][data-recording-health="true"] #recording-storage-details,
 body[data-authenticated="false"][data-recording-health="true"] #database-export-details,
 body[data-authenticated="false"][data-recording-health="true"] .recording-backup-actions { display: none !important; }
+
+.recording-source-exceptions a { display: inline-block; font-size: 12px; margin-top: 5px; color: var(--text); text-underline-offset: 3px; }
+.recording-source-exceptions a:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
+.recording-section[data-tone="warning"] > summary small { color: var(--stale); }
+.recording-empty-datasets { margin: 12px 0 0; border-top: 1px solid var(--border); }
+.recording-empty-datasets > summary { padding: 12px 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.recording-storage-allocation { margin-top: 12px; border-top: 1px solid var(--border); }
+.recording-storage-allocation > summary { padding: 12px 0; font-size: 12px; }

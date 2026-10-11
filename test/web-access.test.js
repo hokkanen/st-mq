@@ -73,6 +73,38 @@ test('manual database verification is an admin-only read operation on a slave an
   assert.equal(calls, 1);
 });
 
+test('verification API pins current database ownership and preserves an explicit busy refusal', async t => {
+  const first = {}, second = {}, calls = [];
+  let currentStore = first, released = 0, busy = false;
+  const verifier = { configure() {}, enable() {}, close() {},
+    status: ({ store }) => { calls.push(['read', store]); return { state: 'idle' }; },
+    start: (origin, { store }) => {
+      calls.push([origin, store]);
+      if (busy) throw Object.assign(new Error('/private/source.sqlite'), { statusCode: 409, code: 'full_verification_busy' });
+      return { state: 'running' };
+    } };
+  const { access } = await setup(t, configuration({ addon: false, token: firstToken }), {
+    databaseVerification: verifier,
+    getReadContext: async () => ({ store: currentStore, release: () => { released++; } }),
+  });
+  const url = `${endpoint(access.server)}/api/database-verification`, headers = authorization(firstToken);
+  assert.equal((await fetch(url, { headers })).status, 200);
+  const post = () => fetch(url, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal((await post()).status, 202);
+  currentStore = second; busy = true;
+  const refused = await post();
+  assert.equal(refused.status, 409);
+  const result = await refused.json();
+  assert.equal(result.code, 'full_verification_busy');
+  assert.match(result.error, /Another database check is still running/);
+  assert.doesNotMatch(result.error, /private/);
+  currentStore = undefined;
+  assert.equal((await fetch(url, { headers })).status, 200);
+  assert.deepEqual(calls, [['read', first], ['manual', first], ['manual', second], ['read', undefined]],
+    'An unavailable read context never falls back to the previous database');
+  assert.equal(released, 4, 'Both accepted and refused requests release their snapshot');
+});
+
 test('add-on without a token starts only ingress, which rejects direct and spoofed proxy requests', async t => {
   const { access } = await setup(t);
   assert.equal(access.status().ingress.enabled, true);

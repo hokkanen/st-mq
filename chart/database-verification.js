@@ -5,6 +5,7 @@ function verificationRequestFailure(error, start = false) {
   const refused = error?.status >= 400 && error.status < 500 && ![408, 429].includes(error.status);
   const cause = [401, 403].includes(error?.status) ? 'Admin access is required on this computer.'
     : error?.code === 'full_verification_unavailable' ? 'A current database is not available. Wait for storage and startup to be ready.'
+      : error?.code === 'full_verification_busy' ? 'Another database check is still running. Wait for it to finish, then retry.'
       : refused ? 'The request was rejected. Refresh the status before trying again.' : '';
   return { uncertain: start && !refused,
     message: start ? cause ? `Verification was not started. ${cause}`
@@ -52,6 +53,7 @@ export function bindDatabaseVerification({ document, request, formatTime = value
   const $ = id => document.getElementById(id);
   const button = $('database-verification-start'), detail = $('database-verification-status'), schedule = $('database-verification-schedule'), activity = $('database-verification-activity');
   let state, refreshing = false, starting = false, admin = false, timer, closed = false, revision = 0, notice = null, readFailure = '';
+  const visible = () => document.visibilityState !== 'hidden' && $('recording-details').open && $('database-verification-details').open;
   const setText = (element, value) => { if (element.textContent !== value) element.textContent = value; };
   function render() {
     if (notice && now() - notice.at >= ACTION_RECEIPT_MS) notice = null;
@@ -64,7 +66,7 @@ export function bindDatabaseVerification({ document, request, formatTime = value
       : state?.state === 'complete' ? `Verified ${formatTime(result.verifiedAt)} at transaction ${result.checkpoint.sequence}.${result.journal
         ? ` Checked current records, retained transactions after ${result.journal.baseSequence} and ${result.journal.archivedBranches} archived branches. Discarded transaction versions cannot be checked.` : ''} Newer transactions are outside this check.`
         : ['error', 'interrupted'].includes(state?.state) ? verificationFailureText(state)
-          : state?.state === 'unavailable' ? 'Verification status is unavailable. Reconnect to check the result.' : 'No full verification completed in this application run.';
+          : state?.state === 'unavailable' ? 'Verification status is unavailable. Reconnect to check the result.' : 'No full verification completed for this database in this application run.';
     setText(detail, [notice?.message, readFailure, description && `${readFailure ? 'Last received status: ' : ''}${description}`].filter(Boolean).join(' '));
     setText(schedule, state?.intervalMs > 0 ? `Scheduled every ${state.intervalMs / 3_600_000} hours${state.nextAt ? ` · next check ${formatTime(state.nextAt)}` : ''}.`
       : 'Scheduled checks are disabled. Enable them in recording configuration.');
@@ -72,13 +74,13 @@ export function bindDatabaseVerification({ document, request, formatTime = value
   }
   function scheduleRefresh() {
     clearTimer(timer);
-    if (!closed && admin && (['running', 'queued'].includes(state?.state) || state?.activity?.active || state?.activity?.queued?.length
-      || $('database-verification-details').open)) timer = setTimer(refresh, 2000);
+    if (!closed && admin && visible()) timer = setTimer(refresh, 2000);
   }
   async function refresh() {
-    if (refreshing || starting || !admin || closed) return;
+    if (refreshing || starting || !admin || closed || !visible()) return;
     clearTimer(timer);
-    refreshing = true;
+    const pendingRead = {};
+    refreshing = pendingRead;
     const readRevision = revision;
     try {
       const next = await request('/api/database-verification');
@@ -88,7 +90,7 @@ export function bindDatabaseVerification({ document, request, formatTime = value
       }
     }
     catch (error) { if (!closed && readRevision === revision) readFailure = verificationRequestFailure(error).message; }
-    finally { refreshing = false; if (!closed) render(); scheduleRefresh(); }
+    finally { if (refreshing === pendingRead) refreshing = false; if (!closed) render(); scheduleRefresh(); }
   }
   button.addEventListener('click', async () => {
     if (button.disabled || closed) return;
@@ -101,16 +103,25 @@ export function bindDatabaseVerification({ document, request, formatTime = value
       if (!closed && startRevision === revision) state = next;
     }
     catch (error) { if (!closed && startRevision === revision) notice = { ...verificationRequestFailure(error, true), at: now() }; }
-    finally { starting = false; if (!closed) render(); }
+    finally { if (startRevision === revision) starting = false; if (!closed) render(); }
     void refresh();
   });
-  $('database-verification-details').addEventListener('toggle', () => {
-    if ($('database-verification-details').open) void refresh();
+  function visibilityChanged() {
+    if (visible()) void refresh();
     else scheduleRefresh();
-  });
+  }
+  $('database-verification-details').addEventListener('toggle', visibilityChanged);
+  $('recording-details').addEventListener('toggle', visibilityChanged);
+  document.addEventListener?.('visibilitychange', visibilityChanged);
+  function reset() {
+    revision++; refreshing = starting = false; clearTimer(timer);
+    state = undefined; notice = null; readFailure = ''; render();
+  }
   render();
   return { update(status) { const wasAdmin = admin; admin = status?.webAccess?.role === 'admin';
-      if (wasAdmin && !admin) { revision++; clearTimer(timer); }
+      if (wasAdmin && !admin) { revision++; refreshing = starting = false; clearTimer(timer); }
       render(); if (admin && !wasAdmin) void refresh(); },
-    close() { closed = true; clearTimer(timer); } };
+    reset() { reset(); void refresh(); },
+    clear() { admin = false; reset(); },
+    close() { closed = true; revision++; clearTimer(timer); document.removeEventListener?.('visibilitychange', visibilityChanged); } };
 }

@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { lstat, open, opendir, readFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { backupDirectory } from './backup-directory.js';
+import { backupDirectory, backupLocation } from './backup-directory.js';
 import { scanResetBackups } from '../pairing/reset-storage.js';
 import { validateSnapshot } from '../pairing/snapshots.js';
 import { DIGEST_ALGORITHM } from '../replication/publication.js';
@@ -134,7 +134,8 @@ export async function listBackupCatalog(config, { clock = Date.now, maxEntries =
     label: copy.kind === 'reset' ? copy.label
       : `${copy.kind === 'protected' ? 'Protected copy' : 'Saved backup'} · ${new Date(copy.createdAt ?? copy.fileModifiedAt).toISOString()}` }));
   available.sort((a, b) => (b.createdAt ?? b.fileModifiedAt) - (a.createdAt ?? a.fileModifiedAt));
-  return { directory, checkedAt: clock(), complete: reasons.size === 0, limit: maxCopies, reasons: [...reasons], copies: available };
+  return { directory, location: backupLocation(config), checkedAt: clock(), complete: reasons.size === 0,
+    limit: maxCopies, reasons: [...reasons], copies: available };
 }
 
 export function publicBackupCatalog(catalog) {
@@ -156,7 +157,7 @@ export function createBackupCatalog({ getConfig, clock = Date.now, cacheMs = 300
       try { return await forcedFollowup; } finally { forcedFollowup = null; }
     }
     const config = getConfig();
-    const key = JSON.stringify([backupDirectory(config), config.pair?.directory ?? null]);
+    const key = JSON.stringify([backupDirectory(config), config.pair?.directory ?? null, backupLocation(config)]);
     if (!force && !dirty && cached && cached.key === key
       && clock() - (cached.value.lastAttemptAt ?? cached.value.checkedAt) < cacheMs) return cached.value;
     const current = generation;

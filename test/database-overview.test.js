@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
@@ -82,6 +82,22 @@ test('physical inventory distinguishes retained observations, disposable journal
   assert.deepEqual(store.getState('recorder:adaptive-budget:v1'), adaptive);
   assert.equal(after.journalRetention.commits, 1);
   assert(after.journalRetention.baseSequence > before.journalRetention.baseSequence);
+});
+
+test('file metadata distinguishes absent WAL from unavailable main files and invalid paths', t => {
+  const directory=mkdtempSync(join(tmpdir(),'stmq-inventory-files-'));
+  const store=new Store(':memory:');
+  t.after(()=>{store.close();rmSync(directory,{recursive:true,force:true});});
+  const database=path=>getDatabaseOverview({store:{db:store.db,path},now:at}).database;
+  const missing=database(join(directory,'missing.sqlite'));
+  assert.equal(missing.fileBytes,null);assert.equal(missing.walBytes,0);assert.equal(missing.totalFileBytes,null);
+  assert(missing.allocatedBytes>0,'SQLite allocation remains available independently of filesystem metadata');
+  const main=join(directory,'file.sqlite');writeFileSync(main,'synthetic');
+  const noWal=database(main);assert.equal(noWal.fileBytes,9);assert.equal(noWal.walBytes,0);assert.equal(noWal.totalFileBytes,9);
+  const invalid=database(join(main,'not-a-directory.sqlite'));
+  assert.equal(invalid.fileBytes,null);assert.equal(invalid.walBytes,null);assert.equal(invalid.totalFileBytes,null);
+  mkdirSync(`${main}-wal`);
+  const invalidWal=database(main);assert.equal(invalidWal.fileBytes,9);assert.equal(invalidWal.walBytes,null);assert.equal(invalidWal.totalFileBytes,null);
 });
 
 test('peer catch-up retains its original value separately when disposable transaction history expires', () => {
@@ -540,7 +556,31 @@ test('overview API is authenticated, worker-backed, cached and read-only', async
   assert.equal(cached.cache.hit, true);
   assert.equal(cached.generatedAt, first.generatedAt);
   assert.equal(items(cached).get('controller_phase').count, 1, 'inventory explicitly reports cached snapshot counts');
+  const fresh=await fetch(`${url}?refresh=true`,{headers}).then(result=>result.json());
+  assert.equal(fresh.cache.hit,false);
+  assert.equal(items(fresh).get('controller_phase').count,2,'manual refresh scans the current committed database');
+  const cachedAgain=await fetch(url,{headers}).then(result=>result.json());
+  assert.equal(cachedAgain.cache.hit,true);assert.equal(items(cachedAgain).get('controller_phase').count,2);
   assert.equal(store.db.prepare('PRAGMA data_version').get().data_version, before, 'worker never writes the database');
   const cancellation = new AbortController(); cancellation.abort();
   await assert.rejects(service.overview({ signal: cancellation.signal }), { name: 'AbortError' });
+});
+
+test('concurrent forced inventory reads share one worker slot and cancellation belongs to each reader',async t=>{
+  const directory=mkdtempSync(join(tmpdir(),'stmq-overview-coalescing-'));
+  const store=new Store(join(directory,'history.sqlite'));
+  const service=createChartService({store,maxQueue:1});
+  t.after(async()=>{await service.close();store.close();rmSync(directory,{recursive:true,force:true});});
+  put(store,'controller_phase',1);
+  const controller=new AbortController();
+  const cancelled=service.overview({force:true,signal:controller.signal});
+  const retained=service.overview({force:true});
+  controller.abort();
+  await assert.rejects(cancelled,{name:'AbortError'});
+  const result=await retained;
+  assert.equal(result.cache.hit,false);assert.equal(items(result).get('controller_phase').count,1);
+  put(store,'controller_phase',2,at+1000);
+  const fresh=await service.overview({force:true});
+  assert.equal(fresh.cache.hit,false);assert.equal(items(fresh).get('controller_phase').count,2);
+  await assert.rejects(service.overview({force:'true'}),/Invalid inventory refresh option/);
 });

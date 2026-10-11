@@ -6,7 +6,7 @@ import { createReadOnlyControls } from '../chart/dashboard-access.js';
 
 const filename = 'stmq-2026-09-25T15-04-32-123Z.sqlite';
 const path = `/example/exports/${filename}`;
-function fixture(request, windowOverrides = {}) {
+function fixture(request, windowOverrides = {}, options = {}) {
   const button = () => ({ disabled: false, isConnected: true, dataset: {}, attributes: new Map(),
     getAttribute(name) { return this.attributes.get(name) ?? null; },
     hasAttribute(name) { return this.attributes.has(name); },
@@ -34,20 +34,67 @@ function fixture(request, windowOverrides = {}) {
     clearInterval: id => intervals.delete(id),
     ...windowOverrides,
   };
-  bindDatabaseExport({ saveButton, downloadButton, message, progress, detail, request, window, document });
-  return { document, saveButton, downloadButton, message, progress, detail, classes, links, blobs, timers, revoked, intervals };
+  const panel = bindDatabaseExport({ saveButton, downloadButton, message, progress, detail, request, window, document, ...options });
+  return { panel, document, saveButton, downloadButton, message, progress, detail, classes, links, blobs, timers, revoked, intervals };
 }
 
-test('save local copy uses POST and reports the server path without initiating a browser download', async () => {
+test('save local copy identifies the file beside the correctly mapped backup folder without downloading', async () => {
   const requests = [];
   const view = fixture(async method => { requests.push(method); return Response.json({ filename, path }); });
   await view.saveButton.click();
   assert.deepEqual(requests, ['POST']);
-  assert.equal(view.message.textContent, `Database copy saved on the server: ${path}`);
+  assert.equal(view.message.textContent, `Database copy saved on the server: ${filename}. See the backup folder above.`);
   assert.equal(view.links.length, 0);
   assert.equal(view.blobs.length, 0);
   assert.equal(view.saveButton.disabled, false);
   assert.equal(view.downloadButton.disabled, false);
+});
+
+test('dated export receipts last one day and a newer action starts its own lifetime', async () => {
+  let now = Date.parse('2026-10-11T12:00:00Z'), attempts = 0;
+  const view = fixture(async () => ++attempts === 1 ? Response.json({ filename, path })
+    : Response.json({ error: 'The selected copy could not be saved.' }, { status: 409 }), {}, { now: () => now });
+  await view.saveButton.click();
+  assert.match(view.detail.textContent, /11 Oct 2026/);
+  now += 24 * 3600_000 - 1; view.panel.tick();
+  assert.match(view.message.textContent, /Database copy saved/);
+  await view.saveButton.click();
+  now += 1; view.panel.tick();
+  assert.match(view.message.textContent, /could not be saved/);
+  now += 24 * 3600_000 - 1; view.panel.tick();
+  assert.equal(view.message.textContent, ''); assert.equal(view.detail.hidden, true);
+  assert.equal(view.classes.has('form-error'), false);
+});
+
+test('logout clears an export and a late response cannot publish an old receipt or download', async () => {
+  let resolve;
+  const view = fixture(() => new Promise(done => { resolve = done; }));
+  const work = view.downloadButton.click(); view.panel.clear();
+  resolve(new Response('synthetic database', { headers: { 'content-disposition': `attachment; filename="${filename}"` } }));
+  await work;
+  assert.equal(view.links.length, 0); assert.equal(view.message.textContent, '');
+  assert.equal(view.detail.hidden, true); assert.equal(view.progress.hidden, true);
+  assert.equal(view.intervals.size, 0); assert.equal(view.downloadButton.disabled, false);
+});
+
+test('clearing an export cancels its response body after headers for blob and selected-file downloads', async () => {
+  for (const picker of [false, true]) {
+    let cancelled = false, aborted = false, signal;
+    const view = fixture(async (_method, options) => {
+      signal = options.signal;
+      return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new Uint8Array([1, 2, 3])); },
+        cancel() { cancelled = true; },
+      }), { headers: { 'content-disposition': `attachment; filename="${filename}"` } });
+    }, picker ? { showSaveFilePicker: async () => ({ createWritable: async () => new WritableStream({ abort() { aborted = true; } }) }) } : {});
+    const work = view.downloadButton.click(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(signal.aborted, false);
+    view.panel.clear(); await work;
+    assert.equal(signal.aborted, true); assert.equal(cancelled, true);
+    if (picker) assert.equal(aborted, true);
+    assert.equal(view.message.textContent, ''); assert.equal(view.links.length, 0);
+    assert.equal(view.intervals.size, 0);
+  }
 });
 
 test('download uses the complete server timestamped filename and releases the browser object URL', async () => {

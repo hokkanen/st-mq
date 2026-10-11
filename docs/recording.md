@@ -1361,8 +1361,9 @@ database size. The adaptive target remains
 next to adaptive growth, never beside total growth as if it were a total cap.
 The prospective adaptive byte counter names its start date. Opening **Storage & growth** or **Other recorded data** requests the shared
 cached, read-only inventory in a worker;
-its dated estimate covers all retained adaptive observations, including imported
-or recovered rows and currently excluded recovery evidence. It excludes shared
+its dated estimate covers retained adaptive observations, including recovered
+observations and currently excluded recovery evidence. Exact measurements and
+CSV import rows belong to **Other recorded data**, outside that estimate. It excludes shared
 indexes, page slack and other tables, so it cannot be subtracted from physical
 database bytes to calculate an exact fixed-data size. No full-history scan runs on
 each status refresh. Inventory refresh failures retain the last successful figures
@@ -1443,8 +1444,10 @@ the first three minutes of a recording run show **Starting recording**, includin
 when unavailable diagnostic rows have already been recorded. After usable evidence
 has arrived, a subsequent source loss warns immediately. This initial wait never
 hides write failures or a stalled loop. **Monitoring active** means some observed
-recording evidence is usable; individual missing sources remain visible in the
-recording details. **Last source check** dates a source polling attempt, including
+recording evidence is usable. Partial loss of an observed source still raises
+attention and links to its explanation, even when other sources remain healthy.
+Stream labels preserve their measurement and unit, with links to the applicable
+recording details, without exposing private source identifiers. **Last source check** dates a source polling attempt, including
 an unavailable result, and does not claim a saved measurement or successful write.
 The expanded Recording fold shows the last completed loop update and any
 unavailable, stale, failed, unknown or held-attention streams observed in this run.
@@ -1461,6 +1464,11 @@ also supplies History recovery. Manual exports and complete reset bundles use
 `recording.backup_directory`; pinned protected rejoin exports live in that root's
 `pair-exports` repository. Only pinned protected exports count as retained copies; routine
 rolling pairing snapshots and inactive working databases are not portable backups.
+On Home Assistant, **Folder** uses Configuration's verified host mapping under
+`/addon_configs/<app slug>` and **Inside app** shows the actual application path.
+An unknown mapping or a configured path outside the known `/config` mount is
+explicitly unavailable; the UI never invents a host folder. Standalone Linux
+shows its actual configured folder.
 The catalog is cached for five minutes. **Refresh list** explicitly requests new
 metadata discovery. Limits, unavailable locations or changed files produce an
 incomplete-list notice; failed refreshes retain the previous list with its date.
@@ -1473,7 +1481,11 @@ Listing does not recheck a file's integrity. **Verified during creation** descri
 exporter or reset-publication evidence, not the bytes today; the exact creation-check
 time is not recorded. **Verify** checks the
 selected copy with the shared full verifier, retaining a dated result for that file
-identity; replacement or modification invalidates the displayed result. A check
+identity during the current application run; replacement or modification
+invalidates the displayed result. The latest check takes precedence over
+creation evidence. Failed checks and changed files raise attention even with
+the list folded. Restart does not claim that a previously checked copy was
+rechecked. A check
 never imports history or grants control authority. **Download** transfers the
 selected file; **Review history** opens the existing source review before recovery.
 The folder and file inventory, verification and downloads require admin access.
@@ -1483,7 +1495,13 @@ server. Recovery and saving a new local copy retain their active-master checks.
 Manual export progress and failures are separate from the inventory. Completion
 receipts persist when the writable database permits; an in-memory receipt remains
 available if persistence fails. Browser download activity never replaces the latest
-saved-copy date or count. A completed download proves transfer to the browser,
+saved-copy date, count or save failure. Saving and downloading retain independent
+outcomes, so success in one cannot clear failure in the other. Current receipt
+format 2 is validated at this diagnostic boundary; earlier or malformed receipts
+remain preserved and unknown, without conversion or overwrite. They require a
+deliberate fresh development database to establish supported persisted diagnostics;
+they do not prevent independent inspection of current backup files.
+A completed download proves transfer to the browser,
 not durable saving or continued availability on its device. Files elsewhere,
 arbitrary CLI output names and Home Assistant-managed backups are not silently
 claimed by the catalog. Existing files are never moved into the new backup root.
@@ -1519,6 +1537,8 @@ updated; database size figures stay in **Storage & growth**. Groups cover:
 - Recovery contributions, immutable revert/restore decisions and the current history selection.
 - Availability coverage, recorder statistics and storage support.
 
+Populated datasets appear first. Empty datasets and entirely empty groups remain
+available under labelled folds with counts, without dominating the initial view.
 An empty dataset is identified as empty rather than inferred to contain
 measurements. The overview does not expose configuration values, private device
 identifiers, import paths or arbitrary event payloads. Storage support records
@@ -1544,7 +1564,12 @@ by this inventory.
 Database inventory queries are read-only. Opening the outer Recording details
 fold alone performs no full inventory query. The shared cached inventory refreshes while **Storage & growth** or **Other recorded data**
 is open. Both folds share one request and cache. A bounded worker query keeps large inventories out of the live
-control loop. Expand/collapse state survives updates. Meter-accuracy details
+control loop. **Refresh inventory** bypasses the worker cache; ordinary reads retain
+its five-minute cache. Missing or unreadable database-file sizes remain unknown;
+an absent WAL is zero. A fresh inventory owns the allocation figures consistently
+in both the summary and its details. Database replacement, scope change and logout
+clear previous inventory and energy-check results and fence late responses.
+Expand/collapse state and keyboard focus survive updates. Meter-accuracy details
 show the property cumulative-meter check and the Charger 1 session summary
 without changing the learner.
 
@@ -2054,6 +2079,8 @@ new monitoring period. Nothing is saved to SQLite, a file, browser storage,
 backups or replicas. An earlier period is unavailable, not a period with zero
 failures. Snapshot and history viewers cannot report the active master's
 memory-only history.
+These writer summaries describe the main Store; independent worker connections
+have their own operation results and are not silently included in these timings.
 
 The past-day and past-week views distinguish the duration monitored in this run
 from the duration included in the summaries. The oldest partly overlapping
@@ -2124,6 +2151,19 @@ software version for model replay. **Recover history** can import supported gaps
 into the active database; a full restore remains the offline operation into a new
 database path. The export does not contain the separate private configuration file
 or external token files.
+The export action shows a dated receipt for up to 24 hours, or until the next
+export action. Logout clears it and aborts any browser transfer still in progress.
+Browsers with a file picker stream directly to the chosen file; other browsers
+receive the complete file before offering their normal download handling, as
+explained beside the action. Closing a fold does not cancel an accepted server
+operation.
+
+Within this application run, full database verification results belong to the database that was checked,
+including when a replacement uses the same path. A known integrity failure
+remains attention-worthy through an unsuccessful retry until a successful check
+of that database. Global verifier activity separately includes backup, pairing
+and recovery checks. Status polling pauses while the verification fold, its parent
+or the page is hidden; an accepted check continues, and reopening reads its result.
 
 ## Retained storage costs
 

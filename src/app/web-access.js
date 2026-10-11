@@ -60,6 +60,7 @@ export function createWebAccess({ config: initialConfig, ...serverOptions }) {
   serverOptions.recordingHealth ??= createRecordingHealth({
     clock: serverOptions.clock ?? Date.now,
     getConfig: backupConfig, backupCatalog: serverOptions.backupCatalog,
+    getBackupChecks: copies => serverOptions.backupInspection?.health(copies),
   });
   serverOptions.databaseExport ??= createDatabaseExport({
     getDirectory: () => backupDirectory(backupConfig()),
@@ -74,8 +75,8 @@ export function createWebAccess({ config: initialConfig, ...serverOptions }) {
     available: () => !closed && !serverOptions.settingsReloadStatus?.().busy && !serverOptions.settingsReloadStatus?.().unavailable,
     acquire: async () => {
       const context = await serverOptions.getReadContext?.();
-      const store = context?.store ?? serverOptions.store;
-      return { dbPath: store?.path, release: context?.release };
+      const store = context ? context.store : serverOptions.store;
+      return { dbPath: store?.path, store, release: context?.release };
     },
   });
   const draining = new Map();

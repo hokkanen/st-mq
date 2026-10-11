@@ -44,13 +44,14 @@ test('event-only door recordings distinguish last report age from current connec
 function fixture(request) {
   let now=Date.parse('2026-09-08T10:00:00Z'),visible=true;
   const classes=new Set(),attributes=new Map(),renders=[],states=[];
-  const root={setAttribute:(key,value)=>attributes.set(key,value),removeAttribute:key=>attributes.delete(key)};
+  let clears=0;
+  const root={setAttribute:(key,value)=>attributes.set(key,value),removeAttribute:key=>attributes.delete(key),replaceChildren:()=>{clears++;}};
   const details={open:false},storage={open:false},parent={open:false},button={disabled:false};
   const message={textContent:'',classList:{add:value=>classes.add(value),remove:value=>classes.delete(value)}};
   const refresh=recordingOverviewRefresh({request,root,details:[details,storage],parent,message,button,clock:()=>now,
     isVisible:()=>visible,render:overview=>renders.push(overview),onState:state=>states.push(state)});
   return {refresh,details,storage,parent,button,message,attributes,classes,renders,states,
-    advance:ms=>{now+=ms;},visibility:value=>{visible=value;}};
+    get clears(){return clears;},advance:ms=>{now+=ms;},visibility:value=>{visible=value;}};
 }
 
 test('overview requests only while both folds are open and visible, with one in-flight request and a cache lifetime',async()=>{
@@ -61,7 +62,7 @@ test('overview requests only while both folds are open and visible, with one in-
   view.details.open=true;view.visibility(false);await view.refresh();assert.equal(calls,0);
   view.visibility(true);
   const pending=view.refresh();assert.equal(calls,1);assert(view.button.disabled);assert.equal(view.attributes.get('aria-busy'),'true');
-  await view.refresh({force:true});assert.equal(calls,1,'concurrent refresh does not duplicate the database scan');
+  await view.refresh();assert.equal(calls,1,'concurrent automatic refresh does not duplicate the database scan');
   const generatedAt=Date.parse('2026-09-07T10:00:00Z');
   resolve({generatedAt,groups:[],refreshAfterMs:300000,cache:{hit:true}});await pending;
   assert(!view.button.disabled);assert(!view.attributes.has('aria-busy'));
@@ -71,6 +72,51 @@ test('overview requests only while both folds are open and visible, with one in-
   view.advance(300000);view.parent.open=false;await view.refresh();assert.equal(calls,1);
   view.parent.open=true;const expired=view.refresh();assert.equal(calls,2);
   resolve({generatedAt,groups:[]});await expired;
+});
+
+test('manual inventory refresh bypasses the server cache and coalesces pending requests into one follow-up',async()=>{
+  const pending=[];
+  const view=fixture((path,options)=>new Promise(resolve=>pending.push({path,options,resolve})));
+  view.parent.open=true;view.details.open=true;
+  const first=view.refresh();assert.equal(pending.length,1);
+  await view.refresh({force:true});await view.refresh({force:true});
+  assert.equal(pending.length,1,'only the original request is in flight');
+  pending[0].resolve({generatedAt:0,groups:[]});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(pending.length,2);
+  assert.equal(pending[1].path,'/api/recording-overview?refresh=true');
+  pending[1].resolve({generatedAt:1,groups:[]});await first;
+  assert.equal(pending.length,2,'repeated clicks request only one fresh follow-up');
+  assert.equal(view.renders.length,2);assert.equal(view.button.disabled,false);
+});
+
+test('inventory scope reset cancels work, clears old content and rejects late replies from the old generation',async()=>{
+  const pending=[];
+  const view=fixture((path,options)=>new Promise(resolve=>pending.push({path,options,resolve})));
+  view.parent.open=true;view.storage.open=true;
+  const first=view.refresh();pending[0].resolve({generatedAt:0,groups:[{id:'old'}]});await first;
+  const oldRequest=view.refresh({force:true});assert.equal(pending.length,2);
+  await view.refresh({force:true});view.refresh.reset();
+  assert.equal(pending[1].options.signal.aborted,true);
+  assert.equal(view.clears,1);assert.equal(view.states.at(-1),'idle');
+  assert.match(view.message.textContent,/has not been checked/);
+  const currentRequest=view.refresh();assert.equal(pending.length,3,'a new scope has no old cache delay');
+  pending[1].resolve({generatedAt:1,groups:[{id:'wrong-scope'}]});await oldRequest;
+  assert.equal(view.renders.length,1,'even an uncancellable old response is ignored');
+  assert.equal(view.button.disabled,true,'old request cannot release the new request button');
+  pending[2].resolve({generatedAt:2,groups:[{id:'new'}]});await currentRequest;
+  assert.deepEqual(view.renders.map(result=>result.groups[0].id),['old','new']);
+  assert.equal(pending.length,3,'reset cancels the old queued follow-up');
+});
+
+test('invalid inventory dates stay unavailable instead of crashing or inventing a scan time',async()=>{
+  for(const timestamp of [1e20,-1,Infinity,NaN]) {
+    assert.equal(inventoryDateSpan({firstAt:timestamp,lastAt:timestamp}),'Dates not recorded');
+    assert.equal(inventoryDateSpan({datePrecision:'date',firstAt:timestamp,lastAt:timestamp}),'Dates not recorded');
+  }
+  const view=fixture(async()=>({generatedAt:1e20,groups:[]}));view.parent.open=true;view.details.open=true;
+  await view.refresh();assert.equal(view.renders.length,1);assert.match(view.message.textContent,/Inventory: time unavailable/);
+  assert(!view.classes.has('form-error'));
 });
 
 test('storage and dataset folds share one bounded inventory request and refresh while either is open', async () => {
@@ -270,7 +316,7 @@ test('opening Recording details leaves inventory idle until a data fold is expan
   const pending=view.refresh();assert.equal(calls,1);
   assert.deepEqual(view.states,['loading']);
   view.details.open=true;
-  await view.refresh({force:true});assert.equal(calls,1,'storage and dataset folds share the in-flight gate');
+  await view.refresh();assert.equal(calls,1,'storage and dataset folds share the in-flight gate');
   const overview={generatedAt:0,groups:[],database:{adaptiveEstimatedBytes:1234},refreshAfterMs:300000};
   resolve(overview);await pending;
   assert.deepEqual(view.renders,[overview]);assert.deepEqual(view.states,['loading','ready']);

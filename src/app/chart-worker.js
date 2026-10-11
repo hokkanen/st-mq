@@ -81,7 +81,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint }) => {
     if (operation === 'overview') {
       const at = Date.now();
       const currentOverviewRevision = JSON.stringify(readOverviewRevision.get());
-      const hit = overview && overviewRevision === currentOverviewRevision
+      const hit = !args.force && overview && overviewRevision === currentOverviewRevision
         && at - overview.generatedAt >= 0 && at - overview.generatedAt < OVERVIEW_REFRESH_MS;
       if (!hit) {
         overview = getDatabaseOverview({ store, now: at });

@@ -932,7 +932,7 @@ G_warming = G / 2</code>
                 <p id="recording-recording-coverage" class="recording-health-evidence"></p>
                 <ul id="recording-recording-sources" class="recording-source-exceptions" hidden></ul>
                 <p class="recording-health-evidence">A polling attempt can return unavailable data. A completed update or usable source reading does not prove that every configured source was recorded.</p>
-                <div class="recording-evidence-links"><a href="#recording-adaptive-details" data-recording-open="recording-adaptive-details">Measurement details →</a><a href="#recording-overview-details" data-recording-open="recording-overview-details">Other recorded data →</a></div>
+                <div class="recording-evidence-links"><a href="#recording-adaptive-details" data-recording-open="recording-adaptive-details">Adaptive measurement details →</a><a href="#recording-overview-details" data-recording-open="recording-overview-details">Other recorded data →</a></div>
               </div>
             </details>
             <details id="recording-performance-details" class="recording-health-card recording-performance">
@@ -943,7 +943,7 @@ G_warming = G / 2</code>
                 <div id="recording-performance-data" hidden>
                   <div class="recording-performance-current"><span id="recording-performance-current"></span><span id="recording-performance-waiting" hidden></span></div>
                   <div class="recording-performance-toolbar">
-                    <div><p id="recording-performance-coverage" class="recording-performance-coverage"></p><p class="recording-health-evidence">Held in memory · clears on restart or storage reopen</p></div>
+                    <div><p id="recording-performance-coverage" class="recording-performance-coverage"></p><p class="recording-health-evidence">Main recording connection · held in memory until restart or storage reopen</p></div>
                     <div class="recording-performance-period" role="group" aria-label="Storage health period">
                       <button id="recording-performance-day" type="button" aria-pressed="true">Past day</button>
                       <button id="recording-performance-week" type="button" aria-pressed="false">Past week</button>
@@ -969,11 +969,12 @@ G_warming = G / 2</code>
                     </div>
                   </div>
                   <div id="recording-performance-incidents" class="recording-performance-incidents" hidden>
-                    <h4>Recent problems</h4><ul id="recording-performance-incident-list"></ul>
+                    <h4>Latest problem of each type</h4><ul id="recording-performance-incident-list"></ul>
                   </div>
                   <details id="recording-performance-technical" class="recording-performance-explanation">
                     <summary>Technical details</summary>
                     <p id="recording-performance-scope" class="recording-health-evidence"></p>
+                    <p>These statistics cover the main recording connection and its queue. Separate recovery, publication and checkpoint worker timings are outside this view; their writes can still compete for the same storage.</p>
                     <p>Write + commit is the time spent performing and committing a successful transaction. Commit only is included in that time; do not add the two. Approx. p95 estimates the duration that 95% of measured operations stayed within.</p>
                     <table class="recording-performance-timings">
                       <caption class="sr-only">Successful transaction timings for the selected monitored period</caption>
@@ -1000,7 +1001,7 @@ G_warming = G / 2</code>
               </div>
             </details>
             <details id="recording-disk-card" class="recording-health-card">
-              <summary><span class="recording-health-label">Storage &amp; growth</span><strong id="recording-disk-state" class="recording-health-state">Disk space unknown</strong><span class="recording-health-evidence"><span id="recording-disk-free">Unknown</span> available · Database <span id="recording-disk-database">Unknown</span></span></summary>
+              <summary><span class="recording-health-label">Storage &amp; growth</span><strong id="recording-disk-state" class="recording-health-state">Disk space unknown</strong><span class="recording-health-evidence"><span id="recording-disk-free">Unknown</span> available · Database allocation <span id="recording-disk-database">Unknown</span></span></summary>
               <div class="recording-health-body">
                 <div id="recording-disk-meter" class="storage-meter" role="meter" aria-label="Disk space available" aria-valuemin="0" aria-valuemax="100" hidden><span></span></div>
                 <p id="recording-disk-capacity" class="recording-health-evidence"></p>
@@ -1025,9 +1026,11 @@ G_warming = G / 2</code>
                       <dl class="recording-storage-facts"><dt>Database file</dt><dd id="recording-growth-file">Not checked</dd><dt>Transaction log (WAL)</dt><dd id="recording-growth-wal">Not checked</dd><dt>Combined files</dt><dd id="recording-growth-files">Not checked</dd><dt>Reusable inside database</dt><dd id="recording-growth-reusable">Not checked</dd></dl>
                       <p id="recording-growth-fileEvidence"></p>
                       <p>SQLite allocation includes records, indexes, retained transaction history and reusable pages. Cleanup makes pages reusable without shrinking the file. The WAL can change while recording continues. Backups, transfer staging and other temporary files are additional disk use.</p>
+                      <details class="recording-storage-allocation"><summary>Allocation and retained transaction details</summary>
                       <dl class="recording-storage-facts"><dt>Observation pages</dt><dd id="recording-growth-observationPages">Not checked</dd><dt>Other historical records</dt><dd id="recording-growth-historyPages">Not checked</dd><dt>Current and derived state</dt><dd id="recording-growth-currentPages">Not checked</dd><dt>Disposable transaction history</dt><dd id="recording-growth-journalPages">Not checked</dd><dt>Pending peer catch-up</dt><dd id="recording-growth-peerBacklogPages">Not checked</dd><dt>Archived divergent branches</dt><dd id="recording-growth-branchPages">Not checked</dd><dt>Indexes</dt><dd id="recording-growth-indexPages">Not checked</dd><dt>SQLite bookkeeping</dt><dd id="recording-growth-internalPages">Not checked</dd></dl>
                       <p>Page categories include unused space within allocated pages. Indexes are counted separately. These sizes are measured only when the inventory refreshes; they do not set adaptive precision.</p>
                       <p id="recording-growth-journalRetention">Transaction retention has not been checked.</p>
+                      </details>
                     </details>
                   </td></tr>
                   <tr>
@@ -1039,7 +1042,7 @@ G_warming = G / 2</code>
                   <tr class="recording-storage-detail-row"><td colspan="3" headers="recording-storage-adaptive-label">
                     <details class="recording-storage-evidence"><summary>Measurement evidence</summary>
                       <p id="recording-growth-inventoryAt">Retained adaptive size has not been measured.</p><p id="recording-growth-observations"></p>
-                      <p>Includes imported and recovered observations, including excluded recovery evidence. Shared indexes, page slack and other tables are additional; this estimate cannot be subtracted from database size to measure the remaining data.</p>
+                      <p>Includes retained adaptive observations, recovered observations and excluded recovery evidence. Imported observations are recorded and counted separately. Shared indexes, page slack and other tables are additional; this estimate cannot be subtracted from database size to measure the remaining data.</p>
                       <dl class="recording-storage-facts"><dt>Newly recorded payload</dt><dd id="recording-growth-adaptiveStored">Not measured yet</dd></dl><p id="recording-growth-adaptiveSince"></p>
                     </details>
                   </td></tr>
@@ -1056,14 +1059,15 @@ G_warming = G / 2</code>
                 <p id="recording-backup-detail" class="recording-health-detail"></p>
                 <p id="recording-backup-activity" class="recording-health-evidence" hidden></p>
                 <p id="recording-backup-download" class="recording-health-evidence" hidden></p>
-                <dl class="recording-storage-facts recording-backup-folder"><dt>Backup folder</dt><dd id="recording-backup-folder">Not known</dd><dt>Listed copies</dt><dd id="recording-backup-size">Not checked</dd></dl>
+                <dl class="recording-storage-facts recording-backup-folder"><dt>Folder</dt><dd id="recording-backup-folder">Not known</dd><dt id="recording-backup-inside-label" hidden>Inside app</dt><dd id="recording-backup-inside" hidden></dd><dt>Listed copies</dt><dd id="recording-backup-size">Not checked</dd></dl>
+                <p id="recording-backup-location-detail" class="recording-health-evidence"></p>
                 <div class="recording-backup-toolbar"><p id="recording-backup-catalogStatus" class="recording-health-evidence" role="status"></p><button id="recording-backup-refresh" type="button" class="secondary-button">Refresh list</button></div>
                 <ul id="recording-backup-list" class="recording-backup-list"></ul>
-                <p id="recording-backup-verification" class="recording-health-evidence">A copy on the same disk does not protect against disk failure. Keep an independent copy on separate storage.</p>
+                <p id="recording-backup-verification" class="recording-health-evidence">Full recheck results belong to this application run and the checked file state. A copy on the same disk does not protect against disk failure. Keep an independent copy on separate storage.</p>
           <details id="database-export-details" class="recording-section">
             <summary><span>Export database<small>Save or download a complete copy</small></span></summary>
             <div class="recording-section-body">
-              <p class="muted">Export a complete copy of the recorded history and saved state. Recording continues during export. Filenames include the export date and time in UTC.</p>
+              <p class="muted">Export recorded history and saved state while recording continues. Private configuration and external token files need separate copies. Retain matching software for replay. Filenames include the export date and time in UTC.</p>
               <p class="family-access-note">Admin access is required to save or download a database copy.</p>
               <div class="recording-tool-actions">
                 <div>
@@ -1075,6 +1079,7 @@ G_warming = G / 2</code>
                   <p id="database-export-download-help" class="muted">Save to this device. Choose a location when prompted, or use your browser’s download folder.</p>
                 </div>
               </div>
+              <p id="database-export-browser-help" class="muted" hidden></p>
               <p id="database-export-message" class="muted" role="status" aria-live="polite"></p>
               <progress id="database-export-progress" class="background-work-progress" aria-label="Database export progress" hidden></progress>
               <p id="database-export-detail" class="muted background-work-detail" hidden></p>
@@ -1093,7 +1098,7 @@ G_warming = G / 2</code>
             <div id="recording-content" class="recording-section-body"></div>
           </details>
           <details id="recording-overview-details" class="recording-section">
-            <summary><span>Other recorded data<small>Exact states, forecasts, learning and retained history</small></span></summary>
+            <summary><span>Other recorded data<small>Exact measurements, states, forecasts and learning history</small></span></summary>
             <div class="recording-section-body">
               <p class="recording-inventory-link"><a href="#recording-storage-details" data-recording-open="recording-storage-details">Inventory date, sizes &amp; refresh <span aria-hidden="true">→</span></a></p>
               <p id="recording-overview-notice" class="muted" role="status" hidden></p>
@@ -1113,7 +1118,7 @@ G_warming = G / 2</code>
           <details id="history-recovery-details" class="recording-section">
             <summary><span>History recovery<small>Recover missing entries or undo an earlier recovery</small></span></summary>
             <div class="recording-section-body">
-              <p class="muted">Review a backup or paired computer, and see what previous recoveries added.</p>
+              <p class="muted">Review a backup or paired computer, and see what previous recoveries added. Recovery adds supported missing history. Restoring a complete database is a separate offline operation.</p>
               <div class="recording-tool-actions">
                 <div>
                   <button id="history-recovery-open" data-admin-only class="secondary-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="history-recovery-dialog" aria-describedby="history-recovery-open-help">Review history</button>
@@ -1124,7 +1129,7 @@ G_warming = G / 2</code>
             </div>
           </details>
           <details id="database-verification-details" class="recording-section">
-            <summary><span>Verify database<small>Optional full integrity and content check</small></span></summary>
+            <summary><span>Verify database<small id="database-verification-summary">Optional full integrity and content check</small></span></summary>
             <div class="recording-section-body">
               <p class="muted">Read the complete database at one fixed transaction checkpoint to check its integrity and content.</p>
               <div class="recording-tool-actions">

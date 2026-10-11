@@ -106,6 +106,7 @@ const heatingErrorRequests = new Map();
 let refreshSequence = 0;
 let pairStatusRevision = 0;
 let lastReplicaSnapshot;
+let recordingContext;
 const dirtyTemporary = new Set();
 const temporaryFields = { awayUntilLocal: 'away-until', pauseUntilLocal: 'pause-until' };
 const heatingCommandLabel = command => ({ reduction: 'Reduced heating', normal: 'Normal heating', preheat: 'Preheat', circulation: 'Circulation' })[command] ?? 'Heating request';
@@ -139,6 +140,11 @@ const reasons = {
 function lockScreen({ authenticationFailed = false } = {}) {
   heatingExplorer.clear();
   recordingHealth.clear();
+  refreshRecordingOverview.reset();
+  databaseVerification.clear();
+  databaseExport.clear();
+  resetAudits();
+  recordingContext = undefined;
   selectPickers.dismiss();
   for (const picker of temporaryDatePickers) picker.dismiss();
   const hadPassword = Boolean(session.token), hadStatus = Boolean(lastStatus);
@@ -184,7 +190,14 @@ function showError(error, { connection = true } = {}) {
   if (connection) $('connection').textContent = 'Connection needs attention';
 }
 const recordingHealth = createRecordingHealth({ document, request: api,
-  reviewBackup: options => historyRecovery.open(options), downloadBackup });
+  reviewBackup: options => historyRecovery.open(options), downloadBackup, onContextChange: resetRecordingContext });
+function resetRecordingContext(health) {
+  const context = JSON.stringify([health.scope, health.contextId]);
+  if (context === recordingContext) return;
+  recordingContext = context;
+  refreshRecordingOverview.reset();
+  databaseVerification.reset(); resetAudits();
+}
 async function downloadBackup(copy) {
   const path = `/api/recording-backups/download?sourceId=${encodeURIComponent(copy.id)}`;
   assertWebRequest(webAccess, path, undefined, lastStatus);
@@ -817,6 +830,7 @@ function render(s) {
   lastStatus = s;
   dashboardStatusReceived = true;
   statusReceivedMonotonicAt = performance.now();
+  if (s.recordingHealth?.version === 2) resetRecordingContext(s.recordingHealth);
   recordingHealth.update(s);
   readOnlyControls.update(s);
   garageControls.update(s);
@@ -879,7 +893,7 @@ function render(s) {
     detail: [controlMode, decisionTitle, decisionReasons, recoveryDetail].filter(Boolean).join('\n\n') });
   renderCurrentPrice(document, s);
   renderContract(s); renderProviders(s); renderH66(s); equipmentPanel.update(s); renderFloorPreheat(document, s); renderGarage(document, s);
-  if ($('recording-details')?.open) renderRecording(s,$('recording-content'));
+  if ($('recording-details')?.open && $('recording-adaptive-details').open) renderRecording(s,$('recording-content'));
   const temporary = temporaryValues(s);
   const controlPrice = priceControlState(s, { paused: Boolean(temporary.pauseUntilLocal), away: Boolean(temporary.awayUntilLocal) });
   setStatusDetail($('control-price'), { key: 'home-control-mode', label: controlPrice.label,
@@ -987,8 +1001,8 @@ async function refresh({ forceChart = false, background = false } = {}) {
     const replaced = snapshot !== lastReplicaSnapshot;
     if (replaced) {
       eventStream.reset(snapshot); auditFetchedAt = 0;
-      void refreshRecordingOverview({ force: true });
     }
+    void refreshRecordingOverview();
     lastReplicaSnapshot = snapshot;
     if (replica && !replica.available) return;
     await Promise.all([historyChart.refresh(s, { force: forceChart || replaced }), events()]);
@@ -1175,25 +1189,30 @@ $('h66-test-form').addEventListener('submit', async event => {
   }
   await refresh();
 });
-const refreshRecordingOverview=recordingOverviewRefresh({request:api,root:$('recording-overview-content'),
+const refreshRecordingOverview=recordingOverviewRefresh({request:(path, options) => api(path, undefined, options),root:$('recording-overview-content'),
   details:[$('recording-overview-details'),$('recording-disk-card')],parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh'),
   isVisible: () => dashboardStatusReceived && document.body.dataset.authenticated === 'true' && document.visibilityState !== 'hidden',
   render: (overview, root) => { renderRecordingOverview(overview, root); recordingHealth.inventory(overview); },
   onState: state => recordingHealth.inventoryStatus(state) });
-bindDatabaseExport({ saveButton: $('database-export-save'), downloadButton: $('database-export-download'),
+const databaseExport = bindDatabaseExport({ saveButton: $('database-export-save'), downloadButton: $('database-export-download'),
   message: $('database-export-message'), progress: $('database-export-progress'), detail: $('database-export-detail'),
   window, document, onSettled: () => { void recordingHealth.refresh(); void recordingHealth.refreshCopies({ force: true, scan: true }); },
-  request: method => {
+  request: (method, { signal: operationSignal }) => {
     assertWebRequest(webAccess, '/api/database-export', method === 'POST' ? {} : undefined, lastStatus);
     assertDashboardWrite('/api/database-export', method === 'POST' ? {} : undefined, lastStatus);
-    return session.run(async ({ headers, signal }) => {
-      const response = await fetch(applicationUrl('/api/database-export'), { method, signal,
+    return session.run(async ({ headers }) => {
+      // The export owns the body lifetime after fetch returns its headers.
+      // lockScreen clears it before ending the authentication session.
+      const response = await fetch(applicationUrl('/api/database-export'), { method, signal: operationSignal,
         headers: { ...headers, ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}) },
         ...(method === 'POST' ? { body: '{}' } : {}) });
       if (response.status === 401) { lockScreen({ authenticationFailed: true }); throw new Error(authenticationMessage(ingress)); }
       return response;
-    });
+    }, { signal: operationSignal });
   } });
+const exportBrowserHelp = $('database-export-browser-help');
+exportBrowserHelp.hidden = typeof window.showSaveFilePicker === 'function';
+exportBrowserHelp.textContent = 'This browser prepares the complete file before handing it to its download folder. Keep this page open. For large files, you can also copy an existing saved copy from the backup folder shown above.';
 for (const [id, path, filename] of [
   ['floor-preheat-guide', '/api/downloads/floor-preheat-guide', 'floor-preheat.md'],
 ]) $(id).addEventListener('click', async () => {
@@ -1215,24 +1234,41 @@ for (const [id, path, filename] of [
 for (const id of ['recording-overview-details','recording-disk-card']) $(id).addEventListener('toggle',()=>void refreshRecordingOverview());
 $('recording-overview-refresh').addEventListener('click',()=>void refreshRecordingOverview({force:true}));
 setInterval(refreshRecordingOverview,60_000);
-let auditFetchedAt = 0, auditBusy = false, auditLoaded = false;
+let auditFetchedAt = 0, auditBusy = false, auditLoaded = false, auditRevision = 0;
+function resetAudits() {
+  auditRevision++; auditFetchedAt = 0; auditBusy = false; auditLoaded = false;
+  $('energy-audit-content').replaceChildren();
+  $('energy-audit-message').hidden = false;
+  $('energy-audit-message').textContent = 'Open this section to load recorded energy checks.';
+}
 async function refreshAudits() {
-  if (!$('recording-details').open || !$('energy-audit-details').open || auditBusy || Date.now()-auditFetchedAt<60_000) return;
+  if (session.locked || !dashboardStatusReceived || document.visibilityState === 'hidden'
+    || !$('recording-details').open || !$('energy-audit-details').open || auditBusy || Date.now()-auditFetchedAt<60_000) return;
   auditBusy = true;
+  const revision = auditRevision;
   try {
-    renderEnergyAudits(await api('/api/energy-audits'),$('energy-audit-content'));
+    const result = await api('/api/energy-audits');
+    if (revision !== auditRevision) return;
+    renderEnergyAudits(result,$('energy-audit-content'));
     auditFetchedAt=Date.now();auditLoaded=true;$('energy-audit-message').hidden=true;
   }
   catch {
+    if (revision !== auditRevision) return;
     $('energy-audit-message').hidden=false;
     $('energy-audit-message').textContent=auditLoaded
       ? 'Could not refresh the checks. The last successful results are still shown.'
       : 'Recorded energy checks could not be loaded. They will retry while this section is open.';
   }
-  finally { auditBusy=false; }
+  finally { if (revision === auditRevision) auditBusy=false; }
 }
 $('recording-details').addEventListener('toggle',()=>{
-  if ($('recording-details').open) { renderRecording(lastStatus,$('recording-content')); void refreshRecordingOverview(); void refreshAudits(); }
+  if ($('recording-details').open) {
+    if ($('recording-adaptive-details').open) renderRecording(lastStatus,$('recording-content'));
+    void refreshRecordingOverview(); void refreshAudits();
+  }
+});
+$('recording-adaptive-details').addEventListener('toggle', () => {
+  if ($('recording-details').open && $('recording-adaptive-details').open) renderRecording(lastStatus,$('recording-content'));
 });
 $('energy-audit-details').addEventListener('toggle',refreshAudits);
 setInterval(refreshAudits,60_000);
@@ -1240,12 +1276,12 @@ historyChart = createHistoryChart({ api: (path, options) => api(path, undefined,
 document.addEventListener('themechange', event => historyChart.updateTheme(event.detail.theme));
 setInterval(() => refresh({ background: true }), 15_000);
 setInterval(refreshPairing, 3_000);
-setInterval(() => { checkCommunication(); if (!session.locked) { fireplacePanel.tick(); heatingExplorer.tick(); } }, 1000);
+setInterval(() => { checkCommunication(); if (!session.locked) { fireplacePanel.tick(); heatingExplorer.tick(); databaseExport.tick(); } }, 1000);
 setInterval(() => { if (!session.locked) historyRecovery.tick(); }, 2000);
 window.addEventListener('online', () => void refresh());
 document.addEventListener('visibilitychange', () => {
   checkCommunication();
-  if (!document.hidden) { void refresh(); void refreshRecordingOverview(); }
+  if (!document.hidden) { void refresh(); void refreshRecordingOverview(); void refreshAudits(); databaseExport.tick(); }
 });
 if (session.locked) { $('auth').hidden = ingress; $('connection').textContent = 'Signed out'; if (!ingress) $('token').focus(); }
 else void refresh();
