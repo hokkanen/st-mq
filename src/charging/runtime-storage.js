@@ -94,6 +94,9 @@ function receptionMeaning(value) {
 function supplyMeaning(value) {
   const record = withoutReceiptClocks(value);
   if (!object(record)) return record;
+  // Easee dates this container when the native/property query completes. The
+  // contributing measurements keep their own clocks in observationTimes.
+  delete record.observedAt;
   for (const key of ['propertyCurrentA', 'reportedPropertyCurrentA', 'chargerCurrentA', 'voltageV'])
     if (Object.hasOwn(record, key)) record[key] = measurementMetadata(record[key]);
   if (object(record.observationTimes)) record.observationTimes = Object.fromEntries(

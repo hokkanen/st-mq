@@ -211,6 +211,8 @@ test('production OCPP metering and vehicle reception clocks wait for a complete 
   // production reception object for the assigned-card representation too.
   saved.view.chargers[0].mqtt = structuredClone(saved.view.vehicleFeeds[0].reception);
   saved.view.chargers[0].vehicleMqtt = structuredClone(saved.view.vehicleFeeds[0].reception);
+  saved.view.chargers[0].telemetry.supply.observedAt = projectedAt;
+  saved.view.chargers[0].control.snapshot.supply.observedAt = projectedAt;
   const set = (next, path, value) => {
     const parts = path.split('.'), field = parts.pop();
     let owner = next.view;
@@ -229,6 +231,8 @@ test('production OCPP metering and vehicle reception clocks wait for a complete 
     ['chargers.0.telemetry.supply.observationTimes.charger.0', projectedAt + 5000],
     ['chargers.0.telemetry.supply.observationTimes.voltage.0', projectedAt + 5000],
     ['chargers.0.telemetry.supply.estimate.observedAt', projectedAt + 5000],
+    ['chargers.0.telemetry.supply.observedAt', projectedAt + 5000],
+    ['chargers.0.control.snapshot.supply.observedAt', projectedAt + 5000],
     ['chargers.0.control.snapshot.supply.propertyCurrentA.0', 2],
     ['chargers.0.control.snapshot.supply.chargerCurrentA.0', 2],
     ['chargers.0.control.snapshot.supply.voltageV.0', 231],
@@ -280,6 +284,7 @@ test('production instruction clocks, metering provenance and feed health remain 
     next => { next.view.chargers[0].values.actualCurrentA.inputs[0].source = 'different-meter'; },
     next => { next.view.chargers[0].values.voltageV.quality = 'unavailable'; },
     next => { next.view.chargers[0].telemetry.supply.feedEvidence.property.epoch = 'different-connection'; },
+    next => { next.view.chargers[0].telemetry.supply.provenance = { observedAt: projectedAt + 1000 }; },
     next => { next.view.chargers[0].telemetry.supply.estimate.available = !next.view.chargers[0].telemetry.supply.estimate.available; },
     next => { next.view.chargers[1].values.maximumCurrentA.value -= 1; },
     next => { next.view.chargers[0].vehicleMqtt.available = !next.view.chargers[0].vehicleMqtt.available; },
