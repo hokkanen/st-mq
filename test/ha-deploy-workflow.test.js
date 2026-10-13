@@ -2,17 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main } from '../scripts/deploy-ha.js';
 import { DeploymentTransportError } from '../scripts/lib/ha-deploy-transport.js';
 
+const version = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8')).version;
+
 function workflowFixture(t, { existingLock = false, corruptBundle = false, changedApp = false, optionsAfterRebuild,
   lostRebuildResponse = false, lostRefreshResponse = false, changedRepositories = false, stateError,
   wrongSchema = false, complete = false, initialState = 'stopped', lostDiscoveryResponse = false,
   lostLockResponse = false, containerStartsAtRead = Infinity, stoppedAfterRebuild = false,
-  storedFileCheck, finalFileTimeout = false } = {}) {
+  storedFileCheck, finalFileTimeout = false, sourceChangesAfterRebuild = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ha-deploy-workflow-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const checkout = join(directory, 'checkout');
@@ -23,9 +25,9 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   const connectionPath = join(privateDirectory, 'connection.json');
   writeFileSync(connectionPath, JSON.stringify({ ssh_host: 'synthetic-ha' }), { mode: 0o600 });
   writeFileSync(join(checkout, '.gitignore'), 'dist/\n');
-  writeFileSync(join(checkout, 'config.json'), JSON.stringify({ version: '0.9.5-dev.3', options: {}, schema: {} }));
+  writeFileSync(join(checkout, 'config.json'), JSON.stringify({ version, options: {}, schema: {} }));
   writeFileSync(join(checkout, 'package.json'), JSON.stringify({
-    name: 'synthetic-deployment-fixture', version: '0.9.5-dev.3', private: true,
+    name: 'synthetic-deployment-fixture', version, private: true,
     scripts: { build: 'node build.cjs' },
   }));
   writeFileSync(join(checkout, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3 }));
@@ -39,7 +41,7 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   git('add', '.gitignore', 'config.json', 'package.json', 'package-lock.json', 'build.cjs', 'src/index.js');
   git('commit', '--quiet', '-m', 'Synthetic deployment baseline');
   const remoteHead = git('rev-parse', 'HEAD');
-  if (corruptBundle) {
+  if (corruptBundle || sourceChangesAfterRebuild) {
     writeFileSync(join(checkout, 'src/index.js'), 'export const synthetic = false;\n');
     git('add', 'src/index.js');
     git('commit', '--quiet', '-m', 'Synthetic deployment target');
@@ -48,7 +50,7 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   const events = [];
   const messages = [];
   const uploads = new Map();
-  const app = { slug: 'synthetic_st-mq', repository: 'synthetic', state: 'stopped', version: '0.9.5-dev.3', schema: [], options: {
+  const app = { slug: 'synthetic_st-mq', repository: 'synthetic', state: 'stopped', version, schema: [], options: {
     enabled: false,
     charging: { limit: 0, schedule: [{ start: '01:00', target: 80 }, { start: '02:00', target: null }] },
   } };
@@ -56,6 +58,7 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   let storeReads = 0;
   let rebuilt = false;
   let refreshed = false;
+  let sourceMoved = false;
   let pythonCode = '';
   let containerReads = 0;
   const ssh = {
@@ -100,11 +103,12 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
           } else assert.equal(timeoutMs, 30000, 'intermediate metadata checks retain their short deadline');
           if (rebuilt && readsFiles) assert.ok(!pythonCode.includes('from supervisor.apps.options import UiOptions'), 'final file check does not repeat unused schema presentation imports');
           const failed = stateError && (rebuilt || (refreshed && stateError === 'source'));
-          return { exitCode: 0, output: JSON.stringify(failed ? { error: stateError } : { ok: true, schema: [] }) };
+          return { exitCode: 0, output: JSON.stringify(sourceMoved ? { error: 'source' }
+            : failed ? { error: stateError } : { ok: true, schema: [] }) };
         }
         return { exitCode: 0, output: '' };
       }
-      if (complete && script.includes("['docker','image','ls'")) return { exitCode: 0, output: JSON.stringify('synthetic-st-mq:0.9.5-dev.3') };
+      if (complete && script.includes("['docker','image','ls'")) return { exitCode: 0, output: JSON.stringify(`synthetic-st-mq:${version}`) };
       if (complete && script.includes('docker run')) {
         assert.match(script, /--network none/);
         assert.match(script, /--entrypoint node/);
@@ -169,7 +173,16 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
       checkout,
       connect: async config => { assert.equal(config.ssh_host, 'synthetic-ha'); events.push({ type: 'connect' }); return ssh; },
       supervisor,
-      log: message => messages.push(message),
+      log: message => {
+        messages.push(message);
+        // The successful awaited response has already returned. An independent
+        // repository refresh now changes source before installed verification.
+        if (sourceChangesAfterRebuild && message.startsWith('Supervisor rebuild completed.')) {
+          assert.equal(rebuilt, true);
+          sourceMoved = true;
+          events.push({ type: 'source-moved-after-rebuild-ack' });
+        }
+      },
     }),
   };
 }
@@ -402,6 +415,26 @@ test('source movement during metadata refresh prevents rebuilding a different co
   const fixture = workflowFixture(t, { stateError: 'source' });
   await assert.rejects(fixture.deploy(), /Remote source no longer matches the selected commit/);
   assertNoRebuild(fixture.events);
+  assertRetainedFailureState(fixture.events);
+});
+
+test('source movement after acknowledged rebuild retains evidence and refuses installed verification', async t => {
+  const fixture = workflowFixture(t, { complete: true, sourceChangesAfterRebuild: true });
+  await assert.rejects(fixture.deploy(), error => {
+    assert.match(error.message, /Remote source no longer matches the selected commit/);
+    assert.match(error.message, /Deployment stopped during verification: installed metadata/);
+    assert.match(error.message, /Supervisor confirmed rebuild completion/);
+    assert.doesNotMatch(error.message, /submitted rebuild may still be running/);
+    return true;
+  });
+  const rebuilds = fixture.events.filter(event => event.type === 'api' && event.endpoint.endsWith('/rebuild'));
+  assert.equal(rebuilds.length, 1, 'the pre-rebuild source checks succeeded and the acknowledged rebuild is not repeated');
+  const movement = fixture.events.findIndex(event => event.type === 'source-moved-after-rebuild-ack');
+  assert(movement > fixture.events.indexOf(rebuilds[0]));
+  assert(fixture.messages.some(message => message.startsWith('Supervisor rebuild completed.')));
+  assert(!fixture.messages.some(message => message.startsWith('Verified ')));
+  assert(fixture.events.some(event => event.type === 'ssh' && Buffer.isBuffer(event.input)
+    && event.script.includes('.bundle')), 'the committed target bundle was transferred before the independent source change');
   assertRetainedFailureState(fixture.events);
 });
 
