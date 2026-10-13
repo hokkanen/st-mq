@@ -98,6 +98,9 @@ test('allowance series preserve zero and fallback zero, exact transitions, gaps 
   put(history, 'charger2', 'fallback', 12, 30_000); put(history, 'charger2', 'fallback', 12, 35_000);
   put(history, 'charger2', 'unknown', null, 40_000); put(history, 'charger2', 'unknown', null, 45_000);
   put(history, 'charger2', 'limited', 8, 50_000); put(history, 'charger2', 'limited', 8, 55_000);
+  // This historical fixture includes the last actually observed endpoints,
+  // independently of the live unchanged-coverage persistence cadence.
+  history.flush();
   const chart = query(store, { points: 100 }), { ev1_current_allowance: first, ev2_current_allowance: second } = chart.series;
   assert(first.some(point => point.y === 10.5));
   assert(second.some(point => point.x === start + 10_000 && point.y === 0));

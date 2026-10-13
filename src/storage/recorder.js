@@ -14,6 +14,17 @@ import { observationTimeAdmitted, observationAvailableAt, sourceTimeAdmission, v
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, YEAR = 365.25 * DAY;
 export const RECORDING_VERSION = 'recording-contract-v2';
 const VERSION = RECORDING_VERSION;
+const METRIC_FLUSH_MS = 30_000, MAX_PENDING_METRIC_BUCKETS = 256;
+const METRIC_SUMS = ['polls', 'records', 'bytes', 'error_squared_time', 'error_time', 'stale', 'failed', 'unavailable'];
+function combineMetrics(left, right) {
+  const row = { ...left };
+  for (const field of METRIC_SUMS) row[field] = (left[field] ?? 0) + (right[field] ?? 0);
+  row.first_saved_at = left.first_saved_at === null ? right.first_saved_at
+    : right.first_saved_at === null ? left.first_saved_at : Math.min(left.first_saved_at, right.first_saved_at);
+  row.last_saved_at = left.last_saved_at === null ? right.last_saved_at
+    : right.last_saved_at === null ? left.last_saved_at : Math.max(left.last_saved_at, right.last_saved_at);
+  return row;
+}
 // Logical row estimate, including source/quality/provenance metadata and JSON
 // structure. Local SQL IDs and unrelated table/index allocation never affect it.
 const observationBytes = o => Buffer.byteLength(JSON.stringify({ source: o.source, device: o.device,
@@ -191,6 +202,10 @@ export class Recorder {
     // Presentation evidence only. A restored checkpoint is not an acquisition
     // made by this runtime, and this marker grants no device authority.
     this.observedStreams = new Set();
+    // Only optional receipt diagnostics wait in RAM. Source continuity, open
+    // energy, recording thresholds and selected-observation accounting stay
+    // in their original transaction. No independent timer/writer is needed.
+    this.pendingMetrics = new Map();
     this.configure(config);
     this.adaptiveBudgetState();
     readStorageMetrics(store.db);
@@ -475,6 +490,40 @@ export class Recorder {
   count(state, now, { saved = false, error = null, elapsed = 0, bytes = 0, polls = 1 } = {}) {
     const hour = Math.floor(now / HOUR) * HOUR;
     const errorTime = Number.isFinite(error) && elapsed>0 ? elapsed : 0;
+    const id = JSON.stringify([state.key, hour]);
+    const increment = { key: state.key, bucket: hour, polls, records: Number(saved), bytes,
+      first_saved_at: saved ? now : null, last_saved_at: saved ? now : null,
+      error_squared_time: errorTime ? error * error * errorTime : 0, error_time: errorTime,
+      stale: polls * Number(state.status === 'stale'), failed: polls * Number(state.status === 'failed'),
+      unavailable: polls * Number(state.status === 'unavailable') };
+    const previous = this.pendingMetrics.get(id);
+    const pending = { ...(previous ? combineMetrics(previous, increment) : increment),
+      firstPendingAt: previous?.firstPendingAt ?? now, lastPendingAt: now };
+    this.setPendingMetrics(id, pending);
+    // New hour rows remain explicit even if this receipt selected no record.
+    // Record counts, bytes and extrema always commit with their observation.
+    if (saved || now - pending.firstPendingAt >= METRIC_FLUSH_MS
+      || !previous && !this.store.db.prepare('SELECT 1 FROM recorder_metrics WHERE key=? AND bucket=?').get(state.key, hour))
+      this.savePendingMetrics(id, now);
+    if (this.pendingMetrics.size > MAX_PENDING_METRIC_BUCKETS)
+      this.savePendingMetrics(this.pendingMetrics.keys().next().value, now);
+  }
+
+  setPendingMetrics(id, value) {
+    const previous = this.pendingMetrics.get(id);
+    this.store.afterRollback(() => {
+      if (previous) this.pendingMetrics.set(id, previous); else this.pendingMetrics.delete(id);
+    });
+    if (value) this.pendingMetrics.set(id, value); else this.pendingMetrics.delete(id);
+  }
+
+  savePendingMetrics(id, now) {
+    const row = this.pendingMetrics.get(id);
+    if (!row) return;
+    if (row.bucket < Math.floor(now / HOUR) * HOUR - 7 * DAY) {
+      this.setPendingMetrics(id, null);
+      return;
+    }
     this.store.db.prepare(`INSERT INTO recorder_metrics
       (key,bucket,polls,records,first_saved_at,last_saved_at,bytes,error_squared_time,error_time,stale,failed,unavailable) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(key,bucket) DO UPDATE SET polls=polls+excluded.polls,records=records+excluded.records,bytes=bytes+excluded.bytes,
@@ -484,8 +533,29 @@ export class Recorder {
         WHEN last_saved_at IS NULL THEN excluded.last_saved_at ELSE MAX(last_saved_at,excluded.last_saved_at) END,
       error_squared_time=error_squared_time+excluded.error_squared_time,error_time=error_time+excluded.error_time,
       stale=stale+excluded.stale,failed=failed+excluded.failed,unavailable=unavailable+excluded.unavailable`)
-      .run(state.key,hour,polls,Number(saved),saved ? now : null,saved ? now : null,bytes,errorTime ? error*error*errorTime : 0,errorTime,
-        polls*Number(state.status==='stale'),polls*Number(state.status==='failed'),polls*Number(state.status==='unavailable'));
+      .run(row.key,row.bucket,row.polls,row.records,row.first_saved_at,row.last_saved_at,row.bytes,
+        row.error_squared_time,row.error_time,row.stale,row.failed,row.unavailable);
+    this.setPendingMetrics(id, null);
+  }
+
+  flushMetrics(now, { force = false } = {}) {
+    const hour = Math.floor(now / HOUR) * HOUR, oldest = hour - 7 * DAY;
+    for (const [id, row] of this.pendingMetrics) {
+      // A long suspended runtime must not resurrect already expired statistics.
+      if (row.bucket < oldest) this.setPendingMetrics(id, null);
+      else if (force || row.bucket < hour || now - row.firstPendingAt >= METRIC_FLUSH_MS)
+        this.savePendingMetrics(id, now);
+    }
+  }
+
+  metricHistory(rows, key, from, to, now, prunedBefore) {
+    const history = new Map(rows.map(row => [row.bucket, row]));
+    for (const row of this.pendingMetrics.values()) {
+      if (row.key !== key || row.bucket < Math.max(from, prunedBefore) || row.bucket > to || row.lastPendingAt > now) continue;
+      const saved = history.get(row.bucket);
+      history.set(row.bucket, saved ? combineMetrics(saved, row) : row);
+    }
+    return [...history.values()].sort((a,b) => a.bucket - b.bucket);
   }
 
   coverage(state, o, status, freshUpdate = true, reportPolicyChanged = false) {
@@ -825,6 +895,7 @@ export class Recorder {
     if (selected?.some(value=>!energySignals(value))) throw new TypeError('Invalid energy flush group');
     return this.store.transaction(() => {
       const observations = [];
+      this.flushMetrics(now, { force });
       let budget = this.adaptiveBudgetState() ? this.adaptiveBudget(now) : null;
       for (const row of this.store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%'").all()) {
         const s = JSON.parse(row.value), p = s.pending;
@@ -947,7 +1018,8 @@ export class Recorder {
       const stats = {};
       const stream = [s.source,s.device,s.signal,s.unit,s.recordingPolicy];
       const current = savedEdge.get(...stream,currentHour,now+1);
-      const history = metrics.all(s.key,now-7*DAY-HOUR,currentHour);
+      const history = this.metricHistory(metrics.all(s.key,now-7*DAY-HOUR,currentHour),
+        s.key,now-7*DAY-HOUR,currentHour,now,g.metricsPrunedBefore);
       for (const [label,span] of [['hour',HOUR],['day',DAY],['week',7*DAY]]) {
         const from = now-span, completeFrom = Math.max(Math.ceil(from/HOUR)*HOUR,g.metricsPrunedBefore);
         const buckets = history.filter(b => b.bucket+HOUR > from);

@@ -1,6 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chargingControlLabel, chargingControlReason, chargingVehicleFeedReason } from '../chart/charging-status.js';
+import { chargingControlLabel, chargingControlReason, chargingVehicleFeedReason, chargingRecordedDetail } from '../chart/charging-status.js';
+
+test('recorded charging details use the assessment date and preserve an unknown date', () => {
+  const recorded = { readOnly: true, recorded: true, snapshotAt: Date.parse('2026-10-13T08:00:01Z') };
+  assert.match(chargingRecordedDetail(recorded), /13 Oct 2026, 11:00:01 Europe\/Helsinki/);
+  for (const snapshotAt of [undefined, null, NaN]) {
+    const detail = chargingRecordedDetail({ ...recorded, snapshotAt });
+    assert.match(detail, /Recorded master status \(time unavailable\)/);
+    assert.doesNotMatch(detail, /1970/);
+  }
+  assert.equal(chargingRecordedDetail({ snapshotAt: recorded.snapshotAt }), '');
+});
 
 test('unplugged vehicle status explains its meaning separately from charger communication', () => {
   assert.equal(chargingControlLabel('disconnected'), 'No vehicle connected');

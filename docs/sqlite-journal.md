@@ -19,6 +19,25 @@ supported. The Home learning algorithm is unchanged.
 | Inactive divergent branches | Protected unique evidence, retained after explicit rejoin. It never grants control authority. |
 | Sparse learning checkpoints | Derived replay caches, independent of disposable transactions; the immutable learning inputs remain authoritative. |
 
+Charging's durable control, session, battery reference and restoration state
+still writes in the accepting transaction. Its derived card view has a
+30-second save cadence: subsequent accepted writes refresh the complete view
+when due, and important control, session, plan, restriction and source-availability
+changes force an earlier view. The previous complete view and its plan references
+remain intact between saves. Each newly saved view carries its own `recordedAt`;
+a replica uses that date rather than the newer database publication time and
+does not overlay newer control or plan fragments onto an older card. A genuinely
+absent date is unknown. Receipt clocks and already-recorded metering/progress
+can wait for the view cadence. A quiet final presentation tail need not survive
+restart; durable facts remain authoritative and the running controller computes
+a fresh view. This adds no timer, writer, format migration or schema reset.
+
+Optional recorder poll/error totals and repeated unchanged charging-allowance
+coverage are buffered with the bounds and failure semantics in
+[the recording contract](recording.md#charger-current-allowances). This does not
+batch learning inputs, measured energy, source corrections, permissions or
+restoration obligations.
+
 An installation has one configured paired or mirror counterpart. Its common
 checkpoint is explicitly enrolled during the initial seed. Retained peer evidence
 is part of the database, so restart and role changes do not lose the common base.

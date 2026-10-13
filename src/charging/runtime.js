@@ -194,6 +194,9 @@ export class ChargingRuntime {
     this.sessionDiagnostics = new ChargingSessionDiagnostics({ store, key: `${this.key}:session-diagnostics`, clock,
       retentionDays: this.configuration.report_retention_days });
     this.limiterHistory = new ChargingAllowanceHistory({ store, input: config.input });
+    this.limiterHistoryPending = 0;
+    this.limiterHistoryAdmission = null;
+    this.limiterHistorySequence = 0;
     this.physicalTests = new ChargingPhysicalTests({ store, key: `${this.key}:physical-tests`, clock });
     const stored = readChargingRuntime(store, this.key);
     // Initialize the preference only when all charging runtime state is absent.
@@ -322,22 +325,85 @@ export class ChargingRuntime {
       ? { ...this.coordination, priority: this.settings.priority } : this.coordination;
   }
   recordLimiterHistory(now = this.clock()) {
-    if (!this.store.transactionDepth) {
-      void this.write(() => this.recordLimiterHistory(this.clock())).catch(() => {
-        this.limiterHistory.suspend(); this.limiterHistoryError = 'Load balancing history could not be saved.';
-      });
-      return;
-    }
+    // Shutdown retains the last confirmed tail for the final authorized flush.
+    // Neither a late callback nor an aborted queued save is a new observation.
+    if (this.closed) return;
     try {
-      if (!this.closed && this.canControl() && ['providers', 'mqtt'].includes(this.config.input)) {
-        for (const [id, item] of Object.entries(this.chargers)) {
-          // Easee installation belongs to connections; only Shelly has a
-          // configured enabled switch. Automatic scheduling is independent.
-          const configured = id === 'charger1' ? Boolean(this.config.connections?.easee?.charger_id)
-            : this.configuration.chargers[id].enabled;
-          if (configured) this.limiterHistory.observe({ chargerId: id, association: item.association,
-            status: this.allowanceStatus(id, this.controlStatus(id), now) }, now);
-          else this.limiterHistory.suspend(id);
+      if (!this.canControl() || !['providers', 'mqtt'].includes(this.config.input)) {
+        this.limiterHistory.suspend(); this.limiterHistoryError = null; return;
+      }
+      const candidates = Object.entries(this.chargers).map(([id, item]) => {
+        // Easee installation belongs to connections; only Shelly has a
+        // configured enabled switch. Automatic scheduling is independent.
+        const configured = id === 'charger1' ? Boolean(this.config.connections?.easee?.charger_id)
+          : this.configuration.chargers[id].enabled;
+        return { id, configured, observation: configured ? structuredClone({ chargerId: id,
+          association: item.association, status: this.allowanceStatus(id, this.controlStatus(id), now) }) : null };
+      });
+      const needsWrite = candidates.some(({ id, configured, observation }) => configured
+        ? this.limiterHistory.needsWrite(observation, now) : this.limiterHistory.previous.get(id)?.pendingSamples > 0);
+      // An older queued transition must run before even a RAM-only confirmation.
+      // Capture the callback clocks and values now: reading them after admission
+      // could collapse A -> B -> A into the final A during a delayed write.
+      if (!this.limiterHistoryPending && (this.store.transactionDepth || !needsWrite)) {
+        this.recordCapturedLimiterHistory(candidates, now); return;
+      }
+      this.limiterHistoryPending++;
+      let pending = true, rolledBack = false, flight;
+      const admission = { entered: false, sequence: ++this.limiterHistorySequence };
+      const release = () => { if (pending) { pending = false; this.limiterHistoryPending--; } };
+      try { flight = this.write(() => {
+        admission.entered = true;
+        // A synchronous committed job no longer blocks same-stack confirmations.
+        // Failed jobs retain the guard until their rejection has been handled.
+        this.store.afterCommit(release);
+        this.store.afterRollback(() => {
+          rolledBack = true;
+          if (!this.closed) {
+            // Run after the history's own rollback restorers, before the queue
+            // can start a later job. A deferred rejection must not erase that
+            // later job's successfully admitted observations.
+            this.limiterHistory.previous.clear();
+            this.limiterHistoryError = 'Load balancing history could not be saved.';
+          }
+        });
+        this.recordCapturedLimiterHistory(candidates, now);
+      }, { isCurrent: () => {
+        const preceding = this.limiterHistoryAdmission;
+        if (preceding && preceding !== admission && !preceding.entered
+          || admission.sequence > (preceding?.sequence ?? 0) + 1) {
+          // A fatal BEGIN can reject before any rollback hook was registered.
+          // A sequence gap also identifies a rejection before preadmission.
+          // Fence either missing decision before a later job begins. Contention
+          // retries the same token and therefore retains confirmed continuity.
+          this.limiterHistory.suspend();
+        }
+        this.limiterHistoryAdmission = admission;
+        return true;
+      } }); }
+      catch (error) { release(); throw error; }
+      return flight.catch(error => {
+        if (!this.closed && !rolledBack && error?.committed !== true
+          && !(this.limiterHistoryAdmission?.sequence > admission.sequence)) {
+          this.limiterHistory.suspend(); this.limiterHistoryError = 'Load balancing history could not be saved.';
+        }
+      }).finally(release);
+    } catch {
+      this.limiterHistory.suspend();
+      this.limiterHistoryError = 'Load balancing history could not be saved.';
+    }
+  }
+  recordCapturedLimiterHistory(candidates, now) {
+    if (this.closed) return;
+    try {
+      if (this.canControl() && ['providers', 'mqtt'].includes(this.config.input)) {
+        for (const { id, configured, observation } of candidates) {
+          if (configured) this.limiterHistory.observe(observation, now);
+          else {
+            // Preserve only the already-observed endpoint before an orderly
+            // configured suspension; disabling never extends history to now.
+            this.limiterHistory.flush(id); this.limiterHistory.suspend(id);
+          }
         }
       } else this.limiterHistory.suspend();
       this.limiterHistoryError = null;
@@ -345,6 +411,14 @@ export class ChargingRuntime {
       this.limiterHistory.suspend();
       this.limiterHistoryError = 'Load balancing history could not be saved.';
     }
+  }
+  flushLimiterHistory() {
+    if (!this.canControl() || !['providers', 'mqtt'].includes(this.config.input)) return 0;
+    if (!this.store.transactionDepth) throw new Error('Allowance history flush requires an authorized storage transaction');
+    // Called after ingress and controllers quiesce, including after close. This
+    // performs no status read, fresh observation, command or runtime admission.
+    try { return this.limiterHistory.flush(); }
+    catch { this.limiterHistoryError = 'Load balancing history could not be saved.'; return 0; }
   }
   persist() {
     const now = this.clock();
@@ -397,7 +471,7 @@ export class ChargingRuntime {
     const saved = { version: 7, revision: this.revision, controls: this.controls, chargers, vehicleFeeds,
       consumedTeslaPower: this.consumedTeslaPower, consumedTeslaCurrent: this.consumedTeslaCurrent, view };
     validateChargingRuntimeState(saved);
-    writeChargingRuntime(this.store, this.key, saved);
+    writeChargingRuntime(this.store, this.key, saved, { at: now });
   }
   mqttRoutes() {
     return Object.values(this.vehicleFeeds).filter(item => item.mqttTopic)

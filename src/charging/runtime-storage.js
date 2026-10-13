@@ -4,6 +4,8 @@ import { validateChargingRuntimeState } from './runtime-state.js';
 // Charging owns this representation. The shared Store/journal still sees normal
 // state rows and publishes every changed field in one ordinary transaction.
 export const CHARGING_RUNTIME_VERSION = 7;
+export const CHARGING_VIEW_INTERVAL_MS = 30_000;
+const projections = new WeakMap();
 const inputs = /^charging:(mqtt|providers|simulated|offline)$/;
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -41,8 +43,93 @@ const planPath = path => /^(?:charger\/charger[12]\/plan|view\/charger\/charger[
 const ownedKeys = (key, manifest) => [...paths(manifest).map(path => prefix(key) + path),
   ...manifest.plans.map(id => `${prefix(key)}plan/${id}`), ...manifest.contexts.map(id => `${prefix(key)}context/${id}`)];
 
+function validateProjectionDate(view) {
+  if (view && Object.hasOwn(view, 'recordedAt') && (!Number.isSafeInteger(view.recordedAt) || view.recordedAt < 0)) fail();
+}
+const receiptClocks = new Set(['receivedAt', 'readAt', 'lastReadAt', 'lastLiveAt', 'ageMs', 'evaluatedAt', 'recordedAt']);
+const electricalFields = new Set(['powerKw', 'actualCurrentA', 'voltageV',
+  'phaseCurrentA', 'phasePowerKw', 'phaseVoltageV', 'phaseMeasurements']);
+function withoutReceiptClocks(value) {
+  if (Array.isArray(value)) return value.map(withoutReceiptClocks);
+  if (!object(value)) return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !receiptClocks.has(key))
+    .map(([key, value]) => [key, withoutReceiptClocks(value)]));
+}
+function measurementMetadata(value) {
+  if (typeof value === 'number') return { available: Number.isFinite(value) };
+  if (Array.isArray(value)) return { phases: value.length, available: value.every(Number.isFinite) };
+  if (!object(value)) return value;
+  if (!Object.hasOwn(value, 'value')) return withoutReceiptClocks(value);
+  const { value: measurement, measuredAt, sourceTime, readback, admittedAt, ...metadata } = value;
+  return withoutReceiptClocks(metadata);
+}
+const phaseMeasurements = new Set(['current', 'voltage', 'power', 'act_energy', 'total_power', 'total_act_energy']);
+function phaseMetadata(value) {
+  if (!object(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, value]) => [key,
+    phaseMeasurements.has(key) && typeof value === 'number' ? { available: Number.isFinite(value) }
+      : ['phase_a', 'phase_b', 'phase_c'].includes(key) ? phaseMetadata(value) : value]));
+}
+function telemetryMeaning(value) {
+  if (!object(value)) return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !receiptClocks.has(key))
+    .map(([key, value]) => [key, key === 'phaseMeasurements' ? phaseMetadata(value)
+      : electricalFields.has(key) ? measurementMetadata(value) : withoutReceiptClocks(value)]));
+}
+function nativeSnapshotMeaning(snapshot) {
+  const value = telemetryMeaning(snapshot);
+  if (!object(value)) return value;
+  // phase_info is metering, not permission, native current, or plug evidence.
+  // A correlated query's clocks are bookkeeping; native instruction clocks
+  // on the other fields retain their meaning and force early publication.
+  delete value.powerAt;
+  if (object(snapshot.fields)) value.fields = Object.fromEntries(Object.entries(snapshot.fields).map(([role, field]) => {
+    let record = role === 'phase_info' ? measurementMetadata(field) : withoutReceiptClocks(field);
+    if (object(record?.readback)) {
+      record = { ...record, readback: { ...record.readback } };
+      delete record.readback.requestedAt; delete record.readback.admittedAt;
+      if (role === 'phase_info') delete record.readback.measuredAt;
+    }
+    if (role === 'phase_info' && object(record)) { delete record.admittedAt; delete record.readback; }
+    return [role, record];
+  }));
+  return value;
+}
+/** Conservative early-publication fence. Only repeated receipt clocks and
+ * already-durable metering/progress are allowed to wait for the view cadence.
+ * Unknown fields remain in the comparison rather than silently being batched. */
+function projectionMeaning(saved) {
+  const chargers = Object.fromEntries(Object.entries(saved.chargers ?? {}).map(([id, record]) => {
+    const { progress, supplyEstimate, sessionCost, ...durable } = record;
+    return [id, { ...durable, ...(progress ? { battery: { connected: progress.connected,
+      reference: progress.reference, batteryInputs: progress.batteryInputs } } : {}) }];
+  }));
+  const { recordedAt, diagnostics, chargers: cards, ...view } = saved.view ?? {};
+  if (diagnostics) view.reportStatus = { available: diagnostics.available !== false, error: diagnostics.error ?? null,
+    retentionDays: diagnostics.retention?.days };
+  if (view.physicalTests) {
+    view.physicalTests = structuredClone(view.physicalTests);
+    for (const run of view.physicalTests.runs ?? []) delete run.observedAt;
+  }
+  const cardMeaning = (cards ?? []).map(card => {
+    const { progress, sessionCost, requiredGridKwh, referenceGridKwh, automaticSoc, automatic,
+      telemetry, values, control, ...rest } = card;
+    const snapshot = control?.snapshot;
+    const projectedControl = control ? { ...control, ...(snapshot ? { snapshot: nativeSnapshotMeaning(snapshot) } : {}) } : control;
+    if (projectedControl?.session) {
+      projectedControl.session = { ...projectedControl.session }; delete projectedControl.session.observedAt;
+    }
+    return { ...rest, control: projectedControl, telemetry: telemetryMeaning(telemetry),
+      values: Object.fromEntries(Object.entries(values ?? {}).map(([key, value]) => [key,
+        electricalFields.has(key) ? measurementMetadata(value) : withoutReceiptClocks(value)])) };
+  });
+  return digest(withoutReceiptClocks({ revision: saved.revision, controls: saved.controls, chargers,
+    view: { ...view, chargers: cardMeaning } }));
+}
+
 function encode(saved) {
   validateChargingRuntimeState(saved);
+  validateProjectionDate(saved.view);
   if (saved?.version !== CHARGING_RUNTIME_VERSION) fail();
   const records = new Map(), plans = new Map(), contexts = new Map();
   const put = (path, value) => {
@@ -145,6 +232,7 @@ export function readChargingRuntime(store, key) {
   }
   if (usedPlans.size !== manifest.plans.length || usedContexts.size !== manifest.contexts.length) fail();
   validateChargingRuntimeState(saved);
+  validateProjectionDate(saved.view);
   if (saved.view?.reportRetentionDays !== undefined && (!Number.isSafeInteger(saved.view.reportRetentionDays)
     || saved.view.reportRetentionDays < 1 || saved.view.reportRetentionDays > 3650)) fail();
   if (saved.view?.reportStatus !== undefined && (!exact(saved.view.reportStatus, ['available', 'error'])
@@ -153,12 +241,33 @@ export function readChargingRuntime(store, key) {
   return saved;
 }
 
-export function writeChargingRuntime(store, key, saved) {
-  const next = encode(saved), base = prefix(key);
+export function writeChargingRuntime(store, key, saved, { at, viewIntervalMs = CHARGING_VIEW_INTERVAL_MS, forceView = false } = {}) {
+  validateChargingRuntimeState(saved);
+  validateProjectionDate(saved.view);
+  if (at !== undefined && (!Number.isSafeInteger(at) || at < 0)
+    || !Number.isSafeInteger(viewIntervalMs) || viewIntervalMs < 0 || typeof forceView !== 'boolean') fail();
+  if (store.readOnly) throw new Error('Charging runtime storage is read-only');
+  const base = prefix(key), meaning = saved.view && at !== undefined ? projectionMeaning(saved) : null;
+  let state = projections.get(store);
+  if (!state) { state = new Map(); projections.set(store, state); }
   return store.transaction(() => {
     const previous = store.getState(key);
     if (previous != null) validateManifest(previous);
     else if (store.db.prepare('SELECT 1 FROM state WHERE key=? OR key GLOB ? LIMIT 1').get(key, `${base}*`)) fail();
+    const prior = state.get(key);
+    const publishView = !saved.view || at === undefined || forceView || !previous?.view || !prior
+      || prior.at === undefined || meaning !== prior.meaning || at < prior.at || at - prior.at >= viewIntervalMs;
+    const candidate = publishView ? { ...saved, ...(saved.view && at !== undefined
+      ? { view: { ...saved.view, recordedAt: at } } : {}) } : { ...saved };
+    if (!publishView) delete candidate.view;
+    const next = encode(candidate);
+    if (!publishView) {
+      next.manifest.roots.push('view');
+      next.manifest.view = previous.view;
+      next.manifest.plans = [...new Set([...next.manifest.plans, ...previous.plans])].sort();
+      next.manifest.contexts = [...new Set([...next.manifest.contexts, ...previous.contexts])].sort();
+    }
+    validateManifest(next.manifest);
     const retained = new Set(ownedKeys(key, next.manifest));
     for (const [kind, entries] of [['context', next.contexts], ['plan', next.plans]])
       for (const [id, record] of entries) {
@@ -171,6 +280,10 @@ export function writeChargingRuntime(store, key, saved) {
     store.setState(key, next.manifest);
     if (previous) for (const obsolete of ownedKeys(key, previous)) if (!retained.has(obsolete))
       store.db.prepare('DELETE FROM state WHERE key=?').run(obsolete);
+    if (publishView) {
+      store.afterRollback(() => { if (prior) state.set(key, prior); else state.delete(key); });
+      state.set(key, { at, meaning });
+    }
   });
 }
 

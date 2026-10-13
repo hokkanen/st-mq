@@ -6,6 +6,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Charging history avoids database admissions for unchanged allowance reports.
+  Confirmed unchanged coverage saves every minute for Charger 1 and every five
+  seconds for Charger 2; actual transitions remain immediate. Charging card
+  snapshots save on a 30-second cadence, with important control/session changes
+  saved immediately and replicas displaying the snapshot's own date. Optional
+  recorder poll/error statistics are batched while saved records, energy,
+  accounting, control intent and restoration obligations remain durable.
+
 - Charger cards treat a healthy unplugged vehicle as ready for the next connection
   instead of warning about missing charging permission. Both cards explain
   connection loss, pending instructions and recovery separately; popups translate

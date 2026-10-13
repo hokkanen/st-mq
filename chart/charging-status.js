@@ -1,3 +1,5 @@
+import { TIME_ZONE } from '../src/domain/prices.js';
+
 export const CHARGING_CONTROL_CAUSES = {
   disconnected: 'No vehicle connected', unavailable: 'Charger status unavailable',
   'read-failed': 'Charger read failed', 'command-failed': 'Charger instruction unconfirmed',
@@ -74,8 +76,14 @@ export function chargingConfirmationMissing(charger) {
   return !idle;
 }
 
-export const chargingRecordedDetail = charger => charger.readOnly === true && charger.recorded === true
-  ? 'Recorded master status; live charger health is unavailable on this read-only computer. Check current status and use controls on the controlling computer.' : '';
+export function chargingRecordedDetail(charger) {
+  if (charger.readOnly !== true || charger.recorded !== true) return '';
+  const at = charger.snapshotAt;
+  const dated = Number.isSafeInteger(at) && Number.isFinite(new Date(at).getTime());
+  const time = dated ? `${new Intl.DateTimeFormat('en-GB', { timeZone: TIME_ZONE,
+    dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(at))} ${TIME_ZONE}` : 'time unavailable';
+  return `Recorded master status (${time}); live charger health is unavailable on this read-only computer. Check current status and use controls on the controlling computer.`;
+}
 
 /** Waiting for vehicle evidence does not suspend ordinary price scheduling. */
 export const chargingIdentificationInProgress = charger => charger.identification?.active === true

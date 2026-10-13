@@ -51,7 +51,7 @@ function homeLearningSnapshot(snapshot, checkpoint, now) {
       : 'No compatible saved Home model is available at this snapshot boundary.' };
 }
 
-/** Show the master's saved charging decision at the publication boundary.
+/** Show the master's saved charging decision at its own projection boundary.
  * Neither the viewer clock nor copied ownership can schedule charger actions. */
 function chargingSnapshot(snapshot) {
   if (!snapshot) return null;
@@ -63,7 +63,10 @@ function chargingSnapshot(snapshot) {
     throw new Error('Malformed current charging snapshot; start a fresh development database');
   for (const record of Object.values(saved.chargers ?? {})) validateTargetState(record.targetState);
   for (const charger of saved.view.chargers) validateTargetSelection(charger.targetSelection);
-  const snapshotAt = snapshot.publication.sourceAt;
+  const publicationAt = snapshot.publication.sourceAt;
+  const snapshotAt = saved.view.recordedAt ?? null;
+  if (snapshotAt !== null && snapshotAt > publicationAt)
+    throw new Error('Charging projection is newer than its published snapshot');
   const settings = chargingSettings(saved.view.settings);
   const reception = value => ({ ...value, available: false, connected: null, brokerConnected: null, subscribed: null,
     subscriptionStatus: 'read-only-snapshot', reason: 'read-only-snapshot', readOnly: true, recorded: true, snapshotAt });
@@ -71,17 +74,18 @@ function chargingSnapshot(snapshot) {
     readOnly: true, recorded: true, snapshotAt,
     fields: Object.fromEntries(Object.entries(setup.fields ?? {}).map(([key, value]) => [key,
       { ...value, available: false, recorded: true, reason: 'read-only-snapshot' }])) } : null;
-  // Reports and runtime fragments share this publication's pinned read
-  // transaction. Use its original clock, never the viewer's elapsed time.
+  // SQL reports can advance independently of a cadence-limited card view.
+  // Keep their publication and individual assessment boundaries separate.
   const reports = new ChargingSessionDiagnostics({ store: snapshot.store, key: `${key}:session-diagnostics`,
-    clock: () => snapshotAt, retentionDays: saved.view.reportRetentionDays ?? 30 }).status(snapshotAt);
+    clock: () => publicationAt, retentionDays: saved.view.reportRetentionDays ?? 30 }).status(publicationAt);
   const tests = saved.view.physicalTests;
   if (tests && (tests.version !== 3 || !Array.isArray(tests.runs)))
     throw new Error('Unsupported charging assessment snapshot; start a fresh development database');
-  const recordedReport = report => report ? { ...structuredClone(report), readOnly: true, recorded: true, snapshotAt,
+  const recordedReport = report => report ? { ...structuredClone(report), readOnly: true, recorded: true,
+    snapshotAt: report.observedAt <= publicationAt ? report.observedAt : null,
     liveAvailable: false, evidenceStale: report.endedAt === null || report.evidenceStale === true } : null;
   const diagnostics = reports ? { ...structuredClone(reports), ...saved.view.reportStatus,
-    canManage: false, readOnly: true, recorded: true, snapshotAt, liveAvailable: false,
+    canManage: false, readOnly: true, recorded: true, snapshotAt: publicationAt, statusRecordedAt: snapshotAt, liveAvailable: false,
     chargers: reports.chargers.map(slot => ({ id: slot.id, hasMore: slot.hasMore === true, current: recordedReport(slot.current),
       recent: (slot.recent ?? []).map(recordedReport) })) } : null;
   // Preserve the master's assessment, including an unfinished test phase. A
@@ -90,10 +94,8 @@ function chargingSnapshot(snapshot) {
     runs: tests.runs.map(run => ({ ...run, readOnly: true, recorded: true, snapshotAt, liveAvailable: false })) } : null;
   const chargers = CHARGER_DEFINITIONS.map(definition => {
     const id = definition.id;
-    const record = saved.chargers?.[id] ?? {};
-    const ownership = record.association ? snapshot.store.getState(`charging:${snapshot.input}:${id}:${record.association}:ownership`) : null;
     const recorded = saved.view?.chargers?.find(charger => charger.id === id);
-    const control = { ...(ownership ?? recorded?.control ?? { phase: 'unavailable', released: false }),
+    const control = { ...(recorded?.control ?? { phase: 'unavailable', released: false }),
       enabled: settings.chargers[id].enabled, readOnly: true, snapshotAt, snapshot: null };
     // A published view already contains the master's selected vehicle, battery
     // facts and energy assumption. Rebuilding it with this viewer's code would
@@ -104,11 +106,11 @@ function chargingSnapshot(snapshot) {
       progress: recorded?.progress ?? null,
       readOnly: true, recorded: true, snapshotAt, control,
       automaticSoc: recorded?.automaticSoc ?? null,
-      plan: record.plan ?? recorded?.plan ?? null, forecast: recorded?.forecast ?? null,
+      plan: recorded?.plan ?? null, forecast: recorded?.forecast ?? null,
       mqtt: reception(recorded?.mqtt), vehicleMqtt: recorded?.vehicleMqtt ? reception(recorded.vehicleMqtt) : null,
       error: null };
   });
-  return { readOnly: true, recorded: true, snapshotAt, timezone: TIME_ZONE,
+  return { readOnly: true, recorded: true, snapshotAt, publicationAt, timezone: TIME_ZONE,
     controls: saved.view.controls, settings, chargers,
     vehicleFeeds: (saved.view?.vehicleFeeds ?? []).map(feed => ({ ...feed, reception: reception(feed.reception),
       ...(feed.setup ? { setup: recordedSetup(feed.setup) } : {}) })),
@@ -243,7 +245,7 @@ export async function startReplica({ config, clock = Date.now,
     catch {
       // Invalid controller state must stay uninterpreted, while independent
       // history remains available to diagnose a failed master startup.
-      charging = { available: false, readOnly: true, recorded: true, snapshotAt: publication?.sourceAt ?? null,
+      charging = { available: false, readOnly: true, recorded: true, snapshotAt: null, publicationAt: publication?.sourceAt ?? null,
         settings: null, chargers: [], vehicleFeeds: [],
         error: 'The saved charging data is unavailable in this snapshot. Other recorded data remains readable.' };
     }

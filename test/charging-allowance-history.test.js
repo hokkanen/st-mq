@@ -117,12 +117,13 @@ test('healthy source evidence can confirm held clocks while lost source health c
 });
 
 test('both histories independently retain value/status changes without adding rows for advancing clocks', t => {
-  const { store, put, read } = fixture(t);
+  const { store, history, put, read } = fixture(t);
   const first = easeeAllowanceStatus({ telemetry: native([12.5, 14, 16]), now: at });
   put(first, at, otherAssociation, 'charger1'); put(first, at + 5000, otherAssociation, 'charger1');
   const states = [decision(), decision({ applicationStatus: 'pending' }), decision({ appliedCurrentA: 14 }),
     decision({ limit: { currentA: 14, loadCurrentA: 14, reason: 'charger1-priority' } })];
   states.forEach((status, index) => { put(status, at + index * 10_000); put({ ...status, measuredAt: at + index * 10_000 + 5000 }, at + index * 10_000 + 5000); });
+  history.flush('charger1');
   assert.equal(store.observations({ signal: CHARGING_ALLOWANCE_SIGNALS.charger2 }).length, states.length);
   assert.equal(store.observations({ signal: CHARGING_ALLOWANCE_SIGNALS.charger1 }).length, 1);
   assert.equal(read().charger1.spans[0].allowanceA, 12.5);

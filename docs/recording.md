@@ -431,7 +431,18 @@ recovery never fills earlier unobserved periods.
 A semantic change stores one exact observation with equipment identity, mode,
 allowance, applicable maximum, reason and source evidence. Unchanged valid
 observations extend compact coverage in place rather than append duplicate rows
-on every poll. Original measurement clocks are not renewed by reading a cache.
+on every poll. Repeated unchanged confirmations update bounded RAM coverage;
+the next actual observation at least 60 seconds after the previous coverage
+save for Charger 1, or five seconds for Charger 2, persists the endpoint and
+accumulated confirmation count. Semantic transitions are saved immediately.
+Database-backed charts and replicas can show an unknown recent tail until that
+confirmed coverage is saved, even while the live allowance remains available.
+Before a transition or an orderly stop with recording authority, confirmed
+pending endpoints are flushed with their original source clocks. A crash,
+save failure or authority loss may leave the last unchanged tail unsaved;
+recovery treats that time as unknown instead of bridging it. Pure unchanged callbacks need no SQLite
+write admission. Device observation and command-confirmation cadence are unchanged.
+Original measurement clocks are not renewed by reading a cache.
 Restart, ownership changes, equipment/source changes and missing observations
 must not join unobserved time to a previous known state. Both numeric allowances
 continue while cars are unplugged: Charger 1 retains its native reported
@@ -647,6 +658,18 @@ constant. This calculation does not change adaptive precision or its accounting.
 It annualizes recent allocation growth; it does not predict the database size
 next year, report expiry or when SQLite will reuse existing pages. A stable file
 can therefore show no new growth while retained records consume reusable pages.
+
+Optional hourly poll, error and availability statistics accumulate in a bounded
+RAM buffer. A stream's next receipt after 30 seconds, the existing routine
+recorder flush, or an orderly forced flush saves the pending totals in their
+original hour buckets. This is not a strict 30-second crash-loss bound for a
+quiet stream. Selected records, recorded-byte totals and saved timestamp extrema
+commit immediately with their observation; adaptive precision, open energy
+intervals, source coverage and learning inputs keep their existing durability.
+Live recording statistics include pending totals without writing during a status
+read. Replicas and restart see only committed statistics, so optional diagnostic
+totals can lag or lose the unsaved tail after a crash. Pending buckets are capped
+at 256, and expired statistics cannot be resurrected after a long suspension.
 
 For a repeatable offline comparison, run
 `node scripts/benchmarks/recorder-budget.js`. It exercises invented scalar and

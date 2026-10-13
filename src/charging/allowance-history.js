@@ -5,6 +5,7 @@ export const CHARGING_ALLOWANCE_MODES = Object.freeze(['unknown', 'inactive', 'u
 const SOURCE = 'charging-allowance';
 // Charger 1 follows the existing minute update; Shelly publishes on its five-second poll.
 const COVERAGE_GAP_MS = Object.freeze({ charger1: 90_000, charger2: 30_000 });
+const COVERAGE_SAVE_MS = Object.freeze({ charger1: 60_000, charger2: 5_000 });
 const APPLICATION = new Set(['confirmed', 'idle', 'pending', 'blocked', 'unknown', 'inactive']);
 const current = value => Number.isFinite(value) && value >= 0 && value <= 1000 ? value : null;
 const reasonCode = value => typeof value === 'string' && /^[a-z][a-z0-9-]{0,79}$/.test(value) ? value : null;
@@ -97,31 +98,85 @@ function canonicalStatus(value) {
   return Object.fromEntries(keys.map(key => [key, value[key]]));
 }
 
-/** One exact state per semantic change. Source/receipt clocks do not manufacture
- * new decisions: the state preserves its initial clocks and compact coverage
- * retains the latest source clock. Restart and delayed ticks leave real gaps. */
+function observationUpdate(previous, { chargerId, association, status } = {}, now) {
+  if (!Object.hasOwn(CHARGING_ALLOWANCE_SIGNALS, chargerId) || !Number.isSafeInteger(now) || now < 0
+    || typeof association !== 'string' || !/^[a-f0-9]{64}$/.test(association))
+    throw new TypeError('Allowance history requires charger and equipment identity and a valid observation time');
+  const value = canonicalStatus(status ?? unknown('allowance-unavailable'));
+  const { measuredAt, receivedAt, sourceTimes, ...meaning } = value;
+  const signature = JSON.stringify([association, meaning]);
+  const continuous = Boolean(previous && previous.association === association && previous.sourceEpoch === value.sourceEpoch
+    && now - previous.at <= COVERAGE_GAP_MS[chargerId]);
+  return { chargerId, association, value, signature, continuous,
+    same: continuous && signature === previous.signature,
+    outOfOrder: Boolean(previous && now < previous.at), sourceTime: measuredAt ?? now };
+}
+
+/** One exact state per semantic change. Repeated confirmations advance bounded
+ * RAM coverage, persisted at the source cadence or before a state boundary.
+ * Original source clocks stay separate; restart and delayed ticks leave gaps. */
 export class ChargingAllowanceHistory {
   constructor({ store, input }) {
     if (!store?.db || !['providers', 'mqtt', 'offline', 'simulated'].includes(input))
       throw new TypeError('A history store and supported input are required');
     this.store = store; this.input = input; this.previous = new Map();
   }
-  suspend(chargerId) { if (chargerId) this.previous.delete(chargerId); else this.previous.clear(); }
-  observe({ chargerId, association, status } = {}, now) {
-    if (!Object.hasOwn(CHARGING_ALLOWANCE_SIGNALS, chargerId) || !Number.isSafeInteger(now) || now < 0
-      || typeof association !== 'string' || !/^[a-f0-9]{64}$/.test(association))
-      throw new TypeError('Allowance history requires charger and equipment identity and a valid observation time');
-    const value = canonicalStatus(status ?? unknown('allowance-unavailable'));
-    const { measuredAt, receivedAt, sourceTimes, ...meaning } = value;
-    const signature = JSON.stringify([association, meaning]), previous = this.previous.get(chargerId);
-    if (previous && now < previous.at) return { saved: false, reason: 'out-of-order' };
-    const continuous = previous && previous.association === association && previous.sourceEpoch === value.sourceEpoch && now - previous.at <= COVERAGE_GAP_MS[chargerId];
-    const same = continuous && signature === previous.signature, sourceTime = measuredAt ?? now;
-    const next = this.store.transaction(() => {
-      if (continuous && (value.mode !== 'unknown' || previous.mode === 'unknown'))
-        this.store.db.prepare('UPDATE recorder_coverage SET end_at=?,source_time=?,samples=samples+1 WHERE id=?')
-          .run(now, sourceTime, previous.coverageId);
-      if (same) return { ...previous, at: now };
+  remember(chargerId, next) {
+    const previous = this.previous.get(chargerId);
+    if (this.store.transactionDepth) this.store.afterRollback(() => {
+      if (previous) this.previous.set(chargerId, previous); else this.previous.delete(chargerId);
+    });
+    if (next) this.previous.set(chargerId, next); else this.previous.delete(chargerId);
+  }
+  suspend(chargerId) {
+    for (const id of chargerId ? [chargerId] : [...this.previous.keys()]) this.remember(id, null);
+  }
+  needsWrite(observation = {}, now) {
+    const previous = this.previous.get(observation.chargerId);
+    const update = observationUpdate(previous, observation, now);
+    return !update.outOfOrder && (!update.same || now - previous.persistedAt >= COVERAGE_SAVE_MS[update.chargerId]);
+  }
+  extend(previous, at = previous.at, sourceTime = previous.sourceTime, samples = previous.pendingSamples) {
+    this.store.db.prepare('UPDATE recorder_coverage SET end_at=?,source_time=?,samples=samples+? WHERE id=?')
+      .run(at, sourceTime, samples, previous.coverageId);
+  }
+  flush(chargerId) {
+    if (chargerId !== undefined && !Object.hasOwn(CHARGING_ALLOWANCE_SIGNALS, chargerId))
+      throw new TypeError('Unknown charger allowance history');
+    const pending = [...this.previous].filter(([id, previous]) => (chargerId === undefined || chargerId === id) && previous.pendingSamples);
+    if (!pending.length) return 0;
+    return this.store.transaction(() => {
+      for (const [id, previous] of pending) {
+        this.extend(previous);
+        this.remember(id, { ...previous, persistedAt: previous.at, pendingSamples: 0 });
+      }
+      return pending.length;
+    });
+  }
+  observe(observation = {}, now) {
+    const previous = this.previous.get(observation.chargerId);
+    const { chargerId, association, value, signature, continuous, same, sourceTime, outOfOrder } = observationUpdate(previous, observation, now);
+    if (outOfOrder) return { saved: false, reason: 'out-of-order' };
+    if (same) {
+      const next = { ...previous, at: now, sourceTime, pendingSamples: previous.pendingSamples + 1 };
+      if (now - previous.persistedAt < COVERAGE_SAVE_MS[chargerId]) {
+        this.remember(chargerId, next);
+        return { saved: false, id: previous.id };
+      }
+      return this.store.transaction(() => {
+        this.extend(next);
+        this.remember(chargerId, { ...next, persistedAt: now, pendingSamples: 0 });
+        return { saved: false, id: previous.id };
+      });
+    }
+    return this.store.transaction(() => {
+      if (previous) {
+        // Only a continuous usable transition can close the preceding state at
+        // this receipt. Unknown/lost/replaced sources confirm no later coverage.
+        if (continuous && (value.mode !== 'unknown' || previous.mode === 'unknown'))
+          this.extend(previous, now, previous.sourceTime, previous.pendingSamples + 1);
+        else if (previous.pendingSamples) this.extend(previous);
+      }
       const signal = CHARGING_ALLOWANCE_SIGNALS[chargerId];
       const id = this.store.observation({ source: SOURCE, device: association, signal,
         value: value.allowanceA, unit: 'A', sourceTime, receivedAt: now,
@@ -131,10 +186,10 @@ export class ChargingAllowanceHistory {
       const coverageId = Number(this.store.db.prepare(`INSERT INTO recorder_coverage
         (source,device,signal,status,start_at,end_at,source_time,observation_id,samples) VALUES(?,?,?,?,?,?,?,?,1)`)
         .run(SOURCE, association, signal, 'fresh', now, now, sourceTime, id).lastInsertRowid);
-      return { signature, association, sourceEpoch: value.sourceEpoch, mode: value.mode, at: now, coverageId, id };
+      this.remember(chargerId, { signature, association, sourceEpoch: value.sourceEpoch, mode: value.mode,
+        at: now, sourceTime, persistedAt: now, pendingSamples: 0, coverageId, id });
+      return { saved: true, id };
     });
-    this.previous.set(chargerId, next);
-    return { saved: !same, id: next.id };
   }
 }
 

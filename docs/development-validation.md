@@ -133,6 +133,21 @@ Journal changes must also run against the pinned add-on Node version in
 rendering and embedded-NUL TEXT handling differ across these runtimes.
 `test/storage-journal-precision.test.js` checks exact stored values, rejected
 unsupported scalars, bounded capture and independent corruption detection.
+
+Charging write reduction is covered by `test/charging-allowance-cadence.test.js`,
+`test/charging-runtime-allowance-order.test.js`,
+`test/charging-runtime-allowance.test.js`, `test/charging-runtime-storage.test.js`
+and `test/charging-replica.test.js`. They exercise SQL-free unchanged callbacks,
+queued transition ordering, rollback, actual observed endpoints, coherent dated
+views, immediate durable control/session facts and original plan references.
+The storage fixtures include views produced by the production charger runtime.
+`test/recorder-metrics-batching.test.js` covers pending live diagnostic totals,
+immediate selected-record accounting, nested/outer rollback, committed consumer
+failure, hour boundaries, bounded RAM, expiry and file-backed restart. Existing
+recorder suites retain energy conservation and learning-input coverage. Write
+counts and journal bytes in these controlled fixtures establish reduced work;
+they do not establish installed Home Assistant stall or MQTT latency gains.
+
 For a real process boundary between two installed runtimes, run:
 
 ```sh

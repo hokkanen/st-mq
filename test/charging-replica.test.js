@@ -15,12 +15,12 @@ import { normalizeScheduleState, scheduleFingerprint, effectiveScheduleFingerpri
 
 const snapshotAt = Date.parse('2026-01-15T00:00:00Z');
 
-async function fixture(t, saved, ownership, seed = () => {}) {
+async function fixture(t, saved, ownership, seed = () => {}, projectionAt = snapshotAt) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-charging-replica-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const dbPath = join(directory, 'snapshot.sqlite'), store = new Store(dbPath);
   store.event('decision', { input: 'mqtt',  }, snapshotAt);
-  if (saved.version === 7) writeChargingRuntime(store, 'charging:mqtt', saved);
+  if (saved.version === 7) writeChargingRuntime(store, 'charging:mqtt', saved, projectionAt === null ? {} : { at: projectionAt });
   else store.setState('charging:mqtt', saved);
   seed(store);
   if (ownership) store.setState('charging:mqtt:charger1:synthetic-association:ownership', ownership);
@@ -113,7 +113,7 @@ test('recorded charger control reasons retain their machine meaning and original
     settings: settings.chargers[definition.id], now: snapshotAt,
     telemetry: { connected: { value: false, available: true, measuredAt, receivedAt, source: definition.provider } },
     control: { phase: 'off', confirmed: false, reason: definition.id === 'charger1' ? 'within-limit' : 'disconnected',
-      snapshot: { online: true, readAt: receivedAt } },
+      lastReadAt: receivedAt, snapshot: { online: true, readAt: receivedAt } },
   }));
   const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 7,
     chargers: { charger1: { association: 'synthetic-association' }, charger2: { association: 'synthetic-second-association' } },
@@ -131,8 +131,8 @@ test('recorded charger control reasons retain their machine meaning and original
     assert.equal(charger.control.readOnly, true);
     assert.equal(charger.control.snapshotAt, snapshotAt);
     assert.equal(charger.control.snapshot, null, 'Recorded native state cannot supply live connection health');
-    assert.equal(charger.control.reason, 'disconnected',
-      'Ownership and recorded-view reasons stay usable as codes; recorded context is presented separately');
+    assert.equal(charger.control.reason, charger.id === 'charger1' ? 'within-limit' : 'disconnected',
+      'The frozen view reason is not replaced by newer independently saved ownership');
     assert.deepEqual(charger.values.connected, chargers.find(item => item.id === charger.id).values.connected);
     assert.equal(charger.values.connected.measuredAt, measuredAt);
     assert.equal(charger.values.connected.receivedAt, receivedAt);
@@ -141,6 +141,60 @@ test('recorded charger control reasons retain their machine meaning and original
   assert.deepEqual(JSON.parse(JSON.stringify(app.status().charging)), charging,
     'Viewer time does not rewrite recorded reasons or evidence clocks');
   assert.equal(digest(), originalDigest, 'Recorded charging projection does not alter the published database');
+});
+
+test('replica keeps a dated charging assessment coherent when publication and durable control facts are newer', async t => {
+  const projectionAt = snapshotAt - 20_000, settings = chargingSettings();
+  const frozenPlan = { state: 'waiting', startAt: snapshotAt + 3600_000 };
+  const newPlan = { state: 'released', startAt: snapshotAt };
+  const ownership = { version: 5, phase: 'released', owned: null, pending: null, manual: null, released: true };
+  const chargers = CHARGER_DEFINITIONS.map(definition => ({ ...buildCharger({ definition,
+    settings: settings.chargers[definition.id], now: projectionAt,
+    control: { phase: 'waiting', released: false, lastReadAt: projectionAt,
+      snapshot: { online: true, readAt: projectionAt } } }), plan: frozenPlan,
+    progress: { creditedGridKwh: 1, remainingGridKwh: 9 } }));
+  const { app, digest, originalDigest, advance } = await fixture(t, { version: 7,
+    chargers: { charger1: { association: 'synthetic-association', plan: newPlan },
+      charger2: { association: 'synthetic-second-association', plan: newPlan } },
+    view: { settings, chargers } }, ownership, () => {}, projectionAt);
+  const charging = app.status().charging;
+  assert.equal(charging.snapshotAt, projectionAt);
+  assert.equal(charging.publicationAt, snapshotAt);
+  assert.equal(charging.diagnostics.snapshotAt, snapshotAt, 'Independently stored reports use their own publication boundary');
+  assert.equal(charging.diagnostics.statusRecordedAt, projectionAt);
+  for (const charger of charging.chargers) {
+    assert.equal(charger.snapshotAt, projectionAt);
+    assert.equal(charger.control.snapshotAt, projectionAt);
+    assert.equal(charger.control.phase, 'waiting');
+    assert.equal(charger.control.released, false);
+    assert.deepEqual(charger.plan, frozenPlan);
+    assert.deepEqual(charger.progress, { creditedGridKwh: 1, remainingGridKwh: 9 });
+  }
+  advance(); assert.deepEqual(app.status().charging, charging);
+  assert.equal(digest(), originalDigest);
+});
+
+test('a genuinely absent charging projection date stays unknown rather than adopting the publication clock', async t => {
+  const settings = chargingSettings();
+  const { app, digest, originalDigest } = await fixture(t, { version: 7, chargers: {}, view: { settings,
+    chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
+      settings: settings.chargers[definition.id], now: snapshotAt })) } }, undefined, () => {}, null);
+  const charging = app.status().charging;
+  assert.equal(charging.snapshotAt, null);
+  assert.equal(charging.publicationAt, snapshotAt);
+  assert.ok(charging.chargers.every(charger => charger.snapshotAt === null && charger.control.snapshotAt === null));
+  assert.equal(digest(), originalDigest);
+});
+
+test('a charging projection newer than its publication cannot supply a recorded charging assessment', async t => {
+  const settings = chargingSettings();
+  const { app, digest, originalDigest } = await fixture(t, { version: 7, chargers: {}, view: { settings,
+    chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
+      settings: settings.chargers[definition.id], now: snapshotAt })) } }, undefined, () => {}, snapshotAt + 1);
+  assert.equal(app.status().charging.available, false);
+  assert.equal(app.status().charging.snapshotAt, null);
+  assert.deepEqual(app.status().charging.chargers, []);
+  assert.equal(digest(), originalDigest);
 });
 
 test('replica preserves independent vehicle identification, selected values and session costs from the published view', async t => {
@@ -343,7 +397,7 @@ test('replica retains a recorded diagnostics save failure alongside the last com
   assert.deepEqual(report.outcome, committed.outcome);
   assert.equal(report.observedAt, observedAt);
   assert.equal(report.evaluatedAt, observedAt);
-  assert.equal(report.snapshotAt, snapshotAt);
+  assert.equal(report.snapshotAt, observedAt);
   advance();
   assert.deepEqual(app.status().charging.diagnostics, diagnostics);
   assert.equal(digest(), originalDigest);

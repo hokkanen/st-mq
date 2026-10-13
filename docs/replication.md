@@ -190,6 +190,15 @@ describes when the source read was pinned, not when a long transfer finished.
 Chart observation extensions stop at that time. Clocks should be synchronized on
 both computers.
 
+Charging cards retain one complete master assessment between their 30-second
+saves, with important control/session changes saved earlier. Their `snapshotAt`
+is the saved view's own `recordedAt`, independently of the newer publication
+checkpoint. A missing view date remains unknown. Newer durable ownership or
+plan fragments do not overwrite portions of an older displayed assessment.
+Session reports retain their separate report/publication dates; neither copied
+cards nor reports grant live control authority. Optional recording statistics
+include only committed batches and can lag the master's live diagnostic totals.
+
 To check a saved snapshot again without writing to it:
 
 ```sh

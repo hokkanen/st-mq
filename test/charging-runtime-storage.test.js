@@ -8,6 +8,7 @@ import { ChargingRuntime } from '../src/charging/runtime.js';
 import { Store } from '../src/storage/store.js';
 import { encodeChange } from '../src/storage/journal-codec.js';
 import { readChargingRuntime, writeChargingRuntime } from '../src/charging/runtime-storage.js';
+import { fixture as jointFixture } from './helpers/charging-joint-fixture.js';
 
 const key = 'charging:simulated', at = 1_800_000_000_000;
 const plan = () => ({ id: 'synthetic-accepted-plan', at, deadlineAt: at + 86_400_000,
@@ -125,6 +126,190 @@ test('an enclosing failed commit cannot publish new fragments or delete the prio
   } finally { store.close(); }
 });
 
+test('dated charging views consolidate receipt clocks while every durable energy fragment commits immediately', t => {
+  const store = new Store(':memory:'), unbatched = new Store(':memory:');
+  try {
+    const saved = fixture();
+    saved.chargers.charger1.progress = { version: 2, reference: null, connected: false, creditKwh: 0 };
+    writeChargingRuntime(store, key, saved, { at });
+    writeChargingRuntime(unbatched, key, saved, { at, viewIntervalMs: 0 });
+    const sequence = store.checkpoint().sequence, unbatchedSequence = unbatched.checkpoint().sequence;
+    for (let tick = 1; tick <= 29; tick++) {
+      saved.chargers.charger1.progress.creditKwh = tick / 100;
+      saved.chargers.charger1.supplyEstimate.observedAt = at + tick * 1000;
+      saved.view.chargers[0].progress = { creditedGridKwh: tick / 100 };
+      saved.view.chargers[0].values.powerKw.receivedAt = at + tick * 1000;
+      saved.view.chargers[0].telemetry.readAt = at + tick * 1000;
+      saved.view.chargers[1].telemetry.readAt = at + tick * 1000;
+      writeChargingRuntime(store, key, saved, { at: at + tick * 1000 });
+      writeChargingRuntime(unbatched, key, saved, { at: at + tick * 1000, viewIntervalMs: 0 });
+      const committed = readChargingRuntime(store, key);
+      assert.deepEqual(committed.chargers, saved.chargers, 'Energy, anchor and supply persistence is never cadence-limited');
+      assert.equal(committed.view.recordedAt, at);
+      assert.equal(committed.view.chargers[0].values.powerKw.receivedAt, at);
+    }
+    const changes = store.db.prepare('SELECT record_key,payload FROM journal_changes WHERE sequence>?').all(sequence);
+    const baseline = unbatched.db.prepare('SELECT record_key,payload FROM journal_changes WHERE sequence>?').all(unbatchedSequence);
+    const bytes = changes.reduce((sum, row) => sum + Buffer.byteLength(row.payload), 0);
+    const baselineBytes = baseline.reduce((sum, row) => sum + Buffer.byteLength(row.payload), 0);
+    assert.ok(changes.length < baseline.length * .3, 'At least 70% fewer actual journal row effects in this controlled window');
+    assert.ok(bytes < baselineBytes * .4, 'At least 60% less actual journal payload in this controlled window');
+    t.diagnostic(JSON.stringify({ changedRows: changes.length, unbatchedChangedRows: baseline.length,
+      journalBytes: bytes, unbatchedJournalBytes: baselineBytes }));
+    assert.equal(changes.length, 29 * 2);
+    assert.ok(changes.every(row => !row.record_key.includes(':runtime:view/')),
+      'No view fragments are journaled during unchanged receipt-clock/progress churn');
+    writeChargingRuntime(store, key, saved, { at: at + 30_000 });
+    assert.deepEqual(readChargingRuntime(store, key).view, { ...saved.view, recordedAt: at + 30_000 },
+      'The deadline publishes the newest whole candidate, including unchanged fields');
+  } finally { store.close(); unbatched.close(); }
+});
+
+test('production Shelly card metering waits for cadence while physical confirmation and native permission publish immediately', async t => {
+  const live = await jointFixture(t), store = new Store(':memory:');
+  t.after(() => store.close());
+  await live.connect('charger2');
+  const saved = readChargingRuntime(live.store, live.runtime.key);
+  saved.view.chargers[1] = JSON.parse(JSON.stringify(live.view('charger2')));
+  const projectedAt = live.now;
+  writeChargingRuntime(store, key, saved, { at: projectedAt });
+  const card = saved.view.chargers[1];
+  assert.ok(card.control.snapshot.fields.phase_info.value.phase_a, 'Exercise the actual native nested metering representation');
+  const phase = structuredClone(card.control.snapshot.fields.phase_info.value);
+  phase.total_power += .03; phase.phase_a.current += .1; phase.phase_a.power += .03;
+  live.advance(5000);
+  assert.equal(live.runtime.chargers.charger2.adapter.accept('phase_info', {
+    value: phase, last_update_ts: live.now / 1000 }), true);
+  assert.equal(saved.chargers.charger2.progress.version, 2);
+  saved.chargers.charger2.progress.creditKwh += .02;
+  saved.view.chargers[1] = JSON.parse(JSON.stringify(live.view('charger2')));
+  writeChargingRuntime(store, key, saved, { at: live.now });
+  assert.equal(readChargingRuntime(store, key).chargers.charger2.progress.creditKwh,
+    saved.chargers.charger2.progress.creditKwh, 'Durable progress can advance alongside the deferred production card');
+  assert.equal(readChargingRuntime(store, key).view.recordedAt, projectedAt,
+    'A changed meter receipt does not rewrite the complete projection');
+  assert.equal(readChargingRuntime(store, key).view.chargers[1].control.snapshot.fields.phase_info.value.total_power,
+    card.control.snapshot.fields.phase_info.value.total_power);
+  // Status flags are physical assessments, independent of raw metering values.
+  saved.view.chargers[1].control.pauseConfirmed = !card.control.pauseConfirmed;
+  writeChargingRuntime(store, key, saved, { at: live.now + 1000 });
+  assert.equal(readChargingRuntime(store, key).view.recordedAt, live.now + 1000);
+  saved.view.chargers[1].control.snapshot.fields.start_charging.value = false;
+  writeChargingRuntime(store, key, saved, { at: live.now + 2000 });
+  assert.equal(readChargingRuntime(store, key).view.recordedAt, live.now + 2000);
+  saved.view.chargers[1].control.currentAdjustment.stage = 'physical-response-pending';
+  writeChargingRuntime(store, key, saved, { at: live.now + 3000 });
+  assert.equal(readChargingRuntime(store, key).view.recordedAt, live.now + 3000);
+});
+
+for (const change of ['controls', 'session', 'plan', 'target', 'pending', 'fault', 'epoch', 'availability'])
+  test(`a ${change} boundary publishes a complete dated charging view before its cadence`, () => {
+    const store = new Store(':memory:');
+    try {
+      const saved = fixture(); writeChargingRuntime(store, key, saved, { at });
+      const next = structuredClone(saved), card = next.view.chargers[0];
+      next.view.chargers[1].telemetry.readAt = at + 1000;
+      if (change === 'controls') next.chargers.charger1.controls.enabled = true;
+      if (change === 'session') next.chargers.charger1.association = 'd'.repeat(64);
+      if (change === 'plan') next.chargers.charger1.plan.periods[0].startAt += 60_000;
+      if (change === 'target') card.values.minimumSoc = { value: 90, source: 'session-request', available: true };
+      if (change === 'pending') card.control.pending = { role: 'start_charging', value: false, dispatchedAt: at + 1000 };
+      if (change === 'fault') card.control.errorCode = 'native-fault';
+      if (change === 'epoch') card.control.snapshot = { online: true, generation: 2 };
+      if (change === 'availability') card.values.powerKw.available = false;
+      writeChargingRuntime(store, key, next, { at: at + 1000 });
+      assert.deepEqual(readChargingRuntime(store, key), { ...next, view: { ...next.view, recordedAt: at + 1000 } });
+    } finally { store.close(); }
+  });
+
+test('outer and nested rollback retain the view cadence and retry the complete semantic boundary', () => {
+  const store = new Store(':memory:');
+  try {
+    const saved = fixture(); writeChargingRuntime(store, key, saved, { at });
+    const next = structuredClone(saved); next.chargers.charger1.controls.enabled = true;
+    const original = rows(store);
+    assert.throws(() => store.transaction(() => {
+      writeChargingRuntime(store, key, next, { at: at + 1000 });
+      throw new Error('synthetic outer failure');
+    }), /synthetic outer failure/);
+    assert.deepEqual(rows(store), original);
+    store.transaction(() => {
+      assert.throws(() => store.transaction(() => {
+        writeChargingRuntime(store, key, next, { at: at + 2000 });
+        throw new Error('synthetic nested failure');
+      }), /synthetic nested failure/);
+      assert.deepEqual(rows(store), original);
+    });
+    writeChargingRuntime(store, key, next, { at: at + 3000 });
+    assert.equal(readChargingRuntime(store, key).view.recordedAt, at + 3000);
+    const ordinary = structuredClone(next);
+    ordinary.view.chargers[0].telemetry.readAt = at + 4000;
+    writeChargingRuntime(store, key, ordinary, { at: at + 4000 });
+    assert.equal(readChargingRuntime(store, key).view.recordedAt, at + 3000);
+  } finally { store.close(); }
+});
+
+test('a deferred view keeps its immutable plan/context references until a complete replacement is committed', () => {
+  const store = new Store(':memory:');
+  try {
+    const saved = fixture(); writeChargingRuntime(store, key, saved, { at });
+    const original = store.getState(key);
+    saved.view.chargers[0].telemetry.readAt = at + 1000;
+    writeChargingRuntime(store, key, saved, { at: at + 1000 });
+    assert.deepEqual(store.getState(key).plans, original.plans);
+    assert.deepEqual(store.getState(key).contexts, original.contexts);
+    assert.equal(readChargingRuntime(store, key).view.recordedAt, at);
+    saved.chargers.charger1.plan.intervals[0].scenarios[0].weight = .5;
+    saved.view.chargers[0].plan = structuredClone(saved.chargers.charger1.plan);
+    writeChargingRuntime(store, key, saved, { at: at + 2000 });
+    assert.deepEqual(readChargingRuntime(store, key), { ...saved, view: { ...saved.view, recordedAt: at + 2000 } });
+    assert.equal(store.db.prepare("SELECT count(*) n FROM state WHERE key GLOB 'charging:*:runtime:plan/*'").get().n, 1);
+    assert.equal(store.db.prepare("SELECT count(*) n FROM state WHERE key GLOB 'charging:*:runtime:context/*'").get().n, 1);
+    saved.view.chargers[1].telemetry.readAt = at + 3000;
+    writeChargingRuntime(store, key, saved, { at: at + 3000 });
+    assert.equal(readChargingRuntime(store, key).view.recordedAt, at + 2000);
+  } finally { store.close(); }
+});
+
+test('restart publishes a new complete view; an explicit final view flush saves latest presentation', t => {
+  const path = disk(t), saved = fixture(), store = new Store(path);
+  writeChargingRuntime(store, key, saved, { at }); store.close();
+  const restarted = new Store(path);
+  try {
+    saved.view.chargers[0].telemetry.readAt = at + 1000;
+    writeChargingRuntime(restarted, key, saved, { at: at + 1000 });
+    assert.equal(readChargingRuntime(restarted, key).view.recordedAt, at + 1000);
+    saved.view.chargers[0].telemetry.readAt = at + 2000;
+    writeChargingRuntime(restarted, key, saved, { at: at + 2000 });
+    assert.equal(readChargingRuntime(restarted, key).view.recordedAt, at + 1000);
+    writeChargingRuntime(restarted, key, saved, { at: at + 2000, forceView: true });
+    assert.deepEqual(readChargingRuntime(restarted, key).view, { ...saved.view, recordedAt: at + 2000 });
+  } finally { restarted.close(); }
+});
+
+for (const recordedAt of [null, -1, .5, '2026-10-13', Infinity])
+  test(`invalid projection date ${recordedAt} rejects before changing storage`, () => {
+    const store = new Store(':memory:');
+    try {
+      const saved = fixture(); writeChargingRuntime(store, key, saved);
+      const original = rows(store), checkpoint = store.checkpoint();
+      saved.view.recordedAt = recordedAt;
+      assert.throws(() => writeChargingRuntime(store, key, saved, { at }), /Unsupported or incomplete charging state/);
+      assert.deepEqual(rows(store), original); assert.deepEqual(store.checkpoint(), checkpoint);
+    } finally { store.close(); }
+  });
+
+test('a read-only charging store rejects an explicit final view flush without changing bytes', t => {
+  const path = disk(t), saved = fixture(), store = new Store(path);
+  writeChargingRuntime(store, key, saved, { at }); store.close();
+  const reader = new Store(path, { readOnly: true });
+  try {
+    const original = rows(reader);
+    assert.throws(() => writeChargingRuntime(reader, key, saved, { at: at + 1000, forceView: true }), /read-only/);
+    assert.deepEqual(rows(reader), original);
+  } finally { reader.close(); }
+});
+
 test('a pinned reader keeps a complete old plan while current publication replaces and removes its rows', t => {
   const path = disk(t), store = new Store(path), saved = fixture();
   writeChargingRuntime(store, key, saved);
@@ -142,7 +327,7 @@ test('a pinned reader keeps a complete old plan while current publication replac
   } finally { reader.close(); store.close(); }
 });
 
-for (const damage of ['missing-field', 'missing-plan', 'damaged-context', 'orphan', 'missing-root', 'old-aggregate'])
+for (const damage of ['missing-field', 'missing-plan', 'damaged-context', 'orphan', 'missing-root', 'old-aggregate', 'projection-date'])
   test(`startup rejects ${damage} on an inactive input without modifying the database`, t => {
     const path = disk(t), store = new Store(path), saved = fixture();
     writeChargingRuntime(store, key, saved);
@@ -153,6 +338,10 @@ for (const damage of ['missing-field', 'missing-plan', 'damaged-context', 'orpha
     if (damage === 'orphan') store.setState(`${key}:runtime:root/unknown`, { value: true });
     if (damage === 'missing-root') store.db.prepare('DELETE FROM state WHERE key=?').run(key);
     if (damage === 'old-aggregate') store.setState(key, { ...saved, version: 6 });
+    if (damage === 'projection-date') {
+      saved.view.recordedAt = at; writeChargingRuntime(store, key, saved);
+      store.setState(`${key}:runtime:view/recordedAt`, { value: -1 });
+    }
     store.db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE');
     store.close();
     const before = readFileSync(path);
