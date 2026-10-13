@@ -98,6 +98,17 @@ the stopped 5 A report even while the preceding maximum is still being delivered
 zero remains a separate possible restriction. Uncertain command/readback ordering
 preserves an existing tighter qualified choice without qualifying an ambiguous
 new request. Missing or invalid new values do not erase that known constraint.
+If a same-connection permission Stop was already dispatched when the stopped 5 A
+report arrived, its unresolved ACK/readback also leaves that request unknown.
+An ACK received after the request keeps that ordering even when classification
+waited for identity or source admission. Dispatch intent is not evidence that
+the Stop applied or that the vehicle request was reflected. A proposed Stop,
+another connection's command, zero and other usable lower/higher requests keep
+their separate meanings; expiry cannot prove a dispatched command was unapplied.
+The same uncertainty applies while a native OCPP pause awaits its profile reply
+or confirmation, using the original guarded Charging witness in that exact
+equipment scope and transaction. A profile proposal without that witness cannot
+explain the stopped request, and no pending profile proves a physical pause.
 When no qualified choice exists, equal, inconsistent or incomplete evidence leaves
 the independent vehicle limit unknown. This prevents a 6 A identification setting
 or stopped 5 A report from becoming a permanent limit on later charging.

@@ -4,6 +4,7 @@ import { createChargingTeslaCapture, teslamateVehicleTelemetry } from '../src/ch
 import { updateTeslaCurrentRequest, validateTeslaCurrentRequest } from '../src/charging/tesla-current-request.js';
 import { validateChargingRuntimeState } from '../src/charging/runtime-state.js';
 import { planChargers } from '../src/charging/planner.js';
+import { ocppPauseInstruction } from '../src/charging/ocpp.js';
 
 const START = 1_800_000_000_000;
 function fixture() {
@@ -22,6 +23,12 @@ function fixture() {
 const pilot = (value, at) => ({ value, available: true, measuredAt: at, receivedAt: at, retained: false });
 const stoppedFields = { start_charging: { value: false, measuredAt: START, receivedAt: START },
   work_state: { measuredAt: START, receivedAt: START }, phase_info: { measuredAt: START, receivedAt: START } };
+const permissionScope = () => ({ association: 'synthetic-charger',
+  session: { connected: true, sessionId: 'synthetic-session', connectedAt: START },
+  snapshot: { association: 'synthetic-charger', fields: {} } });
+const pendingStop = (patch = {}) => ({ association: 'synthetic-charger', sessionId: 'synthetic-session',
+  revision: 1, expiresAt: START + 10_000, role: 'start_charging', value: false,
+  reason: 'economic-wait', stage: 'dispatched', dispatchedAt: START + 500, ...patch });
 const ocppPause = (now, stoppedAt = START + 3) => ({ enabled: true, ownsInstruction: true, pauseConfirmed: true,
   session: { connected: true, connectedAt: START, lastDisconnectedAt: START - 1000, transactionId: 17 },
   owned: { profileId: 1, transactionId: 17, requestedAt: START + 1, pauseRequestedAt: START + 1,
@@ -30,6 +37,14 @@ const ocppPause = (now, stoppedAt = START + 3) => ({ enabled: true, ownsInstruct
   snapshot: { transport: 'ocpp', online: true, pluggedIn: true, readAt: now, connectionId: 'synthetic-ocpp',
     transactionConfirmed: true, transactionStartedAt: START, transactionId: 17, connectorStatus: 'SuspendedEVSE',
     statusAt: stoppedAt, powerAt: stoppedAt, powerKw: 0 } });
+const pendingOcppPause = now => {
+  const control = ocppPause(now); control.scope = 'a'.repeat(64); control.snapshot.scope = control.scope;
+  control.ownsInstruction = false; control.pauseConfirmed = false; control.owned = null;
+  control.pending = { action: 'install', attempts: 1, nextAttemptAt: START + 30_000, accepted: false, execution: null,
+    instruction: { ...ocppPauseInstruction({ profileId: 1, transactionId: 17, startAt: START + 3600_000, now: START }),
+      requestedAt: START + 500, pauseRequestedAt: START + 600 } };
+  return control;
+};
 
 test('a qualified request keeps its original clocks through four real max-only pilot cycles and restart', () => {
   const f = fixture(); f.send('charge_current_request_max', 13); f.send('charge_current_request', 10);
@@ -106,6 +121,143 @@ test('pending command intent is unknown and preserves a proven lower ceiling wit
   assert.equal(f.state.request.reflected, false); assert.equal(f.state.request.eligible, false);
   assert.deepEqual(f.state.limit, original); f.advance(); f.send('charge_current_request_max', 16);
   assert.deepEqual(f.state.limit, original);
+});
+
+for (const stage of ['dispatched', 'accepted']) test(`a stopped 5 A during ${stage} permission Stop remains unknown through ACK, max updates and restart`, () => {
+  const f = fixture(); f.send('charge_current_request_max', 13); f.send('charge_current_request', 10);
+  const original = structuredClone(f.state.limit); f.advance();
+  f.setControl({ ...permissionScope(), pending: pendingStop({ stage,
+    ...(stage === 'accepted' ? { acceptedAt: START + 800 } : {}) }) });
+  f.send('charging_state', 'Stopped'); f.send('charge_current_request', 5);
+  const request = structuredClone(f.capture.snapshot().fields.charge_current_request);
+  assert.equal(f.state.request.eligible, false); assert.equal(f.state.request.reflected, false);
+  assert.deepEqual(f.state.limit, original);
+  // The command can fail, expire or be superseded after publication. None proves
+  // it was unapplied at the original request; a later max cannot rewrite that.
+  f.advance(12_000); f.setControl({ ...permissionScope(), pending: null,
+    permissionCommand: { value: false, sessionId: 'synthetic-session', dispatchedAt: START + 500, acceptedAt: f.now } });
+  f.restore(f.state); f.capture.setConnected(false); f.admit(); f.capture.setConnected(true); f.send('healthy', true);
+  for (const maximum of [5, 16]) { f.advance(); f.send('charge_current_request_max', maximum); }
+  f.send('charge_current_request', 5);
+  assert.deepEqual(f.capture.snapshot().fields.charge_current_request, request);
+  assert.deepEqual(f.state.limit, original); assert.equal(f.state.request.eligible, false);
+  f.advance(); f.send('charge_current_request', 8); assert.equal(f.project().value, 8);
+});
+
+test('delayed first qualification keeps dispatch/request/ACK order after pending was cleared', () => {
+  const f = fixture(); f.send('charge_current_request_max', 13); f.send('charge_current_request', 10);
+  const original = structuredClone(f.state.limit); f.advance();
+  f.capture.receive('teslamate/cars/1/charging_state', 'Stopped', {});
+  f.capture.receive('teslamate/cars/1/charge_current_request', '5', {});
+  f.advance(500); f.setControl({ ...permissionScope(), pending: null,
+    permissionCommand: { value: false, sessionId: 'synthetic-session', dispatchedAt: START + 500, acceptedAt: f.now } });
+  f.admit(); assert.equal(f.state.request.eligible, false); assert.equal(f.state.request.reflected, false);
+  assert.deepEqual(f.state.limit, original); assert.equal(f.state.request.receivedAt, START + 1000);
+  f.advance(); f.send('charge_current_request_max', 16); assert.deepEqual(f.state.limit, original);
+});
+
+test('a pending Stop without an earlier qualified limit leaves stopped 5 A unknown', () => {
+  const f = fixture(); f.send('charge_current_request_max', 13); f.advance();
+  f.setControl({ ...permissionScope(), pending: pendingStop() });
+  f.send('charging_state', 'Stopped'); f.send('charge_current_request', 5);
+  assert.equal(f.state.request.eligible, false); assert.equal(f.state.request.reflected, false);
+  assert.equal(f.project().value, null);
+});
+
+for (const [name, mutate] of [
+  ['proposed unpublished command', control => { control.pending.stage = 'proposed'; }],
+  ['future dispatch', control => { control.pending.dispatchedAt = START + 1500; }],
+  ['foreign session', control => { control.pending.sessionId = 'other-session'; }],
+  ['foreign equipment', control => { control.pending.association = 'other-charger'; }],
+  ['changed physical association', control => { control.snapshot.association = 'other-charger'; }],
+  ['dispatch before new physical connection', control => { control.session.connectedAt = START + 700; }],
+  ['disconnected physical session', control => { control.session.connected = false; }],
+  ['superseded by pending Start', control => { control.pending.value = true; }],
+]) test(`${name} cannot suppress an independent stopped 5 A request`, () => {
+  const f = fixture(); f.send('charge_current_request_max', 13); f.send('charge_current_request', 10); f.advance();
+  const control = { ...permissionScope(), pending: pendingStop() }; mutate(control); f.setControl(control);
+  f.send('charging_state', 'Stopped'); f.send('charge_current_request', 5);
+  assert.equal(f.state.request.eligible, true); assert.equal(f.project().value, 5);
+});
+
+for (const current of [0, 1, 8, 16]) test(`pending permission Stop does not replace a genuinely new ${current} A request`, () => {
+  const f = fixture(); f.send('charge_current_request_max', 13); f.send('charge_current_request', 10); f.advance();
+  f.setControl({ ...permissionScope(), pending: pendingStop() }); f.send('charging_state', 'Stopped');
+  f.send('charge_current_request', current);
+  assert.equal(f.state.request.reflected, false); assert.equal(f.project().value, current < 13 ? current : null);
+  assert.equal(f.state.limit?.value ?? null, current < 13 ? current : null);
+});
+
+test('permission Stop intent cannot suppress5 while Tesla still reports charging', () => {
+  const f = fixture(); f.send('charge_current_request_max', 13); f.send('charge_current_request', 10); f.advance();
+  f.setControl({ ...permissionScope(), pending: pendingStop() }); f.send('charge_current_request', 5);
+  assert.equal(f.project().value, 5); assert.equal(f.state.request.eligible, true);
+});
+
+test('a pending same-transaction OCPP pause keeps stopped 5 A unknown through later ACK and maximum changes', () => {
+  const f = fixture(); f.setNativeCurrent({ ...pilot(13, START), receivedAt: null });
+  f.send('charge_current_request_max', 13); f.send('charge_current_request', 10);
+  const original = structuredClone(f.state.limit); f.advance();
+  const control = pendingOcppPause(f.now); f.setControl(control);
+  f.send('charging_state', 'Stopped'); f.send('charge_current_request', 5);
+  assert.equal(f.state.request.eligible, false); assert.equal(f.state.request.reflected, false);
+  assert.deepEqual(f.state.limit, original);
+  f.advance(); control.owned = { ...control.pending.instruction, confirmedAt: f.now }; control.pending = null;
+  control.ownsInstruction = true; control.pauseConfirmed = true;
+  for (const maximum of [5, 16]) { f.advance(); f.send('charge_current_request_max', maximum); }
+  assert.deepEqual(f.state.limit, original); assert.equal(f.state.request.eligible, false);
+});
+
+test('a later owned OCPP confirmation preserves uncertainty at the original stopped request receipt', () => {
+  const f = fixture(); f.setNativeCurrent({ ...pilot(13, START), receivedAt: null });
+  f.send('charge_current_request_max', 13); f.send('charge_current_request', 10);
+  const original = structuredClone(f.state.limit); f.advance();
+  f.capture.receive('teslamate/cars/1/charging_state', 'Stopped', {});
+  f.capture.receive('teslamate/cars/1/charge_current_request', '5', {});
+  f.advance(500); const control = pendingOcppPause(f.now);
+  control.owned = { ...control.pending.instruction, confirmedAt: f.now }; control.pending = null;
+  control.ownsInstruction = true; f.setControl(control); f.admit();
+  assert.equal(f.state.request.eligible, false); assert.equal(f.state.request.reflected, false);
+  assert.deepEqual(f.state.limit, original);
+});
+
+for (const [name, mutate] of [
+  ['unwitnessed profile proposal', control => { delete control.pending.instruction.pauseRequestedAt; control.pending.attempts = 0; }],
+  ['profile clear', control => { control.pending.action = 'clear'; }],
+  ['foreign equipment scope', control => { control.scope = 'b'.repeat(64); }],
+  ['foreign transaction', control => { control.pending.instruction.transactionId = 18; }],
+  ['changed native transaction', control => { control.snapshot.transactionId = 18; }],
+  ['unconfirmed native transaction', control => { control.snapshot.transactionConfirmed = false; }],
+  ['future pause witness', control => { control.pending.instruction.pauseRequestedAt = START + 1500; }],
+  ['request before current connection', control => { control.pending.instruction.requestedAt = START - 1; }],
+  ['ended pause before request', control => { control.pending.instruction.startAt = START + 1000; }],
+]) test(`OCPP ${name} cannot suppress an independent stopped 5 A`, () => {
+  const f = fixture(); f.setNativeCurrent({ ...pilot(13, START), receivedAt: null });
+  f.send('charge_current_request_max', 13); f.send('charge_current_request', 10); f.advance();
+  const control = pendingOcppPause(f.now); mutate(control); f.setControl(control);
+  f.send('charging_state', 'Stopped'); f.send('charge_current_request', 5);
+  assert.equal(f.state.request.eligible, true); assert.equal(f.project().value, 5);
+});
+
+for (const current of [0, 1, 8, 16]) test(`an OCPP pending pause preserves a new independent ${current} A request`, () => {
+  const f = fixture(); f.setNativeCurrent({ ...pilot(13, START), receivedAt: null });
+  f.send('charge_current_request_max', 13); f.send('charge_current_request', 10); f.advance();
+  f.setControl(pendingOcppPause(f.now)); f.send('charging_state', 'Stopped'); f.send('charge_current_request', current);
+  assert.equal(f.state.request.reflected, false); assert.equal(f.project().value, current < 13 ? current : null);
+});
+
+for (const [name, patch] of [
+  ['foreign session', { sessionId: 'other-session' }],
+  ['before current connection', { dispatchedAt: START - 1 }],
+  ['future ACK', { acceptedAt: START + 2000 }],
+]) test(`late saved Stop ACK ${name} cannot suppress independent5`, () => {
+  const f = fixture(); f.send('charge_current_request_max', 13); f.send('charge_current_request', 10); f.advance();
+  f.setControl({ ...permissionScope(), permissionCommand: { value: false, sessionId: 'synthetic-session',
+    dispatchedAt: START + 500, acceptedAt: START + 1500, ...patch } });
+  f.capture.receive('teslamate/cars/1/charging_state', 'Stopped', {});
+  f.capture.receive('teslamate/cars/1/charge_current_request', '5', {});
+  f.advance(500); f.admit();
+  assert.equal(f.project().value, 5); assert.equal(f.state.request.eligible, true);
 });
 
 test('currentTest pending derives its scope from the supported parent record and never hides zero', () => {

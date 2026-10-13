@@ -5,6 +5,8 @@ import assert from 'node:assert/strict';
 import { createOcppScheduleAdapter, initialOcppControllerState, normalizeOcppComposite, ocppPauseInstruction } from '../src/charging/ocpp.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { chargerDisplay } from '../chart/charging.js';
+import { createChargingTeslaCapture } from '../src/charging/teslamate.js';
+import { updateTeslaCurrentRequest } from '../src/charging/tesla-current-request.js';
 
 const START = Date.parse('2026-09-24T09:00:00Z'), MINUTE = 60_000, scope = 'a'.repeat(64);
 const plan = (startAt, extra = {}) => ({ id: 'synthetic-plan', startAt, feasible: true, periods: [{ startAt, endAt: null }], ...extra });
@@ -66,6 +68,44 @@ function fixture({ initialState = null, identification = null, nativeTakeover = 
 const appState = (at, enabled) => ({ readAt: at, enabled, enabledAt: at, stopped: !enabled, stopAt: at,
   controlKnown: true, faulted: false, authorizationBlocked: false, schedule: null });
 const writes = f => f.calls.filter(row => row.action !== 'GetCompositeSchedule');
+
+for (const outcome of ['Accepted', 'Rejected']) test(`a real pending OCPP pause preserves qualified 10 A when stopped 5 A precedes ${outcome} profile reply`, async t => {
+  const f = fixture(); let qualification = null, release, reached;
+  const wait = new Promise(resolve => { release = resolve; }), entered = new Promise(resolve => { reached = resolve; });
+  const capture = createChargingTeslaCapture({ clock: () => f.now,
+    onObservation: () => { qualification = updateTeslaCurrentRequest(qualification, capture.snapshot(), {
+      now: f.now, nativeCurrent: f.adapter.normalize(f.controller.status().snapshot).currentA,
+      control: f.controller.status() }); } });
+  t.after(async () => { release(); await f.controller.close(); capture.close(); });
+  await f.controller.update({ enabled: false }); capture.setConnected(true);
+  const send = (field, value) => capture.receive(`teslamate/cars/1/${field}`, String(value), {});
+  send('healthy', true); send('charging_state', 'Charging'); send('charge_current_request_max', 13); send('charge_current_request', 10);
+  const original = structuredClone(qualification.limit); assert.equal(original.value, 10);
+  f.intercept(async (action, payload, options, result) => {
+    if (action !== 'SetChargingProfile') return result();
+    assert.equal(options.beforeSend(), true);
+    const response = outcome === 'Accepted' ? result() : { status: 'Rejected' };
+    reached(); await wait; return response;
+  });
+  f.advance(1000);
+  const update = f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  await entered;
+  const pending = f.controller.status().pending;
+  assert.equal(pending.action, 'install'); assert.equal(pending.accepted, false);
+  assert.ok(pending.instruction.pauseRequestedAt >= f.controller.status().session.connectedAt);
+  assert.deepEqual(f.stored.pending, pending, 'The guarded pre-write Charging witness is actually persisted');
+  f.advance(1000); send('charging_state', 'Stopped'); send('charge_current_request', 5);
+  const request = structuredClone(capture.snapshot().fields.charge_current_request);
+  assert.equal(qualification.request.eligible, false); assert.equal(qualification.request.reflected, false);
+  assert.deepEqual(qualification.limit, original);
+  f.advance(1000); release(); await update;
+  if (outcome === 'Accepted') assert.ok(f.controller.status().owned.confirmedAt > request.receivedAt);
+  else assert.ok(f.controller.status().pending, 'A rejected profile cannot invent native ownership');
+  for (const maximum of [5, 16]) { f.advance(1000); send('charge_current_request_max', maximum); }
+  assert.deepEqual(qualification.limit, original); assert.deepEqual(capture.snapshot().fields.charge_current_request, request);
+  f.advance(1000); send('charge_current_request', 0);
+  assert.equal(qualification.limit.value, 0, 'A new genuine zero remains an independent restriction');
+});
 
 test('ordinary pending native refresh retains its confirmed pause until new evidence arrives', async t => {
   const f = fixture(); t.after(() => f.controller.close());

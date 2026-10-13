@@ -105,7 +105,42 @@ export function updateTeslaCurrentRequest(previous, snapshot, { now, nativeCurre
         || test.phase === 'restored' && time(test.permissionAt)
           && test.permissionAt >= Math.floor(request.receivedAt / 1000) * 1000);
     const stoppedReflection = stopped && snapshot.charging === false && request.value === 5;
-    const uncertainStop = stopAcknowledged && !stoppedReflection && snapshot.charging === false && request.value === 5;
+    // A dispatched permission Stop can produce the stopped 5 A report before
+    // its ACK/readback is admitted. Intent supplies only uncertainty, never
+    // proof of a reflected request or physical stop. A delayed first evaluation
+    // may see the saved ACK after pending was cleared; keep the receipt order.
+    const samePermissionScope = typeof control?.association === 'string'
+      && control.association === physical?.association && session?.connected === true
+      && typeof session.sessionId === 'string' && time(session.connectedAt);
+    const dispatchBeforeRequest = command => command?.sessionId === session?.sessionId
+      && time(command.dispatchedAt) && command.dispatchedAt >= session.connectedAt
+      && command.dispatchedAt <= request.receivedAt;
+    const permissionPending = control?.pending;
+    const uncertainPermissionStop = samePermissionScope
+      && (permissionPending?.association === control.association && permissionPending.role === 'start_charging'
+        && permissionPending.value === false && ['dispatched', 'accepted'].includes(permissionPending.stage)
+        && dispatchBeforeRequest(permissionPending)
+        || permission?.value === false && dispatchBeforeRequest(permission)
+          && time(permission.acceptedAt) && permission.acceptedAt > request.receivedAt && permission.acceptedAt <= now);
+    const sameOcppScope = physical?.transport === 'ocpp' && typeof control.scope === 'string'
+      && control.scope === physical.scope && session?.connected === true && time(session.connectedAt)
+      && physical.transactionConfirmed === true && Number.isSafeInteger(physical.transactionId)
+      && physical.transactionId > 0 && physical.transactionId === session.transactionId;
+    const pauseBeforeRequest = instruction => instruction?.transactionId === session?.transactionId
+      && time(instruction.requestedAt) && instruction.requestedAt >= session.connectedAt
+      && time(instruction.pauseRequestedAt) && instruction.pauseRequestedAt >= instruction.requestedAt
+      && instruction.pauseRequestedAt <= request.receivedAt
+      && time(instruction.startAt) && instruction.startAt > request.receivedAt;
+    // OCPP records a guarded Charging observation just before profile send.
+    // The pending profile or a later confirmation can explain uncertainty at
+    // receipt, but neither supplies a retrospectively applied physical pause.
+    const uncertainOcppStop = sameOcppScope
+      && (permissionPending?.action === 'install' && Number.isInteger(permissionPending.attempts)
+        && permissionPending.attempts > 0 && pauseBeforeRequest(permissionPending.instruction)
+        || pauseBeforeRequest(owned) && time(owned.confirmedAt)
+          && owned.confirmedAt > request.receivedAt && owned.confirmedAt <= now);
+    const uncertainStop = (stopAcknowledged || uncertainPermissionStop || uncertainOcppStop) && !stoppedReflection
+      && snapshot.charging === false && request.value === 5;
     const reflected = valid && request.value > 0 && (pilotKnown && request.value === nativeCurrent.value || stoppedReflection);
     const eligible = valid && !reflected && !uncertainPilot && !uncertainStop && !uncertainTest
       && (pilotKnown ? request.value < nativeCurrent.value

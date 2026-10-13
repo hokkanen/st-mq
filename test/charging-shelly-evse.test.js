@@ -10,6 +10,8 @@ import { createShellyEvseAdapter, createShellyController, shellyAssociation, val
 import { shellyProfile } from '../src/charging/shelly-profile.js';
 import { shellyCurrentLimit } from '../src/charging/shelly-limit.js';
 import { matchTeslaSession } from '../src/charging/vehicle.js';
+import { createChargingTeslaCapture } from '../src/charging/teslamate.js';
+import { updateTeslaCurrentRequest } from '../src/charging/tesla-current-request.js';
 import { Engine } from '../src/app/engine.js';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
@@ -1052,6 +1054,81 @@ test('fuse pause is an EVSE Boolean action and reply/readback is distinct from p
   const commands=f.writes.filter(row=>row.method.endsWith('.Set'));
   assert.equal(commands.length,1);assert.equal(commands[0].method,'Boolean.Set');assert.equal(commands[0].params.value,false);assert.equal(commands[0].options.retain,false);
   assert.notEqual(controller.status().executionStage,'physical-effect');assert.equal(saved.association,f.adapter.association);
+});
+
+for (const outcome of ['accepted', 'rejected']) test(`a real dispatched Shelly Stop keeps stopped 5 A unknown across ${outcome} reply and source rollback`, async t => {
+  const store = new Store(':memory:'), f = fixture(t, { limiterEnabled: true }, store);
+  let controller, releaseReply, stopId, qualification = null, failCommit = false;
+  const capture = createChargingTeslaCapture({ clock: f.now,
+    afterRollback: callback => store.afterRollback(callback),
+    saveState: value => store.setState('synthetic-tesla-source', value),
+    onObservation: () => {
+      const previous = structuredClone(qualification); store.afterRollback(() => { qualification = previous; });
+      qualification = updateTeslaCurrentRequest(qualification, capture.snapshot(), {
+        now: f.now(), nativeCurrent: f.adapter.normalize().currentA, control: controller.status() });
+      store.setState('synthetic-tesla-qualification', qualification);
+    } });
+  t.after(async () => { releaseReply?.(); await controller?.close(); capture.close(); f.adapter.close(); store.close(); });
+  await f.ready();
+  controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: value => store.setState('synthetic-controller', value) });
+  capture.setConnected(true);
+  const send = (field, value) => store.transaction(() => capture.receive(`teslamate/cars/1/${field}`, String(value), {}));
+  send('healthy', true); send('charging_state', 'Charging'); send('charge_current_request_max', 16); send('charge_current_request', 10);
+  const original = structuredClone(qualification.limit);
+  assert.equal(original.value, 10);
+  let reached;
+  const stopped = new Promise(resolve => { reached = resolve; });
+  const publish = f.client.publish.bind(f.client), emit = f.client.emit.bind(f.client);
+  t.mock.method(f.client, 'publish', (topic, payload, options, callback) => {
+    const frame = JSON.parse(payload);
+    if (frame.method === 'Boolean.Set' && frame.params.value === false) stopId = frame.id;
+    return publish(topic, payload, options, callback);
+  });
+  t.mock.method(f.client, 'emit', (event, ...args) => {
+    if (event === 'message' && args[0].endsWith('/rpc')) {
+      const frame = JSON.parse(args[1]);
+      if (frame.id === stopId && releaseReply === undefined) {
+        let released = false;
+        releaseReply = () => {
+          if (released) return; released = true;
+          if (outcome === 'rejected') { delete frame.result; frame.error = { code: -1, message: 'Synthetic Stop rejection' }; }
+          emit(event, args[0], Buffer.from(JSON.stringify(frame)), args[2]);
+        };
+        reached(); return true;
+      }
+    }
+    return emit(event, ...args);
+  });
+  f.setNow(NOW + 1000);
+  const reconcile = controller.update({ enabled: false,
+    allocation: { property: reading([44, 30, 32], f.now()), easee: reading([12, 12, 12], f.now()) } });
+  await stopped;
+  const pending = controller.status().pending;
+  assert.equal(pending.role, 'start_charging'); assert.equal(pending.value, false); assert.equal(pending.stage, 'dispatched');
+  assert.deepEqual(store.getState('synthetic-controller').pending, pending, 'The actual controller publishes only its saved dispatch');
+  send('charging_state', 'Stopped');
+  const source = store.getState('synthetic-tesla-source'), saved = store.getState('synthetic-tesla-qualification');
+  const exec = store.db.exec.bind(store.db);
+  t.mock.method(store.db, 'exec', sql => {
+    if (sql === 'COMMIT' && failCommit) throw Object.assign(new Error('Synthetic request admission failure'),
+      { code: 'ERR_SQLITE_ERROR', errcode: 10 });
+    return exec(sql);
+  });
+  failCommit = true; assert.throws(() => send('charge_current_request', 5)); failCommit = false;
+  assert.deepEqual(store.getState('synthetic-tesla-source'), source);
+  assert.deepEqual(store.getState('synthetic-tesla-qualification'), saved);
+  assert.deepEqual(qualification, saved, 'Source rejection rolls qualification back with original field clocks');
+  f.setNow(NOW + 1500); send('charge_current_request', 5);
+  assert.equal(qualification.request.eligible, false); assert.equal(qualification.request.reflected, false);
+  assert.deepEqual(qualification.limit, original);
+  const request = structuredClone(capture.snapshot().fields.charge_current_request);
+  f.setNow(NOW + 2000); releaseReply(); await reconcile;
+  if (outcome === 'accepted') assert.ok(controller.status().permissionCommand.acceptedAt > request.receivedAt);
+  else assert.equal(controller.status().pending.stage, 'dispatched', 'A negative reply does not manufacture an applied Stop');
+  for (const maximum of [5, 16]) { f.setNow(f.now() + 1000); send('charge_current_request_max', maximum); }
+  assert.deepEqual(qualification.limit, original); assert.deepEqual(capture.snapshot().fields.charge_current_request, request);
+  assert.deepEqual(store.getState('synthetic-tesla-qualification').limit, original);
 });
 test('telemetry fallback limits current without starting a manual stop',async t=>{
   const f=fixture(t,{limiterEnabled:true});f.fields.start_charging=false;f.fields.work_state='charger_pause';await f.ready();
