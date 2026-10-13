@@ -195,12 +195,13 @@ test('handover checks database compatibility before stopping the master, includi
       originalPath = (await readReplicaPublication(target.config.snapshotDirectory)).dbPath;
       const db = new DatabaseSync(originalPath); db.exec('PRAGMA user_version=7'); db.close();
     } else {
-      // An earlier release can export its own database. Only the receiver runs
-      // the current validator; the real transfer and handover paths stay intact.
-      source.snapshots.snapshot = async ({ dbPath, destination }) => {
-        await copyFile(dbPath, destination);
-        const db = new DatabaseSync(destination); db.exec('PRAGMA user_version=7'); db.close();
-        return { ...await snapshotDigest(destination), checkpoint: { databaseId: randomUUID(), sequence: 0, hash: 'a'.repeat(64) }, sourceStartedAt: 1, sourceAt: 1 };
+      // Corrupt only the current snapshot's schema header, keeping its exact
+      // checkpoint and source clocks so real transfer preflight diagnoses it.
+      const snapshot = source.snapshots.snapshot;
+      source.snapshots.snapshot = async input => {
+        const metadata = await snapshot(input);
+        const db = new DatabaseSync(input.destination); db.exec('PRAGMA user_version=7'); db.close();
+        return { ...metadata, ...await snapshotDigest(input.destination) };
       };
     }
     const originalBytes = originalPath ? await readFile(originalPath) : null;
