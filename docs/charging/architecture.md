@@ -199,7 +199,11 @@ The live card uses current admitted evidence. Its derived database view publishe
 as one complete snapshot every 30 seconds, or earlier when control, connection,
 instructions, identification, planning, provenance or availability changes.
 Routine native-query bookkeeping, metering and vehicle-feed reception clocks do
-not independently bypass that cadence. The published snapshot retains all of its
+not independently bypass that cadence. Unchanged coordination calculation times
+(`at`, `proposed.at`, `adopted.at`) and the controller-derived Shelly allowance
+evaluation date also follow it. Allocation results, native Equalizer source dates,
+source epochs and actual plan dates/interval boundaries still publish early.
+The published snapshot retains all of its
 actual values and original source/receipt clocks beside its own `recordedAt`;
 canonicalizing the comparison never rewrites the saved evidence. Durable control,
 session, energy and restoration state remains immediate. Native instruction

@@ -28,7 +28,11 @@ remain intact between saves. Each newly saved view carries its own `recordedAt`;
 a replica uses that date rather than the newer database publication time and
 does not overlay newer control or plan fragments onto an older card. A genuinely
 absent date is unknown. Receipt clocks and already-recorded metering/progress
-can wait for the view cadence. A quiet final presentation tail need not survive
+can wait for the view cadence, as can unchanged coordination and Shelly allowance
+calculation clocks. This comparison preserves the complete original dated payload;
+it never renews native evidence or changes live assessment freshness. Native
+allowance clocks, source epochs, allocation results and plan dates remain fences.
+A quiet final presentation tail need not survive
 restart; durable facts remain authoritative and the running controller computes
 a fresh view. This adds no timer, writer, format migration or schema reset.
 

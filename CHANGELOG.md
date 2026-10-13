@@ -11,6 +11,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   qualified limits keep their original evidence; zero and independent requests
   retain their meanings, and command intent is never reported as applied Stop.
 
+- Unchanged charging coordination and controller allowance calculations respect
+  the card snapshot's save cadence, reducing repeated writes without changing
+  their original clocks, native evidence, live control or actual plan boundaries.
+
 - Caravan native On commands wait five minutes after observed Off, including
   power tests, Automatic, manual power and restoration. Native drying receives
   a bounded five-minute power-fall window. Original clocks and restoration duties

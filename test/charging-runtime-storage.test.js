@@ -8,6 +8,7 @@ import { ChargingRuntime } from '../src/charging/runtime.js';
 import { Store } from '../src/storage/store.js';
 import { encodeChange } from '../src/storage/journal-codec.js';
 import { readChargingRuntime, writeChargingRuntime } from '../src/charging/runtime-storage.js';
+import { sharedChargingAssessment } from '../src/charging/shared-assessment.js';
 import { fixture as jointFixture } from './helpers/charging-joint-fixture.js';
 
 const key = 'charging:simulated', at = 1_800_000_000_000;
@@ -300,6 +301,106 @@ test('production instruction clocks, metering provenance and feed health remain 
       assert.deepEqual(readChargingRuntime(store, key).view, { ...next.view, recordedAt: projectedAt + 1000 });
     } finally { store.close(); }
   }
+});
+
+async function plannedProductionState(t) {
+  const live = await jointFixture(t);
+  await live.automatic('charger1', true); await live.automatic('charger2', true); await live.plan();
+  await live.connect('charger1'); await live.connect('charger2'); await live.plan();
+  live.runtime.persist();
+  const saved = readChargingRuntime(live.store, live.runtime.key);
+  assert.ok(saved.view.coordination?.proposed && saved.view.coordination?.adopted);
+  assert.equal(saved.view.chargers[1].allowance.source, 'st-mq-load-balancing');
+  assert.equal(saved.view.chargers[0].allowance.source, 'easee-equalizer');
+  return { saved, projectedAt: live.now };
+}
+
+test('production calculation clock refreshes batch while original published clocks and durable progress survive restart', async t => {
+  const { saved, projectedAt } = await plannedProductionState(t);
+  const refreshes = [
+    ['coordination', next => { next.view.coordination.at += 5000; }],
+    ['proposed calculation', next => { next.view.coordination.proposed.at += 5000; }],
+    ['adopted calculation', next => { next.view.coordination.adopted.at += 5000; }],
+    ['controller allowance', next => { next.view.chargers[1].allowance.measuredAt += 5000;
+      next.view.chargers[1].allowance.receivedAt += 5000; }],
+  ];
+  for (const [label, refresh] of refreshes) {
+    const path = disk(t), store = new Store(path);
+    let published;
+    try {
+      writeChargingRuntime(store, key, saved, { at: projectedAt });
+      const before = readChargingRuntime(store, key), sequence = store.checkpoint().sequence;
+      const next = structuredClone(saved); refresh(next);
+      next.chargers.charger1.progress.creditKwh += .01;
+      writeChargingRuntime(store, key, next, { at: projectedAt + 5000 });
+      const deferred = readChargingRuntime(rawReader(store.db), key);
+      assert.deepEqual(deferred.view, before.view, label);
+      assert.deepEqual(deferred.chargers, next.chargers, `Durable progress remains immediate: ${label}`);
+      assert.equal(store.db.prepare("SELECT count(*) n FROM journal_changes WHERE sequence>? AND record_key LIKE '%:runtime:view/%'").get(sequence).n,
+        0, `No early view row effects for an unchanged calculation: ${label}`);
+      writeChargingRuntime(store, key, next, { at: projectedAt + 30_000 });
+      published = readChargingRuntime(store, key);
+      assert.deepEqual(published.view, { ...next.view, recordedAt: projectedAt + 30_000 },
+        `The complete payload preserves every original calculation and native clock: ${label}`);
+    } finally { store.close(); }
+    const restarted = new Store(path);
+    try { assert.deepEqual(readChargingRuntime(restarted, key), published, `Current-format restart is lossless: ${label}`); }
+    finally { restarted.close(); }
+  }
+});
+
+test('calculation comparison exemptions retain production plan, allocation, provenance and native-clock fences', async t => {
+  const { saved, projectedAt } = await plannedProductionState(t);
+  const fences = [
+    ['allocation boundary', next => { next.view.coordination.allocations[0].end += 1000; }],
+    ['current limit', next => { next.view.coordination.currentLimits[0].currentA += 1; }],
+    ['priority', next => { next.view.coordination.priority = 'charger2'; }],
+    ['session', next => { next.view.coordination.sessions.charger1 += ':replacement'; }],
+    ['request revision', next => { next.view.coordination.requests.charger1.revision += 1; }],
+    ['proposed feasibility', next => { next.view.coordination.proposed.feasible = !next.view.coordination.proposed.feasible; }],
+    ['adopted cost', next => { next.view.coordination.adopted.plans.charger1.costCents += 1; }],
+    ['solver result', next => { next.view.coordination.proposed.solver.globalOptimalityProven = !next.view.coordination.proposed.solver.globalOptimalityProven; }],
+    ['unknown nested clock', next => { next.view.coordination.proposed.solver.observedAt = projectedAt + 1000; }],
+    ['allowance value', next => { next.view.chargers[1].allowance.allowanceA -= 1; }],
+    ['allowance source epoch', next => { next.view.chargers[1].allowance.sourceEpoch = 'synthetic-replacement-epoch'; }],
+    ['allowance availability', next => { next.view.chargers[1].allowance.mode = 'unknown'; }],
+    ['native Equalizer source clock', next => { next.view.chargers[0].allowance.measuredAt += 1000; }],
+    ['native current clock', next => { next.view.chargers[1].values.currentA.measuredAt += 1000; }],
+    ['plan calculation clock', next => { next.chargers.charger1.plan.at += 1000; next.view.chargers[0].plan.at += 1000; }],
+    ['plan interval boundary', next => { next.chargers.charger1.plan.intervals[0].start += 1000; next.view.chargers[0].plan.intervals[0].start += 1000; }],
+  ];
+  for (const [label, change] of fences) await t.test(label, () => {
+    const store = new Store(':memory:');
+    try {
+      writeChargingRuntime(store, key, saved, { at: projectedAt });
+      const next = structuredClone(saved);
+      next.view.coordination.at += 1000;
+      next.view.coordination.proposed.at += 1000;
+      next.view.coordination.adopted.at += 1000;
+      next.view.chargers[1].allowance.measuredAt += 1000;
+      change(next);
+      writeChargingRuntime(store, key, next, { at: projectedAt + 1000 });
+      assert.deepEqual(readChargingRuntime(store, key).view, { ...next.view, recordedAt: projectedAt + 1000 }, label);
+    } finally { store.close(); }
+  });
+});
+
+test('a batched calculation refresh supplies no new freshness to a saved native execution assessment', async t => {
+  const { saved, projectedAt } = await plannedProductionState(t), store = new Store(':memory:');
+  try {
+    writeChargingRuntime(store, key, saved, { at: projectedAt });
+    const before = readChargingRuntime(store, key), next = structuredClone(saved);
+    next.view.coordination.at = projectedAt + 20_000;
+    next.view.coordination.adopted.at = projectedAt + 20_000;
+    next.view.chargers[1].allowance.measuredAt = projectedAt + 20_000;
+    writeChargingRuntime(store, key, next, { at: projectedAt + 20_000 });
+    const persisted = readChargingRuntime(store, key);
+    assert.deepEqual(persisted.view, before.view);
+    const assessment = sharedChargingAssessment(persisted.view.chargers, persisted.view.coordination, projectedAt + 20_000);
+    assert.equal(assessment.execution.expectedCurrentA, null, 'An old live-limiter assessment remains unknown after its freshness deadline');
+    assert.equal(persisted.view.chargers[1].control.limiter.evaluatedAt, before.view.chargers[1].control.limiter.evaluatedAt);
+    assert.equal(persisted.view.coordination.at, before.view.coordination.at);
+  } finally { store.close(); }
 });
 
 for (const change of ['controls', 'session', 'plan', 'target', 'pending', 'fault', 'epoch', 'availability'])

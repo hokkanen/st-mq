@@ -148,8 +148,24 @@ function nativeSnapshotMeaning(snapshot) {
   }));
   return value;
 }
-/** Conservative early-publication fence. Only repeated receipt clocks and
- * already-durable metering/progress are allowed to wait for the view cadence.
+function coordinationMeaning(value) {
+  const record = withoutReceiptClocks(value);
+  if (!object(record)) return record;
+  // Re-running unchanged allocation assessments dates the calculation, not a
+  // new plan or native instruction. Preserve every result and nested plan clock.
+  delete record.at;
+  for (const key of ['proposed', 'adopted']) if (object(record[key])) delete record[key].at;
+  return record;
+}
+function allowanceMeaning(value) {
+  const record = withoutReceiptClocks(value);
+  // This timestamp comes from the limiter's evaluation, not measured current.
+  // Equalizer allowance source clocks retain their native evidence meaning.
+  if (object(record) && record.source === 'st-mq-load-balancing') delete record.measuredAt;
+  return record;
+}
+/** Conservative early-publication fence. Only repeated receipt/calculation
+ * clocks and already-durable metering/progress may wait for the view cadence.
  * Unknown fields remain in the comparison rather than silently being batched. */
 function projectionMeaning(saved) {
   const chargers = Object.fromEntries(Object.entries(saved.chargers ?? {}).map(([id, record]) => {
@@ -158,6 +174,7 @@ function projectionMeaning(saved) {
       reference: progress.reference, batteryInputs: progress.batteryInputs } } : {}) }];
   }));
   const { recordedAt, diagnostics, chargers: cards, ...view } = saved.view ?? {};
+  if (view.coordination) view.coordination = coordinationMeaning(view.coordination);
   if (diagnostics) view.reportStatus = { available: diagnostics.available !== false, error: diagnostics.error ?? null,
     retentionDays: diagnostics.retention?.days };
   if (view.physicalTests) {
@@ -176,6 +193,7 @@ function projectionMeaning(saved) {
     }
     return { ...rest, ...(rest.mqtt ? { mqtt: receptionMeaning(rest.mqtt) } : {}),
       ...(rest.vehicleMqtt ? { vehicleMqtt: receptionMeaning(rest.vehicleMqtt) } : {}),
+      ...(rest.allowance ? { allowance: allowanceMeaning(rest.allowance) } : {}),
       control: projectedControl, telemetry: telemetryMeaning(telemetry),
       values: Object.fromEntries(Object.entries(values ?? {}).map(([key, value]) => [key,
         electricalFields.has(key) ? measurementMetadata(value)
