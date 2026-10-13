@@ -144,6 +144,10 @@ test('receiver process death mid-transfer leaves a reusable checkpoint and clean
   assert.equal((await resumed.send({ type: 'complete', checkpoint: transfer.metadata.target })).type, 'published');
   resumed.child.stdin.end(); await resumed.closed;
   assert.deepEqual(await databaseCheckpoint({ dbPath: f.publication.dbPath }), transfer.metadata.target);
+  const published = await readReplicaPublication(f.directory);
+  assert.equal(published.sourceStartedAt, transfer.metadata.sourceStartedAt);
+  assert.equal(published.sourceAt, transfer.metadata.sourceAt,
+    'standalone receiver publishes the frozen delivery clock instead of the earlier caller metadata');
   assert.equal((await readdir(f.directory)).some(name => name.endsWith('.changes')), false);
 });
 

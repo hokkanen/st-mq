@@ -15,7 +15,7 @@ import { configurePublicationRoots, ownedDirectory, readReplicaPublication, sync
 import { databaseErrorDetails, databaseErrorGuidance } from '../storage/database-errors.js';
 import { databaseCheckpoint, JOURNAL_DIGEST, sameCheckpoint, validCheckpoint } from '../replication/incremental.js';
 import { PeerTransfers, peerOperation, receivePeerTransfer } from '../replication/coalesced.js';
-import { adoptJournalDatabase, acceptPeerPublication, applyPeerPublication, checkpointMetadata, publishCheckpointMetadata, recoverJournalPublication } from '../replication/journal-publication.js';
+import { adoptJournalDatabase, acceptPeerPublication, applyPeerPublication, peerPublicationBoundary, checkpointMetadata, publishCheckpointMetadata, recoverJournalPublication } from '../replication/journal-publication.js';
 import { acquireReceiverLock } from '../replication/receiver.js';
 import { installJournal } from '../storage/journal.js';
 import { checkedRecoverySource as checkedSource, emptyRecoverySource } from '../recovery/source-check.js';
@@ -620,9 +620,8 @@ export class PairManager {
         const target=transfer.metadata.target;
         if(target.sequence<publication.checkpoint.sequence) throw pairError('verification_failed');
         const caughtUp=target.sequence>=metadata.checkpoint.sequence;
-        const boundary={...metadata,...(!caughtUp?{sequence:publication.sequence,sourceAt:publication.sourceAt,
-          sourceStartedAt:publication.sourceStartedAt}:{}),
-          generation:sameCheckpoint(target,metadata.checkpoint)?metadata.generation:randomUUID(),checkpoint:target,digest:target.hash};
+        const boundary=peerPublicationBoundary({...metadata,...(!caughtUp?{sequence:publication.sequence}:{}),
+          generation:sameCheckpoint(target,metadata.checkpoint)?metadata.generation:randomUUID()},transfer.metadata);
         transferredBytes+=transfer.metadata.bytes;
         await this.state.update({pendingSnapshot:boundary});
         try {
@@ -721,7 +720,7 @@ export class PairManager {
       return metadata;
     }
     const metadata=await this.exportSnapshot({force:true,pin:true});
-    await this.peerTransfers.export({dbPath,onYield:()=>this.hooks.admitStorageWrite?.(),after:anchor.checkpoint,refresh:true,sourcePath:join(this.snapshots.directory,`export-${metadata.generation}.sqlite`),signal:this.abort.signal});
+    await this.peerTransfers.export({dbPath,onYield:()=>this.hooks.admitStorageWrite?.(),after:anchor.checkpoint,refresh:true,sourcePath:join(this.snapshots.directory,`export-${metadata.generation}.sqlite`),sourceSnapshot:metadata,signal:this.abort.signal});
     return metadata;
   }
 
@@ -1161,15 +1160,15 @@ export class PairManager {
       const incremental=Boolean(base);
       let verification;
       if(incremental) {
-        let sourcePath;
+        let sourcePath,sourceSnapshot;
         if(body.verifyWithFullSnapshot===true) {
-          const snapshot=await this.exportSnapshot({force:true,pin:true});
+          const snapshot=sourceSnapshot=await this.exportSnapshot({force:true,pin:true});
           sourcePath=join(this.snapshots.directory,`export-${snapshot.generation}.sqlite`);
           verification=await this.fullVerification(sourcePath,snapshot.checkpoint);
         }
-        const delivery=await this.peerTransfers.export({dbPath:await this.journalSource(),after:base,refresh:true,sourcePath,
+        const delivery=await this.peerTransfers.export({dbPath:await this.journalSource(),after:base,refresh:true,sourcePath,sourceSnapshot,
           signal:this.abort.signal,onYield:()=>this.hooks.admitStorageWrite?.()});
-        metadata={...metadata,checkpoint:delivery.target,digest:delivery.target.hash};
+        metadata=peerPublicationBoundary(metadata,delivery);
       } else {
         metadata=await this.exportPeerSeed();
         if(body.verifyWithFullSnapshot===true) verification=await this.fullVerification(

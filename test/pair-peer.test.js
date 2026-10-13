@@ -120,7 +120,7 @@ test('database compatibility and integrity errors cross encrypted transport with
   const client = new PairPeer({ ...options, peerUrl: `http://127.0.0.1:${address.port}` });
   t.after(async () => { await client.close(); await server.close(); });
   for (code of ['database_schema_mismatch', 'database_schema_invalid', 'database_algorithm_mismatch',
-    'database_state_incompatible', 'database_integrity_failed']) {
+    'database_state_incompatible', 'database_integrity_failed', 'journal_peer_format_incompatible']) {
     await assert.rejects(client.request('snapshot'), error => {
       assert.equal(error.code, code);
       assert.equal(error.message, code);

@@ -115,7 +115,27 @@ directory synchronization precede publishing the pending-transfer receipt. Stagi
 does not hold the source's write lock. Transfer frames are bounded; interrupted
 transfers leave the receiver's previous checkpoint available. Retrying uses the
 same immutable pending target even if recording has continued or the recent
-transaction window has advanced.
+transaction window has advanced. The current consolidated delivery format is
+version 2. Its `sourceStartedAt` and `sourceAt` are captured around the same
+pinned read that supplies its target checkpoint. Private staging metadata, the
+saved pending receipt, wire header and public descriptor retain those exact
+clocks. Reading a previously exported static seed retains the seed's original
+clocks and requires its exact checkpoint; it never dates the old file anew.
+
+Receiver publications use the delivered target and its frozen clocks together,
+including a retained delivery older than a later checkpoint query. Pairing,
+standalone SSH mirrors and protected release/rejoin follow this rule. A snapshot
+clock does not renew any device report or saved charging-view date. Charging and
+learning views newer than their publication boundary remain unavailable.
+
+There is no untimestamped delivery decoder or clock repair. Before deploying this
+transient-format change, complete and acknowledge existing deliveries with the
+matching earlier software, quiesce synchronization at that acknowledged boundary
+and update both peers together. An existing untimestamped pending delivery fails
+with `journal_peer_format_incompatible` before staging cleanup or receipt mutation.
+Preserve its database and staging files; use the matching software to finish it,
+or an explicitly approved deliberate fresh development start. This format change
+does not migrate, replace or reset the same-schema application database.
 
 The receiver verifies its starting checkpoint, each expected row fingerprint,
 transport digest and resulting whole-content fingerprint before committing the

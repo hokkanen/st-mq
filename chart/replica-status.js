@@ -1,6 +1,6 @@
 import { outdoorSourceLabel, providerName, temperatureReadingStatus } from './provider-status.js';
 import { durationText } from './reading-status.js';
-import { pairAllowsControl } from './pair-status.js';
+import { pairAllowsControl, pairIssueHelp } from './pair-status.js';
 import { renderCurrentPrice } from './current-price.js';
 import { setStatusDetail } from './status-details.js';
 
@@ -139,13 +139,16 @@ export function primaryReplicationDisplay(status, { formatTime = at => new Date(
   const state = ['waiting', 'syncing', 'ready', 'error', 'stopped'].includes(sync.state) ? sync.state : 'waiting';
   const phase = { connecting: 'Connecting to the slave.', snapshotting: 'Preparing a consistent database snapshot.',
     transferring: 'Sending database changes to the slave.', verifying: 'Verifying the slave’s database identity.' }[sync.phase];
-  const summary = state === 'syncing' ? phase ?? 'Synchronizing the slave database.'
+  const unsupportedDelivery = state === 'error' && sync.error === 'journal_peer_format_incompatible';
+  const summary = unsupportedDelivery ? 'Mirror synchronization is blocked. Home control continues.'
+    : state === 'syncing' ? phase ?? 'Synchronizing the slave database.'
     : state === 'error' ? 'Mirror synchronization failed. Home control continues; synchronization will retry automatically.'
       : state === 'stopped' ? 'Database synchronization is stopped.'
         : state === 'ready' ? 'The last database synchronization was verified.' : 'Waiting to synchronize the slave database.';
   const sourceAt = timestamp(sync.snapshotAt ?? sync.sourceAt), verifiedAt = timestamp(sync.verifiedAt);
   const lastSuccessAt = timestamp(sync.lastSuccessAt), nextAttemptAt = timestamp(sync.nextAttemptAt);
-  const detail = [lastSuccessAt ? `Last successful sync: ${formatTime(lastSuccessAt)}.` : 'No successful synchronization yet.',
+  const detail = [unsupportedDelivery ? pairIssueHelp({ error: sync.error }) : '',
+    lastSuccessAt ? `Last successful sync: ${formatTime(lastSuccessAt)}.` : 'No successful synchronization yet.',
     sourceAt ? `Master snapshot: ${formatTime(sourceAt)}.` : '',
     verifiedAt ? `Identity verified: ${formatTime(verifiedAt)}.` : '',
     nextAttemptAt && state !== 'syncing' && state !== 'stopped' ? `Next attempt: ${formatTime(nextAttemptAt)}.` : ''].filter(Boolean).join(' ');

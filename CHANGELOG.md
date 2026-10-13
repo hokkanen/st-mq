@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Pairing and SSH mirror publications keep the source clocks of the exact frozen
+  delivery, preventing intermittent unavailable saved charging and learning views
+  when recording advances during synchronization. Retries and static seeds retain
+  their original clocks. Finish and acknowledge earlier pending deliveries before
+  updating both peers together; unsupported deliveries remain preserved.
+
 - Learning checkpoints share exact prepared fitting samples instead of repeatedly
   copying their bodies into the current cache and every sparse recovery checkpoint.
   This reduces checkpoint writes, replica payloads and future checkpoint storage

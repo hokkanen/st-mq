@@ -96,6 +96,12 @@ Pairing browser display ages use the server's status clock advanced by monotonic
 elapsed time. Pairing snapshot presentation allows the existing 60-second cross-computer
 uncertainty and displays zero age within it, never a negative age. This is display
 policy only; it changes neither roles nor permission to promote or control.
+Paired and mirror publications bind their source clocks to the exact delivered
+checkpoint's frozen source read. A pending retry keeps those clocks even when
+the master has newer data; a static seed keeps its original export clocks.
+An earlier checkpoint query, receiver receipt time and transaction seal time
+cannot substitute for that read boundary. Saved charging and learning dates
+remain independently checked against the publication clock.
 Market periods and forecasts are intentionally future dated and retain their
 issue/availability checks instead of device-report admission.
 

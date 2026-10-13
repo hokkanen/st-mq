@@ -4,6 +4,7 @@ import { open, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ownedDirectory, GENERATION_PATTERN, replicationError } from './publication.js';
 import { acquireReceiverLock } from './receiver.js';
+import { PEER_TRANSFER_VERSION, PEER_TRANSFER_FIELDS, validPeerSourceClocks } from './peer-transfer-contract.js';
 import { sameCheckpoint, validCheckpoint } from './incremental.js';
 
 export const CHANGE_CHUNK_BYTES = 256 * 1024;
@@ -30,19 +31,19 @@ export function peerOperation(operation,{dbPath,signal,onYield,...args}) {
   });
 }
 export function validPeerTransfer(value) {
-  return value?.version===1 && GENERATION_PATTERN.test(value.id ?? '') && validCheckpoint(value.base) && validCheckpoint(value.target)
-    && Object.keys(value).every(key=>['version','id','base','target','contentHash','rows','bytes','digest'].includes(key))
+  return value?.version===PEER_TRANSFER_VERSION && validPeerSourceClocks(value) && GENERATION_PATTERN.test(value.id ?? '') && validCheckpoint(value.base) && validCheckpoint(value.target)
+    && Object.keys(value).every(key=>[...PEER_TRANSFER_FIELDS,'bytes','digest'].includes(key))
     && value.base.databaseId===value.target.databaseId && value.base.sequence<=value.target.sequence
     && /^[a-f0-9]{64}$/.test(value.contentHash ?? '') && Number.isSafeInteger(value.rows) && value.rows>=0
     && Number.isSafeInteger(value.bytes) && value.bytes>0 && /^[a-f0-9]{64}$/.test(value.digest ?? '');
 }
 export class PeerTransfers {
   constructor(directory){this.directory=directory;}
-  async export({dbPath,after,signal,sourcePath,refresh=false,onYield}) {
+  async export({dbPath,after,signal,sourcePath,sourceSnapshot,refresh=false,onYield}) {
     await ownedDirectory(this.directory,'.st-mq-peer-transfers');
     const unlock=await acquireReceiverLock(this.directory);
     try {
-      const result=await peerOperation('export',{dbPath,after,directory:this.directory,sourcePath,refresh,signal,onYield});
+      const result=await peerOperation('export',{dbPath,after,directory:this.directory,sourcePath,sourceSnapshot,refresh,signal,onYield});
       for(const name of await readdir(this.directory)) {
         const match=/^peer-([a-f0-9-]{36})\.changes(?:\.partial)?$/.exec(name);
         if(match && (match[1]!==result.id || name.endsWith('.partial'))) await rm(join(this.directory,name),{force:true});

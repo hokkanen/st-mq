@@ -39,4 +39,6 @@ test('transport rejects SSH argument injection and remote shell metacharacters w
     assert.throws(() => validateTransportConfig({ ...config, ...change }), /^Error: configuration_invalid$/);
   }
   assert.equal(publicReplicationError(new Error('synthetic private details')), 'transfer_failed');
+  assert.equal(publicReplicationError(Object.assign(new Error('synthetic private delivery'),
+    { code: 'journal_peer_format_incompatible' })), 'journal_peer_format_incompatible');
 });

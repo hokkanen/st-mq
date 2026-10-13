@@ -177,6 +177,15 @@ fresh-start guidance; it is never silently skipped or reset. Pair authority stat
 uses version 3 and the encrypted peer protocol uses version 2 (`/v2/pair`). Both
 computers must run this contract; earlier formats are not translated.
 
+Consolidated changed-row deliveries use transient format version 2, with source
+clocks frozen at their exact target checkpoint. This is separate from pairing
+authority and encrypted-envelope versions. Before deploying a delivery-format
+change, finish and acknowledge earlier pending deliveries with their matching
+software, quiesce synchronization at that boundary and update both computers
+together. Untimestamped pending deliveries are preserved and fail closed; no
+clock inference or application-database reset occurs. See
+[the delivery and preservation contract](sqlite-journal.md#offline-peers-and-divergent-history).
+
 <a id="fresh-development-databases"></a>
 
 ## Deliberate fresh start after a development schema change

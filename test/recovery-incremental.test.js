@@ -13,12 +13,20 @@ import { validRecoverySourceSummary } from '../src/recovery/coverage-report.js';
 
 async function peerDonor(f){enrollJournalPeer(f.master.db);return f.donor();}
 
-async function journalSource(f,donor,{truncate=false,corrupt=false,retired=false}={}) {
+async function journalSource(f,donor,{truncate=false,corrupt=false,retired=false,untimestamped=false,missingClock=false,reversedClock=false,unknownClock=false}={}) {
   const transfers=new PeerTransfers(join(f.directory,'peer-wire'));
   const metadata=await transfers.export({dbPath:donor.path,after:enrollJournalPeer(f.master.db).checkpoint});
   const lines=(await readFile(join(transfers.directory,`peer-${metadata.id}.changes`),'utf8')).trimEnd().split('\n');
   if(corrupt){const change=JSON.parse(lines[1]);change.afterHash='0'.repeat(64);lines[1]=JSON.stringify(change);}
   if(retired)lines[0]=JSON.stringify({version:2,base:metadata.base,checkpoint:metadata.target});
+  if(untimestamped || missingClock || reversedClock || unknownClock) {
+    const header=JSON.parse(lines[0]);
+    if(untimestamped){header.version=1;delete header.sourceStartedAt;delete header.sourceAt;}
+    if(missingClock)delete header.sourceAt;
+    if(reversedClock)header.sourceAt=header.sourceStartedAt-1;
+    if(unknownClock)header.obsoleteAt=header.sourceAt;
+    lines[0]=JSON.stringify(header);
+  }
   if(truncate) lines.pop();
   const path=join(f.directory,`source-${truncate}-${corrupt}.ndjson`);
   await writeFile(path,lines.join('\n')+'\n',{mode:0o600});
@@ -108,12 +116,13 @@ test('divergent peer journal overlays common evidence without replacing local ro
   assert.equal(f.master.db.prepare('PRAGMA foreign_key_check').get(),undefined);
 });
 
-for(const mode of ['truncate','corrupt','retired']) test(`unsupported or damaged peer transfer (${mode}) leaves target untouched`,async t=>{
+for(const mode of ['truncate','corrupt','retired','untimestamped','missingClock','reversedClock','unknownClock']) test(`unsupported or damaged peer transfer (${mode}) leaves target untouched`,async t=>{
   const f=fixture(t),donor=await peerDonor(f);observation(donor,start,22);
-  const donorJournalPath=await journalSource(f,donor,{[mode]:true}),before=f.master.checkpoint();
+  const donorJournalPath=await journalSource(f,donor,{[mode]:true}),before=f.master.checkpoint(),wire=await readFile(donorJournalPath);
   await assert.rejects(recoveryPreview({masterPath:f.master.path,donorJournalPath,signal:t.signal}));
   assert.deepEqual(f.master.checkpoint(),before);
   assert.equal(f.master.observations().length,0);
+  assert.deepEqual(await readFile(donorJournalPath),wire);
 });
 
 test('history-only revert uses temporary review state and preserves the model epoch',async t=>{

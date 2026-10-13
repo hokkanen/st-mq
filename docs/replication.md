@@ -131,7 +131,14 @@ and the complete target content fingerprint, then publishes the changed rows and
 checkpoint in one SQLite transaction. A durable pending receipt distinguishes a
 crash before that commit from one after it but before acknowledgement. The source
 keeps an immutable pending delivery, so a lost reply retries the same target even
-while recording continues. Acknowledgement rebases bounded batches, yielding to
+while recording continues. That delivery also retains the source clocks from the
+same pinned read; its publication never borrows the time of an earlier head query
+or a later retry. Static seeds retain their original snapshot clocks. The one
+current consolidated delivery format is version 2; finish and acknowledge earlier
+pending deliveries with matching software before updating both computers together.
+Unsupported pending deliveries are preserved and rejected, without inferred
+timestamps or database conversion. See [the delivery contract](sqlite-journal.md#offline-peers-and-divergent-history).
+Acknowledgement rebases bounded batches, yielding to
 admitted controller writes. Partial transfers leave the last complete checkpoint
 readable. Read-only viewers pin coherent snapshots; they cannot control equipment
 or write application state. Receiver ownership remains an operating-system-backed

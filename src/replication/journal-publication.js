@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { lstat, readFile, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
-import { peerOperation } from './coalesced.js';
+import { peerOperation, validPeerTransfer } from './coalesced.js';
 import { databaseCheckpoint, JOURNAL_DIGEST, sameCheckpoint, validCheckpoint } from './incremental.js';
 import { durableJson, GENERATION_PATTERN, PUBLICATION_FORMAT, readReplicaPublication, replicationError, syncDirectory, validatePublicationDatabasePath } from './publication.js';
 
@@ -38,10 +38,15 @@ export async function recoverJournalPublication(directory, { signal } = {}) {
   return readReplicaPublication(directory);
 }
 
-/** Caller owns the receiver lock and has checked pair authority. Publication
- * never clones the database; WAL readers keep their already pinned transaction. */
+/** A transfer's frozen source read owns its checkpoint and clocks together.
+ * Earlier checkpoint queries and later retries cannot date that boundary. */
+export function peerPublicationBoundary(metadata,transfer) {
+  if(!validPeerTransfer(transfer)) throw replicationError('invalid_protocol');
+  return {...metadata,checkpoint:transfer.target,digest:transfer.target.hash,
+    sourceStartedAt:transfer.sourceStartedAt,sourceAt:transfer.sourceAt};
+}
 export function applyPeerPublication({transfer,...options}) {
-  return applyPublication({...options,from:transfer.metadata.base,to:transfer.metadata.target,
+  return applyPublication({...options,metadata:peerPublicationBoundary(options.metadata,transfer.metadata),from:transfer.metadata.base,to:transfer.metadata.target,
     apply:dbPath=>peerOperation('apply',{dbPath,path:transfer.path,metadata:transfer.metadata,signal:options.signal})});
 }
 export function publishCheckpointMetadata({checkpoint,...options}) {

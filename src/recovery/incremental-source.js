@@ -5,6 +5,7 @@ import { matchingCheckpoint, validCheckpoint, MAX_COMMIT_BYTES, resolveChange } 
 import { peerAnchor, reversePeerChanges } from '../storage/journal-peer.js';
 import { changeContentHash } from '../storage/journal-codec.js';
 import { Store } from '../storage/store.js';
+import { PEER_TRANSFER_VERSION, PEER_TRANSFER_FIELDS, validPeerSourceClocks } from '../replication/peer-transfer-contract.js';
 import { yieldToController } from './scheduler.js';
 
 const invalid = () => { throw Object.assign(new Error('The recovery transaction source changed or is incomplete; check again.'), { code:'RECOVERY_INVALID' }); };
@@ -164,9 +165,10 @@ export async function openJournalSource({masterPath,journalPath,yieldControl=yie
       let value;try{value=JSON.parse(line);}catch{invalid();}
       if(!header) {
         const anchor=peerAnchor(donor.db);
-        if(!value || value.version!==1 || value.mode!=='peer' || !validCheckpoint(value.base) || !validCheckpoint(value.target)
-          || !Object.keys(value).every(key=>['version','mode','id','base','target','contentHash','rows'].includes(key))
+        if(!value || value.version!==PEER_TRANSFER_VERSION || !validPeerSourceClocks(value) || value.mode!=='peer' || !validCheckpoint(value.base) || !validCheckpoint(value.target)
+          || !Object.keys(value).every(key=>['mode',...PEER_TRANSFER_FIELDS].includes(key))
           || !matchingCheckpoint(anchor?.checkpoint,value.base)
+          || !/^[a-f0-9-]{36}$/.test(value.id ?? '')
           || value.base.databaseId!==value.target.databaseId || value.base.sequence>value.target.sequence
           || !Number.isSafeInteger(value.rows)||value.rows<0||!/^[a-f0-9]{64}$/.test(value.contentHash)) invalid();
         header=value;peerHash=anchor.contentHash;

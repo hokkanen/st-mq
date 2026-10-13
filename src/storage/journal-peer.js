@@ -6,6 +6,7 @@ import { JOURNALED_TABLES } from './schema.js';
 import { encodeChange, rowHash, changeContentHash } from './journal-codec.js';
 import { journalConnection, journalExclusive, journalReadRow, journalApplyRow, readCheckpoint,
   matchingCheckpoint, validCheckpoint, resolveChange, validateCheckpoint, decodeJournalChange } from './journal.js';
+import { PEER_TRANSFER_VERSION, PEER_TRANSFER_FIELDS, validPeerSourceClocks } from '../replication/peer-transfer-contract.js';
 import { learningCheckpointSampleReferences, validateLearningCheckpointSample } from './learning-checkpoint-storage.js';
 
 const fail = (code='journal_peer_conflict') => { throw Object.assign(new Error('The retained peer checkpoint could not be reconciled. Preserve both histories and retry the peer operation.'),{code}); };
@@ -47,6 +48,15 @@ export function peerAnchor(db) {
   if(!row) return null;
   const checkpoint=parse(row.anchor),pending=parse(row.pending);
   if(!validCheckpoint(checkpoint)) fail();
+  if(row.pending!==null && (!pending || pending.version!==PEER_TRANSFER_VERSION || !validPeerSourceClocks(pending)
+    || !Object.keys(pending).every(key=>[...PEER_TRANSFER_FIELDS,'path','sourcePath','ackContentHash'].includes(key))
+    || !validCheckpoint(pending.base) || !validCheckpoint(pending.target)
+    || pending.base.databaseId!==pending.target.databaseId || pending.base.sequence>pending.target.sequence
+    || !/^[a-f0-9-]{36}$/.test(pending.id ?? '') || !/^[a-f0-9]{64}$/.test(pending.contentHash ?? '')
+    || !Number.isSafeInteger(pending.rows) || pending.rows<0 || typeof pending.path!=='string'
+    || pending.sourcePath!==undefined && typeof pending.sourcePath!=='string'
+    || pending.ackContentHash!==undefined && !/^[a-f0-9]{64}$/.test(pending.ackContentHash)))
+    throw Object.assign(new Error('Unsupported pending peer delivery. Preserve this database and its staging files. Complete and acknowledge the delivery with the matching software before updating both peers, or make an explicitly approved fresh development start.'), {code:'journal_peer_format_incompatible'});
   return {checkpoint,contentHash:row.content_hash,pending:pending&&{...pending,status:row.rebase_cursor===null?'ready':'rebasing',cursor:row.rebase_cursor},
     ...(row.completed_source ? {completedSourcePath:row.completed_source} : {})};
 }
@@ -62,6 +72,7 @@ export function enrollJournalPeer(db,{checkpoint}={}) {
 /** The receiver has durably accepted this exact source state. No command or
  * machine-local authority is inferred from this storage acknowledgement. */
 export function acceptPeerCheckpoint(db,{checkpoint}={}) {
+  peerAnchor(db);
   return journalExclusive(db,()=>{
     if(checkpoint===undefined)checkpoint=readCheckpoint(db);
     const hash=checkpointContent(db,checkpoint),state=journalConnection(db);
@@ -90,15 +101,35 @@ export function capturePeerChanges(db,changes,sequence) {
   }
 }
 
+/** Validate saved receipts and static provenance before acknowledgement or
+ * staging cleanup. Copied source files keep their original receipt locations. */
+export function validatePeerTransferExport(db,{after,sourcePath,sourceSnapshot,clock=Date.now}={}) {
+  // Reject unsupported saved deliveries and static source metadata before any
+  // staging cleanup or peer receipt mutation. Never infer an old read clock.
+  const anchor=peerAnchor(db);
+  if(anchor?.pending && !ownedPath(db,anchor.pending.path)) fail();
+  if(anchor?.pending) openPending(db,anchor.pending.id).spool.close();
+  if(typeof clock!=='function' || sourcePath && (!validPeerSourceClocks(sourceSnapshot) || !validCheckpoint(sourceSnapshot?.checkpoint))
+    || !sourcePath && sourceSnapshot!==undefined) fail('journal_peer_invalid');
+  if(sourcePath) {
+    const source=new DatabaseSync(sourcePath,{readOnly:true});
+    try {
+      const sourceAnchor=peerAnchor(source);
+      if(!sourceAnchor || after && !matchingCheckpoint(after,sourceAnchor.checkpoint)
+        || !matchingCheckpoint(validateCheckpoint(source),sourceSnapshot.checkpoint)) fail('journal_peer_invalid');
+    } finally {source.close();}
+  }
+}
 /** Freeze only keys changed since this configured peer's acknowledged anchor.
  * A private spool is built under a read snapshot: control writers keep their
  * SQLite write lock. Publishing the fsynced spool needs one short transaction. */
-export function preparePeerTransfer(db,{after,sourcePath,refresh=false}={}) {
+export function preparePeerTransfer(db,{after,sourcePath,sourceSnapshot,refresh=false,clock=Date.now}={}) {
+  validatePeerTransferExport(db,{after,sourcePath,sourceSnapshot,clock});
   const lease=stageLease(db);
-  try { return stagePeerTransfer(db,{after,sourcePath,refresh}); }
+  try { return stagePeerTransfer(db,{after,sourcePath,sourceSnapshot,refresh,clock}); }
   finally {lease.close();}
 }
-function stagePeerTransfer(db,{after,sourcePath,refresh}) {
+function stagePeerTransfer(db,{after,sourcePath,sourceSnapshot,refresh,clock}) {
   let anchor=peerAnchor(db);
   if(!anchor) fail('journal_peer_unregistered');
   if(anchor.completedSourcePath) fail('journal_peer_pending');
@@ -123,12 +154,15 @@ function stagePeerTransfer(db,{after,sourcePath,refresh}) {
     const reader=journalConnection(sourceDb);
     spool=new DatabaseSync(partial);
     spool.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; CREATE TABLE meta(value TEXT NOT NULL); CREATE TABLE rows(ordinal INTEGER PRIMARY KEY,table_name TEXT NOT NULL,record_key TEXT NOT NULL,change TEXT NOT NULL,after_row TEXT); BEGIN');
+    const sourceStartedAt=sourcePath ? sourceSnapshot.sourceStartedAt : clock();
     reader.exec('BEGIN');
     try {
       validateCheckpoint(sourceDb);
       anchor=peerAnchor(sourceDb);
       if(anchor.pending?.status==='rebasing' || anchor.pending&&!refresh || after && !matchingCheckpoint(after,anchor.checkpoint)) fail();
       const target=readCheckpoint(sourceDb),contentHash=content(sourceDb);
+      const sourceAt=sourcePath ? sourceSnapshot.sourceAt : clock();
+      if(!validPeerSourceClocks({sourceStartedAt,sourceAt}) || sourcePath && !matchingCheckpoint(target,sourceSnapshot.checkpoint)) fail('journal_peer_invalid');
       let rows=0,projected=anchor.contentHash;
       const put=spool.prepare('INSERT INTO rows VALUES(?,?,?,?,?)');
       for(const saved of reader.prepare('SELECT c.*,b.row AS before_row FROM journal_peer_changes c JOIN journal_peer_before b USING(table_name,record_key) ORDER BY table_name,record_key').iterate()) {
@@ -140,7 +174,7 @@ function stagePeerTransfer(db,{after,sourcePath,refresh}) {
         put.run(rows++,saved.table_name,saved.record_key,JSON.stringify(change),stringify(row));
       }
       if(projected!==contentHash) fail();
-      metadata={id,base:anchor.checkpoint,target,contentHash,rows};
+      metadata={version:PEER_TRANSFER_VERSION,id,base:anchor.checkpoint,target,contentHash,rows,sourceStartedAt,sourceAt};
       spool.prepare('INSERT INTO meta VALUES(?)').run(JSON.stringify(metadata));
     } finally { reader.exec('ROLLBACK'); source?.close();source=null; }
     spool.exec('COMMIT');spool.close();spool=null;
@@ -166,7 +200,9 @@ function openPending(db,id) {
   const spool=new DatabaseSync(pending.path,{readOnly:true});
   try {
     const saved=JSON.parse(spool.prepare('SELECT value FROM meta').get().value);
-    if(saved.id!==pending.id || !matchingCheckpoint(saved.base,pending.base)||!matchingCheckpoint(saved.target,pending.target)
+    if(!saved || saved.version!==PEER_TRANSFER_VERSION || !validPeerSourceClocks(saved)
+      || !Object.keys(saved).every(key=>PEER_TRANSFER_FIELDS.includes(key))
+      || saved.sourceStartedAt!==pending.sourceStartedAt || saved.sourceAt!==pending.sourceAt || saved.id!==pending.id || !matchingCheckpoint(saved.base,pending.base)||!matchingCheckpoint(saved.target,pending.target)
       ||saved.contentHash!==pending.contentHash||saved.rows!==pending.rows) fail();
     return {spool,pending};
   } catch(error){spool.close();throw error;}
@@ -310,6 +346,7 @@ function validateLearningChanges(db,checks) {
 export function applyPeerTransfer(db,{base,target,contentHash,changes,rows}={}) {
   if(!validCheckpoint(base)||!validCheckpoint(target)||base.databaseId!==target.databaseId||!/^([a-f0-9]{64})$/.test(contentHash)
     ||target.sequence<base.sequence||!Number.isSafeInteger(rows)||rows<0) fail();
+  peerAnchor(db);
   return withLearningChecks(db,checks=>{
     const head=validateCheckpoint(db),state=journalConnection(db);
     if(matchingCheckpoint(head,target)) return head;

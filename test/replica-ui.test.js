@@ -248,6 +248,15 @@ test('primary sync notice reports progress and retries without exposing transpor
   assert.equal($('replica-notice').hidden, true);
 });
 
+test('an unsupported pending mirror delivery reports the preservation requirement', () => {
+  const display = primaryReplicationDisplay({ topology: 'mirror', role: 'master',
+    sync: { state: 'error', error: 'journal_peer_format_incompatible' } });
+  assert.match(display.summary, /synchronization is blocked.*Home control continues/);
+  assert.match(display.detail, /Preserve the database and staging files/);
+  assert.match(display.detail, /acknowledge.*matching application/);
+  assert.match(display.detail, /Do not reset history/);
+});
+
 test('the header separates paired authority from the master’s feature automation permissions', () => {
   const { document, $ } = fixture();
   for (const enabled of [false, true]) {

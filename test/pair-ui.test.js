@@ -151,6 +151,14 @@ test('incompatible algorithms, state and integrity errors remain distinct and bl
   }
 });
 
+test('unsupported pending delivery guidance preserves files and requires its matching application', () => {
+  const view = primary({ sync: { state: 'error', error: 'journal_peer_format_incompatible' } });
+  const help = pairIssueHelp(view);
+  assert.match(help, /Preserve the database and staging files/);
+  assert.match(help, /acknowledge.*matching application/);
+  assert.match(help, /Do not reset history/);
+});
+
 test('the master displays a connected slave synchronization failure without mislabeling it local history', () => {
   const peer = { reachable: true, role: 'slave', sync: { state: 'error', error: 'database_algorithm_mismatch' } };
   assert.match(pairIssueHelp(primary({ peer })), /different learning algorithm/);

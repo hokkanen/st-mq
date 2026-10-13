@@ -81,7 +81,7 @@ const PUBLIC_ERRORS = new Set(['peer_unavailable', 'peer_authentication_failed',
   'runtime_failed', 'database_schema_mismatch', 'database_schema_invalid',
   'database_algorithm_mismatch', 'database_state_incompatible', 'database_integrity_failed',
   'database_journal_invalid', 'journal_history_expired', 'journal_checkpoint_mismatch', 'journal_hash_mismatch',
-  'journal_transaction_too_large', 'journal_peer_conflict', 'journal_peer_invalid', 'journal_peer_unregistered', 'journal_peer_pending', 'full_verification_checkpoint_mismatch', 'full_verification_content_mismatch',
+  'journal_transaction_too_large', 'journal_peer_conflict', 'journal_peer_invalid', 'journal_peer_unregistered', 'journal_peer_pending', 'journal_peer_format_incompatible', 'full_verification_checkpoint_mismatch', 'full_verification_content_mismatch',
   'ocpp_handover_not_ready', 'mqtt_handover_not_ready', 'mqtt_source_context_invalid', 'mqtt_source_contract_mismatch', 'stopped', 'timed_out',
   ...RECOVERY_ERROR_CODES]);
 export function publicPairError(error) {

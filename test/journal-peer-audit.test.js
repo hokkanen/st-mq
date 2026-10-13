@@ -12,6 +12,7 @@ import { enrollJournalPeer, peerAnchor, preparePeerTransfer, peerTransferRows,
   acknowledgePeer, applyPeerTransfer, rewindPeer, releasePeerSource } from '../src/storage/journal-peer.js';
 import { PeerTransfers, peerOperation, receivePeerTransfer } from '../src/replication/coalesced.js';
 import { PairManager } from '../src/pairing/manager.js';
+import { createSourceSnapshot } from '../src/replication/transport.js';
 import { SnapshotRepository } from '../src/pairing/snapshots.js';
 
 async function fixture(t, populate = () => {}) {
@@ -287,7 +288,7 @@ for (const interrupted of ['lost-ack', 'committed-ack', 'unpinned-ack']) test(`a
   f.source.setState('synthetic-seed', 1);
   const seed = await snapshots.create({ dbPath: f.source.path, claim, sequence: 1, force: true, pin: true });
   const sourcePath = join(snapshots.directory, `export-${seed.generation}.sqlite`);
-  const delivery = preparePeerTransfer(f.source.db, { after: f.receiver.checkpoint(), sourcePath });
+  const delivery = preparePeerTransfer(f.source.db, { after: f.receiver.checkpoint(), sourcePath, sourceSnapshot: seed });
   deliver(f.source, f.receiver, delivery);
   if (interrupted !== 'lost-ack') {
     const result = await peerOperation('acknowledge', { dbPath: f.source.path, checkpoint: delivery.target });
@@ -318,8 +319,8 @@ test('receiving reverse-direction changes cannot erase an unfinished owned seed 
   const f = await fixture(t);
   f.source.setState('synthetic-original-master', 1);
   const sourcePath = join(f.directory, 'synthetic-seed.sqlite');
-  await f.source.backup(sourcePath);
-  const seed = preparePeerTransfer(f.source.db, { after: f.receiver.checkpoint(), sourcePath });
+  const sourceSnapshot = await createSourceSnapshot({ dbPath: f.source.path, destination: sourcePath });
+  const seed = preparePeerTransfer(f.source.db, { after: f.receiver.checkpoint(), sourcePath, sourceSnapshot });
   deliver(f.source, f.receiver, seed);
   assert.equal(acknowledgePeer(f.source.db, { checkpoint: seed.target }).sourcePath, sourcePath);
   f.receiver.setState('synthetic-new-master', 2);

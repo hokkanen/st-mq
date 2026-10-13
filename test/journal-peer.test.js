@@ -225,7 +225,8 @@ test('peer spool pages bound bytes as well as row count and acknowledgement resu
 
 test('failed source opening releases the staging lease and removes its abandoned partial file',async t=>{
  const {a,b,dir}=await fixture(t),base=b.checkpoint();a.setState('doc',{counter:44});
- assert.throws(()=>preparePeerTransfer(a.db,{after:base,sourcePath:join(dir,'synthetic-missing.sqlite')}));
+ assert.throws(()=>preparePeerTransfer(a.db,{after:base,sourcePath:join(dir,'synthetic-missing.sqlite'),
+  sourceSnapshot:{checkpoint:a.checkpoint(),sourceStartedAt:1,sourceAt:1}}));
  assert.equal(peerAnchor(a.db).pending,null);
  const {readdir}=await import('node:fs/promises');
  assert(!(await readdir(dir)).some(name=>name.endsWith('.partial')));

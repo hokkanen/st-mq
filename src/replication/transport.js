@@ -8,7 +8,7 @@ import { ownedDirectory, replicationError, syncDirectory } from './publication.j
 import { sshOptions } from './ssh-options.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
 import { databaseCheckpoint, JOURNAL_DIGEST, sameCheckpoint } from './incremental.js';
-import { checkpointMetadata } from './journal-publication.js';
+import { checkpointMetadata, peerPublicationBoundary } from './journal-publication.js';
 import { CHANGE_CHUNK_BYTES, PeerTransfers, peerOperation } from './coalesced.js';
 
 const wrapper = fileURLToPath(new URL('../../scripts/replica-ssh.js', import.meta.url));
@@ -18,7 +18,7 @@ const PUBLIC_ERRORS = new Set(['configuration_invalid', 'tool_unavailable', 'con
   'directory_not_empty', 'unsafe_directory', 'invalid_publication', 'timed_out', 'stopped', 'protocol_failed',
   'database_schema_mismatch', 'database_schema_invalid', 'database_algorithm_mismatch',
   'database_state_incompatible', 'database_integrity_failed', 'database_journal_invalid',
-  'lineage_mismatch', 'journal_history_expired', 'journal_checkpoint_mismatch', 'journal_hash_mismatch', 'journal_transaction_too_large', 'journal_peer_conflict', 'journal_peer_invalid', 'journal_peer_unregistered', 'journal_peer_pending']);
+  'lineage_mismatch', 'journal_history_expired', 'journal_checkpoint_mismatch', 'journal_hash_mismatch', 'journal_transaction_too_large', 'journal_peer_conflict', 'journal_peer_invalid', 'journal_peer_unregistered', 'journal_peer_pending', 'journal_peer_format_incompatible']);
 
 function publicationResult(publication,transferredBytes) {
   const {generation,digest,digestAlgorithm,checkpoint,bytes,sourceStartedAt,sourceAt,verifiedAt}=publication;
@@ -192,9 +192,7 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
         const anchor=await peerOperation('anchor',{dbPath,signal:abort.signal});
         if(anchor.pending && sameCheckpoint(anchor.pending.target,after))await acknowledge(after);
         const transfer=await peerTransfers.export({dbPath,after,signal:abort.signal,onYield});
-        metadata={...currentMetadata,...(transfer.target.sequence<checkpoint.sequence?{
-          sourceAt:ready.publication.sourceAt,sourceStartedAt:ready.publication.sourceStartedAt}:{}),
-          checkpoint:transfer.target,digest:transfer.target.hash};
+        metadata=peerPublicationBoundary(currentMetadata,transfer);
         channel.send({type:'peer-apply-begin',transfer});
         if((await channel.next()).type!=='apply-ready')throw replicationError('protocol_failed');
         for(let offset=0;offset<transfer.bytes;offset+=CHANGE_CHUNK_BYTES) {
@@ -228,7 +226,7 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
     onPhase('snapshotting');
     const result = await snapshot({ dbPath, destination, signal: abort.signal });
     const anchor=await peerOperation('anchor',{dbPath,signal:abort.signal});
-    await peerTransfers.export({dbPath,after:anchor.checkpoint,sourcePath:destination,refresh:true,signal:abort.signal,onYield});
+    await peerTransfers.export({dbPath,after:anchor.checkpoint,sourcePath:destination,sourceSnapshot:result,refresh:true,signal:abort.signal,onYield});
     onPhase('transferring');
     for (let attempt = 0; attempt < 2; attempt++) {
       const remote = `${config.sshHost}:${config.remoteDirectory}/incoming-${generation}.sqlite`;

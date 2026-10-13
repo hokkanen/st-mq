@@ -1262,3 +1262,52 @@ test('rejoin after both branches compact preserves unique excluded history and r
   assert.equal(selected.getState('synthetic-excluded-control'),null);
   assert.equal(selected.events({type:'synthetic-unique-after-divergence'}).length,0);selected.close();
 });
+
+for (const verifyWithFullSnapshot of [false, true]) test(`protected rejoin publishes the frozen ${verifyWithFullSnapshot ? 'static snapshot' : 'live transfer'} clocks after recording advances`, async t => {
+  const root = await fixture(t);
+  const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
+    recoveryPreview: async () => ({ previewId: randomBytes(32).toString('hex'), status: 'checked', model: { status: 'not-assessed' } }),
+  } });
+  const donor = await manager(t, root, 'donor', { role: 'slave' }); connect(primary, donor);
+  await donor.synchronize(primary.state.claim()); await donor.action('promote', command());
+  const history = new Store(donor.state.value.activeDbPath);
+  history.event('synthetic-divergent-rejoin', {}, 100); history.close();
+  await donor.observeClaim(primary.state.claim());
+  await primary.action('check-recovery', command());
+  const originalCheckpoint = primary.exportCheckpoint.bind(primary), originalTransfer = primary.peerTransfers.export.bind(primary.peerTransfers);
+  let queried, frozen, staticSnapshot;
+  primary.exportCheckpoint = async () => {
+    queried = await originalCheckpoint();
+    const source = new Store(primary.state.value.activeDbPath);
+    source.setState('synthetic-write-after-head-query', 1); source.close();
+    return queried;
+  };
+  primary.peerTransfers.export = async options => {
+    staticSnapshot ??= options.sourceSnapshot;
+    const delivery = await originalTransfer(options);
+    frozen ??= delivery;
+    return delivery;
+  };
+  const originalRequest = primary.peer.request.bind(primary.peer);
+  let release;
+  primary.peer.request = (operation, body, options) => {
+    if (operation === 'release') release = structuredClone(body);
+    return originalRequest(operation, body, options);
+  };
+  await primary.action('rejoin', { ...command(), discardUnrecovered: true,
+    previewId: primary.status().recovery.preview.previewId, verifyWithFullSnapshot });
+  assert(frozen.target.sequence > queried.checkpoint.sequence);
+  assert.deepEqual(release.metadata.checkpoint, frozen.target);
+  assert.equal(release.metadata.sourceAt, frozen.sourceAt);
+  assert.equal(release.metadata.sourceStartedAt, frozen.sourceStartedAt);
+  if (verifyWithFullSnapshot) {
+    assert.deepEqual(frozen.target, staticSnapshot.checkpoint);
+    assert.equal(frozen.sourceAt, staticSnapshot.sourceAt);
+    assert.equal(frozen.sourceStartedAt, staticSnapshot.sourceStartedAt);
+  }
+  const publication = await readReplicaPublication(donor.config.snapshotDirectory);
+  assert.deepEqual(publication.checkpoint, frozen.target);
+  assert.equal(publication.sourceAt, frozen.sourceAt);
+  assert.equal(publication.sourceStartedAt, frozen.sourceStartedAt);
+  assert.equal(donor.state.value.role, 'slave'); assert.equal(donor.canControl(), false);
+});
