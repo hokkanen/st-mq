@@ -1414,7 +1414,29 @@ export class PairManager {
         const { dbPath: retainedPath, ...preservedSnapshot } = currentDonor;
         await this.state.update({ role: 'protected', release: { epoch: metadata.claim.epoch, digest: metadata.digest, identity,
           ...(retainReplica ? { preservedSnapshot } : {}) }, reason: 'rejoining' });
-        const result = await this.installReplica(metadata, { signal: this.abort.signal, allowRelease: true });
+        let result, acceptedUnchanged;
+        const accepted = this.state.value.accepted;
+        if (accepted?.generation === metadata.generation) {
+          // Current seed acceptance replaces its byte digest with the journal
+          // checkpoint digest. Resume this exact accepted release; republishing
+          // the original seed would rewrite an already accepted generation.
+          acceptedUnchanged = await this.replicaPublicationGuard(this.abort.signal);
+          result = await readReplicaPublication(this.config.snapshotDirectory);
+          if (!result || result.digestAlgorithm !== JOURNAL_DIGEST
+            || !sameCheckpoint(accepted.checkpoint, metadata.checkpoint)
+            || !sameCheckpoint(result.checkpoint, metadata.checkpoint)
+            || !isDeepStrictEqual(result.claim, metadata.claim) || result.sequence !== metadata.sequence
+            || result.bytes !== metadata.bytes || result.chunkBytes !== metadata.chunkBytes
+            || result.sourceStartedAt !== metadata.sourceStartedAt || result.sourceAt !== metadata.sourceAt
+            || result.dbPath !== join(resolve(this.config.snapshotDirectory), `snapshot-${metadata.generation}.sqlite`))
+            throw pairError('verification_failed');
+          await this.fullVerification(result.dbPath, metadata.checkpoint);
+          const remote = await this.peer.request('status', { claim: this.state.claim(), sync: publicSync(this.sync) }, { signal: this.abort.signal });
+          if (remote.claim?.role !== 'master' || remote.claim.epoch !== metadata.claim.epoch
+            || remote.claim.nodeId !== metadata.claim.nodeId) throw pairError('authority_changed');
+          await this.assertReplica(metadata.claim, { allowRelease: true });
+          await acceptedUnchanged();
+        } else result = await this.installReplica(metadata, { signal: this.abort.signal, allowRelease: true });
         if (body.verifyWithFullSnapshot === true) {
           if (!body.verification || !sameCheckpoint(body.verification.checkpoint, metadata.checkpoint))
             throw pairError('full_verification_checkpoint_mismatch');
@@ -1422,6 +1444,7 @@ export class PairManager {
           if (actual.digest !== body.verification.digest) throw pairError('full_verification_content_mismatch');
         }
         await this.peer.request('peer-ack',{checkpoint:result.checkpoint},{signal:this.abort.signal,timeoutMs:this.config.timeoutMs});
+        await acceptedUnchanged?.();
         await this.hooks.closeReplica?.();
         await this.state.update({ role: 'slave', reason: null, release: null, transition: null, everWritten: false,
           activeDbPath: null, recovery: null, activationError: null, releaseReceipt: { requestId: body.requestId, identity } });

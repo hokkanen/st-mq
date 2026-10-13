@@ -1036,6 +1036,13 @@ replacement can resume that same request. During
 journal replacement its read-only web view stays closed until that request
 completes; a closed view alone does not establish a stopped process.
 
+An exceptional full seed already accepted under that saved release can resume
+its acknowledgement from the exact accepted generation, checkpoint and frozen
+source metadata. It performs full current verification and checks the current
+peer authority without republishing the original seed image. Publication and
+local-write guards remain active through acknowledgement; changed or unknown
+evidence leaves the computer protected.
+
 Independent donor histories without a shared configured-peer anchor require
 exceptional full replacement. That path
 retains the original former-master database and its SQLite sidecars; a protected
