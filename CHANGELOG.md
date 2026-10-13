@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Allow guarded native Easee handback when retained disconnect evidence belongs
+  to a proven earlier session, preserving the event and current restoration,
+  native instruction and ownership checks.
+
 - Rejoining a protected computer allows its final history acknowledgement to
   finish within the configured operation timeout, avoiding a premature short
   timeout after replacement history was already accepted. Failed or interrupted
