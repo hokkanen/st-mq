@@ -24,6 +24,13 @@ An older runtime or database is not a supported replication peer. Historical
 version 0.7.5 data enters through the supported [read-only CSV import](csv-import.md)
 on the master, which records it in the current schema before replication.
 
+Each read request pins and checks its selected publication checkpoint before
+serving rows. A database that has advanced before its manifest is published can
+temporarily refuse a request; the viewer never serves a mismatched boundary.
+If a checkpoint read or validation fails after the request transaction opens,
+that transaction is rolled back before rejecting the request. Cleanup preserves
+the original failure and does not grant authority to malformed saved data.
+
 ## Set up two standalone Linux computers
 
 Install ST-MQ and build its UI on both computers using the normal installation

@@ -295,10 +295,19 @@ export async function startReplica({ config, clock = Date.now,
     const snapshot = current;
     if (snapshot) {
       if (!snapshot.references) {
-        snapshot.store.db.exec('BEGIN');
-        if (snapshot.publication.checkpoint && !matchingCheckpoint(snapshot.store.checkpoint(), snapshot.publication.checkpoint)) {
-          snapshot.store.db.exec('ROLLBACK');
-          throw Object.assign(new Error('The replica checkpoint advanced. Retry the request.'), { statusCode: 503 });
+        let opened = false;
+        try {
+          snapshot.store.db.exec('BEGIN'); opened = true;
+          if (snapshot.publication.checkpoint && !matchingCheckpoint(snapshot.store.checkpoint(), snapshot.publication.checkpoint))
+            throw Object.assign(new Error('The replica checkpoint advanced. Retry the request.'), { statusCode: 503 });
+        } catch (error) {
+          // No context exists yet for the server's release finally. Reject the
+          // original read failure after releasing this unleased transaction.
+          if (opened) try { snapshot.store.db.exec('ROLLBACK'); }
+          catch (cleanupError) {
+            try { if (error && typeof error === 'object') error.cleanupError ??= cleanupError; } catch {}
+          }
+          throw error;
         }
       }
       snapshot.references++;

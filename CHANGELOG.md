@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Slave viewers release a read transaction when checkpoint validation fails,
+  preventing one failed read from leaving subsequent requests stuck.
+
 - Pairing and SSH mirror publications keep the source clocks of the exact frozen
   delivery, preventing intermittent unavailable saved charging and learning views
   when recording advances during synchronization. Retries and static seeds retain

@@ -72,6 +72,75 @@ async function viewer(t, directory, readPublication, extra = {}) {
   return { app, request };
 }
 
+function journalSnapshot(...args) {
+  const publication = snapshot(...args), store = new Store(publication.dbPath, { readOnly: true });
+  try { return { ...publication, checkpoint: store.checkpoint() }; }
+  finally { store.close(); }
+}
+
+test('a checkpoint statement read failure rolls back its unleased context and the next request succeeds', async t => {
+  const directory = fixture(t), publication = journalSnapshot(directory, 'checkpoint-read-failure');
+  const { app, request } = await viewer(t, directory, async () => publication);
+  const prepare = app.store.db.prepare.bind(app.store.db), exec = app.store.db.exec.bind(app.store.db);
+  const boundaries = []; let reads = 0;
+  const failure = Object.assign(new Error('Synthetic checkpoint statement read failure'), { statusCode: 503 });
+  t.mock.method(app.store.db, 'prepare', sql => {
+    const statement = prepare(sql);
+    if (sql !== 'SELECT database_id,sequence,hash FROM journal_meta WHERE id=1') return statement;
+    return { get() { if (++reads === 1) throw failure; return statement.get(); } };
+  });
+  t.mock.method(app.store.db, 'exec', sql => { boundaries.push(sql); return exec(sql); });
+  assert.deepEqual(await request('/api/status'), { status: 503,
+    body: { error: 'Request could not be confirmed. Retry shortly.' } });
+  assert.deepEqual(boundaries, ['BEGIN', 'ROLLBACK']);
+  assert.equal((await request('/api/status')).status, 200);
+  assert.deepEqual(boundaries, ['BEGIN', 'ROLLBACK', 'BEGIN', 'ROLLBACK']);
+  assert.equal(reads, 2);
+  assert.equal(digest(publication.dbPath), publication.digest, 'Reader cleanup does not change the saved database');
+});
+
+test('failed read admission preserves its original error without releasing an unopened transaction', async t => {
+  const directory = fixture(t), publication = journalSnapshot(directory, 'checkpoint-begin-failure');
+  const { app, request } = await viewer(t, directory, async () => publication);
+  const exec = app.store.db.exec.bind(app.store.db), boundaries = []; let refuse = true;
+  t.mock.method(app.store.db, 'exec', sql => {
+    boundaries.push(sql);
+    if (sql === 'BEGIN' && refuse) {
+      refuse = false;
+      throw Object.assign(new Error('Synthetic read admission failure'), { statusCode: 409 });
+    }
+    return exec(sql);
+  });
+  assert.deepEqual(await request('/api/status'), { status: 409, body: { error: 'Synthetic read admission failure' } });
+  assert.deepEqual(boundaries, ['BEGIN']);
+  assert.equal((await request('/api/recording-health')).status, 200);
+  assert.deepEqual(boundaries, ['BEGIN', 'BEGIN', 'ROLLBACK']);
+  assert.equal(digest(publication.dbPath), publication.digest);
+});
+
+test('malformed current checkpoints keep failing closed while each refused read releases its transaction', async t => {
+  const directory = fixture(t), publication = journalSnapshot(directory, 'checkpoint-malformed');
+  const { app, request } = await viewer(t, directory, async () => publication);
+  const prepare = app.store.db.prepare.bind(app.store.db), exec = app.store.db.exec.bind(app.store.db);
+  const boundaries = []; let malformed = true;
+  t.mock.method(app.store.db, 'prepare', sql => {
+    const statement = prepare(sql);
+    if (sql !== 'SELECT database_id,sequence,hash FROM journal_meta WHERE id=1') return statement;
+    return { get: () => malformed ? { database_id: 'unsupported', sequence: -1, hash: 'invalid' } : statement.get() };
+  });
+  t.mock.method(app.store.db, 'exec', sql => { boundaries.push(sql); return exec(sql); });
+  const first = await request('/api/status');
+  assert.equal(first.status, 400);
+  assert.match(first.body.error, /transaction checkpoint could not be verified.*Preserve the database/);
+  assert.deepEqual(await request('/api/recording-health'), first,
+    'A malformed checkpoint is still rejected rather than becoming a nested-BEGIN failure or a readable fallback');
+  assert.deepEqual(boundaries, ['BEGIN', 'ROLLBACK', 'BEGIN', 'ROLLBACK']);
+  malformed = false;
+  assert.equal((await request('/api/status')).status, 200);
+  assert.deepEqual(boundaries, ['BEGIN', 'ROLLBACK', 'BEGIN', 'ROLLBACK', 'BEGIN', 'ROLLBACK']);
+  assert.equal(digest(publication.dbPath), publication.digest);
+});
+
 test('replica startup seeks the latest recorded decision by commit order without sorting history', async t => {
   const directory=fixture(t),publication=snapshot(directory,'decision-index');
   const writer=new Store(publication.dbPath);
