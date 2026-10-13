@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- A transient Easee OCPP Charging status no longer releases an application pause
+  while the charger still confirms its effective zero-current schedule. Failed
+  readback and pending writes stay uncertain; newer Stop and schedule instructions
+  retain their independent priority.
+
 - A Tesla stopped 5 A report received while a same-connection Stop awaits its reply
   remains unknown instead of becoming a lasting vehicle current limit. Earlier
   qualified limits keep their original evidence; zero and independent requests

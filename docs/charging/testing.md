@@ -48,6 +48,14 @@ supply new evidence. Reading a fixture's view is not an event. These regressions
 prove software behavior with controlled source events and fault injection; they
 do not qualify storage hardware or establish a real device's physical response.
 
+The OCPP controller fixtures exercise real native profile installation,
+replacement and composite parsing. A transient Charging report while the
+effective schedule is still zero must not release the profile. The same cases
+cover unavailable readback, uncertain own writes, concurrent native instruction
+or scope changes and current-format restart, preserving original event clocks.
+These controlled protocol results do not identify the cause of a live firmware
+status transition or establish who issued an external instruction.
+
 ## Prepare a bounded session
 
 1. Record the application revision, charger firmware, actual car-to-charger

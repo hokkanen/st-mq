@@ -412,12 +412,24 @@ removal yields the current physical connection to external control; only the
 application's exact OCPP profile is released. Native current limits remain in
 the charger.
 A fresh Charging observation before an owned, physically confirmed pause expires
-also establishes an app release, unless ST-MQ already has a pending Clear for
-that exact owned profile. The charger may have applied that Clear despite a lost
-reply; its resulting Charging status cannot become a new external instruction
-that prevents normal Resume. The pending Clear keeps its existing reconciliation
-and retry boundary. Separately observed external Stops and schedule edits retain
-priority. `SuspendedEVSE` or zero power alone does not identify a manual action.
+can establish a release only when a current `GetCompositeSchedule` also confirms
+that the effective zero restriction no longer covers the remaining pause. The
+query and final native reread retain the same owned instruction, physical
+connection, confirmed transaction and original Charging event. A still-effective
+zero leaves the physical pause unconfirmed while status or power disagrees; it
+does not authorize profile removal. Failed or obsolete readback leaves release
+unknown and cannot supply a new Clear or Start permission. Composite readback
+verifies the effective envelope, not a particular profile's ownership or who acted.
+
+A pending own install or Clear keeps its existing bounded reconciliation and
+retry boundary. The charger may have applied that command despite a lost reply;
+resulting Charging status cannot become a new external instruction that prevents
+normal Resume. Separately source-timed external Stops and schedule edits retain
+priority without depending on this inferred-release query. Original event clocks
+are never renewed by the query, receipt or restart. The inferred release uses
+the original Charging source time as its instruction boundary, so a later
+source-timed local Stop retains priority even when admitted after a delayed
+query. `SuspendedEVSE` or zero power alone does not identify a manual action.
 
 Explicit takeover compares a temporarily unavailable cloud schedule read against
 the last observed schedule without renewing its source evidence. Losing that

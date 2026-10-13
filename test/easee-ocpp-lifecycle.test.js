@@ -913,11 +913,48 @@ test('production native adapter distinguishes app priority from Equalizer suspen
   assert.equal(x.nativeWrites().length, 1);
 });
 
-test('production native read recognizes app Charge now only after physical confirmation of an owned pause', async t => {
+test('production native reads retain an effective zero through a replacement and transient Charging status', async t => {
+  const x = await nativeAppFixture(t);
+  await x.controller.update({ enabled: true, plan: x.plan });
+  x.f.advance(1000);
+  const startAt = AT + 45 * 60_000;
+  await x.controller.update({ plan: { ...x.plan, startAt, periods: [{ startAt, endAt: null }] } });
+  const saved = x.saved, before = x.nativeWrites().length;
+  assert.equal(before, 2);
+  assert.equal(x.nativeWrites()[0].payload.csChargingProfiles.chargingProfileId, x.nativeWrites()[1].payload.csChargingProfiles.chargingProfileId);
+  x.f.advance(3000); x.physical('Charging', 0);
+  const view = await x.controller.update();
+  assert.equal(view.phase, 'pause-unconfirmed'); assert.equal(view.manual, null); assert.equal(view.pauseConfirmed, false);
+  assert.deepEqual(view.owned, saved.owned); assert.deepEqual(view.pauseWitness, saved.pauseWitness);
+  assert.equal(x.nativeWrites().length, before); assert.equal(x.listener.options.canStart(), false);
+  assert.equal(view.snapshot.statusAt, x.f.now); assert.equal(view.snapshot.powerAt, x.f.now);
+  x.f.advance(1000); x.physical('SuspendedEVSE', 0);
+  assert.equal((await x.controller.update()).pauseConfirmed, true); assert.equal(x.nativeWrites().length, before);
+});
+
+test('production native Stop retains source priority over a release qualified by a delayed composite', async t => {
+  const x = await nativeAppFixture(t);
+  await x.controller.update({ enabled: true, plan: x.plan });
+  x.profiles.delete(x.saved.owned.profileId); x.f.advance(1000); x.physical('Charging', 7);
+  const chargingAt = x.f.now, nativeRequest = x.f.nativeRequest;
+  x.f.nativeRequest = async (...args) => { const reply = await nativeRequest(...args); if (args[0] === 'GetCompositeSchedule') x.f.advance(5000); return reply; };
+  const released = await x.controller.update();
+  assert.equal(released.manual.kind, 'release'); assert.equal(released.manual.at, chargingAt); assert.equal(x.f.now, AT + 6000);
+  x.f.nativeRequest = nativeRequest; x.f.advance(1000); x.physical('Charging', 0, null);
+  const stop = { transactionId: 7, at: AT + 4000, receivedAt: x.f.now, reason: 'Local' };
+  x.listener.control = { ...x.listener.control, timestamp: chargingAt, nativeStop: stop };
+  const stopped = await x.controller.update();
+  assert.equal(stopped.manual.kind, 'stop'); assert.equal(stopped.phase, 'yielded');
+  assert.deepEqual(stopped.snapshot.nativeStop, stop); assert.equal(stopped.snapshot.transactionConfirmed, false);
+  assert.equal(x.listener.options.canStart(), false, 'The real provider cannot renew a replacement transaction lease after the later native Stop');
+});
+
+test('production native read recognizes release after physical pause confirmation and effective zero removal', async t => {
   const x = await nativeAppFixture(t);
   let view = await x.controller.update({ enabled: true, plan: x.plan });
   const saved = x.saved, id = view.owned.profileId;
   assert.equal(view.pauseConfirmed, true);
+  x.profiles.delete(id);
   x.f.advance(1000); x.physical('Charging', 7);
   const restarted = x.createController(saved); t.after(() => restarted.close());
   view = await restarted.update({ enabled: true, plan: x.plan });
@@ -1184,6 +1221,7 @@ test('native transaction rollover keeps app priority and the same physical conne
   const x = await nativeAppFixture(t);
   let view = await x.controller.update({ enabled: true, plan: x.plan });
   const connectedAt = view.session.connectedAt;
+  x.profiles.delete(view.owned.profileId);
   x.f.advance(1000); x.physical('Charging', 7);
   view = await x.controller.update({ enabled: true });
   assert.equal(view.manual.kind, 'release');
@@ -1222,6 +1260,7 @@ test('older Easee cloud control observations cannot acknowledge or erase a newer
 test('a newer Easee schedule wins over a takeover request for an earlier displayed release', async t => {
   const x = await nativeAppFixture(t);
   await x.controller.update({ enabled: true, plan: x.plan });
+  x.profiles.delete(x.saved.owned.profileId);
   x.f.advance(1000); x.physical('Charging', 7);
   let view = await x.controller.update({ enabled: true });
   assert.equal(view.manual.kind, 'release');

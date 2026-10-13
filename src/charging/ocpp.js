@@ -576,12 +576,12 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   const localStopInSession = stop => time(state.session?.connectedAt)
     && (stop.at > state.session.connectedAt
       || localStopAfter(stop, state.session.connectedAt) && stop.transactionId === state.session.transactionId);
-  async function observeAppControl() {
+  async function observeAppControl(current, signal) {
     const now = clock(), app = snapshot.appControl, prior = state.appControl;
     const changes = {};
-    const manual = (kind, evidence, resumeAt = null) => {
-      changes.manual = { id: hash([kind, evidence, now, state.session?.connectedAt]), kind, at: now,
-        transactionId: snapshot.transactionId, resumeAt, cycleEndsAt: resolveChargingDeadline(now, desired.readyBy, desired.timezone) };
+    const manual = (kind, evidence, resumeAt = null, at = now) => {
+      changes.manual = { id: hash([kind, evidence, at, state.session?.connectedAt]), kind, at,
+        transactionId: snapshot.transactionId, resumeAt, cycleEndsAt: resolveChargingDeadline(at, desired.readyBy, desired.timezone) };
       changes.execution = null; changes.released = kind === 'release'; changes.provisional = false;
     };
     const localStop = snapshot.nativeStop;
@@ -620,17 +620,26 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         schedule: app.schedule && (!prior || app.readAt >= prior.readAt) ? app.schedule : prior?.schedule ?? null };
     }
     const witness = state.pauseWitness;
-    // An uncertain Clear may already have released our pause. Its resulting
-    // Charging status cannot identify an external release; retain the exact
-    // pending command until its existing reconciliation completes. Independently
-    // observed Stop and schedule changes above keep their own authority.
-    const clearingOwned = state.pending?.action === 'clear'
-      && state.pending.instruction.fingerprint === state.owned?.fingerprint;
-    if (!changes.manual && !state.manual && !clearingOwned && witness && state.owned?.profileId === witness.profileId
+    // Charging can be transient while our zero profile remains effective, or
+    // result from an uncertain own command. Neither identifies a newer release.
+    // Independent Stop and schedule changes above retain their own authority.
+    if (!changes.manual && !state.manual && !state.pending && witness && state.owned?.profileId === witness.profileId
       && snapshot.transactionConfirmed && snapshot.transactionId === witness.transactionId
       && snapshot.connectionId === witness.connectionId && now < state.owned.startAt
       && snapshot.connectorStatus === 'Charging' && snapshot.statusAt > witness.at && fresh(snapshot.statusAt, now)) {
-      manual('release', ['native-charging', snapshot.statusAt, witness.profileId]);
+      const owned = state.owned, charging = snapshot;
+      const currentRelease = () => canWrite(current) && !state.pending && state.owned === owned
+        && state.pauseWitness === witness && clock() < owned.startAt && fresh(charging.statusAt, clock());
+      const composite = await adapter.composite(charging, owned.startAt + 60_000, { signal, guard: currentRelease });
+      snapshot = await adapter.read({ signal });
+      if (!currentRelease() || !snapshot.online || !fresh(snapshot.readAt, clock()) || !snapshot.transactionConfirmed
+        || snapshot.connectionId !== charging.connectionId || snapshot.transactionId !== charging.transactionId
+        || snapshot.connectorStatus !== charging.connectorStatus || snapshot.statusAt !== charging.statusAt
+        || instructionChanged(charging, snapshot) || !isDeepStrictEqual(snapshot.nativeStop, charging.nativeStop))
+        throw fail('control-revoked');
+      if (!coversZero(composite, Math.max(clock(), composite.startAt), owned.startAt))
+        // Qualification receipt must not outrank a later source-timed Stop.
+        manual('release', ['native-charging', charging.statusAt, witness.profileId], null, charging.statusAt);
     }
     if (Object.keys(changes).length) await commit(changes);
   }
@@ -812,7 +821,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
             nativeTakeoverAt: unresolved.requestedAt });
         else if (desired.enabled === true) return display('unconfirmed', REASONS['takeover-unconfirmed'], 'takeover-unconfirmed');
       }
-      await observeAppControl();
+      await observeAppControl(current, signal);
       if (desired.takeover) {
         const token = desired.takeover; desired.takeover = null;
         await takeOver(current, token, signal);
@@ -975,7 +984,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         ownsInstruction = pauseConfirmed = false;
         throw fail('control-revoked');
       }
-      await observeAppControl();
+      await observeAppControl(current, signal);
       if (staleAppControl()) throw fail('control-revoked');
       if (state.manual || nativeStopped()) {
         if (!await clearInstruction(state.owned, current, signal)) return display('unconfirmed', 'Native profile release is waiting for its bounded retry.');
