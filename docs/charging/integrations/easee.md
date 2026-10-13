@@ -309,9 +309,10 @@ that the connected native OCPP server takes over charging authorization, RFID
 handling and charge schedules. The cloud scheduler described above cannot be
 assumed to remain effective after activation. ST-MQ selects one charging control
 backend at a time. Initial activation checks for an active cloud schedule before
-suspending the cloud controller. An active schedule defers commissioning,
-preserving both the restriction and any pending automatic takeover in the cloud
-controller. Once that schedule clears or expires, setup drains the old controller
+suspending the cloud controller. An external or unconfirmed schedule defers
+commissioning, preserving both the restriction and any pending automatic takeover
+in the cloud controller. A current, exactly confirmed ST-MQ economic delay may
+instead use the guarded handback described below. Setup drains the old controller
 and checks again before applying native configuration. Missing native control readiness or
 an unfinished handover stays visibly pending. Falling back to cloud readings
 does not switch the charging controller back to cloud schedules.
@@ -687,6 +688,15 @@ Open **Data & settings → Connections & configuration → Charging** and expand
 progress or retry, native control readiness and an existing cloud schedule
 waiting to hand over; **Local readings** separately reports the socket and fresh
 measurement readiness. Working cloud readings retain their own availability.
+When enabling native control again, ST-MQ may first release its exact confirmed
+cloud economic delay for the same current connection. Fresh charger state readback,
+unchanged equipment/session and instruction clocks, and completed cleanup are
+required before native Save/Apply. External schedules, newer Stop/current
+restrictions, pending takeover or tests, unavailable evidence and uncertain
+cleanup keep setup blocked. This integration handover preserves the Automatic
+preference and grants no new takeover or Start permission. Ordinary shutdown
+still preserves the cloud program; a configured listener alone does not confirm
+charger-side native control.
 Temporary listener readiness warnings clear when the listener recovers, without
 waiting for the next cloud check or reapplying charger configuration. Outstanding
 cloud failures and retry deadlines remain in effect. Storage and authorization

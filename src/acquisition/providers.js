@@ -189,12 +189,14 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     ocppSetupState: { get: () => store.getState('easee:ocpp-setup'),
       set: value => write(() => store.setState('easee:ocpp-setup', value), { priority: 'control' }) },
     ocppInstallation: localInstallation,
-    onOcppControlTransition: async ({ phase, adapter }) => {
+    onOcppControlTransition: async ({ phase, adapter, schedule, ownedCloudProof }) => {
       const charging = engine.charging;
       if (!charging?.pauseForBackendChange || !charging?.finishBackendChange)
         throw Object.assign(new Error('Native charging control is unavailable'), { code: 'native-control-unavailable' });
       try {
-        if (phase === 'prepare') return await charging.pauseForBackendChange('charger1');
+        if (phase === 'inspect-owned-cloud') return charging.ownedCloudBackendChangeProof('charger1', schedule);
+        if (phase === 'prepare') return await charging.pauseForBackendChange('charger1', { ownedCloudProof });
+        if (phase !== 'complete') throw new Error('Unsupported charging control transition.');
         const item = charging.charger('charger1');
         if (item.backendTransition) return await charging.finishBackendChange('charger1', adapter);
         if (item.adapter !== adapter) {

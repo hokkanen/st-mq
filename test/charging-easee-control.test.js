@@ -44,6 +44,80 @@ function harness() {
   return h;
 }
 
+test('a current own cloud delay drains with its original session and native clocks before backend change', async () => {
+  const h = harness(); await h.update();
+  const before = structuredClone(h.controller.status()), proof = h.controller.ownedBackendChangeProof(h.schedules);
+  assert.match(proof, /^[a-f0-9]{64}$/);
+  const result = await h.controller.releaseOwnedForBackendChange(proof);
+  assert.equal(result.handoverConfirmed, true); assert.equal(result.owned, null); assert.equal(result.pending, null);
+  assert.equal(h.schedules.enabled, 'none'); assert.equal(h.writes.length, 2);
+  assert.equal(result.session.connectedAt, before.session.connectedAt);
+  assert.equal(result.snapshot.observations[48].at, before.snapshot.observations[48].at);
+  assert.equal(h.dynamicA, 32, 'releasing a delay does not resume or change a native current limit');
+});
+
+for (const variant of ['external-schedule', 'stop', 'zero', 'disconnect', 'offline', 'authority', 'probe', 'generation', 'restart'])
+  test(`owned cloud backend proof cannot overrule a later ${variant}`, async () => {
+    const h = harness(); await h.update();
+    const proof = h.controller.ownedBackendChangeProof(h.schedules), before = h.writes.length;
+    assert(proof);
+    if (variant === 'external-schedule') h.schedules.delayed.startTime = '05:00:00';
+    if (variant === 'stop') { h.enabled = false; h.sourceTimes[31] = h.now; }
+    if (variant === 'zero') { h.dynamicA = 0; h.reason = 52; }
+    if (variant === 'disconnect') h.mode = 1;
+    if (variant === 'offline') h.online = false;
+    if (variant === 'authority') h.allowed = false;
+    if (variant === 'probe') h.identification = { id: 'new-probe', connectedAt: h.saved.session.connectedAt, phase: 'charging' };
+    if (variant === 'generation') await h.update();
+    if (variant === 'restart') { h.restart(); await h.update(); }
+    const result = await h.controller.releaseOwnedForBackendChange(proof);
+    assert.equal(h.writes.length, before, 'a stale proof supplies no schedule or device command');
+    assert.equal(result.handoverConfirmed, null);
+    assert.equal(h.schedules.enabled, 'delayed');
+    if (variant === 'zero') assert.equal(h.dynamicA, 0);
+  });
+
+for (const limit of [0, 12]) test(`native ${limit}A instruction during the final clear read preserves the exact own delay`, async () => {
+  const h = harness(); await h.update(); const proof = h.controller.ownedBackendChangeProof(h.schedules);
+  let reads = 0;
+  h.readHook = url => { if (url.endsWith('/schedules') && ++reads === 2) { h.dynamicA = limit; h.reason = limit === 0 ? 52 : 54; } };
+  const result = await h.controller.releaseOwnedForBackendChange(proof);
+  assert.equal(h.writes.length, 1); assert.equal(h.schedules.enabled, 'delayed'); assert.equal(h.dynamicA, limit);
+  assert.equal(result.handoverConfirmed, false); assert.equal(result.errorCode, 'state-changed');
+});
+
+test('a new controller revision while the handover read waits revokes the original proof', async () => {
+  const h = harness(); await h.update(); const proof = h.controller.ownedBackendChangeProof(h.schedules);
+  let entered, release;
+  const waiting = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
+  let held = false;
+  h.readHook = async url => { if (!held && url.endsWith('/schedules')) { held = true; entered(); await gate; } };
+  const draining = h.controller.releaseOwnedForBackendChange(proof); await waiting;
+  const newer = h.update(); release(); await Promise.all([draining, newer]);
+  assert.equal(h.writes.length, 1); assert.equal(h.schedules.enabled, 'delayed');
+  assert.equal(h.controller.status().owned.startAt, NOW + 3 * 3600_000);
+});
+
+test('same-version restart requires a new current proof and preserves the saved own delay clocks', async () => {
+  const h = harness(); await h.update(); const before = structuredClone(h.saved);
+  const first = h.controller.ownedBackendChangeProof(h.schedules);
+  h.restart(); await h.update(); const current = h.controller.ownedBackendChangeProof(h.schedules);
+  assert(current); assert.notEqual(current, first);
+  assert.deepEqual(h.saved.owned, before.owned);
+  assert.equal((await h.controller.releaseOwnedForBackendChange(current)).handoverConfirmed, true);
+  assert.equal(h.writes.length, 2);
+});
+
+for (const clock of ['connection', 'confirmation']) test(`future saved ${clock} clocks cannot establish cloud handback authority`, async () => {
+  const h = harness(); await h.update(); const before = h.writes.length;
+  if (clock === 'connection') h.saved.session.connectedAt = h.now + 1000;
+  h.saved.owned.confirmedAt = h.now + 1000;
+  h.restart(); await h.update();
+  assert.equal(h.controller.ownedBackendChangeProof(h.schedules), null);
+  assert.equal(h.writes.length, before); assert.equal(h.saved.owned.confirmedAt, h.now + 1000);
+  if (clock === 'connection') assert.equal(h.saved.session.connectedAt, h.now + 1000);
+});
+
 test('unsupported Easee schedule types block automatic takeover and do not offer an unusable action', async () => {
   for (const kind of ['offPeak', 'tariff']) {
     const h = harness();

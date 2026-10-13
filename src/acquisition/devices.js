@@ -300,9 +300,16 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       // Commissioning can replace the cloud schedule itself. Inspect it before
       // suspending the cloud controller: a blocked setup must not cancel that
       // controller's pending automatic takeover or release its economic wait.
-      if (target === 'native' && !await nativeScheduleClear())
-        throw Object.assign(new Error('Cloud schedule is active'), { code: 'cloud-schedule-active' });
-      await onOcppControlTransition({ phase: 'prepare', target });
+      let ownedCloudProof = null;
+      if (target === 'native') {
+        const schedule = await easeeAuthenticated(`${API}/api/chargers/${encodeURIComponent(easee.charger_id)}/schedules`, { method: 'GET' });
+        if (!['none', 'ocpp.direct'].includes(schedule?.enabled)) {
+          if (schedule?.enabled === 'delayed') ownedCloudProof = await onOcppControlTransition({ phase: 'inspect-owned-cloud', target, schedule });
+          if (typeof ownedCloudProof !== 'string' || !/^[a-f0-9]{64}$/.test(ownedCloudProof))
+            throw Object.assign(new Error('Cloud schedule is active'), { code: 'cloud-schedule-active' });
+        }
+      }
+      await onOcppControlTransition({ phase: 'prepare', target, ownedCloudProof });
       controlBackend = 'transition';
       if (target === 'native') {
         // An external schedule can arrive while the old controller drains.

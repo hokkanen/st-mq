@@ -537,11 +537,12 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       try { return await adapter.read({ signal, forceRest: true }); }
       catch { throw failure('readback-failed', 'The new Easee schedule could not be read back.'); }
     },
-    async clear({ kind = 'delayed', expectedFingerprint, expectedControlFingerprint, signal, canMutate = () => true } = {}) {
+    async clear({ kind = 'delayed', expectedFingerprint, expectedControlFingerprint, expectedNativeFingerprint, signal, canMutate = () => true } = {}) {
       if (!['delayed', 'daily', 'weekly'].includes(kind)) throw new Error('This Easee schedule requires manual release in the Easee app');
       const before = await adapter.read({ signal, forceRest: true });
       if (before.fingerprint !== expectedFingerprint || before.schedule.enabled !== kind
-        || expectedControlFingerprint && before.controlFingerprint !== expectedControlFingerprint)
+        || expectedControlFingerprint && before.controlFingerprint !== expectedControlFingerprint
+        || expectedNativeFingerprint && easeeTakeoverFingerprint(before) !== expectedNativeFingerprint)
         throw failure('state-changed', 'Easee changed before schedule handover.');
       if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
       try { await request(`${base}/${kind}/disable`, { method: 'POST', signal, controlGuard: canMutate }, true); }

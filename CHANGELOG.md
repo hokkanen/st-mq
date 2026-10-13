@@ -20,6 +20,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   the original seed image. Full verification, current authority and unchanged
   publication checks remain required; original donor evidence stays retained.
 
+- Re-enabling local Easee control can hand over its own confirmed cloud delay
+  before native setup. Fresh session and instruction checks preserve external
+  schedules, later restrictions and uncertain cleanup; changing the setting
+  alone still does not confirm native control.
+
 - Storage technical details distinguish journal sealing from SQLite COMMIT,
   helping attribute slow saves while retaining the existing total. Unmeasured
   stages stay unknown; SQLite COMMIT includes synchronization and checkpoint work.
