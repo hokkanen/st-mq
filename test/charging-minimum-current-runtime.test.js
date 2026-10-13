@@ -1782,7 +1782,7 @@ test('a saved minimum-current restoration remains visible and blocks backend cha
   assert.equal(control.handoverConfirmed, false, 'Saved current restriction still needs confirmed restoration');
   const view = runtime.status().chargers.find(charger => charger.id === 'charger2');
   assert.equal(view.identification.currentTest.id, control.currentTest.id);
-  await assert.rejects(runtime.pauseForBackendChange('charger2'), /current restriction is released/);
+  await assert.rejects(runtime.pauseForBackendChange('charger2', { target: 'cloud' }), /current restriction is released/);
   assert.notEqual(runtime.chargers.charger2.backendTransition.ready, true);
 });
 

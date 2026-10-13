@@ -9,6 +9,7 @@ import { chargingPlannerInput, chargingPlanValidUntil } from './planner-input.js
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
 import { backgroundPlanDeadline } from './plan-settling.js';
 import { createChargingController } from './controller.js';
+import { validateOcppChargingOwnershipState } from './ocpp.js';
 import { easeeChargerTelemetry, effectiveScheduleFingerprint } from './easee.js';
 import { teslamateVehicleTelemetry, teslamateConnectionContext, teslamateDeparture } from './teslamate.js';
 import { updateTeslaCurrentRequest, vehicleCurrentConstraint } from './tesla-current-request.js';
@@ -46,6 +47,50 @@ import { storageFailureCode } from '../storage/write-health.js';
 const MINUTE = 60_000;
 const noRecordedEnergy = () => null;
 const CURRENT_RECONCILE_MS = 5000;
+function cloudBackendReferenceScope(runtime, item) {
+  const control = item.controller?.status(), session = control?.session, snapshot = control?.snapshot;
+  const now = runtime.clock(), connectedAt = session?.connectedAt;
+  // These are each backend's admitted connection boundaries. Disagreement
+  // cannot by itself establish another physical unplug or translate authority.
+  const knownConnection = session?.connected === true && Number.isSafeInteger(connectedAt) && connectedAt >= 0 && connectedAt <= now;
+  const progressScope = item.progress?.reference?.vehicleScope ?? null;
+  const batteryScope = item.progress?.batteryInputs?.scope ?? null;
+  const present = item.request != null || item.targetState != null || progressScope !== null || batteryScope !== null || item.vehicleMatch != null;
+  if (!knownConnection && !present && snapshot?.pluggedIn !== true)
+    return { kind: 'absent', association: item.association, adapterGeneration: item.adapterGeneration };
+  const scope = `${item.association}:${connectedAt}`;
+  const context = { association: item.association, adapterGeneration: item.adapterGeneration,
+    connectedAt: knownConnection ? connectedAt : null, requestScope: item.request?.scope ?? null,
+    requestSession: item.request?.sessionId ?? null, targetConnectedAt: item.targetState?.connectedAt ?? null,
+    progressScope, batteryScope, vehicleMatchScope: item.vehicleMatch?.scope ?? null, vehicleId: item.vehicleMatch?.id ?? null };
+  const vehicleScopes = ['bmw', 'tesla'].map(id => `${id}:${scope}`);
+  if (item.adapter?.ownershipNamespace === 'ocpp' || !item.ownershipAdmitted
+    || !knownConnection
+    || snapshot?.online !== true || snapshot.controlKnown !== true || snapshot.pluggedIn !== true
+    || !Number.isSafeInteger(snapshot.readAt) || snapshot.readAt > now || now - snapshot.readAt > MINUTE
+    || item.request?.scope !== scope || item.request.sessionId !== scope
+    || item.targetState && item.targetState.connectedAt !== connectedAt
+    || item.vehicleMatch && item.vehicleMatch.scope !== scope
+    || progressScope !== null && !vehicleScopes.includes(progressScope)
+    || batteryScope !== null && !vehicleScopes.includes(batteryScope)
+    || progressScope !== null && batteryScope !== null && progressScope !== batteryScope
+    || item.vehicleMatch && [progressScope, batteryScope].some(value => value !== null && value !== `${item.vehicleMatch.id}:${scope}`))
+    return { ...context, kind: 'unavailable' };
+  return { ...context, kind: 'current' };
+}
+function knownNativeCloudScopeConflict(runtime, id, item, referenceScope, nativeScope) {
+  if (typeof nativeScope !== 'string' || !/^[a-f0-9]{64}$/.test(nativeScope))
+    throw new Error('Current native charging scope is required before backend cleanup.');
+  const native = runtime.store.getState(`${runtime.key}:${id}:${item.association}:ownership:ocpp`);
+  validateOcppChargingOwnershipState(native, nativeScope);
+  const conflict = Number.isSafeInteger(referenceScope?.connectedAt) && native?.session?.connected === true
+    && Number.isSafeInteger(native.session.connectedAt) && native.session.connectedAt >= 0
+    && native.session.connectedAt !== referenceScope.connectedAt;
+  if (conflict) return true;
+  if (item.adapter?.ownershipNamespace !== 'ocpp' && referenceScope?.kind === 'unavailable')
+    throw new Error('Current cloud charging references are unavailable or inconsistent before backend cleanup.');
+  return false;
+}
 // Initial preference is preparation time, not a lease on passive observation.
 // The saved attempt clock prevents polling or restart from renewing it.
 const IDENTIFICATION_PREPARATION_WAIT_MS = 90_000;
@@ -917,22 +962,36 @@ export class ChargingRuntime {
       ...(preparingMinimum ? { prepareOnly: true } : {}),
       ...(state.phase === 'pausing' ? { pauseUntil: state.pauseUntil } : {}) };
   }
-  ownedCloudBackendChangeProof(id, schedule) {
+  ownedCloudBackendChangeProof(id, schedule, nativeScope) {
     const item = this.charger(id);
     if (this.closed || !this.canControl() || item.adapterPending || item.adapter?.ownershipNamespace === 'ocpp') return null;
+    if (knownNativeCloudScopeConflict(this, id, item, cloudBackendReferenceScope(this, item), nativeScope)) return null;
     return item.controller?.ownedBackendChangeProof?.(schedule) ?? null;
   }
-  async pauseForBackendChange(id, { ownedCloudProof = null } = {}) {
+  async pauseForBackendChange(id, { ownedCloudProof = null, target, nativeScope } = {}) {
     const item = this.charger(id);
     if (this.closed) throw new Error('Charging backend transition is unavailable.');
+    if (!['native', 'cloud'].includes(target)) throw new Error('Current charging backend target is required.');
+    if (item.backendTransition && (item.backendTransition.target !== target
+      || target === 'native' && item.backendTransition.nativeScope !== nativeScope))
+      throw new Error('Charging backend target changed before preparation completed.');
+    const referenceScope = target === 'native' ? cloudBackendReferenceScope(this, item) : null;
+    if (target === 'native' && knownNativeCloudScopeConflict(this, id, item, referenceScope, nativeScope))
+      throw new Error('Saved native and current cloud session boundaries disagree; the current cloud session is preserved.');
     if (item.backendTransition?.flight) return item.backendTransition.flight;
     if (item.backendTransition?.ready) return;
-    const transition = item.backendTransition ??= { ready: false };
+    const transition = item.backendTransition ??= { ready: false, target, nativeScope: target === 'native' ? nativeScope : null };
     let unprepared = false;
     let ownerController, ownerAdapter;
     transition.flight = (async () => {
       if (item.adapterPending) await item.adapterFlight;
       ownerController = item.controller; ownerAdapter = item.adapter;
+      const currentScope = target === 'native' ? cloudBackendReferenceScope(this, item) : null;
+      try {
+        if (referenceScope !== null && JSON.stringify(referenceScope) !== JSON.stringify(currentScope)
+          || target === 'native' && knownNativeCloudScopeConflict(this, id, item, currentScope, nativeScope))
+          throw new Error('Charging session evidence changed before backend cleanup.');
+      } catch (error) { unprepared = true; throw error; }
       const control = item.controller ? ownedCloudProof
         ? await item.controller.releaseOwnedForBackendChange(ownedCloudProof)
         : await item.controller.update({ enabled: false }) : this.savedOwnership(id);
@@ -940,6 +999,9 @@ export class ChargingRuntime {
         unprepared = true;
         throw new Error('The owned cloud handover changed before cleanup was prepared.');
       }
+      if (target === 'native' && (JSON.stringify(referenceScope) !== JSON.stringify(cloudBackendReferenceScope(this, item))
+        || knownNativeCloudScopeConflict(this, id, item, cloudBackendReferenceScope(this, item), nativeScope)))
+        throw new Error('Charging session evidence changed during backend cleanup.');
       // An empty controller can report failed readback when the charger is
       // already in OCPP mode. Only our durable restrictions block this drain;
       // setup separately verifies the remote backend before commissioning.

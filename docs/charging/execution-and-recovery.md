@@ -299,6 +299,17 @@ The ready-by time becomes one concrete occurrence when the physical connection s
 
 Current-format sessions, requests, assignments, costs and uncertain commands recover only within the same physical/source association. Device, MQTT broker/root, integration profile/service or phase association changes cannot borrow old ownership. A potentially dispatched command is reconciled with native readback before another intention; it is never blindly replayed.
 
+Cloud-to-native setup validates the existing native ownership slot against its
+actual target scope before releasing a cloud instruction. A positively known
+saved native boundary that differs from the current cloud boundary blocks that
+cleanup, preserving both namespaces. Such disagreement is evidence of different
+saved or observed backend boundaries, not proof of a physical replug. Present
+but unresolved scoped references also withhold cleanup; an unscoped initial
+manual-fallback charge estimate is not a prior connection. Preparation waits
+must retain the same current source and reference context. Neither matching
+boundaries nor missing native state establish complete backend-switch continuity
+or copy a cloud execution into native authority.
+
 Shelly command confirmation requires its acknowledged setting and fresh native
 readback within the same adapter generation and physical connection. An unrelated
 connected work-state update does not erase that confirmation. Pending observations

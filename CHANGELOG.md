@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Native Easee setup checks its actual target scope and saved session boundary
+  before cloud cleanup. Disagreement or unresolved scoped references preserve
+  the current cloud program and separate local ownership without inferring a
+  physical replug or transferring control authority.
+
 - Avoid repeatedly preparing cloud charging delays that are already shorter than
   the supported pause. An applicable confirmed program keeps its original
   release, while a positively unsent replacement is cleared without losing

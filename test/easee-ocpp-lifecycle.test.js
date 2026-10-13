@@ -14,6 +14,8 @@ import { easeeAllowanceStatus } from '../src/charging/allowance-history.js';
 import { updateSupplyEstimate } from '../src/charging/supply.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { createChargingController } from '../src/charging/controller.js';
+import { initialOcppControllerState } from '../src/charging/ocpp.js';
+import { Store } from '../src/storage/store.js';
 import { loadConfig } from '../src/app/config.js';
 import { start } from '../src/main.js';
 
@@ -232,7 +234,8 @@ test('a schedule installed during native commissioning preflight prevents config
 
 async function ownedCloudHandoverFixture(t) {
   const f = fixture(t), native = f.make();
-  await native.reconcileOcpp(); await native.restoreOcpp(); await native.close();
+  await native.reconcileOcpp(); const nativeScope = native.chargerScheduleControl().scope;
+  await native.restoreOcpp(); await native.close();
   f.observations = [[80, 344], [141, 1], [250, true], [31, true], [109, 2], [96, 0], [120, 0],
     [47, 16], [48, 32], [104, 32], [22, 20], [23, 20], [24, 20]]
     .map(([id, value]) => ({ id, value, timestamp: new Date(f.now).toISOString() }));
@@ -243,24 +246,29 @@ async function ownedCloudHandoverFixture(t) {
   t.after(() => controller.close());
   await controller.update({ enabled: true, maximumAmps: 16, plan, timezone: 'Europe/Helsinki' });
   assert(controller.status().owned, 'the real cloud producer confirms its own installed delay');
-  const item = { adapter, controller }, settings = { automatic: true }, transitions = [];
-  const runtime = { closed: false, canControl: () => true, charger: () => item, savedOwnership: () => saved.get('cloud'),
+  const association = 'c'.repeat(64), store = new Store(':memory:'); t.after(() => store.close());
+  const physicalScope = `${association}:${controller.status().session.connectedAt}`;
+  const item = { adapter, controller, association, adapterGeneration: 1, ownershipAdmitted: true,
+    request: { scope: physicalScope, sessionId: physicalScope } }, settings = { automatic: true }, transitions = [];
+  const runtime = { closed: false, key: 'charging:providers', store, clock: () => f.now,
+    canControl: () => true, charger: () => item, savedOwnership: () => saved.get('cloud'),
     tick() {}, async setAdapter(id, next) {
       await item.controller.close(); item.adapter = next;
       item.controller = (next.createController ?? createChargingController)({ adapter: next, clock: () => f.now,
         canControl: () => true, saveState: state => saved.set('native', clone(state)) });
     } };
   t.after(() => item.controller.close());
-  f.transition = async ({ phase, target, schedule, ownedCloudProof, adapter: next }) => {
+  f.transition = async ({ phase, target, schedule, ownedCloudProof, nativeScope: targetScope, adapter: next }) => {
     transitions.push({ phase, target });
     try {
-      if (phase === 'inspect-owned-cloud') return ChargingRuntime.prototype.ownedCloudBackendChangeProof.call(runtime, 'charger1', schedule);
-      if (phase === 'prepare') return await ChargingRuntime.prototype.pauseForBackendChange.call(runtime, 'charger1', { ownedCloudProof });
+      if (phase === 'inspect-owned-cloud') return ChargingRuntime.prototype.ownedCloudBackendChangeProof.call(runtime, 'charger1', schedule, targetScope);
+      if (phase === 'prepare') return await ChargingRuntime.prototype.pauseForBackendChange.call(runtime, 'charger1', { ownedCloudProof, target, nativeScope: targetScope });
       return await ChargingRuntime.prototype.finishBackendChange.call(runtime, 'charger1', next);
     } catch { throw Object.assign(Error('Current cloud handover remains pending'), { code: 'control-transition-pending' }); }
   };
   f.events.length = 0;
-  return { f, item, controller, settings, transitions, plan };
+  return { f, item, runtime, controller, settings, transitions, plan, store, nativeScope,
+    nativeKey: `${runtime.key}:charger1:${association}:ownership:ocpp` };
 }
 
 test('reenabling the exact inactive native connection releases a real own cloud delay before Save/Apply', async t => {
@@ -277,6 +285,70 @@ test('reenabling the exact inactive native connection releases a real own cloud 
   assert.equal(x.item.adapter.ownershipNamespace, 'ocpp');
   assert.deepEqual(x.transitions.map(({ phase }) => phase), ['inspect-owned-cloud', 'prepare', 'complete']);
 });
+
+test('native commissioning permits matching saved and current session boundaries at the cleanup preflight', async t => {
+  const x = await ownedCloudHandoverFixture(t), state = initialOcppControllerState(x.nativeScope);
+  state.session = { transactionId: null, connected: true,
+    connectedAt: x.controller.status().session.connectedAt, lastDisconnectedAt: null };
+  x.store.setState(x.nativeKey, state);
+  const provider = x.f.make(); await provider.reconcileOcpp();
+  assert.equal(provider.localOcppStatus().setup.state, 'connecting'); assert.equal(writes(x.f).length, 3);
+  assert.deepEqual(x.store.getState(x.nativeKey), state, 'Validation does not rewrite native observations or ownership');
+});
+
+test('actual native preparation cannot be borrowed by an opposite backend target during cleanup or mode Apply', async t => {
+  const x = await ownedCloudHandoverFixture(t), cleanup = deferred(), cleanupEntered = deferred(),
+    modeStore = deferred(), modeStoreEntered = deferred();
+  x.f.beforeRequest = async ({ path, method }) => {
+    if (method === 'POST' && path.endsWith('/schedules/delayed/disable')) { cleanupEntered.resolve(); await cleanup.promise; }
+    if (method === 'POST' && path.includes('/connection-details/')) { modeStoreEntered.resolve(); await modeStore.promise; }
+  };
+  t.after(() => { cleanup.resolve(); modeStore.resolve(); });
+  const provider = x.f.make(), activating = provider.reconcileOcpp(); await cleanupEntered.promise;
+  const pendingTransition = x.item.backendTransition;
+  assert.equal(pendingTransition.target, 'native'); assert(pendingTransition.flight);
+  await assert.rejects(ChargingRuntime.prototype.pauseForBackendChange.call(x.runtime, 'charger1', { target: 'cloud' }), /target changed/);
+  await assert.rejects(ChargingRuntime.prototype.pauseForBackendChange.call(x.runtime, 'charger1', { target: 'native', nativeScope: 'e'.repeat(64) }), /target changed/);
+  assert.equal(x.item.backendTransition, pendingTransition, 'Rejected targets cannot borrow or erase the exact cleanup owner');
+  cleanup.resolve(); await modeStoreEntered.promise;
+  assert.equal(x.item.backendTransition.ready, true);
+  await assert.rejects(ChargingRuntime.prototype.pauseForBackendChange.call(x.runtime, 'charger1', { target: 'cloud' }), /target changed/);
+  assert.equal(x.item.backendTransition, pendingTransition);
+  modeStore.resolve(); await activating;
+  assert.equal(provider.localOcppStatus().setup.state, 'connecting'); assert.equal(writes(x.f).length, 3);
+  assert.equal(x.item.adapter.ownershipNamespace, 'ocpp');
+});
+
+for (const path of ['owned-delay', 'schedule-none'])
+  test(`the actual ${path} commissioning path refuses differing saved and observed backend session boundaries before mutations`, async t => {
+    const x = await ownedCloudHandoverFixture(t), state = initialOcppControllerState(x.nativeScope);
+    state.session = { transactionId: null, connected: true,
+      connectedAt: x.controller.status().session.connectedAt - 1000, lastDisconnectedAt: null };
+    x.store.setState(x.nativeKey, state);
+    const before = clone(x.controller.status());
+    if (path === 'schedule-none') x.f.schedule = { enabled: 'none' };
+    const provider = x.f.make(); await provider.reconcileOcpp();
+    assert.notEqual(provider.localOcppStatus().setup.state, 'connecting'); assert.deepEqual(writes(x.f), []);
+    assert.deepEqual(x.controller.status().owned, before.owned); assert.deepEqual(x.controller.status().execution, before.execution);
+    assert.equal(x.controller.status().enabled, before.enabled); assert.deepEqual(x.store.getState(x.nativeKey), state);
+    assert.equal(x.item.backendTransition, undefined); assert.equal(x.item.adapter.ownershipNamespace, undefined);
+  });
+
+for (const unsupported of ['native-scope', 'version', 'unknown-field', 'array', 'false'])
+  test(`current ${unsupported} native ownership rejects before actual cloud cleanup and mode Apply`, async t => {
+    const x = await ownedCloudHandoverFixture(t); let state = initialOcppControllerState(x.nativeScope);
+    state.session = { transactionId: null, connected: true, connectedAt: x.controller.status().session.connectedAt, lastDisconnectedAt: null };
+    if (unsupported === 'native-scope') state.scope = 'd'.repeat(64);
+    if (unsupported === 'version') state.version = 1;
+    if (unsupported === 'unknown-field') state.unrelated = true;
+    if (unsupported === 'array') state = [];
+    if (unsupported === 'false') state = false;
+    x.store.setState(x.nativeKey, state); const before = clone(x.controller.status());
+    const provider = x.f.make(); await provider.reconcileOcpp();
+    assert.deepEqual(writes(x.f), []); assert.notEqual(provider.localOcppStatus().setup.state, 'connecting');
+    assert.deepEqual(x.controller.status().owned, before.owned); assert.equal(x.controller.status().enabled, true);
+    assert.deepEqual(x.store.getState(x.nativeKey), state); assert.equal(x.item.backendTransition, undefined);
+  });
 
 test('a retained admitted disconnect from an earlier session does not block guarded native reenable', async t => {
   const x = await ownedCloudHandoverFixture(t), f = x.f, connection = x.controller.status().session.connectedAt;

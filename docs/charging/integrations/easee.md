@@ -715,6 +715,25 @@ cleanup keep setup blocked. This integration handover preserves the Automatic
 preference and grants no new takeover or Start permission. Ordinary shutdown
 still preserves the cloud program; a configured listener alone does not confirm
 charger-side native control.
+
+Before this cleanup, native setup validates the saved local-controller state
+against the actual configured native scope. Differing positively connected
+saved-native and current-cloud session boundaries block preparation, including
+when no cloud schedule is enabled. The disagreement does not prove another
+physical unplug: each backend retains its original observed boundary. Present
+but unavailable or inconsistent cloud request, target, vehicle or scoped battery
+references also block cleanup. Source and reference context are rechecked after
+preparation waits. Pre-cleanup refusal leaves the current cloud program,
+references and separate local profile, pending commands and restoration duties
+intact. A changed context after cleanup keeps the transition blocked; it cannot
+undo a command that already took effect.
+
+Genuinely absent current native state can follow ordinary setup. Matching
+boundaries or an absent native record do not prove that accepted periods or
+session references survive a complete backend switch and restart. This check
+does not transfer ownership between protocols or authorize a handback from an
+active cloud period.
+
 An admitted retained disconnect whose ended session and original source event
 both precede the current connection does not block that connection's guarded
 handback. The historical event remains intact. Unconsumed current-session,

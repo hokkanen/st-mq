@@ -1076,7 +1076,7 @@ function transitionFixture(update) {
   };
   const fake = { closed: false, settings, ticks: [], charger: () => item, savedOwnership: () => null,
     tick: options => fake.ticks.push(options), async setAdapter(id, adapter) { item.adapter = adapter; item.controller = { status: () => ({ phase: 'off' }) }; },
-    pauseForBackendChange: id => ChargingRuntime.prototype.pauseForBackendChange.call(fake, id),
+    pauseForBackendChange: (id, options) => ChargingRuntime.prototype.pauseForBackendChange.call(fake, id, options),
     finishBackendChange: (id, adapter) => ChargingRuntime.prototype.finishBackendChange.call(fake, id, adapter) };
   return { fake, item, settings };
 }
@@ -1086,7 +1086,7 @@ test('backend preparation drains once, holds reconciles and preserves user prefe
   const { fake, item, settings } = transitionFixture(input => {
     calls.push(input); return new Promise(resolve => { release = () => resolve({ owned: null, pending: null, handoverConfirmed: true }); });
   });
-  const first = fake.pauseForBackendChange('charger1'), second = fake.pauseForBackendChange('charger1');
+  const first = fake.pauseForBackendChange('charger1', { target: 'cloud' }), second = fake.pauseForBackendChange('charger1', { target: 'cloud' });
   assert.ok(item.backendTransition); assert.deepEqual(calls, [{ enabled: false }]);
   await ChargingRuntime.prototype.reconcile.call(fake, 'charger1');
   assert.equal(calls.length, 1, 'periodic reconcile cannot race the drain');
@@ -1099,10 +1099,10 @@ test('backend preparation drains once, holds reconciles and preserves user prefe
 test('unconfirmed backend cleanup stays held and a successful retry permits switching', async () => {
   let clean = false;
   const { fake, item } = transitionFixture(async () => ({ owned: clean ? null : { profileId: 1 }, pending: null, handoverConfirmed: clean }));
-  await assert.rejects(fake.pauseForBackendChange('charger1'), /blocked until/);
+  await assert.rejects(fake.pauseForBackendChange('charger1', { target: 'cloud' }), /blocked until/);
   assert.equal(item.backendTransition.ready, false); assert.equal(item.error, 'charging-backend-transition-blocked');
   await assert.rejects(fake.finishBackendChange('charger1', {}), /not been prepared/);
-  clean = true; await fake.pauseForBackendChange('charger1'); assert.equal(item.backendTransition.ready, true);
+  clean = true; await fake.pauseForBackendChange('charger1', { target: 'cloud' }); assert.equal(item.backendTransition.ready, true);
   fake.setAdapter = async () => { item.error = 'charging-adapter-unavailable'; };
   await assert.rejects(fake.finishBackendChange('charger1', {}), /could not activate/);
   assert.equal(item.backendTransition.ready, true, 'failed activation cannot silently reenable the previous controller');
@@ -1164,7 +1164,7 @@ test('gap replanning changes remaining periods while preserving elapsed executio
 
 test('backend preparation permits an empty drained controller despite unrelated readback unavailability', async () => {
   const { fake, item } = transitionFixture(async () => ({ owned: null, pending: null, handoverConfirmed: false }));
-  await fake.pauseForBackendChange('charger1'); assert.equal(item.backendTransition.ready, true);
+  await fake.pauseForBackendChange('charger1', { target: 'cloud' }); assert.equal(item.backendTransition.ready, true);
 });
 
 test('close drains the current operation while retaining finite ownership for pairing handover', async () => {
