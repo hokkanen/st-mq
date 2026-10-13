@@ -69,6 +69,237 @@ const appState = (at, enabled) => ({ readAt: at, enabled, enabledAt: at, stopped
   controlKnown: true, faulted: false, authorizationBlocked: false, schedule: null });
 const writes = f => f.calls.filter(row => row.action !== 'GetCompositeSchedule');
 
+for (const powerKw of [0, 7]) test(`fresh Charging at ${powerKw} kW cannot release a replaced profile whose current composite remains zero`, async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  f.advance(1000);
+  await f.controller.update({ plan: plan(START + 45 * MINUTE) });
+  const before = structuredClone(f.stored), callCount = f.calls.length;
+  assert.equal(writes(f).length, 2, 'The real adapter replaces the same native profile without clearing it');
+  assert.equal(writes(f)[0].payload.csChargingProfiles.chargingProfileId, writes(f)[1].payload.csChargingProfiles.chargingProfileId);
+  f.advance(3000);
+  f.snapshot({ connectorStatus: 'Charging', statusAt: f.now, powerKw, powerAt: f.now });
+  const view = await f.controller.update();
+  assert.equal(view.manual, null); assert.equal(view.phase, 'pause-unconfirmed');
+  assert.equal(view.pauseConfirmed, false, 'Contrary status/power cannot remain physical pause confirmation');
+  assert.deepEqual(view.owned, before.owned); assert.deepEqual(view.pauseWitness, before.pauseWitness);
+  assert.ok(f.calls.slice(callCount).length > 0);
+  assert.ok(f.calls.slice(callCount).every(row => row.action === 'GetCompositeSchedule'), 'The effective zero is read without Clear, replacement or Start');
+  f.snapshot({}); f.advance(1000);
+  assert.equal((await f.controller.update()).pauseConfirmed, true, 'Fresh suspension recovers the original profile');
+  assert.equal(writes(f).length, 2);
+});
+
+test('fresh Charging can release an owned pause only after the current effective zero is gone', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const before = structuredClone(f.stored), callCount = f.calls.length;
+  f.profiles.delete(before.owned.profileId); f.advance(3000);
+  f.snapshot({ connectorStatus: 'Charging', statusAt: f.now, powerKw: 7, powerAt: f.now });
+  const view = await f.controller.update();
+  assert.equal(view.manual.kind, 'release'); assert.equal(view.manual.at, f.now);
+  assert.equal(view.phase, 'yielded'); assert.equal(view.owned, null); assert.equal(view.pauseWitness, null);
+  assert.deepEqual(f.calls.slice(callCount).map(row => row.action), ['GetCompositeSchedule', 'ClearChargingProfile']);
+  assert.deepEqual(writes(f).at(-1).payload, { id: before.owned.profileId }, 'Handback clears only the exact prior owned profile');
+});
+
+test('a delayed release qualification cannot supersede a later source-timed local Stop admitted afterward', async t => {
+  const f = fixture(); t.after(() => f.controller.close()); let startPermission = null;
+  f.adapter.setStartPermission = value => { startPermission = value; };
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  f.profiles.delete(f.stored.owned.profileId); f.advance(1000);
+  const chargingAt = f.now;
+  f.snapshot({ connectorStatus: 'Charging', statusAt: chargingAt, powerKw: 7, powerAt: chargingAt });
+  f.intercept((action, _payload, _options, result) => { const reply = result(); if (action === 'GetCompositeSchedule') f.advance(5000); return reply; });
+  const released = await f.controller.update();
+  assert.equal(released.manual.kind, 'release'); assert.equal(released.phase, 'yielded');
+  assert.equal(f.now, START + 6000, 'Actual readback qualification completes after the intervening native Stop source time');
+  f.intercept(null); f.advance(1000); f.transaction(null); f.confirmed(false);
+  const stop = { transactionId: 7, at: START + 4000, receivedAt: f.now, reason: 'Local' };
+  f.snapshot({ connectorStatus: 'Charging', statusAt: chargingAt, transactionStartedAt: null, powerKw: 0,
+    powerAt: f.now, nativeStop: stop });
+  const stopped = await f.controller.update();
+  assert.equal(stopped.manual.kind, 'stop', 'Qualification completion cannot make an earlier Charging event outrank the later original Stop');
+  assert.equal(stopped.phase, 'yielded'); assert.equal(startPermission, null, 'An ended native transaction supplies no replacement Start permission');
+  assert.equal(released.manual.at, chargingAt, 'The release instruction boundary retains the original native event clock');
+  assert.deepEqual(stopped.snapshot.nativeStop, stop);
+});
+
+for (const outcome of ['timeout', 'rejected', 'malformed']) test(`a ${outcome} composite leaves a fresh Charging release unknown`, async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const before = structuredClone(f.stored), writeCount = writes(f).length;
+  f.advance(3000); f.snapshot({ connectorStatus: 'Charging', statusAt: f.now, powerKw: 0, powerAt: f.now });
+  f.intercept((action, _payload, _options, result) => {
+    if (action !== 'GetCompositeSchedule') return result();
+    if (outcome === 'timeout') throw Object.assign(Error('synthetic timeout'), { code: 'ocpp-request-timeout' });
+    if (outcome === 'rejected') return { status: 'Rejected' };
+    const reply = result(); reply.chargingSchedule.chargingSchedulePeriod[0].limit = -1; return reply;
+  });
+  const view = await f.controller.update();
+  assert.equal(view.manual, null); assert.equal(view.pauseConfirmed, false);
+  assert.equal(view.errorCode, outcome === 'timeout' ? 'ocpp-request-timeout' : 'composite-unavailable');
+  assert.deepEqual(f.stored.owned, before.owned); assert.deepEqual(f.stored.pauseWitness, before.pauseWitness);
+  assert.equal(writes(f).length, writeCount, 'Failed release evidence authorizes no Clear, replacement or Start');
+  f.intercept(null); f.snapshot({}); f.advance(1000);
+  assert.equal((await f.controller.update()).pauseConfirmed, true);
+  assert.equal(writes(f).length, writeCount);
+});
+
+test('a transient Charging report during an uncertain own replacement cannot become an external release', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  f.advance(1000);
+  f.intercept((action, _payload, _options, result) => {
+    const reply = result();
+    if (action === 'SetChargingProfile') throw Object.assign(Error('synthetic lost replacement reply'), { code: 'ocpp-request-timeout' });
+    return reply;
+  });
+  await f.controller.update({ plan: plan(START + 45 * MINUTE) });
+  const pending = structuredClone(f.stored.pending), before = structuredClone(f.stored.pauseWitness), callCount = f.calls.length;
+  assert.equal(pending.action, 'install'); assert.equal(pending.accepted, false);
+  f.intercept(null); f.advance(3000);
+  f.snapshot({ connectorStatus: 'Charging', statusAt: f.now, powerKw: 0, powerAt: f.now });
+  const view = await f.controller.update();
+  assert.equal(view.manual, null); assert.deepEqual(view.pending, pending); assert.deepEqual(view.pauseWitness, before);
+  assert.equal(f.calls.length, callCount, 'Own uncertainty retains the original bounded retry without a release query or command');
+  f.snapshot({}); f.advance(30_000);
+  assert.equal((await f.controller.update()).pauseConfirmed, true);
+  assert.equal(f.stored.pending, null); assert.equal(f.stored.manual, null);
+});
+
+for (const instruction of ['local-stop', 'cloud-stop', 'schedule']) test(`an independent ${instruction} keeps priority without waiting for inferred release readback`, async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  f.app({ ...appState(START, true), schedule: noNativeSchedule() });
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const callCount = f.calls.length, ownId = f.stored.owned.profileId;
+  f.advance(3000); f.snapshot({ connectorStatus: 'Charging', statusAt: f.now, powerKw: 0, powerAt: f.now,
+    ...(instruction === 'local-stop' ? { nativeStop: { transactionId: 7, at: f.now, receivedAt: f.now, reason: 'Remote' } } : {}) });
+  if (instruction === 'cloud-stop') f.app({ ...appState(f.now, false), schedule: noNativeSchedule() });
+  if (instruction === 'schedule') f.app({ ...appState(f.now, true), schedule: { ...noNativeSchedule(), enabled: 'daily',
+    daily: { timezone: 'UTC', periods: [{ maximumAmps: 16, startTime: '10:00:00', stopTime: '12:00:00' }] } } });
+  f.intercept((action, _payload, _options, result) => {
+    assert.notEqual(action, 'GetCompositeSchedule', 'The independent instruction does not need generic Charging inference');
+    return result();
+  });
+  const view = await f.controller.update();
+  assert.equal(view.manual.kind, instruction === 'schedule' ? 'window' : 'stop'); assert.equal(view.phase, 'yielded');
+  assert.deepEqual(f.calls.slice(callCount), [{ action: 'ClearChargingProfile', payload: { id: ownId } }]);
+});
+
+for (const change of ['authority', 'admission', 'connection', 'transaction', 'local-stop', 'cloud-stop', 'schedule', 'status', 'stale'])
+test(`an inferred release cannot cross ${change} changing during the current composite query`, async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  f.app({ ...appState(START, true), schedule: noNativeSchedule() });
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const before = structuredClone(f.stored), writeCount = writes(f).length;
+  f.profiles.delete(before.owned.profileId); f.advance(3000);
+  f.snapshot({ connectorStatus: 'Charging', statusAt: f.now, powerKw: 7, powerAt: f.now });
+  let crossed = false;
+  f.intercept((action, _payload, options, result) => {
+    const reply = result();
+    if (action !== 'GetCompositeSchedule' || crossed) return reply;
+    crossed = true;
+    if (change === 'authority') f.authority(false);
+    else if (change === 'admission') f.admission(false);
+    else if (change === 'connection') { f.reconnect(); f.confirmed(true); }
+    else if (change === 'transaction') f.transaction(8);
+    else if (change === 'stale') f.advance(61_000);
+    else {
+      f.advance(1000);
+      if (change === 'local-stop') f.snapshot({ connectorStatus: 'Charging', statusAt: START + 3000, powerKw: 0, powerAt: f.now,
+        nativeStop: { transactionId: 7, at: f.now, receivedAt: f.now, reason: 'Remote' } });
+      else if (change === 'cloud-stop') f.app({ ...appState(f.now, false), schedule: noNativeSchedule() });
+      else if (change === 'schedule') f.app({ ...appState(f.now, true), schedule: { ...noNativeSchedule(), enabled: 'daily',
+        daily: { timezone: 'UTC', periods: [{ maximumAmps: 16, startTime: '10:00:00', stopTime: '12:00:00' }] } } });
+      else f.snapshot({ connectorStatus: 'SuspendedEVSE', statusAt: f.now, powerKw: 0, powerAt: f.now });
+    }
+    if (['authority', 'admission', 'connection', 'transaction', 'stale'].includes(change)) assert.equal(options.guard(), false);
+    return reply;
+  });
+  const view = await f.controller.update();
+  assert.equal(crossed, true); assert.equal(view.manual, null); assert.equal(view.errorCode, 'control-revoked');
+  assert.deepEqual(f.stored.owned, before.owned); assert.deepEqual(f.stored.pauseWitness, before.pauseWitness);
+  assert.equal(writes(f).length, writeCount, 'An obsolete positive reply cannot authorize Clear, replacement or Start');
+  if (change === 'local-stop' || change === 'cloud-stop' || change === 'schedule') {
+    f.intercept(null);
+    const stopped = await f.controller.update();
+    assert.equal(stopped.manual.kind, change === 'schedule' ? 'window' : 'stop');
+    assert.equal(stopped.phase, 'yielded', 'The genuinely newer instruction keeps its independent evidence');
+  }
+});
+
+test('an explicit OFF queued during a release query cancels inference before its own exact cleanup', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const ownId = f.stored.owned.profileId, writeCount = writes(f).length;
+  f.advance(3000);
+  f.snapshot({ connectorStatus: 'Charging', statusAt: f.now, powerKw: 7, powerAt: f.now });
+  let off;
+  f.intercept((action, _payload, options, result) => {
+    const reply = result();
+    if (action === 'GetCompositeSchedule' && !off) {
+      reply.chargingSchedule.chargingSchedulePeriod[0].limit = 32;
+      off = f.controller.update({ enabled: false });
+      assert.equal(options.guard(), false, 'The queued controller instruction immediately revokes the older inference');
+    }
+    return reply;
+  });
+  await f.controller.update(); await off;
+  assert.ok(off); assert.ok(f.saves.every(state => state.manual === null));
+  assert.equal(f.controller.status().enabled, false); assert.equal(f.controller.status().owned, null);
+  assert.deepEqual(writes(f).slice(writeCount), [{ action: 'ClearChargingProfile', payload: { id: ownId } }],
+    'The new explicit OFF owns cleanup; the older positive reply never becomes a manual instruction');
+});
+
+test('a final native read failure cannot turn a positive composite into release permission', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const before = structuredClone(f.stored), writeCount = writes(f).length, read = f.adapter.read;
+  f.profiles.delete(before.owned.profileId); f.advance(3000);
+  f.snapshot({ connectorStatus: 'Charging', statusAt: f.now, powerKw: 7, powerAt: f.now });
+  let returned = false;
+  f.intercept((action, _payload, _options, result) => { const reply = result(); if (action === 'GetCompositeSchedule') returned = true; return reply; });
+  f.adapter.read = options => {
+    if (returned) throw Object.assign(Error('synthetic final native read failure'), { code: 'read-failed' });
+    return read(options);
+  };
+  const view = await f.controller.update();
+  assert.equal(returned, true); assert.equal(view.manual, null); assert.equal(view.errorCode, 'read-failed');
+  assert.deepEqual(f.stored.owned, before.owned); assert.equal(writes(f).length, writeCount);
+});
+
+for (const event of ['older-than-witness', 'expired']) test(`a ${event} Charging event is not renewed by a fresh native receipt`, async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const before = structuredClone(f.stored), writeCount = writes(f).length;
+  f.advance(event === 'expired' ? 65_000 : 3000);
+  const statusAt = event === 'expired' ? START + 1000 : before.pauseWitness.at;
+  f.snapshot({ connectorStatus: 'Charging', statusAt, statusReceivedAt: f.now, powerKw: 0, powerAt: f.now });
+  const view = await f.controller.update();
+  assert.equal(view.manual, null); assert.equal(view.snapshot.statusAt, statusAt);
+  assert.deepEqual(f.stored.pauseWitness, before.pauseWitness); assert.equal(writes(f).length, writeCount);
+});
+
+for (const effectiveZero of [true, false]) test(`current-format restart preserves ${effectiveZero ? 'the original owned zero without inferred release' : 'a confirmed release without retaking control'}`, async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  f.advance(3000);
+  if (!effectiveZero) f.profiles.delete(f.stored.owned.profileId);
+  f.snapshot({ connectorStatus: 'Charging', statusAt: f.now, powerKw: effectiveZero ? 0 : 7, powerAt: f.now });
+  await f.controller.update();
+  const saved = structuredClone(f.stored), restarted = fixture({ initialState: saved });
+  t.after(() => restarted.controller.close()); restarted.advance(5000);
+  if (effectiveZero) restarted.profiles.set(saved.owned.profileId, structuredClone(saved.owned.payload.csChargingProfiles));
+  restarted.snapshot({ connectorStatus: 'Charging', statusAt: START + 3000, statusReceivedAt: restarted.now,
+    powerKw: effectiveZero ? 0 : 7, powerAt: START + 3000 });
+  const view = await restarted.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(view.phase, effectiveZero ? 'pause-unconfirmed' : 'yielded');
+  assert.deepEqual(view.manual, saved.manual); assert.deepEqual(view.owned, saved.owned); assert.deepEqual(view.pauseWitness, saved.pauseWitness);
+  assert.equal(writes(restarted).length, 0, 'A supported restart neither rewrites zero nor retakes a released connection');
+  assert.equal(view.snapshot.statusAt, START + 3000, 'Restart/readback retain the original native event clock');
+});
+
 for (const outcome of ['Accepted', 'Rejected']) test(`a real pending OCPP pause preserves qualified 10 A when stopped 5 A precedes ${outcome} profile reply`, async t => {
   const f = fixture(); let qualification = null, release, reached;
   const wait = new Promise(resolve => { release = resolve; }), entered = new Promise(resolve => { reached = resolve; });
@@ -551,9 +782,10 @@ test('a vehicle-side suspension retains period timing and needs charger-side gap
   assert.deepEqual(writes(f).at(-1), { action: 'ClearChargingProfile', payload: { id: profileId } });
 });
 
-test('fresh charging after a confirmed owned pause establishes manual priority', async () => {
+test('fresh charging after the effective owned pause is removed establishes manual priority', async () => {
   const f = fixture({ nativeTakeover: true }); f.app({ ...appState(START, true), schedule: noNativeSchedule() });
   await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  f.profiles.delete(f.stored.owned.profileId);
   f.advance(1000); f.physicalPause(false);
   let view = await f.controller.update({ enabled: true });
   assert.equal(view.phase, 'yielded'); assert.equal(f.profiles.size, 0);

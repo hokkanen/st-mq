@@ -78,6 +78,14 @@ For Direct OCPP, an actual `StopTransaction` reporting `Remote`, `Local` or
 and blocks replacement Start. An owned profile pause, missing stop reason or
 generic suspension does not supply that evidence or identify who acted.
 
+For an owned OCPP pause, a later generic Charging status alone cannot establish
+a release. Current guarded composite readback must also show that the effective
+zero interval no longer applies, followed by unchanged native connection,
+transaction and instruction evidence. Contradictory status while zero remains
+effective withdraws physical confirmation without clearing the profile. Pending
+own writes and failed or obsolete readback retain uncertainty; independently
+observed source-timed Stop and schedule changes keep their normal priority.
+
 **Use automatic** is a separate, explicit new
 instruction: enable Automatic, end Charge now, supersede the observed manual
 Start/Stop, supersede Shelly's adjustable session current choice when its limiter
