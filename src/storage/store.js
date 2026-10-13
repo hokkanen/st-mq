@@ -374,7 +374,7 @@ export class Store {
     // leave an opened transaction behind if the database becomes unreadable.
     const changesBefore = this.databaseChanges();
     const timing = { beginMs: 0, bodyMs: 0, commitMs: 0, totalMs: 0,
-      journalSealMs: null, nativeCommitMs: null, committed: false };
+      journalSealMs: null, nativeCommitMs: null, journal: null, startedAt: Date.now(), committed: false };
     const transactionStarted = performance.now();
     const recordTiming = () => {
       timing.totalMs = performance.now() - transactionStarted;
@@ -409,7 +409,10 @@ export class Store {
         // Reading diagnostics cannot mask the commit's original outcome.
         try {
           const stages = journalCommitTiming(this.db);
-          if (stages) { timing.journalSealMs = stages.journalSealMs; timing.nativeCommitMs = stages.nativeCommitMs; }
+          if (stages) {
+            timing.journalSealMs = stages.journalSealMs; timing.nativeCommitMs = stages.nativeCommitMs;
+            timing.journal = stages.journal;
+          }
         } catch {}
       }
       committed = true; timing.committed = true;
