@@ -109,6 +109,28 @@ test('Caravan recording resumes an unchanged qualified state prospectively witho
   assert.deepEqual(freshness(f.recorder, DEADLINE).reasons, ['missing-report']);
 });
 
+test('a subsequently recovered historical report cannot hide the current Caravan source-clock wait predecessor', async t => {
+  const f = fixture(t), donor = new Store(':memory:');
+  t.after(() => donor.close());
+  const historical = structuredClone(f.original);
+  historical.sourceTime = historical.receivedAt = SOURCE - 5000;
+  historical.raw.fieldTimestamps.power = historical.sourceTime;
+  historical.raw.locationEvidence.meterObservedAt = historical.sourceTime;
+  assert.equal(new Recorder(donor).record(historical).saved, true);
+  await merge(f.store, donor);
+  const before = f.coverage(), lastInserted = before.at(-1);
+  assert.equal(lastInserted.status, 'fresh');
+  assert(lastInserted.end_at < before[0].end_at && lastInserted.id > before[0].id,
+    'the actual recovery inserted an older source report after the current local span');
+  const result = f.resume();
+  assert.equal(result.changed, true);
+  assert.equal(isCaravanRecordingRecovery(result.observation), true);
+  assert.equal(result.observation.raw.originalReportSourceTime, SOURCE);
+  assert.equal(result.observation.raw.originalReportReceivedAt, SOURCE);
+  assert.deepEqual(result.observation.raw.fieldTimestamps, f.original.raw.fieldTimestamps);
+  assert.deepEqual(f.coverage().slice(0, before.length), before, 'neither the imported history nor local gap is rewritten');
+});
+
 test('Caravan recovery preserves the original physical receipt and delayed-admission proof', t => {
   const f = fixture(t, { deferred: true });
   const result = f.resume();

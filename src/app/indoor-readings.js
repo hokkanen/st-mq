@@ -1,6 +1,7 @@
 import { HELD_TEMPERATURE_SIGNALS, INDOOR_ATTENTION_MS } from '../domain/indoor-sensors.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { observationTimeAdmitted, observationAvailableAt } from '../domain/time-evidence.js';
+import { selectedCoverageSpan, nextCoverageStart } from '../storage/coverage-history.js';
 
 const ALLOWED = new Set(['good', 'simulated', 'historical', 'converted_fahrenheit', 'stale']);
 
@@ -69,8 +70,7 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
     const earlier = store.db.prepare(`SELECT o.raw FROM active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id
       WHERE c.source=? AND c.device=? AND c.signal=? AND c.start_at<=?
         AND json_extract(o.raw,'$.reportIntervalMs')>0
-        AND COALESCE((SELECT n.start_at FROM active_recorder_coverage n WHERE n.source=c.source AND n.device=c.device
-          AND n.signal=c.signal AND n.id>c.id ORDER BY n.id LIMIT 1),?)>?
+        AND ${selectedCoverageSpan('c')} AND COALESCE(${nextCoverageStart('c')},?)>?
       ORDER BY c.start_at DESC,c.id DESC LIMIT 1`).get(reading.source, reading.device, reading.signal, at, at, from);
     age = earlier ? temperatureReportMaxAge({ raw: JSON.parse(earlier.raw) }) : null;
     if (age === null) return null;
@@ -79,14 +79,14 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
   // candidate span repeatedly scans/sorts the same stream as history grows.
   const preceding = store.db.prepare(`SELECT id FROM active_recorder_coverage AS recorder_coverage
     WHERE source=? AND device=? AND signal=? AND start_at<=?
+      AND ${selectedCoverageSpan('recorder_coverage')}
     ORDER BY start_at DESC,id DESC LIMIT 1`).get(reading.source, reading.device, reading.signal, from)?.id ?? null;
   const args = [reading.source, reading.device, reading.signal, at, from, from - age, preceding];
   const spans = store.db.prepare(`SELECT c.*,o.id AS original_id,o.source_time AS original_source_time,
       o.received_at AS original_received_at,o.value,o.unit,o.quality,o.raw,o.import_id,o.row_number,
-      (SELECT n.start_at FROM active_recorder_coverage n WHERE n.source=c.source AND n.device=c.device
-        AND n.signal=c.signal AND n.id>c.id ORDER BY n.id LIMIT 1) AS next_start
+      ${nextCoverageStart('c')} AS next_start
     FROM active_recorder_coverage c LEFT JOIN active_observations o ON o.id=c.observation_id
-    WHERE c.source=? AND c.device=? AND c.signal=? AND c.start_at<=?
+    WHERE c.source=? AND c.device=? AND c.signal=? AND c.start_at<=? AND ${selectedCoverageSpan('c')}
       AND (c.source_time+COALESCE(json_extract(o.raw,'$.reportIntervalMs'),0)
         +COALESCE(json_extract(o.raw,'$.reportGraceMs'),0)>=? OR c.end_at>=?
         OR c.id=?)

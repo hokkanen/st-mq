@@ -10,6 +10,7 @@ import { recordedTransport } from '../domain/recording-source.js';
 import { ADAPTIVE_BUDGET_KEY, initialAdaptiveBudget as initialBudget, readAdaptiveBudget } from './adaptive-recording-budget.js';
 import { STORAGE_METRICS_KEY, initialStorageMetrics, readStorageMetrics } from './recording-metrics.js';
 import { observationTimeAdmitted, observationAvailableAt, sourceTimeAdmission, validateAdmittedSourceTime } from '../domain/time-evidence.js';
+import { selectedCoverageSpan } from './coverage-history.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, YEAR = 365.25 * DAY;
 export const RECORDING_VERSION = 'recording-contract-v2';
@@ -293,8 +294,9 @@ export class Recorder {
         return { changed: false };
       const prior = this.store.db.prepare(`SELECT c.source_time,c.end_at,o.raw,o.value FROM active_recorder_coverage c
         JOIN active_observations o ON o.id=c.observation_id WHERE c.source=? AND c.device=? AND c.signal=?
-        AND c.status='fresh' AND c.end_at<=? ORDER BY c.id DESC LIMIT 1`)
-        .get(reading.source, reading.device, reading.signal, wait.startedAt);
+        AND c.status='fresh' AND c.end_at<=? AND ${selectedCoverageSpan('c', '?')}
+        ORDER BY c.end_at DESC,c.start_at DESC,c.id DESC LIMIT 1`)
+        .get(reading.source, reading.device, reading.signal, wait.startedAt, wait.startedAt);
       const priorRaw = prior?.raw ? JSON.parse(prior.raw) : null;
       const probe = evidence => evidence && Object.fromEntries(['method', 'meterSignature', 'startedAt', 'completedAt',
         'powerRiseW', 'powerFallW', 'minimumChangeW', 'phases'].map(key => [key, evidence[key]]));
@@ -371,8 +373,9 @@ export class Recorder {
       const span = this.store.db.prepare(`SELECT c.*,o.value,o.unit,o.source_time AS observed_source_time,
         o.received_at AS observed_received_at,o.quality,o.raw FROM active_recorder_coverage c
         JOIN active_observations o ON o.id=c.observation_id WHERE c.source=? AND c.device=? AND c.signal=?
-        AND c.status='fresh' AND c.start_at<=? AND c.end_at<=? ORDER BY c.id DESC LIMIT 1`)
-        .get(reading.source, reading.device, reading.signal, at, at);
+        AND c.status='fresh' AND c.start_at<=? AND c.end_at<=? AND ${selectedCoverageSpan('c', '?')}
+        ORDER BY c.start_at DESC,c.id DESC LIMIT 1`)
+        .get(reading.source, reading.device, reading.signal, at, at, at);
       const previousRaw = span?.raw ? JSON.parse(span.raw) : reading.raw ?? {};
       const sourceTime = span?.source_time ?? reading.sourceTime;
       const lastReportTime = s.lastReportTime?.sourceTime === sourceTime ? s.lastReportTime : null;
@@ -929,7 +932,7 @@ export class Recorder {
     const reportAge = temperatureReportMaxAge(o);
     if (reportAge !== null) {
       const span = this.store.db.prepare(`SELECT * FROM active_recorder_coverage AS recorder_coverage WHERE source=? AND device=? AND signal=?
-        AND start_at<=? ORDER BY start_at DESC,id DESC LIMIT 1`).get(o.source,o.device,signal,at);
+        AND start_at<=? AND ${selectedCoverageSpan('recorder_coverage')} ORDER BY start_at DESC,id DESC LIMIT 1`).get(o.source,o.device,signal,at);
       const available = span?.status==='fresh' && at<span.source_time+reportAge;
       return {...o,value:available?o.value:null,quality:available?o.quality:flags([...o.quality,span?.status==='fresh'?'missing-report':span?.status??'unavailable']),
         reportObservedAt:span?.end_at<=at?span.source_time:null,
@@ -937,7 +940,7 @@ export class Recorder {
         reportExpiresAt:available?Math.min(span.source_time+reportAge,span.end_at>at?at:Infinity):null};
     }
     const coverage = this.store.db.prepare(`SELECT * FROM active_recorder_coverage AS recorder_coverage WHERE source=? AND device=? AND signal=? AND start_at<=?
-      ORDER BY start_at DESC,id DESC LIMIT 1`).get(o.source,o.device,signal,at);
+      AND ${selectedCoverageSpan('recorder_coverage')} ORDER BY start_at DESC,id DESC LIMIT 1`).get(o.source,o.device,signal,at);
     if (coverage && coverage.end_at >= o.receivedAt) {
       if (coverage.status !== 'fresh') return {...o,value:null,quality:flags([...o.quality,coverage.status])};
       if (coverage.end_at <= at && coverage.observation_id === o.id && coverage.source_time > o.sourceTime) {

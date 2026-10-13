@@ -4,6 +4,7 @@ import { OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { indoorReadingUsable } from './indoor-readings.js';
 import { goodQuality } from '../control/learning.js';
 import { observationTimeAdmitted } from '../domain/time-evidence.js';
+import { selectedCoverageSpan } from '../storage/coverage-history.js';
 
 const qualityReasons = Object.freeze({
   missing: 'missing-reading', invalid: 'invalid-value', 'invalid-value': 'invalid-value',
@@ -73,6 +74,7 @@ export function indoorStatusMetadata(reading, now, { latest = reading, store, kn
   if (store && reading) {
     const span = store.db.prepare(`SELECT source_time,end_at FROM active_recorder_coverage AS recorder_coverage
       WHERE source=? AND device=? AND signal=? AND status='fresh' AND start_at<=?
+      AND ${selectedCoverageSpan('recorder_coverage')}
       ORDER BY start_at DESC,id DESC LIMIT 1`).get(reading.source, reading.device, reading.signal, knownAt);
     if (span?.end_at > knownAt) {
       // A compact span proves availability at this earlier boundary, but its

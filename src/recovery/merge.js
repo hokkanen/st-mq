@@ -482,8 +482,31 @@ export class HistoryMerge {
         return { id: old.id, disposition: old.status === row.status
           && this.sameObservationReference(old.observation_id, observationId) ? 'duplicates' : 'conflicts' };
       }
-      if (this.target.db.prepare(`SELECT 1 FROM active_recorder_coverage AS recorder_coverage WHERE source=? AND device=? AND signal=?
-        AND start_at<? AND end_at>? LIMIT 1`).get(row.source, row.device, row.signal, row.end_at, row.start_at)) return { disposition: 'conflicts' };
+      const overlaps = this.target.db.prepare(`SELECT * FROM active_recorder_coverage AS recorder_coverage WHERE source=? AND device=? AND signal=?
+        AND start_at<? AND end_at>?`).iterate(row.source, row.device, row.signal, row.end_at, row.start_at);
+      let continued;
+      for (const prior of overlaps) {
+        if (continued === undefined) {
+          const original = observationId === null ? null : this.target.db.prepare('SELECT * FROM active_observations WHERE id=?').get(observationId);
+          const raw = original ? decode(original.raw) : null;
+          continued = row.status === 'fresh' && row.samples > 0 && mapped?.disposition === 'duplicates'
+            && usable(original) && raw?.recorder?.version === RECORDING_VERSION
+            && raw.recorder.status === 'fresh' && raw.recorder.temporalBasis === 'source-observation'
+            && !raw.retained && !raw.cached && !raw.acquisitionOnly && !raw.auditOnly
+            && !decode(original.quality).some(flag => ['retained', 'cached', 'acquisition-only', 'audit-only'].includes(flag))
+            && original.source === row.source && original.device === row.device && original.signal === row.signal
+            && instant(row.source_time) && row.source_time <= row.end_at && row.end_at <= this.now
+            && observationTimeAdmitted({ sourceTime: original.source_time, receivedAt: original.received_at, raw }, row.start_at);
+        }
+        // Recorder extends fresh confirmations in place while keeping the
+        // original saved observation. A frozen continuation of that exact
+        // shared prefix is additional evidence, not a competing value. Retain
+        // the intact donor row separately so reversal never owns the prefix.
+        if (!continued || prior.status !== 'fresh' || prior.samples <= 0 || prior.start_at !== row.start_at
+          || prior.end_at >= row.end_at || !instant(prior.source_time) || prior.source_time > prior.end_at
+          || row.source_time < prior.source_time || row.samples <= prior.samples
+          || !this.sameObservationReference(prior.observation_id, observationId)) return { disposition: 'conflicts' };
+      }
       const id = this.insert('recorder_coverage', { ...without(row, ['id']), observation_id: mapped?.id ?? null });
       return { id, disposition: 'missing', at: row.start_at };
     });
