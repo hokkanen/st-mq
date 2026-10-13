@@ -756,8 +756,8 @@ test('a start-now plan created after API latency releases immediately without se
 
 test('a start reached during the final adapter read refreshes and releases instead of retrying an invalid delay', async () => {
   const h = harness(); let reads = 0;
-  h.readHook = async url => { if (url.endsWith('/schedules') && ++reads === 2) h.now += 1000; };
-  const result = await h.update({ plan: { id: 'soon', startAt: NOW + 1000 } });
+  h.readHook = async url => { if (url.endsWith('/schedules') && ++reads === 2) h.now += 16 * 60_000; };
+  const result = await h.update({ plan: { id: 'soon', startAt: NOW + 16 * 60_000 } });
   assert.equal(result.phase, 'released'); assert.equal(result.errorCode, null); assert.equal(h.writes.length, 0);
 });
 
@@ -1179,9 +1179,199 @@ test('installed adapter rechecks expiry after the durable beforeWrite hook witho
   const h=harness(),before=await h.adapter.read();
   await assert.rejects(h.adapter.installDelayed({startAt:NOW+16*60000,timezone:'Europe/Helsinki',maximumAmps:16,
     expectedFingerprint:before.fingerprint,expectedControlFingerprint:before.controlFingerprint,
-    beforeWrite:async()=>{h.now+=2*60000;}}),error=>error.code==='start-passed');
+    beforeWrite:async()=>{h.now+=2*60000;}}),error=>error.code==='start-passed'&&error.notDispatched===true);
   assert.equal(h.writes.length,0);await h.controller.close();
 });
+
+test('near-start replans retain the exact current own program without preparing an unsendable replacement', async () => {
+  const h = harness(), first = await h.update(), owned = structuredClone(first.owned);
+  const native = structuredClone(h.schedules), execution = structuredClone(first.execution);
+  let pendingSaves = 0; h.saveHook = value => { if (value.pending) pendingSaves++; };
+  h.now = owned.startAt - 10 * 60_000;
+  for (let index = 0; index < 4; index++) {
+    const reads = h.reads;
+    const result = await h.update({ plan: { id: `near-start-${index}`, startAt: owned.startAt + 48_000 + index * 1000 } });
+    assert.equal(result.phase, 'waiting'); assert.equal(result.errorCode, null); assert.equal(result.pending, null);
+    assert.deepEqual(result.owned, owned); assert.deepEqual(result.execution, execution);
+    assert.deepEqual(h.schedules, native); assert.equal(h.writes.length, 1);
+    assert.equal(h.reads - reads, 2, 'Only the ordinary observation/schedule read runs; no replacement preflight');
+    assert.equal(pendingSaves, 0); assert(h.controller.ownedBackendChangeProof(h.schedules));
+    h.now += 1000;
+    if (index === 1) h.restart();
+  }
+  await h.controller.close();
+});
+
+for (const mode of [2, 3]) test(`a first short future plan in mode ${mode} remains unadopted without a new release or pause`, async () => {
+  const h = harness(); h.mode = mode;
+  const result = await h.update({ plan: { id: 'short-first-plan', startAt: NOW + 10 * 60_000 } });
+  assert.equal(result.phase, 'unavailable'); assert.equal(result.errorCode, 'invalid-plan');
+  assert.match(result.reason, /shorter than fifteen minutes/);
+  assert.equal(result.pending, null); assert.equal(result.owned, null); assert.equal(result.released, false);
+  assert.equal(result.execution, null); assert.equal(h.writes.length, 0); assert.equal(h.reads, 2);
+  assert.equal(h.schedules.enabled, 'none'); await h.controller.close();
+});
+
+test('a new economic pause at the supported fifteen-minute boundary still installs normally', async () => {
+  const h = harness(); const result = await h.update({ plan: { id: 'supported-boundary', startAt: NOW + 15 * 60_000 } });
+  assert.equal(result.phase, 'waiting'); assert.equal(result.pending, null); assert.equal(h.writes.length, 1);
+  assert.equal(result.owned.startAt, NOW + 15 * 60_000); await h.controller.close();
+});
+
+for (const maximumAmps of [10, 20]) test(`a near-start hold respects the currently applicable ${maximumAmps} A ceiling`, async () => {
+  const h = harness(), first = await h.update(), owned = structuredClone(first.owned);
+  h.now = owned.startAt - 10 * 60_000;
+  const result = await h.update({ maximumAmps, plan: { id: 'new-current-ceiling', startAt: owned.startAt + 60_000 } });
+  assert.deepEqual(result.owned, owned); assert.equal(result.pending, null); assert.equal(h.writes.length, 1);
+  assert.equal(result.phase, maximumAmps < 16 ? 'unavailable' : 'waiting');
+  if (maximumAmps < 16) assert.match(result.reason, /current native instruction is unchanged/);
+  await h.controller.close();
+});
+
+test('fresh native ceiling readback cannot label the old higher delay as an applicable retained program', async () => {
+  const h = harness(), first = await h.update(); h.now = first.owned.startAt - 10 * 60_000;
+  const request = h.request;
+  h.adapter = createEaseeScheduleAdapter({ request: async (url, options) => {
+    const value = await request(url, options);
+    return Array.isArray(value) ? value.map(row => row.id === 47 ? { ...row, value: 10 } : row) : value;
+  }, chargerId: 'synthetic-charger', clock: () => h.now, canControl: () => h.allowed });
+  await h.controller.close();
+  h.controller = createChargingController({ adapter: h.adapter, initialState: h.saved, clock: () => h.now,
+    canControl: () => h.allowed, getMaximumAmps: snapshot => Math.floor(snapshot.limits.chargerA),
+    saveState: value => { validateChargingOwnershipState(value); h.saved = structuredClone(value); } });
+  const result = await h.update({ plan: { id: 'lower-native-ceiling', startAt: first.owned.startAt + 48_000 } });
+  assert.equal(result.snapshot.limits.chargerA, 10); assert.equal(result.phase, 'unavailable');
+  assert.deepEqual(result.owned, first.owned); assert.equal(result.pending, null); assert.equal(h.writes.length, 1);
+  await h.controller.close();
+});
+
+test('a guarded preflight crossing the minimum clears only its positively unsent preparation and rereads once', async () => {
+  const h = harness(), first = await h.update(), owned = structuredClone(first.owned), execution = structuredClone(first.execution);
+  h.now = owned.startAt - 20 * 60_000;
+  const proposedAt = h.now + 16 * 60_000;
+  let guardedSaves = 0, reads = 0;
+  h.readHook = url => { if (url.endsWith('/schedules')) reads++; };
+  h.saveHook = value => {
+    if (value.pending?.installRequestedAt !== undefined && guardedSaves++ === 0) h.now += 2 * 60_000;
+  };
+  const result = await h.update({ plan: { id: 'preflight-expired', startAt: proposedAt } });
+  assert.equal(result.pending, null); assert.equal(h.saved.pending, null); assert.equal(result.phase, 'waiting');
+  assert.deepEqual(result.owned, owned); assert.deepEqual(result.execution, execution);
+  assert.equal(h.writes.length, 1); assert.equal(reads, 3, 'Ordinary read, guarded preflight and one fresh reconciliation');
+  assert.equal(guardedSaves, 1); await h.controller.close();
+});
+
+test('the same unsent expiry with no adopted program remains unavailable and does not retry the short install', async () => {
+  const h = harness(); let guardedSaves = 0;
+  h.saveHook = value => { if (value.pending?.installRequestedAt !== undefined && guardedSaves++ === 0) h.now += 2 * 60_000; };
+  const result = await h.update({ plan: { id: 'first-expired', startAt: NOW + 16 * 60_000 } });
+  assert.equal(result.pending, null); assert.equal(h.saved.pending, null); assert.equal(result.owned, null);
+  assert.equal(result.phase, 'unavailable'); assert.equal(result.released, false); assert.equal(h.writes.length, 0);
+  assert.equal(guardedSaves, 1); assert.equal(h.reads, 6); await h.controller.close();
+});
+
+test('a new source-timed Stop during unsent preparation wins on the single fresh reconciliation', async () => {
+  const h = harness(), first = await h.update(), owned = structuredClone(first.owned);
+  h.now = owned.startAt - 20 * 60_000; const proposedAt = h.now + 16 * 60_000;
+  let guardedSaves = 0, scheduleReads = 0;
+  h.readHook = url => { if (url.endsWith('/schedules')) scheduleReads++; };
+  h.saveHook = value => {
+    if (value.pending?.installRequestedAt !== undefined && guardedSaves++ === 0) {
+      h.now += 2 * 60_000; h.enabled = false; h.sourceTimes[31] = h.now;
+    }
+  };
+  const result = await h.update({ plan: { id: 'unsent-before-native-stop', startAt: proposedAt } });
+  assert.equal(result.pending, null); assert.equal(h.saved.pending, null); assert.equal(result.phase, 'yielded');
+  assert.equal(result.manual.kind, 'stop'); assert.equal(result.snapshot.observations[31].at, h.sourceTimes[31]);
+  assert.deepEqual(result.owned, owned); assert.equal(h.enabled, false); assert.equal(h.writes.length, 1);
+  assert.equal(scheduleReads, 3); assert.equal(guardedSaves, 1); await h.controller.close();
+});
+
+test('latency at an exact fifteen-minute intermediate gap neither sends a late pause nor hides a missed transition', async () => {
+  const h = harness(); h.mode = 3;
+  const pauseAt = NOW + 30 * 60_000, resumeAt = pauseAt + 15 * 60_000;
+  const plan = { id: 'exact-gap', startAt: NOW, deadlineAt: NOW + 4 * 3600_000,
+    periods: [{ startAt: NOW, endAt: pauseAt }, { startAt: resumeAt, endAt: null }] };
+  const first = await h.update({ plan }); h.now = pauseAt;
+  let scheduleReads = 0;
+  h.readHook = url => { if (url.endsWith('/schedules') && ++scheduleReads === 2) h.now += 250; };
+  const refused = await h.update({ plan });
+  assert.equal(refused.phase, 'unavailable'); assert.equal(refused.pending, null); assert.equal(refused.owned, null);
+  assert.deepEqual(refused.execution, first.execution); assert.equal(refused.released, false);
+  assert.equal(h.writes.length, 0); assert.equal(scheduleReads, 3, 'The known-unsent preflight is followed by one ordinary read');
+  h.readHook = null; h.restart(); h.now = resumeAt;
+  const resumed = await h.update({ plan });
+  assert.equal(resumed.phase, 'released'); assert.equal(resumed.released, true); assert.equal(h.writes.length, 0);
+  assert.deepEqual(resumed.lastMissedTransition, { pauseAt, resumeAt, noticedAt: resumeAt });
+  await h.controller.close();
+});
+
+test('a future saved confirmation cannot supply a near-start retained program', async () => {
+  const h = harness(), first = await h.update(); h.now = first.owned.startAt - 10 * 60_000;
+  h.saved.owned.confirmedAt = h.now + 1000; h.restart();
+  const result = await h.update({ plan: { id: 'future-confirmation', startAt: first.owned.startAt + 48_000 } });
+  assert.equal(result.phase, 'unavailable'); assert.equal(result.pending, null); assert.equal(h.writes.length, 1);
+  assert.equal(h.controller.ownedBackendChangeProof(h.schedules), null); await h.controller.close();
+});
+
+for (const maximumAmps of ['16', null, 0, 6, 16.5, 81])
+  test(`a malformed saved delayed current ${JSON.stringify(maximumAmps)} cannot claim near-start retained waiting`, async () => {
+    const h = harness(), first = await h.update(); h.now = first.owned.startAt - 10 * 60_000;
+    h.saved.owned.schedule.delayed.maximumAmps = maximumAmps; h.restart();
+    const result = await h.update({ plan: { id: 'invalid-saved-limit', startAt: first.owned.startAt + 48_000 } });
+    assert.equal(result.phase, 'unavailable'); assert.equal(result.pending, null); assert.equal(h.writes.length, 1);
+    assert.equal(result.owned.schedule.delayed.maximumAmps, maximumAmps, 'A saved value is neither coerced nor repaired');
+    await h.controller.close();
+  });
+
+test('a short new physical connection cannot borrow the previous connection program', async () => {
+  const h = harness(), first = await h.update(); h.now = first.owned.startAt - 10 * 60_000;
+  h.mode = 1; await h.update(); h.now += 1000; h.mode = 2;
+  const result = await h.update({ plan: { id: 'short-new-connection', startAt: h.now + 10 * 60_000 } });
+  assert.notEqual(result.session.connectedAt, first.session.connectedAt);
+  assert.equal(result.owned, null); assert.equal(result.pending, null); assert.equal(result.phase, 'unavailable');
+  assert.equal(result.released, false); assert.equal(h.writes.length, 2, 'Only the previous owned delay was released on unplug');
+  await h.controller.close();
+});
+
+for (const failure of ['lost-response', 'rejected', 'readback'])
+  test(`a ${failure} after entering the actual schedule request retains uncertain pending ownership`, async () => {
+    const h = harness(), first = await h.update(); h.now += 1000;
+    const startAt = NOW + 4 * 3600_000, priorOwned = structuredClone(first.owned);
+    if (failure === 'readback') h.readHook = () => { if (h.writes.length > 1) throw new Error('readback failed'); };
+    else h.writeHook = () => {
+      if (failure === 'lost-response') {
+        const { enabled, ...delayed } = h.writes.at(-1).body;
+        h.schedules.enabled = 'delayed'; h.schedules.delayed = delayed;
+      }
+      throw Object.assign(new Error('schedule request failed'), failure === 'rejected' ? { status: 403 } : {});
+    };
+    const result = await h.update({ plan: { id: 'uncertain-new-program', startAt } });
+    assert.equal(result.pending.action, 'install'); assert.equal(result.pending.startAt, startAt);
+    assert.deepEqual(result.owned, priorOwned); assert.equal(h.writes.length, 2); assert.equal(result.phase, 'unconfirmed');
+    const originalPending = structuredClone(result.pending);
+    h.writeHook = null; h.readHook = null; h.restart();
+    const recovered = await h.update({ plan: { id: 'uncertain-new-program', startAt } });
+    assert.equal(recovered.pending, null); assert.equal(recovered.owned.startAt, startAt);
+    if (failure !== 'rejected') assert.equal(recovered.owned.scheduleRequestedAt, originalPending.installRequestedAt);
+    await h.controller.close();
+  });
+
+for (const boundary of ['external-schedule', 'native-stop', 'disconnect', 'inactive-schedule'])
+  test(`a near-start candidate cannot claim retained waiting across a ${boundary} change`, async () => {
+    const h = harness(), first = await h.update(); h.now = first.owned.startAt - 10 * 60_000;
+    if (boundary === 'external-schedule') h.schedules.delayed.startTime = '05:00:00';
+    if (boundary === 'native-stop') { h.enabled = false; h.sourceTimes[31] = h.now; }
+    if (boundary === 'disconnect') h.mode = 1;
+    if (boundary === 'inactive-schedule') h.schedules.daily = { timezone: 'Europe/Helsinki', periods: [{ startTime: '08:00:00', stopTime: '09:00:00' }] };
+    const result = await h.update({ plan: { id: 'short-with-boundary', startAt: first.owned.startAt + 48_000 } });
+    assert.notEqual(result.phase, 'waiting'); assert.equal(result.pending, null);
+    assert.equal(h.writes.filter(write => write.url.endsWith('/delayed')).length, 1, 'No replacement delay is sent');
+    if (boundary === 'native-stop') { assert.equal(result.manual.kind, 'stop'); assert.equal(h.enabled, false); }
+    if (boundary === 'external-schedule') assert.equal(result.manual.kind, 'schedule');
+    await h.controller.close();
+  });
+
 test('fresh readback cannot certify an economic pause using older mode and reason clocks',async()=>{
   const h=harness(),start=NOW+3600000;
   const plan={id:'multi-period',startAt:NOW,deadlineAt:NOW+4*3600000,periods:[{startAt:NOW,endAt:NOW+30*60000},{startAt:start,endAt:null}]};

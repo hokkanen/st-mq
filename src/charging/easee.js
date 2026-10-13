@@ -521,10 +521,12 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
         if (!canMutate() || !canControl() || startAt - clock() < (identification ? 1000 : 15 * 60000)) return false;
         try { delayedScheduleFor({ startAt, timezone, maximumAmps }, clock()); return true; } catch { return false; }
       };
+      const unsentStart = () => Object.assign(failure('start-passed', 'The delayed start expired before dispatch.'), { notDispatched: true });
+      if (!temporalGuard()) throw unsentStart();
       // Let the controller durably record this guarded observation before the
       // request. A failed save must leave the native charger untouched.
       await beforeWrite(before);
-      if (!temporalGuard()) throw failure('start-passed', 'The delayed start expired before dispatch.');
+      if (!temporalGuard()) throw unsentStart();
       if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
       try {
         await request(`${base}/delayed`, { method: 'POST', headers: { 'content-type': 'application/json' },

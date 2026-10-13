@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Avoid repeatedly preparing cloud charging delays that are already shorter than
+  the supported pause. An applicable confirmed program keeps its original
+  release, while a positively unsent replacement is cleared without losing
+  genuinely uncertain commands or native instruction priority.
+
 - Allow guarded native Easee handback when retained disconnect evidence belongs
   to a proven earlier session, preserving the event and current restoration,
   native instruction and ownership checks.

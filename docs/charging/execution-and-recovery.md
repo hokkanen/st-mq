@@ -116,6 +116,15 @@ manual deadlines and retired schedule fingerprints are not repaired or translate
 into current control permission. Valid same-version restart, pending native
 instruction recovery and known later external instructions remain supported.
 
+Easee cloud economic scheduling checks the existing 15-minute minimum before
+preparing a different future delay. A closer proposal can retain only an
+unchanged same-connection owned program within current limits; otherwise it
+remains unadopted. The adapter's immediate pre-request refusal may establish that
+one exact prepared install was not dispatched and permit its cleanup plus one
+fresh read. Request or readback failure never supplies that proof. Original
+execution, release times, missed pauses and native instruction priority remain
+separate from the rejected proposal.
+
 Shelly current adjustment has independent permission through `limiterEnabled`.
 It remains active with Automatic scheduling off. A current setting carried into
 a new confirmed physical connection supplies initial device readback, not a

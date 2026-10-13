@@ -42,6 +42,24 @@ at least 15 minutes of the current charging period and a gap of at least 15
 minutes. It uses the same native delayed start and pause confirmation as other
 period transitions; manual instructions retain priority.
 
+A new economic delay must still have at least 15 minutes remaining at dispatch.
+When a different proposal is already closer than that, the controller retains an
+unchanged, same-connection owned economic program only while its saved limit
+remains within the current applicable ceiling. Its original schedule, release
+time and execution remain intact, including after restart; the proposal does not
+create another pending write or command preflight. With no usable owned program,
+the short proposal remains unadopted and the native instruction stays unchanged.
+This does not authorize an early release or a new Start. Existing provisional
+release and later external instructions retain their separate rules.
+
+If command preflight or durable preparation consumes that minimum gap, the
+adapter can positively report that its immediate pre-request guard refused the
+exact install before any schedule request. Only that proven-unsent preparation
+is cleared, followed by one fresh reconciliation. A lost/rejected request or
+failed readback still retains uncertain pending ownership. An intermediate pause
+missed because of latency keeps its original execution and missed-transition
+report; no extra scheduling buffer or shorter pause is invented.
+
 Repeated price data, including after restart, and metadata-only updates do not
 trigger reconsideration. Ordinary telemetry and setting changes do not themselves
 interrupt final release. Completion and readiness are recalculated against the

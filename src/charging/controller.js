@@ -108,7 +108,7 @@ const DIAGNOSTICS = {
   'takeover-unconfirmed': 'Automatic control is unconfirmed. Review the charger status before retrying with the “Use automatic” button in Charging controls.',
   'invalid-plan': 'The proposed start or charging limit is invalid. A new plan will be requested.',
   'missing-current-limit': 'Easee has not supplied a usable charger current limit. Another reading will be requested before scheduling.',
-  'start-passed': 'The proposed start arrived while Easee was being checked. The current instruction will be read again to release charging.',
+  'start-passed': 'The proposed pause became too short while Easee was being checked. The current instruction will be read again before further changes.',
   'ambiguous-start': 'The proposed start falls in a repeated daylight-saving hour, which Easee cannot identify uniquely. A new unambiguous plan is needed.',
   'start-out-of-range': 'Easee accepts only the next occurrence of a local start time. This proposed date is farther ahead; planning will retry closer to the start.',
 };
@@ -577,6 +577,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
   }
   async function reconcile(expectedGeneration, refreshed = false, backendChange = null) {
     let now = clock(), operation = 'read-failed';
+    let preparedInstall = null;
     const previousIdentification = identification !== null || state.owned?.purpose === 'identification';
     if (closed || expectedGeneration !== generation) return status();
     if (!adapter?.read) {
@@ -846,10 +847,31 @@ export function createChargingController({ adapter, initialState = null, saveSta
         state.execution = execution ? copy(execution) : null; state.released = false;
         await waitingPhase(plannedPause, pauseRequested); return status();
       }
+      if (plan.startAt - now < MIN_PRICE_PAUSE_MS) {
+        // The minimum applies to a new native economic pause, not the time
+        // remaining on an already adopted program. Keep its absolute release
+        // and execution rather than preparing an unsendable replacement.
+        if (ownsCurrent() && state.owned.fingerprint === snapshot.fingerprint
+          && state.owned.purpose !== 'identification' && state.session?.connected === true
+          && isTime(state.session.connectedAt) && state.owned.confirmedAt >= state.session.connectedAt
+          && state.owned.confirmedAt <= now && state.owned.startAt > now
+          && state.owned.schedule.enabled === 'delayed'
+          && Number.isInteger(state.owned.schedule.delayed?.maximumAmps)
+          && state.owned.schedule.delayed.maximumAmps >= 6 && state.owned.schedule.delayed.maximumAmps <= 80
+          && scheduleFingerprint(state.owned.schedule) === state.owned.fingerprint
+          && state.owned.schedule.delayed.maximumAmps <= maximumAmps) {
+          const retainedPause = state.execution && now >= state.execution.periods[0].startAt
+            && now < state.execution.finalStartAt
+            && !state.execution.periods.some(period => period.startAt <= now && now < period.endAt);
+          await waitingPhase(Boolean(retainedPause), isTime(state.owned.requestedAt));
+        } else await phase('unavailable', 'The proposed economic pause is shorter than fifteen minutes. The current native instruction is unchanged; waiting for a usable plan.', 'invalid-plan');
+        return status();
+      }
       state.pending = { action: 'install', planId: plan.id ?? plan.planId ?? null, startAt: plan.startAt,
         expectedFingerprint, expectedActiveFingerprint, previousFingerprint: snapshot.fingerprint,
         previousActiveFingerprint: currentFingerprint(), startedAt: now,
         ...(execution ? { execution: copy(execution), periods: copy(execution.periods), finalStartAt: execution.finalStartAt } : {}) };
+      preparedInstall = state.pending;
       const pending = copy(state.pending);
       await phase('unconfirmed', 'The delayed start is being confirmed with Easee.');
       operation = 'command-failed';
@@ -867,8 +889,9 @@ export function createChargingController({ adapter, initialState = null, saveSta
           const prior = state.pending, witnessed = { ...pending, installRequestedAt: clock(),
             ...(before.mode === 3 ? { pauseRequestedAt: clock() } : {}) };
           state.pending = witnessed;
+          preparedInstall = witnessed;
           try { await persist(); } catch (error) {
-            if (error?.committed !== true) state.pending = prior;
+            if (error?.committed !== true) { state.pending = prior; preparedInstall = prior; }
             throw error;
           }
           pending.installRequestedAt = witnessed.installRequestedAt;
@@ -886,6 +909,13 @@ export function createChargingController({ adapter, initialState = null, saveSta
     } catch (error) {
       if (takeoverState === 'pending') takeoverState = 'blocked';
       const errorCode = Object.hasOwn(DIAGNOSTICS, error?.code) ? error.code : operation;
+      if (errorCode === 'start-passed' && error.notDispatched === true
+        && preparedInstall !== null && state.pending === preparedInstall && state.pending.action === 'install') {
+        // Only the adapter's immediate pre-request refusal proves this exact
+        // preparation was never sent. Network and readback errors stay pending.
+        state.pending = null;
+        if (!backendChange && !refreshed && !closed && expectedGeneration === generation) return reconcile(expectedGeneration, true);
+      }
       if (errorCode === 'state-changed') {
         // The pre-write guard guarantees no command was sent. A fresh read
         // distinguishes harmless telemetry movement from an actual app edit.
