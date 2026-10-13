@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
+import { vehicleCurrentConstraint } from './tesla-current-request.js';
 
 const IDS = ['charger1', 'charger2'], PRIORITIES = ['balanced', ...IDS], MINUTE = 60_000, HOUR = 60 * MINUTE;
 const finite = Number.isFinite;
 const number = value => finite(value) ? value : null;
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const fresh = (value, now) => time(value) && value <= now && now - value <= 2 * MINUTE;
-const value = (charger, key) => charger?.values?.[key]?.available === true ? charger.values[key].value : null;
+const value = (charger, key) => key === 'vehicleCurrentA' ? vehicleCurrentConstraint(charger?.values?.[key])
+  : charger?.values?.[key]?.available === true ? charger.values[key].value : null;
 const hash = input => createHash('sha256').update(JSON.stringify(input)).digest('hex');
 const SOURCES = ['easee', 'easee-ocpp', 'shelly-evse'];
 const COMMAND_BLOCKS = ['provider-offline', 'input-processing', 'source-time-pending', 'device-permission-held',

@@ -129,11 +129,15 @@ for (const fault of ['IOERR', 'FULL']) for (const [field, rejected] of [['plugge
     const f = await fixture(t); await f.connect(); await f.send('charger_power', 7);
     await f.send('charge_current_request_max', 16); await f.send('charge_current_request', 10);
     const identity = structuredClone(f.runtime.chargers.charger1.vehicleMatch);
+    const qualified = structuredClone(f.runtime.chargers.charger1.vehicleEvidence.teslaCurrentRequest);
+    assert.equal(qualified.limit.value, 10);
     const source = f.saved('charging:teslamate'), runtime = f.saved(f.runtime.key);
     f.advance(1000); await rejectReceipt(f, teslaTopic(field), rejected, fault);
     assert.deepEqual(f.saved('charging:teslamate'), source);
     assert.deepEqual(f.saved(f.runtime.key), runtime);
     assert.deepEqual(f.runtime.chargers.charger1.vehicleMatch, identity);
+    assert.deepEqual(f.runtime.chargers.charger1.vehicleEvidence.teslaCurrentRequest, qualified,
+      'Rejected source admission rolls the session qualifier back with its raw source and progress');
     let snapshot = f.runtime.teslaCapture.snapshot();
     assert.equal(snapshot.connected, true, 'A source admission failure is distinct from MQTT disconnection.');
     assert.equal(snapshot.healthy, false);
@@ -156,6 +160,29 @@ for (const fault of ['IOERR', 'FULL']) for (const [field, rejected] of [['plugge
     if (field === 'charge_current_request') assert.equal(f.runtime.telemetry().charger1.vehicleCurrentA.value, 0);
     else assert.equal(f.runtime.chargers.charger1.vehicleMatch, null);
   });
+
+test('admitted Tesla max-only pilot cycles preserve the independent request in actual source/runtime transactions', async t => {
+  const f = await fixture(t); await f.connect(); await f.send('charger_power', 7);
+  await f.send('charge_current_request_max', 13); await f.send('charge_current_request', 10);
+  const item = f.runtime.chargers.charger1, qualified = structuredClone(item.vehicleEvidence.teslaCurrentRequest);
+  const request = structuredClone(f.saved('charging:teslamate').fields.charge_current_request);
+  const identity = structuredClone(item.vehicleMatch), controls = structuredClone(item.controls);
+  assert.equal(f.runtime.telemetry().charger1.vehicleCurrentA.value, 10);
+  for (const maximum of [10, 12, 10, 12, 10, 12, 10, 12]) {
+    f.advance(1000); await f.send('charge_current_request_max', maximum);
+    const projected = f.runtime.telemetry().charger1.vehicleCurrentA;
+    assert.equal(projected.value, 10); assert.equal(projected.receivedAt, request.receivedAt);
+    assert.deepEqual(projected.independentRequest, qualified.limit);
+    assert.deepEqual(f.saved('charging:teslamate').fields.charge_current_request, request);
+    assert.deepEqual(item.vehicleEvidence.teslaCurrentRequest, qualified);
+    assert.deepEqual(item.vehicleMatch, identity); assert.deepEqual(item.controls, controls);
+    assert.deepEqual(f.saved(f.runtime.key).chargers.charger1.vehicleEvidence.teslaCurrentRequest, qualified);
+  }
+  assert.equal(qualified.limit.value, 10);
+  const state = f.saved(f.runtime.key); f.runtime.status(); f.runtime.telemetry();
+  assert.deepEqual(f.saved(f.runtime.key), state, 'Pure cards cannot admit or alter a qualification');
+  assert.deepEqual(f.nativeCommands, [], 'Constraint evidence cannot grant Start or takeover');
+});
 
 test('pending ordinary Tesla receipt withdraws evidence before the write queue admits it', async t => {
   const f = await fixture(t); await f.connect(); await f.send('charger_power', 7);

@@ -106,3 +106,20 @@ test('explicit planning and changed prices bypass an outstanding background wait
   assert.equal(f.runtime.lastBackgroundPlan.at, f.now);
   assert.equal(f.runtime.backgroundPlanDueAt, null);
 });
+
+test('changed dormant vehicle constraints bypass the runtime period deadband and replace allocation scope', async t => {
+  const f = await acceptedWaiting(t), originalViews = f.runtime.views.bind(f.runtime);
+  let knownLimitA = 15;
+  f.runtime.views = (...args) => originalViews(...args).map(view => view.id === 'charger2' ? { ...view,
+    values: { ...view.values, vehicleCurrentA: { value: null, available: false, source: 'teslamate', knownLimitA } } } : view);
+  await f.runtime.updatePlan();
+  const scope = f.runtime.allocationScope, basis = f.runtime.chargers.charger2.plan.basis;
+  f.advance(1000); await f.runtime.updatePlan(f.now, { background: true });
+  assert.ok(f.runtime.backgroundPlanDueAt, 'Unchanged dormant evidence takes the ordinary fixed wait');
+  knownLimitA = 14;
+  await f.runtime.updatePlan(f.now, { background: true });
+  assert.equal(f.runtime.lastBackgroundPlan.at, f.now, 'A changed applicable bound bypasses the existing wait');
+  assert.equal(f.runtime.backgroundPlanDueAt, null); assert.notEqual(f.runtime.allocationScope, scope);
+  assert.notEqual(f.runtime.chargers.charger2.plan.basis, basis,
+    'The environment comparison records the bound actually used by the planner');
+});

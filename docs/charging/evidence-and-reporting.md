@@ -14,6 +14,12 @@ actual ceiling; requesting 95% with a reported 80% ceiling is constrained rather
 than silently rewritten. Vehicle current limits and native not-before times
 constrain either charging point.
 
+An independently qualified Tesla current request retains its original receipt
+and supply provenance through controller pilot changes. The current raw request
+and maximum remain separately visible, including a stopped report or invalid
+value; neither can silently replace the older qualified constraint. Qualification
+is a physical-session constraint, not permission to start or new measured draw.
+
 ## Charge progress and cost
 
 Physical electricity sources are always Easee for C1 and Shelly EVSE for C2, regardless of vehicle identity. Progress uses accepted interval kWh plus the recorder's admissible pending tail. Wrong units, unusable quality, invalid geometry and overlapping conflicting contributions are excluded. Missing energy receives no invented credit. The modeling assumption is 92.5% grid-to-battery efficiency; it is not measured battery capacity or efficiency.

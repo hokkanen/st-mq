@@ -192,6 +192,49 @@ async function pausedColdFixture(t) {
   return f;
 }
 
+for (const lateDeparture of [false, true]) test(`a genuinely qualified Tesla request survives native pilot cycles and restart but retires on ${lateDeparture ? 'late-admitted' : 'fresh'} departure`, async t => {
+  const f = await fixture(t, { initialCurrentA: 13 });
+  await f.update(); f.advance(6000); await f.sampleTesla(6);
+  f.advance(5000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'tesla');
+  await f.update(); assert.equal(f.fields.current_limit.value, 13);
+  f.advance(1000); f.publishTesla({ charge_current_request_max: 13, charge_current_request: 10 }); f.observe();
+  const item = f.item('charger2'), qualification = structuredClone(item.vehicleEvidence.teslaCurrentRequest);
+  const identity = structuredClone(item.vehicleMatch), request = structuredClone(item.request), controls = structuredClone(item.controls);
+  assert.equal(f.runtime.telemetry().charger2.vehicleCurrentA.value, 10);
+  for (const value of [10, 12, 10, 12]) {
+    f.advance(1000); f.notifyCurrent(value, { source: 'sys' }); await f.adapter.refresh();
+    f.publishTesla({ charge_current_request_max: value }); f.observe();
+    assert.equal(f.runtime.telemetry().charger2.vehicleCurrentA.value, 10);
+    assert.deepEqual(item.vehicleEvidence.teslaCurrentRequest, qualification);
+  }
+  await f.restart(); f.observe();
+  assert.equal(f.runtime.telemetry().charger2.vehicleCurrentA.value, 10);
+  assert.deepEqual(f.item('charger2').vehicleEvidence.teslaCurrentRequest, qualification);
+  assert.deepEqual(f.item('charger2').vehicleMatch, identity); assert.deepEqual(f.item('charger2').request, request);
+  assert.deepEqual(f.item('charger2').controls, controls);
+  f.advance(1000); f.publishTesla({ healthy: false }); f.observe();
+  assert.equal(f.runtime.telemetry().charger2.vehicleCurrentA.available, false);
+  assert.equal(f.runtime.telemetry().charger2.vehicleCurrentA.value, null);
+  assert.equal(f.runtime.allocationContext().vehicleCurrentA, 10, 'The retained known ceiling still constrains actual Shelly allocation');
+  f.publishTesla({ healthy: true }); f.observe();
+  f.advance(1000); const departureAt = f.now;
+  if (lateDeparture) {
+    f.advance(1000); f.publishTesla({ charge_current_request: 'invalid' }); f.observe();
+    assert.ok(f.item('charger2').vehicleEvidence.teslaCurrentRequest.request.receivedAt > qualification.limit.receivedAt);
+    // A queued boundary retains its original ingress receipt, even when a
+    // separately admitted request is already newer by the time it is applied.
+    f.publishTesla({ charging_state: 'Disconnected' }, { at: departureAt });
+    f.publishTesla({ charging_state: 'Stopped' });
+    // The newest request follows departure while the still-authoritative limit
+    // precedes it. Admission/restart must not keep that limit in a retired scope.
+    await f.restart();
+  } else f.publishTesla({ charging_state: 'Disconnected' });
+  f.observe();
+  assert.equal(f.item('charger2').vehicleMatch, null);
+  assert.equal(f.item('charger2').vehicleEvidence.teslaCurrentRequest, null);
+});
+
 function publishBmw(f, values, measuredAt = f.now) {
   f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
   f.runtime.receiveSoc('synthetic/minimum-current/bmw', JSON.stringify({

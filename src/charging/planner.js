@@ -1,5 +1,6 @@
 import { delayedScheduleFor } from './easee.js';
 import { TIME_ZONE } from '../domain/prices.js';
+import { vehicleCurrentConstraint } from './tesla-current-request.js';
 
 const HOUR = 3_600_000, EPS = 1e-7, MIN_CURRENT_A = 6;
 const MIN_PERIOD_MS = 15 * 60_000, MIN_PAUSE_MS = 15 * 60_000;
@@ -8,7 +9,8 @@ const finite = Number.isFinite;
 const unique = values => [...new Set(values)];
 const three = value => Array.isArray(value) && value.length === 3 && value.every(item => finite(item) && item >= 0);
 const asPhases = value => three(value) ? value : finite(value) && value >= 0 ? [value, value, value] : null;
-const value = (charger, key) => charger.values?.[key]?.available === false ? null : charger.values?.[key]?.value ?? null;
+const value = (charger, key) => key === 'vehicleCurrentA' ? vehicleCurrentConstraint(charger.values?.[key])
+  : charger.values?.[key]?.available === false ? null : charger.values?.[key]?.value ?? null;
 const priceValue = row => row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price;
 const cashPrice = row => row.cashPriceCtPerKwh ?? row.priceCtPerKwh;
 const decisionCost = result => result.costCents + (result.uncertaintyPremiumCents ?? 0);

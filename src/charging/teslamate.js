@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { teslamateConfiguration } from '../app/config.js';
+import { updateTeslaCurrentRequest, validateTeslaCurrentRequest } from './tesla-current-request.js';
 const NUMERIC = { battery_level: 100, charge_limit_soc: 100, charge_current_request: 100,
   charge_current_request_max: 100, charger_actual_current: 100, charger_phases: 3, charger_voltage: 500,
   charger_power: 350, charge_energy_added: 1000 };
 const FIELDS = new Set([...Object.keys(NUMERIC), 'healthy', 'scheduled_charging_start_time', 'plugged_in', 'geofence', 'charging_state', 'state']);
 const IDENTITY_FIELDS = new Set(['plugged_in', 'geofence', 'charging_state', 'state', 'charger_power', 'charger_actual_current']);
-const CHANGE_ONLY_FIELDS = new Set([...IDENTITY_FIELDS, 'battery_level', 'charge_limit_soc']);
+const CHANGE_ONLY_FIELDS = new Set([...IDENTITY_FIELDS, 'battery_level', 'charge_limit_soc', 'charge_current_request', 'charge_current_request_max']);
 const validTime = value => Number.isSafeInteger(value) && value >= 0;
 
 /** Native negative connection evidence remains distinct from the plug topic. */
@@ -168,7 +169,8 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
   };
 }
 
-export function teslamateVehicleTelemetry(snapshot = {}, { now = Date.now(), charging = snapshot.charging } = {}) {
+export function teslamateVehicleTelemetry(snapshot = {}, { now = Date.now(), charging = snapshot.charging,
+  currentRequest } = {}) {
   const available = snapshot.connected === true && snapshot.healthy === true;
   const signal = (value, field) => {
     const metadata = snapshot.fields?.[field] ?? {};
@@ -183,17 +185,22 @@ export function teslamateVehicleTelemetry(snapshot = {}, { now = Date.now(), cha
   };
   const requested = signal(snapshot.requestedCurrentA, 'charge_current_request');
   const supplied = signal(snapshot.maxCurrentA, 'charge_current_request_max');
-  // Tesla's maximum is the currently available supply, including our own
-  // temporary pilot reduction or stop. A matching request is not an independent
-  // vehicle restriction: feeding it back as an EVSE ceiling can keep a pause
-  // stuck at the stopped 5 A report or pin delivery to an identification test.
-  // Only a lower request distinguishes vehicle demand from available supply.
-  const distinctVehicleLimit = requested.available && supplied.available
-    && Number.isFinite(requested.value) && requested.value >= 0
-    && Number.isFinite(supplied.value) && requested.value < supplied.value;
-  const vehicleCurrentA = { ...requested, value: distinctVehicleLimit ? requested.value : null,
-    available: distinctVehicleLimit,
-    reason: distinctVehicleLimit ? null : requested.reason ?? supplied.reason ?? 'vehicle-current-limit-unknown' };
+  // The runtime supplies its admitted physical-session state. A standalone
+  // projection can only qualify the original pair; it cannot manufacture
+  // request independence from a later maximum or mutate durable evidence.
+  const qualification = currentRequest === undefined ? updateTeslaCurrentRequest(null, snapshot, { now }) : currentRequest;
+  validateTeslaCurrentRequest(qualification);
+  const limit = qualification?.vehicleAssociation === snapshot.association ? qualification.limit : null;
+  const applicable = limit && limit.receivedAt <= now && limit.maximumReceivedAt <= now
+    && qualification.request.receivedAt <= now && (qualification.request.offered?.receivedAt ?? 0) <= now;
+  const qualified = available && applicable;
+  const vehicleCurrentA = { ...requested, value: qualified ? limit.value : null, available: Boolean(qualified),
+    receivedAt: limit?.receivedAt ?? requested.receivedAt, sequence: limit?.sequence ?? requested.sequence,
+    retained: limit?.retained ?? requested.retained,
+    lastKnownValue: limit?.value ?? requested.lastKnownValue,
+    knownLimitA: applicable ? limit.value : null,
+    reason: qualified ? null : requested.reason ?? (limit && !applicable ? 'vehicle-evidence-stale' : supplied.reason ?? 'vehicle-current-limit-unknown'),
+    independentRequest: limit ? { ...limit } : null, rawRequest: requested };
   return { soc: signal(snapshot.batteryLevel, 'battery_level'), minimumSoc: signal(snapshot.chargeLimitSoc, 'charge_limit_soc'),
     vehicleCeilingSoc: signal(snapshot.chargeLimitSoc, 'charge_limit_soc'),
     vehicleCurrentA,

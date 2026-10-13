@@ -78,15 +78,47 @@ TeslaMate's `charge_current_request_max` describes currently available supply,
 which can follow an EVSE pilot reduction or stop. A request equal to that maximum
 does not establish a separate vehicle current limit. Only a valid request below
 a known available maximum supplies that restriction, including a reported zero.
-Equal, inconsistent or incomplete values leave the independent vehicle limit
-unknown, while both raw observations retain their values and receipt clocks.
-This prevents a 6 A identification setting or a stopped 5 A report from becoming
-a permanent limit on later charging. Native charger/electrical ceilings and the
-vehicle's own protections still apply. Field meanings follow the
+The physical session records qualification against supply evidence for that
+request, preserving its original receipt and sequence. A qualified lower request
+remains a constraint when later maximum-only updates follow the controller's
+pilot, including equality; that equality cannot erase the original vehicle choice
+and cause repeated pilot increases and reductions. A new usable higher request
+retires the earlier lower choice. Raw request and maximum values remain separate
+from this qualified constraint, with their actual original clocks.
+
+MQTT request and maximum publications arrive separately. An admitted native
+readback can confirm the original offered pilot's measurement time even when its
+query receipt is later; both clocks remain unchanged. That evidence can qualify
+a lower request when its separately arriving maximum completes the picture.
+A later maximum by itself cannot qualify an earlier matching or unknown request.
+
+A request matching the confirmed pilot cannot become independent merely because
+a later maximum rises. A positively confirmed application Stop can also explain
+the stopped 5 A report even while the preceding maximum is still being delivered;
+zero remains a separate possible restriction. Uncertain command/readback ordering
+preserves an existing tighter qualified choice without qualifying an ambiguous
+new request. Missing or invalid new values do not erase that known constraint.
+When no qualified choice exists, equal, inconsistent or incomplete evidence leaves
+the independent vehicle limit unknown. This prevents a 6 A identification setting
+or stopped 5 A report from becoming a permanent limit on later charging.
+Native charger/electrical ceilings and the vehicle's own protections still apply.
+Field meanings follow the
 [Tesla telemetry reference](https://developer.tesla.com/docs/fleet-api/fleet-telemetry/available-data).
 A positive vehicle request below 6 A uses a valid 6 A pilot allowance while the
 vehicle limits its own draw; planning estimates that lower delivery and reserves
 the pilot allowance. Explicit zero and electrical limits still prevent starting.
+
+Qualification belongs to the current equipment, physical connection and Tesla
+feed association. Admitted source/runtime writes save it atomically with source
+and charge progress; cards and diagnostics only read it. Same-connection restart
+and transport reconnect keep its original provenance, while an actual departure,
+new connection, changed feed or confirmed different vehicle retires it. Feed
+unavailability withdraws live projection without manufacturing fresh evidence;
+the dormant known constraint still bounds planning and allowed current, including
+zero, while raw source availability remains false.
+A genuinely absent optional qualification record defaults to null; malformed or
+unknown recorded shapes fail closed. No record supplies Start or takeover authority.
+Unchanged live or retained current publications do not renew their field clocks.
 
 The [planning contract](../planning.md#schedules-inside-the-vehicle) owns how the
 reported next start restricts period selection. An absent next start does not

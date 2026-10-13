@@ -25,7 +25,8 @@ export function chargingPlannerInput(options) {
       values: Object.fromEntries(['connected', 'charging', 'currentA', 'maximumCurrentA', 'actualCurrentA',
         'voltageV', 'powerKw', 'minimumSoc', 'vehicleCeilingSoc', 'soc', 'scheduledStartAt',
         'scheduledEndAt', 'vehicleNotBefore', 'nativeCurrentA', 'vehicleCurrentA'].map(key => [key,
-        key === 'soc' ? charger.values?.soc : fields(charger.values?.[key], ['value', 'available', 'assumed'])])),
+        key === 'soc' ? charger.values?.soc : fields(charger.values?.[key], ['value', 'available', 'assumed',
+          ...(key === 'vehicleCurrentA' ? ['knownLimitA'] : [])])])),
     })),
     ...(supply === undefined ? {} : { supply: {
       ...fields(supply, ['configuredBudgetCurrentA', 'allocationA', 'voltageV',

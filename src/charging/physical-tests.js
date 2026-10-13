@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { CHARGING_EFFICIENCY } from '../domain/charging-energy.js';
 import { chargingDiagnosticSessionId } from './session-diagnostics.js';
 import { sharedChargingAssessment, advanceSharedAssessment, validSharedAssessment } from './shared-assessment.js';
+import { vehicleCurrentConstraint } from './tesla-current-request.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, MAX_RUNS = 24;
 const PROGRAMS = ['immediate', 'vehicle-schedule'];
@@ -16,7 +17,8 @@ const capacity = value => finite(value) && value >= 1 && value <= 300;
 const copy = value => structuredClone(value);
 const allowed = (value, keys) => object(value) && Object.keys(value).every(key => keys.includes(key));
 const active = run => ACTIVE.includes(run.phase);
-const field = (charger, name) => charger?.values?.[name]?.available === true ? charger.values[name].value : null;
+const field = (charger, name) => name === 'vehicleCurrentA' ? vehicleCurrentConstraint(charger?.values?.[name])
+  : charger?.values?.[name]?.available === true ? charger.values[name].value : null;
 const connected = charger => field(charger, 'connected');
 const feedAvailable = feed => (feed?.setup?.available ?? feed?.reception?.available) === true;
 const fresh = (snapshot, now) => snapshot?.online === true && time(snapshot.readAt)
@@ -69,8 +71,11 @@ function headroom(input, charger) {
     : charger?.id === 'charger1' ? field(charger, 'voltageV') : null;
   const limits = ['maximumCurrentA', 'vehicleCurrentA', 'nativeCurrentA'].map(name => field(charger, name))
     .filter(value => finite(value) && value > 0);
-  const powerKw = forecastPower > 0 ? forecastPower : limits.length && voltage >= 200 && voltage <= 250
+  const vehicleLimit = field(charger, 'vehicleCurrentA');
+  const boundedPower = limits.length && voltage >= 200 && voltage <= 250
     ? 3 * voltage * Math.min(...limits) / 1000 : null;
+  const vehiclePower = finite(vehicleLimit) && voltage >= 200 && voltage <= 250 ? 3 * voltage * vehicleLimit / 1000 : null;
+  const powerKw = vehicleLimit === 0 ? 0 : forecastPower > 0 ? Math.min(forecastPower, vehiclePower ?? Infinity) : boundedPower;
   const gridKwh = capacityKwh > 0 && percent(input.soc) && percent(input.nativeTargetSoc)
     ? capacityKwh * Math.max(0, input.nativeTargetSoc - input.soc) / 100 / CHARGING_EFFICIENCY : null;
   const minutes = gridKwh !== null && powerKw > 0 ? gridKwh / powerKw * 60 : null;

@@ -69,6 +69,17 @@ test('preparation gates use live readiness and duration instead of one fixed bat
   assert.equal(f.writes.length, 0);
 });
 
+test('preparation estimates honor dormant vehicle constraints instead of a preceding larger forecast', () => {
+  const f = fixture(), tests = f.create(), charger = f.view.chargers[0];
+  charger.forecast = { voltageV: 230, powerKw: 11.04 };
+  charger.values.vehicleCurrentA = { value: null, available: false, knownLimitA: 5 };
+  assert.equal(tests.preview(f.input(), f.view).headroom.powerKw, 3.45);
+  charger.values.vehicleCurrentA.knownLimitA = 0;
+  const stopped = tests.preview(f.input(), f.view).headroom;
+  assert.equal(stopped.powerKw, 0); assert.equal(stopped.minutes, null);
+  assert.equal(charger.values.vehicleCurrentA.available, false);
+});
+
 test('guided duration uses published planning voltage even before a vehicle draws power', () => {
   const f = fixture(), tests = f.create();
   const charger = f.view.chargers[0];

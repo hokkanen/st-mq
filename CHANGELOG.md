@@ -19,6 +19,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   their original clocks. Finish and acknowledge earlier pending deliveries before
   updating both peers together; unsupported deliveries remain preserved.
 
+- A qualified Tesla vehicle current limit survives maximum-only pilot updates,
+  preventing repeated current reductions and increases. Stopped and identification
+  reports cannot become permanent vehicle limits; original raw observations and
+  qualification clocks remain separate through same-connection restart.
 - A confirmed joint Tesla/BMW assignment survives later shared charging episodes
   on the same physical connections. Earlier BMW-only peer episodes cannot create
   a false identity conflict or reset the current battery target and charge anchor;

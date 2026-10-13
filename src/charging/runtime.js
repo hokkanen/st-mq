@@ -11,6 +11,7 @@ import { backgroundPlanDeadline } from './plan-settling.js';
 import { createChargingController } from './controller.js';
 import { easeeChargerTelemetry, effectiveScheduleFingerprint } from './easee.js';
 import { teslamateVehicleTelemetry, teslamateConnectionContext, teslamateDeparture } from './teslamate.js';
+import { updateTeslaCurrentRequest, vehicleCurrentConstraint } from './tesla-current-request.js';
 import { forecastHousehold, householdReferenceSummary } from './history.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createHouseholdForecastService } from './history-service.js';
@@ -1226,6 +1227,11 @@ export class ChargingRuntime {
       if (disconnected) item.identification = null;
       const connectedAt = session?.connectedAt, scope = !disconnected && observedSession && Number.isSafeInteger(connectedAt)
         ? `${item.association}:${connectedAt}` : null;
+      if (item.vehicleEvidence?.teslaCurrentRequest && (disconnected
+        || tesla.association && item.vehicleEvidence.teslaCurrentRequest.vehicleAssociation !== tesla.association
+        || teslaDepartedSince(Math.min(item.vehicleEvidence.teslaCurrentRequest.request.receivedAt,
+          item.vehicleEvidence.teslaCurrentRequest.limit?.receivedAt ?? Infinity))))
+        item.vehicleEvidence.teslaCurrentRequest = null;
       if (disconnected || scope !== null && item.targetState?.connectedAt !== connectedAt) item.targetState = null;
       if (disconnected || scope !== null && item.vehicleMatch?.scope !== scope) item.vehicleMatch = null;
       if (disconnected || scope !== null && item.vehicleConflict?.scope !== scope) item.vehicleConflict = null;
@@ -1699,6 +1705,9 @@ export class ChargingRuntime {
       // retire that BMW context; disconnect/source/equipment boundaries also
       // clear it before a new physical assignment can use it.
       else if (vehicleId === 'tesla') item.targetState = null;
+      if (vehicleId === 'tesla') item.vehicleEvidence.teslaCurrentRequest = updateTeslaCurrentRequest(
+        item.vehicleEvidence.teslaCurrentRequest, tesla, { now, nativeCurrent: result[id].currentA, control: controls[id] });
+      else if (vehicleId === 'bmw' && item.vehicleEvidence) item.vehicleEvidence.teslaCurrentRequest = null;
       this.projectVehicleTelemetry(id, { result, controls, tesla, bmwAvailable, homeContext }, now,
         { vehicleId, conflict, sessionId: item.request?.sessionId, identification: item.identification });
     }
@@ -1744,7 +1753,8 @@ export class ChargingRuntime {
           : identification?.phase === 'inconclusive' ? 'identification-inconclusive' : 'assignment-unresolved',
       chargerId: id, association: item.association, sessionId, revision: vehicleId ? item.vehicleMatch.revision : this.revision };
     if (vehicleId === 'tesla') {
-      Object.assign(result[id], teslamateVehicleTelemetry(tesla, { now, charging: result[id].charging?.value }));
+      Object.assign(result[id], teslamateVehicleTelemetry(tesla, { now, charging: result[id].charging?.value,
+        currentRequest: item.vehicleEvidence?.teslaCurrentRequest ?? null }));
       result[id].assignedVehicleSource = 'teslamate';
     }
     if (vehicleId === 'bmw') {
@@ -2244,7 +2254,8 @@ export class ChargingRuntime {
       chargers: views.map(view => [view.id, view.association, view.deadlineAt, view.settings, view.request?.revision,
         view.referenceGridKwh, view.capabilities.externalLoadBalancing || view.capabilities.currentControl ? null : view.values.currentA.value,
         ...['connected', 'soc', 'minimumSoc', 'capacityKwh', 'maximumCurrentA',
-          'vehicleNotBefore', 'vehicleCurrentA', 'nativeCurrentA', 'vehicleCeilingSoc'].map(key => view.values[key]?.value ?? null)]) });
+          'vehicleNotBefore', 'vehicleCurrentA', 'nativeCurrentA', 'vehicleCeilingSoc'].map(key =>
+          key === 'vehicleCurrentA' ? vehicleCurrentConstraint(view.values[key]) : view.values[key]?.value ?? null)]) });
     const settlingKey = digest({ stabilityBasis, historySelection, authority: this.canControl(),
       ready: this.historyReady, historyError: this.historyError,
       supply: { configuredBudgetCurrentA: supply.configuredBudgetCurrentA,
@@ -2276,7 +2287,8 @@ export class ChargingRuntime {
     const allocationScope = digest({ priority: this.settings.priority, prices: priceWindow(currentPrices, -Infinity, Infinity),
       chargers: views.map(view => [view.id, view.association, view.request?.sessionId, view.request?.revision,
         view.settings.enabled, view.request?.chargeNow === true,
-        ...['connected', 'maximumCurrentA', 'nativeCurrentA', 'vehicleCurrentA', 'vehicleNotBefore'].map(key => view.values[key]?.value ?? null)]) });
+        ...['connected', 'maximumCurrentA', 'nativeCurrentA', 'vehicleCurrentA', 'vehicleNotBefore'].map(key =>
+          key === 'vehicleCurrentA' ? vehicleCurrentConstraint(view.values[key]) : view.values[key]?.value ?? null)]) });
     const previousAllocations = this.allocationScope === allocationScope ? this.coordination?.allocations ?? [] : [];
     const planning = { now, prices: planningPrices, household: this.household, supply, priority: this.settings.priority, previousAllocations };
     const evidence = this.planningEvidence();
@@ -2365,7 +2377,8 @@ export class ChargingRuntime {
         view.capabilities.externalLoadBalancing || view.capabilities.currentControl ? null : view.values.currentA.value, view.values.maximumCurrentA.value,
         view.values.scheduledStartAt.value, view.values.scheduledEndAt.value,
         ...['vehicleNotBefore', 'vehicleCurrentA', 'nativeCurrentA', 'vehicleCeilingSoc'].map(key =>
-          view.values[key]?.available === false ? null : view.values[key]?.value ?? null)]) };
+          key === 'vehicleCurrentA' ? vehicleCurrentConstraint(view.values[key])
+            : view.values[key]?.available === false ? null : view.values[key]?.value ?? null)]) };
     for (const view of views) {
       const item = this.charger(view.id), control = view.control;
       item.forecast = result.forecasts?.[view.id] ?? null;
@@ -2691,7 +2704,7 @@ export class ChargingRuntime {
       charger.request?.chargeNow === true, charger.control?.session?.connectedAt, charger.control?.manual,
       charger.requiredGridKwh > 1e-7,
       ...['connected', 'maximumCurrentA', 'nativeCurrentA', 'vehicleCurrentA', 'vehicleNotBefore']
-        .map(key => charger.values[key]?.value ?? null)])) : null;
+        .map(key => key === 'vehicleCurrentA' ? vehicleCurrentConstraint(charger.values[key]) : charger.values[key]?.value ?? null)])) : null;
     if (!holdScope) this.currentAllocationHold = null;
     const allocateCurrent = priority === 'charger2' && !capacityOnly ? undefined : headroom => {
       if (this.currentAllocationHold?.scope !== holdScope
@@ -2711,7 +2724,7 @@ export class ChargingRuntime {
       evidence: supply?.feedEvidence?.property },
       easee: { healthy: first?.online === true, currents: supply?.chargerCurrentA, times: supply?.observationTimes?.charger,
         evidence: supply?.feedEvidence?.charger },
-      vehicleCurrentA: capacityOnly ? null : view?.values.vehicleCurrentA?.value,
+      vehicleCurrentA: capacityOnly ? null : vehicleCurrentConstraint(view?.values.vehicleCurrentA),
       notBefore: capacityOnly ? null : view?.values.vehicleNotBefore?.value,
       priority: capacityOnly ? null : priority, allocateCurrent,
       allocationA: null, reservationA: 0 };

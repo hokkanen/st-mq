@@ -348,6 +348,18 @@ test('five-amp vehicle delivery reserves a six-amp pilot in independent shared a
     'A native vehicle zero remains a stop restriction');
 });
 
+test('dormant known vehicle restrictions still bound independent shared assessment', t => {
+  const f = fixture(t); f.plug(); f.coordinate();
+  const row = f.view.coordination.adopted.allocations[0], current = f.view.chargers[1];
+  current.values.vehicleCurrentA = { value: null, available: false, knownLimitA: 5 };
+  Object.assign(row.chargers.charger2, { currentA: 5, powerKw: 3.45, currentLimitA: 6 });
+  row.phaseHeadroomA = [12,12,12];
+  assert.equal(sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()).adopted.state, 'feasible');
+  current.values.vehicleCurrentA.knownLimitA = 0;
+  assert.equal(sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()).adopted.state, 'inconsistent');
+  assert.equal(current.values.vehicleCurrentA.available, false);
+});
+
 test('fresh metered charging supersedes a held vehicle start only while independently observed', t => {
   const f = fixture(t); f.plug(); f.coordinate();
   f.view.chargers[1].values.vehicleNotBefore = f.reading(f.now() + HOUR, 'teslamate');

@@ -5,6 +5,7 @@ import { validateIdentificationState } from './identification.js';
 import { validateJointTeslaComparison } from './joint-identification.js';
 import { validateChargingFlexibility } from './flexibility.js';
 import { validateChargingProgress } from './progress.js';
+import { validateTeslaCurrentRequest } from './tesla-current-request.js';
 
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
 const time = value => Number.isSafeInteger(value) && value >= 0;
@@ -13,7 +14,7 @@ const fields = (value, allowed) => object(value) && Object.keys(value).every(key
 const vehicleIds = ['bmw', 'tesla'];
 const evidenceFields = ['scope', 'chargingTimes', 'stoppedTimes', 'physicalCharging', 'historyOverflow',
   'bmwReason', 'bmwChargingReadingId', 'bmwPlugReadingId', 'bmwContestedPauseRequestedAt', 'teslaContestedPauseRequestedAt',
-  'teslaCurrentCandidate', 'teslaCurrentMatch', 'teslaCurrentMatchTestId', 'teslaCurrentResolvedTestId'];
+  'teslaCurrentCandidate', 'teslaCurrentMatch', 'teslaCurrentMatchTestId', 'teslaCurrentResolvedTestId', 'teslaCurrentRequest'];
 const times = value => Array.isArray(value) && value.length <= 4096
   && value.every((at, index) => time(at) && (index === 0 || value[index - 1] < at));
 const sessionConnectedAt = request => Number(request.scope.split(':').at(-1));
@@ -118,6 +119,7 @@ export function validateChargingRuntimeState(saved) {
       throw new Error('Unsupported saved charging controls; start a fresh development database');
     validateSavedRequest(previous.request, previous.association);
     validateCurrentIdentificationEvidence(previous.vehicleEvidence);
+    validateTeslaCurrentRequest(previous.vehicleEvidence?.teslaCurrentRequest);
     if (previous.vehicleMatch?.pauseRequestedAt !== undefined && (previous.vehicleMatch.id !== 'tesla'
       || !Number.isSafeInteger(previous.vehicleMatch.pauseRequestedAt)
       || previous.vehicleMatch.pauseRequestedAt < previous.vehicleMatch.connectedAt

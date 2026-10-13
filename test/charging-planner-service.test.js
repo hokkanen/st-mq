@@ -35,6 +35,26 @@ test('worker preserves the complete planner result and selects available cheap d
   assert.deepEqual(options, before, 'Worker planning cannot mutate live request inputs');
 });
 
+test('worker serialization and cache preserve changing dormant Tesla constraints without claiming live availability', async t => {
+  const service = serviceFor(t), options = smallRequest('charger2'), charger = options.chargers[0];
+  charger.capabilities = { scheduling: true, currentControl: true, externalLoadBalancing: false };
+  charger.requiredGridKwh = 14;
+  let previousDelivered = Infinity;
+  for (const knownLimitA of [10, 5, 0]) {
+    charger.values.vehicleCurrentA = { value: null, available: false, assumed: false, knownLimitA };
+    const before = structuredClone(options), result = await service.request(options), direct = planChargers(options);
+    assert.deepEqual(result, direct, 'The worker receives the same dormant bound as direct planning');
+    assert.deepEqual(options, before); assert.equal(charger.values.vehicleCurrentA.available, false);
+    assert.ok(result.plans.charger2.deliveredGridKwh < previousDelivered);
+    previousDelivered = result.plans.charger2.deliveredGridKwh;
+    if (knownLimitA === 0) assert.equal(previousDelivered, 0, 'Zero retires the cached positive-current plan');
+  }
+  delete charger.values.vehicleCurrentA.knownLimitA;
+  const unknown = await service.request(options);
+  assert.equal(unknown.plans.charger2.feasible, true, 'Retiring the dormant constraint invalidates the old zero cache');
+  assert.ok(unknown.plans.charger2.deliveredGridKwh > 0);
+});
+
 test('worker preserves optimistic future capacity across transient fallback and explicit opt-out changes', async t => {
   const service = serviceFor(t), options = smallRequest('charger2'), charger = options.chargers[0];
   charger.capabilities = { scheduling: true, currentControl: true, externalLoadBalancing: false };
