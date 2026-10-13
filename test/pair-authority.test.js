@@ -1264,6 +1264,78 @@ test('rejoin after both branches compact preserves unique excluded history and r
   assert.equal(selected.events({type:'synthetic-unique-after-divergence'}).length,0);selected.close();
 });
 
+for (const journal of [true, false]) for (const outcome of journal ? ['slow', 'expired', 'failed'] : ['slow'])
+  test(`${journal ? 'journal' : 'independent snapshot'} rejoin acknowledgement ${outcome} keeps its operation deadline and exact release`, async t => {
+    const root = await fixture(t);
+    const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
+      recoveryPreview: async () => ({ previewId: randomBytes(32).toString('hex'), status: 'checked', model: { status: 'not-assessed' } }),
+    } });
+    const donor = await manager(t, root, 'donor', { role: journal ? 'slave' : 'master' }); connect(primary, donor);
+    if (journal) { await donor.synchronize(primary.state.claim()); await donor.action('promote', command()); }
+    const originalPath = donor.state.value.activeDbPath;
+    const original = new Store(originalPath);
+    original.event('synthetic-retained-rejoin-evidence', { meaning: 'original donor' }, 100);
+    original.setState('synthetic-excluded-rejoin-control', { enabled: true }); original.close();
+    await donor.observeClaim(primary.state.claim());
+    await primary.action('check-recovery', command());
+    const action = { ...command(), discardUnrecovered: true, previewId: primary.status().recovery.preview.previewId };
+    const source = new Store(primary.state.value.activeDbPath, { readOnly: true });
+    const sourceObservations = source.db.prepare('SELECT * FROM observations ORDER BY id').all(); source.close();
+    const request = donor.peer.request.bind(donor.peer), acknowledgements = [];
+    const simulatedCleanupMs = donor.peer.timeoutMs + 1;
+    assert(simulatedCleanupMs < donor.config.timeoutMs);
+    let first = true;
+    donor.peer.request = async (operation, body, options) => {
+      if (operation === 'peer-ack') {
+        assert.equal(donor.state.value.role, 'protected'); assert.equal(donor.canControl(), false);
+        assert.equal(options.signal, donor.abort.signal, 'shutdown still cancels the acknowledgement');
+        acknowledgements.push(structuredClone(body.checkpoint));
+        // Model elapsed cleanup against the real transport's selected deadline;
+        // no slow wall-clock sleep or device operation is needed.
+        const budget = options.timeoutMs ?? donor.peer.timeoutMs;
+        if (first) {
+          first = false;
+          const elapsed = outcome === 'expired' ? budget + 1 : simulatedCleanupMs;
+          if (elapsed > budget) throw Object.assign(Error('synthetic acknowledgement expiry'), { code: 'peer_unavailable' });
+          if (outcome === 'failed') throw Object.assign(Error('synthetic acknowledgement rejection'), { code: 'journal_peer_conflict' });
+        }
+      }
+      return request(operation, body, options);
+    };
+    if (outcome !== 'slow') {
+      await assert.rejects(primary.action('rejoin', action), { code: outcome === 'expired' ? 'peer_unavailable' : 'journal_peer_conflict' });
+      const saved = structuredClone(primary.state.value.recovery.releaseOperation);
+      const release = structuredClone(donor.state.value.release);
+      assert.equal(donor.state.value.role, 'protected'); assert.equal(donor.state.value.reason, 'rejoining');
+      assert.equal(donor.state.value.releaseReceipt, undefined); assert.equal(donor.canControl(), false);
+      assert.deepEqual(donor.state.value.accepted.checkpoint, saved.metadata.checkpoint);
+      await assert.rejects(primary.action('rejoin', { ...action, requestId: randomUUID() }), { code: 'invalid_transition' });
+      assert.deepEqual(donor.state.value.release, release);
+      const advancing = new Store(primary.state.value.activeDbPath);
+      advancing.setState('synthetic-after-frozen-release', { later: true }); advancing.close();
+      assert.equal((await primary.action('rejoin', action)).ok, true);
+      assert.deepEqual(donor.state.value.accepted.checkpoint, saved.metadata.checkpoint, 'retry keeps the frozen target after later source writes');
+      assert.deepEqual(acknowledgements[0], acknowledgements[1]);
+    } else {
+      assert.equal((await primary.action('rejoin', action)).ok, true);
+      const unchanged = new Store(primary.state.value.activeDbPath, { readOnly: true });
+      assert.deepEqual(unchanged.db.prepare('SELECT * FROM observations ORDER BY id').all(), sourceObservations); unchanged.close();
+    }
+    assert.equal(donor.state.value.role, 'slave'); assert.equal(donor.canControl(), false); assert.equal(primary.canControl(), true);
+    assert.equal(donor.state.value.release, null); assert.equal(donor.state.value.releaseReceipt.requestId, action.requestId);
+    const publication = await readReplicaPublication(donor.config.snapshotDirectory), selected = new Store(publication.dbPath, { readOnly: true });
+    assert.equal(selected.getState('synthetic-excluded-rejoin-control'), null);
+    assert.equal(selected.events({ type: 'synthetic-retained-rejoin-evidence' }).length, 0);
+    if (journal) assert(selected.db.prepare('SELECT after_row FROM journal_peer_branch_rows WHERE after_row IS NOT NULL').all()
+      .some(row => row.after_row.includes('synthetic-retained-rejoin-evidence')), 'the divergent branch stays inactive and retained');
+    assert.equal(selected.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok'); selected.close();
+    if (!journal) {
+      const retained = new Store(originalPath, { readOnly: true });
+      assert.equal(retained.events({ type: 'synthetic-retained-rejoin-evidence' }).length, 1);
+      assert.deepEqual(retained.getState('synthetic-excluded-rejoin-control'), { enabled: true }); retained.close();
+    }
+  });
+
 for (const verifyWithFullSnapshot of [false, true]) test(`protected rejoin publishes the frozen ${verifyWithFullSnapshot ? 'static snapshot' : 'live transfer'} clocks after recording advances`, async t => {
   const root = await fixture(t);
   const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
