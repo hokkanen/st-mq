@@ -160,8 +160,18 @@ export function createChargingController({ adapter, initialState = null, saveSta
     identification: identification ? copy(identification) : null, snapshot: snapshot ? copy(snapshot) : null });
   const currentFingerprint = () => activeFingerprint(snapshot.schedule);
   const ownsCurrent = () => state.owned && state.owned.activeFingerprint === currentFingerprint();
+  const admittedDisconnect = (event, now) => ['bmw-cardata', 'easee-stream'].includes(event?.source)
+    && boundaryId(event.readingId) && isTime(event.measuredAt) && isTime(event.receivedAt)
+    && isTime(event.endedConnectedAt) && validateAdmittedSourceTime({ sourceTime: event.measuredAt,
+      receivedAt: event.receivedAt, admittedAt: event.admittedAt, now });
   function ownedBackendChangeProof(schedule, ownerGeneration = generation) {
     const now = clock();
+    const disconnect = desired.vehicleDisconnect;
+    // A retained event for an earlier session is still evidence, but
+    // observeVehicleDisconnect cannot attach it to this current connection.
+    const earlierDisconnect = admittedDisconnect(disconnect, now)
+      && disconnect.endedConnectedAt < state.session?.connectedAt
+      && disconnect.measuredAt < state.session?.connectedAt;
     if (!permitted() || !snapshot || snapshot.online !== true || !snapshot.controlKnown
       || !isTime(snapshot.readAt) || snapshot.readAt > now || now - snapshot.readAt > 60_000
       || snapshot.pluggedIn !== true || snapshot.enabled !== true || stopped(snapshot)
@@ -173,7 +183,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
       || state.pending || state.manual || state.takeoverPending || state.automaticTakeover
       || state.vehicleDisconnect?.awaitingConnection || state.vehicleDisconnect?.cleanupPending
       || identification || desired.chargeNow || desired.takeover || desired.replan
-      || desired.vehicleDisconnect && desired.vehicleDisconnect.readingId !== state.vehicleDisconnect?.readingId)
+      || disconnect && !earlierDisconnect && disconnect.readingId !== state.vehicleDisconnect?.readingId)
       return null;
     try {
       if (schedule?.enabled !== 'delayed' || snapshot.schedule.enabled !== 'delayed'
@@ -220,9 +230,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
     : value.enabled === false || value.reason === 53;
   async function observeVehicleDisconnect(now) {
     const event = desired.vehicleDisconnect;
-    if (!['bmw-cardata', 'easee-stream'].includes(event?.source) || !boundaryId(event.readingId)
-      || !isTime(event.measuredAt) || !isTime(event.receivedAt) || !isTime(event.endedConnectedAt)
-      || !validateAdmittedSourceTime({ sourceTime: event.measuredAt, receivedAt: event.receivedAt, admittedAt: event.admittedAt, now })) return;
+    if (!admittedDisconnect(event, now)) return;
     const prior = copy(state);
     const known = state.vehicleDisconnect;
     if (known?.source !== event.source || known?.readingId !== event.readingId) {

@@ -697,6 +697,11 @@ cleanup keep setup blocked. This integration handover preserves the Automatic
 preference and grants no new takeover or Start permission. Ordinary shutdown
 still preserves the cloud program; a configured listener alone does not confirm
 charger-side native control.
+An admitted retained disconnect whose ended session and original source event
+both precede the current connection does not block that connection's guarded
+handback. The historical event remains intact. Unconsumed current-session,
+unknown or newer disconnect evidence and unfinished cleanup/restoration still
+block handback.
 Temporary listener readiness warnings clear when the listener recovers, without
 waiting for the next cloud check or reapplying charger configuration. Outstanding
 cloud failures and retry deadlines remain in effect. Storage and authorization

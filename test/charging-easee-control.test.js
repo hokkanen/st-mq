@@ -17,7 +17,7 @@ function harness() {
       h.reads++;
       if (h.readHook) await h.readHook(url);
       if (url.endsWith('/schedules')) return structuredClone(h.schedules);
-      return [obs(250, h.online, h.now), obs(31, h.enabled, h.sourceTimes[31] ?? h.now), obs(109, h.mode, h.now),
+      return [obs(250, h.online, h.now), obs(31, h.enabled, h.sourceTimes[31] ?? h.now), obs(109, h.mode, h.sourceTimes[109] ?? h.now),
         obs(96, h.reason ?? (h.schedules.enabled === 'none' ? 0 : 54), h.sourceTimes[96] ?? h.now), obs(47, 16, h.now),
         obs(48, h.dynamicA, h.sourceTimes[48] ?? h.now), obs(104, 32, h.now), obs(120, h.mode === 3 ? 8 : 0, h.now),
         ...[22, 23, 24].map(id => obs(id, 20, h.now)), ...[230, 231, 232].map(id => obs(id, 12, h.now))];
@@ -54,6 +54,55 @@ test('a current own cloud delay drains with its original session and native cloc
   assert.equal(result.session.connectedAt, before.session.connectedAt);
   assert.equal(result.snapshot.observations[48].at, before.snapshot.observations[48].at);
   assert.equal(h.dynamicA, 32, 'releasing a delay does not resume or change a native current limit');
+});
+
+for (const source of ['easee-stream', 'bmw-cardata'])
+  test(`an admitted earlier ${source} disconnect remains intact without blocking the current own delay handback`, async () => {
+    const h = harness(); await h.update(); h.now += 1000;
+    const event = { source, readingId: 'earlier-fixture-disconnect', endedConnectedAt: NOW - 2000,
+      measuredAt: NOW - 1000, receivedAt: h.now };
+    const original = structuredClone(event), connection = h.saved.session.connectedAt;
+    await h.update({ vehicleDisconnect: event });
+    assert.equal(h.saved.vehicleDisconnect, undefined, 'an earlier event is not attached to the current controller session');
+    assert.equal(h.saved.session.connectedAt, connection); assert.equal(h.writes.length, 1);
+    const proof = h.controller.ownedBackendChangeProof(h.schedules); assert(proof);
+    const result = await h.controller.releaseOwnedForBackendChange(proof);
+    assert.equal(result.handoverConfirmed, true); assert.equal(h.writes.length, 2);
+    assert.equal(result.session.connectedAt, connection); assert.deepEqual(event, original);
+    assert.equal(h.dynamicA, 32); assert.equal(h.schedules.enabled, 'none');
+  });
+
+for (const variant of ['current-session', 'unknown-session', 'future-session', 'newer-source-event', 'future-source-event', 'unsupported-source', 'invalid-id'])
+  test(`a ${variant} disconnect cannot establish own delay handback authority`, async () => {
+    const h = harness(); await h.update(); h.now += 1000;
+    h.sourceTimes[109] = NOW; // An unchanged mode read is not a new physical reconnect.
+    const event = { source: 'easee-stream', readingId: 'guarded-fixture-disconnect', endedConnectedAt: NOW - 2000,
+      measuredAt: NOW - 1000, receivedAt: h.now };
+    if (variant === 'current-session') { event.endedConnectedAt = NOW; event.measuredAt = NOW + 500; }
+    if (variant === 'unknown-session') event.endedConnectedAt = null;
+    if (variant === 'future-session') event.endedConnectedAt = h.now + 1000;
+    if (variant === 'newer-source-event') event.measuredAt = NOW + 500;
+    if (variant === 'future-source-event') event.measuredAt = h.now + 500;
+    if (variant === 'unsupported-source') event.source = 'unknown-source';
+    if (variant === 'invalid-id') event.readingId = '';
+    const original = structuredClone(event); await h.update({ vehicleDisconnect: event });
+    const before = h.writes.length;
+    assert.equal(h.controller.ownedBackendChangeProof(h.schedules), null);
+    assert.equal(h.writes.length, before); assert.deepEqual(event, original);
+    if (variant === 'current-session') assert.equal(h.saved.vehicleDisconnect.awaitingConnection, true);
+  });
+
+test('an earlier desired disconnect cannot hide a saved unfinished cleanup obligation', async () => {
+  const h = harness(); await h.update();
+  const obligation = { source: 'easee-stream', readingId: 'pending-fixture-disconnect', endedConnectedAt: NOW - 3000,
+    measuredAt: NOW - 2000, receivedAt: NOW - 1000, cleanupPending: true, awaitingConnection: false };
+  h.saved.vehicleDisconnect = structuredClone(obligation); h.restart(); h.allowed = false;
+  const older = { source: 'easee-stream', readingId: 'earlier-fixture-disconnect', endedConnectedAt: NOW - 5000,
+    measuredAt: NOW - 4000, receivedAt: NOW - 3000 };
+  await h.update({ vehicleDisconnect: older }); h.allowed = true;
+  assert.equal(h.controller.ownedBackendChangeProof(h.schedules), null);
+  assert.deepEqual(h.saved.vehicleDisconnect, obligation); assert.equal(h.writes.length, 1);
+  assert(h.controller.status().owned, 'the exact owned instruction remains available for required cleanup');
 });
 
 for (const variant of ['external-schedule', 'stop', 'zero', 'disconnect', 'offline', 'authority', 'probe', 'generation', 'restart'])

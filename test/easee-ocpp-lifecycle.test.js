@@ -278,6 +278,27 @@ test('reenabling the exact inactive native connection releases a real own cloud 
   assert.deepEqual(x.transitions.map(({ phase }) => phase), ['inspect-owned-cloud', 'prepare', 'complete']);
 });
 
+test('a retained admitted disconnect from an earlier session does not block guarded native reenable', async t => {
+  const x = await ownedCloudHandoverFixture(t), f = x.f, connection = x.controller.status().session.connectedAt;
+  f.advance(1000);
+  x.item.vehicleDisconnect = { source: 'easee-stream', readingId: 'earlier-fixture-stream-event',
+    endedConnectedAt: connection - 2000, measuredAt: connection - 1000, receivedAt: f.now };
+  const original = clone(x.item.vehicleDisconnect);
+  await x.controller.update({ enabled: true, maximumAmps: 16, plan: x.plan, timezone: 'Europe/Helsinki',
+    vehicleDisconnect: x.item.vehicleDisconnect });
+  assert.equal(writes(f).length, 0, 'the retained older event does not alter the current cloud program');
+  const provider = f.make(); await provider.reconcileOcpp();
+  assert.equal(provider.localOcppStatus().setup.state, 'connecting');
+  assert.equal(f.current.connectivityMode, 'DualProtocol');
+  const mutations = writes(f); assert.equal(mutations.length, 3);
+  assert(mutations[0].path.endsWith('/schedules/delayed/disable'));
+  assert(mutations[1].path.includes('/connection-details/')); assert(mutations[2].path.includes('/connections/chargers/'));
+  assert.deepEqual(x.item.vehicleDisconnect, original, 'integration handback does not erase historical disconnect evidence');
+  assert.equal(x.controller.status().session.connectedAt, connection);
+  assert.equal(x.controller.status().vehicleDisconnect, undefined);
+  assert.equal(x.item.adapter.ownershipNamespace, 'ocpp'); assert.deepEqual(x.settings, { automatic: true });
+});
+
 for (const change of ['external-delay', 'newer-stop', 'newer-zero', 'final-read-schedule', 'failed-clear', 'newer-stop-after-clear'])
   test(`own cloud handover preserves ${change} and refuses native Save/Apply`, async t => {
     const x = await ownedCloudHandoverFixture(t), f = x.f;
