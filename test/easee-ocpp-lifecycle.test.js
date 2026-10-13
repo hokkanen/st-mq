@@ -13,6 +13,7 @@ import { CHARGING_OBSERVATION_IDS } from '../src/charging/easee.js';
 import { easeeAllowanceStatus } from '../src/charging/allowance-history.js';
 import { updateSupplyEstimate } from '../src/charging/supply.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
+import { createChargingController } from '../src/charging/controller.js';
 import { loadConfig } from '../src/app/config.js';
 import { start } from '../src/main.js';
 
@@ -98,6 +99,15 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
       }
       if (method === 'POST' && /^\/api\/chargers\/[^/]+\/schedules\/(?:daily|weekly|delayed)\/disable$/.test(path)) {
         assert.equal(body, null); schedule = { ...schedule, enabled: 'none' };
+        if (cloudObservations) cloudObservations = cloudObservations.map(row => row.id === 96
+          ? { ...row, value: 0, timestamp: new Date(now).toISOString() } : row);
+        return new Response(null, { status: 204 });
+      }
+      if (method === 'POST' && path === `/api/chargers/${CHARGER}/schedules/delayed`) {
+        const { enabled, ...delayed } = body; assert.equal(enabled, true);
+        schedule = { ...schedule, enabled: 'delayed', delayed };
+        if (cloudObservations) cloudObservations = cloudObservations.map(row => row.id === 96
+          ? { ...row, value: 54, timestamp: new Date(now).toISOString() } : row);
         return new Response(null, { status: 204 });
       }
       assert.fail(`Unexpected synthetic request: ${method} ${path}`);
@@ -148,7 +158,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
       },
       onOcppControlTransition: async change => {
         events.push({ type: 'transition', phase: change.phase, target: change.target });
-        await transition(change);
+        return await transition(change);
       } });
     providers.push(provider); return provider;
   }
@@ -219,6 +229,112 @@ test('a schedule installed during native commissioning preflight prevents config
   assert.deepEqual(f.events.filter(event => event.type === 'transition').map(({ phase, target }) => [phase, target]),
     [['prepare', 'native'], ['complete', 'cloud']]);
 });
+
+async function ownedCloudHandoverFixture(t) {
+  const f = fixture(t), native = f.make();
+  await native.reconcileOcpp(); await native.restoreOcpp(); await native.close();
+  f.observations = [[80, 344], [141, 1], [250, true], [31, true], [109, 2], [96, 0], [120, 0],
+    [47, 16], [48, 32], [104, 32], [22, 20], [23, 20], [24, 20]]
+    .map(([id, value]) => ({ id, value, timestamp: new Date(f.now).toISOString() }));
+  const cloud = f.make(false), adapter = cloud.chargerScheduleControl(), saved = new Map();
+  const plan = { id: 'fixture-owned-economic-delay', startAt: f.now + 3 * 3600_000 };
+  const controller = createChargingController({ adapter, clock: () => f.now, canControl: () => true,
+    saveState: state => saved.set('cloud', clone(state)) });
+  t.after(() => controller.close());
+  await controller.update({ enabled: true, maximumAmps: 16, plan, timezone: 'Europe/Helsinki' });
+  assert(controller.status().owned, 'the real cloud producer confirms its own installed delay');
+  const item = { adapter, controller }, settings = { automatic: true }, transitions = [];
+  const runtime = { closed: false, canControl: () => true, charger: () => item, savedOwnership: () => saved.get('cloud'),
+    tick() {}, async setAdapter(id, next) {
+      await item.controller.close(); item.adapter = next;
+      item.controller = (next.createController ?? createChargingController)({ adapter: next, clock: () => f.now,
+        canControl: () => true, saveState: state => saved.set('native', clone(state)) });
+    } };
+  t.after(() => item.controller.close());
+  f.transition = async ({ phase, target, schedule, ownedCloudProof, adapter: next }) => {
+    transitions.push({ phase, target });
+    try {
+      if (phase === 'inspect-owned-cloud') return ChargingRuntime.prototype.ownedCloudBackendChangeProof.call(runtime, 'charger1', schedule);
+      if (phase === 'prepare') return await ChargingRuntime.prototype.pauseForBackendChange.call(runtime, 'charger1', { ownedCloudProof });
+      return await ChargingRuntime.prototype.finishBackendChange.call(runtime, 'charger1', next);
+    } catch { throw Object.assign(Error('Current cloud handover remains pending'), { code: 'control-transition-pending' }); }
+  };
+  f.events.length = 0;
+  return { f, item, controller, settings, transitions, plan };
+}
+
+test('reenabling the exact inactive native connection releases a real own cloud delay before Save/Apply', async t => {
+  const x = await ownedCloudHandoverFixture(t), f = x.f, connectedAt = x.controller.status().session.connectedAt;
+  f.advance(1500); // Fresh receipt time advances without changing native instruction clocks.
+  const provider = f.make(); await provider.reconcileOcpp();
+  assert.equal(provider.localOcppStatus().setup.state, 'connecting'); assert.equal(f.current.connectivityMode, 'DualProtocol');
+  const mutations = writes(f);
+  assert.equal(mutations.length, 3);
+  assert(mutations[0].path.endsWith('/schedules/delayed/disable'));
+  assert(mutations[1].path.includes('/connection-details/')); assert(mutations[2].path.includes('/connections/chargers/'));
+  assert.equal(x.controller.status().owned, null); assert.equal(x.controller.status().session.connectedAt, connectedAt);
+  assert.deepEqual(x.settings, { automatic: true }, 'backend cleanup never changes the dashboard preference');
+  assert.equal(x.item.adapter.ownershipNamespace, 'ocpp');
+  assert.deepEqual(x.transitions.map(({ phase }) => phase), ['inspect-owned-cloud', 'prepare', 'complete']);
+});
+
+for (const change of ['external-delay', 'newer-stop', 'newer-zero', 'final-read-schedule', 'failed-clear', 'newer-stop-after-clear'])
+  test(`own cloud handover preserves ${change} and refuses native Save/Apply`, async t => {
+    const x = await ownedCloudHandoverFixture(t), f = x.f;
+    let scheduleReads = 0, changed = false, cleared = false;
+    const nativeChange = (id, value) => {
+      f.advance(1); f.observations = f.observations.map(row => row.id === id
+        ? { ...row, value, timestamp: new Date(f.now).toISOString() } : row);
+    };
+    if (change === 'external-delay') {
+      f.schedule = { enabled: 'delayed', delayed: { timezone: 'Europe/Helsinki', startTime: '23:30:00', maximumAmps: 8 } };
+      const before = writes(f).length;
+      const status = await x.controller.update({ enabled: true, maximumAmps: 16, plan: x.plan, timezone: 'Europe/Helsinki' });
+      assert.equal(status.phase, 'yielded'); assert.equal(writes(f).length, before, 'ordinary polling preserves the newer external schedule');
+    }
+    f.beforeRequest = ({ path, method }) => {
+      if (path.endsWith('/schedules') && method === 'GET') {
+        scheduleReads++;
+        if (change === 'final-read-schedule' && scheduleReads === 3)
+          f.schedule = { enabled: 'delayed', delayed: { timezone: 'Europe/Helsinki', startTime: '23:45:00', maximumAmps: 9 } };
+      }
+      if (!changed && path.includes('/observations') && change.startsWith('newer-') && change !== 'newer-stop-after-clear') {
+        changed = true; nativeChange(change === 'newer-stop' ? 31 : 48, change === 'newer-stop' ? false : 0);
+      }
+      if (path.endsWith('/schedules/delayed/disable') && method === 'POST') {
+        cleared = true;
+        if (change === 'failed-clear') return new Response(null, { status: 403 });
+      }
+      if (cleared && !changed && path.includes('/observations') && change === 'newer-stop-after-clear') {
+        changed = true; nativeChange(31, false);
+      }
+    };
+    const provider = f.make(); await provider.reconcileOcpp();
+    assert.notEqual(provider.localOcppStatus().setup.state, 'connecting');
+    assert.equal(f.current.connectivityMode, 'OcppOff');
+    assert.equal(writes(f).filter(row => !row.path.endsWith('/schedules/delayed/disable')).length, 0,
+      'no native configuration or Apply overtakes the restriction or uncertain cleanup');
+    assert.deepEqual(x.settings, { automatic: true });
+    if (change === 'failed-clear') {
+      assert(x.controller.status().pending); assert(x.controller.status().owned); assert.equal(x.item.backendTransition.ready, false);
+    }
+    if (change === 'newer-stop' || change === 'newer-stop-after-clear')
+      assert.equal(f.observations.find(row => row.id === 31).value, false);
+    if (change === 'newer-stop' || change === 'newer-zero') {
+      assert.equal(x.item.backendTransition, null, 'no-preparation rejection leaves ordinary cloud reconciliation available');
+      assert.equal(x.controller.status().enabled, true);
+      const before = writes(f).length;
+      const current = await x.controller.update({ enabled: true, maximumAmps: 16, plan: x.plan, timezone: 'Europe/Helsinki' });
+      if (change === 'newer-stop') {
+        assert.equal(current.phase, 'yielded'); assert.equal(current.manual.kind, 'stop');
+      } else {
+        assert.equal(current.phase, 'waiting'); assert.equal(current.snapshot.limits.dynamicChargerA, 0);
+        assert.equal(current.manual, null, 'a current restriction alone does not invent a native Stop');
+      }
+      assert.equal(writes(f).length, before, 'resumed cloud reconciliation keeps the newer native restriction');
+    }
+    if (change === 'newer-zero') assert.equal(f.observations.find(row => row.id === 48).value, 0);
+  });
 
 test('unsupported setup state fences listener authorization and both control backends before mutation', async t => {
   const f = fixture(t), malformed = { version: 999, ownedFingerprint: 'malformed' };

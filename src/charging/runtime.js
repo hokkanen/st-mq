@@ -898,23 +898,46 @@ export class ChargingRuntime {
       ...(preparingMinimum ? { prepareOnly: true } : {}),
       ...(state.phase === 'pausing' ? { pauseUntil: state.pauseUntil } : {}) };
   }
-  async pauseForBackendChange(id) {
+  ownedCloudBackendChangeProof(id, schedule) {
+    const item = this.charger(id);
+    if (this.closed || !this.canControl() || item.adapterPending || item.adapter?.ownershipNamespace === 'ocpp') return null;
+    return item.controller?.ownedBackendChangeProof?.(schedule) ?? null;
+  }
+  async pauseForBackendChange(id, { ownedCloudProof = null } = {}) {
     const item = this.charger(id);
     if (this.closed) throw new Error('Charging backend transition is unavailable.');
     if (item.backendTransition?.flight) return item.backendTransition.flight;
     if (item.backendTransition?.ready) return;
     const transition = item.backendTransition ??= { ready: false };
+    let unprepared = false;
+    let ownerController, ownerAdapter;
     transition.flight = (async () => {
       if (item.adapterPending) await item.adapterFlight;
-      const control = item.controller ? await item.controller.update({ enabled: false }) : this.savedOwnership(id);
+      ownerController = item.controller; ownerAdapter = item.adapter;
+      const control = item.controller ? ownedCloudProof
+        ? await item.controller.releaseOwnedForBackendChange(ownedCloudProof)
+        : await item.controller.update({ enabled: false }) : this.savedOwnership(id);
+      if (ownedCloudProof && control?.backendChangePrepared === false && !control.pending) {
+        unprepared = true;
+        throw new Error('The owned cloud handover changed before cleanup was prepared.');
+      }
       // An empty controller can report failed readback when the charger is
       // already in OCPP mode. Only our durable restrictions block this drain;
       // setup separately verifies the remote backend before commissioning.
       if (this.closed || control?.owned || control?.pending
-        || ['proposed', 'applying', 'active', 'restoring', 'uncertain'].includes(control?.currentTest?.phase))
+        || ['proposed', 'applying', 'active', 'restoring', 'uncertain'].includes(control?.currentTest?.phase)
+        || ownedCloudProof && (control?.handoverConfirmed !== true || control?.manual
+          || control?.snapshot?.stopped || control?.snapshot?.faulted || control?.snapshot?.authorizationBlocked
+          || control?.snapshot?.enabled !== true || control?.snapshot?.pluggedIn !== true
+          || !(control?.snapshot?.limits?.dynamicChargerA > 0)))
         throw new Error('Charging backend transition is blocked until the current restriction is released.');
       transition.ready = true; item.error = null;
     })().catch(() => {
+      if (unprepared && item.backendTransition === transition
+        && item.controller === ownerController && item.adapter === ownerAdapter) {
+        item.backendTransition = null;
+        this.tick({ force: true });
+      }
       item.error = 'charging-backend-transition-blocked';
       throw new Error('Charging backend transition is blocked until the current restriction is released.');
     }).finally(() => { delete transition.flight; });
