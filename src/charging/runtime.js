@@ -1208,7 +1208,7 @@ export class ChargingRuntime {
   // write. Polling telemetry, cards or diagnostics cannot advance this state.
   advanceTelemetry(now = this.clock()) {
     const { result, controls, tesla, teslaDepartedSince, bmwAvailable, homeContext, vehicleAssociations } = this.telemetryContext(now);
-    const candidates = {}, freshCandidates = {}, currentMatches = {}, teslaPauseMatches = {}, independentTeslaMatches = new Set(), bmwMatches = {}, awaitingConnection = new Set(), bmw = this.vehicleFeeds.bmw;
+    const candidates = {}, freshCandidates = {}, currentMatches = {}, teslaPauseMatches = {}, independentTeslaMatches = new Set(), bmwMatches = {}, bmwPassiveOptions = {}, awaitingConnection = new Set(), bmw = this.vehicleFeeds.bmw;
     for (const [id, item] of Object.entries(this.chargers)) {
       const snapshot = controls[id]?.snapshot;
       if (item.definition.provider === 'easee' && snapshot) {
@@ -1226,6 +1226,7 @@ export class ChargingRuntime {
       if (disconnected) item.identification = null;
       const connectedAt = session?.connectedAt, scope = !disconnected && observedSession && Number.isSafeInteger(connectedAt)
         ? `${item.association}:${connectedAt}` : null;
+      if (disconnected || scope !== null && item.targetState?.connectedAt !== connectedAt) item.targetState = null;
       if (disconnected || scope !== null && item.vehicleMatch?.scope !== scope) item.vehicleMatch = null;
       if (disconnected || scope !== null && item.vehicleConflict?.scope !== scope) item.vehicleConflict = null;
       if (item.vehicleMatch?.id === 'tesla' && teslaDepartedSince(item.vehicleMatch.matchedAt)) item.vehicleMatch = null;
@@ -1344,6 +1345,7 @@ export class ChargingRuntime {
           matchingSince: retrySince,
           consumedPlugId: reidentifying || retainedBmw ? null : bmw.consumedPlugId,
           consumedChargingId: retainedBmw ? null : bmw.consumedChargingId };
+        bmwPassiveOptions[id] = !evidence.historyOverflow && bmwAvailable ? passiveOptions : null;
         const passiveBmw = !evidence.historyOverflow && bmwAvailable && bmwSessionMatchDetails(bmw.reading, passiveOptions);
         // One shared episode cannot hide a second independent contradiction.
         // Finding one alternative is enough; no unbounded match list is needed.
@@ -1455,9 +1457,14 @@ export class ChargingRuntime {
     }
     const sharedEpisode = winner => {
       const episode = bmwMatches[winner]?.[0];
-      return episode && Object.keys(this.chargers).every(id => bmwMatches[id]?.length
-        && bmwMatches[id].every(match => match.chargingReadingId === episode.chargingReadingId
-          && match.stopReadingId === episode.stopReadingId)) ? episode : null;
+      const sameEpisode = match => match.chargingReadingId === episode.chargingReadingId
+        && match.stopReadingId === episode.stopReadingId;
+      // Every BMW episode competing on the Tesla connection must be this
+      // shared episode. The BMW peer may also retain older episodes supporting
+      // its own connection; those do not contradict the Tesla comparison.
+      return episode && bmwMatches[winner].every(sameEpisode)
+        && Object.keys(this.chargers).every(id => id === winner || bmwMatches[id]?.some(sameEpisode)
+          || bmwPassiveOptions[id] && bmwSessionMatchDetails(bmw.reading, { ...bmwPassiveOptions[id], matchingEpisode: episode })) ? episode : null;
     };
     // A unique measured-current match can replace an older mistaken association.
     // Saved conflicts are historical context, not permanent new candidates.
@@ -1473,7 +1480,8 @@ export class ChargingRuntime {
         // Both chargers independently match the same complete BMW episode.
         // The positive Tesla comparison resolves its location; the peer keeps
         // its own BMW evidence. Consume the shared episode so it cannot later
-        // recreate BMW on the Tesla connection. Distinct episodes stay conflicts.
+        // recreate BMW on the Tesla connection. A distinct BMW episode on that
+        // connection remains a conflict; older BMW-only peer history does not.
         consumeBmwEpisode(bmw, episode.chargingReadingId);
         candidates[winner] = candidates[winner].filter(vehicle => vehicle !== 'bmw');
         freshCandidates[winner] = freshCandidates[winner].filter(vehicle => vehicle !== 'bmw');
@@ -1686,7 +1694,11 @@ export class ChargingRuntime {
       }
       if (vehicleId === 'bmw') item.targetState = updateTargetState(item.targetState, {
         connectedAt: controls[id].session.connectedAt, reading: bmw.reading, now, live: false });
-      else item.targetState = null;
+      // Unknown identity withdraws projection, not the original source history
+      // for this connection. A positively identified different vehicle does
+      // retire that BMW context; disconnect/source/equipment boundaries also
+      // clear it before a new physical assignment can use it.
+      else if (vehicleId === 'tesla') item.targetState = null;
       this.projectVehicleTelemetry(id, { result, controls, tesla, bmwAvailable, homeContext }, now,
         { vehicleId, conflict, sessionId: item.request?.sessionId, identification: item.identification });
     }

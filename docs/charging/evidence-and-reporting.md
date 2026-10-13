@@ -35,6 +35,14 @@ unavailability; configured defaults, measured energy and native current limits
 retain their separate ownership. Genuinely absent references use current defaults;
 invalid or retired saved progress is rejected before database mutation.
 
+BMW's compact target-filter history also remains dormant when identity becomes
+unresolved within the same physical connection, including a conflict or explicit
+identification retry. It retains the original lower-target source clocks but is
+not projected or applied until BMW is positively identified again with a healthy
+feed. A confirmed different vehicle, disconnect, changed connection, equipment
+replacement or BMW feed replacement retires that context. Retaining source
+history does not resolve a genuine identity conflict or grant charging authority.
+
 Price revisions are canonicalized by publication authority over their actual coverage. New quarter/hour slices replace the overlapped region only; negative prices, remaining older coverage and gaps remain explicit. Binary interval lookup prices physical contributions efficiently. Costs distinguish actual delivered, estimated remaining, missing/unpriced coverage and timing comparisons. The per-charger and combined timing benchmark is not proof of causal controller savings.
 
 The **Added energy** tile shows recorded grid energy for the whole plugged-in

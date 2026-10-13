@@ -15,6 +15,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   their original clocks. Finish and acknowledge earlier pending deliveries before
   updating both peers together; unsupported deliveries remain preserved.
 
+- A confirmed joint Tesla/BMW assignment survives later shared charging episodes
+  on the same physical connections. Earlier BMW-only peer episodes cannot create
+  a false identity conflict or reset the current battery target and charge anchor;
+  independent contradictory evidence and changed connection scopes remain blocked.
+- BMW target-filter evidence remains dormant through unresolved identity on the
+  same connection, so recovery cannot erase an observed lower target. It supplies
+  no active vehicle value or charging permission while identification is unresolved.
+
 - Learning checkpoints share exact prepared fitting samples instead of repeatedly
   copying their bodies into the current cache and every sparse recovery checkpoint.
   This reduces checkpoint writes, replica payloads and future checkpoint storage

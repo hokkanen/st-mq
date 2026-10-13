@@ -1118,6 +1118,84 @@ test(`a unique Tesla test on ${winner} with Charger 2 drawing ${secondCurrentA} 
   assert.equal(f.item(winner).vehicleConflict, null); assert.equal(f.item(peer).vehicleConflict, null);
 });
 
+for (const winner of ['charger1', 'charger2']) for (const restart of [false, true])
+test(`a retained Tesla comparison resolves a later shared BMW episode on ${winner}${restart ? ' across restart' : ''}`, async t => {
+  const { f, publish, chargingId } = await sharedBmwEpisodeFixture(t);
+  const peer = winner === 'charger1' ? 'charger2' : 'charger1';
+  await settleTeslaCurrent(f, winner); await f.update();
+  assert.equal(f.item(winner).vehicleMatch?.id, 'tesla');
+  assert.equal(f.item(peer).vehicleMatch?.id, 'bmw');
+  assert.equal(f.runtime.receiveSoc('synthetic/minimum-current/bmw', JSON.stringify({ provider: 'bmw-cardata',
+    soc: 35, usableCapacityKwh: 65, chargeLimitSoc: 90, measuredAt: f.now,
+    readingId: 'synthetic-joint-battery-anchor' }), { retain: false }, f.now), true);
+  f.publishTesla({ battery_level: 70, charge_limit_soc: 85 });
+  // The recorder supplies synthetic committed energy at this unchanged anchor.
+  f.runtime.readEnergy = () => ({ gridKwh: 1, coveredMs: 1000 });
+  f.runtime.refreshPlanningState(f.now);
+  const proof = structuredClone(f.item(winner).vehicleEvidence.teslaCurrentMatch);
+  const matches = Object.fromEntries(Object.entries(f.runtime.chargers).map(([id, item]) => [id, structuredClone(item.vehicleMatch)]));
+  const progress = Object.fromEntries(Object.entries(f.runtime.chargers).map(([id, item]) => [id, structuredClone(item.progress)]));
+  const target = structuredClone(f.item(peer).targetState);
+  const writes = structuredClone(f.writes);
+  const currentTest = structuredClone(f.item('charger2').controller.status().currentTest);
+  assert.equal(currentTest.phase, 'restored');
+
+  // The shared episode may lie beyond both of the runtime's bounded passive
+  // candidates. Every earlier episode belongs only to the identified BMW peer.
+  for (let episode = 0; episode < 3; episode++) {
+    f.advance(40_000); await f.adapter.refresh();
+    f.item(peer).vehicleEvidence.chargingTimes.push(f.now); publish({ charging: true });
+    f.advance(20_000); await f.adapter.refresh();
+    f.item(peer).vehicleEvidence.stoppedTimes.push(f.now); publish({ charging: false });
+  }
+
+  // A later complete vehicle episode agrees with both physical connections.
+  // The BMW peer also retains its earlier qualified episode; that older,
+  // consistent history is not a separate contradiction on the Tesla winner.
+  f.advance(90_000); await f.adapter.refresh();
+  for (const item of Object.values(f.runtime.chargers)) item.vehicleEvidence.chargingTimes.push(f.now);
+  publish({ charging: true });
+  const newerChargingId = f.runtime.vehicleFeeds.bmw.reading.fields.charging.readingId;
+  f.advance(20_000); await f.adapter.refresh();
+  for (const item of Object.values(f.runtime.chargers)) item.vehicleEvidence.stoppedTimes.push(f.now);
+  publish({ charging: false });
+  if (restart) { await f.restart(); f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw'); }
+  f.observe();
+  f.runtime.refreshPlanningState(f.now);
+
+  for (const id of ['charger1', 'charger2']) {
+    assert.deepEqual(f.item(id).vehicleMatch, matches[id], 'Shared timing cannot erase a same-connection positive identity');
+    assert.equal(f.item(id).vehicleConflict, null);
+    assert.deepEqual(f.item(id).progress, progress[id], 'The battery anchor, target and recorded energy survive the later episode');
+  }
+  assert.notEqual(newerChargingId, chargingId);
+  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, newerChargingId,
+    'The newly resolved episode cannot become a later conflicting candidate');
+  assert.deepEqual(f.item(winner).vehicleEvidence.teslaCurrentMatch, proof);
+  assert.deepEqual(f.item(peer).targetState, target, 'An unchanged physical assignment retains the BMW target evidence');
+  assert.deepEqual(f.item('charger2').controller.status().currentTest, currentTest);
+  assert.deepEqual(f.writes, writes, 'Historical assignment sends no new current test, Start or Stop');
+});
+
+for (const winner of ['charger1', 'charger2']) for (const restart of [false, true])
+test(`a retained Tesla comparison cannot hide a later BMW episode only on ${winner}${restart ? ' across restart' : ''}`, async t => {
+  const { f, publish } = await sharedBmwEpisodeFixture(t);
+  await settleTeslaCurrent(f, winner); await f.update();
+  const proof = structuredClone(f.item(winner).vehicleEvidence.teslaCurrentMatch);
+  const writes = structuredClone(f.writes);
+  f.advance(90_000); await f.adapter.refresh();
+  f.item(winner).vehicleEvidence.chargingTimes.push(f.now); publish({ charging: true });
+  f.advance(20_000); await f.adapter.refresh();
+  f.item(winner).vehicleEvidence.stoppedTimes.push(f.now); publish({ charging: false });
+  if (restart) { await f.restart(); f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw'); }
+  f.observe();
+  assert.equal(f.item(winner).vehicleMatch, null);
+  assert.deepEqual([...(f.item(winner).vehicleConflict?.ids ?? [])].sort(), ['bmw', 'tesla'],
+    'Independent contrary evidence must withdraw certainty even with a saved positive comparison');
+  assert.deepEqual(f.item(winner).vehicleEvidence.teslaCurrentMatch, proof);
+  assert.deepEqual(f.writes, writes);
+});
+
 for (const secondCurrentA of [6, 4]) for (const bmwEvidence of ['absent', 'start only', 'stop only'])
 test(`joint current identification with Charger 2 drawing ${secondCurrentA} A cannot supply BMW identity when its source episode is ${bmwEvidence}`, async t => {
   const f = await fixture(t); f.observe();

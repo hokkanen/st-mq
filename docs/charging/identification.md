@@ -124,10 +124,14 @@ can identify either charger; BMW still requires its own positive evidence.
 If the same valid BMW source start/stop episode matches both current physical
 connections, a unique Tesla current match can resolve both assignments jointly:
 Tesla on the uniquely matching charger, and BMW on the other charger using its
-own qualified BMW episode. Every BMW match involved must refer to that same
-source start and stop; the peer's saved conflict or the absence of a Tesla match
-is insufficient. A different contradictory BMW episode still leaves an
-unresolved conflict. This joint conclusion retains the normal feed, source-time,
+own qualified BMW episode. Every BMW match competing on the Tesla connection
+must refer to that same source start and stop, and the peer must positively match
+that exact episode even when its earlier BMW episodes precede it in history.
+Older qualified episodes belonging only to the BMW peer support its existing
+assignment and do not contradict the Tesla comparison. The peer's saved conflict
+or the absence of a Tesla match is insufficient. A different contradictory BMW
+episode on the Tesla connection still leaves an unresolved conflict. This joint
+conclusion retains the normal feed, source-time,
 physical-session and explicit-retry checks; it does not manufacture a new BMW
 event or grant another identification attempt. Completing a retry keeps its
 source-time boundary, so earlier BMW episodes cannot return on a later poll.

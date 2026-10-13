@@ -555,9 +555,13 @@ test('replacing or disabling a BMW source invalidates its saved charger match', 
     const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
     publish(runtime, facts()); pauseBmw(runtime, f);
     assert.equal(view(runtime).vehicle.id, 'bmw');
+    f.setNow(START + 2 * MINUTE); publishTarget(runtime, 100, START + 2 * MINUTE);
+    f.setNow(START + 3 * MINUTE); publishTarget(runtime, 85, START + 3 * MINUTE);
+    assert.equal(runtime.chargers.charger1.targetState.conflict, true);
     f.config.charging = { vehicles: { bmw: { mqttTopic } } };
     const restarted = f.create(); t.after(() => restarted.close());
     assert.equal(view(restarted).vehicle.state, 'unidentified');
+    assert.equal(restarted.chargers.charger1.targetState, null, 'A different source cannot inherit dormant target history');
     assert.equal(restarted.vehicleFeeds.bmw.consumedPlugId, null);
     if (mqttTopic) publish(restarted, { provider: 'bmw-cardata', soc: 90, measuredAt: START + MINUTE, readingId: 'replacement-soc' });
     assert.equal(view(restarted).values.soc.source, 'manual-fallback', 'A replacement battery feed cannot inherit the previous vehicle identification');
@@ -646,6 +650,58 @@ test('one BMW 100 to X transition holds the latest lower target across restart w
   f.setNow(START + 7 * MINUTE); f.setConnection(true); restarted.tick();
   assert.equal(view(restarted).targetSelection, null, 'The next unknown car cannot inherit BMW selection');
   assert.equal(restarted.chargers.charger1.targetState, null);
+});
+
+for (const restart of [false, true])
+test(`a same-connection identity conflict retains dormant BMW target history${restart ? ' across restart' : ''}`, async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts(START, { chargeLimitSoc: 100 })); pauseBmw(runtime, f);
+  f.setNow(START + 2 * MINUTE); publishTarget(runtime, 85, START + 2 * MINUTE);
+  f.setNow(START + 3 * MINUTE); publishTarget(runtime, 100, START + 3 * MINUTE);
+  const held = structuredClone(runtime.chargers.charger1.targetState);
+  assert.equal(view(runtime).values.minimumSoc.source, 'bmw-target-filter');
+  assert.equal(held.lower.value, 85);
+  f.setNow(START + 4 * MINUTE); f.setCharging(true); f.setTeslaEvidence('easee'); await runtime.tick();
+  assert.equal(view(runtime).vehicle.state, 'conflict');
+  assert.equal(view(runtime).targetSelection, null, 'An unresolved identity cannot project BMW target authority');
+  assert.deepEqual(runtime.chargers.charger1.targetState, held);
+  const current = restart ? f.create() : runtime;
+  if (restart) t.after(() => current.close());
+  await current.tick();
+  assert.equal(view(current).vehicle.state, 'conflict');
+  assert.equal(view(current).targetSelection, null);
+  assert.deepEqual(current.chargers.charger1.targetState, held);
+
+  // Positive departure evidence withdraws the competing Tesla candidate. The
+  // original BMW episode still positively identifies this physical connection.
+  f.setNow(START + 5 * MINUTE); f.tesla.atHome = false; await current.tick();
+  assert.equal(view(current).vehicle.id, 'bmw');
+  f.setNow(START + 6 * MINUTE); publishTarget(current, 100, START + 6 * MINUTE);
+  assert.equal(view(current).values.minimumSoc.value, 85);
+  assert.equal(view(current).values.minimumSoc.source, 'bmw-target-filter');
+  assert.deepEqual(current.chargers.charger1.targetState.lower, held.lower,
+    'Identity recovery and fresh raw 100 cannot renew or erase the original lower-target clocks');
+});
+
+for (const boundary of ['physical connection', 'equipment'])
+test(`dormant BMW target history is retired by a changed ${boundary}`, async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts(START, { chargeLimitSoc: 100 })); pauseBmw(runtime, f);
+  f.setNow(START + 2 * MINUTE); publishTarget(runtime, 85, START + 2 * MINUTE);
+  const held = structuredClone(runtime.chargers.charger1.targetState);
+  f.setNow(START + 3 * MINUTE); f.setCharging(true); f.setTeslaEvidence('easee'); await runtime.tick();
+  assert.equal(view(runtime).vehicle.state, 'conflict');
+  assert.deepEqual(runtime.chargers.charger1.targetState, held);
+  let current = runtime;
+  if (boundary === 'physical connection') {
+    f.setNow(START + 4 * MINUTE); f.setConnection(true, START + 4 * MINUTE);
+  } else {
+    f.config.connections = { easee: { charger_id: 'synthetic-replacement-charger', equalizer_id: 'synthetic-equalizer' } };
+    current = f.create(); t.after(() => current.close());
+  }
+  await current.tick();
+  assert.equal(current.chargers.charger1.targetState, null);
+  assert.equal(view(current).targetSelection, null);
 });
 
 test('normal Save overrides a held BMW target with 84 or 100 for this connection across restart', async t => {
