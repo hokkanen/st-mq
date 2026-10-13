@@ -195,10 +195,20 @@ source clock and preserves the last committed assessment's observed/evaluated
 clocks, rather than piggybacking unsaved observer timestamps into runtime writes.
 No viewer clock advances a recorded assessment or supplies control authority.
 
+The live card uses current admitted evidence. Its derived database view publishes
+as one complete snapshot every 30 seconds, or earlier when control, connection,
+instructions, identification, planning, provenance or availability changes.
+Routine native-query bookkeeping, metering and vehicle-feed reception clocks do
+not independently bypass that cadence. The published snapshot retains all of its
+actual values and original source/receipt clocks beside its own `recordedAt`;
+canonicalizing the comparison never rewrites the saved evidence. Durable control,
+session, energy and restoration state remains immediate. Native instruction
+last-change clocks and physical confirmation boundaries still force publication.
+
 Startup validates the current manifest, every required field, content hashes and
 references for all input environments, including inactive ones. Missing records,
 unreferenced fragments, invalid nested state and older aggregate formats fail
-before writable setup. Schema 29 requires an intentional fresh development start;
+before writable setup. Schema 30 requires an intentional fresh development start;
 opening an incompatible installation never resets or converts it.
 
 Rollback restores both persisted state and observer bookkeeping, including report

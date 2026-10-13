@@ -27,7 +27,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   Confirmed unchanged coverage saves every minute for Charger 1 and every five
   seconds for Charger 2; actual transitions remain immediate. Charging card
   snapshots save on a 30-second cadence, with important control/session changes
-  saved immediately and replicas displaying the snapshot's own date. Optional
+  saved immediately and replicas displaying the snapshot's own date. Repeated
+  native readbacks, OCPP phase metering and vehicle-feed reception respect that
+  cadence without changing original evidence clocks or live control. Optional
   recorder poll/error statistics are batched while saved records, energy,
   accounting, control intent and restoration obligations remain durable.
 

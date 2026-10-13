@@ -49,6 +49,8 @@ function validateProjectionDate(view) {
 const receiptClocks = new Set(['receivedAt', 'readAt', 'lastReadAt', 'lastLiveAt', 'ageMs', 'evaluatedAt', 'recordedAt']);
 const electricalFields = new Set(['powerKw', 'actualCurrentA', 'voltageV',
   'phaseCurrentA', 'phasePowerKw', 'phaseVoltageV', 'phaseMeasurements']);
+const nativeSignals = new Set(['connected', 'charging', 'currentA', 'availableCurrentA',
+  'maxCurrentA', 'maximumCurrentA']);
 function withoutReceiptClocks(value) {
   if (Array.isArray(value)) return value.map(withoutReceiptClocks);
   if (!object(value)) return value;
@@ -61,7 +63,51 @@ function measurementMetadata(value) {
   if (!object(value)) return value;
   if (!Object.hasOwn(value, 'value')) return withoutReceiptClocks(value);
   const { value: measurement, measuredAt, sourceTime, readback, admittedAt, ...metadata } = value;
+  // Derived OCPP phase measurements retain their individual provenance, but
+  // another admitted meter timestamp is not a new control/session boundary.
+  if (Array.isArray(metadata.inputs)) metadata.inputs = metadata.inputs.map(input => {
+    if (!object(input)) return input;
+    const { measuredAt, sourceTime, ...context } = input;
+    return context;
+  });
   return withoutReceiptClocks(metadata);
+}
+function signalMeaning(value, key) {
+  const record = withoutReceiptClocks(value);
+  if (!object(record)) return record;
+  // Correlated native queries confirm an unchanged setting without renewing
+  // its instruction clock. Keep measuredAt, instructionAt and native values.
+  if (object(record.readback)) {
+    delete record.readback.requestedAt;
+    delete record.readback.admittedAt;
+  }
+  // Shelly's verified hardware maximum is dated by the service/config query,
+  // unlike its adjustable currentA setting's native last-change timestamp.
+  if (key === 'maximumCurrentA' && record.source === 'shelly-evse') delete record.measuredAt;
+  return record;
+}
+function receptionMeaning(value) {
+  const record = withoutReceiptClocks(value);
+  if (object(record)) for (const key of ['lastMessageAt', 'lastRetainedAt', 'lastValidAt', 'lastValidLiveAt']) delete record[key];
+  return record;
+}
+function supplyMeaning(value) {
+  const record = withoutReceiptClocks(value);
+  if (!object(record)) return record;
+  for (const key of ['propertyCurrentA', 'reportedPropertyCurrentA', 'chargerCurrentA', 'voltageV'])
+    if (Object.hasOwn(record, key)) record[key] = measurementMetadata(record[key]);
+  if (object(record.observationTimes)) record.observationTimes = Object.fromEntries(
+    Object.entries(record.observationTimes).map(([key, times]) => [key,
+      ['property', 'charger', 'voltage', 'allowance'].includes(key) ? measurementMetadata(times) : times]));
+  if (object(record.estimate)) {
+    // The complete estimate remains an immediate durable charging fragment.
+    // Its presentation follows the view cadence; quality/configuration changes
+    // still publish early, and plans retain their independent exact fence.
+    const { samples, budgetCurrentA, measuredAt, observedAt, ...estimate } = record.estimate;
+    record.estimate = { ...estimate, ...(budgetCurrentA !== undefined
+      ? { budgetCurrentA: measurementMetadata(budgetCurrentA) } : {}) };
+  }
+  return record;
 }
 const phaseMeasurements = new Set(['current', 'voltage', 'power', 'act_energy', 'total_power', 'total_act_energy']);
 function phaseMetadata(value) {
@@ -72,9 +118,13 @@ function phaseMetadata(value) {
 }
 function telemetryMeaning(value) {
   if (!object(value)) return value;
-  return Object.fromEntries(Object.entries(value).filter(([key]) => !receiptClocks.has(key))
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !receiptClocks.has(key)
+    && !['powerAt', 'powerReceivedAt', 'statusReceivedAt'].includes(key))
     .map(([key, value]) => [key, key === 'phaseMeasurements' ? phaseMetadata(value)
-      : electricalFields.has(key) ? measurementMetadata(value) : withoutReceiptClocks(value)]));
+      : electricalFields.has(key) ? measurementMetadata(value)
+      : nativeSignals.has(key) ? signalMeaning(value, key)
+      : key === 'supply' ? supplyMeaning(value)
+      : ['mqtt', 'reception'].includes(key) ? receptionMeaning(value) : withoutReceiptClocks(value)]));
 }
 function nativeSnapshotMeaning(snapshot) {
   const value = telemetryMeaning(snapshot);
@@ -84,7 +134,7 @@ function nativeSnapshotMeaning(snapshot) {
   // on the other fields retain their meaning and force early publication.
   delete value.powerAt;
   if (object(snapshot.fields)) value.fields = Object.fromEntries(Object.entries(snapshot.fields).map(([role, field]) => {
-    let record = role === 'phase_info' ? measurementMetadata(field) : withoutReceiptClocks(field);
+    let record = role === 'phase_info' ? measurementMetadata(field) : signalMeaning(field, role);
     if (object(record?.readback)) {
       record = { ...record, readback: { ...record.readback } };
       delete record.readback.requestedAt; delete record.readback.admittedAt;
@@ -111,6 +161,8 @@ function projectionMeaning(saved) {
     view.physicalTests = structuredClone(view.physicalTests);
     for (const run of view.physicalTests.runs ?? []) delete run.observedAt;
   }
+  if (Array.isArray(view.vehicleFeeds)) view.vehicleFeeds = view.vehicleFeeds.map(feed => ({ ...feed,
+    ...(feed.reception ? { reception: receptionMeaning(feed.reception) } : {}) }));
   const cardMeaning = (cards ?? []).map(card => {
     const { progress, sessionCost, requiredGridKwh, referenceGridKwh, automaticSoc, automatic,
       telemetry, values, control, ...rest } = card;
@@ -119,9 +171,12 @@ function projectionMeaning(saved) {
     if (projectedControl?.session) {
       projectedControl.session = { ...projectedControl.session }; delete projectedControl.session.observedAt;
     }
-    return { ...rest, control: projectedControl, telemetry: telemetryMeaning(telemetry),
+    return { ...rest, ...(rest.mqtt ? { mqtt: receptionMeaning(rest.mqtt) } : {}),
+      ...(rest.vehicleMqtt ? { vehicleMqtt: receptionMeaning(rest.vehicleMqtt) } : {}),
+      control: projectedControl, telemetry: telemetryMeaning(telemetry),
       values: Object.fromEntries(Object.entries(values ?? {}).map(([key, value]) => [key,
-        electricalFields.has(key) ? measurementMetadata(value) : withoutReceiptClocks(value)])) };
+        electricalFields.has(key) ? measurementMetadata(value)
+          : nativeSignals.has(key) ? signalMeaning(value, key) : withoutReceiptClocks(value)])) };
   });
   return digest(withoutReceiptClocks({ revision: saved.revision, controls: saved.controls, chargers,
     view: { ...view, chargers: cardMeaning } }));

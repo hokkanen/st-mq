@@ -202,6 +202,101 @@ test('production Shelly card metering waits for cadence while physical confirmat
   assert.equal(readChargingRuntime(store, key).view.recordedAt, live.now + 3000);
 });
 
+test('production OCPP metering and vehicle reception clocks wait for a complete dated view without delaying durable state', async t => {
+  const live = await jointFixture(t);
+  await live.connect('charger1');
+  live.runtime.persist();
+  const saved = readChargingRuntime(live.store, live.runtime.key), projectedAt = live.now;
+  // Vehicle assignment is independent of the cadence comparison. Use the
+  // production reception object for the assigned-card representation too.
+  saved.view.chargers[0].mqtt = structuredClone(saved.view.vehicleFeeds[0].reception);
+  saved.view.chargers[0].vehicleMqtt = structuredClone(saved.view.vehicleFeeds[0].reception);
+  const set = (next, path, value) => {
+    const parts = path.split('.'), field = parts.pop();
+    let owner = next.view;
+    for (const part of parts) { assert.ok(owner?.[part] !== undefined, `Production parent exists: ${path}`); owner = owner[part]; }
+    owner[field] = value;
+  };
+  const cases = [
+    ['chargers.0.telemetry.powerAt', projectedAt + 5000],
+    ['chargers.0.telemetry.powerReceivedAt', projectedAt + 5000],
+    ['chargers.0.telemetry.statusReceivedAt', projectedAt + 5000],
+    ['chargers.0.control.snapshot.powerReceivedAt', projectedAt + 5000],
+    ['chargers.0.control.snapshot.statusReceivedAt', projectedAt + 5000],
+    ['chargers.0.values.actualCurrentA.inputs.0.measuredAt', projectedAt + 5000],
+    ['chargers.0.values.voltageV.inputs.0.measuredAt', projectedAt + 5000],
+    ['chargers.0.telemetry.phaseCurrentA.inputs.0.measuredAt', projectedAt + 5000],
+    ['chargers.0.telemetry.supply.observationTimes.charger.0', projectedAt + 5000],
+    ['chargers.0.telemetry.supply.observationTimes.voltage.0', projectedAt + 5000],
+    ['chargers.0.telemetry.supply.estimate.observedAt', projectedAt + 5000],
+    ['chargers.0.control.snapshot.supply.propertyCurrentA.0', 2],
+    ['chargers.0.control.snapshot.supply.chargerCurrentA.0', 2],
+    ['chargers.0.control.snapshot.supply.voltageV.0', 231],
+    ['chargers.0.telemetry.supply.propertyCurrentA.0', 2],
+    ['chargers.0.mqtt.lastMessageAt', projectedAt + 5000],
+    ['chargers.0.vehicleMqtt.lastValidLiveAt', projectedAt + 5000],
+    ['vehicleFeeds.0.reception.lastMessageAt', projectedAt + 5000],
+    ['vehicleFeeds.0.reception.lastRetainedAt', projectedAt + 5000],
+    ['vehicleFeeds.0.reception.lastValidAt', projectedAt + 5000],
+    ['vehicleFeeds.0.reception.lastValidLiveAt', projectedAt + 5000],
+    ['chargers.1.values.connected.readback.requestedAt', projectedAt + 5000],
+    ['chargers.1.telemetry.currentA.readback.requestedAt', projectedAt + 5000],
+    ['chargers.1.telemetry.maximumCurrentA.measuredAt', projectedAt + 5000],
+    ['chargers.1.values.maximumCurrentA.measuredAt', projectedAt + 5000],
+  ];
+  for (const [path, value] of cases) {
+    const store = new Store(':memory:');
+    try {
+      writeChargingRuntime(store, key, saved, { at: projectedAt });
+      const baseline = readChargingRuntime(store, key), sequence = store.checkpoint().sequence;
+      const next = structuredClone(saved);
+      set(next, path, value);
+      next.chargers.charger1.progress.creditKwh += .01;
+      writeChargingRuntime(store, key, next, { at: projectedAt + 5000 });
+      const deferred = readChargingRuntime(store, key);
+      assert.deepEqual(deferred.view, baseline.view, path);
+      assert.deepEqual(deferred.chargers, next.chargers, `Durable state commits immediately: ${path}`);
+      assert.equal(store.db.prepare("SELECT count(*) n FROM journal_changes WHERE sequence>? AND record_key LIKE '%:runtime:view/%'").get(sequence).n,
+        0, `No view writes during metering/poll churn: ${path}`);
+      writeChargingRuntime(store, key, next, { at: projectedAt + 30_000 });
+      assert.deepEqual(readChargingRuntime(store, key).view, { ...next.view, recordedAt: projectedAt + 30_000 },
+        `All original newest values and clocks publish together: ${path}`);
+    } finally { store.close(); }
+  }
+});
+
+test('production instruction clocks, metering provenance and feed health remain early-publication fences', async t => {
+  const live = await jointFixture(t);
+  await live.connect('charger1');
+  live.runtime.persist();
+  const saved = readChargingRuntime(live.store, live.runtime.key), projectedAt = live.now;
+  saved.view.chargers[0].vehicleMqtt = structuredClone(saved.view.vehicleFeeds[0].reception);
+  const cases = [
+    next => { next.view.chargers[1].values.currentA.measuredAt += 1000; },
+    next => { next.view.chargers[1].values.currentA.readback.measuredAt += 1000; },
+    next => { next.view.chargers[1].telemetry.charging.measuredAt += 1000; },
+    next => { next.view.chargers[1].control.snapshot.fields.start_charging.measuredAt += 1000; },
+    next => { next.view.chargers[0].control.snapshot.statusAt += 1000; },
+    next => { next.view.chargers[0].values.actualCurrentA.inputs[0].source = 'different-meter'; },
+    next => { next.view.chargers[0].values.voltageV.quality = 'unavailable'; },
+    next => { next.view.chargers[0].telemetry.supply.feedEvidence.property.epoch = 'different-connection'; },
+    next => { next.view.chargers[0].telemetry.supply.estimate.available = !next.view.chargers[0].telemetry.supply.estimate.available; },
+    next => { next.view.chargers[1].values.maximumCurrentA.value -= 1; },
+    next => { next.view.chargers[0].vehicleMqtt.available = !next.view.chargers[0].vehicleMqtt.available; },
+    next => { next.view.vehicleFeeds[0].reception.reason = 'vehicle-feed-stale'; },
+    next => { next.view.chargers[0].control.identification = { powerReceivedAt: projectedAt + 1000 }; },
+  ];
+  for (const change of cases) {
+    const store = new Store(':memory:');
+    try {
+      writeChargingRuntime(store, key, saved, { at: projectedAt });
+      const next = structuredClone(saved); change(next);
+      writeChargingRuntime(store, key, next, { at: projectedAt + 1000 });
+      assert.deepEqual(readChargingRuntime(store, key).view, { ...next.view, recordedAt: projectedAt + 1000 });
+    } finally { store.close(); }
+  }
+});
+
 for (const change of ['controls', 'session', 'plan', 'target', 'pending', 'fault', 'epoch', 'availability'])
   test(`a ${change} boundary publishes a complete dated charging view before its cadence`, () => {
     const store = new Store(':memory:');
