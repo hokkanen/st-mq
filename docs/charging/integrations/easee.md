@@ -701,6 +701,10 @@ Temporary listener readiness warnings clear when the listener recovers, without
 waiting for the next cloud check or reapplying charger configuration. Outstanding
 cloud failures and retry deadlines remain in effect. Storage and authorization
 readiness failures are reported separately from listener network failures.
+After restart, setup status keeps the original saved retry deadline and last
+successful setup clock visible, including while waiting to check the charger.
+An earlier failure reason that was not recorded remains unknown; displaying
+these clocks neither runs a retry nor changes its deadline.
 Correct missing configuration and use **Apply reviewed configuration** to reconnect.
 The live setup status shows the effective base server URL and whether it was
 detected, explicitly configured or derived from the pairing virtual IP. It hides

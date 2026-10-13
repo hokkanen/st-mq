@@ -333,6 +333,48 @@ test('a lost apply response retries only its known version and honors persisted 
   assert.equal(restart.status().state, 'connecting');
 });
 
+test('restart exposes saved setup clocks while preserving failure backoff and unknown failure reason', async () => {
+  const f = fixture();
+  await f.setup.runDue();
+  f.listener.available = true;
+  f.advance(30001);
+  await f.setup.runDue();
+  assert.equal(f.setup.status().state, 'ready');
+  const lastSuccessAt = f.saved.lastSuccessAt;
+  assert.equal(lastSuccessAt, AT + 30001);
+  f.listener.available = false;
+  f.advance(3600001);
+  const get = f.api.get;
+  f.api.get = async () => {
+    f.calls.push('rate-limited-get');
+    throw Object.assign(new Error('fixture-rate-limit'), { status: 429, retryAfterMs: 120000 });
+  };
+  await f.setup.runDue();
+  assert.equal(f.setup.status().reason, 'cloud-rate-limit');
+  const saved = structuredClone(f.saved), calls = [...f.calls];
+  const restarted = f.make();
+  const status = restarted.status();
+  assert.equal(status.state, 'checking');
+  assert.equal(status.reason, null, 'An unrecorded earlier failure reason remains unknown.');
+  assert.equal(status.busy, false);
+  assert.equal(status.nextAttemptAt, saved.nextAttemptAt, 'The original durable retry deadline stays visible.');
+  assert.equal(status.lastSuccessAt, lastSuccessAt, 'Status reads preserve the original successful setup clock.');
+  const display = easeeLocalConnectionDisplay({ localOcpp: { ...f.listener, setup: status } },
+    { now: AT + 3630002, formatTime: at => `fixture-clock-${at}` });
+  assert.ok(display.setup.detail.includes(`Next setup attempt fixture-clock-${saved.nextAttemptAt}`));
+  assert.deepEqual(f.saved, saved, 'Rendering status never writes saved setup state.');
+  await restarted.runDue();
+  assert.deepEqual(f.calls, calls, 'No cloud read, Store or Apply runs before the saved failure deadline.');
+  assert.deepEqual(f.saved, saved);
+  assert.equal(restarted.status().nextAttemptAt, saved.nextAttemptAt);
+  f.advance(120001);
+  f.api.get = get;
+  await restarted.runDue();
+  assert.ok(f.calls.length > calls.length, 'The ordinary setup retry runs when its deadline arrives.');
+  await restarted.close();
+  await f.setup.close();
+});
+
 test('authority revocation during cloud reads and close during pending reads prevent all later mutations', async () => {
   const f = fixture(), observations = f.api.observations;
   f.api.observations = async (...args) => { const result = await observations(...args); f.revoke(); return result; };

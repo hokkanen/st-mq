@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Local Easee setup shows its saved retry deadline after restart, so a delayed
+  retry remains visible while setup is waiting to check the charger. Original
+  clocks and failure backoff are preserved.
+
 - Rejoining a protected computer allows its final history acknowledgement to
   finish within the configured operation timeout, avoiding a premature short
   timeout after replacement history was already accepted. Failed or interrupted
