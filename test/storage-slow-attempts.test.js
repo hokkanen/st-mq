@@ -60,7 +60,7 @@ test('missing and malformed journal diagnostics stay unknown without retaining p
   const health = createWriteHealth(() => start + 1000);
   const marker = 'private-fixture-marker';
   const malformed = [undefined, null, false, [], { ...prepared, privateKey: marker },
-    { ...prepared, tables: [marker] }, { ...prepared, tables: ['state', 'state'] },
+    { ...prepared, tables: [marker] }, { ...prepared, tables: ['state', 'state'] }, { ...prepared, tables: new Array(1) },
     { ...prepared, sequence: 0 }, { ...prepared, at: Infinity }, { ...prepared, changeCount: -1 },
     { ...prepared, bytes: 0 }, { ...noEffects, at: start }, { ...noEffects, tables: ['state'] },
     { ...noEffects, sequence: 1 }, { ...noEffects, bytes: 100 },

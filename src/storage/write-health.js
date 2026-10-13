@@ -11,7 +11,7 @@ function journalEvidence(value) {
   if (!value || Object.keys(value).sort().join(',') !== 'at,bytes,changeCount,sequence,tables'
     || !Number.isSafeInteger(value.changeCount) || value.changeCount < 0
     || !Number.isSafeInteger(value.bytes) || value.bytes < 0 || !Array.isArray(value.tables)
-    || value.tables.length > tableNames.size || value.tables.some(name => !tableNames.has(name))
+    || value.tables.length > tableNames.size || Array.from(value.tables).some(name => !tableNames.has(name))
     || new Set(value.tables).size !== value.tables.length) return null;
   if (value.changeCount === 0
     ? value.at !== null || value.sequence !== null || value.bytes !== 0 || value.tables.length !== 0
