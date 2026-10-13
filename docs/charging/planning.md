@@ -104,6 +104,26 @@ subject to its original connection, instruction and return-time boundaries.
 
 The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. There is no one-cent pause penalty or mandatory one-cent saving hurdle. Practical minimum economic runs/gaps remain 15 minutes; equal-cost choices prefer stability.
 
+For new Easee cloud programs, an intermediate gap must be strictly longer than
+15 minutes. The cloud adapter installs that next delayed start after the preceding
+period ends and needs at least 15 minutes still remaining at dispatch. An exact
+15-minute gap therefore cannot survive any positive read or storage latency.
+The existing `localClockSchedule` capability carries this representation limit;
+local OCPP and Shelly periods retain their own supported execution paths. Initial
+future starts are checked separately and are not excluded by this intermediate-gap
+rule. It adds no latency buffer: an arbitrarily longer gap can still become too
+short before dispatch, and accepted periods do not prove an observed physical pause.
+
+Within an equal-price capacity block, the bounded selection uses the later edge
+when its earlier edge would create an exact cloud minimum gap. If both adjacent
+selected periods would create that gap, it centers the required energy within
+the block instead. A shared-period seed applies this same placement when either
+participating charger uses cloud scheduling. This selects a placement rather than
+adding another search loop or forcing a fixed gap; the ordinary joint simulation
+still validates every phase, native restriction, peer deadline, energy request and
+complete cost. Fixed/adopted executions retain their original periods and clocks.
+Their existing price/deadline revision and physical-dispatch guards remain separate.
+
 Alongside continuous starts and individual period improvements, freely scheduled
 requests receive one shared-period candidate. It selects cheaper windows using
 their combined modeled capacity so both chargers can move together when an

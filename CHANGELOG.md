@@ -19,6 +19,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Qualify HA deployment refusal when an independent repository refresh changes
   source after rebuild, and document stopped verification and inspected retry.
 
+- New Easee cloud plans exclude exact fifteen-minute intermediate gaps that
+  cannot survive dispatch latency. Same-price alternatives retain joint service,
+  electrical and cost checks; adopted programs keep their original boundaries.
+
 - Allow guarded native Easee handback when retained disconnect evidence belongs
   to a proven earlier session, preserving the event and current restoration,
   native instruction and ownership checks.

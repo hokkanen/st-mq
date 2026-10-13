@@ -46,6 +46,11 @@ function nativePeriodsAvailable(job, starts, periods) {
   let pauseAt = job.now;
   for (const period of periods?.[job.charger.id] ?? [{ startAt: starts[job.charger.id], endAt: null }]) {
     if (period.startAt > pauseAt) {
+      // Cloud installs the next delay only after the preceding period ends.
+      // Its dispatch guard needs fifteen minutes still remaining: an exact
+      // minimum gap cannot survive any positive read or storage latency.
+      // This excludes new candidates; frozen/adopted programs stay separate.
+      if (pauseAt > job.now && period.startAt - pauseAt <= MIN_PAUSE_MS) return false;
       const key = `${pauseAt}:${period.startAt}`;
       let available = cache.get(key);
       if (available === undefined) {
@@ -636,17 +641,42 @@ function cheapestPeriods(job, intervals, maxPeriods = Infinity) {
       // capacity. This avoids splitting across scattered equal-price fragments.
       blocks.sort((a, b) => joins(b) - joins(a) || b.capacity - a.capacity || a.start - b.start);
       const block = blocks.shift();
+      const cloud = job.charger.capabilities?.localClockSchedule === true;
+      // Interior rows of a joined period are not pause boundaries.
+      const previousEnd = cloud ? selected.reduce((at, row) => row.endAt <= block.start
+        ? Math.max(at, row.endAt) : at, -Infinity) : -Infinity;
+      const nextStart = cloud ? selected.reduce((at, row) => row.startAt >= block.end
+        ? Math.min(at, row.startAt) : at, Infinity) : Infinity;
+      const exactBefore = block.start - previousEnd === MIN_PAUSE_MS;
+      const exactAfter = nextStart - block.end === MIN_PAUSE_MS;
       const fromEnd = selected.some(row => row.startAt === block.end)
-        && !selected.some(row => row.endAt === block.start);
+        && !selected.some(row => row.endAt === block.start)
+        // A cloud gap exactly at the dispatch minimum cannot be executed.
+        // The same-price block may fit this energy at its later edge without
+        // spending more or imposing a fixed gap; joint simulation still owns
+        // capacity, service and the final comparison.
+        || exactBefore && !exactAfter;
+      // With an exact gap on both sides, either edge loses a valid candidate.
+      // Center the required energy within this same-price capacity instead.
+      // This only seeds a placement; rounding and all joint limits are checked
+      // by the ordinary simulator, and it adds no dispatch-latency allowance.
+      let skipEnergy = exactBefore && exactAfter ? Math.max(0, block.capacity - remaining) / 2 : 0;
       for (const row of fromEnd ? [...block.rows].reverse() : block.rows) {
         if (remaining <= EPS) break;
-        const capacity = row.powerKw * (row.end - row.start) / HOUR;
-        const energy = Math.min(remaining, capacity);
         let startAt = row.start, endAt = row.end;
+        if (skipEnergy > EPS) {
+          const capacity = row.powerKw * (row.end - row.start) / HOUR;
+          const skipped = Math.min(skipEnergy, capacity);
+          skipEnergy -= skipped;
+          if (skipped >= capacity - EPS) continue;
+          startAt += skipped / row.powerKw * HOUR;
+        }
+        const capacity = row.powerKw * (row.end - startAt) / HOUR;
+        const energy = Math.min(remaining, capacity);
         if (energy < capacity - EPS) {
           const duration = energy / row.powerKw * HOUR;
           if (fromEnd) startAt = row.end - duration;
-          else endAt = row.start + duration;
+          else endAt = startAt + duration;
         }
         selected.push({ startAt: Math.max(row.start, Math.floor(startAt / 1000) * 1000),
           endAt: Math.min(row.end, Math.ceil(endAt / 1000) * 1000) });
@@ -762,7 +792,8 @@ function sharedPeriodCandidate(jobs, intervals) {
     return Number.isInteger(limit) && limit > 0 ? limit : Infinity;
   }));
   const shared = cheapestPeriods({ targetAt: Math.max(...jobs.map(job => job.targetAt)),
-    charger: { requiredGridKwh: jobs.reduce((sum, job) => sum + job.charger.requiredGridKwh, 0) } }, pooled, maxPeriods);
+    charger: { requiredGridKwh: jobs.reduce((sum, job) => sum + job.charger.requiredGridKwh, 0),
+      capabilities: { localClockSchedule: jobs.some(job => job.charger.capabilities.localClockSchedule === true) } } }, pooled, maxPeriods);
   if (!shared) return null;
   const periods = {};
   for (const job of jobs) {
