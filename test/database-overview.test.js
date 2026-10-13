@@ -50,6 +50,11 @@ test('empty overview explains all physical tables without inventing historical p
     assert(!items(overview).has('rollup-metadata'));
     assert.match(overview.groups.find(group => group.id === 'support').description, /original committed records/);
     assert.match(overview.groups.find(group => group.id === 'support').description, /cached chart responses stay in memory/);
+    const prepared = items(overview).get('learning_checkpoint_samples');
+    assert.equal(prepared.retention, 'derived');
+    assert.match(prepared.writeBehavior, /Once per distinct prepared sample value/);
+    assert.match(prepared.retentionDescription, /no automatic expiry/);
+    assert.match(prepared.retentionDescription, /Original learning inputs remain the reconstruction source/);
     for (const [id, item] of items(overview)) {
       assert(item.description && item.retentionDescription, id);
       assert.equal(item.status, ['history-selection','journal_meta'].includes(id) ? 'present' : 'empty', id);

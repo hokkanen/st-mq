@@ -96,7 +96,10 @@ for(const phase of ['during-apply','before-publication','after-publication'])tes
  const m=preparePeerTransfer(a.db,{after:old});b.close();
  const storeURL=new URL('../src/storage/store.js',import.meta.url).href,peerURL=new URL('../src/storage/journal-peer.js',import.meta.url).href;
  const script=`import {Store} from ${JSON.stringify(storeURL)};import {peerTransferRows,applyPeerTransfer} from ${JSON.stringify(peerURL)};
- const source=new Store(process.argv[1],{readOnly:true}),target=new Store(process.argv[2]);target.db.function('interrupt',()=>process.kill(process.pid,'SIGKILL'));
+ const source=new Store(process.argv[1],{readOnly:true}),target=new Store(process.argv[2]);
+ // Match the receiver's file-backed TEMP policy before installing fault hooks;
+ // changing temp_store later would erase these deliberately retained triggers.
+ target.db.exec('PRAGMA temp_store=FILE');target.db.function('interrupt',()=>process.kill(process.pid,'SIGKILL'));
  ${phase==='during-apply'?"target.db.exec('CREATE TEMP TRIGGER interrupt_apply AFTER INSERT ON events BEGIN SELECT interrupt(); END');":''}
  ${phase==='before-publication'?"target.db.exec('CREATE TEMP TRIGGER interrupt_head BEFORE UPDATE OF base_sequence ON journal_meta BEGIN SELECT interrupt(); END');":''}
  const m=JSON.parse(process.argv[3]);applyPeerTransfer(target.db,{...m,changes:peerTransferRows(source.db,{id:m.id}).map(row=>row.change)});process.kill(process.pid,'SIGKILL');`;

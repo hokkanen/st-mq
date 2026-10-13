@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Store } from '../src/storage/store.js';
 import { JOURNALED_TABLES } from '../src/storage/schema.js';
 import { LEARNING_ALGORITHM } from '../src/domain/learning-contract.js';
-import { verifyJournal } from '../src/storage/journal.js';
+import { verifyJournal, journalConnection } from '../src/storage/journal.js';
 import { enrollJournalPeer, peerAnchor, preparePeerTransfer, peerTransferRows,
   acknowledgePeer, applyPeerTransfer, rewindPeer, releasePeerSource } from '../src/storage/journal-peer.js';
 import { PeerTransfers, peerOperation, receivePeerTransfer } from '../src/replication/coalesced.js';
@@ -118,7 +118,7 @@ test('peer apply and rewind preserve cascading report and learning dependencies'
     store.db.prepare('INSERT INTO learning_journal_entries(id,epoch,input,key,kind,at,algorithm_version,payload) VALUES(?,?,?,?,?,?,?,?)')
       .run(1, 'synthetic-epoch', 'mqtt', 'synthetic-key', 'synthetic', 1, LEARNING_ALGORITHM, '{}');
     store.db.prepare('INSERT INTO learning_checkpoints VALUES(?,?,?,?,?,?,?,?)')
-      .run('mqtt', 'synthetic-epoch', 1, 1, 0, 0, 'original', '{}');
+      .run('mqtt', 'synthetic-epoch', 1, 1, 0, 0, 'original', '{"checkpointStorageVersion":1}');
   }));
   const base = f.source.checkpoint(), original = contents(f.source);
   f.source.transaction(() => {
@@ -156,6 +156,107 @@ test('stream failure after earlier valid rows rolls back the complete peer appli
   deliver(f.source, f.receiver, transfer);
   assert.deepEqual(contents(f.receiver), contents(f.source));
   verifyJournal(f.receiver.db);
+});
+
+for (const invalid of ['missing sample', 'damaged sample'])
+test(`a correctly fingerprinted peer target with a ${invalid} rolls back without publishing`, async t => {
+  const f = await fixture(t);
+  const original = contents(f.receiver), checkpoint = f.receiver.checkpoint(), anchor = peerAnchor(f.receiver.db);
+  const digest = 'a'.repeat(64);
+  f.source.transaction(() => {
+    f.source.setState('synthetic:before-invalid-cache', { value: 1 });
+    if (invalid === 'damaged sample')
+      f.source.db.prepare('INSERT INTO learning_checkpoint_samples(digest,payload) VALUES(?,?)')
+        .run(digest, JSON.stringify({ timestamp: 1, phase: 'normal' }));
+    f.source.db.prepare('INSERT INTO state VALUES(?,?,?)').run('adaptive:mqtt',
+      JSON.stringify({ checkpointStorageVersion: 1, sampleRefs: [digest] }), 1);
+  });
+  // The source journal fingerprints these exact rows normally. Rejection must
+  // therefore come from dependency/body validation, not transport corruption.
+  const transfer = preparePeerTransfer(f.source.db, { after: checkpoint });
+  assert(transfer.rows > 1, 'the rejected application includes other valid work');
+  assert.throws(() => deliver(f.source, f.receiver, transfer), { code: 'database_integrity_failed' });
+  assert.deepEqual(contents(f.receiver), original);
+  assert.deepEqual(f.receiver.checkpoint(), checkpoint);
+  assert.deepEqual(peerAnchor(f.receiver.db), anchor);
+  assert.equal(f.receiver.db.prepare("SELECT COUNT(*) n FROM sqlite_temp_master WHERE name='journal_learning_manifest_checks'").get().n, 0);
+  verifyJournal(f.receiver.db);
+});
+
+for (const operation of ['update', 'delete'])
+test(`ordinary peer catch-up refuses to ${operation} an immutable prepared sample`, async t => {
+  const payload = JSON.stringify({ timestamp: 1, phase: 'normal', quality: [] });
+  const digest = createHash('sha256').update(payload).digest('hex');
+  const f = await fixture(t, store => store.transaction(() => {
+    store.db.prepare('INSERT INTO learning_checkpoint_samples(digest,payload) VALUES(?,?)').run(digest, payload);
+  }));
+  const original = contents(f.receiver), checkpoint = f.receiver.checkpoint(), anchor = peerAnchor(f.receiver.db);
+  f.source.transaction(() => {
+    f.source.setState('synthetic:before-mutated-body', { value: 1 });
+    if (operation === 'update')
+      f.source.db.prepare('UPDATE learning_checkpoint_samples SET payload=? WHERE digest=?')
+        .run(JSON.stringify({ timestamp: 2, phase: 'normal', quality: [] }), digest);
+    else f.source.db.prepare('DELETE FROM learning_checkpoint_samples WHERE digest=?').run(digest);
+  });
+  const transfer = preparePeerTransfer(f.source.db, { after: checkpoint });
+  assert.throws(() => deliver(f.source, f.receiver, transfer), { code: 'journal_peer_conflict' });
+  assert.deepEqual(contents(f.receiver), original);
+  assert.deepEqual(f.receiver.checkpoint(), checkpoint);
+  assert.deepEqual(peerAnchor(f.receiver.db), anchor);
+  assert.equal(f.receiver.db.prepare("SELECT COUNT(*) n FROM sqlite_temp_master WHERE name='journal_learning_manifest_checks'").get().n, 0);
+  verifyJournal(f.receiver.db);
+});
+
+test('many arriving cache manifests spill only their identities and validate bodies arriving later', async t => {
+  const f = await fixture(t), count = 320;
+  const sample = { timestamp: 1, phase: 'normal', quality: [] }, payload = JSON.stringify(sample);
+  const digest = createHash('sha256').update(payload).digest('hex');
+  f.source.transaction(() => {
+    f.source.db.prepare('INSERT INTO learning_checkpoint_samples(digest,payload) VALUES(?,?)').run(digest, payload);
+    const insert = f.source.db.prepare('INSERT INTO state VALUES(?,?,?)');
+    for (let index = 0; index < count; index++) insert.run(`adaptive:synthetic-${index}`,
+      JSON.stringify({ checkpointStorageVersion: 1, sampleRefs: [digest],
+        episodeArchive: [{ id: `synthetic-${index}`, sampleRefs: [digest] }] }), 1);
+  });
+  const transfer = preparePeerTransfer(f.source.db, { after: f.receiver.checkpoint() });
+  let observed = 0;
+  function* manifestFirst() {
+    for (const change of changes(f.source, transfer)) {
+      if (change.table === 'learning_checkpoint_samples') continue;
+      const state = journalConnection(f.receiver.db);
+      assert.equal(state.prepare('PRAGMA temp_store').get().temp_store, 1);
+      assert.equal(state.prepare('PRAGMA temp.cache_size').get().cache_size, -8192);
+      assert.equal(state.prepare('SELECT COUNT(*) n FROM temp.journal_learning_manifest_checks').get().n, observed);
+      if (!observed) assert.deepEqual(state.prepare('PRAGMA temp.table_info(journal_learning_manifest_checks)').all()
+        .map(row => row.name), ['table_name', 'record_key'], 'scratch stores identities without retaining full transfer payloads');
+      yield change;
+      observed++;
+    }
+    assert.equal(observed, count);
+    assert.equal(journalConnection(f.receiver.db).prepare('SELECT COUNT(*) n FROM temp.journal_learning_manifest_checks').get().n, count);
+    // Read the transfer again in bounded pages, retaining no body backlog in JS.
+    for (const change of changes(f.source, transfer)) if (change.table === 'learning_checkpoint_samples') yield change;
+  }
+  applyPeerTransfer(f.receiver.db, { ...transfer, changes: manifestFirst() });
+  assert.deepEqual(contents(f.receiver), contents(f.source));
+  assert.equal(f.receiver.db.prepare("SELECT COUNT(*) n FROM sqlite_temp_master WHERE name='journal_learning_manifest_checks'").get().n, 0);
+  assert.deepEqual(f.receiver.getState('adaptive:synthetic-319'), {
+    samples: [sample], episodeArchive: [{ id: 'synthetic-319', samples: [sample] }],
+  });
+  verifyJournal(f.receiver.db);
+});
+
+test('peer scratch refuses to erase a caller\'s existing in-memory temporary work', async t => {
+  const f = await fixture(t);
+  f.source.setState('synthetic:changed', 1);
+  const transfer = preparePeerTransfer(f.source.db, { after: f.receiver.checkpoint() });
+  const original = contents(f.receiver), checkpoint = f.receiver.checkpoint();
+  const state = journalConnection(f.receiver.db);
+  state.exec('PRAGMA temp_store=MEMORY; CREATE TEMP TABLE unrelated_work(value INTEGER); INSERT INTO unrelated_work VALUES(7)');
+  assert.throws(() => deliver(f.source, f.receiver, transfer), { code: 'journal_peer_temp_storage_required' });
+  assert.equal(state.prepare('SELECT value FROM temp.unrelated_work').get().value, 7);
+  assert.deepEqual(contents(f.receiver), original);
+  assert.deepEqual(f.receiver.checkpoint(), checkpoint);
 });
 
 test('worker transfer preserves Unicode split across disk reads and multiple network frames', async t => {

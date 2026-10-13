@@ -15,6 +15,8 @@ const storeURL = new URL('../../src/storage/store.js', import.meta.url).href;
 const peerURL = new URL('../../src/storage/journal-peer.js', import.meta.url).href;
 const transferURL = new URL('../../src/replication/coalesced.js', import.meta.url).href;
 const verifierURL = new URL('../../src/storage/full-verifier.js', import.meta.url).href;
+const fixtureURL = new URL('../helpers/home-learning-fixture.js', import.meta.url).href;
+const learningURL = new URL('../../src/app/committed-learning.js', import.meta.url).href;
 function run(source, directory, signal) {
   return new Promise((resolve, reject) => {
     const child = spawn(otherNode, ['--input-type=module', '-e', source, directory], { stdio: ['ignore', 'pipe', 'pipe'], signal });
@@ -28,6 +30,56 @@ function run(source, directory, signal) {
     });
   });
 }
+
+test('compact learning checkpoints transfer and hydrate exactly across Node/SQLite runtimes',
+  { skip: !otherNode && !required && 'Set STMQ_OTHER_NODE to another supported Node executable.', timeout: 60_000 }, async t => {
+    assert.ok(otherNode, 'Set STMQ_OTHER_NODE for required cross-runtime validation.');
+    const directory = await mkdtemp(join(tmpdir(), 'stmq-learning-cross-runtime-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const sourcePath = join(directory, 'source.sqlite'), targetPath = join(directory, 'target.sqlite');
+    const window = `import {appendLearningRecord} from ${JSON.stringify(fixtureURL)};
+      import {replayLearningJournal} from ${JSON.stringify(learningURL)};
+      const append=(s,index)=>appendLearningRecord(s,'mqtt','sample',{
+        timestamp:Date.parse('2026-01-01T00:00:00Z')+index*900000,
+        indoorC:21+index/100,outdoorC:1/3,solarRadiationWm2:0,
+        phase:'normal',regime:'occupied',thermalCompressorDuty:1,thermalAuxKw:0,quality:[],
+      },{config:{indoorSensorWeights:{indoor_temperature:1}}});`;
+    const seeded = await run(`import {Store} from ${JSON.stringify(storeURL)};
+      import {enrollJournalPeer} from ${JSON.stringify(peerURL)};
+      ${window}
+      const dir=process.argv[1],s=new Store(dir+'/source.sqlite');
+      for(let i=1;i<=4;i++)append(s,i);
+      const checkpoint=replayLearningJournal(s,'mqtt');
+      enrollJournalPeer(s.db);await s.backup(dir+'/target.sqlite');s.close();
+      console.log(JSON.stringify({node:process.version,checkpoint}));`, directory, t.signal);
+    assert.notEqual(seeded.node, process.version);
+    const target = new Store(targetPath);
+    let base;
+    try { assert.deepEqual(target.getState('adaptive:mqtt'), seeded.checkpoint); base = target.checkpoint(); }
+    finally { target.close(); }
+    const exported = await run(`import {Store} from ${JSON.stringify(storeURL)};
+      import {PeerTransfers} from ${JSON.stringify(transferURL)};
+      ${window}
+      const dir=process.argv[1],s=new Store(dir+'/source.sqlite');append(s,5);
+      const checkpoint=replayLearningJournal(s,'mqtt');s.close();
+      const metadata=await new PeerTransfers(dir+'/transfers').export({dbPath:dir+'/source.sqlite',after:${JSON.stringify(base)}});
+      console.log(JSON.stringify({checkpoint,metadata}));`, directory, t.signal);
+    await peerOperation('apply', { dbPath: targetPath, metadata: exported.metadata,
+      path: join(directory, 'transfers', `peer-${exported.metadata.id}.changes`) });
+    const receiver = new Store(targetPath);
+    try {
+      assert.deepEqual(receiver.getState('adaptive:mqtt'), exported.checkpoint);
+      assert.equal(receiver.db.prepare('SELECT COUNT(*) n FROM learning_checkpoint_samples').get().n,
+        exported.checkpoint.samples.length);
+      assert.equal(receiver.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+    } finally { receiver.close(); }
+    const sourceVerification = await run(`import {verifyDatabase} from ${JSON.stringify(verifierURL)};
+      const verification=await verifyDatabase({dbPath:process.argv[1]+'/source.sqlite'});
+      console.log(JSON.stringify(verification));`, directory, t.signal);
+    const receiverVerification = await verifyDatabase({ dbPath: targetPath });
+    assert.equal(receiverVerification.digest, sourceVerification.digest);
+    assert.deepEqual(receiverVerification.checkpoint, sourceVerification.checkpoint);
+  });
 
 test('different Node/SQLite runtimes seed, compact, catch up and reverse direction without losing stored precision',
   { skip: !otherNode && !required && 'Set STMQ_OTHER_NODE to another supported Node executable.', timeout: 60_000 }, async t => {

@@ -6,6 +6,7 @@ import { JOURNALED_TABLES } from './schema.js';
 import { encodeChange, rowHash, changeContentHash } from './journal-codec.js';
 import { journalConnection, journalExclusive, journalReadRow, journalApplyRow, readCheckpoint,
   matchingCheckpoint, validCheckpoint, resolveChange, validateCheckpoint, decodeJournalChange } from './journal.js';
+import { learningCheckpointSampleReferences, validateLearningCheckpointSample } from './learning-checkpoint-storage.js';
 
 const fail = (code='journal_peer_conflict') => { throw Object.assign(new Error('The retained peer checkpoint could not be reconciled. Preserve both histories and retry the peer operation.'),{code}); };
 const tables=new Map(JOURNALED_TABLES.map(table=>[table.name,table]));
@@ -255,19 +256,75 @@ function resetHead(db,target,hash) {
   state.prepare('UPDATE journal_meta SET sequence=?,hash=?,base_sequence=?,base_hash=?,content_hash=?,base_content_hash=?,retained_bytes=0,retained_commits=0 WHERE id=1')
     .run(target.sequence,target.hash,target.sequence,target.hash,hash,hash);
 }
+const LEARNING_CHECKS = 'journal_learning_manifest_checks';
+/** Peer workers have a private connection. Spill the changed manifest identities
+ * to bounded-page-cache TEMP storage rather than retaining the offline backlog
+ * in JavaScript. Switching temp_store would discard unrelated TEMP objects, so
+ * refuse that combination instead of silently destroying a caller's scratch. */
+function withLearningChecks(db,operation) {
+  const state=journalConnection(db);
+  if(state.transaction || db.isTransaction) fail('journal_transaction_active');
+  if(state.prepare('PRAGMA temp_store').get().temp_store!==1) {
+    if(state.prepare('SELECT 1 FROM sqlite_temp_master LIMIT 1').get()) fail('journal_peer_temp_storage_required');
+    state.exec('PRAGMA temp_store=FILE');
+  }
+  state.exec('PRAGMA temp.cache_size=-8192');
+  return journalExclusive(db,()=>{
+    state.exec(`CREATE TEMP TABLE ${LEARNING_CHECKS}(table_name TEXT NOT NULL,record_key TEXT NOT NULL,
+      PRIMARY KEY(table_name,record_key)) WITHOUT ROWID`);
+    const checks={state,insert:state.prepare(`INSERT OR IGNORE INTO temp.${LEARNING_CHECKS} VALUES(?,?)`)};
+    let failed=false;
+    try {return operation(checks);}
+    catch(error){failed=true;throw error;}
+    finally {try{state.exec(`DROP TABLE temp.${LEARNING_CHECKS}`);}catch(error){if(!failed)throw error;}}
+  });
+}
+function trackLearningCheck(checks,change) {
+  if(change.table==='learning_checkpoint_samples') {
+    // Normal catch-up only inserts immutable bodies; protected rewind can also
+    // remove or restore them. Validate each present body immediately, then let
+    // this row leave memory before reading the next streamed transfer record.
+    const row=checks.state.prepare('SELECT digest,payload FROM learning_checkpoint_samples WHERE digest=?').get(change.key[0]);
+    if(row) validateLearningCheckpointSample(row);
+  }
+  if(change.table==='learning_checkpoints' || change.table==='state' && change.key[0].startsWith('adaptive:'))
+    checks.insert.run(change.table,JSON.stringify(change.key));
+}
+/** The checked base already owns its existing immutable bodies. Verify new or
+ * restored bodies once, then seek each affected manifest's dependency closure;
+ * do not decode or scan unrelated historical checkpoints during catch-up. */
+function validateLearningChanges(db,checks) {
+  const state=checks.state;
+  for(const saved of state.prepare(`SELECT table_name,record_key FROM temp.${LEARNING_CHECKS}`).iterate()) {
+    const change={table:saved.table_name,key:JSON.parse(saved.record_key)},row=journalReadRow(db,change);
+    if(!row) continue;
+    const compact=JSON.parse(change.table==='state'?row.value:row.payload);
+    const refs=learningCheckpointSampleReferences(compact);
+    for(let start=0;start<refs.length;start+=128) {
+      const batch=refs.slice(start,start+128),placeholders=batch.map(()=>'?').join(',');
+      if(state.prepare(`SELECT digest FROM learning_checkpoint_samples WHERE digest IN (${placeholders})`).all(...batch).length!==batch.length)
+        fail('database_integrity_failed');
+    }
+  }
+}
 export function applyPeerTransfer(db,{base,target,contentHash,changes,rows}={}) {
   if(!validCheckpoint(base)||!validCheckpoint(target)||base.databaseId!==target.databaseId||!/^([a-f0-9]{64})$/.test(contentHash)
     ||target.sequence<base.sequence||!Number.isSafeInteger(rows)||rows<0) fail();
-  return journalExclusive(db,()=>{
+  return withLearningChecks(db,checks=>{
     const head=validateCheckpoint(db),state=journalConnection(db);
     if(matchingCheckpoint(head,target)) return head;
     if(!matchingCheckpoint(head,base)) fail();
     if(meta(db)?.completed_source) fail('journal_peer_pending');
     let hash=content(db),count=0;
     for(const change of changes) {
+      // Current prepared bodies are immutable and have no ordinary GC producer.
+      // Explicit protected rewind owns the separate reverse/remove operation.
+      if(change.table==='learning_checkpoint_samples' && (change.before!==null || change.after===null)) fail();
       journalApplyRow(db,change);hash=changeContentHash(hash,[change]);count++;
+      trackLearningCheck(checks,change);
     }
     if(count!==rows||hash!==contentHash) fail();
+    validateLearningChanges(db,checks);
     resetHead(db,target,hash);
     state.exec('DELETE FROM journal_peer_changes');
     state.prepare('INSERT INTO journal_peer VALUES(1,?,?,NULL,NULL,NULL) ON CONFLICT(id) DO UPDATE SET anchor=excluded.anchor,content_hash=excluded.content_hash,pending=NULL,rebase_cursor=NULL,completed_source=NULL')
@@ -278,7 +335,7 @@ export function applyPeerTransfer(db,{base,target,contentHash,changes,rows}={}) 
 /** Explicit protected rejoin only. Retain unique changed rows once, then restore
  * the shared peer anchor atomically. Bookkeeping histories are not replayed. */
 export function rewindPeer(db,{checkpoint}={}) {
-  return journalExclusive(db,()=>{
+  return withLearningChecks(db,checks=>{
     const anchor=peerAnchor(db),head=validateCheckpoint(db),state=journalConnection(db);
     if(!anchor||anchor.pending?.status==='rebasing'||!matchingCheckpoint(checkpoint,anchor.checkpoint)) fail();
     if(matchingCheckpoint(head,checkpoint)) return null;
@@ -294,8 +351,10 @@ export function rewindPeer(db,{checkpoint}={}) {
       put.run(id,count++,...record);
       const change=encodeChange(saved.table_name,key,before,after);
       journalApplyRow(db,change,true);projected=changeContentHash(projected,[change]);
+      trackLearningCheck(checks,change);
     }
     if(projected!==anchor.contentHash) fail();
+    validateLearningChanges(db,checks);
     state.prepare('UPDATE journal_peer_branches SET rows=?,digest=? WHERE id=?').run(count,hash.digest('hex'),id);
     resetHead(db,checkpoint,anchor.contentHash);
     state.exec('DELETE FROM journal_peer_changes');

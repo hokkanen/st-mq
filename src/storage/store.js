@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { validateArchivedLearningCheckpointStorage } from './learning-checkpoint-archive.js';
 import { mkdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -17,6 +18,8 @@ import { createWriteHealth } from './write-health.js';
 import { WriteQueue, sqliteContention } from './write-queue.js';
 import { readAdaptiveBudget } from './adaptive-recording-budget.js';
 import { readStorageMetrics } from './recording-metrics.js';
+import { encodeLearningCheckpoint, decodeLearningCheckpoint, validateLearningCheckpointStorage,
+  validateLearningCheckpointSample, withLearningCheckpointRead } from './learning-checkpoint-storage.js';
 import { registerJournalFunctions } from './journal-codec.js';
 import { initializeJournal, installJournal, validateCheckpoint, readCheckpoint, checkpointAt,
   commonCheckpoint, exportChanges, changedRecordKeys, journalBase, compactJournal } from './journal.js';
@@ -81,8 +84,27 @@ export function validateCurrentDatabaseFormat(db, { full = false } = {}) {
     { code: 'database_integrity_failed' });
 }
 
-export function validateCurrentDatabase(db, { full = false } = {}) {
+export function validateCurrentDatabase(db, { full = false, readOnly = false } = {}) {
   validateCurrentDatabaseFormat(db, { full });
+  // Writable startup rejects unsupported active caches before mutation. A
+  // read-only evidence viewer can expose independent observations even when a
+  // derived cache is unavailable; its getter still uses only the current
+  // decoder, and explicit full verification remains strict.
+  const savedCheckpoint = value => {
+    let checkpoint;
+    try { checkpoint = JSON.parse(value); }
+    catch { throw Object.assign(new Error('Unreadable learning checkpoint storage. Preserve this database and use an intact current-version backup or a new empty database. The existing database was not changed.'),
+      { code: 'database_state_incompatible' }); }
+    return validateLearningCheckpointStorage(db, checkpoint, { references: full });
+  };
+  if (full || !readOnly) {
+    for (const row of db.prepare("SELECT value FROM state WHERE key GLOB 'adaptive:*'").iterate()) savedCheckpoint(row.value);
+  }
+  if (full) {
+    for (const row of db.prepare('SELECT digest,payload FROM learning_checkpoint_samples').iterate()) validateLearningCheckpointSample(row);
+    for (const row of db.prepare('SELECT payload FROM learning_checkpoints').iterate()) savedCheckpoint(row.payload);
+    validateArchivedLearningCheckpointStorage(db);
+  }
   // Reject an unsupported recorder before writable setup or paired source-state
   // initialization. A genuinely absent prospective budget needs no backfill.
   readAdaptiveBudget(db);
@@ -249,7 +271,7 @@ export class Store {
         // A concurrent writer may advance between the checkpoint's individual
         // indexed reads. Validate one committed snapshot, then release it.
         this.db.exec('BEGIN');
-        try { validateCurrentDatabase(this.db); }
+        try { validateCurrentDatabase(this.db, { readOnly: true }); }
         finally { this.db.exec('ROLLBACK'); }
       }
       if (readOnly) { registerJournalFunctions(this.db); this.db.exec(`PRAGMA query_only = ON; PRAGMA busy_timeout = ${isMainThread ? 0 : 5000};`); return; }
@@ -412,14 +434,23 @@ export class Store {
   }
 
   getState(key) {
-    const row = this.db.prepare('SELECT value FROM state WHERE key = ?').get(label(key, 'key'));
-    return row ? JSON.parse(row.value) : null;
+    label(key, 'key');
+    const read = () => {
+      const row = this.db.prepare('SELECT value FROM state WHERE key = ?').get(key);
+      const value = row ? JSON.parse(row.value) : null;
+      return key.startsWith('adaptive:') ? decodeLearningCheckpoint(this.db, value) : value;
+    };
+    return key.startsWith('adaptive:') ? withLearningCheckpointRead(this.db, read) : read();
   }
 
   setState(key, value) {
-    return this.write(() => this.db.prepare(`INSERT INTO state (key, value, updated_at) VALUES (?, ?, ?)
+    label(key, 'key');
+    const save = () => this.write(() => this.db.prepare(`INSERT INTO state (key, value, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at WHERE state.value <> excluded.value`)
-      .run(label(key, 'key'), json(value), Date.now()));
+      .run(key, json(key.startsWith('adaptive:') ? encodeLearningCheckpoint(this.db, value) : value), Date.now()));
+    // A standalone cache save must not publish a manifest before its prepared
+    // bodies, nor leave bodies behind when its final state write is rejected.
+    return key.startsWith('adaptive:') && !this.transactionDepth ? this.transaction(save) : save();
   }
 
   write(operation) {

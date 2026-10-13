@@ -6,6 +6,17 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Learning checkpoints share exact prepared fitting samples instead of repeatedly
+  copying their bodies into the current cache and every sparse recovery checkpoint.
+  This reduces checkpoint writes, replica payloads and future checkpoint storage
+  growth while preserving learning precision, history and recovery revert/restore.
+  Ordinary pairing and handover remain incremental. Development schema 30 requires
+  a deliberate fresh database; existing databases are preserved and rejected,
+  without automatic conversion or reset.
+- Ready source corrections receive bounded publication priority so continuously
+  changing controller inputs cannot indefinitely postpone the corrected model.
+  Journal-head checks, catch-up retries and normal-write fairness remain intact.
+
 - Charging history avoids database admissions for unchanged allowance reports.
   Confirmed unchanged coverage saves every minute for Charger 1 and every five
   seconds for Charger 2; actual transitions remain immediate. Charging card

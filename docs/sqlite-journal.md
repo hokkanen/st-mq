@@ -164,6 +164,37 @@ cache, initially for a new epoch/source revision and then after at least 256 inp
 of source time. They are indexed by input, source revisions, time and cursor and
 replicate as ordinary cache rows. This is not a per-minute model snapshot stream.
 
+Current and sparse caches store the complete numerical checkpoint with ordered
+references to shared, content-addressed prepared samples. Episode archives retain
+their exact sample membership, including warmup windows and invalid endpoints.
+The shared bodies preserve the original normalized sensor/fireplace interpretation;
+loading never substitutes current configuration or current source selection.
+Indexed batches hydrate only the saved working set and verify each body's digest.
+Sample bodies and their cache manifest publish in the same transaction and
+replicate as ordinary changed rows. Required bodies must exist at the receiver's
+checked base or arrive in its changed-row transfer before the target is accepted.
+Ordinary peer transfers can only insert these immutable bodies; protected rejoin
+owns their separate rewind/removal path and preserves divergent values in branch
+evidence. The receiver streams body validation and stages affected manifest keys
+in disk-backed private TEMP storage, avoiding a JavaScript collection of the
+entire offline backlog. Existing bodies at the checked base are trusted during
+catch-up; hydration verifies their hashes, and full verification audits retained
+bodies and archived branch references. A matching checkpoint alone is not a full
+database integrity check.
+
+Sparse checkpoint cadence and retained recovery evidence are unchanged. Shared
+prepared bodies remain available even after a recovery is reverted or a cache is
+superseded; they are derived caches, not replacement source history. Future growth
+includes unique prepared bodies (including distinct corrected interpretations)
+and small sparse manifests, rather than another complete fitting archive per
+checkpoint. This does not bound total database size or automatically reclaim the
+physical size of an existing file. Development schema 30 supports only this
+current representation; there is no older cache decoder or database migration.
+Read-only history viewers may still expose independently valid recorded evidence
+when a derived model cache is unavailable. Model access rejects malformed or
+unsupported cache representations; writable startup and full verification remain
+strict, and no older checkpoint is interpreted.
+
 For ordinary live learning, caches above 128 KiB (including replacement of an
 already larger cache) save through a worker after the controller transaction.
 Their sparse checkpoint and active cache publish together at the same validated

@@ -3,12 +3,24 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { fixture,sample,recover,start,W } from './helpers/recovery-fixture.js';
-import { replayLearningJournal,appendLearningRecord } from '../src/app/committed-learning.js';
+import { replayLearningJournal,appendLearningRecord,validLearningCheckpoint } from '../src/app/committed-learning.js';
 import { Store } from '../src/storage/store.js';
 import { findLearningPrefix } from '../src/recovery/learning-prefix.js';
 import { previewRecoveryRevision,reviseRecovery } from '../src/recovery/service.js';
 import { addFireplace, removeFireplace } from '../src/app/fireplace.js';
 import { addSensorChange, revertSensorChange } from '../src/app/sensor-changes.js';
+import { decodeLearningCheckpoint, learningCheckpointSampleReferences } from '../src/storage/learning-checkpoint-storage.js';
+import { saveLearningCheckpoint } from '../src/storage/learning-checkpoints.js';
+
+function assertCompactCaches(store) {
+  for(const row of store.db.prepare('SELECT payload FROM learning_checkpoints').all()) {
+    const compact=JSON.parse(row.payload);
+    assert.equal(compact.checkpointStorageVersion,1);
+    assert.equal(Object.hasOwn(compact,'samples'),false);
+    assert(validLearningCheckpoint(decodeLearningCheckpoint(store.db,compact)),
+      'every retained source interpretation still hydrates its original complete checkpoint');
+  }
+}
 
 const measurements=[];
 const io=()=>Object.fromEntries(readFileSync('/proc/self/io','utf8').trim().split('\n').map(line=>{const [key,value]=line.split(':');return [key,Number(value)];}));
@@ -131,6 +143,7 @@ test('recovery and timeless revert reuse sparse checkpoints after transaction pa
     assert.deepEqual(replayLearningJournal(f.master,'mqtt',null,{rebuild:true,persistCheckpoint:false}),revised.checkpoint);
     assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM learning_journal_entries WHERE source_entry_id IS NULL').get().n,sourceEntries,
       'compaction and selection preserve immutable source inputs');
+    assertCompactCaches(f.master);
     assert.equal(f.master.getState('synthetic-current-bookkeeping').iteration,3);
     assert(steps.filter(value=>value.phase==='rebuilding').every(value=>value.total<4));
   }
@@ -164,6 +177,87 @@ test('prefix lookup pins cached states and patches while the controller commits 
   assert(wrote);assert.equal(prefix.cursor,prior.journalCursor);
   f.master.setState('synthetic-after-prefix',{recording:true});
   assert.deepEqual(f.master.getState('synthetic-after-prefix'),{recording:true},'lookup releases its own pinned snapshot');
+});
+
+for(const source of ['current and reversed caches','sparse caches after transaction compaction'])
+test(`prefix selection skips unsuitable prepared bodies in ${source}`,async t=>{
+  const f=fixture(t);
+  sample(f.master,start+W);
+  const baseline=replayLearningJournal(f.master,'mqtt');
+  const originalManifest=JSON.parse(f.master.db.prepare('SELECT value FROM state WHERE key=?').get('adaptive:mqtt').value);
+  const allowed=new Set(learningCheckpointSampleReferences(originalManifest));
+  addFireplace(f.master,'mqtt',{requestId:'synthetic-prefix-load',kg:2},start);
+  const corrected=replayLearningJournal(f.master,'mqtt',null,{rebuild:true});
+  sample(f.master,start+2*W);
+  const changed=replayLearningJournal(f.master,'mqtt',corrected);
+  f.master.transaction(()=>saveLearningCheckpoint(f.master.db,{input:'mqtt',epoch:'original',checkpoint:changed}));
+  const unsuitable=new Set();
+  for(const row of f.master.db.prepare('SELECT payload FROM learning_checkpoints WHERE fireplace_revision>0').all())
+    for(const digest of learningCheckpointSampleReferences(JSON.parse(row.payload))) if(!allowed.has(digest)) unsuitable.add(digest);
+  assert(unsuitable.size>0,'the newer source interpretations retain distinct prepared bodies');
+  if(source.startsWith('sparse')) {
+    for(let index=0;index<3;index++) f.master.setState('synthetic-prefix-bookkeeping',{index});
+    f.master.compactJournal({maxCommits:1});
+    assert.equal(f.master.db.prepare("SELECT COUNT(*) n FROM journal_changes WHERE table_name='state' AND record_key=?")
+      .get(JSON.stringify(['adaptive:mqtt'])).n,0,'only sparse candidates retain the original interpretation');
+  }
+  const prepare=f.master.db.prepare.bind(f.master.db),fetched=[];
+  t.mock.method(f.master.db,'prepare',sql=>{
+    const statement=prepare(sql);
+    if(/^SELECT digest,payload FROM learning_checkpoint_samples WHERE digest IN/.test(sql)) {
+      const all=statement.all.bind(statement);
+      statement.all=(...digests)=>{
+        assert(digests.every(digest=>!unsuitable.has(digest)),
+          'metadata must reject affected interpretations before reading or hashing their prepared archive');
+        fetched.push(...digests);return all(...digests);
+      };
+    }
+    return statement;
+  });
+  const prefix=await findLearningPrefix(f.master,{input:'mqtt',epoch:'original',earliest:start+3*W,
+    fireplaceRevision:0,yieldControl:async()=>{}});
+  assert.deepEqual(prefix.checkpoint,baseline);
+  assert.equal(prefix.cursor,baseline.journalCursor);
+  assert.deepEqual(new Set(fetched),allowed,'only the admitted unchanged working set is hydrated');
+  assert.deepEqual(replayLearningJournal(f.master,'mqtt',prefix.checkpoint,{fireplaceRevision:0,persistCheckpoint:false}),
+    replayLearningJournal(f.master,'mqtt',null,{rebuild:true,fireplaceRevision:0,persistCheckpoint:false}),
+    'metadata filtering preserves exact reconstruction through the affected remainder');
+});
+
+for(const phase of ['eligibility','hydration'])
+test(`sparse prefix ${phase} database failures propagate instead of hiding behind cache fallback`,async t=>{
+  const f=fixture(t);
+  sample(f.master,start+W);replayLearningJournal(f.master,'mqtt');
+  f.master.db.prepare('DELETE FROM state WHERE key=?').run('adaptive:mqtt');
+  for(let index=0;index<3;index++) f.master.setState('synthetic-prefix-bookkeeping',{index});
+  f.master.compactJournal({maxCommits:1});
+  const prepare=f.master.db.prepare.bind(f.master.db);
+  t.mock.method(f.master.db,'prepare',sql=>{
+    const relevant=phase==='eligibility'
+      ? sql==='SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND id=?'
+      : /^SELECT digest,payload FROM learning_checkpoint_samples WHERE digest IN/.test(sql);
+    if(relevant) throw Object.assign(new Error('synthetic storage read failure'),{code:'synthetic_database_read_failed'});
+    return prepare(sql);
+  });
+  await assert.rejects(findLearningPrefix(f.master,{input:'mqtt',epoch:'original',earliest:start+2*W}),
+    {code:'synthetic_database_read_failed'});
+  f.master.setState('synthetic-after-prefix-error',{recording:true});
+  assert.deepEqual(f.master.getState('synthetic-after-prefix-error'),{recording:true},
+    'failed lookup releases its pinned read transaction');
+});
+
+test('a sparse cache with a missing prepared body falls back to its intact immutable journal',async t=>{
+  const f=fixture(t);
+  sample(f.master,start+W);const baseline=replayLearningJournal(f.master,'mqtt');
+  f.master.transaction(()=>{
+    f.master.db.prepare('DELETE FROM state WHERE key=?').run('adaptive:mqtt');
+    f.master.db.prepare('DELETE FROM learning_checkpoint_samples').run();
+  });
+  for(let index=0;index<3;index++) f.master.setState('synthetic-prefix-bookkeeping',{index});
+  f.master.compactJournal({maxCommits:1});
+  assert.equal(await findLearningPrefix(f.master,{input:'mqtt',epoch:'original',earliest:start+2*W}),null);
+  assert.deepEqual(replayLearningJournal(f.master,'mqtt',null,{rebuild:true,persistCheckpoint:false}),baseline,
+    'derived cache damage cannot remove original learning inputs or invent replacement model state');
 });
 
 for(const correction of ['fireplace','sensor','fireplace-removal']) test(`late ${correction} corrections and timeless reversal replay only their affected suffix`,async t=>{
@@ -228,6 +322,7 @@ test('successive late recoveries retain exact source selection across compaction
       assert.deepEqual(reopened.getState('adaptive:mqtt'),f.master.getState('adaptive:mqtt'));
       assert.equal(reopened.db.prepare('SELECT COUNT(*) n FROM learning_checkpoints').get().n,
         f.master.db.prepare('SELECT COUNT(*) n FROM learning_checkpoints').get().n);
+      assertCompactCaches(reopened);
     } finally { reopened.close(); }
   };
   const verify=(result,progress)=>{

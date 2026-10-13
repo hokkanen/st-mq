@@ -32,6 +32,16 @@ Live learning and reconstruction must use the same ordered entry function.
 Checkpoints are replaceable caches with integrity digests and journal cursors;
 they are not the only source of model history.
 
+The persisted checkpoint is a compact manifest over shared, content-addressed
+prepared fitting samples. Hydration restores the exact working checkpoint,
+including invalid barriers, historical normalization and episode membership,
+before applying the existing digest and journal-boundary checks. Numerical learning
+and the supported algorithm do not change. Sparse recovery checkpoints use the
+same representation and retain their source revisions and selection boundaries.
+Prepared cache bodies do not replace the immutable journal, configuration, seeds
+or recovery contribution/decision ledger. Reverting or restoring a recovery still
+selects preserved source history and rebuilds only genuinely affected learning.
+
 Ordinary controller updates retain one final model cache for their ordered
 learning work. Small caches can commit with the update; larger caches are saved
 in a worker only after the immutable learning inputs and control intent commit.
@@ -53,6 +63,10 @@ learning; only this final publication turn queues subsequent writes. Timers and
 read-only requests remain available, but write-dependent work waits for storage.
 Committed replay-ready notifications schedule publication between controller
 updates, so catch-up does not depend on a later update having no new learning.
+Ready correction admission, reconciliation and final publication use the queue's
+bounded control priority; progress notifications and ordinary cache saves retain
+normal priority. Queue fairness can still interleave a learning update, so the
+exact-head fence and catch-up retry remain mandatory before publication.
 A single latest publication receipt per input commits with the model. The owner
 joins worker exit and checks that receipt before releasing queued updates, so a
 lost reply or cancellation after commit still adopts the complete saved result.

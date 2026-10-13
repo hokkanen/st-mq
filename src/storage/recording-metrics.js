@@ -30,7 +30,7 @@ export function readStorageMetrics(db) {
 }
 
 const currentTables = new Set(['state', 'learning_epochs', 'history_selection', 'recovery_exclusions',
-  'recorder_metrics', 'recovery_dependencies', 'learning_checkpoints']);
+  'recorder_metrics', 'recovery_dependencies', 'learning_checkpoints', 'learning_checkpoint_samples']);
 
 /** Explicit inventory only: dbstat visits allocated b-tree pages, so this must
  * stay in the cached read-only overview worker, never on recording/control ticks.

@@ -10,6 +10,7 @@ import { validateSettings } from '../src/app/config.js';
 import { applyLearningRecord, LEARNING_ALGORITHM, validLearningCheckpoint} from '../src/app/committed-learning.js';
 import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
+import { decodeLearningCheckpoint, withLearningCheckpointRead } from '../src/storage/learning-checkpoint-storage.js';
 
 const WINDOW = 900_000, start = Date.parse('2026-01-01T00:00:00Z');
 const pause = () => new Promise(resolve => setTimeout(resolve, 10));
@@ -29,10 +30,11 @@ function fixture(t) {
   };
   let engine = createEngine();
   const observer = new DatabaseSync(path, { readOnly: true });
-  const externalState = key => {
+  const externalState = key => withLearningCheckpointRead(observer, () => {
     const row = observer.prepare('SELECT value FROM state WHERE key=?').get(key);
-    return row ? JSON.parse(row.value) : null;
-  };
+    const value = row ? JSON.parse(row.value) : null;
+    return key.startsWith('adaptive:') ? decodeLearningCheckpoint(observer, value) : value;
+  });
   t.after(async () => {
     await engine.charging.close();
     await engine.closeFireplace();

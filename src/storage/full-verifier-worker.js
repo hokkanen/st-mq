@@ -21,7 +21,7 @@ function pin(path) {
   validateWalHeader(path);
   const db = new DatabaseSync(path, { readOnly: true });
   try {
-    db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=5000; BEGIN');
+    db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=5000; PRAGMA temp_store=FILE; BEGIN');
     validateCurrentDatabaseFormat(db);
     const checkpoint = readCheckpoint(db);
     return { db, checkpoint };

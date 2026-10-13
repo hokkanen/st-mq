@@ -178,18 +178,27 @@ test('the MQTT controller advances a rich learning cache beside durable charging
     .all('charging:mqtt', 'charging:mqtt:runtime:*');
   const chargingBytes = chargingRows.reduce((bytes, row) => bytes + Buffer.byteLength(JSON.stringify(row)), 0);
   const expandedChargingBytes = Buffer.byteLength(JSON.stringify(readChargingRuntime(store, 'charging:mqtt')));
-  assert(checkpointBytes > 1.75 * 1024 * 1024, `The realistic cache must reproduce the large row (${checkpointBytes} bytes)`);
-  assert(checkpointBytes < MAIN_JOURNAL_ROW_BYTES, 'each individual original row is admitted');
+  const expandedCheckpointBytes = Buffer.byteLength(JSON.stringify(original));
+  assert(expandedCheckpointBytes > 1_800_000,
+    `The realistic working checkpoint must reproduce the incident size (${expandedCheckpointBytes} bytes)`);
+  assert(checkpointBytes < expandedCheckpointBytes / 20,
+    'the active cache retains a small manifest instead of repeating the prepared archive');
   assert(expandedChargingBytes > 177_000, 'the production charging snapshot includes a substantial day horizon');
   assert(chargingRows.length > 1 && chargingBytes < expandedChargingBytes,
     'the complete day horizon is retained in deduplicated current records');
-  assert(2 * (checkpointBytes + chargingBytes) > MAIN_JOURNAL_CAPTURE_BYTES,
-    'OLD plus NEW of the cache and all current charging records exceeds the unchanged transaction capture limit');
+  // An ordinary synthetic evidence row preserves the same realistic large input
+  // for this independent admission check. Current adaptive rows are manifests;
+  // retaining their retired full-row shape would defeat the refactor itself.
+  store.setState('synthetic:admission-evidence', original);
+  const evidenceBytes = rawStateBytes(store, 'synthetic:admission-evidence');
+  assert(evidenceBytes < MAIN_JOURNAL_ROW_BYTES, 'each individual evidence row is admitted');
+  assert(2 * (evidenceBytes + chargingBytes) > MAIN_JOURNAL_CAPTURE_BYTES,
+    'OLD plus NEW of realistic evidence and charging records exceeds the unchanged transaction capture limit');
   const beforeAdmission = store.checkpoint();
   assert.throws(() => store.transaction(() => {
     store.db.prepare('UPDATE state SET updated_at=updated_at+1 WHERE key=? OR key GLOB ?')
       .run('charging:mqtt', 'charging:mqtt:runtime:*');
-    store.db.prepare('UPDATE state SET updated_at=updated_at+1 WHERE key=?').run('adaptive:mqtt');
+    store.db.prepare('UPDATE state SET updated_at=updated_at+1 WHERE key=?').run('synthetic:admission-evidence');
   }), { code: 'journal_main_thread_transaction_too_large' });
   assert.deepEqual(store.checkpoint(), beforeAdmission, 'the existing guard still rejects atomically');
   const originalControls = controls(engine), journalBefore = store.learningJournal({ input: 'mqtt' }).length;

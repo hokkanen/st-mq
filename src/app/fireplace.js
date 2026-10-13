@@ -157,14 +157,14 @@ export class FireplaceRebuildManager {
         this.setStatus({ ...this.status(), status: 'failed', requiresRebuild: true,
           error: 'Model rebuild failed; the previous model remains active.' });
       };
-      const admit = operation => {
+      const admit = (operation, { priority = 'normal' } = {}) => {
         if (this.closed || generation !== this.generation) return;
         void this.store.runWrite(() => {
           if (this.closed || generation !== this.generation) return;
           const previousReady = this.ready;
           this.store.afterRollback(() => { this.ready = previousReady; });
           return operation();
-        }, { isCurrent: () => !this.closed && generation === this.generation })
+        }, { priority, isCurrent: () => !this.closed && generation === this.generation })
           .catch(error => this.store.writeHealth.failure(error));
       };
       worker.on('error', () => admit(fail));
@@ -176,6 +176,9 @@ export class FireplaceRebuildManager {
         if (result.type === 'stale') { this.start(undefined, undefined, { force: true }); return; }
         if (result.error) { fail(); return; }
         if (result.type === 'progress') {
+          // READY has control priority and may overtake its older ordinary
+          // progress report. That report cannot demote a complete candidate.
+          if (this.ready && result.journalCursor <= this.ready.head) return;
           this.setStatus({ ...this.status(), status: 'running', processed: result.processed, journalCursor: result.journalCursor });
           return;
         }
@@ -190,7 +193,7 @@ export class FireplaceRebuildManager {
         this.ready = { checkpoint: result.checkpoint, ...selection, head: result.head };
         this.setStatus({ ...this.status(), status: 'ready', journalCursor: result.head, processed: result.processed });
         this.store.afterCommit(() => { if (!this.closed && generation === this.generation) this.onReady?.(); });
-      }));
+      }, { priority: result.type === 'ready' ? 'control' : 'normal' }));
       this.store.afterCommit(() => { if (!this.closed && generation === this.generation)
         this.send({ type: 'rebuild', ...selection, head: this.head(), affectedAt: old.affectedAt }); });
       return true;

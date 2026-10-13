@@ -1,6 +1,7 @@
 import { validLearningCheckpoint } from '../app/committed-learning.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 import { encodeChange } from './journal-codec.js';
+import { decodeLearningCheckpoint, encodeLearningCheckpoint } from './learning-checkpoint-storage.js';
 
 // Sparse replay acceleration, independent of the disposable replication suffix.
 // These caches retain no new observations and never replace the immutable inputs.
@@ -21,10 +22,16 @@ export function saveLearningCheckpoint(db, { input, epoch, checkpoint }) {
   if (!entry || !validLearningCheckpoint(checkpoint, decode(entry))
     || ![fireplaceRevision, sensorRevision].every(value => Number.isSafeInteger(value) && value >= 0))
     throw new Error('The learning checkpoint boundary is invalid');
+  return insertLearningCheckpoint(db, { input, epoch, checkpoint, entry,
+    payload: JSON.stringify(encodeLearningCheckpoint(db, checkpoint)) });
+}
+
+function insertLearningCheckpoint(db, { input, epoch, checkpoint, entry, payload }) {
+  const fireplaceRevision = checkpoint.fireplaceRevision ?? 0, sensorRevision = checkpoint.sensorRevision ?? 0;
   const row = { input, epoch, journal_cursor: checkpoint.journalCursor, at: entry.at,
     fireplace_revision: fireplaceRevision, sensor_revision: sensorRevision,
     history_selection: db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation,
-    payload: JSON.stringify(checkpoint) };
+    payload };
   const inserted = db.prepare(`INSERT INTO learning_checkpoints
     (input,epoch,journal_cursor,at,fireplace_revision,sensor_revision,history_selection,payload) VALUES(?,?,?,?,?,?,?,?)
     ON CONFLICT(input,epoch,fireplace_revision,sensor_revision,journal_cursor) DO NOTHING`)
@@ -42,28 +49,32 @@ export function captureLearningCheckpoints(db, changes) {
     if (change.table !== 'state' || change.after === null || !change.key[0].startsWith('adaptive:')) continue;
     const input = change.key[0].slice('adaptive:'.length);
     const saved = db.prepare('SELECT value FROM state WHERE key=?').get(change.key[0]);
-    let checkpoint;
-    try { checkpoint = JSON.parse(saved?.value); } catch { continue; }
-    if (checkpoint?.algorithmVersion !== LEARNING_ALGORITHM || !Number.isSafeInteger(checkpoint.journalCursor)
-      || checkpoint.journalCursor <= 0) continue;
+    let compact;
+    try { compact = JSON.parse(saved?.value); } catch { continue; }
+    if (compact?.algorithmVersion !== LEARNING_ALGORITHM || !Number.isSafeInteger(compact.journalCursor)
+      || compact.journalCursor <= 0) continue;
     const epoch = db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
-    const fireplaceRevision = checkpoint.fireplaceRevision ?? 0, sensorRevision = checkpoint.sensorRevision ?? 0;
+    const fireplaceRevision = compact.fireplaceRevision ?? 0, sensorRevision = compact.sensorRevision ?? 0;
     if (![fireplaceRevision, sensorRevision].every(value => Number.isSafeInteger(value) && value >= 0)) continue;
     const latest = db.prepare(`SELECT journal_cursor,at,fireplace_revision,sensor_revision FROM learning_checkpoints
       WHERE input=? AND epoch=? ORDER BY journal_cursor DESC LIMIT 1`).get(input, epoch);
     const entry = db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND id=?')
-      .get(epoch, input, checkpoint.journalCursor);
+      .get(epoch, input, compact.journalCursor);
     if (!entry) continue;
     const sameRevision = latest?.fireplace_revision === fireplaceRevision && latest?.sensor_revision === sensorRevision;
     if (sameRevision && entry.at - latest.at < LEARNING_CHECKPOINT_INTERVAL.milliseconds) {
-      if (checkpoint.journalCursor - latest.journal_cursor < LEARNING_CHECKPOINT_INTERVAL.entries) continue;
+      if (compact.journalCursor - latest.journal_cursor < LEARNING_CHECKPOINT_INTERVAL.entries) continue;
       const count = db.prepare(`SELECT COUNT(*) n FROM (SELECT id FROM learning_journal_all
         WHERE epoch=? AND input=? AND id>? AND id<=? ORDER BY id LIMIT ?)`)
-        .get(epoch, input, latest.journal_cursor, checkpoint.journalCursor, LEARNING_CHECKPOINT_INTERVAL.entries).n;
+        .get(epoch, input, latest.journal_cursor, compact.journalCursor, LEARNING_CHECKPOINT_INTERVAL.entries).n;
       if (count < LEARNING_CHECKPOINT_INTERVAL.entries) continue;
     }
+    const checkpoint = decodeLearningCheckpoint(db, compact);
     if (!validLearningCheckpoint(checkpoint, decode(entry))) continue;
-    const inserted = saveLearningCheckpoint(db, { input, epoch, checkpoint });
+    // Store publication already inserted every prepared body in this transaction.
+    // Reuse its exact manifest here: the seal captures only this sparse insert,
+    // while the bodies remain ordinary pending row effects collected before it.
+    const inserted = insertLearningCheckpoint(db, { input, epoch, checkpoint, entry, payload: saved.value });
     if (inserted) captured.push(inserted);
   }
   return captured;

@@ -11,6 +11,7 @@ import { addSensorChange, revertSensorChange } from '../src/app/sensor-changes.j
 import { sample, start, W } from './helpers/recovery-fixture.js';
 import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
+import { decodeLearningCheckpoint } from '../src/storage/learning-checkpoint-storage.js';
 
 function setup(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-checkpoint-cache-'));
@@ -36,7 +37,11 @@ test('cache snapshots a committed boundary, permits later inputs and atomically 
   const sparse = store.db.prepare('SELECT journal_cursor,payload FROM learning_checkpoints').all();
   assert.equal(sparse.length, 1);
   assert.equal(sparse[0].journal_cursor, expected.journalCursor);
-  assert.deepEqual(JSON.parse(sparse[0].payload), expected);
+  const persisted = JSON.parse(sparse[0].payload);
+  assert.equal(persisted.checkpointStorageVersion, 1);
+  assert.equal(Object.hasOwn(persisted, 'samples'), false);
+  assert.deepEqual(decodeLearningCheckpoint(store.db, persisted), expected,
+    'the compact sparse cache restores the exact original prepared working set');
   const reopened = new Store(store.path, { readOnly: true });
   try {
     assert.deepEqual(replayLearningJournal(reopened, 'mqtt', reopened.getState('adaptive:mqtt'),

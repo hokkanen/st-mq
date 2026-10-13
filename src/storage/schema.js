@@ -1,7 +1,7 @@
 import { RECOVERY_DEPENDENCY_SCHEMA } from '../recovery/dependencies.js';
 import { journalSchema } from './journal-schema.js';
 // One current schema. Pre-production databases are never migrated.
-export const SCHEMA_VERSION = 29;
+export const SCHEMA_VERSION = 30;
 // Original source rows remain immutable evidence. The active views select the
 // current recovery interpretation without erasing history or changing local IDs.
 export const RECOVERABLE_TABLES = ['annotations', 'counters', 'energy_audits', 'events',
@@ -78,6 +78,11 @@ CREATE TABLE learning_cycles (
  id TEXT PRIMARY KEY, input TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER,
  status TEXT NOT NULL, payload TEXT NOT NULL);
 CREATE TABLE learning_epochs (input TEXT PRIMARY KEY, epoch TEXT NOT NULL);
+-- A separate digest index keeps lookup keys small. WITHOUT ROWID would put the
+-- large sample body in the key B-tree and reread overflow pages during seeks.
+CREATE TABLE learning_checkpoint_samples (
+ digest TEXT NOT NULL PRIMARY KEY CHECK(length(digest)=64 AND digest NOT GLOB '*[^0-9a-f]*'),
+ payload TEXT NOT NULL CHECK(json_valid(payload)));
 CREATE TABLE learning_checkpoints (
  input TEXT NOT NULL,epoch TEXT NOT NULL,journal_cursor INTEGER NOT NULL REFERENCES learning_journal_entries(id) ON DELETE CASCADE,
  at INTEGER NOT NULL,fireplace_revision INTEGER NOT NULL,sensor_revision INTEGER NOT NULL,history_selection TEXT NOT NULL,

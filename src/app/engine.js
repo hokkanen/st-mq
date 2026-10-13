@@ -370,7 +370,8 @@ export class Engine {
       onReady: () => {
         // Publish between controller updates. Waiting for a quiet tick can
         // starve a correction when each update contributes another input.
-        void this.runWrite(() => this.reconcileFireplace()).catch(error => this.store.writeHealth.failure(error));
+        void this.runWrite(() => this.reconcileFireplace(), { priority: 'control' })
+          .catch(error => this.store.writeHealth.failure(error));
       } });
   }
   reconcileFireplace() {

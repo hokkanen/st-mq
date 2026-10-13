@@ -5,14 +5,17 @@ import { fireplaceRevision } from './fireplace.js';
 import { fireplaceLearningContext } from './fireplace-inputs.js';
 import { sensorLearningContext, sensorRevision } from './sensor-inputs.js';
 import { findLearningPrefix, withPrefixRevisions } from '../recovery/learning-prefix.js';
+import { decodeLearningCheckpoint, withLearningCheckpointRead } from '../storage/learning-checkpoint-storage.js';
 
 // This connection cannot migrate schemas, alter events, or publish checkpoints.
 const db = workerData.dbPath === ':memory:' ? null : new DatabaseSync(workerData.dbPath, { readOnly: true });
 if (db) db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=5000;');
-const store = db && { db, getState: key => {
+const store = db && { db, getState: key => withLearningCheckpointRead(db, () => {
   const row = db.prepare('SELECT value FROM state WHERE key=?').get(key);
-  return row ? JSON.parse(row.value) : null;
-} };
+  if (!row) return null;
+  const value = JSON.parse(row.value);
+  return key.startsWith('adaptive:') ? decodeLearningCheckpoint(db, value) : value;
+}) };
 let checkpoint = null, source = null, processed = 0, selection = null;
 const currentEpoch = () => db?.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(workerData.input)?.epoch ?? 'original';
 const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,

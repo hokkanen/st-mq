@@ -289,7 +289,7 @@ still withhold readiness for further commands, and physical charging or stopping
 requires its own fresh measurement.
 
 Pre-1.0 native state is not migrated. The current charging state uses version 7
-and database schema 29; the physical adapter uses its own explicitly scoped
+and database schema 30; the physical adapter uses its own explicitly scoped
 current state. First initialization with no saved charging runtime state in any
 current input environment defaults
 to Automatic ON for both chargers and Balanced priority, bound to the configured

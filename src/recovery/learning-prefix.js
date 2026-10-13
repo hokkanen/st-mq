@@ -1,7 +1,8 @@
-import { validLearningCheckpoint, learningVersion, learningCheckpointDigest } from '../app/committed-learning.js';
+import { validLearningCheckpoint, learningVersion, learningCheckpointDigest, LEARNING_ALGORITHM } from '../app/committed-learning.js';
 import { yieldToController } from './scheduler.js';
 import { journalBase, resolveChange, reverseChanges } from '../storage/journal.js';
 import { sensorLearningContext } from '../app/sensor-inputs.js';
+import { decodeLearningCheckpoint } from '../storage/learning-checkpoint-storage.js';
 
 const decode=row=>({id:row.id,key:row.key,kind:row.kind,at:row.at,algorithmVersion:row.algorithm_version,
   configVersion:row.config_version===null?null:JSON.parse(row.config_version),
@@ -85,10 +86,15 @@ async function findPinnedLearningPrefix(store,{input,epoch,earliest,fireplaceRev
     const matches=affected>=earliest;
     revisions.set(key,matches);return matches;
   };
-  const inspect=(checkpoint,savedInEpoch,savedSelection)=>{
-    if(!validLearningCheckpoint(checkpoint) || !samePrefixSources(checkpoint,savedInEpoch,savedSelection)) return null;
-    const row=db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND id=?').get(epoch,input,checkpoint.journalCursor);
-    if(!row || row.at>=earliest || !validLearningCheckpoint(checkpoint,decode(row))) return null;
+  const eligible=(compact,savedInEpoch,savedSelection)=>{
+    if(!compact || compact.algorithmVersion!==LEARNING_ALGORITHM
+      || !Number.isSafeInteger(compact.journalCursor) || compact.journalCursor<=0
+      || typeof compact.journalHash!=='string' || typeof compact.checkpointDigest!=='string') return null;
+    const row=db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND id=?').get(epoch,input,compact.journalCursor);
+    if(!row || row.at>=earliest || row.algorithm_version!==LEARNING_ALGORITHM) return null;
+    const entry=decode(row);
+    if(compact.configVersion!==entry.configVersion || compact.journalEntryHash!==learningVersion(entry)
+      || !samePrefixSources(compact,savedInEpoch,savedSelection)) return null;
     const ranges=learningPrefixRanges(db,input,epoch,row.id);
     // A context/episode may be committed after a later-timed sample. Checking
     // only the checkpoint's final entry time would reuse already-affected
@@ -99,13 +105,31 @@ async function findPinnedLearningPrefix(store,{input,epoch,earliest,fireplaceRev
       if(latest>=earliest) return null;
     }
     if(savedInEpoch!==epoch && learningVersion(ranges)!==learningVersion(learningPrefixRanges(db,input,savedInEpoch,row.id))) return null;
-    return {checkpoint,cursor:row.id,at:row.at,ranges};
+    return {entry,cursor:row.id,at:row.at,ranges};
+  };
+  const inspect=(compact,savedInEpoch,savedSelection,{optional=false}={})=>{
+    // A checkpoint can contain megabytes of prepared samples. Metadata proves
+    // whether this boundary/source interpretation could be reused before any
+    // sample bodies are read or hashed; full integrity remains mandatory for
+    // the candidate actually admitted as a learning prefix.
+    const candidate=eligible(compact,savedInEpoch,savedSelection);
+    if(!candidate) return null;
+    let checkpoint;
+    try {checkpoint=decodeLearningCheckpoint(db,compact);}
+    catch(error) {
+      if(optional && ['database_integrity_failed','database_state_incompatible'].includes(error.code)) return null;
+      throw error;
+    }
+    if(!validLearningCheckpoint(checkpoint,candidate.entry)) return null;
+    const {entry,...prefix}=candidate;
+    return {checkpoint,...prefix};
   };
   const selectedEpoch=db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
-  const current=inspect(store.getState(`adaptive:${input}`),selectedEpoch,selection);
-  if(current) return current;
-  const base=journalBase(db),key=`adaptive:${input}`;
+  const key=`adaptive:${input}`;
   let state=db.prepare('SELECT * FROM state WHERE key=?').get(key) ?? null;
+  const current=state&&inspect(JSON.parse(state.value),selectedEpoch,selection);
+  if(current) return current;
+  const base=journalBase(db);
   let epochState=db.prepare('SELECT * FROM learning_epochs WHERE input=?').get(input) ?? null;
   let selectionState=db.prepare('SELECT * FROM history_selection WHERE id=1').get();
   const epochChanges=reverseChanges(db,{after:base,table:'learning_epochs',key:[input]});
@@ -125,10 +149,10 @@ async function findPinnedLearningPrefix(store,{input,epoch,earliest,fireplaceRev
       selectionChange=selectionChanges.next();
     }
     if(state) {
-      const checkpoint=JSON.parse(state.value);
-      if(checkpoint?.checkpointDigest!==lastDigest) {
-        lastDigest=checkpoint?.checkpointDigest;
-        const prefix=inspect(checkpoint,epochState?.epoch ?? 'original',selectionState?.generation);
+      const compact=JSON.parse(state.value);
+      if(compact?.checkpointDigest!==lastDigest) {
+        lastDigest=compact?.checkpointDigest;
+        const prefix=inspect(compact,epochState?.epoch ?? 'original',selectionState?.generation);
         if(prefix) return prefix;
       }
     }
@@ -141,9 +165,9 @@ async function findPinnedLearningPrefix(store,{input,epoch,earliest,fireplaceRev
   for(const row of db.prepare(`SELECT epoch,history_selection,payload FROM learning_checkpoints
     WHERE input=? AND at<? ORDER BY at DESC,journal_cursor DESC`)
     .iterate(input,earliest)) {
-    let checkpoint;
-    try { checkpoint=JSON.parse(row.payload); } catch { continue; }
-    const prefix=inspect(checkpoint,row.epoch,row.history_selection);
+    let compact;
+    try { compact=JSON.parse(row.payload); } catch { continue; }
+    const prefix=inspect(compact,row.epoch,row.history_selection,{optional:true});
     if(prefix) return prefix;
     if(++candidates%16===0) await yieldControl();
   }

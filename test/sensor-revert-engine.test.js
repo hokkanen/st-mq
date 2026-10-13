@@ -14,6 +14,7 @@ import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
 import { sensorLearningContext } from '../src/app/sensor-inputs.js';
 import { revertSensorChange } from '../src/app/sensor-changes.js';
 import { temperatureReadingStatus } from '../chart/provider-status.js';
+import { decodeLearningCheckpoint, withLearningCheckpointRead } from '../src/storage/learning-checkpoint-storage.js';
 
 const start = Date.parse('2026-09-10T12:00:00Z'), HOUR = 3_600_000;
 const pause = () => new Promise(resolve => setTimeout(resolve, 10));
@@ -43,10 +44,11 @@ function fixture(t) {
   appendLearningRecord(store, config.input, 'context', { timestamp: now - HOUR }, { config: engine.control, seed });
   const initial = structuredClone(engine.readAdaptive(now));
   const observer = new DatabaseSync(path, { readOnly: true });
-  const externalState = key => {
+  const externalState = key => withLearningCheckpointRead(observer, () => {
     const row = observer.prepare('SELECT value FROM state WHERE key=?').get(key);
-    return row ? JSON.parse(row.value) : null;
-  };
+    const value = row ? JSON.parse(row.value) : null;
+    return key.startsWith('adaptive:') ? decodeLearningCheckpoint(observer, value) : value;
+  });
   t.after(async () => {
     await engine.charging.close();
     await engine.closeFireplace(); engine.executor.closed = true; clearTimeout(engine.executor.timer);

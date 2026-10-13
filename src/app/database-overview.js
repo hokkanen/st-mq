@@ -527,14 +527,19 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['recovery_dependencies', 'Recovery source references', 'Derived references locate learning and assessments affected by a correction.', 'derived', 'NULL'],
     ['learning_epoch_segments', 'Preserved learning prefixes', 'Compact ranges reuse unaffected learning history before the checkpoint used for a correction.', 'history', 'NULL'],
     ['learning_checkpoints', 'Sparse learning checkpoints', 'Validated replay caches preserve efficient recovery after transaction patches expire. Immutable learning inputs remain the reconstruction source.', 'derived', 'at'],
+    ['learning_checkpoint_samples', 'Shared prepared learning samples', 'Exact normalized fitting samples are saved once per distinct value and shared by current and sparse checkpoints, including alternate correction interpretations.', 'derived', 'NULL'],
   ];
   const journalCounts = Object.fromEntries(journalTables.map(([table,,, ,time])=>[table,aggregate(table,time)]));
   add('transactions', 'Transaction history and retained branches',
     'Transaction patches have bounded retention. Durable checkpoint advancement releases older entries while required application history remains intact. Archived divergent evidence remains available for explicit recovery. These records are not additional measured observations.',
     journalTables.map(([table,label,description,retention,time])=>item(table,label,description,journalCounts[table], {
       retention, dateBasis: time==='NULL' ? 'no independent timestamps stored' : 'transaction time',
-      writeBehavior: retention==='derived' ? 'Maintained with the owning source record.' : 'Saved atomically with the transaction or explicit rejoin.',
-      retentionDescription: retention==='mixed' ? 'Bounded transaction suffix; cleanup preserves the durable checkpoint and required application history.'
+      writeBehavior: table==='learning_checkpoint_samples' ? 'Once per distinct prepared sample value, atomically with checkpoint publication.'
+        : table==='learning_checkpoints' ? 'Sparse replay caches saved at committed learning boundaries.'
+        : retention==='derived' ? 'Maintained with the owning source record.' : 'Saved atomically with the transaction or explicit rejoin.',
+      retentionDescription: ['learning_checkpoints','learning_checkpoint_samples'].includes(table)
+        ? 'Derived replay caches remain retained for current and historical checkpoints; no automatic expiry. Original learning inputs remain the reconstruction source.'
+        : retention==='mixed' ? 'Bounded transaction suffix; cleanup preserves the durable checkpoint and required application history.'
         : retention==='history' ? 'Retained evidence; no automatic expiry.' : 'Replaced with the current committed value.' })));
 
   // Physical table accounting is separate from logical dataset counts above:

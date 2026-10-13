@@ -120,6 +120,24 @@ full checks are measured separately from routine operation; cache-dependent timi
 alone is not proof of bounded I/O. These are controlled Linux fixtures, not
 qualification of physical Raspberry Pi storage or household failover.
 
+Compact learning storage is covered by `test/learning-checkpoint-storage.test.js`,
+`test/learning-checkpoint-archive.test.js`, `test/learning-checkpoints.test.js`
+and `test/journal-peer-audit.test.js`. They check exact normalized values,
+independent duplicate samples, coherent hydration, insert-only peer bodies,
+dependency arrival order, atomic rejection and retained divergent references.
+The cache, Engine and recovery publication suites retain restart, control intent,
+source correction and recovery revert/restore behavior. Prefix tests reject
+unsuitable metadata before fetching prepared bodies, allow journal reconstruction
+when a sparse cache is unavailable, and propagate unexpected database failures.
+`test/extended/learning-checkpoint-storage-scale.test.js` compares accumulated
+logical cache payloads across 96 segmented learning windows and measures
+fresh-process hydration, one new window and incremental pairing over the same
+working set in databases with 4 and 128 MiB of unrelated synthetic history.
+This separates shared-body and sparse-manifest growth from unchanged source
+history; it is not an annual total-size forecast or a cold operating-system-cache
+benchmark. The cross-runtime suite also transfers current-algorithm compact
+learning checkpoints and independently verifies them on both runtimes.
+
 `test/extended/adaptive-journal-scale.test.js` checks sustained constant recording,
 SQL no-ops, compact edits to large state, concurrent full verification and an
 enrolled peer returning after several transaction-retention cycles. The

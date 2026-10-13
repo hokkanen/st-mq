@@ -422,6 +422,14 @@ configured-peer checkpoint and a consolidated map of changed rows; see
 retain one original baseline and its current value, while deletions retain a
 tombstone until acknowledgement. The map survives short transaction-journal
 compaction, so offline duration alone never requires a full database copy.
+Learning cache manifests and their shared prepared sample bodies participate in
+the same changed-row transfer. A receiving cache must resolve its exact referenced
+bodies; compact storage does not introduce a full-copy fallback or permission to
+accept a partial model. Explicit history recovery remaps source evidence and
+reconstructs the target model rather than copying donor cache references.
+New prepared bodies are validated during transfer; affected manifests resolve
+their dependencies after all changed rows arrive. Existing immutable bodies at
+the checked base are verified when hydrated or during an explicit full check.
 Each transfer checks the shared checkpoint, expected previous row values and the
 complete target content fingerprint. Its rows and target checkpoint commit
 atomically. Incomplete frames and disconnected transfers leave the previous

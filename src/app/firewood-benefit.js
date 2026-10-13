@@ -6,6 +6,7 @@ import { LEARNING_ALGORITHM, learningVersion, validLearningCheckpoint } from './
 import { fireplaceLearningContext } from './fireplace-inputs.js';
 import { fireplaceIntegral, fireplaceBurnGroups, FIREPLACE_HORIZON_MS } from '../domain/fireplace.js';
 import { firewoodScenarios, advanceFirewoodPair } from '../domain/firewood-benefit.js';
+import { decodeLearningCheckpoint, withLearningCheckpointRead } from '../storage/learning-checkpoint-storage.js';
 
 const HOUR = 3_600_000, DAY = 24 * HOUR, WINDOW = 15 * 60_000;
 const finite = Number.isFinite;
@@ -38,7 +39,7 @@ export function getFirewoodBenefit(args) {
   const { range, now = Date.now() } = args;
   if (!range || !finite(range.from) || !finite(range.to) || range.to <= range.from || !finite(now))
     throw new TypeError('A finite firewood benefit period is required');
-  try { return computeFirewoodBenefit({ ...args, now }); }
+  try { return withLearningCheckpointRead(args.store.db, () => computeFirewoodBenefit({ ...args, now })); }
   catch {
     let context = null;
     try { context = fireplaceLearningContext(args.store, args.input, undefined, now); } catch { /* No readable source. */ }
@@ -64,7 +65,7 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
   if (cache.get(store.db)?.key === key) return refreshResult(cache.get(store.db), range, now, futureIntervals, context);
   let checkpoint = null;
   try {
-    const saved = checkpointRow ? JSON.parse(checkpointRow.value) : null;
+    const saved = checkpointRow ? decodeLearningCheckpoint(store.db, JSON.parse(checkpointRow.value)) : null;
     const tailRow = saved?.journalCursor ? store.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id=?').get(input, saved.journalCursor) : null;
     if (tailRow && validLearningCheckpoint(saved, decode(tailRow))
       && (saved.fireplaceRevision ?? 0) === context.fireplaceRevision) checkpoint = saved;

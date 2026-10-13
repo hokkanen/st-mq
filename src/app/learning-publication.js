@@ -33,6 +33,10 @@ export function publishCorrection(store, input, candidate) {
 export function publishLearning({ store, input, kind, message, context = {}, signal, isCurrent = () => true,
   onPublish = () => {}, workerFactory = options => new Worker(new URL('./learning-publication-worker.js', import.meta.url), options) }) {
   const databaseId = store.checkpoint().databaseId, token = randomUUID();
+  // A ready correction is valid at an exact journal head. Admit this bounded
+  // publication handoff before further ordinary learning, or a continuously
+  // changing controller can overtake every candidate. Existing queue fairness
+  // still admits normal work; source/head/authority checks remain unchanged.
   return store.runPublication(async () => {
     const cancelled = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
     const lifetime = AbortSignal.any([store.writeQueue.shutdown.signal, ...(signal ? [signal] : [])]);
@@ -89,5 +93,5 @@ export function publishLearning({ store, input, kind, message, context = {}, sig
     }
     if (error) throw error;
     return null;
-  }, { signal, isCurrent });
+  }, { signal, isCurrent, priority: kind === 'correction' ? 'control' : 'normal' });
 }
