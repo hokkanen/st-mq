@@ -16,6 +16,7 @@ import { ownedDirectory, publishSnapshot } from '../src/replication/publication.
 import { acceptPeerPublication, applyPeerPublication, checkpointMetadata, peerPublicationBoundary } from '../src/replication/journal-publication.js';
 import { PeerTransfers, peerOperation, receivePeerTransfer } from '../src/replication/coalesced.js';
 import { acceptPeerCheckpoint, applyPeerTransfer, peerAnchor, preparePeerTransfer, peerTransferRows } from '../src/storage/journal-peer.js';
+import { fixture as jointFixture } from './helpers/charging-joint-fixture.js';
 
 function savedCharging(at) {
   const settings = chargingSettings({});
@@ -25,12 +26,12 @@ function savedCharging(at) {
       control: { phase: 'off', released: false }, telemetry: {} })),
     controls: { priority: 'balanced', revision: 1 }, coordination: null, error: null } };
 }
-async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'stmq-transfer-clock-')), at = Date.now() - 10_000;
+async function fixture(t, { at = Date.now() - 10_000, saved = savedCharging(at) } = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'stmq-transfer-clock-'));
   const source = new Store(join(root, 'source.sqlite'));
   t.after(async () => { try { source.close(); } catch {} await rm(root, { recursive: true, force: true }); });
   source.event('decision', { input: 'mqtt' }, at);
-  writeChargingRuntime(source, 'charging:mqtt', savedCharging(at), { at });
+  writeChargingRuntime(source, 'charging:mqtt', saved, { at });
   await peerOperation('enroll', { dbPath: source.path });
   const directory = join(root, 'replica');
   await ownedDirectory(directory, '.st-mq-replica');
@@ -73,7 +74,55 @@ async function assertReadableCharging(t, publication) {
   const status = app.status();
   assert.equal(status.charging.chargers.length, 2);
   assert.equal(status.charging.error, null);
+  return status;
 }
+
+test('batched production-shaped charging views retain their date through pair catch-up and a cadence publication racing the head query', async t => {
+  const live = await jointFixture(t);
+  await live.connect('charger1'); live.runtime.persist();
+  const saved = readChargingRuntime(live.store, live.runtime.key);
+  const f = await fixture(t, { at: live.now, saved }), { result } = manager(f);
+  const next = structuredClone(saved);
+  const refresh = at => {
+    next.view.chargers[0].telemetry.powerReceivedAt = at;
+    next.view.chargers[0].telemetry.supply.observedAt = at;
+    next.view.chargers[1].values.currentA.readback.requestedAt = at;
+    next.view.vehicleFeeds[0].reception.lastValidLiveAt = at;
+    next.chargers.charger1.progress.creditKwh += .01;
+    writeChargingRuntime(f.source, 'charging:mqtt', next, { at });
+  };
+  refresh(f.at + 5000);
+  const deferred = readChargingRuntime(f.source, 'charging:mqtt');
+  assert.equal(deferred.view.recordedAt, f.at);
+  assert.deepEqual(deferred.chargers, next.chargers, 'durable charging state commits while the whole view waits');
+  const firstQuery = await checkpointMetadata({ dbPath: f.source.path, checkpoint: f.source.checkpoint(),
+    claim: f.claim, sequence: 1, clock: () => f.at + 5000 });
+  preparePeerTransfer(f.source.db, { after: f.publication.checkpoint, clock: () => f.at + 5000 });
+  const first = await result.installCheckpoint(firstQuery);
+  assert.equal((await assertReadableCharging(t, first)).charging.snapshotAt, f.at,
+    'a newer publication keeps the independently dated batched view');
+
+  refresh(f.at + 29_000);
+  assert.equal(readChargingRuntime(f.source, 'charging:mqtt').view.recordedAt, f.at);
+  const queried = await checkpointMetadata({ dbPath: f.source.path, checkpoint: f.source.checkpoint(),
+    claim: f.claim, sequence: 2, clock: () => f.at + 29_000 });
+  writeChargingRuntime(f.source, 'charging:mqtt', next, { at: f.at + 30_000 });
+  assert.equal(readChargingRuntime(f.source, 'charging:mqtt').view.recordedAt, f.at + 30_000);
+  const frozen = preparePeerTransfer(f.source.db, { after: first.checkpoint, clock: () => f.at + 30_000 });
+  const publication = await result.installCheckpoint(queried);
+  assert(publication.checkpoint.sequence > queried.checkpoint.sequence);
+  assert.equal(publication.sourceAt, frozen.sourceAt);
+  assert.equal((await assertReadableCharging(t, publication)).charging.snapshotAt, f.at + 30_000);
+  const replica = new Store(publication.dbPath, { readOnly: true });
+  try {
+    const current = readChargingRuntime(replica, 'charging:mqtt');
+    assert.deepEqual(current.chargers, next.chargers);
+    assert.equal(current.view.chargers[0].telemetry.powerReceivedAt, f.at + 29_000);
+    assert.equal(current.view.chargers[1].values.currentA.readback.requestedAt, f.at + 29_000);
+    assert.equal(current.view.chargers[1].values.currentA.measuredAt, saved.view.chargers[1].values.currentA.measuredAt,
+      'persisted copying and replication preserve the original native instruction clock');
+  } finally { replica.close(); }
+});
 
 test('pair publication dates a later copied checkpoint from its frozen transfer, keeping the charging guard', async t => {
   const f = await fixture(t);
