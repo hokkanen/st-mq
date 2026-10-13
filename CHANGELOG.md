@@ -15,6 +15,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   readback and pending writes stay uncertain; newer Stop and schedule instructions
   retain their independent priority.
 
+- History recovery accepts fresh report spans that genuinely extend the same
+  recorded source prefix, so a usable learning window can replace a missing
+  local window. Original rows remain separate and reversible. Historical imports
+  no longer hide newer local reporting merely because they were inserted later.
+
 - A Tesla stopped 5 A report received while a same-connection Stop awaits its reply
   remains unknown instead of becoming a lasting vehicle current limit. Earlier
   qualified limits keep their original evidence; zero and independent requests

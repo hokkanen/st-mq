@@ -1,5 +1,6 @@
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
+import { selectedCoverageSpan } from '../storage/coverage-history.js';
 
 export const HEAT_PUMP_CONFIG_EVENT = 'heat-pump-power-config';
 const AGE = H66_MAX_AGE_MS, HOUR = 3_600_000;
@@ -70,8 +71,8 @@ function* coverage(db, signal, from, to, input, now) {
     c.source_time AS confirmed_at,c.observation_id,o.value,o.unit,o.quality,o.raw
     FROM active_recorder_coverage c LEFT JOIN active_observations o ON o.id=c.observation_id
     WHERE c.signal=? AND c.source=? AND c.end_at>=? AND c.start_at<? AND c.end_at<=?
-    AND (o.received_at IS NULL OR o.received_at<=?)
-    ORDER BY c.start_at,c.id`).iterate(signal, source, from - AGE, to, now, now)) {
+    AND (o.received_at IS NULL OR o.received_at<=?) AND ${selectedCoverageSpan('c', '?')}
+    ORDER BY c.start_at,c.id`).iterate(signal, source, from - AGE, to, now, now, now)) {
     // Do not use a span whose latest confirmation arrived after the query's now;
     // its compact record cannot prove when the intermediate polls happened.
     const until = Number.isFinite(row.confirmed_at) ? Math.min(row.end_at, row.confirmed_at, now) + AGE : row.start_at;

@@ -155,6 +155,36 @@ contribution ownership and source fingerprints. Records that were already local
 are not owned by the recovery, and retrying a donor does not duplicate its evidence.
 The recovery list includes interrupted operations with accepted contributions.
 
+The recorder can extend a fresh source span without saving another observation.
+A frozen donor continuation of the exact same original observation and span
+start is additional evidence when its source clock, availability endpoint and report
+count advance consistently over every overlapping local prefix. Recovery keeps
+the complete donor span as a separately owned contribution; it neither rewrites
+the original prefix nor divides an overlapping interval. Positive fresh report
+spans are distinct from zero-sample admission boundaries, unavailable transitions
+and contradictory observations, which retain the existing conflict rules. Retained
+or cached reports and acquisition-only or audit-only inputs cannot establish this
+positive fresh continuation.
+Required journal references may then resolve to that admitted continuation, so
+an intact usable donor window can replace a missing local window.
+
+Coverage readers order actual source intervals by their starts, retaining ID
+precedence for contrary transitions at the same start. Equivalent fresh spans
+of the same original observation contribute one continuous evidence stream;
+the most complete genuine source/availability continuation remains usable even if
+its branch has fewer reports. Original report counts are never summed or
+rewritten. A later local continuation or post-gap recording retains its original
+ownership and cannot be masked by a higher-ID historical recovery row.
+Original receipt and deferred-admission clocks remain separate. As-of readers
+retain their current endpoint admission rules: a later compact endpoint cannot
+hide an independently preserved known endpoint or renew an earlier source clock.
+
+This corrects current evidence capture and recovery reference admission. Existing
+committed numerical inputs and the ordered learning update are unchanged; replay
+does not re-query these mutable coverage spans to reinterpret saved inputs.
+The current algorithm identifier, journal/schema and same-version checkpoints
+remain unchanged. No prior algorithm or payload decoder is introduced.
+
 Revert and restore are explicit, reviewed source-selection revisions. Revert
 excludes an operation's contributions and dependent learning; it never deletes
 original observations, events or journal payloads. Later local recordings and

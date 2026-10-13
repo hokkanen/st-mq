@@ -1,5 +1,6 @@
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
+import { selectedCoverageSpan, nextCoverageStart, nextCoverageId } from '../storage/coverage-history.js';
 
 const EQUIPMENT_SIGNALS = ['compressor_active', 'dhw_routing', 'operating_mode', 'auxiliary_output'];
 function sourceReportAge(row,raw) {
@@ -20,15 +21,13 @@ function* availabilityRows(store,{from,to,input,signals}) {
   const scope=input==='simulated' ? "c.source='simulation'" : "c.source<>'simulation'";
   const sql=`WITH gaps AS (
     SELECT c.* FROM active_recorder_coverage c WHERE c.status<>'fresh' AND c.start_at<?
-      AND COALESCE((SELECT n.start_at FROM active_recorder_coverage n WHERE n.source=c.source AND n.device=c.device
-        AND n.signal=c.signal AND n.id>c.id ORDER BY n.id LIMIT 1),?)>=?
+      AND COALESCE(${nextCoverageStart('c')},?)>=?
       AND c.signal IN (${wanted.map(()=>'?').join(',')}) AND ${scope}
   ), transitions AS (
     SELECT c.id,c.source,c.device,c.signal,c.status,MAX(c.start_at,?) AS at,c.observation_id FROM gaps c
     UNION ALL
     SELECT f.id,f.source,f.device,f.signal,f.status,f.start_at AS at,f.observation_id
-      FROM gaps c JOIN active_recorder_coverage f ON f.id=(SELECT n.id FROM active_recorder_coverage n
-        WHERE n.source=c.source AND n.device=c.device AND n.signal=c.signal AND n.id>c.id ORDER BY n.id LIMIT 1)
+      FROM gaps c JOIN active_recorder_coverage f ON f.id=${nextCoverageId('c')}
       WHERE f.status='fresh' AND f.start_at>=? AND f.start_at<?
   ) SELECT t.*,o.unit,o.value,o.quality,o.raw,o.source_time AS original_source_time
     FROM transitions t LEFT JOIN active_observations o ON o.id=t.observation_id ORDER BY t.at,t.id`;
@@ -57,10 +56,10 @@ function* confirmedReportRows(store,{from,to,input,signals,now=to}) {
   const wanted=[...signals];
   if (!wanted.length) return;
   const sql=`SELECT c.*,o.value,o.unit,o.quality,o.raw,o.source_time AS original_source_time,
-    (SELECT n.start_at FROM active_recorder_coverage n WHERE n.source=c.source AND n.device=c.device
-      AND n.signal=c.signal AND n.id>c.id ORDER BY n.id LIMIT 1) AS next_start
+    ${nextCoverageStart('c', 'history_clock.known_at', true)} AS next_start
     FROM active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id
-    WHERE c.signal IN (${wanted.map(()=>'?').join(',')}) AND c.start_at<=?
+    CROSS JOIN (SELECT ? AS known_at) history_clock
+    WHERE c.signal IN (${wanted.map(()=>'?').join(',')}) AND c.start_at<=? AND ${selectedCoverageSpan('c', 'history_clock.known_at', true)}
       AND ${input==='simulated' ? "(c.source='simulation' OR c.source='controller-estimate' AND c.device='simulated')"
         : "c.source<>'simulation' AND NOT(c.source='controller-estimate' AND c.device='simulated')"}
       AND o.received_at<=?
@@ -74,7 +73,7 @@ function* confirmedReportRows(store,{from,to,input,signals,now=to}) {
     ORDER BY c.start_at,c.id`;
   const pending=[];
   const ordered=()=>pending.sort((a,b)=>a.source_time-b.source_time||a.id-b.id);
-  for (const row of store.db.prepare(sql).iterate(...wanted,Math.min(to,now),now,from)) {
+  for (const row of store.db.prepare(sql).iterate(now,...wanted,Math.min(to,now),now,from)) {
     ordered();
     while(pending.length&&pending[0].source_time<row.start_at) yield pending.shift();
     const raw=JSON.parse(row.raw),periodicAge=temperatureReportMaxAge({raw}),age=periodicAge??sourceReportAge(row,raw);

@@ -689,6 +689,13 @@ Repeated observations compact into coverage spans that distinguish fresh held
 values from unavailable/stale sources. The held historical value is what a later
 learner may read; discarded intermediate poll values cannot enter through those
 spans. Successful downloads of older timestamps do not renew source freshness.
+History recovery may retain a longer fresh span beside its exact shared source
+prefix. Readers select one continuous interpretation of those equivalent spans,
+using their genuine source/availability endpoints without adding report counts or
+duration twice. Independent local recording can continue the original lower-ID
+span; historical insertion order never substitutes for source-interval order or
+truncates a newer post-gap report. Unavailable and contrary transitions still
+terminate coverage at their own source boundary.
 SQLite transactions group energy phases, pending sums and acquisition checkpoints
 so retries cannot count an interval twice.
 

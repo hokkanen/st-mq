@@ -10,6 +10,7 @@ import { sensorBoundaries, affectsThermalLearning, sensorLearningContext } from 
 import { withSensorMeasurements } from './sensor-samples.js';
 import { estimateHeatPumpPerformance } from '../domain/heat-pump-performance.js';
 import { recordedEnergyGroups } from '../storage/energy-history.js';
+import { selectedCoverageSpan } from '../storage/coverage-history.js';
 import { validComfortReference, hasEstimatedIndoor } from '../control/learning.js';
 
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
@@ -79,7 +80,7 @@ function trajectory(store, signal, from, to, input, maxAge, minimumTime = -Infin
     AND received_at<=? AND ${scope} ORDER BY source_time,id`).all(signal, Math.max(from - maxAge, minimumTime), to, to).map(decode);
   const coverage = store.db.prepare(`SELECT c.*,c.source_time AS coverage_source_time,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,o.quality,o.raw
     FROM active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id
-    WHERE c.signal=? AND c.start_at<=? AND c.end_at>=? AND o.received_at<=?
+    WHERE c.signal=? AND c.start_at<=? AND c.end_at>=? AND o.received_at<=? AND ${selectedCoverageSpan('c')}
     AND ${input === 'simulated' ? "o.source='simulation'" : outdoor
       ? "o.source IN ('fmi','openmeteo')" : "o.source<>'simulation'"}
     ORDER BY c.start_at,c.id`).all(signal, to, from - maxAge, to);
