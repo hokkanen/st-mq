@@ -306,6 +306,15 @@ transaction execution and event-loop delay. Syscall tracing can attribute a wait
 but changes execution timing; retain the original failure alongside diagnostic
 runs. Do not weaken durability or raise a deadline simply to obtain a passing run.
 
+`test/storage-transaction-timing.test.js` injects bounded waits separately into
+the production journal seal and raw native COMMIT, checks attribution within the
+unchanged total, and exercises original-error rollback, failed BEGIN, nested
+savepoints and unreadable diagnostics. `test/storage-write-health-history.test.js`
+covers null/unmeasured stage counts, the 128-attempt bound and five-minute expiry;
+authenticated health and recording UI tests check the current public fields and
+honest checkpoint/sync labels. Synthetic waits establish timing boundaries, not
+Raspberry Pi filesystem performance or an isolated fsync cause.
+
 Pushes and pull requests run routine tests and builds on Node 22 and 24, the
 secret-history audit and the pinned Home Assistant Supervisor contract check
 below. Both Node jobs also run the deterministic learning-publication and

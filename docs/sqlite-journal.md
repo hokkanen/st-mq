@@ -73,6 +73,16 @@ Savepoint rollback discards captured effects. Explicit receiver apply/undo alrea
 validates and publishes these effects atomically, and disables redundant trigger
 staging only within that boundary.
 
+The main Store's memory-only diagnostics split the existing complete COMMIT
+duration into journal sealing and the raw SQLite COMMIT call. Sealing includes
+capture coalescing, validation, hashing, peer-index updates, retention and journal
+SQL; capture performed by row triggers remains within transaction-body timing.
+Raw SQLite COMMIT can include WAL synchronization and an automatic checkpoint;
+it is not an fsync-only measure. Unreached and uninstrumented bootstrap stages are
+null. The split changes no journal bytes, transaction boundaries, FULL/WAL
+settings, checkpoint policy, rollback or publication authority. Independent raw
+worker transactions remain outside the main Store health summary.
+
 The superseded transaction-by-transaction receiver/rewind path and its separate
 branch archive are removed. The recent suffix remains readable for verification
 and checkpoint lookup; all active peer application and rejoin use the same

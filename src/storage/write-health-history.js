@@ -6,7 +6,8 @@ const RETENTION = 7 * DAY;
 const EDGES = [0, .1, .25, .5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512,
   1000, 2000, 4000, 8000, 16000, 32000, 60000, 120000, 300000, 600000,
   1800000, 3600000, 10800000, DAY, RETENTION, Infinity];
-const METRICS = ['queueDelay', 'controlQueueDelay', 'normalQueueDelay', 'transactionDuration', 'commitDuration'];
+const METRICS = ['queueDelay', 'controlQueueDelay', 'normalQueueDelay', 'transactionDuration', 'commitDuration',
+  'journalSealDuration', 'nativeCommitDuration'];
 const COUNTERS = ['acceptedJobs', 'failedWrites', 'queueRejected', 'cancelledJobs', 'failedJobs',
   'postCommitFailures', 'transactionAttempts', 'committedTransactions', 'commandsNotSent'];
 const CATEGORIES = new Set(['save-failed', 'queue-refused', 'command-not-sent', 'follow-up-failed']);
@@ -159,6 +160,7 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
       if (value.committed) {
         bin.committedTransactions++;
         addMetric(bin.transactionDuration, value.totalMs); addMetric(bin.commitDuration, value.commitMs);
+        addMetric(bin.journalSealDuration, value.journalSealMs); addMetric(bin.nativeCommitDuration, value.nativeCommitMs);
       }
     },
     status(queue = {}) {

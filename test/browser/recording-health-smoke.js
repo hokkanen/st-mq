@@ -44,7 +44,8 @@ for (let index = 0; index < 12680; index++) {
   performanceRuntime.queue({ type: 'completed', priority, delayMs: index % 5000 === 0 ? 612 : priority === 'control' ? 1.6 : 3.3 });
   performanceRuntime.queue({ type: 'pending', pending: 0 });
   if (index < 11320) performanceRuntime.transaction({ committed: true,
-    totalMs: index % 3000 === 0 ? 540 : 17.2, commitMs: index % 3000 === 0 ? 410 : 12.1 });
+    totalMs: index % 3000 === 0 ? 540 : 17.2, commitMs: index % 3000 === 0 ? 410 : 12.1,
+    journalSealMs: index % 3000 === 0 ? 110 : 2.1, nativeCommitMs: index % 3000 === 0 ? 300 : 10 });
 }
 fixtureElapsed = 8 * 3600_000;
 const performanceHistory = performanceRuntime.status({ queued: 0, activeJobs: 0, oldestPendingMs: null });
@@ -171,7 +172,7 @@ window.setPerformance = state => {
     for(const window of Object.values(history.windows)) {
       window.coveredMs=history.elapsedMs;
       window.monitoredMs=history.elapsedMs;
-      for(const metric of ['queueDelay','controlQueueDelay','normalQueueDelay','transactionDuration','commitDuration'])
+      for(const metric of ['queueDelay','controlQueueDelay','normalQueueDelay','transactionDuration','commitDuration','journalSealDuration','nativeCommitDuration'])
         window[metric]={count:0,meanMs:null,p95Ms:null,maxMs:null};
       window.contention={episodes:0,totalMs:0,maxMs:0,active:false};
       for(const metric of ['peakPending','failedWrites','queueRejected','cancelledJobs','failedJobs','postCommitFailures','transactionAttempts','committedTransactions','commandsNotSent']) window[metric]=0;
@@ -477,6 +478,9 @@ try {
   assert.equal(await evaluate('requestCount'), await evaluate('beforePerformanceRequests'), 'Window selection makes no extra request');
   assert.equal(await evaluate("document.activeElement === document.getElementById('recording-performance-week') && document.getElementById('recording-performance-details').open"), true, 'Performance polling preserves focus and disclosure');
   assert.match(await evaluate("document.getElementById('recording-performance-current').textContent"), /^No queued operations$/);
+  assert.equal(await evaluate("document.getElementById('recording-performance-journalSeal-worst').textContent"), '110 ms');
+  assert.equal(await evaluate("document.getElementById('recording-performance-nativeCommit-worst').textContent"), '300 ms');
+  assert.match(await evaluate("document.getElementById('recording-performance-nativeCommit-samples').textContent"), /measured SQLite commits/);
   await evaluate("setPerformance('busy')");
   assert.match(await evaluate("document.getElementById('recording-performance-current').textContent"), /6 queued.*oldest 850 ms.*1 running/);
   assert.match(await evaluate("document.getElementById('recording-performance-waiting').textContent"), /writer lock.*600 ms so far/);
@@ -500,6 +504,8 @@ try {
   await capture('performance-stale-1440-dark');
   await evaluate("failRefresh=false; setPerformance('empty')");
   assert.equal(await evaluate("document.getElementById('recording-performance-queue-mean').textContent"), 'No samples');
+  assert.equal(await evaluate("document.getElementById('recording-performance-journalSeal-mean').textContent"), 'No samples');
+  assert.equal(await evaluate("document.getElementById('recording-performance-nativeCommit-mean').textContent"), 'No samples');
   assert.equal(await evaluate("document.getElementById('recording-performance-failed').textContent"), '0', 'Zero is observed only in covered time');
   await evaluate("setPerformance('reset')");
   assert.equal(await evaluate("document.getElementById('recording-performance-failed').textContent"), 'Not monitored');

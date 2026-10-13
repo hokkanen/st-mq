@@ -126,6 +126,8 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
     queue: timing(window?.queueDelay, 'completed queued operations'),
     transaction: timing(window?.transactionDuration, 'committed transactions'),
     commit: timing(window?.commitDuration, 'commits'),
+    journalSeal: timing(window?.journalSealDuration, 'measured seals'),
+    nativeCommit: timing(window?.nativeCommitDuration, 'measured SQLite commits'),
     controlQueue: timing(window?.controlQueueDelay, 'completed priority operations'),
     normalQueue: timing(window?.normalQueueDelay, 'completed normal operations'),
     contention: observed(contention?.episodes),
@@ -170,7 +172,7 @@ export function createStoragePerformance({ document, now = () => Date.now() }) {
     const data = $('recording-performance-data');
     if (!view.available && data.contains(document.activeElement)) root.querySelector(':scope > summary')?.focus({ preventScroll: true });
     data.hidden = !view.available;
-    for (const name of ['queue', 'transaction', 'commit', 'controlQueue', 'normalQueue']) {
+    for (const name of ['queue', 'transaction', 'commit', 'journalSeal', 'nativeCommit', 'controlQueue', 'normalQueue']) {
       for (const [key, value] of Object.entries(view[name])) set(`${name}-${key}`, value);
     }
     for (const name of ['contention', 'contentionDetail', 'peak', 'failed', 'rejected', 'commandsNotSent', 'committed', 'attempts', 'failedJobs', 'cancelled', 'postCommit']) set(name, view[name]);

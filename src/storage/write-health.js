@@ -28,13 +28,16 @@ export function createWriteHealth(clock = Date.now, queueStatus = null, { monoto
   const state = { startedAt: clock(), lastWriteAt: null, lastFailureAt: null,
     errorCode: null, failures: 0, failing: false };
   const recent = [], limit = 128;
+  const durations = ['beginMs', 'bodyMs', 'commitMs', 'totalMs'];
+  const stages = ['journalSealMs', 'nativeCommitMs'];
   let transactionCount = 0, committedCount = 0, lastTransactionAt = null;
   const timings = () => ({ count: transactionCount, committed: committedCount, lastAt: lastTransactionAt,
     sampleCount: recent.length, sampleLimit: limit,
-    ...Object.fromEntries(['beginMs', 'bodyMs', 'commitMs', 'totalMs'].map(key => {
-      const values = recent.map(row => row[key]).sort((a, b) => a - b);
+    ...Object.fromEntries([...durations, ...stages].map(key => {
+      const values = recent.map(row => row[key]).filter(Number.isFinite).sort((a, b) => a - b);
       return [key, { last: recent.at(-1)?.[key] ?? null, max: values.at(-1) ?? null,
-        p99: values.length ? values[Math.min(values.length - 1, Math.floor(values.length * 0.99))] : null }];
+        p99: values.length ? values[Math.min(values.length - 1, Math.floor(values.length * 0.99))] : null,
+        ...(stages.includes(key) ? { sampleCount: values.length } : {}) }];
     })) });
   return {
     success() { state.lastWriteAt = clock(); state.failing = false; },
@@ -58,9 +61,12 @@ export function createWriteHealth(clock = Date.now, queueStatus = null, { monoto
     },
     transaction(value) {
       if (typeof value?.committed !== 'boolean'
-        || ['beginMs', 'bodyMs', 'commitMs', 'totalMs'].some(key => !Number.isFinite(value[key]) || value[key] < 0)) return;
+        || durations.some(key => !Number.isFinite(value[key]) || value[key] < 0)
+        || stages.some(key => value[key] !== null && (!Number.isFinite(value[key]) || value[key] < 0))) return;
       transactionCount++; committedCount += Number(value.committed); lastTransactionAt = clock();
-      recent.push({ ...value }); if (recent.length > limit) recent.shift();
+      recent.push({ committed: value.committed,
+        ...Object.fromEntries([...durations, ...stages].map(key => [key, value[key]])) });
+      if (recent.length > limit) recent.shift();
       history.transaction(value);
     },
     queue(event) { history.queue(event); },

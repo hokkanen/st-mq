@@ -23,7 +23,7 @@ import { encodeLearningCheckpoint, decodeLearningCheckpoint, validateLearningChe
   validateLearningCheckpointSample, withLearningCheckpointRead } from './learning-checkpoint-storage.js';
 import { registerJournalFunctions } from './journal-codec.js';
 import { initializeJournal, installJournal, validateCheckpoint, readCheckpoint, checkpointAt,
-  commonCheckpoint, exportChanges, changedRecordKeys, journalBase, compactJournal } from './journal.js';
+  commonCheckpoint, exportChanges, changedRecordKeys, journalBase, compactJournal, journalCommitTiming } from './journal.js';
 export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
 
@@ -373,7 +373,8 @@ export class Store {
     // Diagnostic counters cannot introduce a new failure after a commit or
     // leave an opened transaction behind if the database becomes unreadable.
     const changesBefore = this.databaseChanges();
-    const timing = { beginMs: 0, bodyMs: 0, commitMs: 0, totalMs: 0, committed: false };
+    const timing = { beginMs: 0, bodyMs: 0, commitMs: 0, totalMs: 0,
+      journalSealMs: null, nativeCommitMs: null, committed: false };
     const transactionStarted = performance.now();
     const recordTiming = () => {
       timing.totalMs = performance.now() - transactionStarted;
@@ -403,7 +404,14 @@ export class Store {
       timing.bodyMs = performance.now() - bodyStarted;
       const commitStarted = performance.now();
       try { this.db.exec('COMMIT'); }
-      finally { timing.commitMs = performance.now() - commitStarted; }
+      finally {
+        timing.commitMs = performance.now() - commitStarted;
+        // Reading diagnostics cannot mask the commit's original outcome.
+        try {
+          const stages = journalCommitTiming(this.db);
+          if (stages) { timing.journalSealMs = stages.journalSealMs; timing.nativeCommitMs = stages.nativeCommitMs; }
+        } catch {}
+      }
       committed = true; timing.committed = true;
       if (changed) this.writeHealth.success();
     } catch (error) {

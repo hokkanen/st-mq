@@ -976,12 +976,15 @@ G_warming = G / 2</code>
                     <p id="recording-performance-scope" class="recording-health-evidence"></p>
                     <p>These statistics cover the main recording connection and its queue. Separate recovery, publication and checkpoint worker timings are outside this view; their writes can still compete for the same storage.</p>
                     <p>Write + commit is the time spent performing and committing a successful transaction. Commit only is included in that time; do not add the two. Approx. p95 estimates the duration that 95% of measured operations stayed within.</p>
+                    <p>Journal sealing and SQLite COMMIT are stages within Commit only. Sealing includes validation, hashing and journal SQL; SQLite COMMIT includes any synchronization and automatic checkpoint work. Neither isolates fsync. Unmeasured stages are excluded from their sample counts; separate worst durations need not belong to the same transaction.</p>
                     <table class="recording-performance-timings">
                       <caption class="sr-only">Successful transaction timings for the selected monitored period</caption>
                       <thead><tr><th scope="col">Timing</th><th scope="col">Average</th><th scope="col">Approx. p95</th><th scope="col">Worst</th></tr></thead>
                       <tbody>
                         <tr><th scope="row">Write + commit<small id="recording-performance-transaction-samples"></small></th><td data-label="Average" id="recording-performance-transaction-mean"></td><td data-label="Approx. p95" id="recording-performance-transaction-p95"></td><td data-label="Worst" id="recording-performance-transaction-worst"></td></tr>
                         <tr><th scope="row">Commit only<small id="recording-performance-commit-samples"></small></th><td data-label="Average" id="recording-performance-commit-mean"></td><td data-label="Approx. p95" id="recording-performance-commit-p95"></td><td data-label="Worst" id="recording-performance-commit-worst"></td></tr>
+                        <tr><th scope="row">Journal sealing<small id="recording-performance-journalSeal-samples"></small></th><td data-label="Average" id="recording-performance-journalSeal-mean"></td><td data-label="Approx. p95" id="recording-performance-journalSeal-p95"></td><td data-label="Worst" id="recording-performance-journalSeal-worst"></td></tr>
+                        <tr><th scope="row">SQLite COMMIT<small id="recording-performance-nativeCommit-samples"></small></th><td data-label="Average" id="recording-performance-nativeCommit-mean"></td><td data-label="Approx. p95" id="recording-performance-nativeCommit-p95"></td><td data-label="Worst" id="recording-performance-nativeCommit-worst"></td></tr>
                       </tbody>
                     </table>
                     <table class="recording-performance-timings recording-performance-priority">

@@ -17,6 +17,9 @@ const digest = value => createHash('sha256').update(JSON.stringify(value)).diges
 const fail = (code = 'database_journal_invalid') => { throw Object.assign(new Error('The transaction checkpoint could not be verified. Preserve the database and use full verification or an intact current-version backup.'), { code }); };
 const raw = db => connections.get(db) ?? { exec: db.exec.bind(db), prepare: db.prepare.bind(db) };
 export function journalConnection(db) { return raw(db); }
+// Only the latest instrumented COMMIT attempt. Bootstrap/unreached stages are
+// unknown; this is memory-only evidence, never part of the transaction format.
+export function journalCommitTiming(db) { return connections.get(db)?.commitTiming ?? null; }
 export function journalExclusive(db,operation) { return exclusive(db,operation); }
 export function journalReadRow(db,change) { return readRow(db,change); }
 export function journalApplyRow(db,change,reverse=false) { return applyRow(db,change,reverse); }
@@ -202,17 +205,27 @@ function mutable(sql) {
  * rollback; the seal and head are committed with those same effects. */
 export function installJournal(db) {
   if (connections.has(db)) return;
-  const state = { exec: db.exec.bind(db),prepare: db.prepare.bind(db),transaction: false };
+  const state = { exec: db.exec.bind(db),prepare: db.prepare.bind(db),transaction: false,commitTiming: null };
   connections.set(db,state);
   const capture=registerJournalFunctions(db);
   state.resetCaptureBudget=capture.reset;
   state.setCaptureEnabled=capture.setEnabled;
   state.exec('PRAGMA recursive_triggers=ON');
+  const commit = sql => {
+    const timing = state.commitTiming = { journalSealMs: null, nativeCommitMs: null };
+    const sealStarted = performance.now();
+    try { seal(db); }
+    finally { timing.journalSealMs = performance.now() - sealStarted; }
+    const nativeStarted = performance.now();
+    try { return state.exec(sql); }
+    finally { timing.nativeCommitMs = performance.now() - nativeStarted; }
+  };
   const atomic = operation => {
     if (state.transaction) return operation();
+    state.commitTiming=null;
     state.resetCaptureBudget();
     state.exec('BEGIN IMMEDIATE'); state.transaction=true;
-    try { const result = operation(); seal(db); state.exec('COMMIT'); return result; }
+    try { const result = operation(); commit('COMMIT'); return result; }
     catch (error) { try { state.exec('ROLLBACK'); } catch {} throw error; }
     finally { state.transaction=false; }
   };
@@ -230,14 +243,14 @@ export function installJournal(db) {
       fail('journal_transaction_boundary_invalid');
     if(/^SAVEPOINT\b/i.test(start) && !state.transaction) fail('journal_transaction_boundary_invalid');
     if (/^(?:BEGIN|SAVEPOINT)\b/i.test(start)) {
-      if(!state.transaction) state.resetCaptureBudget();
+      if(!state.transaction) { state.commitTiming=null; state.resetCaptureBudget(); }
       const result = state.exec(sql); state.transaction=true; return result;
     }
     if (/^(?:COMMIT|END)\b/i.test(start)) {
-      seal(db); const result=state.exec(sql); state.transaction=false; return result;
+      const result=commit(sql); state.transaction=false; return result;
     }
     if (/^ROLLBACK\b/i.test(start) && !/^ROLLBACK\s+TO\b/i.test(start)) {
-      const result=state.exec(sql); state.transaction=false; return result;
+      const result=state.exec(sql); state.transaction=false; state.commitTiming=null; return result;
     }
     if (/^(?:RELEASE|ROLLBACK\s+TO)\b/i.test(start) || parts.every(part=>/^PRAGMA\b/i.test(part))) return state.exec(sql);
     return atomic(() => state.exec(sql));

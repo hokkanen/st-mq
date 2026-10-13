@@ -2104,10 +2104,19 @@ check does not by itself establish acceptable control latency.
 
 `/api/status` exposes `recordingHealth.recording.storageTimings` for the open
 Store: transaction attempt/commit counts and the last, maximum and p99 BEGIN,
-body, COMMIT and total synchronous durations over the last 128 attempts. These
+body, COMMIT and total synchronous durations over the last 128 attempts. The
+current `journalSealMs` and `nativeCommitMs` fields separate journal sealing from
+the raw SQLite COMMIT call, with measured sample counts for each stage. The
+existing `commitMs` still measures the complete COMMIT wrapper, including both
+stages and its dispatch overhead. An unreached stage, or bootstrap before journal
+instrumentation is installed, is null rather than an inferred zero. Failed
+attempts retain only reached stages; nested savepoints are part of their outer
+attempt, never separate native commits. These
 in-memory diagnostics reset when the Store opens and never write extra history.
-COMMIT time includes any SQLite checkpoint and filesystem wait performed by that
-call; it is not an isolated fsync measurement. Queue depth and `waitingSince`
+Sealing includes synchronous validation, serialization, hashing, peer-index and
+journal SQL work. SQLite COMMIT time includes any checkpoint and filesystem wait
+performed by that call; neither stage is an isolated CPU or fsync measurement.
+The latest transaction date does not date an earlier rolling maximum. Queue depth and `waitingSince`
 remain separate asynchronous-admission evidence. Slow successful writes do not
 prove corruption, and these timings do not grant device authority.
 
@@ -2174,9 +2183,13 @@ Historical failure counts remain after recovery and are separate from current
 writer status.
 
 **Technical details** holds full transaction and commit timings, approximate
-95th percentiles, priority-specific waits, writer-lock statistics, peak backlog
+95th percentiles, journal-sealing and SQLite-COMMIT stages, priority-specific waits, writer-lock statistics, peak backlog
 and other operation counters. Commit is part of the full transaction duration;
-these durations must not be added. No new delay threshold changes warnings or
+the two measured stages are within Commit and these overlapping durations must
+not be added. Stage summaries count only reached, measured stages of successful
+commits; bootstrap can contribute to full transaction/commit summaries without
+contributing a stage sample. Separate stage maxima or percentiles can come from
+different transactions. No new delay threshold changes warnings or
 command deadlines. Current recording and storage warnings retain their existing
 behavior. Reading the summaries never runs a database check or grants control
 authority. The current memory-history API has version 2; earlier history shapes

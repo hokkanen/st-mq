@@ -477,6 +477,8 @@ function performanceHistory(overrides = {}) {
   const day = { requestedMs: 86400_000, monitoredMs: 6 * 3600_000, coveredMs: 6 * 3600_000, complete: false,
     queueDelay: timing, transactionDuration: { ...timing, count: 640, meanMs: 18, maxMs: 780 },
     commitDuration: { ...timing, count: 640, meanMs: 12, maxMs: 520 },
+    journalSealDuration: { ...timing, count: 639, meanMs: 3, p95Ms: 8, maxMs: 120 },
+    nativeCommitDuration: { ...timing, count: 639, meanMs: 9, p95Ms: 12, maxMs: 400 },
     controlQueueDelay: { ...timing, count: 60 }, normalQueueDelay: { ...timing, count: 760 },
     contention: { episodes: 3, totalMs: 925, maxMs: 600, active: false },
     peakPending: 8, failedWrites: 0, queueRejected: 0, commandsNotSent: 0, incidents: [], committedTransactions: 640,
@@ -498,6 +500,10 @@ test('storage performance names run coverage and separates queue, transaction, c
   assert.equal(view.queue.worst, '540 ms');
   assert.equal(view.transaction.worst, '780 ms');
   assert.equal(view.commit.worst, '520 ms');
+  assert.equal(view.journalSeal.worst, '120 ms');
+  assert.equal(view.nativeCommit.worst, '400 ms');
+  assert.equal(view.journalSeal.samples, '639 measured seals');
+  assert.equal(view.nativeCommit.samples, '639 measured SQLite commits');
   assert.equal(view.queue.samples, '820 completed queued operations');
   assert.equal(view.transaction.samples, '640 committed transactions');
   assert.equal(view.contention, '3');
@@ -509,6 +515,10 @@ test('storage performance names run coverage and separates queue, transaction, c
   assert.equal(storagePerformanceView(value, 'day', { now }).waiting, 'Waiting for the writer lock · 0 ms so far');
   assert.equal(storageDuration(0), '0 ms');
   assert.equal(storageDuration(null), 'Unknown');
+  const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
+  assert.match(html, /Journal sealing.*SQLite COMMIT are stages within Commit only/);
+  assert.match(html, /SQLite COMMIT includes any synchronization and automatic checkpoint work/);
+  assert.match(html, /Neither isolates fsync/);
 });
 
 test('storage performance absence, zero samples, zero coverage and unsupported scope do not become healthy history', () => {
@@ -525,6 +535,11 @@ test('storage performance absence, zero samples, zero coverage and unsupported s
   view = storagePerformanceView(value, 'day', { now });
   assert.equal(view.queue.mean, 'Unknown');
   assert.equal(view.queue.samples, 'Sample count unknown');
+  history.windows.day.journalSealDuration = { count: 0, meanMs: null, p95Ms: null, maxMs: null };
+  history.windows.day.nativeCommitDuration = undefined;
+  view = storagePerformanceView(value, 'day', { now });
+  assert.equal(view.journalSeal.mean, 'No samples');
+  assert.equal(view.nativeCommit.mean, 'Unknown');
   for (const invalid of [undefined, null, { version: 0 }, { version: 1 }]) {
     assert.equal(storagePerformanceView(health({ recording: { history: invalid } }), 'day', { now }).available, false);
   }
@@ -555,6 +570,8 @@ test('storage performance period stays local across polling and failed refresh w
   const view = panelFixture(async () => { throw Error('Private fixture failure'); });
   const value = health({ recording: { history: performanceHistory() } });
   view.panel.update({ recordingHealth: value });
+  assert.equal(view.element('recording-performance-journalSeal-worst').textContent, '120 ms');
+  assert.equal(view.element('recording-performance-nativeCommit-worst').textContent, '400 ms');
   view.element('recording-performance-week').click();
   assert.equal(view.element('recording-performance-week').getAttribute('aria-pressed'), 'true');
   assert.match(view.element('recording-performance-coverage').textContent, /Past week/);

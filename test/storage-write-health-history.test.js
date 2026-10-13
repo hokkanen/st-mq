@@ -19,7 +19,8 @@ function fixture() {
     advance(ms) { mono += ms; wall += ms; }, adjustWall(ms) { wall += ms; } };
 }
 const timing = (totalMs, committed = true, commitMs = totalMs / 2) =>
-  ({ committed, totalMs, beginMs: 0, bodyMs: totalMs - commitMs, commitMs });
+  ({ committed, totalMs, beginMs: 0, bodyMs: totalMs - commitMs, commitMs,
+    journalSealMs: null, nativeCommitMs: null });
 
 test('memory windows retain measured means/maxima and approximate percentiles for committed outcomes', () => {
   const f = fixture();
@@ -36,6 +37,34 @@ test('memory windows retain measured means/maxima and approximate percentiles fo
   assert.equal(status.percentileMethod, 'histogram-upper-bound');
   assert.equal(day.complete, false); assert.equal(day.coveredMs, 0);
   assert.equal(JSON.stringify(status).includes('histogram"'), false, 'raw histogram implementation stays private');
+});
+
+test('commit stages retain only measured successful values in bounded summaries and null remains unmeasured', () => {
+  const f = fixture();
+  const health = createWriteHealth(f.wall, null, { monotonic: f.mono });
+  health.transaction(timing(30));
+  health.transaction({ ...timing(50, true, 40), journalSealMs: 10, nativeCommitMs: 30,
+    privatePayload: 'private-diagnostic-marker' });
+  health.transaction({ ...timing(80, false, 60), journalSealMs: 60, nativeCommitMs: null });
+  let status = health.status();
+  assert.deepEqual(status.transactions.journalSealMs, { last: 60, max: 60, p99: 60, sampleCount: 2 });
+  assert.deepEqual(status.transactions.nativeCommitMs, { last: null, max: 30, p99: 30, sampleCount: 1 });
+  assert.deepEqual(status.history.windows.day.journalSealDuration, { count: 1, meanMs: 10, p95Ms: 10, maxMs: 10 });
+  assert.deepEqual(status.history.windows.day.nativeCommitDuration, { count: 1, meanMs: 30, p95Ms: 30, maxMs: 30 });
+  assert.equal(status.history.windows.day.commitDuration.count, 2, 'bootstrap still contributes to full COMMIT history');
+  assert.equal(JSON.stringify(status).includes('private-diagnostic-marker'), false);
+  const attempts = status.transactions.count;
+  for (const invalid of [undefined, -1, Infinity, '10'])
+    health.transaction({ ...timing(40), journalSealMs: invalid, nativeCommitMs: 10 });
+  assert.equal(health.status().transactions.count, attempts, 'invalid stage shapes are not decoded or guessed');
+  for (let index = 0; index < 128; index++) health.transaction(timing(1));
+  status = health.status();
+  assert.equal(status.transactions.sampleCount, 128);
+  assert.deepEqual(status.transactions.journalSealMs, { last: null, max: null, p99: null, sampleCount: 0 });
+  assert.deepEqual(status.transactions.nativeCommitMs, { last: null, max: null, p99: null, sampleCount: 0 });
+  assert.equal(status.history.windows.day.nativeCommitDuration.count, 1, 'rolling attempts do not erase five-minute history');
+  f.advance(8 * DAY);
+  assert.equal(health.status().history.windows.week.nativeCommitDuration.count, 0);
 });
 
 test('failure deduplication and recovery retain recognized failures without errors or private values', () => {

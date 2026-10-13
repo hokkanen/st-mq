@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Storage technical details distinguish journal sealing from SQLite COMMIT,
+  helping attribute slow saves while retaining the existing total. Unmeasured
+  stages stay unknown; SQLite COMMIT includes synchronization and checkpoint work.
+
 - A Tesla stopped 5 A report received while a same-connection Stop awaits its reply
   remains unknown instead of becoming a lasting vehicle current limit. Earlier
   qualified limits keep their original evidence; zero and independent requests

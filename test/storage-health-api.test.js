@@ -47,6 +47,12 @@ test('memory storage summaries use existing authenticated health access without 
     assert(result.recording.history.windows.day.committedTransactions > 0);
     assert.equal(result.recording.history.windows.day.failedWrites, 0);
     assert.equal(result.recording.history.windows.day.commandsNotSent, 0);
+    const stages = result.recording.storageTimings;
+    assert(Number.isFinite(stages.journalSealMs.last));
+    assert(Number.isFinite(stages.nativeCommitMs.last));
+    assert(stages.commitMs.last >= stages.journalSealMs.last + stages.nativeCommitMs.last);
+    assert(result.recording.history.windows.day.journalSealDuration.count > 0);
+    assert(result.recording.history.windows.day.nativeCommitDuration.count > 0);
     assert.deepEqual(result.recording.history.windows.day.incidents, []);
     assert(Number.isSafeInteger(result.recording.lastWriteAt));
     assert.equal(result.recording.history.windows.day.complete, false, 'a new run is partial coverage');
@@ -89,4 +95,6 @@ test('standby health cannot present local memory counters as active master histo
   assert.equal(result.scope, 'snapshot');
   assert.equal(result.recording.state, 'read-only');
   assert.equal(result.recording.history, null);
+  assert.deepEqual(result.recording.storageTimings, f.store.writeHealth.status().transactions,
+    'the existing Store timings remain local evidence within the explicit snapshot scope');
 });
