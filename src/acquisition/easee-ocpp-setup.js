@@ -410,7 +410,7 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
       // temporary listener outage can recover before the next cloud check.
       if (!blocked && saved.appliedFingerprint === wanted && saved.intent === null
         && status.state === 'connecting' && listener.status().available) publish('ready');
-      let current = blocked ? describeStatus(...blocked) : status;
+      let current = blocked ? describeStatus(...blocked) : describeStatus(status.state, status.reason);
       if (!blocked && installed() && !flight && ['ready', 'connecting', 'recovering'].includes(current.state))
         current = describeStatus(local.available ? 'ready' : 'connecting', local.available ? null : 'waiting-connection');
       const recovery = installed() ? { attempts: saved.recovery?.attempts ?? 0,
