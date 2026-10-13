@@ -42,6 +42,14 @@ coverage are buffered with the bounds and failure semantics in
 batch learning inputs, measured energy, source corrections, permissions or
 restoration obligations.
 
+The main Store's memory-only slow-attempt ring dates up to 16 attempts of at
+least one second with their measured stages and prepared journal change counts,
+bytes and table names. Preparation and committed outcome remain separate; no
+row identities or values enter this diagnostic evidence. It performs no extra
+SQL and changes neither journal retention nor SQLite synchronization/checkpoint
+policy. See [storage timings](recording.md#storage-health) for unknown, no-effect
+and failed-attempt meanings.
+
 An installation has one configured paired or mirror counterpart. Its common
 checkpoint is explicitly enrolled during the initial seed. Retained peer evidence
 is part of the database, so restart and role changes do not lose the common base.

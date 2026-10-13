@@ -11,6 +11,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   timeout after replacement history was already accepted. Failed or interrupted
   acknowledgements keep protection and retain the original saved request.
 
+- Storage diagnostics retain a bounded, dated list of slow attempts and anonymous
+  prepared change counts, making individual delays easier to attribute without
+  saving household values or changing database durability.
+
 - Storage technical details distinguish journal sealing from SQLite COMMIT,
   helping attribute slow saves while retaining the existing total. Unmeasured
   stages stay unknown; SQLite COMMIT includes synchronization and checkpoint work.

@@ -2127,6 +2127,28 @@ The latest transaction date does not date an earlier rolling maximum. Queue dept
 remain separate asynchronous-admission evidence. Slow successful writes do not
 prove corruption, and these timings do not grant device authority.
 
+`storageTimings.slowAttempts` retains the last 16 main Store attempts whose
+measured total duration reached one second, with a cumulative count for this
+Store run. It is memory-only diagnostic evidence, not another warning threshold
+or a persisted transaction format. Each entry preserves its original `startedAt`
+and `finishedAt` wall dates, committed outcome and the measured stages above;
+wall-clock changes do not alter monotonic durations. These dates never renew
+source observations. Fast attempts can age out of the 128-attempt summary without
+erasing the separately bounded slow entries.
+
+The optional `journal` summary contains only the already-prepared journal date,
+attempted sequence, coalesced row-change count, existing serialized byte count
+and trusted table names. It adds no SQL query and contains no row keys, values,
+device identities, hashes or error text. A successful seal with no net journal
+effects reports zero changes and bytes, with null date/sequence; this does not
+prove that SQLite wrote no pages. Uninstrumented or unsuccessful sealing is
+unknown. A failed native COMMIT can retain prepared effects, but `committed:false`
+does not claim that their sequence became durable. A successful committed outcome
+does not prove command receipt or physical actuation. The ring is available in
+the existing authenticated health response; the dashboard's historical summaries
+retain their existing scope. Restart and read-only reopen start a new local ring,
+and independent worker connections are not attributed to this Store.
+
 ### Storage health
 
 The **Storage health** summary belongs to **Recording & storage**. Opening it shows the

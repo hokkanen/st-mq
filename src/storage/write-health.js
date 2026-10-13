@@ -1,6 +1,25 @@
 // Runtime evidence must remain readable when the database cannot accept writes.
 // Never retain SQLite messages: they can contain private paths or input values.
 import { createWriteHealthHistory } from './write-health-history.js';
+import { JOURNALED_TABLES } from './schema.js';
+
+const tableNames = new Set(JOURNALED_TABLES.map(table => table.name));
+const timestamp = value => Number.isSafeInteger(value) && value >= 0 && value <= 8_640_000_000_000_000;
+// Diagnostics are optional evidence. Malformed or private metadata becomes
+// unknown, without rejecting the measured transaction or changing its outcome.
+function journalEvidence(value) {
+  if (!value || Object.keys(value).sort().join(',') !== 'at,bytes,changeCount,sequence,tables'
+    || !Number.isSafeInteger(value.changeCount) || value.changeCount < 0
+    || !Number.isSafeInteger(value.bytes) || value.bytes < 0 || !Array.isArray(value.tables)
+    || value.tables.length > tableNames.size || Array.from(value.tables).some(name => !tableNames.has(name))
+    || new Set(value.tables).size !== value.tables.length) return null;
+  if (value.changeCount === 0
+    ? value.at !== null || value.sequence !== null || value.bytes !== 0 || value.tables.length !== 0
+    : !timestamp(value.at) || !Number.isSafeInteger(value.sequence) || value.sequence < 1
+      || value.bytes === 0 || value.tables.length === 0 || value.tables.length > value.changeCount) return null;
+  return { at: value.at, sequence: value.sequence, changeCount: value.changeCount,
+    bytes: value.bytes, tables: [...value.tables].sort() };
+}
 
 export function storageFailureCode(error) {
   if (error?.code === 'STORAGE_QUEUE_FULL') return 'write-queue-full';
@@ -28,11 +47,15 @@ export function createWriteHealth(clock = Date.now, queueStatus = null, { monoto
   const state = { startedAt: clock(), lastWriteAt: null, lastFailureAt: null,
     errorCode: null, failures: 0, failing: false };
   const recent = [], limit = 128;
+  const slow = [], slowLimit = 16, slowThresholdMs = 1000;
+  let slowCount = 0;
   const durations = ['beginMs', 'bodyMs', 'commitMs', 'totalMs'];
   const stages = ['journalSealMs', 'nativeCommitMs'];
   let transactionCount = 0, committedCount = 0, lastTransactionAt = null;
   const timings = () => ({ count: transactionCount, committed: committedCount, lastAt: lastTransactionAt,
     sampleCount: recent.length, sampleLimit: limit,
+    slowAttempts: { thresholdMs: slowThresholdMs, sampleLimit: slowLimit, count: slowCount,
+      samples: slow.map(row => ({ ...row, journal: row.journal && { ...row.journal, tables: [...row.journal.tables] } })) },
     ...Object.fromEntries([...durations, ...stages].map(key => {
       const values = recent.map(row => row[key]).filter(Number.isFinite).sort((a, b) => a - b);
       return [key, { last: recent.at(-1)?.[key] ?? null, max: values.at(-1) ?? null,
@@ -67,6 +90,14 @@ export function createWriteHealth(clock = Date.now, queueStatus = null, { monoto
       recent.push({ committed: value.committed,
         ...Object.fromEntries([...durations, ...stages].map(key => [key, value[key]])) });
       if (recent.length > limit) recent.shift();
+      if (value.totalMs >= slowThresholdMs) {
+        let journal = null;
+        try { journal = journalEvidence(value.journal); } catch {}
+        slowCount++;
+        slow.push({ startedAt: timestamp(value.startedAt) ? value.startedAt : null,
+          finishedAt: timestamp(lastTransactionAt) ? lastTransactionAt : null, ...recent.at(-1), journal });
+        if (slow.length > slowLimit) slow.shift();
+      }
       history.transaction(value);
     },
     queue(event) { history.queue(event); },

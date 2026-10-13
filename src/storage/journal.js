@@ -150,6 +150,7 @@ function persistCommit(db,commit) {
   state.prepare('UPDATE journal_meta SET sequence=?,hash=?,content_hash=?,retained_bytes=retained_bytes+?,retained_commits=retained_commits+1 WHERE id=1')
     .run(commit.sequence,commit.hash,commit.contentHash,bytes);
   trimJournal(db);
+  return bytes;
 }
 function seal(db) {
   const state = raw(db), effects = new Map();
@@ -170,17 +171,25 @@ function seal(db) {
     if(isDeepStrictEqual(before,after)) continue;
     changes.push(encodeChange(first.table,first.key,before,after));
   }
-  if (!changes.length) { if(effects.size) state.exec('DELETE FROM journal_pending'); return; }
+  if (!changes.length) {
+    if(effects.size) state.exec('DELETE FROM journal_pending');
+    return { at: null, sequence: null, changeCount: 0, bytes: 0, tables: [] };
+  }
   changes.push(...captureLearningCheckpoints(db,changes));
-  changes.forEach(validateChange);
+  const changedTables = new Set();
+  changes.forEach(change => { validateChange(change); changedTables.add(change.table); });
   for(const change of changes) if(change.before && change.after
     && ['events','learning_journal_entries'].includes(change.table))
     validateMaterializedRow(change.table,readRow(db,change));
   const head = readCheckpoint(db),content=state.prepare('SELECT content_hash FROM journal_meta WHERE id=1').get().content_hash;
   const commit = { sequence: head.sequence+1,previousHash: head.hash,at: Date.now(),contentHash:changeContentHash(content,changes),changes };
   commit.hash = commitHash(head.databaseId,commit);
-  persistCommit(db,commit);
+  const commitBytes = persistCommit(db,commit);
   state.exec('DELETE FROM journal_pending');
+  // Prepared effects, not proof of native COMMIT or physical disk writes. No
+  // keys, values, source identities or hashes enter runtime diagnostics.
+  return { at: commit.at, sequence: commit.sequence, changeCount: changes.length,
+    bytes: commitBytes, tables: [...changedTables].sort() };
 }
 const sqlStart = sql => sql.replace(/^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)+/,'').trim();
 const statements = sql => sql.replace(/--[^\n]*|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|`[^`]*`|\[[^\]]*\]/g,' ')
@@ -212,9 +221,9 @@ export function installJournal(db) {
   state.setCaptureEnabled=capture.setEnabled;
   state.exec('PRAGMA recursive_triggers=ON');
   const commit = sql => {
-    const timing = state.commitTiming = { journalSealMs: null, nativeCommitMs: null };
+    const timing = state.commitTiming = { journalSealMs: null, nativeCommitMs: null, journal: null };
     const sealStarted = performance.now();
-    try { seal(db); }
+    try { timing.journal = seal(db); }
     finally { timing.journalSealMs = performance.now() - sealStarted; }
     const nativeStarted = performance.now();
     try { return state.exec(sql); }
