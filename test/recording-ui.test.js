@@ -31,6 +31,20 @@ test('recording status explains rejection, held temperatures and historical ener
   assert.match(energy.detail,/completed energy interval does not expire/);
 });
 
+test('Caravan detailed readings explain qualification and required-state gaps while retaining the original observation age', () => {
+  const now = 30 * 60_000, sourceAt = 60_000;
+  for (const [reason, explanation] of [
+    ['location-unconfirmed', /Caravan power check.*not confirmed recording readiness/],
+    ['state-evidence-unavailable', /Fresh power reports, and a fresh fan report while On/],
+  ]) {
+    const display = recordingStatus({ freshness: { status: 'unavailable', reasons: [reason, 'invented-private-flag'],
+      sourceObservedAt: sourceAt, maxAgeMs: 180_000, ageBasis: 'periodic-report', reportIntervalMs: 180_000 } }, { now });
+    assert.equal(display.label, 'Reading unavailable'); assert.match(display.detail, explanation);
+    assert.match(display.detail, /Latest source report is 29 min old/);
+    assert.doesNotMatch(display.detail, /invented-private-flag|expected report is missing|MQTT connection is disconnected/);
+  }
+});
+
 test('event-only door recordings distinguish last report age from current connection health',()=>{
   const display=recordingStatus({freshness:{status:'last-reported',sourceObservedAt:0,maxAgeMs:null,ageBasis:'event-only'}},{now:7*86400_000});
   assert.equal(display.label,'Last reported state');

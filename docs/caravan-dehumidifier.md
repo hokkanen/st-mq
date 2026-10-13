@@ -299,6 +299,13 @@ including when Automatic power is disabled. Unavailable evidence, testing and
 unresolved restoration produce a gap instead of a claimed state. A missing
 humidity report does not prevent recording.
 
+A newly attached capture reports the qualification gap after its first fresh,
+admitted usable appliance state, even before that capture has passed a power
+test. Recording details distinguish that gap from a missing transport report.
+Earlier recorded state and its original source time remain historical evidence;
+the unavailable transition neither renews that measurement nor supplies a device
+value. Repeated unqualified reports do not create repeated gap transitions.
+
 Independently of the dehumidifier gate, the same Caravan fold records
 `caravan_temperature` and `caravan_humidity` from the Shelly BLU H&T. Battery and
 Bluetooth signal strength are live-only.

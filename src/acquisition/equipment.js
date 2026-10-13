@@ -70,7 +70,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     temperatureGuard: { settings: { ...defaultTemperatureControl }, demand: false, managed: false,
       lastAttemptAt: null, lastAttemptPower: null, recordingSince: null, sourceTimeWait: null, sourceTimeWaitExpiry: null,
       probe: null, meterSignature: null, sessionActive: false, restoration: null,
-      qualified: false, boundIdentity: null }, recordingLocation: false }));
+      qualified: false, boundIdentity: null, recordingGateObserved: false }, recordingLocation: false }));
   const admission = createMqttAdmission();
   const coverDispatches = new Map();
   const temperatures = devices.filter(canonicalTemperature);
@@ -200,6 +200,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       const guard = device.temperatureGuard;
       if (guard.probe?.status === 'testing') abortCaravanProbe(guard.probe, reason, receivedAt);
       guard.qualified = false; guard.sessionActive = false; guard.sourceTimeWait = null; guard.sourceTimeWaitExpiry = null;
+      guard.recordingGateObserved = false;
     }
     energy.get(device.id)?.unavailable?.(receivedAt, reason);
     if (device.coverOperation && ['publishing', 'published'].includes(device.coverOperation.status)) {
@@ -423,7 +424,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const location = temperatureGuardStatus(device, now);
     if (!location) return true;
     const state = device.temperatureGuard, qualified = location.qualified;
-    if (!qualified && device.recordingLocation) {
+    // A new capture has no local qualified-to-unqualified edge. Its first
+    // admitted, usable appliance report still establishes that recording is
+    // blocked; older saved state must not imply a fresh or missing MQTT feed.
+    const firstFreshGate = !state.recordingGateObserved && healthy(device, now)
+      && dehumidifierHistory(device, now).value !== null;
+    if (!qualified && (device.recordingLocation || firstFreshGate)) {
       const reading = device.readings[device.stateSignal], history = dehumidifierHistory(device, now);
       const meter = caravanPower(device, now, true);
       const pending = pendingFor(device) || !caravanPower(device, now) && meter;
@@ -444,6 +450,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         sourceTime: null, receivedAt: now, quality: ['location-unconfirmed'],
         raw: { timeBasis: 'availability-transition', ...dehumidifierMetadata(device),
           ...(state.sourceTimeWait ? { sourceTimeWait: { ...state.sourceTimeWait } } : {}) } });
+      state.recordingGateObserved = true;
       if (device.readings[device.stateSignal]) device.readings[device.stateSignal].availabilityConfirmed = false;
     }
     if (!qualified) state.recordingSince = state.sourceTimeWait?.recordingSince ?? null;
@@ -682,7 +689,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           device.dehumidifierHistoryAfter = null;
           Object.assign(device.temperatureGuard, { settings: { ...defaultTemperatureControl }, demand: false, managed: false,
             lastAttemptAt: null, lastAttemptPower: null, recordingSince: null, sourceTimeWait: null, sourceTimeWaitExpiry: null,
-            probe: null, meterSignature: null, sessionActive: false, restoration: null, qualified: false });
+            probe: null, meterSignature: null, sessionActive: false, restoration: null, qualified: false, recordingGateObserved: false });
           device.recordingLocation = false;
         }
         device.temperatureGuard.boundIdentity = physicalIdentity;

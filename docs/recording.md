@@ -1490,6 +1490,10 @@ health immediately and gets a detailed row at its first statistics snapshot.
 Caravan state warnings distinguish an unconfirmed power check from missing
 appliance evidence; Off requires fresh power, while On also requires a fresh fan
 report.
+Fresh admitted reports on a newly attached unqualified Caravan capture publish
+the current recording gap without refreshing an earlier measurement. A failed
+power check therefore remains a qualification warning even while MQTT reports
+are available; earlier state and source time remain preserved.
 
 The **Backups** fold lists managed local copies, their filenames, sizes and dates,
 with the configured folder and the list's own check time. One shared bounded catalog

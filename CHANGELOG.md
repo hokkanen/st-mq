@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Caravan recording warnings distinguish an unconfirmed power check from missing
+  MQTT reports after a new capture attaches. Earlier recorded state and source
+  clocks stay intact, and detailed readings explain the current recording gate.
+
 - Slave viewers release a read transaction when checkpoint validation fails,
   preventing one failed read from leaving subsequent requests stuck.
 

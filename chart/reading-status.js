@@ -31,6 +31,8 @@ const labels = Object.freeze({
   'subscription-failed': 'the sensor subscription failed',
   'report-policy-changed': 'waiting for a report under the changed reporting policy',
   'availability-transition': 'the source reported that readings are unavailable',
+  'location-unconfirmed': 'the Caravan power check and fresh appliance/meter reports have not confirmed recording readiness',
+  'state-evidence-unavailable': 'fresh power reports, and a fresh fan report while On, are required to record the state',
   'invalid-quality': 'the reading failed its source quality checks',
   'out-of-order-source-time': 'the report is older than a newer report already received',
   'conflicting-duplicate': 'readings disagree at the same measurement time',

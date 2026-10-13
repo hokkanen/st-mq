@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
@@ -14,8 +17,8 @@ const capabilities = { power: ['off', 'on'], fanSpeed: ['low', 'medium', 'high']
   targetHumidity: Array.from({ length: 11 }, (_, index) => 30 + index * 5) };
 const settle = () => new Promise(resolve => setImmediate(resolve));
 function fixture(t, options = {}) {
-  const store = new Store(':memory:'), observations = [], sent = [], publications = [], allPublications = [];
-  let now = START, authority = true, capture;
+  const store = options.store ?? new Store(':memory:'), observations = [], sent = [], publications = [], allPublications = [];
+  let now = options.startAt ?? START, authority = true, capture;
   const recorder = new Recorder(store, { clock: () => now });
   const settings = equipmentConfiguration({ devices: [bluHtEquipment({ prefix: 'fixture/air' }),
     options.nativeMeter ? { id: 'caravan', kind: 'metered_switch', area: 'garage', connection: 'shelly:fixture/native-meter',
@@ -45,7 +48,7 @@ function fixture(t, options = {}) {
   };
   create();
   t.after(() => { capture.close(); store.close(); });
-  const f = { get capture() { return capture; }, store, sent, observations, publications, allPublications,
+  const f = { get capture() { return capture; }, store, recorder, sent, observations, publications, allPublications,
     get now() { return now; }, advance: ms => { now += ms; }, authority: value => { authority = value; },
     restart: extra => { capture.close(); create(extra); },
     air: (temperature = 1.5, humidity = 50, retained = false, at = now) => capture.receive('fixture/air/state',
@@ -84,6 +87,95 @@ function fixture(t, options = {}) {
     } };
   return f;
 }
+
+async function restartFromQualifiedSnapshot(t) {
+  const previous = fixture(t); await previous.qualify();
+  const historical = previous.history().findLast(row => row.value !== null);
+  const directory = await mkdtemp(join(tmpdir(), 'caravan-gate-restart-'));
+  const path = join(directory, 'current.sqlite');
+  // A current backup preserves the last committed boundary before an abrupt
+  // stop could report transport loss. The new Store and Recorder then start
+  // normally; no capture-local qualification survives the restart.
+  await previous.store.backup(path); previous.capture.close();
+  const fresh = fixture(t, { store: new Store(path), startAt: previous.now + 1000 });
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  return { fresh, historical };
+}
+
+test('current-format restart reports a qualification gap on its first fresh state without renewing historical measurements', async t => {
+  const { fresh: f, historical } = await restartFromQualifiedSnapshot(t);
+  await f.start();
+  const row = f.recorder.status(f.now).exactParameters.find(row => row.signal === SIGNAL);
+  assert.equal(f.state().available, true); assert.equal(f.guard().qualified, false); assert.equal(f.guard().recording, false);
+  assert.equal(row.observedThisRun, true);
+  assert.equal(row.freshness.status, 'unavailable');
+  assert(row.freshness.reasons.includes('location-unconfirmed'));
+  assert.equal(row.freshness.sourceObservedAt, historical.sourceTime);
+  assert.equal(row.lastSourceTime, historical.sourceTime);
+  assert.deepEqual(f.history().findLast(point => point.value !== null), historical);
+  const gaps = f.history().filter(point => point.quality.includes('location-unconfirmed'));
+  assert.equal(gaps.length, 2, 'the original startup gap and this restarted capture each have one real transition');
+  assert.equal(gaps.at(-1).value, null); assert.equal(gaps.at(-1).sourceTime, null);
+  assert.equal(gaps.at(-1).receivedAt, f.now);
+  await f.sample(5000, 'off', 100);
+  for (let index = 0; index < 4; index++) await f.sample(45000, 'on', 100);
+  await f.sample(1000, 'off', 100);
+  assert.equal(f.guard().locationTest.status, 'failed'); assert.equal(f.guard().locationTest.reason, 'no-power-rise');
+  assert.equal(f.state().available, true); assert.equal(f.guard().recording, false);
+  for (let index = 0; index < 3; index++) await f.sample(30000, 'off', 100);
+  const unavailable = f.recorder.status(f.now).exactParameters.find(point => point.signal === SIGNAL);
+  assert.equal(unavailable.freshness.status, 'unavailable');
+  assert(unavailable.freshness.reasons.includes('location-unconfirmed'));
+  assert.equal(unavailable.freshness.sourceObservedAt, historical.sourceTime);
+  assert.equal(f.history().filter(point => point.quality.includes('location-unconfirmed')).length, gaps.length,
+    'fresh unqualified polling and a failed check do not generate repeated gap transitions');
+  assert.deepEqual(f.sent, [{ power: 'on' }, { power: 'off' }], 'failure restores once and does not renew the test');
+  assert.deepEqual(f.history().findLast(point => point.value !== null), historical);
+
+  f.capture.receive('fixture/dryer/online', 'offline'); f.capture.receive('fixture/dryer/online', 'online');
+  await f.qualify();
+  assert.equal(f.guard().qualified, true); assert.equal(f.guard().recording, true);
+  const recovered = f.history().findLast(point => point.value !== null);
+  assert.equal(recovered.sourceTime, f.now);
+  assert.equal(f.recorder.status(f.now).exactParameters.find(point => point.signal === SIGNAL).freshness.status, 'fresh');
+  assert.deepEqual(f.history().find(point => point.id === historical.id), historical,
+    'fresh qualification adds current evidence without changing the earlier state or filling the gap');
+});
+
+test('retained and pending source reports cannot publish a new capture qualification transition before admission', async t => {
+  const { fresh: f, historical } = await restartFromQualifiedSnapshot(t);
+  const gaps = () => f.history().filter(point => point.quality.includes('location-unconfirmed'));
+  const baseline = gaps().length;
+  f.dryer('off', {}, true); f.meter(100);
+  assert.equal(gaps().length, baseline, 'retained appliance context is not current qualification evidence');
+  const receipt = f.now; f.dryer('off', { timestamp: receipt + 500 });
+  assert.equal(gaps().length, baseline, 'a quarantined report is not yet admitted');
+  f.advance(500); f.capture.tick(); await settle();
+  assert.equal(gaps().length, baseline + 1);
+  assert.equal(gaps().at(-1).sourceTime, null);
+  assert.equal(gaps().at(-1).receivedAt, f.now);
+  assert.equal(f.state().observedAt, receipt + 500, 'admission retains the original native source clock');
+  assert.equal(f.recorder.status(f.now).exactParameters.find(point => point.signal === SIGNAL).lastSourceTime, historical.sourceTime);
+  assert.equal(f.guard().recording, false); assert.deepEqual(f.sent, []);
+});
+
+test('a failed first qualification-gap commit rewinds admission and retries one honest transition', async t => {
+  const { fresh: f, historical } = await restartFromQualifiedSnapshot(t);
+  f.air(); f.meter(100);
+  const rows = f.history(), exec = f.store.db.exec.bind(f.store.db); let fail = true;
+  t.mock.method(f.store.db, 'exec', sql => {
+    if (sql === 'COMMIT' && fail) { fail = false; throw new Error('Synthetic qualification-gap commit failure'); }
+    return exec(sql);
+  });
+  await assert.rejects(f.store.runWrite(() => f.dryer('off')), /Synthetic qualification-gap commit failure/);
+  assert.deepEqual(f.history(), rows);
+  await f.store.runWrite(() => f.dryer('off'));
+  const gap = f.history().at(-1);
+  assert.equal(gap.value, null); assert(gap.quality.includes('location-unconfirmed'));
+  assert.equal(f.history().length, rows.length + 1);
+  assert.equal(f.recorder.status(f.now).exactParameters.find(point => point.signal === SIGNAL).lastSourceTime, historical.sourceTime);
+  assert.equal(f.guard().recording, false); assert.deepEqual(f.sent, []);
+});
 
 test('a small matched electrical rise and fall qualify recording without appliance RH or temperature', async t => {
   const f = fixture(t); await f.qualify({ humidity: null });
