@@ -121,6 +121,16 @@ The operation touches the HA repository cache directly. A later Supervisor
 repository refresh can replace that cache with the published branch; this is a
 development deployment, not release publication.
 
+An independent Supervisor repository refresh can also run during deployment.
+Supervisor 2026.09.3 schedules store refresh every three hours; its Git update
+can reset a locally ahead branch to `origin/<branch>`. The deployment lock
+coordinates this tool's runs, not Supervisor's repository tasks. A source check
+before rebuilding therefore cannot exclude a later change: exact source and
+image verification must still succeed while the app remains stopped. The
+unchanged-repository-list metadata request itself does not fetch Git. See the
+version-pinned [scheduled task](https://github.com/home-assistant/supervisor/blob/2026.09.3/supervisor/misc/tasks.py)
+and [Git update](https://github.com/home-assistant/supervisor/blob/2026.09.3/supervisor/store/git.py).
+
 ## Configuration changes after deployment
 
 Deployment preserves installation settings even if the new application no longer
@@ -163,6 +173,13 @@ The script does not automatically roll back, restart, reset storage or retry a
 possibly running rebuild. Inspect Supervisor's app status and logs locally first.
 Remote source may already have advanced while the image still contains the
 previous build. A lost response does not prove that a rebuild failed.
+If Supervisor acknowledged rebuild completion but source verification then
+reports a different commit, keep the app stopped and inspect the known source,
+Supervisor jobs/logs and retained deployment evidence. A completed rebuild and
+an unknown rebuild outcome are different retry boundaries. An empty jobs view
+does not rule out a later scheduled repository refresh. Once the original
+deployment and interfering task have finished, inspect the empty owned lock as
+described below and begin a fresh checked deployment; retain the failed evidence.
 SSH timeouts, connection failures and oversized output stop further commands;
 no uncertain operation is automatically replayed. Each logical command uses
 noninteractive SSH without an inherited multiplexed session. This avoids browser

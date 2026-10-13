@@ -907,6 +907,11 @@ upstream store scanning and metadata publication, without Git fetch or option
 replacement. It also verifies that Supervisor can filter unknown fields from a
 runtime response while retaining them in saved options. Application recovery
 must therefore validate raw saved fields before resolving secret references.
+The workflow regression injects a source change only after the successful
+rebuild acknowledgment. It verifies that the pre-rebuild checks passed, the
+installed-source check refuses success, and the lock and temporary evidence
+remain without cleanup, a repeated rebuild or a runtime command. This offline
+fault injection does not serialize Supervisor's independent repository refresh.
 
 Supervisor 2026.09.3 retains existing `!secret` references in saved options,
 while `options/config` provides resolved runtime values. Current import receipts
