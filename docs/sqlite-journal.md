@@ -42,6 +42,16 @@ coverage are buffered with the bounds and failure semantics in
 batch learning inputs, measured energy, source corrections, permissions or
 restoration obligations.
 
+Unchanged session-cost and Shelly limiter calculation dates can remain in RAM
+without rewriting their complete durable payload. The comparison uses only the
+last successfully committed state in the same equipment/session and excludes
+precisely `sessionCost.updatedAt` or `limiter.evaluatedAt`; all other fields retain
+their normal writes. First admission, pending transaction/retirement and rollback
+keep the existing atomic boundary. Native instruction/readback/source clocks are
+never covered by this optimization. Cost suppression still shares the ordinary
+runtime transaction; fewer logical effects do not prove fewer physical writes
+or faster COMMIT. See [charging persistence](charging/architecture.md#charging-persistence).
+
 The main Store's memory-only slow-attempt ring dates up to 16 attempts of at
 least one second with their measured stages and prepared journal change counts,
 bytes and table names. Preparation and committed outcome remain separate; no

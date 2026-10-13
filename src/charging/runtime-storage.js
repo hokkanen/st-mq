@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { validateChargingRuntimeState } from './runtime-state.js';
+import { createChargingCalculationWriter } from './calculation-persistence.js';
 
 // Charging owns this representation. The shared Store/journal still sees normal
 // state rows and publishes every changed field in one ordinary transaction.
 export const CHARGING_RUNTIME_VERSION = 7;
 export const CHARGING_VIEW_INTERVAL_MS = 30_000;
 const projections = new WeakMap();
+const costWriters = new WeakMap();
 const inputs = /^charging:(mqtt|providers|simulated|offline)$/;
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -324,6 +326,8 @@ export function writeChargingRuntime(store, key, saved, { at, viewIntervalMs = C
     || !Number.isSafeInteger(viewIntervalMs) || viewIntervalMs < 0 || typeof forceView !== 'boolean') fail();
   if (store.readOnly) throw new Error('Charging runtime storage is read-only');
   const base = prefix(key), meaning = saved.view && at !== undefined ? projectionMeaning(saved) : null;
+  let costWriter = costWriters.get(store);
+  if (!costWriter) { costWriter = createChargingCalculationWriter(store, 'session-cost'); costWriters.set(store, costWriter); }
   let state = projections.get(store);
   if (!state) { state = new Map(); projections.set(store, state); }
   return store.transaction(() => {
@@ -352,10 +356,18 @@ export function writeChargingRuntime(store, key, saved, { at, viewIntervalMs = C
         // large unchanged context on every device receipt just to compare it.
         if (!store.db.prepare('SELECT 1 FROM state WHERE key=?').get(recordKey)) store.setState(recordKey, record);
       }
-    for (const [path, record] of next.records) store.setState(base + path, record);
+    for (const [path, record] of next.records) {
+      const cost = path.match(/^charger\/(charger[12])\/sessionCost$/);
+      if (cost) {
+        const charger = saved.chargers[cost[1]];
+        costWriter.write(base + path, record, { association: charger.association, request: charger.request });
+      } else store.setState(base + path, record);
+    }
     store.setState(key, next.manifest);
-    if (previous) for (const obsolete of ownedKeys(key, previous)) if (!retained.has(obsolete))
+    if (previous) for (const obsolete of ownedKeys(key, previous)) if (!retained.has(obsolete)) {
       store.db.prepare('DELETE FROM state WHERE key=?').run(obsolete);
+      if (/runtime:charger\/charger[12]\/sessionCost$/.test(obsolete)) costWriter.forget(obsolete);
+    }
     if (publishView) {
       store.afterRollback(() => { if (prior) state.set(key, prior); else state.delete(key); });
       state.set(key, { at, meaning });

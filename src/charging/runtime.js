@@ -23,7 +23,8 @@ import { updateTargetState, targetSelection } from './target.js';
 import { acceptEaseeTransition } from './stream-evidence.js';
 import { confirmedIdentityPause } from './identity-evidence.js';
 import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause, prepareActiveTeslaCandidate, matchActiveTeslaPause, IDENTIFICATION_ENERGY_LIMIT_KWH, IDENTIFICATION_PAUSE_WAIT_MS } from './identification.js';
-import { shellyAssociation, shellyCurrentCommandReadback } from './shelly-evse.js';
+import { shellyAssociation, shellyCurrentCommandReadback, validateShellyOwnershipState } from './shelly-evse.js';
+import { createChargingCalculationWriter } from './calculation-persistence.js';
 import { mqttSourceIdentity } from '../pairing/mqtt-source-context.js';
 import { ChargingSessionDiagnostics } from './session-diagnostics.js';
 import { ChargingAllowanceHistory, shellyLimiterStatus, shellyAllowanceStatus, easeeAllowanceStatus } from './allowance-history.js';
@@ -516,6 +517,9 @@ export class ChargingRuntime {
       if (this.closed || generation !== item.adapterGeneration) return;
       item.adapter = adapter;
       const createController = adapter?.createController ?? createChargingController;
+      // All admitted callbacks for this equipment share the successful basis.
+      // Captured generation keeps a new controller's first save independent.
+      const ownershipWriter = item.ownershipCalculationWriter ??= createChargingCalculationWriter(this.store, 'shelly-limiter');
       const hasAuthority = () => {
         const control = item.controller?.status(), boundary = item.vehicleDisconnect;
         return !this.closed && this.canControl()
@@ -524,10 +528,25 @@ export class ChargingRuntime {
           && ['mqtt', 'providers'].includes(this.config.input);
       };
       item.controller = createController({ adapter, initialState: this.savedOwnership(id),
-        saveState: state => this.write(() => {
-          this.store.setState(this.ownershipKey(id), state);
-          this.store.afterCommit(() => { item.ownershipAdmitted = true; });
-        }, { priority: 'control', bytes: Buffer.byteLength(JSON.stringify(state)), isCurrent: () => item.adapter === adapter }), clock: this.clock,
+        saveState: state => {
+          const shelly = id === 'charger2' && item.definition.provider === 'shelly-evse';
+          const scope = shelly ? { association: item.association, adapterGeneration: generation, sessionId: state?.sessionId,
+            physical: state?.limiter?.scope } : null;
+          if (shelly) {
+            if (state == null) throw Object.assign(new Error('unsupported-shelly-ownership'), { code: 'unsupported-shelly-ownership' });
+            validateShellyOwnershipState(state, item.association);
+            if (!this.closed && !this.store.readOnly && !this.store.transactionDepth && !this.writeAbort.signal.aborted
+              && !this.store.writeQueue?.closed && !this.store.writeQueue?.running && !this.store.writeQueue?.pendingLength
+              && !item.adapterPending && generation === item.adapterGeneration
+              && item.adapter === adapter && ownershipWriter.unchanged(this.ownershipKey(id), state, scope))
+              return Promise.resolve();
+          }
+          return this.write(() => {
+            if (shelly) ownershipWriter.write(this.ownershipKey(id), state, scope);
+            else this.store.setState(this.ownershipKey(id), state);
+            this.store.afterCommit(() => { item.ownershipAdmitted = true; });
+          }, { priority: 'control', bytes: Buffer.byteLength(JSON.stringify(state)), isCurrent: () => item.adapter === adapter });
+        }, clock: this.clock,
         // Record publication before a command/readback await. A later ordinary
         // poll must not extend the preceding mode through this changed decision.
         onStatusChange: () => {

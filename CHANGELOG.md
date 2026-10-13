@@ -14,6 +14,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   retry remains visible while setup is waiting to check the charger. Original
   clocks and failure backoff are preserved.
 
+- Avoid rewriting unchanged charging cost and Shelly limiter state solely for
+  another calculation date. Live dates stay current, while committed equipment,
+  session, source and command state retain their exact persistence boundaries.
+
 - Rejoining a protected computer allows its final history acknowledgement to
   finish within the configured operation timeout, avoiding a premature short
   timeout after replacement history was already accepted. Failed or interrupted

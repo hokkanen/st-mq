@@ -180,6 +180,30 @@ normal Store transaction. The shared journal and its durability policy are
 unchanged. Automatic choices, physical session/equipment scope, pending ownership
 and restoration remain authoritative only under their existing live evidence gates.
 
+Live session-cost and Shelly limiter calculations keep their current dates in
+RAM. Their durable state avoids a rewrite when only `sessionCost.updatedAt` or
+`limiter.evaluatedAt` differs from the last successfully committed payload for
+the same equipment and physical request/session. Every other field, including
+unknown fields, source epochs, numerical results and control obligations, remains
+an exact comparison. Missing scope, a backward date and the first save by a new
+controller or Store take the normal write path. Original source, instruction,
+readback and restoration clocks are unaffected; the saved calculation date is
+never renewed by a viewer or treated as current authority.
+
+The calculation cache is published after COMMIT. Per-key pending tokens prevent
+an intermediate write or retirement from being hidden by an older committed
+basis, and nested/outer rollback removes only its own tokens. Preparation order
+also keeps a reentrant after-COMMIT write ahead of an older cache callback. All
+admitted callbacks for one Shelly equipment slot share that committed basis;
+captured adapter generation makes every replacement controller's first save
+independent and fences interference from an older admitted callback. A current
+Shelly controller can avoid a clock-only write admission outside an existing parent
+transaction and an active or queued write; a descendant save still waits for that
+parent's successful commit, and queued saves keep their existing admission order.
+Cost-fragment suppression remains within the ordinary runtime transaction. These
+guards add no timer, query, persisted representation or SQLite policy, and do not
+establish a reduction in native COMMIT attempts or physical storage latency.
+
 Plans are immutable content-addressed records, shared by the internal charger
 state and recorded view. Scenario arrays and interval reference context are
 separate complete immutable records, referenced by the plan. Readers restore the
@@ -225,3 +249,7 @@ then requires fresh device evidence under the existing execution contract.
 source clocks, journal bytes, atomic replacement/cleanup, failed publication,
 pinned readers and invalid-fragment preflight. These offline fixtures establish
 representation and recovery behavior, not physical HA write throughput or latency.
+`test/charging-calculation-persistence.test.js` checks real cost and native
+controller producers, complete field/scope fences, first-save and restart,
+intermediate writes/retirement, parent-admission rollback and committed callback
+failure without renewing saved calculation evidence.
