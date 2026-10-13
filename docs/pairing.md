@@ -1028,6 +1028,13 @@ Only changed records consume additional retained storage; rejoin does not create
 another full database copy. The complete immutable target transfer is staged before the branch archive and
 rollback commit atomically. The saved release request makes retries use the
 originally reviewed donor and target checkpoints even if the source keeps writing. Lost replies never authorize a different replacement.
+The final rejoin acknowledgement uses the configured pairing operation timeout,
+including bounded source cleanup; ordinary status reads retain their short
+deadline. Shutdown still cancels the acknowledgement. If it expires or fails,
+the receiver remains protected and retains the original saved request. Journal
+replacement can resume that same request. During
+journal replacement its read-only web view stays closed until that request
+completes; a closed view alone does not establish a stopped process.
 
 Independent donor histories without a shared configured-peer anchor require
 exceptional full replacement. That path

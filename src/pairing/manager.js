@@ -1243,7 +1243,7 @@ export class PairManager {
       signal:this.abort.signal,guard,beforeCommit:guard});
     await this.state.update({pendingSnapshot:null,accepted:{generation:result.generation,digest:result.digest,
       checkpoint:result.checkpoint,epoch:metadata.claim.epoch,sequence:metadata.sequence,nodeId:metadata.claim.nodeId}});
-    await this.peer.request('peer-ack',{checkpoint:result.checkpoint},{signal:this.abort.signal});
+    await this.peer.request('peer-ack',{checkpoint:result.checkpoint},{signal:this.abort.signal,timeoutMs:this.config.timeoutMs});
     if (verifyWithFullSnapshot) {
       if (!verification || !sameCheckpoint(verification.checkpoint, metadata.checkpoint)) throw pairError('verification_failed');
       const actual = await this.fullVerification(result.dbPath, metadata.checkpoint);
@@ -1421,7 +1421,7 @@ export class PairManager {
           const actual = await this.fullVerification(result.dbPath, metadata.checkpoint);
           if (actual.digest !== body.verification.digest) throw pairError('full_verification_content_mismatch');
         }
-        await this.peer.request('peer-ack',{checkpoint:result.checkpoint},{signal:this.abort.signal});
+        await this.peer.request('peer-ack',{checkpoint:result.checkpoint},{signal:this.abort.signal,timeoutMs:this.config.timeoutMs});
         await this.hooks.closeReplica?.();
         await this.state.update({ role: 'slave', reason: null, release: null, transition: null, everWritten: false,
           activeDbPath: null, recovery: null, activationError: null, releaseReceipt: { requestId: body.requestId, identity } });
