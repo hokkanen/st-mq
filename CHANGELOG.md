@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- A rejoin can resume a failed or lost acknowledgement after its full seed was
+  accepted, preserving that accepted history instead of attempting to republish
+  the original seed image. Full verification, current authority and unchanged
+  publication checks remain required; original donor evidence stays retained.
+
 - Storage technical details distinguish journal sealing from SQLite COMMIT,
   helping attribute slow saves while retaining the existing total. Unmeasured
   stages stay unknown; SQLite COMMIT includes synchronization and checkpoint work.

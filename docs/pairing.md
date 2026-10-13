@@ -1028,6 +1028,12 @@ Only changed records consume additional retained storage; rejoin does not create
 another full database copy. The complete immutable target transfer is staged before the branch archive and
 rollback commit atomically. The saved release request makes retries use the
 originally reviewed donor and target checkpoints even if the source keeps writing. Lost replies never authorize a different replacement.
+An exceptional full seed already accepted under that saved release can resume
+its acknowledgement from the exact accepted generation, checkpoint and frozen
+source metadata. It performs full current verification and checks the current
+peer authority without republishing the original seed image. Publication and
+local-write guards remain active through acknowledgement; changed or unknown
+evidence leaves the computer protected.
 
 Independent donor histories without a shared configured-peer anchor require
 exceptional full replacement. That path
