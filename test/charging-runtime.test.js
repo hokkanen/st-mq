@@ -12,6 +12,7 @@ import { createShellyController } from '../src/charging/shelly-evse.js';
 import { shellyProfile } from '../src/charging/shelly-profile.js';
 import { createOcppScheduleAdapter } from '../src/charging/ocpp.js';
 import { chargingPlannerInput } from '../src/charging/planner-input.js';
+import { fixture as jointFixture } from './helpers/charging-joint-fixture.js';
 
 const HOUR = 3_600_000, initialNow = Date.parse('2026-01-15T00:00:00Z');
 function fixture(charging = {}, saved = {}, automatic = {}) {
@@ -1354,64 +1355,32 @@ test('offline Easee state cannot revive its last raw connection through a legacy
   assert.equal(chargerView(runtime).values.connected.value, null);
 });
 
-test('a future second controller has independent plans and ownership while Equalizer keeps current authority', async t => {
-  const f = fixture({ defaults: { capacityKwh: 20 } }, {}, { charger1: true, charger2: true }), runtime = f.create(), firstAdapter = fakeAdapter(f.clock), secondAdapter = fakeAdapter(f.clock);
-  t.after(() => runtime.close());
-  const currentCommands = [], secondDecisions = [];
-  firstAdapter.setCurrent = async currentA => currentCommands.push({ id: 'charger1', currentA });
-  secondAdapter.setCurrent = async currentA => currentCommands.push({ id: 'charger2', currentA });
-  secondAdapter.capabilities = { scheduling: true, currentControl: true, externalLoadBalancing: false };
-  secondAdapter.normalize = snapshot => ({
-    connected: snapshot.pluggedIn ?? null, currentA: 14, maxCurrentA: 14, phases: [1, 1, 1], voltageV: 230,
-    charging: false, powerKw: 0, limits: snapshot.limits ?? {},
-    capabilities: secondAdapter.capabilities,
-  });
-  secondAdapter.createController = ({ adapter, saveState, getPlan }) => {
-    let closed = false, state = { phase: 'off', released: false, snapshot: null, owned: null };
-    return {
-      status: () => structuredClone(state),
-      async update({ enabled }) {
-        if (closed) return;
-        state.snapshot = await adapter.read();
-        state.session = { connected: true, connectedAt: initialNow };
-        const plan = await getPlan();
-        state.phase = enabled ? plan?.state ?? 'unavailable' : 'off';
-        state.owned = enabled && plan?.state === 'waiting' ? { planId: plan.id, startAt: plan.startAt } : null;
-        secondDecisions.push({ enabled, planId: plan?.id, phase: state.phase });
-        saveState({ version: 1, phase: state.phase, released: false, owned: state.owned });
-      },
-      async close() { closed = true; },
-    };
-  };
-  const vehicle = { connected: true, pluggedIn: true, atHome: true, assignment: 'bmw', batteryLevel: 40,
-    chargeLimitSoc: 80, requestedCurrentA: 3, maxCurrentA: 6, phases: 1, voltageV: 230, actualPowerKw: 0 };
-  runtime.teslaCapture = { snapshot: () => vehicle };
-  await runtime.setAdapter('charger1', firstAdapter);
-  await runtime.setAdapter('charger2', secondAdapter);
-  await runtime.reconcile();
-  await editSession(runtime, 'charger2', { capacityKwh: 10, readyBy: '05:00' });
-  f.setNow(initialNow + 3 * 60_000);
-  runtime.tick({ prices }); await runtime.reconcile();
-  const first = chargerView(runtime), second = chargerView(runtime, 'charger2');
-  assert.equal(first.plan.state, 'waiting');
-  assert.equal(second.plan.state, 'waiting');
+test('current OCPP and Shelly controllers retain independent plans and current-format ownership', async t => {
+  const f = await jointFixture(t);
+  const currentCommands = [];
+  f.runtime.chargers.charger1.adapter.setCurrent = async currentA => currentCommands.push(currentA);
+  await f.automatic('charger1', true); await f.automatic('charger2', true);
+  await f.connect('charger1'); await f.connect('charger2');
+  await f.edit('charger1', { capacityKwh: 20 });
+  await f.edit('charger2', { capacityKwh: 10, readyBy: '05:00' });
+  f.advance(3 * 60_000); await f.plan();
+  const first = f.view('charger1'), second = f.view('charger2');
+  assert.equal(first.plan.state, 'waiting'); assert.equal(second.plan.state, 'waiting');
   assert.notEqual(first.plan.id, second.plan.id);
-  assert.ok(second.plan.deadlineAt < first.plan.deadlineAt);
-  assert.equal(second.values.currentA.value, 14, 'Tesla requested current cannot replace a real charger adapter allowance');
+  assert(second.plan.deadlineAt < first.plan.deadlineAt);
+  const own1 = f.store.getState(f.runtime.ownershipKey('charger1'));
+  const own2 = f.store.getState(f.runtime.ownershipKey('charger2'));
+  assert.equal(own1.execution.planId, first.plan.id);
+  assert.equal(own2.execution.planId, second.plan.id);
+  assert.equal(own1.owned.transactionId, first.control.snapshot.transactionId);
+  assert.equal(own2.association, second.association);
+  assert.equal(own2.ownedPause, true);
+  assert.deepEqual(currentCommands, [], 'Joint coordination leaves native Equalizer current control intact');
   assert.equal(second.values.phases.value, 3);
-  assert.equal(f.values.get(runtime.ownershipKey('charger1')).owned.planId, first.plan.id);
-  assert.equal(f.values.get(runtime.ownershipKey('charger2')).owned.planId, second.plan.id);
-  assert(secondDecisions.some(decision => decision.enabled && decision.planId === second.plan.id));
-  assert.equal(runtime.status().coordination.currentLimitsAreProposals, true);
-  assert.ok(runtime.status().coordination.currentLimits.length > 0);
-  assert.ok(runtime.status().coordination.currentLimits.every(limit => limit.chargerId === 'charger2'));
-  assert.deepEqual(currentCommands, [], 'Coordination proposals never become Equalizer or unsupported dynamic-current writes');
-  vehicle.assignment = 'auto'; runtime.tick();
-  assert.equal(chargerView(runtime, 'charger2').values.connected.value, true,
-    'Uncertain vehicle attribution cannot discard a confirmed second charger connection');
-  await assert.rejects(editSession(runtime, 'charger2', { enabled: false }), /Invalid session field/);
-  assert.equal(runtime.settings.chargers.charger1.enabled, true);
-  assert.equal(chargerView(runtime).control.phase, 'waiting');
+  assert.equal(second.values.connected.value, true, 'Unknown vehicle evidence keeps the confirmed peer in the joint forecast');
+  assert.equal(f.runtime.settings.chargers.charger1.enabled, true);
+  assert.equal(f.runtime.settings.chargers.charger2.enabled, true);
+  await assert.rejects(f.edit('charger2', { enabled: false }), /Invalid session field/);
 });
 
 test('a second plug with unavailable current preserves BMW price scheduling and uses an unapplied maximum-current plan', async t => {
