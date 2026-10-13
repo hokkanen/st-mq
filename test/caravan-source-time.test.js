@@ -5,6 +5,7 @@ import { Recorder } from '../src/storage/recorder.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { getChartData } from '../src/app/chart-data.js';
+import { CARAVAN_NATIVE_RESTART_DELAY_MS } from '../src/domain/caravan-power-timing.js';
 
 const START = Date.parse('2026-10-09T10:00:00Z');
 const IDENTITY = 'a'.repeat(64);
@@ -19,7 +20,7 @@ async function automaticallyAdmit(predicate) {
 
 function fixture(t, { failOn = false, genericMeter = false } = {}) {
   const store = new Store(':memory:'), publications = [], commands = [];
-  let now = START;
+  let now = START - CARAVAN_NATIVE_RESTART_DELAY_MS, warming = false;
   const recorder = new Recorder(store, { clock: () => now });
   const settings = equipmentConfiguration({ devices: [
     { id: 'air', kind: 'temperature', area: 'garage', signal: 'caravan_temperature', connection: 'mqtt:fixture/air' },
@@ -31,7 +32,7 @@ function fixture(t, { failOn = false, genericMeter = false } = {}) {
       dehumidifier_control: true, temperature_control: { sensor_device_id: 'air' }, max_age_seconds: 180,
       mqtt: { timestamp_path: 'timestamp', availability_topic: 'fixture/dryer/online', command_topic: 'fixture/dryer/set' } },
   ] });
-  const capture = createEquipmentCapture({ store, settings, engine: { clock: () => now, recorder, ingest: row => recorder.record(row) },
+  const capture = createEquipmentCapture({ store, settings, canControl: () => !warming, engine: { clock: () => now, recorder, ingest: row => recorder.record(row) },
     publish: async (topic, payload, options) => {
       publications.push({ topic, payload });
       if (topic !== 'fixture/dryer/set') return;
@@ -56,6 +57,7 @@ function fixture(t, { failOn = false, genericMeter = false } = {}) {
     reply('Shelly.GetStatus', { 'switch:0': { id: 0, output: true, apower: 100, current: 0.5, aenergy: { total: 1000 } } });
   };
   meterConnect();
+  warming = true;
   const f = { capture, commands, store, recorder, now: () => now, advance: ms => { now += ms; },
     recording: () => recorder.status(now).exactParameters.find(row => row.signal === 'caravan_dehumidifier_state'),
     native: () => capture.status().devices.find(row => row.id === 'caravan'),
@@ -90,12 +92,17 @@ function fixture(t, { failOn = false, genericMeter = false } = {}) {
       await f.sample(5000, 'off');
       await f.sample(1000, 'on', 105); await f.sample(5000, 'on', 105);
       await f.sample(1000, 'off'); await f.sample(5000, 'off');
+      const until = f.state().powerRestartNotBefore;
+      while (now < until) { f.advance(Math.min(60_000, until - now)); f.air(10); f.dryer('off'); f.meter(100); await settle(); }
       await f.sample(1000, 'on', 105);
       assert.equal(f.state().qualified, true);
       assert.equal(f.state().desiredPower, 'on');
       assert.deepEqual(f.commands.map(row => row.power), ['on', 'off', 'on']);
     },
   };
+  f.dryer('off');
+  while (now < START) { f.advance(Math.min(60_000, START - now)); f.dryer('off'); f.meter(); }
+  warming = false;
   return f;
 }
 
@@ -293,7 +300,7 @@ test('bounded clock admission cannot waive the first state evidence required aft
   assert(!f.store.observations({ signal: SIGNAL }).some(row => row.raw?.timeBasis === 'recording-availability-recovery'));
   f.advance(1); f.dryer('on'); await settle();
   assert.equal(f.state().recording, true); assert.equal(f.recording().freshness.status, 'fresh');
-  assert.deepEqual(f.commands.map(row => row.power), ['on', 'off', 'on']);
+  assert.deepEqual(f.commands.map(row => row.power), ['on', 'off'], 'Automatic On remains held after the actual Off');
 });
 
 test('configuration rejects a recording-disabled Caravan dehumidifier', () => {

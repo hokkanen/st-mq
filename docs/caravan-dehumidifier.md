@@ -19,6 +19,25 @@ Capabilities do not prove successful execution: confirmation requires a fresh
 matching device report. Never use the Caravan energy plug as the appliance power
 control; native shutdown allows its cooling cycle to finish.
 
+The [manufacturer's DESD8LW manual](https://www.electriq.co.uk/files/pdf/DESD8LW%2020210901.pdf)
+describes about three to four minutes of drying after native Off and requires
+five minutes before restarting. For the configured Caravan native profile, every
+application On path waits five minutes after actual admitted native Off: the
+power check, Automatic, manual power and restoration all share the same fence.
+The saved transition keeps its original appliance source, MQTT receipt and
+writer admission clocks. Repeated healthy Off reports do not move that boundary.
+The application does not prevent an independent native On or infer who sent it.
+
+Restart, connection loss and actual native-power freshness expiry leave an
+unobserved interval. The first genuinely fresh admitted Off afterward starts a
+separate conservative five-minute confirmation wait, once for that connection.
+It does not invent an Off transition or renew the earlier transition's clocks.
+A queued report already stale when admitted cannot establish this confirmation.
+Clock rollback cannot shorten an existing saved wait. A different route or
+physical appliance cannot inherit the earlier timing or On restoration.
+Timing is a restriction, never On permission; current authority, identity,
+fresh native feedback and all existing test/temperature checks still apply.
+
 The card starts with reported power and the supported native humidity and fan
 controls. **Automatic power** shows the saved enabled state and thresholds;
 expand it to edit the switch and thresholds, then use **Save changes** or
@@ -207,8 +226,11 @@ to the rise and return close to the Off baseline. Each assessed power level need
 at least two independent meter reports spanning at least five seconds.
 The test does not change the target humidity or fan speed to force a larger
 load. It allows bounded time for native startup and shutdown before assessing
-power, with a three-minute deadline per phase, so cooling operation after Off
-does not immediately fail the check.
+power. The Off baseline has an eight-minute bound covering the restart wait and
+fresh baseline evidence; On has a three-minute bound and the final Off fall has
+a five-minute bound covering native drying. The power check keeps collecting a
+bounded fresh Off baseline while waiting, without consuming On intent or
+renewing its phase deadline.
 If the appliance draws no detectable extra power, the result is inconclusive
 and recording stays paused. Humidity and agreement between air sensors are
 not prerequisites.
@@ -224,6 +246,12 @@ device readback before normal temperature control resumes. The restoration
 obligation survives restart and connection loss; a broken link cannot prove
 restoration. Shutdown and reload attempt restoration within a bounded wait
 before closing the command transport; unresolved obligations remain durable.
+Restoration to On waits for the same native restart boundary without saving a
+new attempted command or extending the original restoration dispatch clock.
+A current-format restart retains the obligation and timing; a new connection's
+uncertain interval may conservatively extend the remaining wait. Manual On
+during the hold is refused with the remaining wait, and the card keeps On
+unavailable until fresh timing and all ordinary command checks permit it.
 A fresh independent native power change aborts the test and supersedes its
 captured setting, so restoration cannot overwrite that newer manual or native
 choice. Commands always use the native appliance controls, never the
@@ -242,6 +270,14 @@ requires a new test after completing any pending restoration.
 Qualification is never filled backwards into the test or an earlier reporting
 gap. Device control authority is required for the
 test and restoration; read-only replicas cannot send these commands.
+
+Native power timing uses one strict current optional state contract. A genuinely
+absent new timing record is established by actual admitted reports; malformed
+records, retired timing versions or mismatched saved key/identity/route fields
+are rejected before writable database setup. There is no conversion, inferred
+transition or automatic repair. Same-schema backup and paired state replication
+retain the original timing and restoration records; copied state grants no
+device authority.
 
 A bounded wait for a slightly early required appliance or meter timestamp pauses
 test advancement and recording without creating a new connection or restarting a failed check.

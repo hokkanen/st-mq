@@ -32,6 +32,8 @@ const dehumidifierControlReady = (status, device, busy) => Boolean(status && !is
 export const dehumidifierControlAllowed = (status, device, busy = false) => dehumidifierControlReady(status, device, busy)
   && device.available === true && device.dehumidifier?.available === true;
 export const dehumidifierCommandAllowed = (status, device, setting, value, busy = false) => dehumidifierSettingAllowed(device, setting, value)
+  && !(setting === 'power' && value === 'on' && device.dehumidifier?.temperatureControl?.configured === true
+    && device.dehumidifier?.powerOnAvailable !== true)
   && (dehumidifierControlAllowed(status, device, busy) || setting === 'power' && value === 'off'
     && dehumidifierControlReady(status, device, busy) && device.dehumidifier?.powerOffAvailable === true);
 
@@ -284,6 +286,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     power.hidden = !(device.capabilities?.power?.length) || device.temperatureControl?.enabled === true;
     controls.hidden = power.hidden && [...settingFields.values()].every(field => field.hidden);
     help.textContent = isReadOnlyReplica(status) ? 'Controls are available on the master computer.'
+      : device.temperatureControl?.restartWaiting ? 'Waiting five minutes after confirmed native Off before switching On.'
       : device.probeBusy ? 'Native settings are locked while the power check runs and the previous power setting is restored.'
       : !live && device.powerOffAvailable && !device.temperatureControl?.enabled ? 'Power can be turned off. Other settings need a fresh device report.'
       : !live ? 'Controls become available after the dehumidifier connects and reports its settings.'
@@ -300,6 +303,8 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
       const test = guard.locationTest;
       const explanation = {
         'checking-power': 'Checking whether Caravan power rises with On and falls with Off.',
+        'waiting-restart': 'Waiting five minutes after confirmed native Off before the power check can switch On.',
+        'waiting-native-power': 'Waiting for fresh native power evidence after the connection gap.',
         'restoring-power': 'Restoring the dehumidifier’s previous power setting.',
         'power-test-failed': 'Caravan power did not confirm both switches. A new connection will repeat the check.',
         'appliance-unavailable': 'Waiting for fresh dehumidifier reports.',
@@ -309,7 +314,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
         cold: !guard.qualified ? 'Waiting for temperature above the automatic Off threshold before checking power.' : null,
       };
       setText(recordingDetail, guard.recording ? 'Caravan power followed native On and Off.'
-        : explanation[guard.reason] ?? explanation[test?.reason]
+        : ['waiting-restart', 'waiting-native-power'].includes(test?.reason) ? explanation[test.reason] : explanation[guard.reason] ?? explanation[test?.reason]
           ?? (test?.status === 'passed' ? 'Waiting for a fresh dehumidifier state report.' : 'Waiting to check Caravan power.'));
       const value = (number, unit) => Number.isFinite(number) ? `${Math.round(number * 10) / 10} ${unit}` : 'Unavailable';
       for (const [field, node] of comparisonValues) setText(node, value(guard[field], field.endsWith('C') ? '°C' : '%'));

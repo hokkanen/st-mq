@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCaravanProbe, advanceCaravanProbe, abortCaravanProbe,
-  CARAVAN_PROBE_PHASE_TIMEOUT_MS, CARAVAN_PROBE_MAX_SAMPLES } from '../src/acquisition/caravan-location.js';
+  CARAVAN_PROBE_BASELINE_TIMEOUT_MS, CARAVAN_PROBE_MAX_SAMPLES } from '../src/acquisition/caravan-location.js';
 
 const START = 1_000_000;
 function fixture(initialPower = 'off') {
   const state = createCaravanProbe({ now: START, initialPower });
   return { state, step: (offset, power, watts, overrides = {}) => advanceCaravanProbe(state,
     { now: START + offset, power, powerObservedAt: START + offset,
-      meterPowerW: watts, meterObservedAt: START + offset, ...overrides }) };
+      meterPowerW: watts, meterObservedAt: START + offset, canStart: true, ...overrides }) };
 }
 
 test('small fan-only rise and matching fall establish electrical evidence without humidity', () => {
@@ -56,7 +56,7 @@ test('cached reports and elapsed time cannot create stable baseline evidence', (
     assert.equal(f.step(offset, 'off', 1, { meterObservedAt: START }).command, null);
   }
   assert.equal(f.state.samples.length, 1);
-  assert.equal(f.step(CARAVAN_PROBE_PHASE_TIMEOUT_MS, 'off', 1).status, 'failed');
+  assert.equal(f.step(CARAVAN_PROBE_BASELINE_TIMEOUT_MS, 'off', 1).status, 'failed');
 });
 
 test('an appliance elsewhere leaves a flat meter response and never authorizes recording', () => {
@@ -84,12 +84,24 @@ test('native Off readback alone is insufficient and delayed cooldown can complet
   f.step(20000, 'off', 40); assert.equal(f.step(25000, 'off', 40).status, 'passed');
 });
 
+test('native drying may retain power for four minutes while the Off fall remains bounded at five minutes', () => {
+  const f = fixture(); f.step(0, 'off', 20); f.step(5000, 'off', 20);
+  f.step(6000, 'on', 220); f.step(11000, 'on', 220);
+  for (const offset of [12000, 17000, 60000, 120000, 180000, 240000])
+    assert.equal(f.step(offset, 'off', 210).status, 'testing');
+  f.step(250000, 'off', 20);
+  assert.equal(f.step(255000, 'off', 20).status, 'passed');
+  const failed = fixture(); failed.step(0, 'off', 20); failed.step(5000, 'off', 20);
+  failed.step(6000, 'on', 220); failed.step(11000, 'on', 220);
+  assert.equal(failed.step(311000, 'off', 210).reason, 'no-matching-power-fall');
+});
+
 test('an unmatched fall or unrelated baseline shift cannot qualify', () => {
   const f = fixture(); f.step(0, 'off', 100); f.step(5000, 'off', 100);
   f.step(6000, 'on', 200); f.step(11000, 'on', 200);
   f.step(12000, 'off', 160); assert.equal(f.step(17000, 'off', 160).status, 'testing');
   f.step(22000, 'off', 0); assert.equal(f.step(27000, 'off', 0).status, 'testing');
-  assert.equal(f.step(191000, 'off', 160).reason, 'no-matching-power-fall');
+  assert.equal(f.step(311000, 'off', 160).reason, 'no-matching-power-fall');
 });
 
 test('meter noise raises the required response and invalid evidence remains unknown', () => {

@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Caravan native On commands wait five minutes after observed Off, including
+  power tests, Automatic, manual power and restoration. Native drying receives
+  a bounded five-minute power-fall window. Original clocks and restoration duties
+  survive restart; a fresh Off after unknown continuity adds a separate
+  conservative hold, and ordinary repeated Off reports do not renew it.
+
 - Caravan recording warnings distinguish an unconfirmed power check from missing
   MQTT reports after a new capture attaches. Earlier recorded state and source
   clocks stay intact, and detailed readings explain the current recording gate.

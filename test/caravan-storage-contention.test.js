@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
+import { CARAVAN_NATIVE_RESTART_DELAY_MS } from '../src/domain/caravan-power-timing.js';
 
 const START = Date.parse('2026-10-09T10:00:00Z'), IDENTITY = 'a'.repeat(64);
 const RESTORE_KEY = `equipment:caravan-probe-restoration:v1:caravan_dehumidifier:${IDENTITY}`;
@@ -21,7 +22,7 @@ async function fixture(t, { locationCheck = true } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-caravan-contention-'));
   const store = new Store(join(directory, 'recording.sqlite')), writer = new DatabaseSync(store.path);
   const client = new EventEmitter(), commands = [];
-  let now = START, locked = false, authority = true;
+  let now = locationCheck ? START - CARAVAN_NATIVE_RESTART_DELAY_MS : START, locked = false, authority = true;
   const settings = equipmentConfiguration({ devices: [
     { id: 'blu_ht', kind: 'temperature', area: 'garage', connection: 'mqtt:fixture/air', signal: 'caravan_temperature',
       mqtt: { state_path: 'temperature', timestamp_path: 'timestamp' } },
@@ -52,7 +53,12 @@ async function fixture(t, { locationCheck = true } = {}) {
     capabilities: { power: ['off', 'on'], fanSpeed: ['low', 'medium', 'high'], targetHumidity: [50, 55] }, ...extra });
   const air = temperature => report('fixture/air', { temperature, timestamp: now });
   const meter = watts => report('fixture/power', { power: watts, timestamp: now });
-  report('fixture/appliance/online', 'online'); air(1.5); appliance(); meter(100);
+  report('fixture/appliance/online', 'online');
+  if (locationCheck) {
+    appliance(); await until(() => store.writeQueueStatus().pending === 0);
+    while (now < START) { now += Math.min(60_000, START - now); appliance(); await until(() => store.writeQueueStatus().pending === 0); }
+  }
+  air(1.5); appliance(); meter(100);
   await until(() => store.writeQueueStatus().pending === 0);
   return { store, acquisition, client, commands, report, appliance, air, meter,
     now: () => now, advance: ms => { now += ms; }, authority: value => { authority = value; },
@@ -174,6 +180,8 @@ test('a queued automatic Off is cancelled when fresh warm air restores On demand
     f.advance(ms); f.appliance(power); f.meter(watts); await delay(0);
   }
   assert.equal(f.state().temperatureControl.qualified, true);
+  const restartAt = f.state().temperatureControl.powerRestartNotBefore;
+  while (f.now() < restartAt) { f.advance(Math.min(60_000, restartAt - f.now())); f.appliance('off'); f.meter(100); await delay(0); }
   f.advance(1000); f.air(10); await delay(0);
   f.advance(1000); f.appliance('on'); await delay(0);
   assert.deepEqual(f.commands.map(row => row.power), ['on', 'off', 'on']);

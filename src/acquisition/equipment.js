@@ -11,6 +11,7 @@ import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 import { CARAVAN_DEHUMIDIFIER_STATES } from '../domain/history-series.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
 import { createCaravanProbe, advanceCaravanProbe, abortCaravanProbe } from './caravan-location.js';
+import { caravanPowerTimingKey, validateCaravanPowerTiming, observeCaravanPower, caravanPowerRestartAt } from '../domain/caravan-power-timing.js';
 import { unsentEquipmentCommand } from '../domain/equipment-command-errors.js';
 
 const scalar = value => typeof value === 'number' && Number.isFinite(value);
@@ -70,7 +71,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     temperatureGuard: { settings: { ...defaultTemperatureControl }, demand: false, managed: false,
       lastAttemptAt: null, lastAttemptPower: null, recordingSince: null, sourceTimeWait: null, sourceTimeWaitExpiry: null,
       probe: null, meterSignature: null, sessionActive: false, restoration: null,
-      qualified: false, boundIdentity: null, recordingGateObserved: false }, recordingLocation: false }));
+      qualified: false, boundIdentity: null, recordingGateObserved: false, nativePowerTiming: null,
+      nativePowerContinuity: false, nativePowerContinuityLostAt: engine.clock() }, recordingLocation: false }));
   const admission = createMqttAdmission();
   const coverDispatches = new Map();
   const temperatures = devices.filter(canonicalTemperature);
@@ -201,6 +203,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (guard.probe?.status === 'testing') abortCaravanProbe(guard.probe, reason, receivedAt);
       guard.qualified = false; guard.sessionActive = false; guard.sourceTimeWait = null; guard.sourceTimeWaitExpiry = null;
       guard.recordingGateObserved = false;
+      guard.nativePowerContinuity = false;
+      guard.nativePowerContinuityLostAt = Math.max(guard.nativePowerContinuityLostAt, receivedAt);
     }
     energy.get(device.id)?.unavailable?.(receivedAt, reason);
     if (device.coverOperation && ['publishing', 'published'].includes(device.coverOperation.status)) {
@@ -277,6 +281,24 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       deadline: reading.observedAt + (config.maxAgeMs || settings.maxAgeMs), signature: meterSignature };
   }
   const probeBusy = device => Boolean(device.temperatureGuard.restoration || device.temperatureGuard.probe?.status === 'testing');
+  function currentNativePowerTiming(device) {
+    const state = device.temperatureGuard, boundary = state.nativePowerTiming;
+    return state.nativePowerContinuity && boundary && boundary.identity === device.dehumidifierReport?.identity
+      && boundary.signature === signature(device.id) && boundary.power === device.dehumidifierState.power ? boundary : null;
+  }
+  function restartWait(device, now) {
+    if (!device.temperatureControl) return false;
+    const boundary = currentNativePowerTiming(device);
+    if (!boundary) return true;
+    const restartAt = caravanPowerRestartAt(boundary);
+    return restartAt !== null && now < restartAt;
+  }
+  function assertRestartReady(device, setting, value, now) {
+    if (setting !== 'power' || value !== 'on' || !restartWait(device, now)) return;
+    const restartAt = caravanPowerRestartAt(currentNativePowerTiming(device));
+    throw fail(restartAt === null ? 'dehumidifier restart needs a fresh native power transition'
+      : `dehumidifier restart is waiting for native drying; wait ${Math.max(1, Math.ceil((restartAt - now) / 1000))} seconds`);
+  }
   function caravanCold(device, now) {
     if (!device.temperatureGuard.settings.enabled) return false;
     const sensor = devices.find(row => row.id === device.temperatureControl?.sensorDeviceId);
@@ -298,6 +320,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const qualified = Boolean(ready && meter && state.qualified && state.meterSignature === meter.signature && !state.restoration);
     const probe = state.probe;
     const testStatus = state.restoration && probe?.status !== 'testing' ? 'restoring' : probe?.status ?? 'waiting';
+    const restartAt = ready ? caravanPowerRestartAt(currentNativePowerTiming(device)) : null;
     return { configured: true, ...policy, canEdit: !closed && canControl() && !probeBusy(device) && validDehumidifierIdentity(state.boundIdentity),
       sensorDeviceId: device.temperatureControl.sensorDeviceId,
       temperatureC: airFresh ? air.value : null, humidity: sensor && fresh(sensor, humidity, now) ? humidity.value : null,
@@ -310,6 +333,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         && dehumidifierHistory(device, now).value !== null
         && device.readings[device.stateSignal]?.observedAt >= state.recordingSince,
       desiredPower: policy.enabled ? state.demand ? 'on' : 'off' : null,
+      powerRestartNotBefore: restartAt,
+      restartWaiting: restartAt !== null && now < restartAt,
       reason: !ready ? 'appliance-unavailable' : testStatus === 'restoring' ? 'restoring-power'
         : !meter ? 'power-unavailable' : !canControl() && !qualified ? 'control-unavailable'
           : !qualified && caravanCold(device, now) ? 'cold'
@@ -337,6 +362,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const operation = device.dehumidifierOperation;
     if (operation?.origin === 'location-restoration' && now - operation.requestedAt < 30_000) return false;
     if (now <= obligation.lastCommandAt) return false;
+    if (obligation.power === 'on' && restartWait(device, now)) return false;
     saveRestoration(device, { ...obligation, lastCommandAt: now });
     reception.afterCommit(() => { void commandDehumidifier(device, 'power', obligation.power, 'location-restoration').catch(() => {}); });
     return false;
@@ -402,7 +428,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     // The native bridge fences command replays by request time.
     if (operation && now <= operation.requestedAt) return;
     const result = advanceCaravanProbe(state.probe, { now, power: device.dehumidifierState.power,
-      powerObservedAt: device.dehumidifierReport.fieldTimestamps.power, meterPowerW: meter.watts, meterObservedAt: meter.observedAt });
+      powerObservedAt: device.dehumidifierReport.fieldTimestamps.power, meterPowerW: meter.watts, meterObservedAt: meter.observedAt,
+      canStart: !restartWait(device, now), restartNotBefore: caravanPowerRestartAt(currentNativePowerTiming(device)) });
     if (state.probe.reason === 'power-changed-externally') {
       saveRestoration(device, null); return;
     }
@@ -482,6 +509,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     // Loss of room evidence stops an appliance previously managed here. A
     // newly discovered appliance elsewhere receives no commands.
     const value = state.demand ? 'on' : 'off';
+    if (value === 'on' && restartWait(device, now)) return;
     if (!state.managed || !(value === 'off' ? powerFeedbackReady(device, now) : healthy(device, now)) || !canControl() || closed) return;
     const operation = device.dehumidifierOperation;
     const pending = ['publishing', 'published'].includes(operation?.status);
@@ -525,6 +553,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   }
   function confirmDehumidifier(device, now) {
     const operation = device.dehumidifierOperation, report = device.dehumidifierReport;
+    if (device.temperatureControl && device.temperatureGuard.nativePowerContinuity && !powerFeedbackReady(device, now, true)) {
+      device.temperatureGuard.nativePowerContinuity = false;
+      device.temperatureGuard.nativePowerContinuityLostAt = Math.max(device.temperatureGuard.nativePowerContinuityLostAt, now);
+    }
     const dispatch = dehumidifierDispatches.get(device);
     if (dispatch?.operation === operation && !scalar(operation.dispatchedAt)
       && ['location-test', 'location-restoration'].includes(operation.origin)
@@ -617,8 +649,14 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     // physical obligation. Keep it visible until the original route returns.
     return saved;
   }
+  function loadNativePowerTiming(device, identity) {
+    const route = signature(device.id);
+    return validateCaravanPowerTiming(store.getState?.(caravanPowerTimingKey(device.id, identity, route)),
+      { identity, signature: route });
+  }
   for (const device of devices.filter(row => row.temperatureControl && row.temperatureGuard.boundIdentity))
-    device.temperatureGuard.restoration = loadRestoration(device, device.temperatureGuard.boundIdentity);
+    { device.temperatureGuard.restoration = loadRestoration(device, device.temperatureGuard.boundIdentity);
+      device.temperatureGuard.nativePowerTiming = loadNativePowerTiming(device, device.temperatureGuard.boundIdentity); }
   for (const device of devices.filter(row => row.kind === 'door')) {
     const saved = store.getState?.(`equipment:door:v1:${device.id}`);
     if (saved?.signature === signature(device.id) && saved.reading) device.readings[device.stateSignal] = {
@@ -689,10 +727,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           device.dehumidifierHistoryAfter = null;
           Object.assign(device.temperatureGuard, { settings: { ...defaultTemperatureControl }, demand: false, managed: false,
             lastAttemptAt: null, lastAttemptPower: null, recordingSince: null, sourceTimeWait: null, sourceTimeWaitExpiry: null,
-            probe: null, meterSignature: null, sessionActive: false, restoration: null, qualified: false, recordingGateObserved: false });
+            probe: null, meterSignature: null, sessionActive: false, restoration: null, qualified: false, recordingGateObserved: false, nativePowerTiming: null,
+            nativePowerContinuity: false, nativePowerContinuityLostAt: evaluatedAt });
           device.recordingLocation = false;
         }
         device.temperatureGuard.boundIdentity = physicalIdentity;
+        if (device.temperatureControl) device.temperatureGuard.nativePowerTiming = loadNativePowerTiming(device, physicalIdentity);
         if (device.temperatureControl) device.temperatureGuard.restoration = loadRestoration(device, physicalIdentity);
         if (device.temperatureControl) store.setState(temperatureControlKey(device), {
           signature: temperatureControlSignature(device), identity: physicalIdentity, settings: device.temperatureGuard.settings });
@@ -709,6 +749,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         return [field, scalar(clock) && clock >= 0 && clock <= at ? clock : null];
       }));
       const prior = device.dehumidifierReport;
+      if (device.temperatureControl && device.temperatureGuard.nativePowerContinuity && scalar(prior?.fieldTimestamps.power)
+        && Math.max(evaluatedAt, engine.clock()) - prior.fieldTimestamps.power >= device.maxAgeMs) {
+        device.temperatureGuard.nativePowerContinuity = false;
+        device.temperatureGuard.nativePowerContinuityLostAt = Math.max(device.temperatureGuard.nativePowerContinuityLostAt,
+          prior.fieldTimestamps.power + device.maxAgeMs);
+      }
       if (prior && Object.keys(fieldTimestamps).some(field => {
         const previousAt = prior.fieldTimestamps[field], incomingAt = fieldTimestamps[field];
         const previousValue = Object.hasOwn(DEHUMIDIFIER_SETTINGS, field) ? device.dehumidifierState[field] : prior[field];
@@ -726,6 +772,33 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         stale ? ['stale-report'] : state.power === null ? ['invalid-value'] : history.value === null ? ['state-evidence-unavailable'] : []);
       if (updated) {
         device.dehumidifierState = state; device.dehumidifierReport = report;
+        if (device.temperatureControl && !stale && ['off', 'on'].includes(state.power)) {
+          const timingAt = Math.max(evaluatedAt, engine.clock());
+          const previous = device.temperatureGuard.nativePowerTiming;
+          let boundary = observeCaravanPower(previous, { identity: physicalIdentity, signature: signature(device.id),
+            power: state.power, sourceAt: powerAt, receivedAt, admittedAt: timingAt, offConfirmation: null });
+          const guard = device.temperatureGuard;
+          const admittedFresh = timingAt - powerAt < device.maxAgeMs;
+          if (!admittedFresh && guard.nativePowerContinuity) {
+            guard.nativePowerContinuity = false; guard.nativePowerContinuityLostAt = timingAt;
+          }
+          if (admittedFresh && !guard.nativePowerContinuity && powerAt >= guard.nativePowerContinuityLostAt && boundary.power === state.power) {
+            // A new native Off after an unknown connection interval confirms
+            // its current state, not an unobserved switch event. Preserve the
+            // earlier transition and add one conservative hold per connection.
+            if (state.power === 'off' && powerAt >= boundary.sourceAt) {
+              const confirmation = { sourceAt: powerAt, receivedAt, admittedAt: timingAt };
+              const previousUntil = caravanPowerRestartAt(boundary);
+              const candidate = { ...boundary, offConfirmation: confirmation };
+              if (caravanPowerRestartAt(candidate) >= previousUntil) boundary = candidate;
+            }
+            guard.nativePowerContinuity = true;
+          }
+          if (boundary !== previous) {
+            store.setState(caravanPowerTimingKey(device.id, physicalIdentity, signature(device.id)), boundary);
+            device.temperatureGuard.nativePowerTiming = boundary;
+          }
+        }
         reported.add(definition.signal);
       }
       invalid = stale || state.power === null;
@@ -835,6 +908,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       throw fail('dehumidifier control is unavailable');
     if (!device.dehumidifierReport?.capabilities[setting]?.includes(value))
       throw fail('the dehumidifier has not advertised support for this setting');
+    assertRestartReady(device, setting, value, engine.clock());
     if (device.dehumidifierOperation && ['publishing', 'published'].includes(device.dehumidifierOperation.status)) {
       if (!['temperature', 'location-test', 'location-restoration'].includes(origin) || setting !== 'power' || value !== 'off')
         throw fail('dehumidifier operation already in progress; wait for its live report');
@@ -862,6 +936,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         throw fail('dehumidifier control is unavailable');
       if (!device.dehumidifierReport.capabilities[setting]?.includes(value))
         throw fail('the dehumidifier has not advertised support for this setting');
+      assertRestartReady(device, setting, value, now);
       if (device.dehumidifierReport.fieldTimestamps[setting] > previousAt && device.dehumidifierState[setting] !== previousValue)
         throw fail('dehumidifier setting changed before dispatch');
       if (origin === 'manual' && (probeBusy(device) || caravanStopping
@@ -1236,6 +1311,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           available: device.controlsDehumidifier && !closed && canControl() && healthy(device, now)
             && validDehumidifierIdentity(device.dehumidifierReport?.identity),
           powerOffAvailable: device.controlsDehumidifier && canControl() && powerFeedbackReady(device, now),
+          powerOnAvailable: device.controlsDehumidifier && !closed && canControl() && healthy(device, now) && !restartWait(device, now),
           state: Object.fromEntries(Object.entries(device.dehumidifierState).map(([field, value]) => [field, fieldFresh(device, field, now) ? value : null])),
           capabilities: structuredClone(device.dehumidifierReport?.capabilities ?? {}),
           measurements: Object.fromEntries(['temperature', 'humidity'].map(field => [field, fieldFresh(device, field, now) ? device.dehumidifierReport?.[field] ?? null : null])),

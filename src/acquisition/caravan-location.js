@@ -1,6 +1,8 @@
 // A session-local electrical response test. The caller owns command authority,
 // source freshness, physical identity and durable restoration of native power.
 export const CARAVAN_PROBE_PHASE_TIMEOUT_MS = 180_000;
+export const CARAVAN_PROBE_BASELINE_TIMEOUT_MS = 480_000;
+export const CARAVAN_PROBE_OFF_TIMEOUT_MS = 300_000;
 export const CARAVAN_PROBE_SAMPLE_SPAN_MS = 5_000;
 export const CARAVAN_PROBE_MIN_CHANGE_W = 3;
 export const CARAVAN_PROBE_MAX_SAMPLES = 6;
@@ -17,7 +19,7 @@ export function createCaravanProbe({ now, initialPower }) {
   if (!Number.isSafeInteger(now) || now < 0 || !['off', 'on'].includes(initialPower))
     throw new Error('Caravan power check requires a valid time and observed native power.');
   return { status: 'testing', phase: 'baseline', reason: 'checking-baseline', startedAt: now,
-    phaseStartedAt: now, deadlineAt: now + CARAVAN_PROBE_PHASE_TIMEOUT_MS,
+    phaseStartedAt: now, deadlineAt: now + CARAVAN_PROBE_BASELINE_TIMEOUT_MS,
     initialPower, pendingCommand: initialPower === 'on' ? 'off' : null,
     commandAt: null, lastCommandAt: null, lastMeterAt: null, confirmedPowerAt: null, samples: [],
     phaseEvidence: { baseline: { commandAt: null, firstPowerObservedAt: null, lastPowerObservedAt: null } },
@@ -40,7 +42,8 @@ function commandIntent(state, now) {
   const command = state.pendingCommand;
   state.pendingCommand = null; state.commandAt = now; state.lastCommandAt = now;
   state.phaseEvidence[state.phase].commandAt = now;
-  state.phaseStartedAt = now; state.deadlineAt = now + CARAVAN_PROBE_PHASE_TIMEOUT_MS;
+  state.phaseStartedAt = now; state.deadlineAt = now + (state.phase === 'baseline' ? CARAVAN_PROBE_BASELINE_TIMEOUT_MS
+    : state.phase === 'off' ? CARAVAN_PROBE_OFF_TIMEOUT_MS : CARAVAN_PROBE_PHASE_TIMEOUT_MS);
   return command;
 }
 
@@ -49,7 +52,7 @@ function nextPhase(state, phase, now) {
   state.pendingCommand = phase; state.commandAt = null; state.samples = [];
   state.confirmedPowerAt = null;
   state.phaseEvidence[phase] = { commandAt: null, firstPowerObservedAt: null, lastPowerObservedAt: null };
-  state.phaseStartedAt = now; state.deadlineAt = now + CARAVAN_PROBE_PHASE_TIMEOUT_MS;
+  state.phaseStartedAt = now; state.deadlineAt = now + (phase === 'off' ? CARAVAN_PROBE_OFF_TIMEOUT_MS : CARAVAN_PROBE_PHASE_TIMEOUT_MS);
   return outcome(state, commandIntent(state, now));
 }
 
@@ -101,6 +104,11 @@ export function advanceCaravanProbe(state, input) {
   const window = stableWindow(state.samples);
   if (!window) return outcome(state);
   if (state.phase === 'baseline') {
+    // The caller owns the native restart boundary. Keep collecting bounded
+    // fresh baseline evidence without consuming On or renewing a deadline.
+    if (input.canStart !== true) { state.reason = Number.isSafeInteger(input.restartNotBefore)
+      ? 'waiting-restart' : 'waiting-native-power'; return outcome(state); }
+    state.reason = 'checking-baseline';
     state.baseline = window; return nextPhase(state, 'on', now);
   }
   const baseline = state.baseline;

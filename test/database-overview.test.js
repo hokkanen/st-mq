@@ -350,6 +350,7 @@ test('current operational checkpoints stay distinct from retained measurements a
     [`voltage:estimate:providers`, 'state-voltage'],
     [`equipment:caravan-probe-restoration:v1:${marker}:identity`, 'state-caravan-restoration'],
     [`equipment:dehumidifier-temperature-control:v1:${marker}`, 'state-caravan-temperature-control'],
+    [`equipment:caravan-power-timing:v1:${marker}:identity:route`, 'state-caravan-power-timing'],
     ['pair:mqtt-source-context', 'state-pair-mqtt'],
   ];
   for (const [key] of registrations) {
@@ -368,6 +369,7 @@ test('current operational checkpoints stay distinct from retained measurements a
   assert.equal(rows.get('state-caravan-restoration').missingCount, 1, 'Completed restoration remains an explicit null current entry');
   assert.equal(rows.get('adaptive-observations').count, 0, 'A checkpoint is not recorded voltage history');
   assert.match(rows.get('state-caravan-temperature-control').description, /dashboard choices/);
+  assert.match(rows.get('state-caravan-power-timing').description, /original source, receipt and admission clocks/);
   assert.match(rows.get('state-pair-mqtt').description, /grants no control authority/);
   assert(!JSON.stringify(overview).includes(marker));
 

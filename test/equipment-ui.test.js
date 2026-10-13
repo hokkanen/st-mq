@@ -5,7 +5,7 @@ import { createEquipmentActions, createEquipmentPanel, equipmentReadingRows, equ
   equipmentCoverReceipt, equipmentCoverResult, equipmentControlResult, equipmentCheckText, dhwrReadingSummary } from '../chart/equipment.js';
 import { historyDatasets, historyValueLabel } from '../chart/history-model.js';
 import { providerName } from '../chart/provider-status.js';
-import { DEHUMIDIFIER_OPTIONS, dehumidifierControlAllowed, dehumidifierResult } from '../chart/caravan.js';
+import { DEHUMIDIFIER_OPTIONS, dehumidifierControlAllowed, dehumidifierCommandAllowed, dehumidifierResult } from '../chart/caravan.js';
 
 const now = Date.parse('2026-09-13T12:00:00Z');
 
@@ -527,7 +527,7 @@ const caravanAir = () => ({ id: 'blu_ht', label: 'Caravan air', area: 'garage', 
     blu_ht_rssi: { label: 'Bluetooth signal', value: -81, unit: 'dBm', observedAt: now, stale: false } } });
 const dehumidifier = (live = false) => ({ id: 'caravan_dehumidifier', label: 'Caravan dehumidifier', area: 'garage',
   kind: 'dehumidifier', available: live, controls: { dehumidifier: true }, readings: {},
-  dehumidifier: { available: live, state: live ? { power: 'off', mode: 'auto', targetHumidity: 55, fanSpeed: 'low', swing: 'fixed_90' } : {},
+  dehumidifier: { available: live, powerOnAvailable: live, state: live ? { power: 'off', mode: 'auto', targetHumidity: 55, fanSpeed: 'low', swing: 'fixed_90' } : {},
     capabilities: Object.fromEntries(Object.entries(DEHUMIDIFIER_OPTIONS).map(([setting, options]) => [setting, options.map(([value]) => value)])),
     runningState: live ? 'off' : null, operation: null } });
 
@@ -703,6 +703,27 @@ test('automatic power actions reject malformed thresholds and remain editable du
   assert.equal(calls.length, 1);
   device.dehumidifier.temperatureControl.canEdit = false; actions.update(current);
   assert.equal(await actions.dehumidifierTemperatureControl(device.id, { enabled: true, offAtC: 1, onAtC: 2 }), false);
+});
+
+test('Caravan On availability separates a confirmed restart wait from unknown timing and leaves other settings available', () => {
+  const device = dehumidifier(true), document = equipmentDocument();
+  device.dehumidifier.powerOnAvailable = false;
+  device.dehumidifier.temperatureControl = { configured: true, enabled: false, canEdit: true, offAtC: 1, onAtC: 2,
+    recording: false, qualified: false, reason: 'checking-power', restartWaiting: true,
+    powerRestartNotBefore: now + 300_000, locationTest: { status: 'testing', phase: 'baseline', reason: 'waiting-restart' } };
+  const current = status({ equipment: { devices: [device] } }), panel = createEquipmentPanel({ document, request: async () => {} });
+  panel.update(current);
+  const appliance = deviceNode(document, 'garage-equipment-readings', 'caravan').querySelector('.caravan-dehumidifier');
+  assert.equal(dehumidifierCommandAllowed(current, device, 'power', 'on'), false);
+  assert.equal(dehumidifierCommandAllowed(current, device, 'fanSpeed', 'high'), true);
+  assert.match(appliance.querySelector('.caravan-recording').textContent, /five minutes after confirmed native Off/);
+  device.dehumidifier.temperatureControl.restartWaiting = false;
+  device.dehumidifier.temperatureControl.powerRestartNotBefore = null;
+  device.dehumidifier.temperatureControl.locationTest.reason = 'waiting-native-power';
+  panel.update(current);
+  assert.equal(dehumidifierCommandAllowed(current, device, 'power', 'on'), false);
+  assert.match(appliance.querySelector('.caravan-recording').textContent, /fresh native power evidence/);
+  assert.doesNotMatch(appliance.querySelector('.caravan-recording').textContent, /five minutes/);
 });
 
 test('recording explains the power check, modest loads and missing evidence independently of humidity', () => {

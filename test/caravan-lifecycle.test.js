@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { Store } from '../src/storage/store.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
+import { CARAVAN_NATIVE_RESTART_DELAY_MS } from '../src/domain/caravan-power-timing.js';
 
 const START = Date.parse('2026-09-30T10:00:00Z');
 const IDENTITY = 'a'.repeat(64);
@@ -12,7 +13,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 
 async function fixture(t) {
   const store = new Store(':memory:'), client = new EventEmitter(), commands = [];
-  let now = START, authority = true, confirmRestoration = true, ended = false;
+  let now = START - CARAVAN_NATIVE_RESTART_DELAY_MS, authority = true, confirmRestoration = true, ended = false;
   const settings = equipmentConfiguration({ devices: [
     { id: 'blu_ht', kind: 'temperature', area: 'garage', connection: 'mqtt:invented/air', signal: 'caravan_temperature',
       mqtt: { state_path: 'temperature', timestamp_path: 'timestamp' },
@@ -46,6 +47,8 @@ async function fixture(t) {
       mqtt: { address: 'mqtt://synthetic.invalid' } } } });
   t.after(async () => { await acquisition.close({ restore: false }); store.close(); });
   client.emit('message', 'invented/appliance/online', Buffer.from('online'), { retain: false });
+  appliance('off'); await settle();
+  while (now < START) { now += Math.min(60_000, START - now); appliance('off'); await settle(); }
   report('invented/air', { temperature: 1.5, humidity: 40, timestamp: now });
   appliance('off'); report('invented/power', { power: 100, timestamp: now });
   now += 5000; appliance('off'); report('invented/power', { power: 100, timestamp: now });
