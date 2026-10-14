@@ -17,7 +17,7 @@ import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
 import { electricityForecastView } from './electricity-forecast-view.js';
 import { recoveryFailure } from '../recovery/errors.js';
 import { EQUIPMENT_COMMAND_ERRORS } from '../domain/equipment-command-errors.js';
-import { ReplicaCheckpointMismatchError, REPLICA_CHECKPOINT_MISMATCH } from './replica-errors.js';
+import { ReplicaCheckpointMismatchError, REPLICA_CHECKPOINT_MISMATCH, createReplicaReadRefusalReporter } from './replica-errors.js';
 
 function authorized(req, token) {
   if (!token) return false;
@@ -105,6 +105,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
   backupCatalog, backupInspection, getDatabaseExportDirectory,
   reloadSettings, previewSettings, settingsReloadStatus = () => ({ available: false, busy: false,
     reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
+  const reportReplicaReadRefusal = createReplicaReadRefusalReporter();
   const overviewService = getReadContext ? null : chartService?.overview ? chartService : createChartService({ store });
   if (typeof familyToken !== 'string' || familyToken && (!token || token === familyToken))
     throw new Error('Family access requires a separate admin web token.');
@@ -726,8 +727,10 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (Object.hasOwn(EQUIPMENT_COMMAND_ERRORS, error?.code))
           return json(409, { code: error.code, error: EQUIPMENT_COMMAND_ERRORS[error.code] });
         if (req.method === 'GET' && /^\/api\/(?:status|recording-health)(?:\?|$)/.test(req.url)
-          && error instanceof ReplicaCheckpointMismatchError)
+          && error instanceof ReplicaCheckpointMismatchError) {
+          reportReplicaReadRefusal(error, /^\/api\/status(?:\?|$)/.test(req.url) ? 'status' : 'recording-health');
           return json(503, REPLICA_CHECKPOINT_MISMATCH);
+        }
         const fireplaceWrite = req.method === 'POST' && /^\/api\/(?:fireplace(?:\/remove)?|sensor-changes(?:\/(?:revert|retry-rebuild))?)(?:\?|$)/.test(req.url);
         const code = error.statusCode ?? (fireplaceWrite && !(error instanceof TypeError || error instanceof SyntaxError) ? 503 : 400);
         json(code, { error: code >= 500 ? 'Request could not be confirmed. Retry shortly.'

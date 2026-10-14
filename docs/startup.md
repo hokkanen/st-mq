@@ -100,6 +100,17 @@ can reject unsupported state before the current master stops. Diagnostics use
 `database_algorithm_mismatch`, `database_state_incompatible` and
 `database_integrity_failed` to distinguish those causes without exposing payloads.
 
+A read-only checkpoint refusal can emit a bounded `replica-read-refused` log.
+It records whether the original request was on its first or second verified read,
+whether rollback completed, and whether the already checked manifest was missing,
+unreadable or the same generation. `not-checked` means the existing rules did not
+permit another manifest check. These are observed branches, not a publication or
+hardware diagnosis. The public 503 response and single verified recheck stay
+unchanged. Each server attempts at most one log per 30 monotonic seconds; its next
+record reports a capped suppressed count. Failed sinks are capped too, so missing
+logs cannot prove no refusal occurred. No identifiers, source clocks, raw errors,
+checkpoints or payloads enter the record.
+
 ## Environment and private configuration
 
 Public defaults are in `config.json.options`; the sparse private file overrides

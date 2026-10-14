@@ -139,6 +139,16 @@ the read. The same suite retains the real SQLite-COMMIT-before-manifest refusal
 and unknown-error privacy checks; no cached database or weaker fence supplies a
 successful response.
 
+The same actual Store/chart-worker producer also qualifies bounded private refusal
+phase logs: pending/same manifest, missing/unreadable manifest, second race and
+failed rollback keep their original public bodies and SQL/manifest call counts.
+Completed rechecks and close retain their original outcomes. A throwing log sink
+cannot alter the real COMMIT-before-manifest refusal or recovery.
+`test/replica-read-refusal-phase.test.js` checks immutable constructor provenance,
+spoofed/accessor input refusal, failed sinks and diagnostic storage, and the
+on-demand 30-second cap with controlled monotonic advances. The cap tests do not
+hold wall time for 30 seconds or change request deadlines.
+
 `test/incremental-replication.test.js` compares identical changes over 1 and 32 MiB
 of synthetic payload, verifies equal bounded transfer size and database inode
 reuse, injects a disconnect during a multi-frame transaction, and exercises crash

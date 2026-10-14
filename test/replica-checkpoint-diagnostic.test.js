@@ -18,9 +18,15 @@ const mismatch = { code: 'replica_checkpoint_mismatch',
   error: 'The read-only snapshot no longer matches its database checkpoint. Wait for verified synchronization, then refresh.' };
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 
-async function fixture(t, { makeChartService, readPublication } = {}) {
+async function fixture(t, { makeChartService, readPublication, sinkFailure = null } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'stmq-replica-diagnostic-'));
   const source = new Store(join(root, 'source.sqlite'));
+  const diagnostics = [], publicationReads = [];
+  t.mock.method(console, 'error', text => {
+    diagnostics.push(JSON.parse(text));
+    if (sinkFailure === 'throw') throw Error('Synthetic private diagnostic sink failure');
+    if (sinkFailure === 'reject') return Promise.reject(Error('Synthetic private diagnostic sink rejection'));
+  });
   let app;
   t.after(async () => { await app?.close(); source.close(); await rm(root, { recursive: true, force: true }); });
   const now = Date.now(); source.event('decision', { input: 'mqtt', phase: 'pause', commands: [] }, now);
@@ -35,13 +41,21 @@ async function fixture(t, { makeChartService, readPublication } = {}) {
     mirror: { directory, intervalMs: 60_000 }, recording: { backupDirectory: join(root, 'backups'), fullVerificationIntervalMs: 0 },
     connections: {}, h66: { enabled: false, writeEnabled: false } },
     makeChartService: makeChartService ?? (() => ({ pin: async () => {}, close: async () => {} })),
-    readPublication, clock: () => now, installSignalHandlers: false });
+    readPublication: (...args) => {
+      publicationReads.push(true);
+      return (readPublication ?? readReplicaPublication)(...args);
+    }, clock: () => now, installSignalHandlers: false });
   const request = async path => {
     const response = await fetch(`http://127.0.0.1:${app.server.address().port}${path}`, { signal: AbortSignal.timeout(5000) });
-    return { status: response.status, body: await response.json() };
+    const bytes = await response.text(), body = JSON.parse(bytes);
+    if (body.code === mismatch.code) assert.equal(bytes, JSON.stringify(mismatch), 'The exact public refusal body remains unchanged');
+    return { status: response.status, body };
   };
-  return { root, source, directory, publication, app, request, now };
+  return { root, source, directory, publication, app, request, now, diagnostics, publicationReads };
 }
+
+const phaseDiagnostic = (latestManifestState, changes = {}) => ({ event: 'replica-read-refused', route: 'recording-health',
+  attempt: 1, rollbackConfirmed: true, closed: false, latestManifestState, suppressed: 0, suppressedClipped: false, ...changes });
 
 function chartBoundaries(t) {
   const pending = [], all = [];
@@ -97,8 +111,11 @@ test('a completed newer publication is verified after an older chart-worker refr
   assert.ok(sameCheckpoint((await readReplicaPublication(f.directory)).checkpoint, second.checkpoint));
   assert.ok(sameCheckpoint(await databaseCheckpoint({ dbPath: f.publication.dbPath }), second.checkpoint));
   assert.ok(sameCheckpoint(boundary.store.checkpoint(), first.checkpoint), 'The old read transaction remains coherent');
+  const reads = f.publicationReads.length;
   boundary.released.resolve();
   assert.equal((await waiting).status, 200, 'A completed current publication can satisfy this original request');
+  assert.equal(f.publicationReads.length - reads, 2, 'Only the original manifest check and verified retry refresh run');
+  assert.deepEqual(f.diagnostics, [], 'A completed different generation adds no refusal diagnostic');
   assert.ok(sameCheckpoint(f.app.store.checkpoint(), second.checkpoint));
   assert.equal(charts.created, 3, 'Only one new verified generation is opened for this request');
   assert.equal((await stat(f.publication.dbPath)).ino, inode);
@@ -119,8 +136,11 @@ test('a second completed publication race still refuses after the one verified r
   assert.ok(sameCheckpoint(retry.store.checkpoint(), second.checkpoint));
   const third = await update('synthetic-third-published-event');
   assert.ok(sameCheckpoint((await readReplicaPublication(f.directory)).checkpoint, third.checkpoint));
+  const reads = f.publicationReads.length;
   retry.released.resolve();
   assert.deepEqual(await waiting, { status: 503, body: mismatch });
+  assert.equal(f.publicationReads.length, reads, 'A second mismatch adds no manifest check');
+  assert.deepEqual(f.diagnostics, [phaseDiagnostic('not-checked', { attempt: 2 })]);
   assert.equal(charts.created, 3, 'This request cannot chase successive publications');
   assert.equal((await f.request('/api/recording-health')).status, 200);
   assert.ok(sameCheckpoint(f.app.store.checkpoint(), third.checkpoint));
@@ -139,8 +159,11 @@ test('a failed rollback does not admit a newer publication or expose its cleanup
     return exec(sql);
   });
   t.after(() => { mocked.mock.restore(); });
+  const reads = f.publicationReads.length;
   boundary.released.resolve();
   assert.deepEqual(await waiting, { status: 503, body: mismatch });
+  assert.equal(f.publicationReads.length, reads, 'Failed cleanup cannot read or admit another manifest');
+  assert.deepEqual(f.diagnostics, [phaseDiagnostic('not-checked', { rollbackConfirmed: false })]);
   assert.equal(charts.created, 2, 'Cleanup failure cannot open the next generation');
   mocked.mock.restore();
   exec('ROLLBACK');
@@ -158,8 +181,10 @@ test('an unreadable current manifest retains the original verified checkpoint re
   const boundary = charts.arm(), waiting = f.request('/api/recording-health');
   await boundary.entered.promise;
   const second = await update('synthetic-second-published-event');
-  unreadable = true; boundary.released.resolve();
+  unreadable = true; const reads = f.publicationReads.length; boundary.released.resolve();
   assert.deepEqual(await waiting, { status: 503, body: mismatch });
+  assert.equal(f.publicationReads.length - reads, 1, 'The original manifest check runs once');
+  assert.deepEqual(f.diagnostics, [phaseDiagnostic('unreadable')]);
   assert.equal(charts.created, 2);
   unreadable = false;
   assert.equal((await f.request('/api/recording-health')).status, 200);
@@ -174,8 +199,11 @@ test('a missing current manifest cannot make the advanced database a readable fa
   const second = await update('synthetic-second-published-event');
   const manifest = join(f.directory, 'publication.json'), held = join(f.directory, 'publication-held.json');
   await rename(manifest, held);
+  const reads = f.publicationReads.length;
   boundary.released.resolve();
   assert.deepEqual(await waiting, { status: 503, body: mismatch });
+  assert.equal(f.publicationReads.length - reads, 1, 'Missing manifest adds no fallback or retry');
+  assert.deepEqual(f.diagnostics, [phaseDiagnostic('missing')]);
   assert.equal(charts.created, 2);
   assert.ok(sameCheckpoint(await databaseCheckpoint({ dbPath: f.publication.dbPath }), second.checkpoint));
   await rename(held, manifest);
@@ -199,17 +227,20 @@ test('closing the viewer during the fresh-manifest check cannot acquire a new re
   await update('synthetic-second-published-event');
   holdManifest = true; boundary.released.resolve();
   await entered.promise;
+  const reads = f.publicationReads.length;
   const closing = f.app.close();
   released.resolve();
   const result = await waiting;
   await closing;
+  assert.equal(f.publicationReads.length, reads, 'Close adds no manifest check or new lease');
+  assert.deepEqual(f.diagnostics, [], 'The unchanged close/transport failure is not classified as a served typed refusal');
   assert.ok(result.transportLost || result.response.status !== 200);
   assert.equal(charts.created, 2, 'A closed viewer cannot open the next generation');
   assert.throws(() => f.app.store.checkpoint(), 'The original reader is closed too');
 });
 
 test('real incremental publication exposes only a typed status/health refusal and preserves the fence through recovery', async t => {
-  const f = await fixture(t), inode = (await stat(f.publication.dbPath)).ino;
+  const f = await fixture(t, { sinkFailure: 'throw' }), inode = (await stat(f.publication.dbPath)).ino;
   for (const path of ['/api/status', '/api/recording-health']) assert.equal((await f.request(path)).status, 200);
   f.source.event('synthetic-unpublished-event', { value: 'synthetic-private-row' }, f.now + 1);
   const target = f.source.checkpoint(), transfers = new PeerTransfers(join(f.root, 'changes'));
@@ -239,6 +270,7 @@ test('real incremental publication exposes only a typed status/health refusal an
   assert.equal((await stat(f.publication.dbPath)).ino, inode);
   const exec = f.app.store.db.exec.bind(f.app.store.db), boundaries = [];
   t.mock.method(f.app.store.db, 'exec', sql => { boundaries.push(sql); return exec(sql); });
+  const reads = f.publicationReads.length;
   for (const path of ['/api/status', '/api/recording-health']) {
     const response = await f.request(path);
     assert.deepEqual(response, { status: 503, body: mismatch });
@@ -246,6 +278,8 @@ test('real incremental publication exposes only a typed status/health refusal an
   }
   assert.deepEqual(await f.request('/api/events'), { status: 503, body: generic }, 'Other routes retain their generic refusal');
   assert.deepEqual(boundaries, ['BEGIN', 'ROLLBACK', 'BEGIN', 'ROLLBACK', 'BEGIN', 'ROLLBACK']);
+  assert.equal(f.publicationReads.length - reads, 6, 'Each original refusal keeps its existing refresh and one manifest check');
+  assert.deepEqual(f.diagnostics, [phaseDiagnostic('same', { route: 'status' })], 'The health refusal is capped, while both public responses retain their original bodies');
   assert.ok(sameCheckpoint(await databaseCheckpoint({ dbPath: f.publication.dbPath }), target), 'Refused reads cannot mutate the committed database');
   released.resolve(); await publishing; prototype.sync = sync;
   for (const path of ['/api/status', '/api/recording-health']) assert.equal((await f.request(path)).status, 200);
@@ -276,4 +310,5 @@ test('native or unknown read failures cannot counterfeit the authored checkpoint
   failing = false;
   assert.equal((await f.request('/api/status')).status, 200);
   assert.ok(sameCheckpoint(f.app.store.checkpoint(), original));
+  assert.deepEqual(f.diagnostics, [], 'Unknown native failures acquire neither typed provenance nor private phase logging');
 });

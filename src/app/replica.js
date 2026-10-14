@@ -21,7 +21,7 @@ import { CHARGER_DEFINITIONS } from '../charging/model.js';
 import { validateTargetState, validateTargetSelection } from '../charging/target.js';
 import { replicaReadModel, snapshotState } from './replica-read-model.js';
 import { matchingCheckpoint } from '../storage/journal.js';
-import { ReplicaCheckpointMismatchError } from './replica-errors.js';
+import { ReplicaCheckpointMismatchError, captureReplicaReadRefusalPhase } from './replica-errors.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
 const unavailable = 'This slave is read-only. Make changes on the master instance.';
@@ -305,6 +305,7 @@ export async function startReplica({ config, clock = Date.now,
           // No context exists yet for the server's release finally. Reject the
           // original read failure after releasing this unleased transaction.
           let rolledBack = false;
+          let latestManifestState = 'not-checked';
           if (opened) try { snapshot.store.db.exec('ROLLBACK'); rolledBack = true; }
           catch (cleanupError) {
             try { if (error && typeof error === 'object') error.cleanupError ??= cleanupError; } catch {}
@@ -314,9 +315,13 @@ export async function startReplica({ config, clock = Date.now,
             // current generation permits one new, fully verified read lease.
             let latest;
             try { latest = await readPublication(directory); }
-            catch { /* An unreadable manifest retains the original refusal. */ }
+            catch { latestManifestState = 'unreadable'; }
             if (latest && latest.generation !== snapshot.publication.generation) return getReadContext(true);
+            if (latest) latestManifestState = 'same';
+            else if (latestManifestState !== 'unreadable') latestManifestState = 'missing';
           }
+          captureReplicaReadRefusalPhase(error, { attempt: rechecked ? 2 : 1, rollbackConfirmed: rolledBack,
+            closed, latestManifestState });
           throw error;
         }
       }
