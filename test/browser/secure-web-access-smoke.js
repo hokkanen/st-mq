@@ -17,10 +17,11 @@ const familyToken = 'synthetic-web-access-browser-family';
 const hostname = 'synthetic-access.example-tail.ts.net';
 const fixture = {
   version: 1, enabled: false, phase: 'disabled', hostname: null, url: null, certificate: null,
+  environment: 'home-assistant', setup: { credentialsReady: true },
   pair: { paired: true },
   helper: { state: 'not_installed', version: null },
   updates: { policy: 'automatic', testedVersion: '1.90.1', installed: null, latest: null, candidate: null },
-  dns: { state: 'not_configured' },
+  dns: { state: 'not_configured', resolver: null, expectedAddress: '192.0.2.50', a: [], aaaa: [] },
   transport: {
     https: { enabled: false, listening: false, address: null },
     recovery: { enabled: true, listening: true, address: { address: '127.0.0.1', port: 1234 } },
@@ -90,10 +91,11 @@ try {
         } else if (input.action === 'recheck' || input.action === 'retry') {
           fixture.phase = 'ready'; fixture.hostname = hostname; fixture.url = `https://${hostname}:8443/`;
           fixture.certificate = { expiresAt: '2026-12-01T12:00:00Z' };
+          fixture.helper.state = 'running';
           fixture.helper.authorizationUrl = null;
           fixture.helper.nodeKeyExpiresAt = '2026-10-16T14:00:00Z'; fixture.helper.securityUpdate = true;
           fixture.transport.https = { enabled: true, listening: true, address: { address: '192.0.2.1', port: 8443 } };
-          fixture.dns = { state: 'mismatch', checkedAt: '2026-10-14T12:00:00Z' };
+          fixture.dns = { state: 'not_configured', resolver: null, expectedAddress: '192.0.2.50', a: [], aaaa: [], checkedAt: '2026-10-14T12:00:00Z' };
         } else if (input.action === 'disable') {
           fixture.enabled = false; fixture.phase = 'disabled'; fixture.transport.https = { enabled: false, listening: false, address: null };
         } else if (input.action === 'set-update-policy') fixture.updates.policy = input.policy;
@@ -183,6 +185,9 @@ try {
   assert.equal(await evaluate("document.getElementById('secure-web-access-enable').disabled"), false, 'Standby can set up its local web entrance');
   assert.equal(await evaluate("document.getElementById('secure-web-access-owner-choice').checkVisibility()"), true, 'First paired setup exposes the owner choice');
   assert.equal(await evaluate("document.getElementById('secure-web-access-owner-select').value"), 'local', 'Pair owner defaults to this computer');
+  assert.equal(await evaluate("document.querySelectorAll('.secure-web-access-steps > li').length"), 6, 'Integrated checklist guides all six setup stages');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-step-prepare-state').textContent"), 'Choose certificate owner');
+  assert.equal(await evaluate("document.querySelector('.secure-web-access-setup-links a').href"), 'https://console.tailscale.com/admin/dns');
   assert.equal(await evaluate("document.getElementById('settings-reload').disabled"), true, 'Standby cannot edit ordinary settings');
   assert.equal(await evaluate("document.getElementById('web-unsafe-warning').checkVisibility()"), true, 'Configured HTTP backup warning persists');
   await evaluate("document.getElementById('secure-web-access-enable').focus();true"); await key('Enter');
@@ -192,21 +197,42 @@ try {
   await evaluate("document.getElementById('secure-web-access-recheck').focus();true"); await key('Enter');
   await until("/HTTPS ready locally/.test(document.getElementById('secure-web-access-state').textContent)");
   await evaluate("document.getElementById('secure-web-access-network-details').open=true;document.getElementById('secure-web-access-update-details').open=true;true");
-  assert.match(await evaluate("document.getElementById('secure-web-access-dns').textContent"), /does not match/);
-  assert.equal(await evaluate("document.getElementById('secure-web-access-hosts-entry').textContent"), `<LAN address> ${hostname}`);
+  assert.equal(await evaluate("document.getElementById('secure-web-access-state').textContent"), 'HTTPS ready locally · household DNS pending');
+  assert.match(await evaluate("document.getElementById('secure-web-access-dns').textContent"), /Check not configured/);
+  assert.equal(await evaluate("document.getElementById('secure-web-access-step-tls-state').textContent"), 'Ready locally');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-hosts-entry').textContent"), `192.0.2.50 ${hostname}`);
+  assert.equal(await evaluate("document.getElementById('secure-web-access-curl-command').textContent"), `curl --resolve '${hostname}:8443:192.0.2.50' 'https://${hostname}:8443/'`);
+  assert.equal(await evaluate("document.getElementById('secure-web-access-step-client-state').textContent"), 'Verify each browser device');
+  assert.equal(await evaluate('location.href'), `${base}/`, 'Local HTTPS readiness never leaves the recovery page automatically');
   assert.match(await evaluate("document.getElementById('secure-web-access-expiry').textContent"), /Dec 2026/);
   assert.match(await evaluate("document.getElementById('secure-web-access-key-expiry').textContent"), /16 Oct 2026.*2d 2h left/);
   assert.match(await evaluate("document.getElementById('secure-web-access-security-warning').textContent"), /urgent security update.*coverage is incomplete/);
   assert.equal(await evaluate("document.getElementById('secure-web-access-security-warning').checkVisibility()"), true);
+  fixture.helper.authorizationUrl = 'https://login.tailscale.com/a/stale-authorization';
+  fixture.dns = { ...fixture.dns, state: 'mismatch', resolver: '192.0.2.53', a: ['192.0.2.50'], aaaa: ['2001:db8::1'] };
+  await evaluate('webBrowser.panel.refresh({force:true})');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-authorize').hasAttribute('href')"), false, 'Running helper cannot expose a stale enrollment link');
+  assert.match(await evaluate("document.getElementById('secure-web-access-dns').textContent"), /does not match/);
+  assert.equal(await evaluate("document.getElementById('secure-web-access-dns-resolver').textContent"), '192.0.2.53');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-dns-a').textContent"), '192.0.2.50');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-dns-aaaa').textContent"), '2001:db8::1');
+  fixture.dns.state = 'unavailable'; fixture.dns.aaaa = [];
+  await evaluate('webBrowser.panel.refresh({force:true})');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-dns-aaaa').textContent"), 'Not checked', 'Failed IPv6 query cannot report no IPv6 answers');
   fixture.phase = 'approval_or_connection_pending'; fixture.dns.state = 'address_confirmation_required';
   await evaluate('webBrowser.panel.refresh({force:true})');
   assert.equal(await evaluate("document.getElementById('secure-web-access-state').textContent"), 'Approval or connection pending');
   assert.match(await evaluate("document.getElementById('secure-web-access-dns').textContent"), /Address needs confirmation.*14 Oct 2026/);
-  fixture.phase = 'ready'; await evaluate('webBrowser.panel.refresh({force:true})');
+  fixture.phase = 'degraded'; fixture.error = 'helper_installation_binding_unavailable';
+  await evaluate('webBrowser.panel.refresh({force:true})');
+  assert.match(await evaluate("document.getElementById('secure-web-access-message').textContent"), /Supervisor host identity is unavailable.*Retry.*saved helper identity is preserved/);
+  fixture.phase = 'ready'; fixture.error = null; await evaluate('webBrowser.panel.refresh({force:true})');
+  await evaluate("document.getElementById('secure-web-access-setup-details').open=false;true");
   await evaluate("document.getElementById('secure-web-access-recheck').focus();window.webBrowser.savedButton=document.activeElement;webBrowser.update();true");
   await settle();
   assert.equal(await evaluate('document.activeElement===webBrowser.savedButton'), true, 'Status updates preserve focused control nodes');
   assert.equal(await evaluate("document.getElementById('secure-web-access-network-details').open"), true, 'Status updates preserve nested folds');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-setup-details').open"), false, 'Status updates preserve the checklist disclosure');
   const selector = "document.getElementById('secure-web-access-update-policy').parentElement.querySelector('.app-select-trigger')";
   await evaluate(`${selector}.focus();true`); await key('Enter'); await key('ArrowDown'); await key('Enter');
   await until("document.getElementById('secure-web-access-update-policy').value==='manual' && !document.getElementById('secure-web-access-check-updates').disabled");
@@ -230,6 +256,7 @@ try {
   await until("document.getElementById('secure-web-access-restore-identity').hidden");
   assert.equal(requests.filter(item => item.action === 'restore-identity').length, beforeRestore + 1, 'Explicit fence confirmation restores exactly once');
   if (screenshots) await mkdir(screenshots, { recursive: true });
+  await evaluate("document.getElementById('secure-web-access-setup-details').open=true;true");
   for (const theme of ['light', 'dark']) for (const width of [320, 390, 1440]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width > 400 ? 1100 : 844, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)};document.getElementById('secure-web-access-details').scrollIntoView({block:'start',behavior:'instant'});true`);
@@ -267,6 +294,8 @@ try {
   assert.equal(await evaluate("document.getElementById('secure-web-access-admin').checkVisibility()"), false);
   assert.equal(await evaluate("document.getElementById('secure-web-access-authorize').hasAttribute('href')"), false);
   assert.equal(await evaluate("document.getElementById('secure-web-access-url').hasAttribute('href')"), false);
+  assert.equal(await evaluate("document.getElementById('secure-web-access-curl-command').textContent"), '');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-dns-a').textContent"), '');
   assert.equal(await evaluate("document.getElementById('secure-web-access-security-warning').checkVisibility()"), false);
   assert.equal(await evaluate("document.getElementById('secure-web-access-restore-identity').checkVisibility()"), false);
   assert.equal(await evaluate("document.getElementById('web-unsafe-warning').checkVisibility()"), true);

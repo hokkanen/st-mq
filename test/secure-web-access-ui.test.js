@@ -10,10 +10,11 @@ const ready = {
   phase: 'ready', enabled: true, hostname: 'synthetic-access.example-tail.ts.net',
   url: 'https://synthetic-access.example-tail.ts.net:8443',
   certificate: { expiresAt: '2026-12-01T12:00:00Z' },
-  helper: { version: '1.90.1', authorizationUrl: 'https://login.tailscale.com/a/synthetic-authorization' },
+  environment: 'home-assistant', setup: { credentialsReady: true },
+  helper: { state: 'running', version: '1.90.1', authorizationUrl: 'https://login.tailscale.com/a/synthetic-authorization' },
   transport: { https: { enabled: true, listening: true, address: { port: 8443 } }, recovery: { enabled: true, listening: true, address: { port: 1234 } },
     ingress: { enabled: false }, lanHttp: { enabled: false } },
-  dns: { state: 'ready', checkedAt: '2026-10-14T12:00:00Z' },
+  dns: { state: 'ready', checkedAt: '2026-10-14T12:00:00Z', resolver: '192.0.2.53', expectedAddress: '192.0.2.1', a: ['192.0.2.1'], aaaa: [] },
   updates: { policy: 'manual', installed: '1.90.1', latest: '1.90.2', candidate: '1.90.2' },
 };
 
@@ -30,6 +31,69 @@ test('a valid certificate is distinct from listener and household DNS readiness'
   for (const field of ['url', 'hostname', 'authorizationUrl', 'helper', 'latest', 'checked', 'installed']) assert.equal(familyView[field], null, field);
   assert.equal(familyView.error, '');
   assert.equal(familyView.updateAvailable, false);
+});
+
+test('setup without router DNS reaches local HTTPS and gives temporary certificate-checked testing instructions', () => {
+  const view = secureWebAccessView({ ...ready, dns: { state: 'not_configured', resolver: null, expectedAddress: '192.0.2.1' } }, { admin: true });
+  assert.equal(view.label, 'HTTPS ready locally · household DNS pending');
+  assert.equal(view.dnsText, 'Check not configured');
+  assert.match(view.summary, /unconfigured check does not establish whether household DNS is already working/);
+  assert.equal(view.setupSteps.tls.state, 'available');
+  assert.equal(view.setupSteps.dns.state, 'pending');
+  assert.equal(view.hostsEntry, `192.0.2.1 ${ready.hostname}`);
+  assert.equal(view.curlCommand, `curl --resolve '${ready.hostname}:8443:192.0.2.1' '${ready.url}/'`);
+  assert.doesNotMatch(view.curlCommand, /(?:^|\s)-k(?:\s|$)|--insecure/);
+  assert.match(view.setupSteps.client.help, /A and AAAA.*client VPN or browser encrypted DNS/);
+  assert.match(view.setupSteps.client.help, /web\.lan_resolver.*save and restart workflow, then Recheck/);
+  assert.equal(view.setupSteps.client.state, 'pending', 'Server evidence never completes client verification');
+  const unknown = secureWebAccessView({ ...ready, dns: { state: 'not_configured', expectedAddress: '0.0.0.0' } }, { admin: true });
+  assert.equal(unknown.hostsEntry, `<LAN address> ${ready.hostname}`);
+  assert.match(unknown.curlCommand, /<LAN-address>/);
+  assert.deepEqual(secureWebAccessView(ready).setupSteps, {});
+});
+
+test('setup checklist reports current evidence rather than treating a saved enrollment link or certificate as authority', () => {
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const view = secureWebAccessView(ready, { admin: true, now });
+  assert.equal(view.authorizationUrl, null, 'A stale AuthURL on a running helper is withheld');
+  assert.equal(view.setupSteps.authorize.label, 'Connection reported');
+  assert.equal(view.setupSteps.prepare.label, 'Passwords ready');
+  const pairedSetup = secureWebAccessView({ ...ready, pair: { paired: true } }, { admin: true, now });
+  assert.equal(pairedSetup.setupSteps.prepare.label, 'Choose certificate owner');
+  assert.equal(pairedSetup.setupSteps.prepare.state, 'pending', 'Preparation stays incomplete until the paired owner is selected');
+  assert.equal(view.setupSteps.account.label, 'Review key expiry', 'Issuance does not verify unattended key-expiry policy');
+  const enrollment = secureWebAccessView({ ...ready, phase: 'authorization_required', helper: { ...ready.helper, state: 'authorization_required' } }, { admin: true, now });
+  assert.equal(enrollment.authorizationUrl, ready.helper.authorizationUrl);
+  assert.equal(enrollment.setupSteps.authorize.state, 'pending');
+  const unknown = secureWebAccessView({ ...ready, setup: {}, helper: { authorizationUrl: ready.helper.authorizationUrl }, transport: {}, certificate: { expiresAt: now - 1 } }, { admin: true, now });
+  assert.equal(unknown.authorizationUrl, null);
+  assert.equal(unknown.setupSteps.prepare.label, 'Not checked');
+  assert.equal(unknown.setupSteps.authorize.label, 'Waiting for setup');
+  assert.equal(unknown.setupSteps.tls.state, 'pending');
+  assert.equal(secureWebAccessView({ ...ready, setup: { credentialsReady: false } }, { admin: true, now }).setupSteps.prepare.label, 'Passwords required');
+  const recipient = secureWebAccessView({ ...ready, pair: { paired: true, ownerId: 'synthetic-owner', localOwner: false },
+    helper: { ...ready.helper, state: 'authorization_required' } }, { admin: true, now });
+  assert.equal(recipient.authorizationUrl, null);
+  assert.equal(recipient.setupSteps.authorize.label, 'Managed on paired computer');
+  assert.match(recipient.setupSteps.dns.help, /shared pair VIP rather than either computer/);
+  assert.match(recipient.setupSteps.account.help, /paired certificate owner/);
+});
+
+test('DNS answers and identity failures give bounded actionable evidence without implying client success', () => {
+  const view = secureWebAccessView({ ...ready, phase: 'degraded', error: 'helper_installation_binding_unavailable',
+    dns: { ...ready.dns, state: 'mismatch', aaaa: ['2001:db8::1'] } }, { admin: true });
+  assert.equal(view.dnsResolver, '192.0.2.53');
+  assert.equal(view.expectedAddress, '192.0.2.1');
+  assert.equal(view.dnsA, '192.0.2.1');
+  assert.equal(view.dnsAAAA, '2001:db8::1');
+  assert.equal(view.setupSteps.dns.state, 'attention');
+  assert.match(view.error, /Supervisor host identity is unavailable.*Supervisor API access.*Retry.*saved helper identity is preserved/);
+  assert.doesNotMatch(view.error, /router|DNS/);
+  const linux = secureWebAccessView({ ...ready, environment: 'linux', error: 'helper_installation_binding_unavailable' }, { admin: true });
+  assert.match(linux.error, /\/etc\/machine-id.*Retry.*saved helper identity is preserved/);
+  const partial = secureWebAccessView({ ...ready, dns: { ...ready.dns, state: 'unavailable', a: ['192.0.2.1'], aaaa: [] } }, { admin: true });
+  assert.equal(partial.dnsA, '192.0.2.1');
+  assert.equal(partial.dnsAAAA, 'Not checked', 'A failed query is not evidence of no IPv6 answer');
 });
 
 test('HTTPS and authorization links reject unexpected hosts, credentials and executable schemes', () => {
@@ -88,7 +152,8 @@ test('panel role changes remove private links without rebuilding controls or kee
   const requests = [];
   const panel = createSecureWebAccessPanel({ document, getAccess: () => access, request: (path, body) => {
     requests.push([path, body]);
-    return complete ? new Promise(resolve => { complete = resolve; }) : Promise.resolve(structuredClone(ready));
+    return complete ? new Promise(resolve => { complete = resolve; }) : Promise.resolve(structuredClone({ ...ready,
+      phase: 'authorization_required', helper: { ...ready.helper, state: 'authorization_required' } }));
   } });
   await panel.refresh({ force: true });
   const originalButton = nodes.get('secure-web-access-recheck');

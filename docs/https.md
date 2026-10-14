@@ -32,22 +32,48 @@ one-hour owner budget. Disabling or expiring HTTPS also destroys connections tha
 have not completed a handshake. These limits bound transport work; development-host
 load measurements do not qualify physical Raspberry Pi behavior.
 
-## Set up when ready
+## Guided setup
+
+Web access has a six-step checklist. Its statuses come from current password,
+helper, certificate, listener and DNS evidence; they are not saved progress
+preferences. Client access and the unattended node-key-expiry policy remain
+explicit manual checks rather than automatically completed steps.
 
 1. Configure an admin password of at least 24 characters in
    `controller.web_token`. An optional distinct family password must meet the
    same network-access requirement. Ingress still uses Home Assistant login.
+   If paired, choose the certificate owner explicitly; it is independent of the
+   master/standby role. Both nodes need suitable network passwords.
 2. Choose **Set up HTTPS**. Fresh installations do not download or start Tailscale
    until this administrator action. There are no Tailscale binaries in Git or
-   bundled in the Home Assistant image.
-3. Authorize the dedicated ST-MQ certificate node through the displayed Tailscale
-   link. Enable MagicDNS and HTTPS certificates in the tailnet account. Arrange
-   an appropriate unattended node-key-expiry policy. Existing system-wide or HA
-   Tailscale installations remain separate.
-4. Use the exact certificate hostname shown by setup. Map that hostname to this
-   server's reserved LAN IPv4 address, or to the existing shared VIP for a pair.
-5. Open the full HTTPS URL and log in normally. A changed origin has separate
-   browser storage; credentials are not copied automatically between origins.
+   bundled in the Home Assistant image. Authorize the dedicated certificate node
+   through the displayed enrollment link and complete any account-side device
+   approval or Tailnet Lock requirement. A recipient node directs setup to its
+   paired certificate owner. Existing system-wide or HA Tailscale installations
+   remain separate.
+3. Follow the checklist links to [Tailscale DNS settings](https://console.tailscale.com/admin/dns)
+   and enable MagicDNS and HTTPS certificates. In [Machines](https://console.tailscale.com/admin/machines),
+   review or disable expiry for this dedicated node so unattended certificate
+   renewal can continue. A valid certificate does not verify that policy.
+4. Choose **Recheck** or **Retry** to finish certificate issuance and start this
+   computer's HTTPS listener. The panel shows the exact URL and reports local
+   readiness independently of household DNS. Keep using ingress or recovery
+   until the chosen HTTPS URL works; the panel never navigates automatically.
+5. When the router or LAN resolver is available, reserve this server's LAN IPv4
+   address in DHCP and add a local DNS A-record override for the exact certificate
+   hostname. A pair uses its existing shared VIP rather than either individual
+   computer's address. This is a local hostname mapping, not public port forwarding.
+6. Set `web.lan_resolver` to the LAN resolver's IPv4 address in Configuration and
+   apply it through the existing configuration-save and controlled-restart
+   workflow. Choose **Recheck**, review the displayed A and AAAA answers, then
+   open the full HTTPS URL on each intended browser device and
+   log in normally. A changed origin has separate browser storage; credentials
+   are not copied automatically between origins.
+
+The external steps are Tailscale account authorization and settings, a stable LAN
+address and local DNS mapping, and a browser check on each intended device. The
+application handles its helper installation, certificate issuance, listener and
+renewal. Router access is not required to complete the first four steps.
 
 Tailscale handles the public DNS challenge for certificate issuance. There is no
 public inbound port forwarding, purchased domain, client-installed CA, Serve or
@@ -61,11 +87,19 @@ silently follow an account-side rename.
 ## Before router DNS is available
 
 Development, setup, authorization and certificate issuance can finish with an
-ISP-controlled router. The UI separates local TLS readiness from LAN DNS readiness.
+ISP-controlled router. The UI separates local TLS readiness from LAN DNS readiness
+and can report **HTTPS ready locally · household DNS pending**. An unconfigured
+server check is not evidence that the household's DNS is missing or broken.
 It does not leave a working ingress/recovery page automatically.
 
 On a test computer, an explicit hosts-file entry can map the exact hostname to
-the server's LAN address. For a command-line TLS check, use the real hostname and
+the server's LAN address: `<LAN-address> <exact-certificate-hostname>`. Use
+`/etc/hosts` on Linux/macOS or `C:\Windows\System32\drivers\etc\hosts` on Windows,
+with administrator access. Remove the temporary entry after household DNS works.
+The panel fills the address from the configured pair VIP or an explicit HTTPS
+IPv4 binding when known; otherwise it labels the address as a placeholder for
+the server's reserved LAN address. A wildcard listener is not a discoverable LAN
+address. For a command-line TLS check, use the real hostname and
 `curl --resolve <hostname>:8443:<LAN-address> https://<hostname>:8443/`; do not use
 `-k` or disable browser certificate validation. Raw-IP HTTPS and unrelated aliases
 do not match the certificate.
@@ -73,9 +107,27 @@ do not match the certificate.
 For ordinary household access, configure the LAN resolver to return the intended
 address and check both A and AAAA answers. An upstream IPv6 answer can compete
 with the local IPv4 mapping. Configure `web.lan_resolver` with the resolver's IPv4
-address for an explicit server-side check; an empty value means not checked.
+address for an explicit server-side check; apply changes through the normal
+configuration-save and controlled-restart workflow before choosing **Recheck**.
+An empty value means not checked.
 Client VPN settings and browser encrypted DNS can bypass that resolver. A server
 check cannot establish every client's DNS or trust-store behavior.
+
+## Installation identity unavailable
+
+This failure is independent of router DNS or certificate issuance. Setup needs
+machine identity evidence before it can use a saved Tailscale identity or install
+its helper. Linux reads a supported local machine identity file. When those files
+are unavailable inside a Home Assistant add-on, it uses the host `machine_id`
+from authenticated Supervisor `GET /info`. The raw identity and Supervisor token
+are not exposed in status or helper process environment.
+
+For Home Assistant, check Supervisor health and the add-on's Supervisor API
+access, then choose **Retry**. For standalone Linux, restore read access to a
+supported identity source (`/etc/machine-id`, `/sys/class/dmi/id/product_uuid` or
+`/sys/firmware/devicetree/base/serial-number`), then retry. Preserve the managed
+directory; deleting it is not a repair. A changed machine binding still requires
+the existing explicit fenced-owner identity restoration described below.
 
 ## Configuration and HTTP backup
 

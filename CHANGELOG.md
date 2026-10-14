@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Confirm Home Assistant HTTPS installation identity through authenticated
+  Supervisor host information when container identity files are unavailable.
+  Preserve saved identities on failure. Guide account authorization, certificate
+  settings, later household DNS and browser verification through a Web access
+  checklist, with temporary certificate-checked testing before router setup.
+
 - Reject malformed saved HTTPS manager state before setup can replace it.
   Only a genuinely missing state file initializes a new disabled installation.
 

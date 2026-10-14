@@ -124,6 +124,8 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   const statePath = () => resolve(directory(), 'state.json');
   const runtimeDirectory = record => resolve(directory(), 'runtime', record.name);
   const pairConfiguration = () => pair?.configuration?.() ?? null;
+  const expectedDnsAddress = () => pairConfiguration()?.vipAddress ??
+    (isIPv4(config().web?.httpsHost) && config().web.httpsHost !== '0.0.0.0' ? config().web.httpsHost : null);
   const localOwner = () => state.pairId ? state.ownerId === pairConfiguration()?.localId : config().topology !== 'pair';
   const responsible = () => localOwner() && (state.enabled || state.peerRenewalRequired);
   function assertOpen() { if (closed) throw httpsError('https_manager_closed'); if (ownedDirectory && configuredDirectory() !== ownedDirectory) throw httpsError('https_directory_restart_required'); }
@@ -246,10 +248,10 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     const resolverAddress = config().web?.lanResolver;
     if (!state.hostname || !resolverAddress) { dns = { state: 'not_configured', a: [], aaaa: [], checkedAt: clock() }; return; }
     if (!isIPv4(resolverAddress)) throw httpsError('lan_resolver_invalid');
-    const resolver = new Resolver({ timeout: 3000, tries: 1 }); resolver.setServers([resolverAddress]);
+    const resolver = (dependencies.createResolver ?? (options => new Resolver(options)))({ timeout: 3000, tries: 1 }); resolver.setServers([resolverAddress]);
     const results = await Promise.allSettled([resolver.resolve4(state.hostname), resolver.resolve6(state.hostname)]);
     const answers = results.map(result => result.status === 'fulfilled' ? result.value : ['ENODATA', 'ENOTFOUND'].includes(result.reason?.code) ? [] : null);
-    const expected = pairConfiguration()?.vipAddress ?? (isIPv4(config().web?.httpsHost) && config().web.httpsHost !== '0.0.0.0' ? config().web.httpsHost : null);
+    const expected = expectedDnsAddress();
     dns = { state: answers.some(value => value === null) ? 'unavailable' : !answers[0].length || answers[1].length || expected && answers[0].some(value => value !== expected) ? 'mismatch' : expected ? 'ready' : 'address_confirmation_required',
       a: answers[0] ?? [], aaaa: answers[1] ?? [], checkedAt: clock() };
   }
@@ -268,7 +270,8 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     await task('integrity', { directory: runtimeDirectory(record), evidence: record.evidence, arch: architecture() });
   }
   async function resolveLocations({ restoreFenced = false } = {}) {
-    locations = await locationsFactory(config().dataDir, directory(), { restoreFenced }); return locations;
+    locations = await locationsFactory(config().dataDir, directory(), { restoreFenced, addon: config().addon === true,
+      signal: cancellation.signal }); return locations;
   }
   async function snapshotIdentity() {
     const destination = resolve(directory(), 'snapshots', 'before-update');
@@ -284,6 +287,9 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     if (state.highestVersion && compareVersions(candidate.version, state.highestVersion) < 0) throw httpsError('helper_downgrade_rejected');
     if (state.quarantined[candidate.version] && !retry) throw httpsError('helper_candidate_quarantined');
     if (state.runtime?.evidence.runtimeVersion === candidate.version) { await integrity(); return; }
+    // A missing host identity is a setup prerequisite, not a failed vendor
+    // release. Preserve existing state and reject before downloading anything.
+    await resolveLocations(); assertOpen();
     const runtimeRoot = resolve(directory(), 'runtime');
     state.transaction = { version: candidate.version, stage: 'downloaded', startedAt: clock() }; await persist();
     let verified;
@@ -291,7 +297,6 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       verified = await task('install', { candidate, directory: runtimeRoot, seen: state.seen, arch: architecture() }, { onProgress: progress => { if (state.operation) state.operation.stage = progress; } });
       assertOpen();
       state.transaction.stage = 'authenticated'; state.seen[candidate.version] = verified.evidence.archiveSha256; await persist();
-      await resolveLocations();
       await preflight(verified.staging, candidate.version, locations);
       assertOpen();
       state.transaction.stage = 'preflight'; await persist();
@@ -559,14 +564,18 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     const common = { version: 1, enabled: state.enabled, phase, certificate: publishedCertificate ? { expiresAt: publishedCertificate.record.expiresAt } : null,
       warning: certificateError ?? lastError ?? (state.peerRenewalRequired && !state.enabled ? 'renewal_retained_for_peer' : null) };
     if (!admin) return common;
-    return { ...common, hostname: state.hostname, url: state.hostname ? `https://${state.hostname}:${config().web?.httpsPort ?? 8443}` : null,
+    return { ...common, environment: config().addon === true ? 'home-assistant' : 'linux',
+      setup: { credentialsReady: typeof config().token === 'string' && config().token.length >= 24 &&
+        (!config().familyToken || typeof config().familyToken === 'string' && config().familyToken.length >= 24 && config().familyToken !== config().token) },
+      hostname: state.hostname, url: state.hostname ? `https://${state.hostname}:${config().web?.httpsPort ?? 8443}` : null,
       certificate: clone(publishedCertificate?.record ?? null), helper: { ...clone(helperStatus), securityUpdate: state.updates.securitySignal?.urgent === true ? true : null,
         securityObservedAt: state.updates.securitySignal?.observedAt ?? null },
       updates: { policy: state.updates.policy, installed: state.runtime?.evidence.runtimeVersion ?? null, latest: state.updates.latest,
         candidate: state.updates.candidate?.version ?? null, testedVersion: BOOTSTRAP_VERSION, lastAttempt: state.updates.lastAttempt,
         lastSuccessfulCheck: state.updates.lastSuccessfulCheck, error: state.updates.error,
         securityCoverage: 'incomplete', bulletinUrl: 'https://tailscale.com/security-bulletins' },
-      dns: clone(dns), operation: clone(state.operation), error: certificateError ?? lastError, pair: state.pairId ? { paired: true, ownerId: state.ownerId,
+      dns: { ...clone(dns), resolver: config().web?.lanResolver || null, expectedAddress: expectedDnsAddress() },
+      operation: clone(state.operation), error: certificateError ?? lastError, pair: state.pairId ? { paired: true, ownerId: state.ownerId,
         localOwner: localOwner(), peerRenewalRequired: state.peerRenewalRequired, peer: clone(peerStatus) } : { paired: config().topology === 'pair' } };
   }
   async function action(input) {

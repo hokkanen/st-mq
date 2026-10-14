@@ -41,6 +41,12 @@ mkdir -p "$stmq_work/data" "$stmq_work/config" "$stmq_work/share"
 # discovers its assigned port from Supervisor; only this disposable test fixes it.
 stmq_fixtures=(--mount "type=bind,source=$stmq_root/test/container,target=/st-mq/test/container,readonly"
   --mount "type=bind,source=$stmq_root/scripts/lib/provider-fixture.js,target=/st-mq/scripts/lib/provider-fixture.js,readonly")
+# Add-on containers cannot rely on host machine files being visible. This test
+# hides hardware identity and supplies only a synthetic Supervisor response.
+docker run --rm --platform "$stmq_platform" --network none --read-only --user 65534:65534 --cap-drop ALL \
+  --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m,mode=1777 \
+  --tmpfs /sys:rw,nosuid,nodev,noexec,size=1m "${stmq_fixtures[@]}" \
+  "$stmq_image" node test/container/https-identity.js
 stmq_mounts=(--platform "$stmq_platform" --network none --env STMQ_CONTAINER_FIXTURE=1 --env STMQ_INGRESS_PORT=8099
   "${stmq_fixtures[@]}"
   --mount "type=bind,source=$stmq_work/data,target=/data"

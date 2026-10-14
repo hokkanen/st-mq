@@ -10,7 +10,7 @@ import { createHttpsManager } from '../src/https/manager.js';
 import { verifySigningBundle, verifyArtifactHash, releaseCandidate, architecture } from '../src/https/distribution.js';
 import { validateCertificate, renewalMinimumValidity } from '../src/https/certificates.js';
 import { privateDirectory, atomicJson, lockDirectory, outsideCheckout } from '../src/https/storage.js';
-import { effectiveRestrictions, restrictedEnvironment, helperLocations } from '../src/https/helper.js';
+import { effectiveRestrictions, restrictedEnvironment, helperLocations, installationBinding } from '../src/https/helper.js';
 import { runtimeTask } from '../src/https/worker.js';
 
 const hostname = 'fixture.test-tailnet.ts.net';
@@ -92,8 +92,89 @@ test('explicit setup installs only its helper, activates validated certificate, 
   await manager.action({ action: 'recheck' }); await settled(manager);
   assert.equal(calls.install, 1); assert.equal(calls.certificate, 1, 'Rechecks do not force issuance');
   const family = manager.status({ admin: false }); assert.equal(family.enabled, true); assert.equal('hostname' in family, false); assert.equal('helper' in family, false); assert.equal('operation' in family, false);
+  for (const field of ['environment', 'setup', 'dns']) assert.equal(field in family, false);
   await manager.action({ action: 'disable' }); await settled(manager);
   assert.equal(manager.status().enabled, false); assert.equal(calls.helperStop, 1); assert.ok(manager.status().certificate.expiresAt);
+});
+
+test('missing add-on host identity blocks downloads and Retry resumes without resetting saved state', async t => {
+  let available = false; const contexts = [];
+  const context = await setup(t, { dependencies: { helperLocations: async (_dataDir, _directory, options) => {
+    contexts.push(options);
+    if (!available) throw Object.assign(Error(), { code: 'helper_installation_binding_unavailable' });
+    const identity = resolve(context.directory, 'https', 'identity'); await privateDirectory(identity);
+    return { identity, socketDirectory: identity, socket: resolve(identity, 's'), uid: process.getuid(), gid: process.getgid(), root: false };
+  } } });
+  context.config.addon = true;
+  await context.manager.action({ action: 'enable' }); const failed = await settled(context.manager);
+  assert.equal(failed.operation.error, 'helper_installation_binding_unavailable');
+  assert.equal(context.calls.install, 0); assert.equal(context.calls.preflight, 0); assert.equal(context.calls.helperStart, 0);
+  assert.equal(contexts[0].addon, true); assert.equal(contexts[0].restoreFenced, false);
+  assert.ok(contexts[0].signal instanceof AbortSignal);
+  const saved = JSON.parse(await readFile(resolve(context.directory, 'https', 'state.json'), 'utf8'));
+  assert.deepEqual(saved.quarantined, {}); assert.equal(saved.transaction, null);
+  await context.manager.close();
+  available = true;
+  const resumed = restart(t, context); await resumed.action({ action: 'retry' });
+  assert.equal((await settled(resumed)).phase, 'ready'); assert.equal(context.calls.install, 1);
+  assert.equal(JSON.parse(await readFile(resolve(context.directory, 'https', 'state.json'), 'utf8')).machineName, saved.machineName);
+});
+
+test('closing during an in-flight Supervisor identity request cancels it before helper installation', async t => {
+  let notify; const entered = new Promise(done => { notify = done; }); let cancelled = false;
+  const { manager, config, calls } = await setup(t, { dependencies: { helperLocations: (_dataDir, _directory, options) =>
+    installationBinding({ ...options, environment: { SUPERVISOR_TOKEN: 'synthetic-supervisor-cancellation' },
+      readIdentity: async () => null, fetchImpl: (_url, request) => new Promise((_resolve, reject) => {
+        request.signal.addEventListener('abort', () => { cancelled = true; reject(Error('Synthetic aborted request')); }, { once: true });
+        notify();
+      }) }) } });
+  config.addon = true;
+  await manager.action({ action: 'enable' }); await entered;
+  await manager.close();
+  assert.equal(cancelled, true); assert.equal(calls.install, 0); assert.equal(calls.preflight, 0); assert.equal(calls.helperStart, 0);
+});
+
+test('admin setup readiness and DNS wiring are configuration evidence independent of DNS checks', async t => {
+  const { manager, config } = await setup(t);
+  config.addon = true;
+  let view = manager.status();
+  assert.equal(view.environment, 'home-assistant'); assert.equal(view.setup.credentialsReady, true);
+  assert.equal(view.dns.expectedAddress, '127.0.0.1'); assert.equal(view.dns.resolver, null);
+  config.web.httpsHost = '0.0.0.0'; config.web.lanResolver = '192.0.2.53'; config.familyToken = 'short';
+  view = manager.status();
+  assert.equal(view.setup.credentialsReady, false); assert.equal(view.dns.expectedAddress, null);
+  assert.equal(view.dns.resolver, '192.0.2.53'); assert.equal(view.dns.state, 'not_configured');
+  config.familyToken = config.token; assert.equal(manager.status().setup.credentialsReady, false);
+  config.familyToken = 'synthetic-distinct-family-password'; assert.equal(manager.status().setup.credentialsReady, true);
+});
+
+test('LAN DNS checks retain address evidence and do not conflate TLS readiness with client DNS', async t => {
+  const unavailable = Object.assign(Error(), { code: 'ETIMEOUT' }); const absent = Object.assign(Error(), { code: 'ENODATA' });
+  const cases = [
+    { name: 'intended IPv4', a: ['192.0.2.44'], aaaa: [], expected: 'ready' },
+    { name: 'different IPv4', a: ['192.0.2.45'], aaaa: [], expected: 'mismatch' },
+    { name: 'competing IPv6', a: ['192.0.2.44'], aaaa: ['2001:db8::44'], expected: 'mismatch' },
+    { name: 'missing AAAA', a: ['192.0.2.44'], aaaa: absent, expected: 'ready' },
+    { name: 'missing IPv4', a: absent, aaaa: [], expected: 'mismatch' },
+    { name: 'unavailable IPv4 query', a: unavailable, aaaa: ['2001:db8::44'], expected: 'unavailable' },
+    { name: 'unavailable IPv6 query', a: ['192.0.2.44'], aaaa: unavailable, expected: 'unavailable' },
+    { name: 'wildcard binding has no confirmed target', a: ['192.0.2.44'], aaaa: [], host: '0.0.0.0', expected: 'address_confirmation_required' },
+  ];
+  for (const scenario of cases) await t.test(scenario.name, async t => {
+    const queries = [];
+    const { manager, config } = await setup(t, { dependencies: { createResolver: options => {
+      assert.equal(options.timeout, 3000); assert.equal(options.tries, 1);
+      return { setServers: servers => assert.deepEqual(servers, ['192.0.2.53']),
+        resolve4: async name => { queries.push(['A', name]); if (scenario.a instanceof Error) throw scenario.a; return scenario.a; },
+        resolve6: async name => { queries.push(['AAAA', name]); if (scenario.aaaa instanceof Error) throw scenario.aaaa; return scenario.aaaa; } };
+    } } });
+    config.web.httpsHost = scenario.host ?? '192.0.2.44'; config.web.lanResolver = '192.0.2.53';
+    await manager.action({ action: 'enable' }); const view = await settled(manager);
+    assert.equal(view.phase, 'ready'); assert.equal(view.dns.state, scenario.expected);
+    assert.deepEqual(view.dns.a, scenario.a instanceof Error ? [] : scenario.a);
+    assert.deepEqual(view.dns.aaaa, scenario.aaaa instanceof Error ? [] : scenario.aaaa);
+    assert.deepEqual(queries, [['A', hostname], ['AAAA', hostname]]);
+  });
 });
 
 test('duplicate setup clicks share one durable operation and cannot install concurrently', async t => {
@@ -159,7 +240,9 @@ test('a peer certificate recipient never installs or starts a certificate helper
   const envelope = { pairId: 'fixture-pair', ownerId: 'peer-node', hostname, generation: 5, certificate: { cert: 'fixture-peer', key: 'fixture-key' } };
   const pair = { configuration: () => ({ pairId: 'fixture-pair', localId: 'local-node', peerId: 'peer-node' }), request: async operation => operation === 'status' ?
     { nodeId: 'peer-node', ownerId: 'peer-node', pairId: 'fixture-pair', enabled: true } : envelope };
-  const { manager, config, calls } = await setup(t, { pair }); config.topology = 'pair';
+  const { manager, config, calls } = await setup(t, { pair, dependencies: {
+    helperLocations: async () => assert.fail('Certificate recipients cannot look up or admit a helper identity'),
+  } }); config.topology = 'pair'; config.addon = true;
   await manager.action({ action: 'enable', owner: 'peer' }); await settled(manager);
   assert.equal(manager.status().phase, 'ready'); assert.equal(calls.install, 0); assert.equal(calls.helperStart, 0);
   await manager.acceptCertificate(envelope);
@@ -374,8 +457,17 @@ test('an application crash reaps a TERM-ignoring owned helper without leaving a 
   const root = process.getuid() === 0;
   if (root) await chown(directory, 65534, 65534);
   const locations = { identity: directory, uid: root ? 65534 : process.getuid(), gid: root ? 65534 : process.getgid(), root };
+  // An opened /bin/sh is BusyBox on Alpine; executing its fd cannot select the
+  // shell applet. Use the current Node executable on both supported platforms,
+  // and prove its TERM handler is installed before killing the owning parent.
   const source = `import { launchRestricted } from ${JSON.stringify(new URL('../src/https/helper.js', import.meta.url).href)};
-    const record = await launchRestricted('/bin/sh', ['-c', 'trap "" TERM; while :; do sleep 1; done'], { foreground: true, locations: ${JSON.stringify(locations)} });
+    let ready, output = ''; const running = new Promise(done => { ready = done; });
+    const record = await launchRestricted(process.execPath, ['--input-type=module', '-e',
+      'process.on("SIGTERM", () => {}); console.log("fixture-ready"); setInterval(() => {}, 1000);'],
+      { foreground: true, locations: ${JSON.stringify(locations)}, onProcess: processRecord => processRecord.child.stdout.on('data', chunk => {
+        output += chunk; if (output.includes('fixture-ready')) ready();
+      }) });
+    await running;
     console.log(JSON.stringify({ launcher: record.child.pid, child: record.ownedPid })); process.stdin.resume();`;
   const caller = spawn(process.execPath, ['--input-type=module', '-e', source], { stdio: ['pipe', 'pipe', 'ignore'] });
   let owned;

@@ -5,7 +5,7 @@ const phases = {
   preparing: ['Preparing', 'Preparing the certificate helper.'],
   authorization_required: ['Authorization required', 'Authorize this computer’s dedicated certificate helper in Tailscale.'],
   approval_or_connection_pending: ['Approval or connection pending', 'Tailscale has not confirmed the helper connection. Check device approval or Tailnet Lock in Tailscale, then recheck.'],
-  certificate_settings_required: ['Tailscale setup required', 'Enable HTTPS certificates for the tailnet, then retry certificate issuance.'],
+  certificate_settings_required: ['Tailscale setup required', 'Enable MagicDNS and HTTPS certificates in Tailscale DNS settings, then retry certificate issuance.'],
   renewal_pending: ['Certificate pending', 'Waiting for a certificate.'],
   ready: ['HTTPS ready locally', 'A valid certificate is available. Household devices still need the exact hostname to resolve to the installation’s LAN address.'],
   degraded: ['Needs attention', 'HTTPS needs attention. Review the reported problem and retry.'],
@@ -21,14 +21,18 @@ const failures = {
   https_operation_interrupted: 'The previous web access operation was interrupted. Review its current status and retry.',
   identity_restore_required: 'A restored certificate helper identity needs explicit review before it can be used again. Keep the original owner fenced and follow the HTTPS restoration guide.',
   helper_storage_outside_checkout_required: 'HTTPS needs private storage outside the checkout. Configure web.https_directory with an external private path and restart before setup.',
-  helper_installation_binding_unavailable: 'This computer’s installation identity could not be confirmed. Keep the saved identity preserved and restore access to the local machine identity before retrying.',
   https_setup_required: 'Set up HTTPS on the certificate owner before installing a helper update.',
   https_helper_owner_required: 'Manage certificate helper updates on the paired certificate-owner computer.',
   https_pair_owner_setup_required: 'This HTTPS state was set up for standalone use. Preserve its directory, configure a fresh external web.https_directory and restart, then explicitly select the paired certificate owner in Web access.',
   https_certificate_owner_fixed: 'This HTTPS state already has a fixed certificate owner. Re-enable it using that owner. Changing the owner requires preserving the current state and explicitly setting up fresh HTTPS state.',
   https_peer_owner_conflict: 'The paired computer reports a different certificate owner. Review Web access on both computers and agree on one owner before retrying setup.',
 };
-const failure = value => typeof value !== 'string' ? '' : failures[value] ?? value;
+const failure = (value, environment) => {
+  if (value === 'helper_installation_binding_unavailable') return environment === 'home-assistant'
+    ? 'The Supervisor host identity is unavailable. Check Home Assistant Supervisor health and this add-on’s Supervisor API access, then Retry. The saved helper identity is preserved; do not delete its directory.'
+    : 'This computer’s installation identity could not be confirmed. Restore read access to /etc/machine-id, /sys/class/dmi/id/product_uuid or /sys/firmware/devicetree/base/serial-number, then Retry. The saved helper identity is preserved; do not delete its directory.';
+  return typeof value !== 'string' ? '' : failures[value] ?? value;
+};
 const date = value => {
   if (value === null || value === undefined || value === '') return 'Unknown';
   const at = new Date(value);
@@ -43,6 +47,40 @@ function keyExpiry(value, now) {
   const remaining = at <= now ? 'Expired' : hours >= 24 ? `${Math.floor(hours / 24)}d ${hours % 24}h left`
     : hours >= 1 ? `${hours}h left` : 'Less than 1 hour left';
   return `${date(at)} · ${remaining}`;
+}
+
+function ipv4(value) {
+  return typeof value === 'string' && /^(?:\d{1,3}\.){3}\d{1,3}$/.test(value)
+    && value.split('.').every(part => String(Number(part)) === part && Number(part) <= 255)
+    && value !== '0.0.0.0' ? value : null;
+}
+
+function setupChecklist(state, { certificateValid, tlsReady, peerOwner, hostname, expectedAddress, dnsText }) {
+  const helper = state.helper ?? {}, dns = state.dns ?? {};
+  const connected = helper.state === 'running';
+  const step = (state, label, help) => ({ state, label, help });
+  return {
+    prepare: state.setup?.credentialsReady === true ? state.pair?.paired && !state.pair.ownerId
+      ? step('pending', 'Choose certificate owner', 'Choose the certificate owner above before Set up HTTPS. Its renewal duty is separate from the master/standby role.')
+      : step('available', 'Passwords ready', 'Network passwords meet the requirement. Use Set up HTTPS on this computer to enable its entrance.')
+      : step('pending', state.setup?.credentialsReady === false ? 'Passwords required' : 'Not checked',
+        'In Configuration, set controller.web_token to an admin password of at least 24 characters. An optional controller.web_family_token must also meet that requirement and differ from the admin password.'),
+    authorize: peerOwner ? step('pending', 'Managed on paired computer', 'Open Web access on the paired certificate owner to authorize its helper. This computer receives its certificate without a local helper.')
+      : connected ? step('available', 'Connection reported', 'Tailscale reports the dedicated helper connected. Account approval and Tailnet Lock can still require attention after reconnecting.')
+      : step('pending', helper.state === 'authorization_required' ? 'Authorization required' : helper.state === 'approval_or_connection_pending' ? 'Approval or connection pending' : 'Waiting for setup',
+        'After Set up HTTPS, use the enrollment link here. Approve this dedicated node in Tailscale if required, then Recheck. A separate host or Home Assistant Tailscale installation does not enroll this helper.'),
+    account: step(state.phase === 'certificate_settings_required' ? 'attention' : 'pending', certificateValid ? 'Review key expiry' : 'Account settings required',
+      peerOwner ? 'Manage MagicDNS, HTTPS certificates and the unattended node-key-expiry policy for the paired certificate owner.'
+        : 'In Tailscale DNS settings, enable MagicDNS and HTTPS certificates. Choose a non-sensitive node name before issuance: certificate names enter public transparency records. In Machines, review or disable this dedicated node’s key expiry for unattended renewal.'),
+    tls: tlsReady ? step('available', 'Ready locally', 'The certificate is valid and this computer’s HTTPS listener is running. Household DNS can be configured later.')
+      : step('pending', certificateValid ? 'Certificate available · listener pending' : 'Certificate pending', peerOwner
+        ? 'Wait for a validated certificate from the paired owner and this computer’s listener. Recovery and ingress remain available.'
+        : 'Authorize the helper and enable account HTTPS settings, then Recheck or Retry. Router DNS changes are not needed to issue the certificate.'),
+    dns: step(dns.state === 'ready' ? 'available' : dns.state === 'mismatch' ? 'attention' : 'pending', dnsText,
+      hostname ? `When the router or LAN resolver is available, add a local DNS A-record override for ${hostname} to ${expectedAddress ?? 'the server’s reserved LAN IPv4 address'}.${state.pair?.paired ? ' Use the shared pair VIP rather than either computer’s individual address.' : ' Reserve that address in DHCP so it stays stable.'} No public port forwarding is needed.`
+        : `After certificate setup, use the exact shown hostname and ${state.pair?.paired ? 'the shared pair VIP' : 'a reserved server LAN IPv4 address'} for a local DNS A-record override. This router/LAN resolver step can wait.`),
+    client: step('pending', 'Verify each browser device', 'Set web.lan_resolver to the LAN resolver’s IPv4 address in Configuration and apply it through the existing save and restart workflow, then Recheck. Review A and AAAA answers below; a conflicting IPv6 answer, client VPN or browser encrypted DNS can bypass the intended IPv4 mapping. Open the full HTTPS address on each intended device and check normal certificate trust before logging in. A server DNS check does not verify those devices.'),
+  };
 }
 
 /** An enrollment link may only open the known upstream login origin. Never
@@ -80,22 +118,28 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
   const unavailable = state.enabled === true && tls?.listening === false && ['ready', 'degraded'].includes(state.phase);
   const busy = state.operation?.state === 'running';
   const certificate = state.certificate;
+  const certificateValid = Number.isFinite(new Date(certificate?.expiresAt ?? NaN).getTime()) && new Date(certificate.expiresAt).getTime() > now;
+  const tlsReady = state.enabled === true && tls?.listening === true && certificateValid;
   const url = admin ? httpsAccessUrl(state.url, state.hostname) : null;
   const hostname = url ? state.hostname : null;
   const dns = state.dns ?? {};
-  const dnsText = { not_configured: 'Not configured', ready: 'Reported address matches', mismatch: 'Address does not match',
+  const dnsText = { not_configured: 'Check not configured', ready: 'Reported address matches', mismatch: 'Address does not match',
     unavailable: 'Check unavailable', address_confirmation_required: 'Address needs confirmation' }[dns.state] ?? 'Not checked';
   const retainedRenewal = admin && state.pair?.localOwner === true && state.pair.peerRenewalRequired === true;
   const peerOwner = state.pair?.ownerId && state.pair.localOwner === false;
+  const expectedAddress = admin ? ipv4(dns.expectedAddress) : null;
+  const dnsPending = admin && state.phase === 'ready' && tlsReady && dns.state !== 'ready';
   const helperSetup = state.enabled === true || retainedRenewal || Boolean(state.updates?.installed);
   const errorCode = state.operation?.error ?? state.error ?? state.updates?.error ?? state.managementError ?? tls?.error ?? '';
   const listener = value => value?.listening === true ? `Listening${Number.isInteger(value.address?.port) && value.address.port > 0 ? ` · port ${value.address.port}` : ''}`
     : value?.enabled === false ? 'Disabled' : value?.listening === false ? 'Unavailable' : 'Unknown';
   return {
-    label: unavailable ? 'HTTPS unavailable' : retainedRenewal && !state.enabled ? 'Disabled · peer renewal retained' : phase[0],
+    label: unavailable ? 'HTTPS unavailable' : retainedRenewal && !state.enabled ? 'Disabled · peer renewal retained'
+      : dnsPending ? 'HTTPS ready locally · household DNS pending' : phase[0],
     tone: unavailable || ['degraded', 'repair_required', 'authorization_required', 'certificate_settings_required'].includes(state.phase)
       ? 'attention' : state.phase === 'ready' ? 'available' : 'pending',
-    summary: unavailable ? 'The HTTPS listener is unavailable. Recovery access remains separate; review the reported problem and retry.' : phase[1],
+    summary: unavailable ? 'The HTTPS listener is unavailable. Recovery access remains separate; review the reported problem and retry.'
+      : dnsPending ? 'HTTPS can be tested now without router DNS. Household DNS verification is pending; an unconfigured check does not establish whether household DNS is already working.' : phase[1],
     https: listener(tls), expiry: date(certificate?.expiresAt),
     http: transport.lanHttp?.enabled === true ? `${listener(transport.lanHttp)} · unencrypted` : listener(transport.lanHttp),
     recovery: listener(transport.recovery), ingress: listener(transport.ingress),
@@ -104,10 +148,17 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     owner: admin && state.pair?.paired === true && state.pair.ownerId
       ? `Certificate owner: ${state.pair.localOwner === true ? 'This computer' : 'Paired computer'}. This is independent of the master/standby role.` : '',
     peerRenewal: retainedRenewal ? 'This computer retains certificate renewal for the paired computer. Disabling this HTTPS entrance does not stop the helper while that duty remains; the peer must confirm that its HTTPS is disabled.' : '',
-    authorizationUrl: admin ? helperAuthorizationUrl(state.helper?.authorizationUrl) : null,
+    authorizationUrl: admin && !peerOwner && state.helper?.state === 'authorization_required' ? helperAuthorizationUrl(state.helper?.authorizationUrl) : null,
     dnsText: `${dnsText}${dns.checkedAt ? ` · ${date(dns.checkedAt)}` : ''}`,
     dnsHelp: hostname ? `Map ${hostname} to this installation’s LAN address in household DNS. Certificate issuance does not require router DNS changes. A successful check on this computer does not verify other household devices.`
       : 'Certificate issuance can be completed before configuring household DNS.',
+    dnsResolver: admin ? ipv4(dns.resolver) ?? 'Not configured' : '',
+    expectedAddress: expectedAddress ?? 'Confirm the reserved LAN IPv4 address',
+    dnsA: admin ? Array.isArray(dns.a) && dns.a.length ? dns.a.join(', ') : dns.checkedAt && dns.state !== 'not_configured' && dns.state !== 'unavailable' ? 'No answers' : 'Not checked' : '',
+    dnsAAAA: admin ? Array.isArray(dns.aaaa) && dns.aaaa.length ? dns.aaaa.join(', ') : dns.checkedAt && dns.state !== 'not_configured' && dns.state !== 'unavailable' ? 'No answers' : 'Not checked' : '',
+    hostsEntry: hostname ? `${expectedAddress ?? '<LAN address>'} ${hostname}` : '',
+    curlCommand: url ? `curl --resolve '${hostname}:${new URL(url).port || '443'}:${expectedAddress ?? '<LAN-address>'}' '${url}'` : '',
+    setupSteps: admin ? setupChecklist(state, { certificateValid, tlsReady, peerOwner, hostname, expectedAddress, dnsText }) : {},
     helper: admin ? state.helper?.version ?? 'Not installed' : null,
     keyExpiry: admin ? state.helper?.nodeKeyExpired === true ? 'Expired (reported by Tailscale)' : keyExpiry(state.helper?.nodeKeyExpiresAt, now) : null,
     keyExpired: admin && (state.helper?.nodeKeyExpired === true || Number.isFinite(new Date(state.helper?.nodeKeyExpiresAt ?? NaN).getTime())
@@ -125,7 +176,7 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
       : state.updates?.policy === 'manual' ? 'Signed stable releases wait for explicit installation approval.'
       : 'Signed stable releases are checked and installed automatically. Existing HTTPS can keep using a valid stored certificate after a helper update fails; some helper failures require repair.',
     restoreIdentity: admin && (state.error === 'identity_restore_required' || state.operation?.error === 'identity_restore_required'),
-    error: admin ? failure(errorCode) : '',
+    error: admin ? failure(errorCode, state.environment) : '',
   };
 }
 
@@ -171,8 +222,18 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     setText('secure-web-access-url', view.url ?? '');
     setText('secure-web-access-dns', admin ? view.dnsText : 'Not checked');
     setText('secure-web-access-dns-help', admin ? view.dnsHelp : 'Certificate issuance can be completed before configuring household DNS.');
+    for (const [field, id] of [['dnsResolver', 'dns-resolver'], ['expectedAddress', 'expected-address'], ['dnsA', 'dns-a'], ['dnsAAAA', 'dns-aaaa']])
+      setText(`secure-web-access-${id}`, admin ? view[field] : '');
+    for (const key of ['prepare', 'authorize', 'account', 'tls', 'dns', 'client']) {
+      const step = view.setupSteps[key];
+      setText(`secure-web-access-step-${key}-state`, step?.label ?? 'Not checked');
+      $(`secure-web-access-step-${key}-state`).dataset.state = step?.state ?? 'pending';
+      setText(`secure-web-access-step-${key}-help`, step?.help ?? '');
+    }
     $('secure-web-access-hosts-help').hidden = !view.hostname;
-    setText('secure-web-access-hosts-entry', view.hostname ? `<LAN address> ${view.hostname}` : '');
+    setText('secure-web-access-hosts-entry', view.hostsEntry);
+    $('secure-web-access-curl-help').hidden = !view.curlCommand;
+    setText('secure-web-access-curl-command', view.curlCommand);
     setText('secure-web-access-helper', view.helper ?? 'Not installed');
     setText('secure-web-access-key-expiry', view.keyExpiry ?? 'Not reported');
     $('secure-web-access-key-expiry').classList.toggle('form-error', Boolean(view.keyExpired));

@@ -56,16 +56,39 @@ async function verifyPrivilege(pid, { uid, gid, requireClearGroups }) {
       requireClearGroups && get('Groups')?.trim()) throw httpsError('helper_privilege_check_failed');
 }
 
-export async function installationBinding() {
+export async function installationBinding({ addon = false, signal, environment = process.env,
+  readIdentity = readFile, fetchImpl = (...args) => fetch(...args) } = {}) {
   for (const path of ['/sys/class/dmi/id/product_uuid', '/sys/firmware/devicetree/base/serial-number', '/etc/machine-id']) {
-    const value = await readFile(path).catch(() => null);
+    const value = await readIdentity(path).catch(() => null);
     if (value && value.length > 4 && value.length < 256 && value.toString().replace(/\0/g, '').trim())
       return createHash('sha256').update(path).update('\0').update(value).digest('hex');
+  }
+  // Supervisor exposes the underlying host's machine-id without opening host
+  // files or granting hardware/API administration privileges to the add-on.
+  // This application-side request never passes its token to the helper.
+  if (addon && typeof environment.SUPERVISOR_TOKEN === 'string' && environment.SUPERVISOR_TOKEN) {
+    try {
+      const response = await fetchImpl('http://supervisor/info', { method: 'GET', redirect: 'error',
+        headers: { Authorization: `Bearer ${environment.SUPERVISOR_TOKEN}`, Accept: 'application/json' },
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000) });
+      if (!response.ok || !response.body) { await response.body?.cancel(); throw Error(); }
+      const chunks = []; let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.length;
+        if (size > 64 * 1024) throw Error();
+        chunks.push(chunk);
+      }
+      const result = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const machineId = result?.data?.machine_id;
+      if (result?.result !== 'ok' || typeof machineId !== 'string' || !/^[a-f0-9]{32}$/i.test(machineId) || /^0+$/.test(machineId)) throw Error();
+      return createHash('sha256').update('home-assistant:supervisor:machine_id').update('\0').update(machineId.toLowerCase()).digest('hex');
+    } catch { /* Preserve identity; transport/response details can contain secrets. */ }
   }
   throw httpsError('helper_installation_binding_unavailable');
 }
 
-export async function helperLocations(dataDir, managerDirectory, { restoreFenced = false } = {}) {
+export async function helperLocations(dataDir, managerDirectory, { restoreFenced = false, addon = false, signal,
+  getInstallationBinding = installationBinding } = {}) {
   if (process.platform !== 'linux' || !process.getuid) throw httpsError('helper_platform_unsupported');
   const root = process.getuid() === 0;
   await outsideCheckout(managerDirectory);
@@ -76,7 +99,7 @@ export async function helperLocations(dataDir, managerDirectory, { restoreFenced
   const identity = root ? resolve(dirname(sibling), `.${basename(sibling)}-https-helper`) : resolve(managerDirectory, 'identity');
   await outsideCheckout(identity);
   const marker = resolve(identity, 'stmq-owner.json');
-  const binding = await installationBinding();
+  const binding = await getInstallationBinding({ addon, signal });
   try { await safeOwnedDirectory(identity, root ? UID : process.getuid(), root ? GID : process.getgid()); }
   catch (error) { if (error.code !== 'EEXIST') throw error; }
   const info = await lstat(identity);

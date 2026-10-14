@@ -14,6 +14,14 @@
 .secure-web-access-owner-choice p { margin: 8px 0; }
 .secure-web-access-notice { border-left: 2px solid var(--stale); padding-left: 10px; }
 .secure-web-access-authorization { overflow-wrap: anywhere; }
+.secure-web-access-steps { display: grid; gap: 14px; padding-left: 20px; margin: 14px 0; }
+.secure-web-access-steps > li { padding-left: 3px; min-width: 0; }
+.secure-web-access-step-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.secure-web-access-step-heading .equipment-device-status { margin-left: auto; white-space: normal; }
+.secure-web-access-steps p { margin: 5px 0 0; }
+.secure-web-access-setup-links { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.secure-web-access-steps a { color: var(--accent); }
+.secure-web-access-address { overflow-wrap: anywhere; }
 .secure-web-access-body .equipment-fold code { overflow-wrap: anywhere; }
 .web-unsafe-warning { margin: 16px 0; border-color: var(--stale); color: var(--text); }
 @media (max-width: 480px) {

@@ -546,18 +546,32 @@
                           <button id="secure-web-access-disable" class="secondary-button" type="button" hidden disabled>Disable HTTPS</button>
                           <button id="secure-web-access-restore-identity" class="secondary-button" type="button" hidden disabled>Restore saved identity</button>
                         </div>
-                        <p id="secure-web-access-authorization" class="secure-web-access-authorization" hidden><a id="secure-web-access-authorize" target="_blank" rel="noopener noreferrer">Authorize certificate helper in Tailscale ↗</a></p>
                         <p id="secure-web-access-message" class="muted" role="status" aria-live="polite"></p>
+                        <details id="secure-web-access-setup-details" class="equipment-fold" open>
+                          <summary>Setup checklist</summary>
+                          <ol class="secure-web-access-steps">
+                            <li><div class="secure-web-access-step-heading"><strong>Prepare passwords &amp; ownership</strong><small id="secure-web-access-step-prepare-state" class="equipment-device-status" data-state="pending">Not checked</small></div><p id="secure-web-access-step-prepare-help" class="muted"></p></li>
+                            <li><div class="secure-web-access-step-heading"><strong>Authorize the certificate helper</strong><small id="secure-web-access-step-authorize-state" class="equipment-device-status" data-state="pending">Waiting for setup</small></div><p id="secure-web-access-step-authorize-help" class="muted"></p><p id="secure-web-access-authorization" class="secure-web-access-authorization" hidden><a id="secure-web-access-authorize" target="_blank" rel="noopener noreferrer">Authorize certificate helper in Tailscale ↗</a></p></li>
+                            <li><div class="secure-web-access-step-heading"><strong>Enable Tailscale certificate settings</strong><small id="secure-web-access-step-account-state" class="equipment-device-status" data-state="pending">Account settings required</small></div><p id="secure-web-access-step-account-help" class="muted"></p><p class="secure-web-access-setup-links"><a href="https://console.tailscale.com/admin/dns" target="_blank" rel="noopener noreferrer">DNS settings ↗</a><a href="https://console.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">Machines &amp; key expiry ↗</a><a href="https://tailscale.com/docs/how-to/set-up-https-certificates" target="_blank" rel="noopener noreferrer">Certificate guide ↗</a></p></li>
+                            <li><div class="secure-web-access-step-heading"><strong>Prepare the HTTPS entrance</strong><small id="secure-web-access-step-tls-state" class="equipment-device-status" data-state="pending">Certificate pending</small></div><p id="secure-web-access-step-tls-help" class="muted"></p><p class="secure-web-access-address"><a id="secure-web-access-url" target="_blank" rel="noopener noreferrer" hidden></a><span id="secure-web-access-url-empty">Address not yet available</span></p></li>
+                            <li><div class="secure-web-access-step-heading"><strong>Configure household DNS when ready</strong><small id="secure-web-access-step-dns-state" class="equipment-device-status" data-state="pending">Not checked</small></div><p id="secure-web-access-step-dns-help" class="muted"></p></li>
+                            <li><div class="secure-web-access-step-heading"><strong>Verify access on household devices</strong><small id="secure-web-access-step-client-state" class="equipment-device-status" data-state="pending">Verify each browser device</small></div><p id="secure-web-access-step-client-help" class="muted"></p></li>
+                          </ol>
+                        </details>
                         <details id="secure-web-access-network-details" class="equipment-fold">
                           <summary>Address &amp; recovery access</summary>
                           <dl class="secure-web-access-facts">
-                            <div><dt>HTTPS address</dt><dd><a id="secure-web-access-url" target="_blank" rel="noopener noreferrer" hidden></a><span id="secure-web-access-url-empty">Not yet available</span></dd></div>
                             <div><dt>LAN DNS check</dt><dd id="secure-web-access-dns">Not checked</dd></div>
+                            <div><dt>DNS resolver</dt><dd id="secure-web-access-dns-resolver">Not configured</dd></div>
+                            <div><dt>Expected LAN IPv4</dt><dd id="secure-web-access-expected-address">Confirm the reserved LAN IPv4 address</dd></div>
+                            <div><dt>A answers</dt><dd id="secure-web-access-dns-a">Not checked</dd></div>
+                            <div><dt>AAAA answers</dt><dd id="secure-web-access-dns-aaaa">Not checked</dd></div>
                             <div><dt>Loopback recovery</dt><dd id="secure-web-access-recovery">Unknown</dd></div>
                             <div><dt>Home Assistant ingress</dt><dd id="secure-web-access-ingress">Unknown</dd></div>
                           </dl>
                           <p id="secure-web-access-dns-help" class="muted">Certificate issuance can be completed before configuring household DNS.</p>
-                          <p id="secure-web-access-hosts-help" class="muted" hidden>A test computer can map the exact hostname to this installation’s LAN address in its hosts file: <code id="secure-web-access-hosts-entry"></code>. Open the HTTPS address above. The raw IP address does not match the certificate.</p>
+                          <p id="secure-web-access-hosts-help" class="muted" hidden>Before router DNS is ready, add this temporary entry to a test computer’s hosts file: <code id="secure-web-access-hosts-entry"></code>. Replace any LAN address placeholder with the reserved server address or shared pair VIP. On Linux/macOS use <code>/etc/hosts</code>; on Windows use <code>C:\Windows\System32\drivers\etc\hosts</code>, with administrator access. Open the exact HTTPS address above, then remove the entry when household DNS is working.</p>
+                          <p id="secure-web-access-curl-help" class="muted" hidden>A command-line test can bypass DNS while still checking the certificate: <code id="secure-web-access-curl-command"></code>. Replace any LAN address placeholder. Keep certificate verification enabled; the raw IP address or an unrelated alias does not match the certificate.</p>
                           <p class="muted">LAN HTTP backup is disabled by default. To enable it, set <code>web.lan_http_enabled</code> to <code>true</code> in this computer’s private configuration and restart. HTTP exposes passwords and household data to interception or modification. Keep it within a trusted LAN firewall boundary.</p>
                           <p class="muted">Loopback recovery remains available through an SSH tunnel. Home Assistant ingress uses the host login when available.</p>
                         </details>
