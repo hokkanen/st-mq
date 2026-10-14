@@ -2,6 +2,7 @@ import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChargingRuntime } from '../src/charging/runtime.js';
+import { createChargingTeslaCapture } from '../src/charging/teslamate.js';
 const NOW=1800000000000;
 function fixture(t) {
   let now=NOW;const saved=new Map(),physical={charger1:{connected:true,charging:false,at:NOW,power:0,session:NOW},charger2:{connected:false,charging:false,at:NOW,power:0,session:null}};
@@ -25,16 +26,59 @@ function fixture(t) {
     admit:()=>runtime.write(()=>runtime.persist()),
     charge(id,at){now=at;Object.assign(physical[id],{charging:true,power:4.14,at});Object.assign(tesla,{charging:true,actualPowerKw:4.14});tesla.fields.charger_power={receivedAt:at,retained:false};tesla.fields.charge_current_request={receivedAt:at,retained:false};}};
 }
+function passiveTeslaFixture(t, id, maximumA = 16) {
+  const f = fixture(t);
+  for (const [key, p] of Object.entries(f.physical))
+    Object.assign(p, { connected: key === id, session: key === id ? NOW : null });
+  let now = NOW;
+  const capture = createChargingTeslaCapture({ clock: () => now,
+    settings: { enabled: true, carId: '1', homeGeofence: 'Home', namespace: '', maxAgeMs: 180000 } });
+  capture.setConnected(true);
+  const send = (field, value) => assert.equal(capture.receive(`teslamate/cars/1/${field}`, String(value)), true);
+  for (const [field, value] of Object.entries({ healthy: true, plugged_in: true, geofence: 'Home',
+    charging_state: 'Stopped', charger_power: 0, battery_level: 40, charge_limit_soc: 90 })) send(field, value);
+  if (maximumA !== null) send('charge_current_request_max', maximumA);
+  send('charge_current_request', 6);
+  f.runtime.teslaCapture = capture;
+  return { ...f, capture, observeCharging(at) {
+    now = at; f.setNow(at);
+    Object.assign(f.physical[id], { charging: true, power: 4.14, at });
+    send('healthy', true); send('charging_state', 'Charging'); send('charger_power', 4.14);
+    send('charger_actual_current', 6); send('charge_current_request', 6);
+  } };
+}
 test('passive assignment continues hours after plug with automatic OFF on either physical charger',async t=>{
   for(const id of ['charger1','charger2']) {
-    const f=fixture(t);for(const [key,p]of Object.entries(f.physical))Object.assign(p,{connected:key===id,session:key===id?NOW:null});
+    const f=passiveTeslaFixture(t,id),originalRequest=f.capture.snapshot().fields.charge_current_request;
     await f.admit();
-    assert.equal(f.view(id).vehicle.id,null);f.charge(id,NOW+2*3600000);
+    assert.equal(f.view(id).vehicle.id,null);f.observeCharging(NOW+2*3600000);
     await f.admit();
     const view=f.view(id);assert.equal(view.vehicle.id,'tesla');assert.equal(view.values.soc.value,40);assert.equal(view.values.vehicleCurrentA.value,6);
     assert.equal(view.settings.enabled,false);assert.equal(view.provider,id==='charger1'?'easee':'shelly-evse');
+    assert.deepEqual(f.capture.snapshot().fields.charge_current_request,originalRequest,'Unchanged request keeps its original capture provenance');
+    assert.equal(view.values.vehicleCurrentA.receivedAt,NOW);
+    assert.equal(view.values.vehicleCurrentA.sequence,originalRequest.sequence);
+    assert.equal(view.values.vehicleCurrentA.independentRequest.maximumA,16);
+    assert.equal(view.values.vehicleCurrentA.independentRequest.maximumReceivedAt,NOW);
   }
 });
+for (const [reason, maximumA] of [['missing', null], ['equal', 6]])
+  test(`passive Tesla identity does not establish a current ceiling from ${reason} supply evidence`, async t => {
+    for (const id of ['charger1', 'charger2']) {
+      const f = passiveTeslaFixture(t, id, maximumA);
+      const originalRequest = f.capture.snapshot().fields.charge_current_request;
+      await f.admit(); f.observeCharging(NOW + 2 * 3600000); await f.admit();
+      const view = f.view(id), current = view.values.vehicleCurrentA;
+      assert.equal(view.vehicle.id, 'tesla'); assert.equal(view.values.soc.value, 40);
+      assert.equal(view.settings.enabled, false);
+      assert.equal(current.value, null); assert.equal(current.available, false);
+      assert.equal(current.knownLimitA, null); assert.equal(current.independentRequest, null);
+      assert.equal(current.reason, 'vehicle-current-limit-unknown');
+      assert.equal(current.rawRequest.value, 6); assert.equal(current.rawRequest.available, true);
+      assert.deepEqual(f.capture.snapshot().fields.charge_current_request, originalRequest);
+      assert.equal(current.rawRequest.receivedAt, NOW);
+    }
+  });
 test('equal-power chargers remain unidentified without inferring either vehicle',async t=>{
   const f=fixture(t);Object.assign(f.physical.charger2,{connected:true,session:NOW});f.charge('charger1',NOW+1000);f.charge('charger2',NOW+1000);
   await f.admit();
