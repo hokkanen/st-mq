@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, statSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { getEventListeners } from 'node:events';
 import { createHttp } from '../src/acquisition/http.js';
 import { fileTokenStore } from '../src/acquisition/token-store.js';
+
+const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 
 test('provider transport permits observations and auth only, refuses redirects and arbitrary origins', async () => {
   const calls = [];
@@ -92,6 +95,62 @@ test('a provider deadline is distinguished from caller cancellation without expo
     const pending = http.json('https://api.easee.com', { signal: cancellation.signal });
     cancellation.abort();
     await assert.rejects(pending, error => error.code === 'provider-request-aborted');
+  } finally { http.close(); }
+});
+
+for (const cancellation of ['caller', 'close', 'deadline']) {
+  test(`a held response body is cancelled by ${cancellation} without accepting its partial JSON`, async () => {
+    const reading = deferred(), external = new AbortController();
+    let cancelled = 0;
+    const http = createHttp({ timeoutMs: cancellation === 'deadline' ? 30 : 1000,
+      // A valid JSON prefix is still incomplete until this source closes. The
+      // transport must reject even when reader.cancel() resolves read as EOF.
+      fetchImpl: async () => new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"ok":true}')); },
+        pull() { reading.resolve(); },
+        cancel() { cancelled++; },
+      })) });
+    const response = http.json('https://api.easee.com/state/example/observations', { signal: external.signal });
+    const rejected = assert.rejects(response, { code: cancellation === 'deadline'
+      ? 'provider-request-timeout' : 'provider-request-aborted' });
+    try {
+      await reading.promise;
+      if (cancellation === 'caller') external.abort();
+      if (cancellation === 'close') http.close();
+      await rejected;
+      assert.equal(cancelled, 1);
+    } finally { http.close(); }
+  });
+}
+
+test('an aborted empty scheduling reply is not an acknowledged command', async () => {
+  const entered = deferred(), reply = deferred(), external = new AbortController();
+  const http = createHttp({ allowChargerTakeover: true, fetchImpl: async () => {
+    entered.resolve(); await reply.promise; return new Response(null, { status: 204 });
+  } });
+  const response = http.text('https://api.easee.com/api/chargers/fixture-charger/commands/resume_charging',
+    { method: 'POST', signal: external.signal });
+  const rejected = assert.rejects(response, { code: 'provider-request-aborted' });
+  try { await entered.promise; external.abort(); reply.resolve(); await rejected; }
+  finally { reply.resolve(); http.close(); }
+});
+
+test('successful response removes its body cancellation listener from the caller signal', async () => {
+  const external = new AbortController();
+  let cancelled = 0, requestSignal;
+  const http = createHttp({ fetchImpl: async (_url, { signal }) => {
+    requestSignal = signal;
+    return new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{"ok":true}')); controller.close(); },
+      cancel() { cancelled++; },
+    }));
+  } });
+  try {
+    assert.deepEqual(await http.json('https://api.easee.com', { signal: external.signal }), { ok: true });
+    assert.equal(getEventListeners(requestSignal, 'abort').length, 0);
+    external.abort();
+    assert.equal(cancelled, 0);
+    assert.deepEqual(await http.json('https://api.easee.com'), { ok: true });
   } finally { http.close(); }
 });
 

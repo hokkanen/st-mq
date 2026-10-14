@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Provider shutdown and request deadlines cancel held response bodies after
+  headers arrive, including on Node 22 after garbage collection. Cancelled
+  partial data and command replies remain failures with their original error
+  classification.
+
 - Native Easee setup checks its actual target scope and saved session boundary
   before cloud cleanup. Disagreement or unresolved scoped references preserve
   the current cloud program and separate local ownership without inferring a
