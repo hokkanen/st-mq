@@ -405,7 +405,7 @@ try {
     ['startup-preparing', { ...originalFixture, enabled: true, phase: 'preparing', operation: { action: 'enable', state: 'completed' } }],
     ['retry-pending', { ...originalFixture, enabled: true, phase: 'degraded', error: 'helper_authorization_start_failed', operation: { state: 'running', action: 'retry', error: null } }],
     ['recovered-receipt', { ...readyFixture, error: null, operation: { action: 'enable', state: 'failed', completedAt: Date.parse('2026-10-14T11:59:59Z'), error: 'helper_authorization_start_failed' } }],
-    ['current-release', { ...readyFixture, helper: { ...readyFixture.helper, securityUpdate: null, runningLatest: null }, updates: { ...readyFixture.updates, installed: '1.104.1', latest: '1.104.1', candidate: '1.104.1' } }],
+    ['current-release', { ...readyFixture, helper: { ...readyFixture.helper, securityUpdate: null, runningLatest: null }, updates: { ...readyFixture.updates, installed: '1.104.1', latest: '1.104.1', candidate: '1.104.1', lastSuccessfulCheck: Date.parse('2026-10-14T11:59:30Z') } }],
     ['urgent-release', { ...readyFixture, helper: { ...readyFixture.helper, securityUpdate: true, securityObservedAt: Date.parse('2026-10-14T11:45:00Z') }, updates: { ...readyFixture.updates, installed: '1.104.1', latest: '1.104.2', candidate: '1.104.2' } }],
     ['renamed-pending', { ...readyFixture, phase: 'degraded', error: 'helper_hostname_changed' }],
     ['authorize', { ...readyFixture, certificate: null, phase: 'authorization_required', helper: { state: 'authorization_required', authorizationUrl: 'https://login.tailscale.com/a/synthetic-authorization' }, transport: { ...originalFixture.transport, https: { enabled: false, listening: false } } }],

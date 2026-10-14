@@ -396,20 +396,25 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   async function observeHelper({ authorize = false, adoptHostname = false } = {}) {
     if (!helper) await startHelper();
     const instance = helper;
+    const requestedAuthorization = authorize;
+    const expectedVersion = state.runtime.evidence.runtimeVersion;
+    const assertCurrentHelper = () => {
+      assertOpen(); validatePairBinding();
+      if (helper !== instance || !responsible()) throw httpsError('https_certificate_owner_mismatch');
+    };
     let observation;
     try {
-      if (!authorize) {
-        observation = await instance.status();
-        const firstObservation = observedHelper !== instance;
-        observedHelper = instance;
-        // A pending enrollment URL belongs to the daemon's current session.
-        // Resume the saved setup intent once on a new helper, rather than
-        // publishing an empty link indefinitely or reauthorizing every poll.
-        authorize = firstObservation && responsible() && observation.BackendState === 'NeedsLogin'
-          && !helperAuthorizationUrl(observation.AuthURL);
-      }
+      observation = await instance.status(); assertCurrentHelper();
+      if (!(observation.Version === expectedVersion || observation.Version?.startsWith(`${expectedVersion}-`))) throw httpsError('helper_running_version_mismatch');
+      const firstObservation = observedHelper !== instance;
+      observedHelper = instance;
+      // Current authenticated evidence needs a restriction readback, not
+      // interactive up with the original bootstrap hostname. Cached state may
+      // still be NeedsLogin after the administrator has finished signing in.
+      authorize = observation.BackendState !== 'Running' && (authorize || firstObservation
+        && observation.BackendState === 'NeedsLogin' && !helperAuthorizationUrl(observation.AuthURL));
       if (authorize) {
-        assertOpen(); observedHelper = instance;
+        assertCurrentHelper();
         if (!certificate) phase = 'preparing';
         observation = await instance.authorize(state.machineName);
       }
@@ -418,12 +423,13 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       if (authorize && errorCode(error) === 'helper_authorization_start_failed') helperStatus.authorizationUrl = null;
       throw error;
     }
-    if (authorize) {
+    if (authorize || requestedAuthorization) {
+      assertCurrentHelper();
       await verifyHelperRestrictions(instance);
+      assertCurrentHelper();
       if (lastError === 'helper_authorization_start_failed' &&
           (observation.BackendState === 'Running' || observation.BackendState === 'NeedsMachineAuth' || helperAuthorizationUrl(observation.AuthURL))) lastError = null;
     }
-    const expectedVersion = state.runtime.evidence.runtimeVersion;
     if (!(observation.Version === expectedVersion || observation.Version?.startsWith(`${expectedVersion}-`))) throw httpsError('helper_running_version_mismatch');
     const previousSecurity = state.updates.securitySignal;
     const saveSecuritySignal = async next => {

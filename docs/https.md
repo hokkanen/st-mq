@@ -104,6 +104,13 @@ failure retains explicit Retry guidance, and ordinary polling does not repeat th
 interactive request. Signing in and approving the node remain administrator
 actions in Tailscale.
 
+Every requested setup, Retry or Recheck reads current helper status. A freshly
+authenticated `Running` helper confirms its full restrictions without another
+interactive `up` command or reapplying the initial hostname. Cached authorization
+state cannot require a redundant login after browser sign-in has finished.
+Current login-needed, stopped and approval-pending states keep their existing
+explicit setup behavior; a current status failure does not count as authentication.
+
 The external steps are Tailscale account authorization and settings, a stable LAN
 address and local DNS mapping, and a browser check on each intended device. The
 application handles its helper installation, certificate issuance, listener and
@@ -251,8 +258,10 @@ and last successful release check. **Install update** appears only for an eligib
 release strictly newer than the accepted installed helper. Initial installation
 belongs to **Set up HTTPS**, and equal or older releases never reinstall it.
 Being up to date with the last checked release does not establish security
-advisory coverage. An urgent warning requires a positive Tailscale vendor signal;
-absent or malformed update metadata remains unknown and cannot erase a saved
+advisory coverage. When the release-check clock is unknown, matching observed
+versions are labeled as a comparison rather than a claim that a timed check occurred.
+An urgent warning requires a positive Tailscale vendor signal; absent or malformed
+update metadata remains unknown and cannot erase a saved
 unresolved warning. A current explicit `RunningLatest:true` observation can
 resolve that warning even when the vendor omits false flags or the latest
 version. Identical positive reports preserve their first observation clock and

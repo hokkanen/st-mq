@@ -185,6 +185,8 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
   const dnsPending = admin && state.phase === 'ready' && tlsReady && dns.state !== 'ready';
   const newerRelease = releaseDifference(state.updates?.candidate, state.updates?.installed) === 1;
   const checkedRelease = releaseDifference(state.updates?.latest, state.updates?.installed);
+  const checkClockKnown = typeof state.updates?.lastSuccessfulCheck === 'number'
+    && Number.isFinite(state.updates.lastSuccessfulCheck) && state.updates.lastSuccessfulCheck >= 0;
   const listener = value => value?.listening === true ? `Listening${Number.isInteger(value.address?.port) && value.address.port > 0 ? ` · port ${value.address.port}` : ''}`
     : value?.enabled === false ? 'Disabled' : value?.listening === false ? 'Unavailable' : 'Unknown';
   return {
@@ -239,11 +241,12 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     tested: admin ? state.updates?.testedVersion ?? 'Not reported' : null,
     installed: admin ? state.updates?.installed ?? null : null,
     latest: admin ? state.updates?.latest ?? 'Not checked' : null,
-    checked: admin ? state.updates?.lastSuccessfulCheck ? date(state.updates.lastSuccessfulCheck) : 'Not checked' : null,
+    checked: admin ? checkClockKnown ? date(state.updates.lastSuccessfulCheck) : 'Not checked' : null,
     policy: state.updates?.policy === 'manual' ? 'manual' : 'automatic',
     updateAvailable: admin && !peerOwner && newerRelease,
     releaseSummary: admin ? !state.updates?.installed ? 'Set up HTTPS to install the tested helper release.'
-      : newerRelease ? 'A newer eligible release is available.' : checkedRelease === 0 ? 'Up to date with the last checked release.'
+      : newerRelease ? 'A newer eligible release is available.' : checkedRelease === 0 ? checkClockKnown
+        ? 'Up to date with the last checked release.' : 'Installed and observed release match; check time unknown.'
       : checkedRelease === -1 ? 'The installed helper is newer than the last checked release.'
       : 'Check releases to compare the installed helper with the current supported release.' : '',
     updatePolicyAvailable: admin && !peerOwner,

@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Reuse fresh authenticated certificate-helper status for setup and Retry, confirm
+  restrictions without another login or reapplying the bootstrap hostname, and
+  preserve unknown release-check clocks in the Web access display.
+
 - Adopt an explicitly renamed Tailscale certificate hostname through Recheck or
   Enable HTTPS, publishing the matching certificate and address together. Keep
   complete generations through storage interruptions and allow forward retry.

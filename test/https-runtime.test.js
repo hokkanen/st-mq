@@ -388,6 +388,105 @@ test('explicit rename requires a fresh successful effective restriction readback
   await context.manager.close();
 });
 
+for (const scenario of ['enable', 'retry', 'stale-pending-recheck', 'restriction-refusal', 'current-needs-login']) test(`fresh current Running ${scenario} preserves current authentication and restriction boundaries`, async t => {
+  let activeHelper, upCalls = 0, restrictions = 0;
+  let backend = scenario === 'stale-pending-recheck' ? 'NeedsLogin' : 'Running';
+  const prefs = { Hostname: 'synthetic-initial-hostname', CorpDNS: false, RouteAll: false, ShieldsUp: true, RunSSH: false, RunWebClient: false,
+    ExitNodeID: '', ExitNodeIP: '', ExitNodeAllowLANAccess: false, AdvertiseRoutes: null, AdvertiseTags: null,
+    AppConnector: { Advertise: false }, AutoUpdate: { Apply: false, Check: true }, RemoteConfig: false };
+  const server = createServer((request, response) => {
+    if (activeHelper?.expectedStop) { response.writeHead(503); response.end(); return; }
+    if (request.url === '/localapi/v0/prefs') restrictions++;
+    const body = request.url === '/localapi/v0/serve-config' ? {} : request.url === '/localapi/v0/prefs' ? prefs
+      : { Version: '1.104.1-fixture', BackendState: backend, CertDomains: backend === 'Running' ? [hostname] : [],
+        AuthURL: backend === 'NeedsLogin' ? 'https://login.tailscale.com/a/currentfixture' : '' };
+    response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(body));
+  });
+  t.after(() => new Promise(done => server.close(done)));
+  const context = await setup(t, { dependencies: { createHelper: options => {
+    const helper = new CertificateHelper(options);
+    helper.start = async () => {
+      activeHelper = helper; helper.expectedStop = false;
+      await writeFile(resolve(options.locations.identity, 'tailscaled.state'), '{}', { mode: 0o600 });
+      if (!server.listening) await new Promise(done => server.listen(options.locations.socket, done));
+    };
+    helper.cli = async args => {
+      if (args[0] === 'up') {
+        upCalls++;
+        // Pinned vendor up.go assigns its explicit hostname to prefs.Hostname;
+        // this does not claim that a console-selected DNS name is reset.
+        prefs.Hostname = args.find(value => value.startsWith('--hostname=')).slice('--hostname='.length);
+      }
+    };
+    helper.certificate = async () => ({ cert: 'fixture-authenticated-cert', key: 'fixture-authenticated-key' });
+    return helper;
+  } } });
+  await context.manager.action({ action: 'enable' }); const original = await settled(context.manager);
+  if (scenario === 'stale-pending-recheck') assert.equal(original.helper.state, 'authorization_required');
+  const before = upCalls, beforeRestrictions = restrictions;
+  backend = 'Running'; prefs.Hostname = 'synthetic-owner-chosen-hostname';
+  if (scenario === 'restriction-refusal') prefs.ShieldsUp = false;
+  if (scenario === 'current-needs-login') backend = 'NeedsLogin';
+  const action = ['restriction-refusal', 'current-needs-login'].includes(scenario) ? 'retry' : scenario === 'stale-pending-recheck' ? 'recheck' : scenario;
+  await context.manager.action({ action }); const observed = await settled(context.manager);
+  if (scenario === 'restriction-refusal') {
+    assert.equal(observed.operation.error, 'helper_restrictions_not_confirmed'); assert.equal(observed.helper.state, 'stopped');
+    assert.equal(activeHelper.expectedStop, true); assert.equal(upCalls, before);
+    assert.equal(observed.certificate.generation, 1); await context.manager.close(); return;
+  }
+  if (scenario === 'current-needs-login') {
+    assert.equal(observed.operation.state, 'completed'); assert.equal(observed.helper.state, 'authorization_required');
+    assert.equal(upCalls, before + 1, 'Cached Running does not bypass a current login-needed observation');
+    assert.equal(Boolean(observed.helper.authorizationUrl), true); assert.equal(observed.certificate.generation, 1);
+    await context.manager.close(); return;
+  }
+  assert.equal(observed.operation.state, 'completed'); assert.equal(observed.phase, 'ready');
+  assert.equal(upCalls, before, 'Fresh authenticated status does not dispatch up with an obsolete bootstrap hostname');
+  assert.equal(prefs.Hostname, 'synthetic-owner-chosen-hostname');
+  assert(restrictions > beforeRestrictions, 'Full effective restrictions remain freshly confirmed');
+  assert.equal(observed.helper.restrictionsVerified, true); await context.manager.close();
+});
+
+for (const boundary of ['closed', 'changed-pair', 'wrong-version']) test(`a current Running refresh respects the ${boundary} fence before native writes`, async t => {
+  let currentPairId = 'authentication-pair', hold = false, upCalls = 0, restrictions = 0, notify, release;
+  const entered = new Promise(done => { notify = done; }), held = new Promise(done => { release = done; });
+  const pair = { configuration: () => ({ pairId: currentPairId, localId: 'local-node', peerId: 'peer-node' }),
+    request: async () => ({ nodeId: 'peer-node', pairId: 'authentication-pair', ownerId: 'local-node', enabled: false }) };
+  const context = await setup(t); await context.manager.close(); context.config.topology = 'pair';
+  const baseHelper = context.dependencies.createHelper;
+  context.dependencies.createHelper = options => { const base = baseHelper(options); return { ...base,
+    status: async () => { if (hold) { notify(); await held; } return { ...await base.status(), Version: hold && boundary === 'wrong-version' ? '1.106.0-fixture' : '1.104.1-fixture' }; },
+    restrictions: async () => { restrictions++; },
+    authorize: async () => { upCalls++; return base.authorize(); },
+  }; };
+  const current = restart(t, context, { pair });
+  await current.action({ action: 'enable', owner: 'local' }); await settled(current);
+  const beforeUp = upCalls, beforeRestrictions = restrictions; hold = true;
+  await current.action({ action: 'retry' }); await entered;
+  let closing;
+  if (boundary === 'closed') closing = current.close();
+  if (boundary === 'changed-pair') currentPairId = 'changed-authentication-pair';
+  release(); const failed = await settled(current);
+  assert.equal(failed.operation.error, { closed: 'https_manager_closed', 'changed-pair': 'https_pair_identity_changed', 'wrong-version': 'helper_running_version_mismatch' }[boundary]);
+  assert.equal(upCalls, beforeUp); assert.equal(restrictions, beforeRestrictions); assert.equal(failed.certificate.generation, 1);
+  if (closing) await closing;
+  currentPairId = 'authentication-pair'; await current.close();
+});
+
+test('current admitted release state with an unknown check clock cannot claim a last checked release', async t => {
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  await context.manager.action({ action: 'check-updates' }); await settled(context.manager); await context.manager.close();
+  const path = resolve(context.directory, 'https', 'state.json'); const saved = JSON.parse(await readFile(path, 'utf8'));
+  saved.updates.lastSuccessfulCheck = null; await atomicJson(path, saved);
+  const current = restart(t, context); current.start();
+  for (let i = 0; i < 200 && current.status().phase !== 'ready'; i++) await wait(5);
+  const status = current.status(); assert.equal(status.error, null, 'The actual current strict state reader admits the null observation clock');
+  assert.equal(status.updates.latest, status.updates.installed); assert.equal(status.updates.lastSuccessfulCheck, null);
+  const view = secureWebAccessView(status, { admin: true }); assert.equal(view.checked, 'Not checked');
+  assert.doesNotMatch(view.releaseSummary, /last checked|Up to date/, 'A missing source clock cannot become a claim that a timed release check exists');
+  await current.close();
+});
+
 for (const recovery of ['interrupted-restart', 'forward-retry']) test(`a state rename followed by failed directory sync retains complete certificate material for ${recovery}`, { timeout: 15000 }, async t => {
   const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
   const renamed = 'renamed.test-tailnet.ts.net'; context.setReportedHostname(renamed); context.setCertificateId(2);

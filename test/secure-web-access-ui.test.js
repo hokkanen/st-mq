@@ -482,7 +482,7 @@ test('helper update availability requires an eligible actually newer release and
   }
   assert.equal(secureWebAccessView({ ...ready, updates: { ...ready.updates, candidate: '1.106.0' } }, { admin: true }).updateAvailable, true);
   const source = { ...ready, helper: { state: 'stopped', version: null, securityUpdate: null },
-    updates: { ...ready.updates, installed: '1.104.1', latest: '1.104.1', candidate: '1.104.1' } };
+    updates: { ...ready.updates, installed: '1.104.1', latest: '1.104.1', candidate: '1.104.1', lastSuccessfulCheck: Date.parse('2026-10-14T12:00:00Z') } };
   const view = secureWebAccessView(source, { admin: true });
   assert.equal(view.helper, '1.104.1', 'A stopped process does not mean the accepted runtime is uninstalled');
   assert.equal(view.updateAvailable, false); assert.match(view.releaseSummary, /Up to date/);
