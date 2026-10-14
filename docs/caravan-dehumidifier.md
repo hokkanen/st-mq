@@ -216,8 +216,12 @@ the policy does not disable the independent location test or recording gate.
 The test owns native settings until it has restored the previous power setting;
 ordinary supported native controls then become available again.
 
-Every time the dehumidifier comes online, the controller checks whether the
-Caravan meter responds to its native power commands. It first establishes an
+A necessary initial or renewed physical location check begins only after
+30 seconds of stable, independently advancing appliance-power and Caravan-meter
+reports. A successful association is retained for the same actual appliance,
+meter and configured wiring across restart and normal paired handover; a process
+start or brief communication loss alone does not repeat the power cycle.
+The check establishes whether the Caravan meter responds to native power commands. It first establishes an
 Off baseline, requesting native Off if necessary, then requests On followed by
 Off. Independently advancing appliance reports must confirm the requested
 settings, and independently advancing Caravan meter reports must show a power
@@ -266,12 +270,71 @@ in control of its physical operation.
 The UI shows **Recording active/paused**, waiting for fresh reports, checking
 power, restoring power, or a failed check. A pass is evidence that the Caravan
 meter followed both switches; unrelated load changes can still confound that
-inference. A failed or inconclusive check leaves recording paused until a new
-appliance or meter connection is checked. The configured, enabled `caravan`
-meter in the same area supplies `caravan_power` in W or kW; no extra configuration
-setting selects a replacement meter. Both the appliance and the meter must
-remain fresh after a pass. Losing either invalidates qualification; restart
-requires a new test after completing any pending restoration.
+inference. A failed or inconclusive check stays latched across restart and brief
+flaps. Restore the previous native power first; a new physical check requires
+an explicit **Recheck appliance location**, changed equipment/wiring, or a
+sustained new outage followed by stable feeds. The configured, enabled `caravan`
+meter in the same area supplies `caravan_power` in W or kW; no replacement-meter
+preference is stored. Historical association does not establish current readings,
+recordability, native power, command permission or completed restoration. While
+warm fresh evidence is present but recovery/retesting is pending or a check has
+failed, keep the current native baseline; this sends no On command. Cold or
+missing-air protection still uses current native evidence to request Off.
+
+The owner approved these exact boundaries on 2026-10-14:
+
+- A real source loss withdraws current qualification and recording immediately.
+  At **60,000 ms of continuous unavailable evidence**, the historical association
+  is invalidated. Returning at 59,999 ms retains it; returning at 60,000 ms cannot
+  resurrect it. Delayed detection uses the original required-field expiry, not
+  the later controller tick. Queued return reports are assessed at actual writer
+  admission and cannot backfill a gap or reverse an expired association.
+- A genuine healthy return from both feeds ends that continuous loss. Stable
+  recovery needs **30,000 ms** of elapsed healthy time and at least that much
+  independent advancement of each original required source clock. At 29,999 ms
+  the association remains unusable. Cache reads, retained messages, transport
+  markers, future/quarantined or nonadvancing reports do not complete recovery.
+  A subsequent flap resets recovery and starts its own continuous loss; distinct
+  short losses are not accumulated into one outage.
+- On restart or handover, unseen time conservatively starts at the last committed
+  healthy checkpoint (or earlier recorded loss). This includes the checkpoint's
+  age; it is not proof of the actual physical outage duration. New reports from
+  this runtime must advance before recovery. Clock rollback and future saved
+  evidence cannot shorten either interval.
+- The strict current saved association keeps the original successful rise/fall
+  proof, actual identity and full appliance/meter/sensor wiring signatures,
+  failure latch and original loss/healthy/source boundaries. A checkpoint can
+  advance at most once per 30 seconds, only after both admitted source clocks
+  advance. Status reads and periodic cache publications do not write it. Pass,
+  failure, loss, explicit physical-check and changed-wiring transitions are saved
+  in their existing ordered transaction, with rollback restoring RAM and state.
+- Changed equipment, broker/topic/channel, mapping/unit or selected temperature
+  wiring invalidates the abandoned association durably, even on a quick A→B→A
+  return. Its historical proof remains labelled history. Verified paired MQTT
+  source context preserves the actual source through transport endpoint changes;
+  an unverified broker edit does not. Original On restoration remains separate
+  and is reconciled before any new association can be used.
+
+**Recheck appliance location** is a physical action inside **Power check**, with
+its switching/restoration effect shown beside it. The current API accepts only
+`{deviceId, identity, signature, revision}` at
+`POST /api/equipment/dehumidifier/location-check`. The full current signature and
+revision are rechecked after writer admission; outstanding commands, tests or
+restoration and duplicate/stale requests cannot start another check. Ordinary
+**Recheck** and status reads remain read-only source refreshes.
+
+A failed explicit rise/fall check is the supported contradictory coupling
+witness. There is no general passive coupling monitor: zero power, low humidity,
+missing fan telemetry, cached On or ordinary unrelated load variation do not
+invalidate a pass by themselves. Retaining a pass through a short loss accepts
+that relocation completed inside the grace may escape immediate retesting; no
+probability guarantee is claimed. Initial absence of this new current state
+requires a real pass; earlier ephemeral probe results are not adopted. Invalid,
+retired or unknown saved fields fail closed before writable startup, without
+translation, repair or deletion. Same-schema backup, replay and replication
+preserve the original records. The DESD8LW is a desiccant appliance: its native
+drying/cooling procedure and five-minute restart fence remain unchanged.
+
 Qualification is never filled backwards into the test or an earlier reporting
 gap. Device control authority is required for the
 test and restoration; read-only replicas cannot send these commands.
@@ -289,7 +352,8 @@ test advancement and recording without creating a new connection or restarting a
 The original phase deadline continues to run. With previously fresh, qualified
 evidence, automatic power holds its existing demand during this brief wait;
 cold or missing air evidence still protects Off. Actual stale evidence,
-connection loss and rejected timestamps still invalidate the check.
+connection loss and rejected required timestamps withdraw current qualification
+and start the separately bounded association loss; an active test is aborted.
 Writer congestion does not by itself reject a required report whose original
 timestamp has already arrived when admission runs. The five-second monotonic
 bound still expires a timestamp that remains ahead; required evidence must
@@ -311,7 +375,7 @@ on the same switch component, a mixed/full report or a fault keeps the required
 evidence gate; a later required notification cannot bypass the ordered queue.
 Rejecting or expiring an ancillary counter supplies no new measurement and does
 not invalidate independent fresh readings. Actual meter expiry or connection
-loss still invalidates qualification.
+loss withdraws current qualification and starts the continuous-loss boundary.
 
 ## Recording
 

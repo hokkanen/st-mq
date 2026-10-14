@@ -10,6 +10,7 @@ import { previousEnergyAudit, checkEnergyAudit } from './energy-audit.js';
 import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
 import { validateSavedChargingState } from '../charging/saved-state.js';
 import { validateSavedCaravanPowerTiming } from '../domain/caravan-power-timing.js';
+import { validateSavedCaravanQualification } from '../domain/caravan-qualification.js';
 import { createDatabaseBackup } from './backup.js';
 import { cycleAssessmentExcluded } from './cycle-assessment.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
@@ -134,6 +135,7 @@ export function validateCurrentDatabase(db, { full = false, readOnly = false } =
   }
   validateSavedChargingState(db);
   validateSavedCaravanPowerTiming(db);
+  validateSavedCaravanQualification(db);
 }
 
 const emptyDatabase = db => db.prepare('PRAGMA user_version').get().user_version === 0

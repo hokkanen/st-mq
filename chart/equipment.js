@@ -164,6 +164,7 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
     if (!status || isReadOnlyReplica(status) || busy) return false;
     actionKind = path.endsWith('/recheck') ? 'recheck' : path.endsWith('/switch') ? 'control'
       : path.endsWith('/dehumidifier') ? 'dehumidifier' : path.endsWith('/dehumidifier/temperature-control') ? 'dehumidifier-temperature-control'
+        : path.endsWith('/dehumidifier/location-check') ? 'dehumidifier-location-check'
         : path.endsWith('/cover') ? 'cover' : 'test';
     actionDeviceId = body.deviceId ?? status.equipmentTests?.active?.deviceId ?? null;
     messageAt = status.now ?? Date.now();
@@ -225,6 +226,13 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
       if (!temperatureControlAllowed(status, device, busy) || !temperatureControlValueAllowed(values)) return Promise.resolve(false);
       const { enabled, offAtC, onAtC } = values;
       return send('/api/equipment/dehumidifier/temperature-control', { deviceId, enabled, offAtC, onAtC }, 'Power control settings saved for this dehumidifier.');
+    },
+    recheckDehumidifierLocation(deviceId) {
+      const device = status?.equipment?.devices?.find(device => device.id === deviceId);
+      const qualification = device?.dehumidifier?.temperatureControl?.qualification;
+      if (!temperatureControlAllowed(status, device, busy) || qualification?.canRecheck !== true) return Promise.resolve(false);
+      return send('/api/equipment/dehumidifier/location-check', { deviceId, identity: device.dehumidifier.identity,
+        signature: qualification.signature, revision: qualification.revision }, 'Location check requested. It will switch native power and restore the previous setting.');
     },
     test(deviceId, on, durationMinutes) {
       const device = status?.equipment?.devices?.find(device => device.id === deviceId);

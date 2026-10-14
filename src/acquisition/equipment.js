@@ -12,6 +12,9 @@ import { CARAVAN_DEHUMIDIFIER_STATES } from '../domain/history-series.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
 import { createCaravanProbe, advanceCaravanProbe, abortCaravanProbe } from './caravan-location.js';
 import { caravanPowerTimingKey, validateCaravanPowerTiming, observeCaravanPower, caravanPowerRestartAt } from '../domain/caravan-power-timing.js';
+import { caravanQualificationKey, validateCaravanQualification, createCaravanQualification,
+  advanceCaravanQualification, loseCaravanQualification, caravanAssociationProof,
+  caravanQualificationCurrentKey, validateCaravanQualificationCurrent } from '../domain/caravan-qualification.js';
 import { unsentEquipmentCommand } from '../domain/equipment-command-errors.js';
 
 const scalar = value => typeof value === 'number' && Number.isFinite(value);
@@ -72,6 +75,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       lastAttemptAt: null, lastAttemptPower: null, recordingSince: null, sourceTimeWait: null, sourceTimeWaitExpiry: null,
       probe: null, meterSignature: null, sessionActive: false, restoration: null,
       qualified: false, boundIdentity: null, recordingGateObserved: false, nativePowerTiming: null,
+      qualification: createCaravanQualification(null, engine.clock()), qualificationKey: null,
+      qualificationSaved: null,
       nativePowerContinuity: false, nativePowerContinuityLostAt: engine.clock() }, recordingLocation: false }));
   const admission = createMqttAdmission();
   const coverDispatches = new Map();
@@ -187,6 +192,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       // Withdraw authority immediately. The original outage boundary then joins
       // the same ordered writer queue as later reports from this connection.
       device.liveSinceConnect = false; device.invalid = true;
+      if (device.temperatureControl) {
+        loseCaravanQualification(device.temperatureGuard.qualification, receivedAt);
+        device.temperatureGuard.qualified = false;
+      }
       for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal])
         engine.rememberObservation?.({ ...identity(device), signal: definition.signal, value: null,
           unit: definition.unit, sourceTime: null, receivedAt, quality: [reason],
@@ -201,7 +210,9 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (device.temperatureControl) {
       const guard = device.temperatureGuard;
       if (guard.probe?.status === 'testing') abortCaravanProbe(guard.probe, reason, receivedAt);
-      guard.qualified = false; guard.sessionActive = false; guard.sourceTimeWait = null; guard.sourceTimeWaitExpiry = null;
+      loseCaravanQualification(guard.qualification, receivedAt);
+      persistQualification(device);
+      guard.qualified = false; guard.sourceTimeWait = null; guard.sourceTimeWaitExpiry = null;
       guard.recordingGateObserved = false;
       guard.nativePowerContinuity = false;
       guard.nativePowerContinuityLostAt = Math.max(guard.nativePowerContinuityLostAt, receivedAt);
@@ -223,12 +234,14 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (device.kind === 'door' && previous?.value != null) device.readings[definition.signal] = {
         ...previous, unavailable: true, quality: [...new Set([...(previous.quality ?? []), reason, 'last-reported'])] };
     }
-    // A brief meter outage must break the session even if it recovers before
-    // the next timer tick. Do not carry an earlier test across that boundary.
+    // Source loss pauses current use immediately. Historical association and
+    // failed-check latch have separate continuous-outage/recovery boundaries.
     if (device.id === 'caravan') for (const appliance of devices.filter(row => row.temperatureControl && row.area === device.area)) {
       const guard = appliance.temperatureGuard;
       if (guard.probe?.status === 'testing') abortCaravanProbe(guard.probe, 'power-unavailable', receivedAt);
-      guard.qualified = false; guard.sessionActive = false; guard.sourceTimeWait = null; guard.sourceTimeWaitExpiry = null;
+      loseCaravanQualification(guard.qualification, receivedAt);
+      persistQualification(appliance);
+      guard.qualified = false; guard.sourceTimeWait = null; guard.sourceTimeWaitExpiry = null;
       recordDehumidifierLocation(appliance, receivedAt);
     }
   }
@@ -280,6 +293,90 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     return { watts: reading.value * (reading.unit === 'kW' ? 1000 : 1), observedAt: reading.observedAt,
       deadline: reading.observedAt + (config.maxAgeMs || settings.maxAgeMs), signature: meterSignature };
   }
+  const qualificationSignature = (device, meterSignature) => createHash('sha256').update(JSON.stringify({
+    temperatureControl: temperatureControlSignature(device), meterSignature })).digest('hex');
+  function persistQualification(device) {
+    const state = device.temperatureGuard, record = state.qualification.record;
+    if (!state.qualificationKey || !record) return;
+    const serialized = JSON.stringify(record);
+    if (serialized === state.qualificationSaved) return;
+    validateCaravanQualification(record, record);
+    store.setState(state.qualificationKey, record);
+    state.qualificationSaved = serialized;
+  }
+  function ensureQualification(device, meter) {
+    const state = device.temperatureGuard, identity = device.dehumidifierReport?.identity;
+    if (!validDehumidifierIdentity(identity) || !meter) return;
+    const scope = qualificationSignature(device, meter.signature);
+    const key = caravanQualificationKey(device.id, identity, scope);
+    if (state.qualificationKey === key) return;
+    const saved = validateCaravanQualification(store.getState?.(key), { identity, signature: scope, meterSignature: meter.signature });
+    const selectionKey = caravanQualificationCurrentKey(device.id);
+    const selected = validateCaravanQualificationCurrent(store.getState?.(selectionKey));
+    const now = engine.clock();
+    if (!selected || selected.identity !== identity || selected.signature !== scope) {
+      if (selected) {
+        const previousKey = caravanQualificationKey(device.id, selected.identity, selected.signature);
+        const previous = validateCaravanQualification(store.getState?.(previousKey), selected);
+        if (previous) {
+          previous.invalidatedAt = now; previous.revision++;
+          store.setState(previousKey, previous);
+        }
+      }
+      if (saved) { saved.invalidatedAt = now; saved.failed = null; saved.revision++; }
+      store.setState(selectionKey, { identity, signature: scope });
+    }
+    if (state.qualificationKey) {
+      if (state.probe?.status === 'testing') {
+        abortCaravanProbe(state.probe, 'power-unavailable', engine.clock());
+        saveLocationResult(device, engine.clock(), false);
+      }
+      // The separate restoration remains owned. Its old electrical test cannot
+      // become proof for the newly selected meter/wiring, even after cleanup.
+      state.probe = null;
+    }
+    state.qualification = createCaravanQualification(saved, state.qualificationKey ? now : state.qualification.startedAt);
+    state.qualificationKey = key;
+    state.qualificationSaved = null;
+    persistQualification(device);
+    state.qualified = false; state.sessionActive = false;
+    state.meterSignature = meter.signature;
+  }
+  function passedLocationEvidence(state) {
+    const record = state.qualification.record;
+    return record?.proof && record.invalidatedAt === null && record.failed === null ? record.proof
+      : state.probe?.status === 'passed' ? state.probe.evidence : null;
+  }
+  function saveLocationResult(device, now, passed) {
+    const state = device.temperatureGuard, watch = state.qualification;
+    if (!state.qualificationKey || !scalar(watch.lastPowerAt) || !scalar(watch.lastMeterAt)) return;
+    if (passed && watch.record?.proof?.completedAt === state.probe.evidence.completedAt) return;
+    if (!passed && watch.record?.failed?.at === state.probe.evidence.completedAt) return;
+    if (!passed && watch.record && watch.record.failed === null
+      && watch.record.invalidatedAt > state.probe.evidence.completedAt) return;
+    const record = watch.record ?? { identity: device.dehumidifierReport.identity,
+      signature: qualificationSignature(device, state.meterSignature), meterSignature: state.meterSignature,
+      proof: null, failed: null, invalidatedAt: now, outageAt: watch.outageAt,
+      revision: 0, recheckAt: null,
+      lastHealthyAt: Math.max(watch.lastPowerAt, watch.lastMeterAt), powerAt: watch.lastPowerAt, meterAt: watch.lastMeterAt };
+    record.revision++; record.recheckAt = null;
+    if (passed) {
+      record.proof = caravanAssociationProof(state.probe.evidence);
+      record.failed = null; record.invalidatedAt = null; record.outageAt = null;
+      record.lastHealthyAt = now; record.powerAt = watch.lastPowerAt; record.meterAt = watch.lastMeterAt;
+      watch.ready = true;
+    } else {
+      record.failed = { at: state.probe.evidence.completedAt, reason: state.probe.reason };
+      record.invalidatedAt = now; watch.ready = false;
+    }
+    watch.record = record; persistQualification(device);
+  }
+  function qualificationLossAt(device, now) {
+    const watch = device.temperatureGuard.qualification;
+    const meterConfig = enabled.find(row => row.id === 'caravan' && row.area === device.area);
+    return Math.min(now, scalar(watch.lastPowerAt) ? watch.lastPowerAt + device.maxAgeMs : now,
+      scalar(watch.lastMeterAt) ? watch.lastMeterAt + (meterConfig?.maxAgeMs || settings.maxAgeMs) : now);
+  }
   const probeBusy = device => Boolean(device.temperatureGuard.restoration || device.temperatureGuard.probe?.status === 'testing');
   function currentNativePowerTiming(device) {
     const state = device.temperatureGuard, boundary = state.nativePowerTiming;
@@ -318,8 +415,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const report = device.dehumidifierReport, state = device.temperatureGuard, policy = state.settings;
     const meter = caravanPower(device, now), ready = healthy(device, now);
     const qualified = Boolean(ready && meter && state.qualified && state.meterSignature === meter.signature && !state.restoration);
-    const probe = state.probe;
-    const testStatus = state.restoration && probe?.status !== 'testing' ? 'restoring' : probe?.status ?? 'waiting';
+    const probe = state.probe, association = state.qualification.record;
+    const evidence = probe?.status === 'testing' ? probe.evidence : passedLocationEvidence(state);
+    const testStatus = state.restoration && probe?.status !== 'testing' ? 'restoring'
+      : probe?.status ?? (association?.failed ? 'failed' : evidence ? 'passed' : 'waiting');
     const restartAt = ready ? caravanPowerRestartAt(currentNativePowerTiming(device)) : null;
     return { configured: true, ...policy, canEdit: !closed && canControl() && !probeBusy(device) && validDehumidifierIdentity(state.boundIdentity),
       sensorDeviceId: device.temperatureControl.sensorDeviceId,
@@ -327,8 +426,19 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       applianceTemperatureC: fieldFresh(device, 'temperature', now) && scalar(report?.temperature) ? report.temperature : null,
       applianceHumidity: fieldFresh(device, 'humidity', now) && scalar(report?.humidity) ? report.humidity : null,
       qualified,
-      locationTest: { status: testStatus, phase: probe?.phase ?? null, reason: probe?.reason ?? null,
-        minimumPowerChangeW: 3, powerRiseW: probe?.evidence?.powerRiseW ?? null, powerFallW: probe?.evidence?.powerFallW ?? null },
+      locationTest: { status: testStatus, phase: probe?.phase ?? null, reason: probe?.reason ?? association?.failed?.reason ?? null,
+        completedAt: evidence?.completedAt ?? association?.failed?.at ?? null,
+        minimumPowerChangeW: 3, powerRiseW: evidence?.powerRiseW ?? null, powerFallW: evidence?.powerFallW ?? null },
+      qualification: { signature: association?.signature ?? (state.qualificationKey ? qualificationSignature(device, state.meterSignature) : null),
+        revision: association?.revision ?? 0,
+        retained: Boolean(association?.proof && association.invalidatedAt === null && !association.failed),
+        passedAt: association?.proof?.completedAt ?? null,
+        unavailableSince: state.qualification.outageAt,
+        stableSince: state.qualification.stable?.startedAt ?? null,
+        canRecheck: ready && Boolean(meter) && Boolean(state.qualificationKey) && !closed && canControl() && !probeBusy(device)
+          && qualificationSignature(device, meter.signature) === (association?.signature ?? qualificationSignature(device, state.meterSignature))
+          && association?.recheckAt == null
+          && !['publishing', 'published'].includes(device.dehumidifierOperation?.status) },
       recording: qualified && device.record !== false && scalar(state.recordingSince) && !state.sourceTimeWait
         && dehumidifierHistory(device, now).value !== null
         && device.readings[device.stateSignal]?.observedAt >= state.recordingSince,
@@ -338,7 +448,9 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       reason: !ready ? 'appliance-unavailable' : testStatus === 'restoring' ? 'restoring-power'
         : !meter ? 'power-unavailable' : !canControl() && !qualified ? 'control-unavailable'
           : !qualified && caravanCold(device, now) ? 'cold'
-          : probe?.status === 'failed' ? 'power-test-failed' : !qualified ? 'checking-power'
+          : testStatus === 'failed' ? 'power-test-failed'
+            : !qualified && probe?.status !== 'testing' ? association?.proof && association.invalidatedAt === null
+              ? 'recovering-feedback' : 'waiting-stable-feedback' : !qualified ? 'checking-power'
             : !policy.enabled ? 'disabled' : !airFresh ? 'air-unavailable'
               : air.value <= policy.offAtC ? 'cold' : air.value >= policy.onAtC ? 'warm' : 'hysteresis' };
   }
@@ -371,18 +483,27 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (!device.temperatureControl) return;
     const state = device.temperatureGuard, meter = caravanPower(device, now);
     const ready = healthy(device, now);
+    if (meter) ensureQualification(device, meter);
+    const watch = state.qualification;
+    const qualificationNow = engine.clock(), originalLossAt = qualificationLossAt(device, qualificationNow);
+    if (originalLossAt < qualificationNow || scalar(watch.lastPowerAt) && qualificationNow >= watch.lastPowerAt + device.maxAgeMs
+      || scalar(watch.lastMeterAt) && qualificationNow >= watch.lastMeterAt + (enabled.find(row => row.id === 'caravan' && row.area === device.area)?.maxAgeMs || settings.maxAgeMs))
+      loseCaravanQualification(watch, originalLossAt);
     const appliancePending = !ready && pendingFor(device) && healthy(device, now, true);
     const meterPending = !meter && caravanPower(device, now, true);
     const wait = state.sourceTimeWait;
     if (wait) {
       const expiry = state.sourceTimeWaitExpiry;
-      const sessionLost = !state.sessionActive || !state.qualified || state.probe?.status !== 'passed' || state.restoration
+      const sessionLost = !state.sessionActive || !state.qualified || !passedLocationEvidence(state) || state.restoration
         || device.dehumidifierReport?.identity !== wait.identity || state.meterSignature !== wait.meterSignature
         || !healthy(device, now, true) || caravanPower(device, now, true)?.signature !== wait.meterSignature
         || !expiry || now >= expiry.powerDeadline || now >= expiry.meterDeadline;
       if (sessionLost || now >= wait.deadline || dehumidifierHistory(device, now).value === null) {
         state.sourceTimeWait = null; state.sourceTimeWaitExpiry = null; state.recordingSince = null;
-        if (sessionLost) { state.qualified = false; state.sessionActive = false; }
+        if (sessionLost) {
+          loseCaravanQualification(watch, Math.min(now, expiry?.powerDeadline ?? now, expiry?.meterDeadline ?? now));
+          state.qualified = false;
+        }
         else {
           // Fan freshness gates history, independently of the electrical test.
           // A later report must cross this real history loss; no new power test.
@@ -392,7 +513,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     }
     if (!ready && !appliancePending || !meter && !meterPending || meter && state.meterSignature && state.meterSignature !== meter.signature) {
       if (state.probe?.status === 'testing') abortCaravanProbe(state.probe, !ready ? 'appliance-unavailable' : 'power-unavailable', now);
-      state.qualified = false; state.sessionActive = false; state.sourceTimeWait = null; state.sourceTimeWaitExpiry = null;
+      loseCaravanQualification(watch, qualificationLossAt(device, now));
+      state.qualified = false; state.sourceTimeWait = null; state.sourceTimeWaitExpiry = null;
     }
     if (state.probe?.status === 'testing' && (!canControl() || closed)) {
       abortCaravanProbe(state.probe, 'control-unavailable', now); state.qualified = false;
@@ -408,13 +530,33 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (now >= state.probe.deadlineAt) advanceCaravanProbe(state.probe, { now });
       else return;
     }
+    if (state.probe?.status === 'failed') saveLocationResult(device, now, false);
+    // Slightly future input still uses the existing recording-only quarantine.
+    // It is not a physical/source outage while the original evidence is fresh.
+    if (appliancePending || meterPending) return;
+    const recovery = advanceCaravanQualification(watch, { now: qualificationNow,
+      healthy: Boolean(healthy(device, qualificationNow) && caravanPower(device, qualificationNow)),
+      powerAt: device.dehumidifierReport?.fieldTimestamps.power, meterAt: meter?.observedAt,
+      lostAt: qualificationLossAt(device, qualificationNow) });
+    persistQualification(device);
     if (state.probe?.status !== 'testing' && !restoreProbePower(device, now)) return;
-    if (!ready || !meter || !canControl() || closed || caravanStopping) return;
+    if (!ready || !meter) return;
+    if (state.probe?.status === 'passed' && watch.record?.proof?.completedAt !== state.probe.evidence.completedAt) {
+      saveLocationResult(device, now, true);
+      state.qualified = true; state.sessionActive = true; return;
+    }
+    if (recovery.ready) { state.qualified = true; state.sessionActive = true; return; }
+    state.qualified = false;
+    if (!canControl() || closed || caravanStopping) return;
+    if (watch.record?.failed?.reason === 'cold' && !caravanCold(device, now)) {
+      watch.record.failed = null; state.probe = null; state.sessionActive = false; persistQualification(device);
+    }
+    if (state.probe?.status !== 'testing' && !recovery.testReady) return;
     if (!state.sessionActive) {
       state.probe = null; state.qualified = false; state.managed = false; state.sourceTimeWait = null; state.sourceTimeWaitExpiry = null;
       state.meterSignature = meter.signature; state.sessionActive = true;
     }
-    if (state.probe?.status === 'passed') { state.qualified = true; return; }
+    if (state.probe?.status === 'passed' || state.probe?.status === 'failed' && !watch.record?.failed) state.probe = null;
     if (caravanCold(device, now)) return;
     if (state.probe?.reason === 'cold') state.probe = null;
     if (state.probe?.status === 'failed') return;
@@ -424,6 +566,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (!state.probe) {
       if (['publishing', 'published'].includes(operation?.status)) return;
       state.probe = createCaravanProbe({ now, initialPower: device.dehumidifierState.power });
+      state.probe.qualificationSignature = qualificationSignature(device, meter.signature);
     }
     // The native bridge fences command replays by request time.
     if (operation && now <= operation.requestedAt) return;
@@ -445,7 +588,13 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         });
       });
     }
-    if (state.probe.status !== 'testing' && restoreProbePower(device, now)) state.qualified = state.probe.status === 'passed';
+    if (state.probe.status !== 'testing') {
+      if (state.probe.status === 'failed') saveLocationResult(device, now, false);
+      if (state.probe.status === 'passed') saveLocationResult(device, now, true);
+      if (restoreProbePower(device, now) && state.probe.status === 'passed') {
+        state.qualified = true;
+      }
+    }
   }
   function recordDehumidifierLocation(device, now) {
     const location = temperatureGuardStatus(device, now);
@@ -463,7 +612,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       // Only an already recorded state in the same passed session may survive
       // this short quarantine. Real loss, first qualification and expiry need
       // new evidence and retain their existing recording fence.
-      if (device.record !== false && pending && state.qualified && state.sessionActive && state.probe?.status === 'passed' && !state.restoration
+      if (device.record !== false && pending && state.qualified && state.sessionActive && passedLocationEvidence(state) && !state.restoration
         && healthy(device, now, true) && history.value !== null && reading?.availabilityConfirmed
         && scalar(state.recordingSince) && reading.observedAt >= state.recordingSince
         && meter?.signature === state.meterSignature) {
@@ -497,6 +646,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const guard = temperatureGuardStatus(device, now);
     if (!guard?.enabled || probeBusy(device) || caravanStopping) return;
     const state = device.temperatureGuard;
+    // Historical proof grants no On permission. Keep the existing native baseline
+    // while recovery/retesting is pending or failed; cold/missing air protects Off.
+    if (!guard.qualified && state.qualification.record?.proof && scalar(guard.temperatureC)
+      && guard.temperatureC > guard.offAtC && healthy(device, now, true) && caravanPower(device, now, true)) return;
+    if (state.qualification.record?.proof && state.qualification.record.invalidatedAt === null
+      && (!scalar(guard.temperatureC) || guard.temperatureC <= guard.offAtC) && healthy(device, now)) state.managed = true;
     // A bounded source-clock wait suspends evaluation; it does not create a
     // new temperature demand. Cold or missing air evidence still protects Off.
     if (state.qualified && !guard.qualified && scalar(guard.temperatureC) && guard.temperatureC > guard.offAtC
@@ -595,12 +750,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           reportIntervalMs: locationDeadline - reading.observedAt,
           ...(wait ? { sourceTimeWait: { ...wait }, ...(reading.timeAdmission ? { timeAdmission: reading.timeAdmission } : {}) } : {}),
           ...(meter ? { locationEvidence: { method: 'native-power-cycle-v1',
-            startedAt: device.temperatureGuard.probe.evidence.startedAt,
-            completedAt: device.temperatureGuard.probe.evidence.completedAt,
-            powerRiseW: device.temperatureGuard.probe.evidence.powerRiseW,
-            powerFallW: device.temperatureGuard.probe.evidence.powerFallW,
-            minimumChangeW: device.temperatureGuard.probe.evidence.minimumChangeW,
-            phases: device.temperatureGuard.probe.evidence.phases,
+            ...caravanAssociationProof(passedLocationEvidence(device.temperatureGuard)),
             meterSignature: meter.signature, meterObservedAt: meter.observedAt } } : {}) } };
       if (wait && device.record !== false) {
         const resumed = engine.recorder?.resumeCaravanRecording(observation, now);
@@ -728,6 +878,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           Object.assign(device.temperatureGuard, { settings: { ...defaultTemperatureControl }, demand: false, managed: false,
             lastAttemptAt: null, lastAttemptPower: null, recordingSince: null, sourceTimeWait: null, sourceTimeWaitExpiry: null,
             probe: null, meterSignature: null, sessionActive: false, restoration: null, qualified: false, recordingGateObserved: false, nativePowerTiming: null,
+            qualification: createCaravanQualification(null, engine.clock()), qualificationKey: null, qualificationSaved: null,
             nativePowerContinuity: false, nativePowerContinuityLostAt: evaluatedAt });
           device.recordingLocation = false;
         }
@@ -943,7 +1094,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         || setting === 'power' && device.temperatureControl && state.settings.enabled))
         throw fail('dehumidifier control choice changed before dispatch');
       if (origin === 'location-test' && (caravanStopping || state.probe !== probe || probe?.status !== 'testing'
-        || !caravanPower(device, now) || value === 'on' && caravanCold(device, now)))
+        || !caravanPower(device, now) || qualificationSignature(device, caravanPower(device, now).signature) !== probe.qualificationSignature
+        || value === 'on' && caravanCold(device, now)))
         throw fail('dehumidifier power check changed before dispatch');
       if (origin === 'location-restoration' && (state.restoration !== restoration || !restoration
         || restoration.power !== value || value === 'on' && caravanCold(device, now)))
@@ -1127,6 +1279,38 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (device.temperatureControl && device.temperatureGuard.settings.enabled && input.setting === 'power')
         throw fail('power is managed by caravan temperature control');
       return commandDehumidifier(device, input.setting, input.value, 'manual');
+    },
+    async recheckDehumidifierLocation(input) {
+      if (!input || typeof input !== 'object' || Array.isArray(input)
+        || Object.keys(input).sort().join(',') !== 'deviceId,identity,revision,signature'
+        || typeof input.deviceId !== 'string' || !validDehumidifierIdentity(input.identity)
+        || !Number.isSafeInteger(input.revision) || input.revision < 0
+        || !validDehumidifierIdentity(input.signature)) throw fail('choose the current appliance and location-check association');
+      const device = devices.find(row => row.id === input.deviceId);
+      const admissible = () => {
+        const guard = device?.temperatureControl && temperatureGuardStatus(device, engine.clock());
+        return guard?.qualification.canRecheck && device.dehumidifierReport.identity === input.identity
+          && guard.qualification.signature === input.signature && guard.qualification.revision === input.revision;
+      };
+      if (!admissible()) throw fail('location check needs current identity, fresh sources, authority and settled restoration');
+      const operation = device.dehumidifierOperation;
+      await write(() => reception.run(() => {
+        if (!admissible() || device.dehumidifierOperation !== operation) throw fail('location check scope or native operation changed');
+        const state = device.temperatureGuard, now = engine.clock(), meter = caravanPower(device, now);
+        const record = state.qualification.record ?? { identity: input.identity, signature: input.signature,
+          meterSignature: meter.signature, proof: null, failed: null, outageAt: null,
+          revision: 0, recheckAt: null,
+          lastHealthyAt: Math.max(device.dehumidifierReport.fieldTimestamps.power, meter.observedAt),
+          powerAt: device.dehumidifierReport.fieldTimestamps.power, meterAt: meter.observedAt };
+        record.invalidatedAt = now; record.failed = null; record.recheckAt = now; record.revision++;
+        state.qualification = createCaravanQualification(record, now);
+        state.qualification.outageAt = null;
+        state.qualified = false; state.sessionActive = false; state.probe = null;
+        state.sourceTimeWait = null; state.sourceTimeWaitExpiry = null;
+        persistQualification(device);
+        recordDehumidifierLocation(device, now);
+      }), { priority: 'control', isCurrent: () => !closed && canControl() });
+      return { deviceId: device.id, temperatureControl: temperatureGuardStatus(device, engine.clock()) };
     },
     async setDehumidifierTemperatureControl(input) {
       if (!input || typeof input !== 'object' || Array.isArray(input)

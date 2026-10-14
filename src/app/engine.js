@@ -839,6 +839,11 @@ export class Engine {
     await this.equipment.recheck(input);
     return this.status();
   }
+  async recheckDehumidifierLocation(input) {
+    if (!this.equipment?.recheckDehumidifierLocation) throw new Error('Dehumidifier location check is unavailable.');
+    await this.equipment.recheckDehumidifierLocation(input);
+    return this.status();
+  }
   async testEquipment(input) {
     if (!this.equipmentTests) throw new Error('MQTT equipment tests are unavailable.');
     await this.equipmentTests.start(input);

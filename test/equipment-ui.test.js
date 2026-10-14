@@ -886,3 +886,23 @@ test('power policy drafts can be discarded without a request, while open details
   assert.equal(save.disabled, true); assert.equal(cancel.hidden, true); assert.deepEqual(calls, []);
   assert.equal(appliance.querySelector('.caravan-power').hidden, true);
 });
+
+
+test('physical Caravan location action binds current scope/revision, survives polling and rejects duplicate/read-only clicks', async () => {
+  const device = dehumidifier(true), calls = [];
+  device.dehumidifier.identity = 'a'.repeat(64);
+  device.dehumidifier.temperatureControl = { configured: true, enabled: false, canEdit: true,
+    qualification: { signature: 'b'.repeat(64), revision: 4, canRecheck: true } };
+  const current = status({ equipment: { devices: [device] } });
+  let release; const held = new Promise(resolve => { release = resolve; });
+  const actions = createEquipmentActions({ request: async (path, body) => { calls.push({ path, body }); await held; return current; } });
+  actions.update(current); const pending = actions.recheckDehumidifierLocation(device.id);
+  assert.equal(actions.snapshot().busy, true); assert.equal(await actions.recheckDehumidifierLocation(device.id), false);
+  actions.update(current); release(); assert.equal(await pending, true);
+  assert.deepEqual(calls, [{ path: '/api/equipment/dehumidifier/location-check', body: { deviceId: device.id,
+    identity: 'a'.repeat(64), signature: 'b'.repeat(64), revision: 4 } }]);
+  actions.update(current); assert.match(actions.snapshot().message, /Location check requested/);
+  actions.update({ ...current, role: 'slave' }); assert.equal(await actions.recheckDehumidifierLocation(device.id), false);
+  actions.update(current); device.dehumidifier.temperatureControl.qualification.canRecheck = false;
+  assert.equal(await actions.recheckDehumidifierLocation(device.id), false); assert.equal(calls.length, 1);
+});

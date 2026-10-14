@@ -540,6 +540,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return await mutate(async (current, input) => { await current.dehumidifierEquipment(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/dehumidifier/temperature-control')
           return await mutate(async (current, input) => { await current.dehumidifierTemperatureControl(input); return json(200, status()); });
+        if (req.method === 'POST' && url.pathname === '/api/equipment/dehumidifier/location-check')
+          return await mutate(async (current, input) => { await current.recheckDehumidifierLocation(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/h66')
           return await mutate(async (current, input) => { await current.setH66Setting(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/test')

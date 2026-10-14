@@ -66,6 +66,7 @@ async function mqttFixture(t) {
   f.reply('Shelly.GetStatus', { 'switch:0': { id: 0, output: true, apower: 51, current: 51 / 230, aenergy: { total: 1000 } } });
   send('fixture/dryer/online', 'online'); f.dryer('on'); await flush();
   f.advance(1); f.air(); f.dryer('on'); await flush();
+  f.advance(30_000); f.air(); f.dryer('on'); f.meter(); await flush();
   assert.deepEqual(commands.map(row => row.power), ['off']);
   f.advance(1); f.dryer('off'); f.meter(); await flush();
   for (let n = 0; n < 3; n++) { f.advance(60_000); f.air(); f.dryer('off'); f.meter(); await flush(); }

@@ -196,6 +196,12 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
           Object.assign(fixture.devices.find(device=>device.id===body.deviceId).dehumidifier.temperatureControl,body);
           return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});
         }
+        if(path.endsWith('/dehumidifier/location-check')) {
+          if(fixture.holdLocation) await new Promise(resolve=>{fixture.releaseLocation=resolve;});
+          const guard=fixture.devices.find(device=>device.id===body.deviceId).dehumidifier.temperatureControl;
+          guard.qualification.canRecheck=false;guard.qualification.revision++;guard.qualified=false;guard.recording=false;
+          guard.reason='waiting-stable-feedback';return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});
+        }
         if(path.endsWith('/heating-test')) {fixture.dhwr.active=true;fixture.dhwr.confirmed=false;fixture.dhwr.requestedAt=fixture.now;fixture.dhwr.expiresAt=fixture.now+600000;fixture.heatingResult={command:body.command,sent:true,at:fixture.now,status:'sent'};return new Response(JSON.stringify(fixture.heatingResult),{status:200});}
         if(path.endsWith('/stop')) {fixture.dhwr.active=false;fixture.dhwr.confirmed=false;fixture.dhwr.requestedAt=fixture.now;if(fixture.dhwr.feedback.power) fixture.dhwr.feedback.power.value=0;if(fixture.dhwr.feedback.state){fixture.dhwr.actualOn=false;fixture.dhwr.feedback.state.value=0;}}
         return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});
@@ -581,7 +587,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     await evaluate(`(() => {const d=window.equipmentUiFixture.devices.find(d=>d.id==='caravan_dehumidifier');d.available=true;
       d.observedAt=window.equipmentUiFixture.now;
       d.mqttStatus={subscriptionStatus:'subscribed',lastLiveAt:window.equipmentUiFixture.now};
-      Object.assign(d.dehumidifier,{available:true,observedAt:window.equipmentUiFixture.now,state:{power:'off',targetHumidity:55,fanSpeed:'low'},runningState:'off'});
+      Object.assign(d.dehumidifier,{available:true,powerOnAvailable:true,powerOffAvailable:true,observedAt:window.equipmentUiFixture.now,state:{power:'off',targetHumidity:55,fanSpeed:'low'},runningState:'off'});
       Object.assign(d.dehumidifier.temperatureControl,{canEdit:true,applianceHumidity:40,reason:'power-test-failed',
         locationTest:{status:'failed',phase:null,reason:'power-test-failed',minimumPowerChangeW:3,powerRiseW:0,powerFallW:0}});return true;})()`);
     await refresh();
@@ -659,6 +665,26 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
       assert.equal(await evaluate(`document.querySelector('${fan}').disabled`), probeBusy, 'Power checks own native settings until restoration finishes');
       assert.equal(await evaluate(`document.querySelector('${policy} [data-setting=automaticPower]').disabled`), probeBusy, 'Power policy edits wait for testing and restoration');
     }
+    await evaluate(`(() => {const d=window.equipmentUiFixture.devices.find(d=>d.id==='caravan_dehumidifier');
+      d.dehumidifier.identity='a'.repeat(64);d.dehumidifier.probeBusy=false;
+      Object.assign(d.dehumidifier.temperatureControl,{canEdit:true,reason:'power-test-failed',qualified:false,recording:false,
+        qualification:{signature:'b'.repeat(64),revision:4,canRecheck:true}});return true;})()`);await refresh();
+    if(!await evaluate(`document.querySelector('${recordingDetails}').open`))await toggleDisclosure(recordingDetails);
+    const locationButton=`${appliance} .caravan-location-recheck`;
+    assert.equal(await evaluate(`document.querySelector('${locationButton}').disabled`),false);
+    await captureAppliance('physical-location-action');
+    await evaluate(`document.querySelector('${locationButton}').focus();true`);await refresh();
+    assert.equal(await evaluate(`document.activeElement===document.querySelector('${locationButton}')&&document.querySelector('${recordingDetails}').open`),true);
+    const locationCalls=await evaluate('window.equipmentUiFixture.calls.length');
+    await evaluate('window.equipmentUiFixture.holdLocation=true;true');
+    await command('input.performActions',{context,actions:[{type:'key',id:'physical-location',actions:[{type:'keyDown',value:'\uE007'},{type:'keyUp',value:'\uE007'}]}]});
+    await until(`window.equipmentUiFixture.calls.length===${locationCalls+1}`);
+    assert.equal(await evaluate(`document.querySelector('${locationButton}').disabled`),true,'In-flight action disables duplicate publication');
+    await evaluate(`document.querySelector('${locationButton}').click();true`);
+    assert.equal(await evaluate('window.equipmentUiFixture.calls.length'),locationCalls+1);
+    assert.deepEqual(await evaluate('window.equipmentUiFixture.calls.at(-1)'),{path:'/api/equipment/dehumidifier/location-check',body:{deviceId:'caravan_dehumidifier',identity:'a'.repeat(64),signature:'b'.repeat(64),revision:4}});
+    await evaluate('window.equipmentUiFixture.releaseLocation();true');await until(`document.querySelector('${appliance} .equipment-control-result').textContent.includes('Location check requested')`);
+    await refresh();assert.equal(await evaluate(`document.querySelector('${locationButton}').disabled`),true,'Admitted pending physical check remains held after polling');
     await evaluate("window.equipmentUiFixture.status.role='slave';true"); await refresh();
     assert.equal(await evaluate(`document.querySelector('${fan}').disabled`), true, 'Replica remains read-only');
     assert.equal(await evaluate(`[...document.querySelectorAll('${policy} input, ${policy} button')].every(node=>node.disabled)`), true, 'Replica cannot edit durable power settings');

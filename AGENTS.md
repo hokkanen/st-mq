@@ -473,6 +473,17 @@ permission to act. See [the configuration guide](docs/configuration.md).
   successful result. Preserve valid zero/false values. Reconnection, held values
   and cached republishes do not manufacture fresh observations or independent
   learning evidence. Corrections cannot invent data for actual acquisition gaps.
+- On 2026-10-14 the owner approved retaining a successful Caravan electrical
+  association across restart and paired handover, bound to actual appliance,
+  meter and configured wiring. Historical proof is separate from live qualified,
+  recordable or commandable evidence. A continuous unavailable interval of
+  60 seconds invalidates it; a return before that boundary requires 30 seconds
+  of independently advancing stable feeds. Unseen downtime counts conservatively
+  from the last admitted checkpoint, without renewing source or proof clocks.
+  Wiring changes, explicit physical rechecks and failed coupling checks retain
+  their own invalidation and restoration duties. Brief flaps do not rearm failed
+  tests. This accepts relocation inside the grace as a residual uncertainty,
+  not a probability guarantee. See [Caravan qualification](docs/caravan-dehumidifier.md#automatic-power-and-caravan-location-check).
 - Charging may resolve both vehicle assignments jointly when fresh Tesla
   actual-current evidence, corroborating power and confirmed positive measured
   draw within a confirmed 6 A offer provide a unique comparison, and BMW's own

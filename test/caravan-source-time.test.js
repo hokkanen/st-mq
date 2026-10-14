@@ -102,6 +102,8 @@ function fixture(t, { failOn = false, genericMeter = false } = {}) {
   };
   f.dryer('off');
   while (now < START) { f.advance(Math.min(60_000, START - now)); f.dryer('off'); f.meter(); }
+  f.dryer('off'); f.meter();
+  f.advance(30_000); f.dryer('off'); f.meter();
   warming = false;
   return f;
 }
@@ -254,7 +256,7 @@ for (const genericMeter of [false, true]) test(`an original ${genericMeter ? 'MQ
   f.advance(40); await automaticallyAdmit(() => f.native().readings.caravan_power.observedAt === f.now());
   assert.equal(f.state().recording, false);
   assert.equal(f.state().qualified, false, 'A replacement meter packet cannot conceal expiry of the old electrical evidence');
-  assert.notEqual(f.state().locationTest.status, 'passed');
+  assert.equal(f.state().qualification.retained, true, 'Historical association is separate from current unusable evidence');
   assert(!f.store.observations({ signal: SIGNAL }).some(row => row.raw?.timeBasis === 'recording-availability-recovery'));
 });
 
@@ -283,7 +285,7 @@ test('an original appliance power deadline cannot be concealed by a deferred fre
   f.advance(40); await automaticallyAdmit(() => f.capture.status().devices.find(row => row.id === 'caravan_dehumidifier').readings[SIGNAL].observedAt === f.now());
   assert.equal(f.state().qualified, false);
   assert.equal(f.state().recording, false);
-  assert.notEqual(f.state().locationTest.status, 'passed');
+  assert.equal(f.state().qualification.retained, true, 'Historical association is separate from current unusable evidence');
   assert(!f.store.observations({ signal: SIGNAL }).some(row => row.raw?.timeBasis === 'recording-availability-recovery'));
 });
 
@@ -318,7 +320,7 @@ test('a rejected required native wait breaks qualification before any subsequent
   assert.equal(f.recording().freshness.status, 'unavailable');
   f.advance(40); f.meter(105); await settle();
   assert.equal(f.state().qualified, false, 'A new packet must not hide the failed deferred-evidence boundary');
-  assert.notEqual(f.state().locationTest.status, 'passed');
+  assert.equal(f.state().qualification.retained, true, 'Historical association is separate from current unusable evidence');
   assert(!f.store.observations({ signal: SIGNAL }).some(row => row.raw?.timeBasis === 'recording-availability-recovery'));
 });
 
@@ -414,7 +416,7 @@ for (const genericMeter of [false, true]) test(`a failed Caravan check does not 
 
 for (const genericMeter of [false, true]) test(`a bounded ${genericMeter ? 'MQTT' : 'native'} meter clock lead pauses an active Caravan check without restarting its baseline`, async t => {
   const f = fixture(t, { genericMeter }); f.dryer('off');
-  f.advance(5000); f.dryer('off'); f.meter(100, 500); await settle();
+  f.advance(4999); f.dryer('off'); f.meter(100, 500); await settle();
   assert.equal(f.commands.length, 0, 'Future source evidence cannot dispatch native power');
   assert.equal(f.state().recording, false);
   assert.equal(f.state().locationTest.status, 'testing');
@@ -427,7 +429,8 @@ for (const genericMeter of [false, true]) test(`a bounded ${genericMeter ? 'MQTT
 
 test('an actual native Caravan meter outage permits a new check after a failed check', async t => {
   const f = fixture(t, { failOn: true }); await f.fail();
-  f.advance(1000); f.reconnectMeter(); f.dryer('off');
+  f.capture.receive('fixture/caravan/online', 'false'); f.advance(60_000); f.reconnectMeter(); f.dryer('off');
+  await f.sample(30_000, 'off');
   assert.equal(f.state().locationTest.status, 'testing');
   assert.equal(f.state().recording, false);
   await f.sample(5000, 'off');
@@ -444,8 +447,8 @@ test('meter evidence expiring during a source-time wait still invalidates the Ca
   f.advance(400); f.capture.tick(); await settle();
   assert.equal(f.state().reason, 'power-unavailable', 'Expiry discards pending evidence from before the reporting gap');
   f.meter(100); await settle();
-  assert.equal(f.state().locationTest.status, 'testing', 'Expired prior evidence remains a real gap even with a bounded report waiting');
-  assert.equal(f.state().locationTest.phase, 'baseline');
+  assert.equal(f.state().locationTest.status, 'failed', 'A brief real gap cannot rearm the failed check');
+  assert.equal(f.state().recording, false);
 });
 
 test('a native meter outage discards its pending source report before Caravan recovery', async t => {
@@ -456,7 +459,8 @@ test('a native meter outage discards its pending source report before Caravan re
   assert.equal(f.state().reason, 'power-unavailable');
   assert.equal(f.state().recording, false);
   assert.equal(f.commands.length, 1, 'A report from the ended connection cannot start a new test');
-  f.reconnectMeter(); f.dryer('off');
+  f.advance(60_000); f.reconnectMeter(); f.dryer('off');
+  await f.sample(30_000, 'off');
   assert.equal(f.state().locationTest.status, 'testing');
   await f.sample(5000, 'off');
   assert.equal(f.commands.length, 2);

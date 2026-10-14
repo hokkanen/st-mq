@@ -60,6 +60,8 @@ async function fixture(t, { locationCheck = true } = {}) {
   }
   air(1.5); appliance(); meter(100);
   await until(() => store.writeQueueStatus().pending === 0);
+  if (locationCheck) { now += 30_000; air(1.5); appliance(); meter(100);
+    await until(() => store.writeQueueStatus().pending === 0); }
   return { store, acquisition, client, commands, report, appliance, air, meter,
     now: () => now, advance: ms => { now += ms; }, authority: value => { authority = value; },
     lock() { writer.exec('BEGIN IMMEDIATE'); locked = true; },
@@ -166,10 +168,10 @@ test('delayed test dispatch durably fences restoration and phase evidence at its
   const clockChange = f.store.runWrite(() => f.advance(100));
   f.appliance(); f.unlock(); await clockChange;
   await until(() => f.commands.length === 1);
-  assert.equal(f.commands[0].requestedAt, START + 5000);
-  assert.equal(f.commands[0].expiresAt, START + 5500);
-  assert.equal(f.state().operation.dispatchedAt, START + 5100);
-  assert.equal(f.store.getState(RESTORE_KEY).lastCommandAt, START + 5100);
+  assert.equal(f.commands[0].requestedAt, START + 35_000);
+  assert.equal(f.commands[0].expiresAt, START + 35_500);
+  assert.equal(f.state().operation.dispatchedAt, START + 35_100);
+  assert.equal(f.store.getState(RESTORE_KEY).lastCommandAt, START + 35_100);
   assert.equal(f.state().temperatureControl.locationTest.phase, 'on');
   assert.equal(f.state().temperatureControl.qualified, false);
 });

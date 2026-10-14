@@ -27,6 +27,7 @@ const ROUTES = [
   ['/api/equipment/cover', { deviceId: 'garage_door1', action: 'open' }],
   ['/api/equipment/dehumidifier', { deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' }],
   ['/api/equipment/dehumidifier/temperature-control', { deviceId: 'caravan_dehumidifier', enabled: false }],
+  ['/api/equipment/dehumidifier/location-check', { deviceId: 'caravan_dehumidifier', identity: 'a'.repeat(64), signature: 'b'.repeat(64), revision: 1 }],
 ];
 const flush = () => new Promise(resolve => setImmediate(resolve));
 

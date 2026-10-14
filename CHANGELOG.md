@@ -14,6 +14,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   responses without exposing native diagnostics. Keep verified-read fencing and
   synchronization behavior unchanged.
 
+- Retain a successful Caravan appliance/meter association across restart,
+  handover and brief evidence gaps. Require advancing stable reports before reuse,
+  preserve real recording gaps and native restoration, and expose a separate
+  physical location recheck. Sustained loss or changed wiring requires a new check.
+
 - Confirm Home Assistant HTTPS installation identity through authenticated
   Supervisor host information when container identity files are unavailable.
   Preserve saved identities on failure. Show the next HTTPS setup action clearly,

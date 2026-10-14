@@ -51,6 +51,8 @@ async function fixture(t) {
   while (now < START) { now += Math.min(60_000, START - now); appliance('off'); await settle(); }
   report('invented/air', { temperature: 1.5, humidity: 40, timestamp: now });
   appliance('off'); report('invented/power', { power: 100, timestamp: now });
+  now += 30_000; report('invented/air', { temperature: 1.5, humidity: 40, timestamp: now });
+  appliance('off'); report('invented/power', { power: 100, timestamp: now }); await settle();
   now += 5000; appliance('off'); report('invented/power', { power: 100, timestamp: now });
   await settle();
   assert.deepEqual(commands, ['on']);

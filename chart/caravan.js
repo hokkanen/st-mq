@@ -92,9 +92,16 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     }
   }
   const comparisonRule = make('p', '', 'caravan-comparison-rule muted');
+  const recheckLocation = make('button', 'Recheck appliance location', 'secondary caravan-location-recheck');
+  recheckLocation.type = 'button';
+  recheckLocation.disabled = true;
+  const recheckHelp = make('p', 'A location check switches native power Off, On and Off, then restores the previous setting. Stable fresh reports and the five-minute restart wait still apply.', 'muted');
+  recheckLocation.addEventListener('click', () => {
+    if (!recheckLocation.disabled) void actions.recheckDehumidifierLocation('caravan_dehumidifier');
+  });
   const humidityLabel = make('p', 'Humidity · live only', 'caravan-comparison-label caravan-humidity-label muted');
   const temperatureLabel = make('p', 'Temperature · live only', 'caravan-comparison-label caravan-temperature-label muted');
-  comparison.append(powerChanges, comparisonRule, humidityLabel, humidityComparison, temperatureLabel, temperatureComparison);
+  comparison.append(powerChanges, comparisonRule, recheckLocation, recheckHelp, humidityLabel, humidityComparison, temperatureLabel, temperatureComparison);
   recordingDetails.append(make('summary', 'Power check'), comparison);
   recordingPanel.append(recording, recordingDetails);
 
@@ -306,7 +313,9 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
         'waiting-restart': 'Waiting five minutes after confirmed native Off before the power check can switch On.',
         'waiting-native-power': 'Waiting for fresh native power evidence after the connection gap.',
         'restoring-power': 'Restoring the dehumidifier’s previous power setting.',
-        'power-test-failed': 'Caravan power did not confirm both switches. A new connection will repeat the check.',
+        'power-test-failed': 'The power did not confirm both switches. Recheck the appliance location explicitly; a brief reconnection does not repeat it.',
+        'recovering-feedback': 'The successful power check is retained. Waiting for 30 seconds of stable, independently advancing reports.',
+        'waiting-stable-feedback': 'Waiting for 30 seconds of stable, independently advancing reports before the power check.',
         'appliance-unavailable': 'Waiting for fresh dehumidifier reports.',
         'power-unavailable': 'Waiting for fresh Caravan power readings.',
         'control-unavailable': 'The power check needs device control authority.',
@@ -321,14 +330,16 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
       for (const [field, node] of powerValues) setText(node, value(test?.[field], 'W'));
       humidityLabel.hidden = humidityComparison.hidden = !Number.isFinite(guard.applianceHumidity) && !Number.isFinite(guard.humidity);
       temperatureLabel.hidden = temperatureComparison.hidden = !Number.isFinite(guard.applianceTemperatureC);
-      comparisonRule.textContent = `On every connection, fresh Caravan meter reports must show at least ${test?.minimumPowerChangeW ?? 3} W of rise with native On and fall with Off.`
+      recheckLocation.disabled = !temperatureControlAllowed(status, appliance, busy || blocked()) || guard.qualification?.canRecheck !== true;
+      comparisonRule.textContent = `A required power check needs at least ${test?.minimumPowerChangeW ?? 3} W of rise with native On and fall with Off.`
         + ' A small fan load is sufficient; full dehumidifying power is not required. The previous power setting is restored before normal control resumes.'
+        + ' A successful equipment-bound check survives restart and brief outages; unavailable readings stay unknown.'
         + ' Humidity is not a recording requirement. History records Off, Low, Medium or High.';
       if (!policyDirty && !policySaving) resetPolicyDraft();
       refreshPolicy();
     }
-    const scoped = ['dehumidifier', 'dehumidifier-temperature-control'].includes(actionKind) && actionDeviceId === appliance.id;
-    const policyResult = scoped && actionKind === 'dehumidifier-temperature-control';
+    const scoped = ['dehumidifier', 'dehumidifier-temperature-control', 'dehumidifier-location-check'].includes(actionKind) && actionDeviceId === appliance.id;
+    const policyResult = scoped && ['dehumidifier-temperature-control', 'dehumidifier-location-check'].includes(actionKind);
     setText(result, scoped && (busy || error || policyResult) ? message : dehumidifierResult(appliance, status.now));
     result.hidden = !result.textContent;
     result.classList.toggle('form-error', Boolean(scoped && error || !policyResult && ['failed', 'unconfirmed'].includes(device.operation?.status)));

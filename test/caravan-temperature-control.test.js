@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
+import { createMqttSourceContext, mqttSourceIdentity } from '../src/pairing/mqtt-source-context.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { createEquipmentCapture } from '../src/acquisition/equipment.js';
@@ -81,10 +83,12 @@ function fixture(t, options = {}) {
         f.advance(Math.min(60_000, until - f.now)); f.air(temperature, humidity); f.dryer('off', appliance); f.meter(100); await settle();
       }
     },
-    start: async ({ temperature = 1.5, humidity = 50, appliance = {}, enabled } = {}) => {
+    start: async ({ temperature = 1.5, humidity = 50, appliance = {}, enabled, stable = true } = {}) => {
       f.air(temperature, humidity); f.dryer('off', appliance);
       if (enabled !== undefined) await f.policy({ enabled });
       f.meter(100); await settle();
+      // Stable feed qualification precedes the separately bounded power cycle.
+      if (stable) { f.air(temperature, humidity); await f.sample(30_000, 'off', 100, appliance); }
     },
     qualify: async (options = {}) => {
       await f.start(options);
@@ -106,6 +110,236 @@ function fixture(t, options = {}) {
   return f;
 }
 
+test('a passed Caravan association survives a brief real dropout after advancing stable recovery without another power cycle', async t => {
+  const f = fixture(t); await f.qualify();
+  assert.equal(f.guard().qualified, true);
+  const before = f.sent.length;
+  f.capture.receive('fixture/dryer/online', 'offline');
+  assert.equal(f.guard().qualified, false, 'Missing live evidence is still unknown');
+  assert.equal(f.guard().recording, false);
+  f.advance(20_000); f.capture.receive('fixture/dryer/online', 'online');
+  f.dryer('off'); f.meter(100); await settle();
+  await f.sample(29_999, 'off', 100);
+  assert.equal(f.guard().qualified, false, 'Recovery cannot finish at 29,999 ms');
+  await f.sample(1, 'off', 100);
+  assert.equal(f.guard().qualified, true);
+  assert.equal(f.sent.length, before, 'Stable recovery of a historical pass sends no test command');
+});
+
+test('a passed Caravan association survives current-version restart with original proof and fresh recovery', async t => {
+  const f = fixture(t); await f.qualify(); f.dryer('off'); f.meter(100); await settle();
+  const proof = structuredClone(f.history().findLast(row => row.value !== null).raw.locationEvidence);
+  const before = f.sent.length;
+  f.restart(); f.advance(1); f.air(); f.dryer('off'); f.meter(100); await settle();
+  assert.equal(f.guard().qualified, false, 'Stored proof is not fresh evidence');
+  await f.sample(30_000, 'off', 100);
+  assert.equal(f.guard().qualified, true);
+  assert.equal(f.sent.length, before, 'Restart alone does not retest a successful association');
+  assert.equal(f.guard().locationTest.completedAt, proof.completedAt, 'A recovered association keeps its actual test clock');
+});
+
+test('an abandoned meter scope cannot recover its old pass after a quick A to B to A change', async t => {
+  const f = fixture(t); let meterAddress = 'mqtt://synthetic-meter-a';
+  f.restart({ brokerIdentityForDevice: d => ({ address: d.id === 'caravan' ? meterAddress : 'mqtt://synthetic-source', username: 'synthetic' }) });
+  await f.qualify(); const original = f.guard().qualification.passedAt, before = f.sent.length;
+  meterAddress = 'mqtt://synthetic-meter-b'; await f.sample(1, 'off', 100);
+  meterAddress = 'mqtt://synthetic-meter-a'; await f.sample(1, 'off', 100);
+  await f.sample(30_000, 'off', 100);
+  assert.equal(f.guard().qualified, false);
+  assert.equal(f.guard().qualification.retained, false);
+  assert.equal(f.guard().qualification.passedAt, original, 'Retired historical evidence is preserved');
+  assert.equal(f.sent.length, before, 'New physical check has only begun its baseline');
+  assert.equal(f.guard().locationTest.status, 'testing');
+});
+
+test('changing the meter during Original On restoration closes the old duty without qualifying new wiring', async t => {
+  const f = fixture(t); let meterAddress = 'mqtt://synthetic-meter-a';
+  f.restart({ brokerIdentityForDevice: d => ({ address: d.id === 'caravan' ? meterAddress : 'mqtt://synthetic-source', username: 'synthetic' }) });
+  f.advance(1); f.air(3); f.dryer('on'); await f.policy({ enabled: false }); f.meter(105); await settle();
+  await f.sample(30_000, 'on', 105); await f.sample(1000, 'off', 100); await f.waitRestart({ temperature: 3 });
+  await f.sample(5000, 'off', 100); await f.sample(1000, 'on', 105); await f.sample(5000, 'on', 105);
+  await f.sample(1000, 'off', 100); await f.sample(5000, 'off', 100);
+  assert.equal(f.guard().locationTest.status, 'restoring');
+  const oldPassedAt = f.guard().locationTest.completedAt, oldScope = f.guard().qualification.signature;
+  assert.equal(f.store.getState(RESTORE_KEY).power, 'on');
+  meterAddress = 'mqtt://synthetic-meter-b'; f.advance(1); f.air(3); f.dryer('off'); f.meter(100); await settle();
+  assert.notEqual(f.guard().qualification.signature, oldScope);
+  assert.equal(f.store.getState(RESTORE_KEY).power, 'on');
+  const writes = [], save = f.store.setState.bind(f.store);
+  f.store.setState = (key, value) => { if (key === RESTORE_KEY) writes.push(value); return save(key, value); };
+  await f.waitRestart({ temperature: 3 }); await f.sample(1000, 'on', 105);
+  assert(writes.includes(null), 'Fresh original On discharges its old obligation; a necessary new-scope check may create a new one');
+  assert.equal(f.guard().qualified, false); assert.notEqual(f.guard().qualification.passedAt, oldPassedAt);
+});
+
+test('cached pre-restart source clocks cannot break the conservative unobserved loss interval', async t => {
+  const f = fixture(t); await f.qualify(); f.advance(1000); f.dryer('off'); f.meter(100); await settle();
+  const cachedAt = f.now, proofAt = f.guard().qualification.passedAt, commands = f.sent.length;
+  f.advance(1000); f.restart(); f.air(); f.dryer('off', { timestamp: cachedAt }); f.meter(100, cachedAt); await settle();
+  const loss = f.guard().qualification.unavailableSince;
+  f.advance(30_000); f.capture.tick(); await settle();
+  assert.equal(f.guard().qualified, false); assert.equal(f.guard().qualification.unavailableSince, loss);
+  assert.equal(f.guard().qualification.passedAt, proofAt); assert.equal(f.sent.length, commands);
+  f.dryer('off'); f.meter(100); await settle(); await f.sample(29_999, 'off', 100);
+  assert.equal(f.guard().qualified, false); await f.sample(1, 'off', 100);
+  assert.equal(f.guard().qualified, true);
+});
+
+test('a physical location check requires the exact current revision and cannot be duplicated or replace restoration', async t => {
+  const f = fixture(t); await f.qualify();
+  const current = () => ({ deviceId: 'caravan_dehumidifier', identity: 'a'.repeat(64),
+    signature: f.guard().qualification.signature, revision: f.guard().qualification.revision });
+  const request = current(), before = f.sent.length, state = f.store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'equipment:caravan-qualification%'").all();
+  await assert.rejects(f.capture.recheckDehumidifierLocation({ ...request, retired: true }));
+  await assert.rejects(f.capture.recheckDehumidifierLocation({ ...request, revision: request.revision - 1 }));
+  f.authority(false); await assert.rejects(f.capture.recheckDehumidifierLocation(request)); f.authority(true);
+  assert.deepEqual(f.store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'equipment:caravan-qualification%'").all(), state);
+  await f.capture.recheck({ deviceId: 'caravan_dehumidifier' });
+  assert.equal(f.guard().qualified, true, 'Ordinary refresh is not a physical check');
+  await f.capture.recheckDehumidifierLocation(request);
+  f.advance(1); f.dryer('off'); f.meter(100); await settle();
+  assert.equal(f.guard().qualified, false); assert.equal(f.guard().qualification.revision, request.revision + 1);
+  await assert.rejects(f.capture.recheckDehumidifierLocation(request));
+  await assert.rejects(f.capture.recheckDehumidifierLocation(current()));
+  assert.equal(f.sent.length, before, 'Explicit check waits for actual stable reports');
+  await f.sample(30_000, 'off', 100); await f.waitRestart(); await f.sample(5000, 'off', 100);
+  assert.equal(f.store.getState(RESTORE_KEY)?.power, 'off');
+  const obligation = structuredClone(f.store.getState(RESTORE_KEY));
+  await assert.rejects(f.capture.recheckDehumidifierLocation(current()));
+  assert.deepEqual(f.store.getState(RESTORE_KEY), obligation);
+});
+
+test('location-test dispatch rejects wiring movement after durable intent and before publication', async t => {
+  let hold = false, release; const waiting = new Promise(resolve => { release = resolve; });
+  const f = fixture(t, { beforePublish: async topic => { if (hold && topic === 'fixture/dryer/set') await waiting; } });
+  let meterAddress = 'mqtt://synthetic-meter-a';
+  f.restart({ brokerIdentityForDevice: d => ({ address: d.id === 'caravan' ? meterAddress : 'mqtt://synthetic-source', username: 'synthetic' }) });
+  f.advance(1); await f.start(); hold = true; await f.waitRestart(); await f.sample(5000, 'off', 100);
+  assert.equal(f.store.getState(RESTORE_KEY)?.power, 'off'); assert.deepEqual(f.sent, []);
+  meterAddress = 'mqtt://synthetic-meter-b'; release(); await settle(); await settle();
+  assert.deepEqual(f.sent, [], 'Final physical-scope check cancels the unsent old-wiring command');
+  assert.equal(f.guard().qualified, false);
+});
+
+test('actual successful proof rejects future completion and impossible command chronology before writable startup', async t => {
+  const f = fixture(t); await f.qualify();
+  const directory = await mkdtemp(join(tmpdir(), 'caravan-proof-validation-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  for (const [name, corrupt] of [['future', r => { r.proof.completedAt = r.lastHealthyAt + 86_400_000; }],
+    ['order', r => { const on = r.proof.phases.on.commandAt; r.proof.phases.on.commandAt = r.proof.phases.off.commandAt; r.proof.phases.off.commandAt = on; }]]) {
+    const path = join(directory, `${name}.sqlite`); await f.store.backup(path);
+    const writer = new Store(path), row = writer.db.prepare("SELECT key,value FROM state WHERE key LIKE 'equipment:caravan-qualification:v1:%'").get();
+    const record = JSON.parse(row.value); corrupt(record);
+    writer.db.prepare('UPDATE state SET value=? WHERE key=?').run(JSON.stringify(record), row.key);
+    writer.db.exec('PRAGMA journal_mode=DELETE'); writer.close();
+    const original = await readFile(path);
+    assert.throws(() => new Store(path), { code: 'database_state_incompatible' });
+    assert.deepEqual(await readFile(path), original, 'Invalid current proof is rejected before mutation');
+  }
+});
+
+test('failed COMMIT rewinds a healthy association checkpoint and reads do not persist it', async t => {
+  const f = fixture(t); await f.qualify();
+  const rows = () => f.store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'equipment:caravan-qualification%'").all();
+  const before = rows(); for (let i = 0; i < 30; i++) f.guard();
+  assert.deepEqual(rows(), before, 'Dashboard reads cannot refresh durable source evidence');
+  const exec = f.store.db.exec.bind(f.store.db); let fail = true;
+  t.mock.method(f.store.db, 'exec', sql => { if (sql === 'COMMIT' && fail) { fail = false; throw new Error('Synthetic association COMMIT failure'); } return exec(sql); });
+  f.advance(30_000);
+  await assert.rejects(f.store.runWrite(() => { f.dryer('off'); f.meter(100); }), /Synthetic association COMMIT failure/);
+  assert.deepEqual(rows(), before); assert.equal(f.guard().qualified, true);
+  await f.store.runWrite(() => { f.dryer('off'); f.meter(100); });
+  assert.notDeepEqual(rows(), before, 'Only successfully admitted new source clocks update the checkpoint');
+});
+
+test('verified paired MQTT source context retains the association through transport handover with fresh recovery', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'caravan-pair-source-'));
+  const f = fixture(t, { store: new Store(join(directory, 'current.sqlite')) });
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const ha = { topology: 'pair', input: 'mqtt', pair: { pairId: 'synthetic-house', token: 'synthetic-pair-token', vip: { address: '192.0.2.30' } },
+    connections: { mqtt: { address: 'mqtt://core-mosquitto', user: 'synthetic-ha' } } };
+  const ubuntu = structuredClone(ha); ubuntu.connections.mqtt = { address: 'mqtt://127.0.0.1', user: 'synthetic-local', ha: { address: 'mqtt://192.0.2.20:1885', user: 'synthetic-ha' } };
+  const local = createMqttSourceContext({ configuration: () => ha, directory: join(directory, 'ha') });
+  const remote = createMqttSourceContext({ configuration: () => ubuntu, directory: join(directory, 'ubuntu') });
+  await local.activate(ha, f.store, { allowSeed: true });
+  f.restart({ brokerIdentityForDevice: () => mqttSourceIdentity(ha, 'primary') }); f.advance(1); await f.qualify();
+  const proofAt = f.guard().qualification.passedAt, scope = f.guard().qualification.signature, commands = f.sent.length;
+  const args = { requirements: local.requirements(f.store), token: randomUUID(), dbPath: f.store.path };
+  await remote.prepare(args); remote.verify(args); await remote.authorize(args); await remote.activate(ubuntu, f.store);
+  assert.notEqual(ha.connections.mqtt.address, ubuntu.connections.mqtt.address);
+  f.restart({ brokerIdentityForDevice: () => mqttSourceIdentity(ubuntu, 'primary') }); f.advance(1); f.air(); f.dryer('off'); f.meter(100); await settle();
+  assert.equal(f.guard().qualification.signature, scope); assert.equal(f.guard().qualified, false);
+  await f.sample(29_999, 'off', 100); assert.equal(f.guard().qualified, false);
+  await f.sample(1, 'off', 100); assert.equal(f.guard().qualified, true);
+  assert.equal(f.guard().qualification.passedAt, proofAt); assert.equal(f.sent.length, commands);
+});
+
+for (const duration of [59_999, 60_000]) test(`actual source return at ${duration} ms preserves the exact continuous-loss boundary`, async t => {
+  const f = fixture(t); await f.qualify(); const proofAt = f.guard().qualification.passedAt;
+  f.capture.receive('fixture/dryer/online', 'offline'); f.advance(duration);
+  f.capture.receive('fixture/dryer/online', 'online'); f.air(); f.dryer('off'); f.meter(100); await settle();
+  assert.equal(f.guard().qualified, false);
+  await f.sample(29_999, 'off', 100); assert.equal(f.guard().qualified, false);
+  await f.sample(1, 'off', 100);
+  assert.equal(f.guard().qualified, duration < 60_000);
+  assert.equal(f.guard().qualification.passedAt, proofAt, 'Historical proof is not renewed on return');
+});
+
+test('delayed source-loss detection uses the original expiry before a fresh report replaces it', async t => {
+  const f = fixture(t); await f.qualify();
+  const powerAt = f.now; f.advance(240_000); f.air(); f.dryer('off'); f.meter(100); await settle();
+  assert.equal(f.guard().qualified, false); assert.equal(f.guard().qualification.retained, false,
+    'Required-field expiry plus 60 seconds invalidates the association without an earlier tick');
+  const rows = f.store.db.prepare("SELECT value FROM state WHERE key LIKE 'equipment:caravan-qualification:v1:%'").all();
+  assert.equal(JSON.parse(rows[0].value).invalidatedAt, powerAt + 240_000);
+});
+
+test('late writer admission cannot resurrect an association from a report received just before expiry', async t => {
+  const f = fixture(t); await f.qualify(); f.capture.receive('fixture/dryer/online', 'offline');
+  await f.store.runWrite(() => {});
+  let release, started = false; const held = new Promise(resolve => { release = resolve; });
+  const publication = f.store.runPublication(async () => { started = true; await held; });
+  await settle(); assert.equal(started, true);
+  f.advance(59_999); const receivedAt = f.now;
+  const queued = f.store.runWrite(() => { f.capture.receive('fixture/dryer/online', 'online', {}, receivedAt); f.air();
+    f.dryer('off', { timestamp: receivedAt }, false, receivedAt); f.meter(100, receivedAt); });
+  f.advance(1); release(); await publication; await queued; await f.store.runWrite(() => {}); await settle();
+  assert.equal(f.guard().qualified, false); assert.equal(f.guard().qualification.retained, false);
+});
+
+test('queued physical recheck refuses changed wiring before admission without rewriting proof or restoration', async t => {
+  const f = fixture(t); let meterAddress = 'mqtt://synthetic-meter-a';
+  f.restart({ brokerIdentityForDevice: d => ({ address: d.id === 'caravan' ? meterAddress : 'mqtt://synthetic-source', username: 'synthetic' }) });
+  f.advance(1); await f.qualify();
+  const request = { deviceId: 'caravan_dehumidifier', identity: 'a'.repeat(64), signature: f.guard().qualification.signature, revision: f.guard().qualification.revision };
+  const rows = () => f.store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'equipment:caravan-qualification%'").all();
+  const before = rows(); let release, started = false; const held = new Promise(resolve => { release = resolve; });
+  const publication = f.store.runPublication(async () => { started = true; await held; }); await settle(); assert(started);
+  const requestPromise = f.capture.recheckDehumidifierLocation(request), rejected = assert.rejects(requestPromise);
+  meterAddress = 'mqtt://synthetic-meter-b'; release(); await publication; await rejected;
+  assert.deepEqual(rows(), before); assert.equal(f.store.getState(RESTORE_KEY), null);
+});
+
+for (const enabled of [true, false]) test(`retained restart association ${enabled ? 'protects Off' : 'preserves native power'} when fresh air is missing and Automatic is ${enabled}`, async t => {
+  const f = fixture(t); await f.qualify({ temperature: 2 }); await f.sample(1000, 'on', 105);
+  assert.equal(f.state().state.power, 'on'); if (!enabled) await f.policy({ enabled: false });
+  const commands = f.sent.length; f.restart(); f.advance(1); f.dryer('on'); f.meter(105); await settle();
+  await f.sample(30_000, 'on', 105);
+  assert.equal(f.guard().temperatureC, null);
+  assert.deepEqual(f.sent.slice(commands), enabled ? [{ power: 'off' }] : [],
+    'Historical proof authorizes neither new On nor a disabled Automatic Off');
+});
+
+test('missing air cannot grant Automatic Off from an absent or changed location association', async t => {
+  for (const changed of [false, true]) {
+    const f = fixture(t); let address = 'mqtt://synthetic-a';
+    f.restart({ brokerIdentityForDevice: () => ({ address, username: 'synthetic' }) }); f.advance(1);
+    if (changed) { await f.qualify({ temperature: 2 }); await f.sample(1000, 'on', 105); address = 'mqtt://synthetic-b'; }
+    const commands = f.sent.length; f.restart({ brokerIdentityForDevice: () => ({ address, username: 'synthetic' }) });
+    f.advance(1); f.dryer('on'); f.meter(105); await settle();
+    assert.equal(f.guard().qualified, false); assert.deepEqual(f.sent.slice(commands), []);
+  }
+});
+
 async function restartFromQualifiedSnapshot(t) {
   const previous = fixture(t); await previous.qualify();
   const historical = previous.history().findLast(row => row.value !== null);
@@ -113,7 +347,7 @@ async function restartFromQualifiedSnapshot(t) {
   const path = join(directory, 'current.sqlite');
   // A current backup preserves the last committed boundary before an abrupt
   // stop could report transport loss. The new Store and Recorder then start
-  // normally; no capture-local qualification survives the restart.
+  // normally; historical association survives, but no current evidence does.
   await previous.store.backup(path); previous.capture.close();
   const fresh = fixture(t, { store: new Store(path), startAt: previous.now + 1000 });
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -123,7 +357,7 @@ async function restartFromQualifiedSnapshot(t) {
 test('native Off holds location-test On for five minutes without renewing clocks or consuming command intent', async t => {
   const f = fixture(t, { knownOff: false }); await f.start();
   const original = f.timing();
-  for (let index = 0; index < 6; index++) await f.sample(45_000, 'off', 100);
+  while (f.now < original.sourceAt + 270_000) await f.sample(Math.min(45_000, original.sourceAt + 270_000 - f.now), 'off', 100);
   assert.equal(f.guard().locationTest.phase, 'baseline'); assert.equal(f.guard().locationTest.reason, 'waiting-restart');
   assert.equal(f.store.getState(RESTORE_KEY), null); assert.deepEqual(f.sent, []);
   assert.deepEqual(f.timing(), original, 'unchanged native Off reports preserve transition and first confirmation clocks');
@@ -216,6 +450,7 @@ test('manual On respects the same native Off boundary without saving an attempte
 
 test('On restoration remains durable during drying and restart without renewed attempts', async t => {
   const f = fixture(t, { knownOff: false }); f.dryer('on'); await f.policy({ enabled: false }); f.meter(105); await settle();
+  await f.sample(30_000, 'on', 105);
   await f.sample(1000, 'off', 100); await f.waitRestart();
   await f.sample(1000, 'on', 105); await f.sample(5000, 'on', 105);
   await f.sample(1000, 'off', 100); await f.sample(5000, 'off', 100);
@@ -255,7 +490,7 @@ test('restart clock earlier than the original Off edge cannot save an out-of-ord
 
 test('current-format restart reports a qualification gap on its first fresh state without renewing historical measurements', async t => {
   const { fresh: f, historical } = await restartFromQualifiedSnapshot(t);
-  await f.start();
+  await f.start({ stable: false });
   const row = f.recorder.status(f.now).exactParameters.find(row => row.signal === SIGNAL);
   assert.equal(f.state().available, true); assert.equal(f.guard().qualified, false); assert.equal(f.guard().recording, false);
   assert.equal(row.observedThisRun, true);
@@ -268,30 +503,24 @@ test('current-format restart reports a qualification gap on its first fresh stat
   assert.equal(gaps.length, 2, 'the original startup gap and this restarted capture each have one real transition');
   assert.equal(gaps.at(-1).value, null); assert.equal(gaps.at(-1).sourceTime, null);
   assert.equal(gaps.at(-1).receivedAt, f.now);
-  await f.waitRestart();
-  await f.sample(5000, 'off', 100);
-  for (let index = 0; index < 4; index++) await f.sample(45000, 'on', 100);
-  await f.sample(1000, 'off', 100);
-  assert.equal(f.guard().locationTest.status, 'failed'); assert.equal(f.guard().locationTest.reason, 'no-power-rise');
-  assert.equal(f.state().available, true); assert.equal(f.guard().recording, false);
-  for (let index = 0; index < 3; index++) await f.sample(30000, 'off', 100);
-  const unavailable = f.recorder.status(f.now).exactParameters.find(point => point.signal === SIGNAL);
-  assert.equal(unavailable.freshness.status, 'unavailable');
-  assert(unavailable.freshness.reasons.includes('location-unconfirmed'));
-  assert.equal(unavailable.freshness.sourceObservedAt, historical.sourceTime);
-  assert.equal(f.history().filter(point => point.quality.includes('location-unconfirmed')).length, gaps.length,
-    'fresh unqualified polling and a failed check do not generate repeated gap transitions');
-  assert.deepEqual(f.sent, [{ power: 'on' }, { power: 'off' }], 'failure restores once and does not renew the test');
-  assert.deepEqual(f.history().findLast(point => point.value !== null), historical);
-
-  f.capture.receive('fixture/dryer/online', 'offline'); f.capture.receive('fixture/dryer/online', 'online');
-  await f.qualify();
+  await f.sample(29_999, 'off', 0); assert.equal(f.guard().recording, false);
+  await f.sample(1, 'off', 0);
   assert.equal(f.guard().qualified, true); assert.equal(f.guard().recording, true);
+  assert.equal(f.guard().locationTest.completedAt, historical.raw.locationEvidence.completedAt);
+  assert.equal(f.guard().restartWaiting, true, 'The independent native restart restriction still applies');
+  assert.deepEqual(f.sent, [], 'Zero meter watts alone do not revoke an electrical association or authorize a test');
   const recovered = f.history().findLast(point => point.value !== null);
-  assert.equal(recovered.sourceTime, f.now);
+  assert.equal(recovered.sourceTime, f.now, 'New state evidence does not fill the earlier recovery gap');
+  assert.equal(f.history().filter(point => point.quality.includes('location-unconfirmed')).length, gaps.length,
+    'the real gap is retained once across association recovery');
+  f.capture.receive('fixture/dryer/online', 'offline'); f.capture.receive('fixture/dryer/online', 'online');
+  await f.sample(1, 'off', 0); await f.sample(30_000, 'off', 0);
+  assert.equal(f.guard().qualified, true); assert.equal(f.guard().recording, true);
+  assert.equal(f.history().findLast(point => point.value !== null).sourceTime, f.now);
+  assert.deepEqual(f.sent, [], 'A later brief flap also recovers without a test');
   assert.equal(f.recorder.status(f.now).exactParameters.find(point => point.signal === SIGNAL).freshness.status, 'fresh');
   assert.deepEqual(f.history().find(point => point.id === historical.id), historical,
-    'fresh qualification adds current evidence without changing the earlier state or filling the gap');
+    'fresh recovery adds current evidence without changing the earlier state or filling the gap');
 });
 
 test('retained and pending source reports cannot publish a new capture qualification transition before admission', async t => {
@@ -377,6 +606,7 @@ test('flat Caravan power fails placement and restores original native Off withou
 
 test('initial native On is restored after the complete Off/On/Off placement test', async t => {
   const f = fixture(t); f.advance(1); f.dryer('on'); await f.policy({ enabled: false }); f.meter(105); await settle();
+  await f.sample(30_000, 'on', 105);
   assert.deepEqual(f.sent, [{ power: 'off' }]);
   await f.sample(1000, 'off', 100); await f.sample(5000, 'off', 100);
   await f.waitRestart();
@@ -397,7 +627,10 @@ test('retained and duplicate meter or appliance reports cannot advance placement
   f.dryer('off'); f.meter(100); f.advance(5000);
   f.meter(100, START); f.dryer('off', { timestamp: START }); f.capture.tick(); await settle();
   assert.equal(f.sent.length, 0);
-  f.meter(100); await settle(); assert.deepEqual(f.sent, [{ power: 'on' }]);
+  f.meter(100); f.dryer('off'); await settle();
+  await f.sample(29_999, 'off', 100); assert.deepEqual(f.sent, []);
+  await f.sample(1, 'off', 100); assert.deepEqual(f.sent, []);
+  await f.sample(5000, 'off', 100); assert.deepEqual(f.sent, [{ power: 'on' }]);
   f.advance(1000); f.dryer('on', { fieldTimestamps: { power: START, fanSpeed: f.now } }); f.meter(105); await settle();
   f.advance(5000); f.meter(105); await settle();
   assert.equal(f.sent.length, 1, 'Fresh meter samples cannot replace independent native On readback');
@@ -405,28 +638,31 @@ test('retained and duplicate meter or appliance reports cannot advance placement
   assert.deepEqual(f.sent.at(-1), { power: 'off' });
 });
 
-test('offline and repeated online markers require one fresh test for the new connection', async t => {
+test('offline and repeated online markers retain only historical association until advancing recovery', async t => {
   const f = fixture(t); await f.qualify(); const gapAt = f.now + 1000;
   f.advance(1000); f.capture.receive('fixture/dryer/online', 'offline');
   assert.equal(f.guard().recording, false); assert.equal(f.history().at(-1).value, null);
   f.capture.receive('fixture/dryer/online', 'online'); f.capture.tick(); await settle();
   assert.equal(f.sent.length, 2); assert.equal(f.guard().qualified, false);
-  f.advance(1000); await f.qualify();
-  assert.equal(f.sent.length, 4); assert.equal(f.guard().qualified, true);
+  await f.sample(1000, 'off', 100); await f.sample(29_999, 'off', 100);
+  assert.equal(f.guard().qualified, false);
+  await f.sample(1, 'off', 100);
+  assert.equal(f.sent.length, 2); assert.equal(f.guard().qualified, true);
   assert(f.history().filter(row => row.value !== null && row.receivedAt > gapAt)
-    .every(row => row.sourceTime >= gapAt + 18000));
+    .every(row => row.sourceTime >= gapAt + 31_000));
   f.advance(1000); f.capture.receive('fixture/dryer/online', 'online'); f.capture.tick(); await settle();
-  assert.equal(f.sent.length, 4, 'A repeated online heartbeat does not create a new physical session');
+  assert.equal(f.sent.length, 2, 'A repeated online heartbeat does not create a new physical session');
 });
 
-test('broker reconnection discards previous placement qualification', async t => {
+test('broker reconnection preserves association while current qualification requires stable source recovery', async t => {
   const f = fixture(t); await f.qualify(); f.capture.setConnected(false);
   f.advance(1000); f.capture.setConnected(true); f.capture.confirmSubscriptions(f.capture.topics);
   f.capture.receive('fixture/dryer/online', 'online'); f.capture.receive('fixture/meter/online', 'online');
   f.dryer('off'); f.meter(100); await settle();
   assert.equal(f.guard().qualified, false); assert.equal(f.guard().recording, false);
   await f.waitRestart();
-  await f.sample(5000, 'off', 100); assert.equal(f.sent.length, 3);
+  await f.sample(5000, 'off', 100); assert.equal(f.sent.length, 2);
+  assert.equal(f.guard().qualified, true);
 });
 
 test('restart during a test restores saved original power before starting any new test', async t => {
@@ -647,7 +883,7 @@ test('a fresh cold boundary interrupts an automatic-power probe and restores nat
   assert.equal(f.guard().qualified, false); assert.equal(f.guard().recording, false);
 });
 
-test('native Shelly kW reports advance placement and native offline invalidates it without plug switching', async t => {
+test('native Shelly kW reports advance placement and recover a brief outage without plug switching', async t => {
   const f = fixture(t, { nativeMeter: true }); await f.qualify({ enabled: false });
   assert.equal(f.guard().qualified, true); assert.equal(f.guard().recording, true);
   assert.equal(f.guard().locationTest.powerRiseW, 5, 'Native kW readings are compared in watts');
@@ -656,8 +892,10 @@ test('native Shelly kW reports advance placement and native offline invalidates 
   assert.equal(f.guard().qualified, false); assert.equal(f.history().at(-1).value, null);
   f.capture.receive('fixture/native-meter/online', 'true'); f.meter(100, f.now, true); await settle();
   assert.equal(f.guard().qualified, false); assert.equal(f.sent.length, 2);
-  f.meter(100); await f.sample(5000, 'off', 100);
-  assert.equal(f.sent.length, 3); assert.deepEqual(f.sent.at(-1), { power: 'on' });
+  await f.sample(1, 'off', 100); await f.sample(29_999, 'off', 100);
+  assert.equal(f.guard().qualified, false);
+  await f.sample(1, 'off', 100);
+  assert.equal(f.sent.length, 2); assert.equal(f.guard().qualified, true);
   assert.equal(f.allPublications.some(row => row.topic === 'fixture/native-meter/relay/0/command'), false,
     'Only the appliance native power endpoint can be switched');
 });
