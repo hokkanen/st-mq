@@ -109,6 +109,13 @@ export const appFingerprint = value => value ? hash([value.controlKnown, value.e
 const appInstructionFingerprint = value => value ? hash([value.enabled, value.enabledAt, value.stopped, value.stopped ? value.stopAt : null,
   value.schedule ? effectiveScheduleFingerprint(value.schedule) : null]) : null;
 const appStopped = value => value?.controlKnown && !value.faulted && !value.authorizationBlocked && value.stopped;
+// Whole-second source precision still uses the original event receipt to order
+// a Stop in the same bucket. Re-reading it cannot make a superseded Stop new.
+export const ocppLocalStopAfter = (stop, boundary) => time(stop?.at) && time(stop?.receivedAt)
+  && (stop.at > boundary || stop.at >= Math.floor(boundary / 1000) * 1000 && stop.receivedAt > boundary);
+export const ocppLocalStopInSession = (stop, session) => time(session?.connectedAt) && time(stop?.at)
+  && (stop.at > session.connectedAt
+    || ocppLocalStopAfter(stop, session.connectedAt) && stop.transactionId === session.transactionId);
 // Disappearance is not an instruction. Production snapshots carry the local
 // observation revision; injected adapters may supply the observations directly.
 const instructionChanged = (before, after) => before.instructionRevision !== undefined && after.instructionRevision !== undefined
@@ -568,14 +575,6 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   const laterStop = app => appStopped(app) && Math.max(app.enabledAt ?? -1, app.stopAt ?? -1) > instructionBoundary();
   const nativeStopped = () => laterStop(snapshot.appControl)
     || laterStop(state.appControl) && (!snapshot.appControl?.controlKnown || staleAppControl());
-  // OCPP timestamps may have only whole seconds. The original event receipt can
-  // order a new Stop within that second; retry/restart retain that receipt and
-  // cannot make a superseded Stop new again. Source time still fences old events.
-  const localStopAfter = (stop, boundary) => stop.at > boundary
-    || stop.at >= Math.floor(boundary / 1000) * 1000 && stop.receivedAt > boundary;
-  const localStopInSession = stop => time(state.session?.connectedAt)
-    && (stop.at > state.session.connectedAt
-      || localStopAfter(stop, state.session.connectedAt) && stop.transactionId === state.session.transactionId);
   async function observeAppControl(current, signal) {
     const now = clock(), app = snapshot.appControl, prior = state.appControl;
     const changes = {};
@@ -585,8 +584,8 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       changes.execution = null; changes.released = kind === 'release'; changes.provisional = false;
     };
     const localStop = snapshot.nativeStop;
-    if (localStop && localStopInSession(localStop) && localStopAfter(localStop, instructionBoundary())
-      && (!state.manual || localStopAfter(localStop, state.manual.at)))
+    if (localStop && ocppLocalStopInSession(localStop, state.session) && ocppLocalStopAfter(localStop, instructionBoundary())
+      && (!state.manual || ocppLocalStopAfter(localStop, state.manual.at)))
       manual('stop', ['ocpp', localStop.transactionId, localStop.at, localStop.reason]);
     if (app && fresh(app.readAt, now)) {
       const scheduleChanged = app.schedule && (!prior || app.readAt >= prior.readAt) && (!prior?.schedule
@@ -829,7 +828,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         const claim = state.automaticTakeover, app = snapshot.appControl;
         if (claim.connectedAt !== session.connectedAt) await commit({ automaticTakeover: null });
         else if (appStopped(app) && Math.max(app.enabledAt ?? -1, app.stopAt ?? -1) > claim.connectedAt
-          || snapshot.nativeStop && localStopInSession(snapshot.nativeStop) && localStopAfter(snapshot.nativeStop, claim.connectedAt))
+          || snapshot.nativeStop && ocppLocalStopInSession(snapshot.nativeStop, state.session) && ocppLocalStopAfter(snapshot.nativeStop, claim.connectedAt))
           await commit({ automaticTakeover: null, nativeTakeoverAt: claim.connectedAt });
         else if (app?.schedule && !easeeScheduleTakeoverSupported(app.schedule))
           return display('unavailable', REASONS['unsupported-schedule'], 'unsupported-schedule');

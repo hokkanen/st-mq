@@ -14,6 +14,20 @@ const fields = (value, keys) => object(value) && Object.keys(value).every(key =>
 const fingerprint = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const optionalTime = value => value == null || isTime(value);
 const optionalId = value => value == null || boundaryId(value);
+function validVehicleDisconnect(value) {
+  if (value == null) return true;
+  if (!fields(value, ['source', 'readingId', 'endedConnectedAt', 'measuredAt', 'receivedAt', 'admittedAt',
+    'cleanupPending', 'awaitingConnection', 'reconnected'])
+    || !['easee-stream', 'bmw-cardata'].includes(value.source) || !boundaryId(value.readingId)
+    || !isTime(value.endedConnectedAt)
+    || typeof value.cleanupPending !== 'boolean' || typeof value.awaitingConnection !== 'boolean'
+    || !validateAdmittedSourceTime({ sourceTime: value.measuredAt, receivedAt: value.receivedAt, admittedAt: value.admittedAt })) return false;
+  const reconnect = value.reconnected;
+  return reconnect === undefined || fields(reconnect, ['readingId', 'measuredAt', 'receivedAt', 'admittedAt', 'retained'])
+    && boundaryId(reconnect.readingId) && reconnect.readingId !== value.readingId && reconnect.retained === false
+    && reconnect.measuredAt > value.measuredAt && (value.source === 'easee-stream' || reconnect.receivedAt > value.receivedAt)
+    && validateAdmittedSourceTime({ sourceTime: reconnect.measuredAt, receivedAt: reconnect.receivedAt, admittedAt: reconnect.admittedAt });
+}
 function validPeriods(periods) {
   return Array.isArray(periods) && periods.length > 0 && periods.every((period, index) =>
     fields(period, ['startAt', 'endAt']) && isTime(period.startAt)
@@ -124,7 +138,8 @@ export function validateChargingOwnershipState(initialState) {
     || !optionalTime(initialState.lastReadAt) || !validOwned(initialState.owned) || !validPending(initialState.pending)
     || !validManual(initialState.manual) || !validExecution(initialState.execution) || !validIdentificationOwnership(initialState.owned)
     || !validIdentificationOwnership(initialState.pending) || !validTakeoverPending(initialState.takeoverPending)
-    || !validAutomaticTakeover(initialState.automaticTakeover) || !validSession(initialState.session))) throw new Error('Unsupported charging ownership; start a fresh development database');
+    || !validAutomaticTakeover(initialState.automaticTakeover) || !validSession(initialState.session)
+    || !validVehicleDisconnect(initialState.vehicleDisconnect))) throw new Error('Unsupported charging ownership; start a fresh development database');
 }
 
 /** Durable native instruction ownership and observed manual priority. */

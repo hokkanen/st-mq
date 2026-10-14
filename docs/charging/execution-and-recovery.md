@@ -310,6 +310,30 @@ must retain the same current source and reference context. Neither matching
 boundaries nor missing native state establish complete backend-switch continuity
 or copy a cloud execution into native authority.
 
+Native-to-cloud deactivation applies the same protection before releasing a
+local profile or applying `OcppOff`. With current admitted connected native
+references, the separate current cloud ownership slot must already describe
+the same observed session boundary. An absent, disconnected or different cloud
+boundary cannot acquire those references by receiving its first online reply.
+Unavailable or inconsistent references, a newer native Stop, unconsumed stream
+disconnect or pending source admission withhold cleanup. Preparation rechecks
+the original source, reference, controller-generation and control-authority
+context after waits. A refusal retains the listener, setup obligation, original
+references and exact native pending/profile duties; explicit deactivation stays
+pending until its evidence permits completion.
+
+A positively admitted native disconnect can retire the live scope while keeping
+historical charge evidence. It permits existing exact owned-profile cleanup
+before `OcppOff`; an unknown or missing socket cannot substitute for that
+disconnect or turn retained manual/pending duties into empty initialization. A
+newer admitted disconnect can retire an old session's manual instruction through
+the existing native controller. Genuinely empty commissioning and a separately admitted matching
+cloud boundary remain supported. Completed earlier cloud disconnect descriptors
+retain their original source, receipt, admission and reconnect clocks; malformed
+or unfinished descriptors cannot supply continuity. These checks prevent a
+future false backend boundary. They neither repair an existing disagreement nor
+prove accepted-period or restart continuity across a complete backend switch.
+
 Shelly command confirmation requires its acknowledged setting and fresh native
 readback within the same adapter generation and physical connection. An unrelated
 connected work-state update does not erase that confirmation. Pending observations

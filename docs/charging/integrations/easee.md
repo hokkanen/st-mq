@@ -775,7 +775,17 @@ preserving the existing address, authentication and certificate settings, then
 applies that version. A failed cloud operation remains pending and retries;
 changing the setting alone does not confirm charger-side shutdown. A different
 server's connection is preserved and cannot be adopted while local OCPP is
-disabled. After local OCPP is disabled, verify that the charger has resumed its
+disabled. Before local cleanup, a connected native controller's current request,
+target and scoped battery evidence must agree with the separately saved current
+cloud session. Missing or differing cloud boundaries, unknown source admission,
+newer native Stop and unconsumed disconnect evidence keep deactivation pending,
+preserving the local listener and exact profile/pending obligations. The original
+context is rechecked after preparation waits. A fresh admitted native disconnect
+permits its existing exact-profile cleanup before `OcppOff`, including when
+historical progress remains. Neither a missing socket nor a cloud query proves a
+physical unplug. This protection does not translate ownership, repair an existing
+backend boundary disagreement or guarantee accepted-period/restart continuity.
+After local OCPP is disabled, verify that the charger has resumed its
 intended cloud control before relying on scheduled charging.
 In the bounded live test, follow-up about one minute after applying `OcppOff`
 reported no active cloud schedule and external authorization disabled. This

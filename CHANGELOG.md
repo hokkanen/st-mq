@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve connected native Easee session references when native-control
+  deactivation to cloud cannot prove the same separately admitted backend boundary. Cleanup waits
+  without discarding profiles or duties; a confirmed disconnect still permits
+  exact owned-profile cleanup before `OcppOff`.
+
 - Provider shutdown and request deadlines cancel held response bodies after
   headers arrive, including on Node 22 after garbage collection. Cancelled
   partial data and command replies remain failures with their original error

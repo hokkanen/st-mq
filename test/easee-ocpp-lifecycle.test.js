@@ -469,6 +469,98 @@ test('disabled owned OCPP keeps its listener until native cleanup and OcppOff ap
     'Owned native cleanup remains callable before OcppOff is applied');
 });
 
+async function runtimeNativeDeactivationFixture(t) {
+  const f = fixture(t), provider = f.make(); await provider.reconcileOcpp();
+  const listener = f.listeners.at(-1), store = new Store(':memory:');
+  const config = { ...clone(f.config), input: 'mqtt' };
+  let runtimeAuthority = true, profile = null;
+  const runtime = new ChargingRuntime({ engine: {}, store, config, clock: () => f.now, canControl: () => runtimeAuthority });
+  runtime.tick = () => {};
+  for (const item of Object.values(runtime.chargers)) item.controls.enabled = false;
+  runtime.refreshSettings();
+  t.after(async () => { await runtime.close(); store.close(); });
+  f.observations = [[80,344],[141,1],[250,true],[31,true],[100,'B'],[109,2],[96,54],[120,0],
+    [47,16],[48,32],[104,32],[22,16],[23,16],[24,16],[110,3]]
+    .map(([id,value]) => ({ id,value,timestamp:new Date(f.now).toISOString() }));
+  listener.control = { connectionId: 'fixture-native-connected-scope', connectorStatus: 'Preparing', timestamp: f.now, receivedAt: f.now,
+    transaction: { id: 41, startedAt: f.now, confirmedAt: f.now, confirmed: true, provenance: 'start-transaction' },
+    readings: [{id:120,value:0,timestamp:new Date(f.now).toISOString(),receivedAt:f.now}] };
+  const adapter = provider.chargerScheduleControl(), plan = { id: 'fixture-native-before-deactivation', startAt: f.now + 3600_000 };
+  const create = adapter.createController;
+  adapter.createController = options => create({ ...options, getPlan: () => plan, getIdentification: () => null });
+  f.nativeRequest = async (action, payload, options) => {
+    assert.equal(options.guard?.() ?? true, true);
+    if (action === 'GetCompositeSchedule') return { status:'Accepted',connectorId:1,scheduleStart:new Date(f.now).toISOString(),
+      chargingSchedule:{duration:payload.duration,chargingRateUnit:'A',chargingSchedulePeriod:profile
+        ? [{startPeriod:0,limit:0},{startPeriod:Math.ceil((plan.startAt-f.now)/1000),limit:16}]:[{startPeriod:0,limit:16}]}};
+    f.events.push({type:'native',action,payload:clone(payload)});
+    if (action === 'SetChargingProfile') { profile=payload.csChargingProfiles.chargingProfileId;
+      listener.control={...listener.control,connectorStatus:'SuspendedEVSE',timestamp:f.now,receivedAt:f.now}; }
+    else { assert.equal(action,'ClearChargingProfile'); assert.equal(payload.id,profile); profile=null; }
+    return {status:'Accepted'};
+  };
+  await runtime.setAdapter('charger1', adapter);
+  const item = runtime.chargers.charger1;
+  await item.controller.update({ enabled: false }); runtime.persist();
+  assert(item.request?.scope); assert.equal(item.ownershipAdmitted, true);
+  f.transition = async ({ phase, target, nativeScope, ownedCloudProof, adapter: next }) => {
+    try {
+      if (phase === 'prepare') return await runtime.pauseForBackendChange('charger1', { target, nativeScope, ownedCloudProof });
+      if (phase === 'complete') return await runtime.finishBackendChange('charger1', next);
+      assert.fail('Unexpected owned-cloud inspection during native deactivation');
+    } catch { throw Object.assign(Error('Charging control transition remains pending'), { code: 'control-transition-pending' }); }
+  };
+  return { f, provider, listener, store, runtime, item, adapter,
+    permitRuntime(value) { runtimeAuthority=value; } };
+}
+
+test('provider restoreOcpp preserves connected native scope and its listener when the target cloud slot is absent', async t => {
+  const x=await runtimeNativeDeactivationFixture(t),{f,provider,listener,store,runtime,item}=x;
+  const original = { request: clone(item.request), progress: clone(item.progress), cost: clone(item.sessionCost), controls: clone(item.controls),
+    native: clone(store.getState(runtime.ownershipKey('charger1'))), setup: clone(f.states.get('setup')) };
+  const before = writes(f).length;
+  await assert.rejects(provider.restoreOcpp(), { code: 'control-transition-pending' });
+  assert.equal(writes(f).length, before, 'no native Save/Apply or cloud disable POST is sent');
+  assert.equal(f.current.connectivityMode, 'DualProtocol'); assert.equal(listener.closed, false);
+  assert.equal(provider.localOcppStatus().ready, true, 'the owned native listener remains reachable');
+  assert.equal(provider.localOcppStatus().setup.reason, 'control-transition-pending');
+  assert.equal(f.states.get('setup').ownedFingerprint, original.setup.ownedFingerprint);
+  assert.equal(f.states.get('setup').appliedFingerprint, original.setup.appliedFingerprint);
+  assert.equal(f.states.get('setup').intent, null);
+  assert.deepEqual(item.request, original.request); assert.deepEqual(item.progress, original.progress);
+  assert.deepEqual(item.sessionCost, original.cost); assert.deepEqual(item.controls, original.controls);
+  assert.deepEqual(store.getState(runtime.ownershipKey('charger1')), original.native);
+  assert.equal(item.backendTransition ?? null, null);
+  assert.equal(f.events.filter(row => row.type === 'native').length, 0);
+});
+
+test('provider disconnected handback clears its exact runtime-owned profile before confirmed OcppOff and listener close', async t => {
+  const x=await runtimeNativeDeactivationFixture(t),{f,provider,listener,runtime,item}=x;
+  await x.adapter.read({forceAppRefresh:true});
+  await item.controller.update({enabled:true,maximumAmps:16});
+  const owned=clone(item.controller.status().owned);assert(owned,item.controller.status().errorCode);
+  x.permitRuntime(false);f.advance(1000);
+  listener.control={...listener.control,connectorStatus:'Available',timestamp:f.now,receivedAt:f.now,transaction:null};
+  f.observations=f.observations.map(row=>[100,109].includes(row.id)
+    ? {...row,value:row.id===100?'A':1,timestamp:new Date(f.now).toISOString()}:row);
+  await item.controller.update({enabled:false});runtime.persist();
+  assert.equal(item.controller.status().session.connected,false);
+  assert.deepEqual(item.controller.status().owned,owned);
+  assert.equal(item.request,null);assert.equal(item.targetState,null);
+  x.permitRuntime(true);
+  const before=f.events.length;
+  await provider.restoreOcpp();
+  const events=f.events.slice(before),clear=events.findIndex(row=>row.type==='native'&&row.action==='ClearChargingProfile');
+  const apply=events.findIndex(row=>row.type==='http'&&row.path.includes('/connections/chargers/')&&row.method==='POST');
+  const close=events.findIndex(row=>row.type==='listener-close');
+  assert(clear>=0&&apply>clear&&close>apply,'exact native cleanup precedes Apply and closing its listener');
+  assert.deepEqual(events[clear].payload,{id:owned.profileId});
+  assert.equal(events.filter(row=>row.type==='native').length,1,'handback sends no Start/Resume');
+  assert.equal(f.current.connectivityMode,'OcppOff');assert.equal(provider.localOcppStatus().setup.state,'disabled');
+  assert.equal(f.states.get('setup').ownedFingerprint,null);assert.equal(listener.closed,true);
+  assert.equal(item.backendTransition??null,null);
+});
+
 test('ordinary provider close preserves native commissioning while explicit restore applies OcppOff', async t => {
   const f = fixture(t), first = f.make(); await first.reconcileOcpp();
   const count = writes(f).length; await first.close();

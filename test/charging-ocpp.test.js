@@ -1074,7 +1074,7 @@ function transitionFixture(update) {
   const settings = { enabled: true, readyBy: '07:00' }, item = {
     controller: { update, status: () => ({ phase: 'paused' }) }, adapter: { name: 'cloud' }, lastReconcileAt: START,
   };
-  const fake = { closed: false, settings, ticks: [], charger: () => item, savedOwnership: () => null,
+  const fake = { closed: false, canControl: () => true, settings, ticks: [], charger: () => item, savedOwnership: () => null,
     tick: options => fake.ticks.push(options), async setAdapter(id, adapter) { item.adapter = adapter; item.controller = { status: () => ({ phase: 'off' }) }; },
     pauseForBackendChange: (id, options) => ChargingRuntime.prototype.pauseForBackendChange.call(fake, id, options),
     finishBackendChange: (id, adapter) => ChargingRuntime.prototype.finishBackendChange.call(fake, id, adapter) };

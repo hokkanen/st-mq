@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createChargingController } from '../src/charging/controller.js';
 import { createEaseeScheduleAdapter, normalizeScheduleState } from '../src/charging/easee.js';
+import { acceptVehicleReading, bmwDisconnectEvent } from '../src/charging/vehicle.js';
 
 const START = Date.parse('2026-09-22T08:00:00Z'), MINUTE = 60_000;
 const observation = (id, value, at) => ({ id, value, timestamp: new Date(at).toISOString() });
@@ -53,6 +54,31 @@ function harness() {
   h.begin = async () => { await h.update(); h.now = START + 35 * MINUTE; };
   return h;
 }
+
+test('a genuinely later received BMW departure retains source time before the backend receipt boundary', async () => {
+  const h = harness();
+  await h.update({ enabled: false });
+  const value = (pluggedIn, measuredAt) => ({ provider: 'bmw-cardata', pluggedIn,
+    fields: { pluggedIn: { measuredAt, readingId: `synthetic-bmw-plug-${measuredAt}` } } });
+  const options = { association: 'synthetic-bmw-source', retained: false };
+  const prior = acceptVehicleReading(null, value(true, START - 5000), { ...options, now: START }).reading;
+  h.now += 1000;
+  const accepted = acceptVehicleReading(prior, value(false, START - 1000), {
+    ...options, now: h.now, receivedAt: START + 500 });
+  assert.equal(accepted.accepted, true);
+  const event = bmwDisconnectEvent(prior, accepted.reading, { connectedAt: START, now: h.now,
+    match: { id: 'bmw', connectedAt: START, matchedAt: START } });
+  assert(event); assert(event.measuredAt < event.endedConnectedAt);
+  const state = await h.update({ enabled: false, vehicleDisconnect: event });
+  assert.equal(state.session.connectedAt, h.now, 'a newer original native connection source may confirm the next boundary');
+  assert.equal(state.vehicleDisconnect.measuredAt, START - 1000);
+  assert.equal(state.vehicleDisconnect.receivedAt, START + 500);
+  assert.equal(state.vehicleDisconnect.endedConnectedAt, START);
+  h.restart();
+  assert.deepEqual(h.controller.status().vehicleDisconnect, state.vehicleDisconnect);
+  assert.deepEqual(h.writes, [], 'source admission and current restart do not invent a native command');
+  await h.controller.close();
+});
 
 test('verified unplug closes the old session despite cached connected Easee and replug opens an unidentified observation', async () => {
   const h = harness(); await h.begin();
