@@ -5,6 +5,7 @@ import { open, mkdir, lstat, chown, chmod, readFile, rm, readdir, writeFile } fr
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { httpsError, privateDirectory, atomicJson, readJson, outsideCheckout } from './storage.js';
+import { helperAuthorizationUrl } from './authorization-url.js';
 
 const UID = 65534; const GID = 65534;
 export const RESTRICTION_FLAGS = Object.freeze(['--accept-dns=false', '--accept-routes=false', '--shields-up=true', '--exit-node=',
@@ -263,7 +264,7 @@ export class CertificateHelper {
     // Waiting for browser/account approval times out normally. A command that
     // never produced an enrollment link must not masquerade as successful setup.
     if (failed && observation.BackendState !== 'Running' && observation.BackendState !== 'NeedsMachineAuth' &&
-        (typeof observation.AuthURL !== 'string' || !observation.AuthURL))
+        !helperAuthorizationUrl(observation.AuthURL))
       throw httpsError('helper_authorization_start_failed');
     return observation;
   }

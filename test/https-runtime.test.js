@@ -10,7 +10,7 @@ import { createHttpsManager } from '../src/https/manager.js';
 import { verifySigningBundle, verifyArtifactHash, releaseCandidate, architecture } from '../src/https/distribution.js';
 import { validateCertificate, renewalMinimumValidity } from '../src/https/certificates.js';
 import { privateDirectory, atomicJson, lockDirectory, outsideCheckout } from '../src/https/storage.js';
-import { effectiveRestrictions, restrictedEnvironment, helperLocations, installationBinding } from '../src/https/helper.js';
+import { CertificateHelper, effectiveRestrictions, restrictedEnvironment, helperLocations, installationBinding } from '../src/https/helper.js';
 import { runtimeTask } from '../src/https/worker.js';
 
 const hostname = 'fixture.test-tailnet.ts.net';
@@ -264,6 +264,42 @@ test('a failed enrollment start is reported and Retry confirms restrictions befo
   assert.equal(restrictions, 2, 'Enrollment is followed by a complete restriction readback');
   assert.equal(calls.install, 1, 'Retry preserves the installed runtime and identity');
   assert.equal(JSON.stringify(manager.status({ admin: false })).includes('login.tailscale.com'), false);
+});
+
+test('Retry through the real enrollment producer preserves a start failure until a usable current link exists', async t => {
+  let AuthURL = ''; let restrictions = 0;
+  const observation = () => ({ Version: '1.104.1-fixture', BackendState: 'NeedsLogin', AuthURL });
+  const { manager, calls } = await setup(t, { dependencies: { createHelper: () => {
+    const helper = new CertificateHelper({ directory: '/synthetic-runtime', locations: {} });
+    helper.start = async () => {}; helper.stop = async () => {};
+    helper.restrictions = async () => { restrictions++; };
+    helper.status = async () => observation();
+    helper.cli = async () => { throw Object.assign(Error('Synthetic private CLI failure'), { code: 'helper_command_failed' }); };
+    return helper;
+  } } });
+  await manager.action({ action: 'enable' });
+  assert.equal((await settled(manager)).operation.error, 'helper_authorization_start_failed');
+  for (const invalid of [' ', 'not-a-url', 'http://login.tailscale.com/a/synthetic', 'https://elsewhere.invalid/a/synthetic']) {
+    AuthURL = invalid;
+    await manager.action({ action: 'retry' }); const failed = await settled(manager);
+    assert.equal(failed.operation.state, 'failed');
+    assert.equal(failed.operation.error, 'helper_authorization_start_failed');
+    assert.equal(failed.error, 'helper_authorization_start_failed');
+    assert.equal(failed.phase, 'degraded');
+    assert.equal(failed.helper.authorizationUrl ?? null, null);
+    assert.equal(restrictions, 1, 'No rejected enrollment result is published or admitted as a usable authorization');
+    assert.equal(JSON.stringify(failed).includes('private CLI failure'), false);
+    assert.equal(JSON.stringify(failed).includes(invalid.trim()) && invalid.trim().length > 0, false);
+  }
+  AuthURL = 'https://login.tailscale.com/a/synthetic';
+  await manager.action({ action: 'retry' }); const pending = await settled(manager);
+  assert.equal(pending.operation.state, 'completed');
+  assert.equal(pending.phase, 'authorization_required');
+  assert.equal(pending.error, null);
+  assert.equal(pending.helper.authorizationUrl, AuthURL);
+  assert.equal(restrictions, 2);
+  assert.equal(calls.install, 1, 'All retries retain the existing runtime and identity');
+  assert.equal(JSON.stringify(manager.status({ admin: false })).includes(AuthURL), false);
 });
 
 test('a peer certificate recipient never installs or starts a certificate helper and rejects replay', async t => {

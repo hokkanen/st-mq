@@ -50,3 +50,13 @@ test('a current connected or account-approval status survives the CLI wait resul
     assert.equal(await helper.authorize('synthetic-certificate-node'), observation);
   }
 });
+
+test('a failed enrollment cannot use a malformed or untrusted link as evidence of a pending browser authorization', async () => {
+  for (const AuthURL of [' ', 'not-a-url', 'http://login.tailscale.com/a/synthetic', 'https://elsewhere.invalid/a/synthetic',
+    'https://login.tailscale.com:8443/a/synthetic', 'https://synthetic@login.tailscale.com/a/synthetic',
+    'https://login.tailscale.com/a/synthetic?redirect=elsewhere', 'https://login.tailscale.com/a/synthetic#fragment',
+    'https://login.tailscale.com/unexpected/synthetic', true, {}]) {
+    const helper = fixture({ BackendState: 'NeedsLogin', AuthURL }, async () => { throw Error('Synthetic private command diagnostic'); });
+    await assert.rejects(helper.authorize('synthetic-certificate-node'), { code: 'helper_authorization_start_failed' });
+  }
+});

@@ -8,6 +8,7 @@ import { BOOTSTRAP_VERSION } from './official-roots.js';
 import { runtimeTask } from './worker.js';
 import { releaseCandidate, compareVersions, architecture, stableVersion } from './distribution.js';
 import { CertificateHelper, helperLocations, preflightRuntime } from './helper.js';
+import { helperAuthorizationUrl } from './authorization-url.js';
 import { validateCertificate, inspectCertificate, certificateHostname, renewalMinimumValidity } from './certificates.js';
 
 const HOUR = 3600000; const DAY = 24 * HOUR;
@@ -86,11 +87,6 @@ function validateState(value) {
   return value;
 }
 function clone(value) { return structuredClone(value); }
-function authorizationUrl(value) {
-  if (typeof value !== 'string' || value.length > 4096) return null;
-  try { const url = new URL(value); return url.protocol === 'https:' && url.hostname === 'login.tailscale.com' && !url.username && !url.password ? url.href : null; }
-  catch { return null; }
-}
 function nodeKeyExpiry(value) {
   const timestamp = typeof value === 'string' ? Date.parse(value) : NaN;
   // A zero/default Go time is not evidence that an unattended key expired.
@@ -368,7 +364,8 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     const observation = authorize ? await helper.authorize(state.machineName) : await helper.status();
     if (authorize) {
       await helper.restrictions();
-      if (lastError === 'helper_authorization_start_failed') lastError = null;
+      if (lastError === 'helper_authorization_start_failed' &&
+          (observation.BackendState === 'Running' || observation.BackendState === 'NeedsMachineAuth' || helperAuthorizationUrl(observation.AuthURL))) lastError = null;
     }
     const expectedVersion = state.runtime.evidence.runtimeVersion;
     if (!(observation.Version === expectedVersion || observation.Version?.startsWith(`${expectedVersion}-`))) throw httpsError('helper_running_version_mismatch');
@@ -387,7 +384,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       } catch { /* Unsupported vendor values cannot clear a known warning. */ }
     }
     helperStatus = { state: observation.BackendState === 'Running' ? 'running' : observation.BackendState === 'NeedsLogin' ? 'authorization_required' : 'approval_or_connection_pending',
-      version: observation.Version?.split('-')[0] ?? null, runningVersion: observation.Version ?? null, authorizationUrl: authorizationUrl(observation.AuthURL),
+      version: observation.Version?.split('-')[0] ?? null, runningVersion: observation.Version ?? null, authorizationUrl: helperAuthorizationUrl(observation.AuthURL),
       nodeKeyExpiresAt: nodeKeyExpiry(observation.Self?.KeyExpiry), nodeKeyExpired: observation.Self?.Expired === true ? true : null,
       securityUpdate: state.updates.securitySignal?.urgent === true ? true : null, securityObservedAt: state.updates.securitySignal?.observedAt ?? null, restrictionsVerified: true };
     const names = observation.CertDomains;
