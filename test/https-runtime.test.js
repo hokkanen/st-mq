@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createServer } from 'node:http';
 import { createHttpsManager } from '../src/https/manager.js';
 import { verifySigningBundle, verifyArtifactHash, releaseCandidate, architecture } from '../src/https/distribution.js';
 import { validateCertificate, renewalMinimumValidity } from '../src/https/certificates.js';
@@ -300,6 +301,55 @@ test('Retry through the real enrollment producer preserves a start failure until
   assert.equal(restrictions, 2);
   assert.equal(calls.install, 1, 'All retries retain the existing runtime and identity');
   assert.equal(JSON.stringify(manager.status({ admin: false })).includes(AuthURL), false);
+  AuthURL = '';
+  await manager.action({ action: 'retry' }); const withdrawn = await settled(manager);
+  assert.equal(withdrawn.operation.state, 'failed');
+  assert.equal(withdrawn.error, 'helper_authorization_start_failed');
+  assert.equal(withdrawn.helper.authorizationUrl, null, 'A later failed enrollment cannot republish an earlier authorization link');
+  assert.equal(restrictions, 2);
+  assert.equal(calls.install, 1);
+});
+
+test('Retry restarts a helper stopped by a failed post-enrollment restriction readback without replacing its identity', async t => {
+  let activeHelper; let starts = 0; let recoveryAllowed = false; let invalidRestrictions = false; const identities = [];
+  const prefs = { CorpDNS: false, RouteAll: false, ShieldsUp: true, RunSSH: false, RunWebClient: false,
+    ExitNodeID: '', ExitNodeIP: '', ExitNodeAllowLANAccess: false, AdvertiseRoutes: null, AdvertiseTags: null,
+    AppConnector: { Advertise: false }, AutoUpdate: { Apply: false, Check: true }, RemoteConfig: false };
+  const server = createServer((request, response) => {
+    if (activeHelper?.expectedStop) { response.writeHead(503); response.end(); return; }
+    const body = request.url === '/localapi/v0/serve-config' ? {} : request.url === '/localapi/v0/prefs'
+      ? { ...prefs, ShieldsUp: !invalidRestrictions }
+      : { Version: '1.104.1-fixture', BackendState: 'NeedsLogin', AuthURL: 'https://login.tailscale.com/a/synthetic' };
+    response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(body));
+  });
+  t.after(() => new Promise(done => server.close(done)));
+  const { manager, calls } = await setup(t, { dependencies: { createHelper: options => {
+    const helper = new CertificateHelper(options);
+    helper.start = async () => {
+      starts++; identities.push(options.locations.identity); activeHelper = helper; helper.expectedStop = false; invalidRestrictions = false;
+      if (!server.listening) await new Promise(done => server.listen(options.locations.socket, done));
+    };
+    helper.cli = async args => {
+      if (helper.expectedStop) throw Object.assign(Error('Synthetic stopped transport'), { code: 'helper_api_socket_refused' });
+      if (args[0] === 'up') invalidRestrictions = !recoveryAllowed;
+    };
+    return helper;
+  } } });
+  await manager.action({ action: 'enable' }); const failed = await settled(manager);
+  assert.equal(failed.operation.state, 'failed');
+  assert.equal(failed.operation.error, 'helper_restrictions_not_confirmed');
+  assert.equal(activeHelper.expectedStop, true, 'The real restriction producer stops the unqualified helper');
+  assert.equal(failed.helper.state, 'stopped');
+  assert.equal(failed.helper.authorizationUrl ?? null, null);
+  recoveryAllowed = true;
+  await manager.action({ action: 'retry' }); const recovered = await settled(manager);
+  assert.equal(recovered.operation.state, 'completed');
+  assert.equal(starts, 2, 'Retry starts a fresh helper object against the existing identity');
+  assert.equal(identities[1], identities[0]);
+  assert.equal(recovered.phase, 'authorization_required');
+  assert.equal(recovered.helper.authorizationUrl, 'https://login.tailscale.com/a/synthetic');
+  assert.equal(recovered.helper.restrictionsVerified, true);
+  assert.equal(calls.install, 1, 'The validated runtime and identity remain in place');
 });
 
 test('a peer certificate recipient never installs or starts a certificate helper and rejects replay', async t => {

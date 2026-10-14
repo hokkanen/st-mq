@@ -361,9 +361,21 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   }
   async function observeHelper({ authorize = false } = {}) {
     if (!helper) await startHelper();
-    const observation = authorize ? await helper.authorize(state.machineName) : await helper.status();
+    let observation;
+    try { observation = authorize ? await helper.authorize(state.machineName) : await helper.status(); }
+    catch (error) {
+      if (authorize && errorCode(error) === 'helper_authorization_start_failed') helperStatus.authorizationUrl = null;
+      throw error;
+    }
     if (authorize) {
-      await helper.restrictions();
+      const instance = helper;
+      try { await instance.restrictions(); }
+      catch (error) {
+        await instance.stop();
+        if (helper === instance) helper = null;
+        helperStatus = { state: 'stopped', version: null };
+        throw error;
+      }
       if (lastError === 'helper_authorization_start_failed' &&
           (observation.BackendState === 'Running' || observation.BackendState === 'NeedsMachineAuth' || helperAuthorizationUrl(observation.AuthURL))) lastError = null;
     }
