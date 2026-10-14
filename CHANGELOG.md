@@ -10,6 +10,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   allowing another connecting client to proceed without obsolete work. Connected
   clients still require durable state admission and current control authority.
 
+- Identify a read-only snapshot checkpoint mismatch in status and recording-health
+  responses without exposing native diagnostics. Keep verified-read fencing and
+  synchronization behavior unchanged.
+
 - Confirm Home Assistant HTTPS installation identity through authenticated
   Supervisor host information when container identity files are unavailable.
   Preserve saved identities on failure. Show the next HTTPS setup action clearly,

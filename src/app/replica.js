@@ -21,6 +21,7 @@ import { CHARGER_DEFINITIONS } from '../charging/model.js';
 import { validateTargetState, validateTargetSelection } from '../charging/target.js';
 import { replicaReadModel, snapshotState } from './replica-read-model.js';
 import { matchingCheckpoint } from '../storage/journal.js';
+import { ReplicaCheckpointMismatchError } from './replica-errors.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
 const unavailable = 'This slave is read-only. Make changes on the master instance.';
@@ -299,7 +300,7 @@ export async function startReplica({ config, clock = Date.now,
         try {
           snapshot.store.db.exec('BEGIN'); opened = true;
           if (snapshot.publication.checkpoint && !matchingCheckpoint(snapshot.store.checkpoint(), snapshot.publication.checkpoint))
-            throw Object.assign(new Error('The replica checkpoint advanced. Retry the request.'), { statusCode: 503 });
+            throw new ReplicaCheckpointMismatchError();
         } catch (error) {
           // No context exists yet for the server's release finally. Reject the
           // original read failure after releasing this unleased transaction.

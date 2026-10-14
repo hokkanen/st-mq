@@ -31,6 +31,18 @@ If a checkpoint read or validation fails after the request transaction opens,
 that transaction is rolled back before rejecting the request. Cleanup preserves
 the original failure and does not grant authority to malformed saved data.
 
+For an admitted checkpoint mismatch, `GET /api/status` and
+`GET /api/recording-health` return HTTP 503 with the diagnostic code
+`replica_checkpoint_mismatch`. The explanation says that the read-only snapshot
+no longer matches its database checkpoint and asks the reader to wait for verified
+synchronization before refreshing. The same refusal applies to a pair's slave.
+The code identifies the checkpoint comparison that failed; it does not establish
+that a publication is currently in progress or explain earlier generic 503s.
+Other routes retain their existing error handling; unknown or native HTTP 503 read
+failures retain their generic private-error response. This diagnostic does not
+change synchronization, retries, read fencing, configuration, database state or
+control authority.
+
 ## Set up two standalone Linux computers
 
 Install ST-MQ and build its UI on both computers using the normal installation

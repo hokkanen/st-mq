@@ -17,6 +17,7 @@ import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
 import { electricityForecastView } from './electricity-forecast-view.js';
 import { recoveryFailure } from '../recovery/errors.js';
 import { EQUIPMENT_COMMAND_ERRORS } from '../domain/equipment-command-errors.js';
+import { ReplicaCheckpointMismatchError, REPLICA_CHECKPOINT_MISMATCH } from './replica-errors.js';
 
 function authorized(req, token) {
   if (!token) return false;
@@ -722,6 +723,9 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
               : 'Web access could not be updated. Refresh its status before retrying.' });
         if (Object.hasOwn(EQUIPMENT_COMMAND_ERRORS, error?.code))
           return json(409, { code: error.code, error: EQUIPMENT_COMMAND_ERRORS[error.code] });
+        if (req.method === 'GET' && /^\/api\/(?:status|recording-health)(?:\?|$)/.test(req.url)
+          && error instanceof ReplicaCheckpointMismatchError)
+          return json(503, REPLICA_CHECKPOINT_MISMATCH);
         const fireplaceWrite = req.method === 'POST' && /^\/api\/(?:fireplace(?:\/remove)?|sensor-changes(?:\/(?:revert|retry-rebuild))?)(?:\?|$)/.test(req.url);
         const code = error.statusCode ?? (fireplaceWrite && !(error instanceof TypeError || error instanceof SyntaxError) ? 503 : 400);
         json(code, { error: code >= 500 ? 'Request could not be confirmed. Retry shortly.'
