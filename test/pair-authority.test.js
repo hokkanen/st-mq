@@ -906,8 +906,10 @@ test('rejoin retains the divergent journal branch without restoring its excluded
   });
 });
 
-test('rejoin retains protected replica history through later mirroring and interrupted release', async t => {
-  for (const interrupted of [false, true]) await t.test(interrupted ? 'restart after publication' : 'completed release', async t => {
+// Each scenario owns a complete independent fixture and the normal per-test budget.
+for (const interrupted of [false, true]) {
+  const scenario = interrupted ? 'restart after publication' : 'completed release';
+  test(`rejoin retains protected replica history through later mirroring and interrupted release: ${scenario}`, async t => {
     const root = await fixture(t);
     const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
       recoveryPreview: async () => ({ previewId: randomBytes(32).toString('hex'), status: 'checked', model: { status: 'not-assessed' } }),
@@ -964,7 +966,7 @@ test('rejoin retains protected replica history through later mirroring and inter
     try { assert.equal(active.getState('synthetic-unmatched-history'), null, 'Inactive retained history never reactivates'); }
     finally { active.close(); }
   });
-});
+}
 
 test('a completed protected recovery survives rechecking unchanged history and rejects stale donor roles', async t => {
   const root = await fixture(t);
