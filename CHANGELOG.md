@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Resume an already requested HTTPS sign-in after its certificate helper restarts
+  and loses the temporary enrollment URL. Keep the saved identity and show startup
+  progress; status polling does not repeatedly request login.
+
 - Discard abandoned local OCPP connection handshakes from the pending save queue,
   allowing another connecting client to proceed without obsolete work. Connected
   clients still require durable state admission and current control authority.

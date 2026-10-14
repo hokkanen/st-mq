@@ -13,6 +13,7 @@ import { validateCertificate, renewalMinimumValidity } from '../src/https/certif
 import { privateDirectory, atomicJson, lockDirectory, outsideCheckout } from '../src/https/storage.js';
 import { CertificateHelper, effectiveRestrictions, restrictedEnvironment, helperLocations, installationBinding } from '../src/https/helper.js';
 import { runtimeTask } from '../src/https/worker.js';
+import { secureWebAccessView } from '../chart/secure-web-access.js';
 
 const hostname = 'fixture.test-tailnet.ts.net';
 const wait = ms => new Promise(resolveWait => setTimeout(resolveWait, ms));
@@ -235,6 +236,194 @@ test('pending authorization stays resumable and its private link is admin only',
   assert.equal(JSON.stringify(manager.status({ admin: false })).includes('login.tailscale.com'), false);
   setRunning(true); await manager.action({ action: 'recheck' }); await settled(manager);
   assert.equal(manager.status().phase, 'ready'); assert.equal(calls.install, 1);
+});
+
+test('restart resumes previously requested HTTPS enrollment when the helper lost its private sign-in URL', async t => {
+  let activeHelper; let AuthURL = ''; let authorizations = 0; let starts = 0;
+  const identities = [];
+  const prefs = { CorpDNS: false, RouteAll: false, ShieldsUp: true, RunSSH: false, RunWebClient: false,
+    ExitNodeID: '', ExitNodeIP: '', ExitNodeAllowLANAccess: false, AdvertiseRoutes: null, AdvertiseTags: null,
+    AppConnector: { Advertise: false }, AutoUpdate: { Apply: false, Check: true }, RemoteConfig: false };
+  const server = createServer((request, response) => {
+    if (activeHelper?.expectedStop) { response.writeHead(503); response.end(); return; }
+    const body = request.url === '/localapi/v0/serve-config' ? {} : request.url === '/localapi/v0/prefs' ? prefs
+      : { Version: '1.104.1-fixture', BackendState: 'NeedsLogin', AuthURL, CertDomains: [] };
+    response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(body));
+  });
+  t.after(() => new Promise(done => server.close(done)));
+  const context = await setup(t, { dependencies: { createHelper: options => {
+    const helper = new CertificateHelper(options);
+    helper.start = async () => {
+      starts++; identities.push(options.locations.identity); activeHelper = helper; helper.expectedStop = false;
+      AuthURL = '';
+      const path = resolve(options.locations.identity, 'tailscaled.state');
+      if (!(await lstat(path).catch(() => null))) await writeFile(path, 'synthetic unchanged managed identity', { mode: 0o600 });
+      if (!server.listening) await new Promise(done => server.listen(options.locations.socket, done));
+    };
+    helper.cli = async args => {
+      if (args[0] === 'up') { authorizations++; AuthURL = 'https://login.tailscale.com/a/syntheticrestart'; }
+    };
+    return helper;
+  } } });
+  await context.manager.action({ action: 'enable' }); const first = await settled(context.manager);
+  assert.equal(first.phase, 'authorization_required'); assert.equal(Boolean(first.helper.authorizationUrl), true);
+  const identity = await readFile(resolve(identities[0], 'tailscaled.state'));
+  assert.equal(authorizations, 1); await context.manager.close();
+  const current = restart(t, context); current.start();
+  for (let i = 0; i < 200 && current.status().phase !== 'authorization_required'; i++) await wait(5);
+  const view = current.status();
+  assert.equal(view.enabled, true); assert.equal(view.phase, 'authorization_required');
+  assert.equal(Boolean(view.helper.authorizationUrl), true, 'The current restarted helper must provide a new link without another setup click');
+  assert.equal(authorizations, 2, 'Each explicitly requested helper lifecycle resumes enrollment once');
+  assert.equal(starts, 2); assert.equal(identities[1], identities[0]); assert.equal(context.calls.install, 1);
+  assert.deepEqual(await readFile(resolve(identities[1], 'tailscaled.state')), identity);
+  assert.equal(JSON.stringify(current.status({ admin: false })).includes('login.tailscale.com'), false);
+  await current.close();
+});
+
+for (const backend of ['Running', 'NeedsMachineAuth', 'NeedsLogin']) test(`restart observes ${backend} with existing authorization evidence without requesting another sign-in`, async t => {
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  await context.manager.close(); let authorizations = 0; let reads = 0;
+  const observation = { Version: '1.104.1-fixture', BackendState: backend, CertDomains: backend === 'Running' ? [hostname] : [],
+    AuthURL: backend === 'NeedsLogin' ? 'https://login.tailscale.com/a/currentfixture' : '' };
+  const current = restart(t, context, { dependencies: { createHelper: options => ({
+    ...context.dependencies.createHelper(options),
+    status: async () => { reads++; return observation; },
+    authorize: async () => { authorizations++; return observation; },
+  }) } });
+  current.start(); for (let i = 0; i < 200 && reads < 2; i++) await wait(5);
+  await current.close(); assert(reads >= 2); assert.equal(authorizations, 0);
+  assert.equal(context.calls.install, 1); assert.equal(context.calls.helperStart, 2);
+});
+
+test('a disabled saved HTTPS installation does not resume authorization on restart', async t => {
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  await context.manager.action({ action: 'disable' }); await settled(context.manager); await context.manager.close();
+  const starts = context.calls.helperStart; let authorizations = 0;
+  const current = restart(t, context, { dependencies: { createHelper: options => ({
+    ...context.dependencies.createHelper(options), authorize: async () => { authorizations++; },
+  }) } });
+  current.start(); await wait(30); await current.close();
+  assert.equal(current.status().enabled, false); assert.equal(current.status().phase, 'disabled');
+  assert.equal(context.calls.helperStart, starts); assert.equal(authorizations, 0); assert.equal(context.calls.install, 1);
+});
+
+test('updating the runtime resumes pending enrollment on its newly started helper only once', async t => {
+  let currentUrl = '', authorizations = 0;
+  const context = await setup(t); context.setRunning(false);
+  const existingTask = context.dependencies.runtimeTask;
+  context.dependencies.runtimeTask = async (name, data) => name === 'discover'
+    ? { metadata: { TarballsVersion: '1.104.2', Tarballs: { [architecture()]: `tailscale_1.104.2_${architecture()}.tgz` } }, etag: 'new-fixture' }
+    : existingTask(name, data);
+  const existingHelper = context.dependencies.createHelper;
+  context.dependencies.createHelper = options => {
+    const base = existingHelper(options);
+    const version = /\/(\d+\.\d+\.\d+)-/.exec(options.directory)[1];
+    const observation = () => ({ Version: `${version}-fixture`, BackendState: 'NeedsLogin', AuthURL: currentUrl });
+    return { ...base,
+      start: async () => { currentUrl = ''; await base.start(); },
+      status: async () => observation(),
+      authorize: async () => { authorizations++; currentUrl = 'https://login.tailscale.com/a/currentfixture'; return observation(); },
+    };
+  };
+  // setup captures dependency values at construction; use the actual manager
+  // with these current adapters before its first explicit setup.
+  await context.manager.close(); const current = restart(t, context);
+  await current.action({ action: 'enable' }); const first = await settled(current);
+  assert.equal(first.phase, 'authorization_required'); assert.equal(authorizations, 1);
+  await current.action({ action: 'update-now' }); const updated = await settled(current);
+  assert.equal(updated.operation.state, 'completed'); assert.equal(updated.phase, 'authorization_required');
+  assert.equal(updated.helper.version, '1.104.2'); assert.equal(Boolean(updated.helper.authorizationUrl), true);
+  assert.equal(authorizations, 2); assert.equal(context.calls.install, 2); assert.equal(context.calls.helperStart, 2);
+  await current.configure(); await wait(20); assert.equal(authorizations, 2, 'The new instance is not enrolled again by status polling');
+  await current.close();
+});
+
+test('resumed startup authorization still stops a helper whose effective restrictions fail readback', async t => {
+  let activeHelper, starts = 0, authorizations = 0, currentUrl = '', invalidRestrictions = false;
+  const prefs = { CorpDNS: false, RouteAll: false, ShieldsUp: true, RunSSH: false, RunWebClient: false,
+    ExitNodeID: '', ExitNodeIP: '', ExitNodeAllowLANAccess: false, AdvertiseRoutes: null, AdvertiseTags: null,
+    AppConnector: { Advertise: false }, AutoUpdate: { Apply: false, Check: true }, RemoteConfig: false };
+  const server = createServer((request, response) => {
+    if (activeHelper?.expectedStop) { response.writeHead(503); response.end(); return; }
+    const body = request.url === '/localapi/v0/serve-config' ? {} : request.url === '/localapi/v0/prefs'
+      ? { ...prefs, ShieldsUp: !invalidRestrictions }
+      : { Version: '1.104.1-fixture', BackendState: 'NeedsLogin', AuthURL: currentUrl };
+    response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(body));
+  });
+  t.after(() => new Promise(done => server.close(done)));
+  const context = await setup(t, { dependencies: { createHelper: options => {
+    const helper = new CertificateHelper(options);
+    helper.start = async () => {
+      starts++; currentUrl = ''; invalidRestrictions = false; activeHelper = helper; helper.expectedStop = false;
+      if (!server.listening) await new Promise(done => server.listen(options.locations.socket, done));
+    };
+    helper.cli = async args => {
+      if (args[0] === 'up') {
+        authorizations++; currentUrl = 'https://login.tailscale.com/a/currentfixture';
+        invalidRestrictions = starts === 2;
+      }
+    };
+    return helper;
+  } } });
+  await context.manager.action({ action: 'enable' }); await settled(context.manager); await context.manager.close();
+  const current = restart(t, context); current.start(); const failed = await diagnosed(current);
+  assert.equal(failed.error, 'helper_restrictions_not_confirmed'); assert.equal(failed.phase, 'degraded');
+  assert.equal(activeHelper.expectedStop, true); assert.equal(failed.helper.state, 'stopped');
+  assert.equal(failed.helper.authorizationUrl ?? null, null, 'An unqualified helper cannot publish an enrollment URL');
+  assert.equal(authorizations, 2); assert.equal(context.calls.install, 1);
+  await current.close();
+});
+
+test('pending startup enrollment renders progress and an unavailable link keeps explicit Retry guidance after failure', async t => {
+  const context = await setup(t); context.setRunning(false);
+  await context.manager.action({ action: 'enable' }); await settled(context.manager); await context.manager.close();
+  let release, notify, successful = false, authorizations = 0, reads = 0;
+  const held = new Promise(done => { release = done; }), entered = new Promise(done => { notify = done; });
+  const observation = () => ({ Version: '1.104.1-fixture', BackendState: 'NeedsLogin',
+    AuthURL: successful ? 'https://login.tailscale.com/a/currentfixture' : '' });
+  const current = restart(t, context, { dependencies: { createHelper: options => ({
+    ...context.dependencies.createHelper(options), status: async () => { reads++; return observation(); },
+    authorize: async () => {
+      authorizations++;
+      if (authorizations === 1) { notify(); await held; }
+      if (!successful) throw Object.assign(Error('Synthetic private authorization detail'), { code: 'helper_authorization_start_failed' });
+      return observation();
+    },
+  }) } });
+  current.start(); await entered;
+  const preparing = secureWebAccessView(current.status(), { admin: true });
+  assert.equal(preparing.next.title, 'Setting up HTTPS'); assert.equal(preparing.busy, true);
+  assert.equal(preparing.authorizationUrl, null, 'The old daemon link is not reused during restart');
+  release(); await diagnosed(current); await wait(10);
+  assert.equal(JSON.stringify(current.status()).includes('private authorization detail'), false);
+  const failed = secureWebAccessView(current.status(), { admin: true });
+  assert.equal(failed.busy, false); assert.equal(failed.authorizationUrl, null); assert.equal(failed.retryAvailable, true);
+  assert.match(failed.error, /Retry setup/);
+  const beforeReads = reads; await current.configure(); await wait(20);
+  await current.configure(); await wait(20);
+  assert(reads > beforeReads, 'Current status was polled after the failed startup attempt');
+  assert.equal(authorizations, 1, 'Polling cannot repeatedly start interactive authorization');
+  successful = true; await current.action({ action: 'retry' }); const retried = await settled(current);
+  assert.equal(authorizations, 2); assert.equal(retried.error, null); assert.equal(retried.helper.restrictionsVerified, true);
+  const resumed = secureWebAccessView(retried, { admin: true });
+  assert.equal(resumed.next.title, 'Sign in to Tailscale'); assert.equal(Boolean(resumed.authorizationUrl), true);
+  assert.equal(JSON.stringify(current.status({ admin: false })).includes('login.tailscale.com'), false);
+  await current.close();
+});
+
+test('closing during a new helper observation cannot begin implicit startup enrollment afterward', async t => {
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  await context.manager.close(); let reads = 0, authorizations = 0, notify, release;
+  const entered = new Promise(done => { notify = done; }), held = new Promise(done => { release = done; });
+  const observation = { Version: '1.104.1-fixture', BackendState: 'NeedsLogin', AuthURL: '' };
+  const current = restart(t, context, { dependencies: { createHelper: options => ({
+    ...context.dependencies.createHelper(options),
+    status: async () => { if (++reads === 2) { notify(); await held; } return observation; },
+    authorize: async () => { authorizations++; return observation; },
+  }) } });
+  current.start(); await entered; const closing = current.close(); release(); await closing;
+  assert.equal(authorizations, 0); assert.equal(context.calls.install, 1);
 });
 
 test('a failed enrollment start is reported and Retry confirms restrictions before exposing its current link', async t => {

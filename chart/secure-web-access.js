@@ -137,7 +137,7 @@ export function insecureWebWarning(transport, { protocol, hostname, ingress = fa
 export function secureWebAccessView(state = {}, { admin = false, now = Date.now() } = {}) {
   const transport = state.transport ?? {}, tls = transport.https;
   const phase = phases[state.phase] ?? ['Status unavailable', 'This computer’s HTTPS status is unavailable.'];
-  const busy = state.operation?.state === 'running';
+  const busy = state.operation?.state === 'running' || state.phase === 'preparing';
   const certificate = state.certificate;
   const expiresAt = new Date(certificate?.expiresAt ?? NaN).getTime();
   const certificateValid = Number.isFinite(expiresAt) && expiresAt > now;

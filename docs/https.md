@@ -92,6 +92,18 @@ a setup failure, separately from waiting for browser sign-in, account approval o
 a connection. The panel never invents an enrollment link or hides the failure
 behind an approval prompt.
 
+A pending sign-in URL belongs to the helper's current daemon session. After an
+application or helper-runtime restart, previously requested setup or retained
+peer renewal resumes that request once if the new restricted helper needs login
+and has no usable current URL. The saved identity, runtime and certificate remain
+in place; an earlier URL is never restored from a cache. Fresh or disabled
+installations do not acquire setup permission. An authenticated helper, an
+existing current sign-in URL or pending account approval does not start another
+login request. The panel shows setup progress while requesting a new URL; a
+failure retains explicit Retry guidance, and ordinary polling does not repeat the
+interactive request. Signing in and approving the node remain administrator
+actions in Tailscale.
+
 The external steps are Tailscale account authorization and settings, a stable LAN
 address and local DNS mapping, and a browser check on each intended device. The
 application handles its helper installation, certificate issuance, listener and

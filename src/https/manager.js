@@ -109,6 +109,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   const clock = dependencies.now ?? Date.now;
   let state = initialState(); let loaded = false; let invalid = false; let closed = false; let busy = null; let admission = null; let admissionKind = null; let initialization = null;
   let helper = null; let locations = null; let releaseLock = null; let timer = null; let expiryTimer = null; let certificate = null;
+  let observedHelper = null;
   let publishedCertificate = null;
   let certificateError = null;
   let phase = 'disabled'; let lastError = null; let helperStatus = { state: 'stopped', version: null }; let dns = { state: 'not_configured', a: [], aaaa: [], checkedAt: null };
@@ -361,8 +362,25 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   }
   async function observeHelper({ authorize = false } = {}) {
     if (!helper) await startHelper();
+    const instance = helper;
     let observation;
-    try { observation = authorize ? await helper.authorize(state.machineName) : await helper.status(); }
+    try {
+      if (!authorize) {
+        observation = await instance.status();
+        const firstObservation = observedHelper !== instance;
+        observedHelper = instance;
+        // A pending enrollment URL belongs to the daemon's current session.
+        // Resume the saved setup intent once on a new helper, rather than
+        // publishing an empty link indefinitely or reauthorizing every poll.
+        authorize = firstObservation && responsible() && observation.BackendState === 'NeedsLogin'
+          && !helperAuthorizationUrl(observation.AuthURL);
+      }
+      if (authorize) {
+        assertOpen(); observedHelper = instance;
+        if (!certificate) phase = 'preparing';
+        observation = await instance.authorize(state.machineName);
+      }
+    }
     catch (error) {
       if (authorize && errorCode(error) === 'helper_authorization_start_failed') helperStatus.authorizationUrl = null;
       throw error;

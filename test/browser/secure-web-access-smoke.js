@@ -398,6 +398,7 @@ try {
     ['disabled-local-owner', { ...readyFixture, enabled: false, phase: 'disabled', pair: { paired: true, ownerId: 'synthetic-owner', localOwner: true }, transport: { ...readyFixture.transport, https: { enabled: false, listening: false } } }],
     ['password-required', { ...originalFixture, setup: { credentialsReady: false } }],
     ['preparing', { ...originalFixture, enabled: true, phase: 'preparing', operation: { state: 'running' } }],
+    ['startup-preparing', { ...originalFixture, enabled: true, phase: 'preparing', operation: { action: 'enable', state: 'completed' } }],
     ['retry-pending', { ...originalFixture, enabled: true, phase: 'degraded', error: 'helper_authorization_start_failed', operation: { state: 'running', action: 'retry', error: null } }],
     ['recovered-receipt', { ...readyFixture, error: null, operation: { action: 'enable', state: 'failed', completedAt: Date.parse('2026-10-14T11:59:59Z'), error: 'helper_authorization_start_failed' } }],
     ['authorize', { ...readyFixture, certificate: null, phase: 'authorization_required', helper: { state: 'authorization_required', authorizationUrl: 'https://login.tailscale.com/a/synthetic-authorization' }, transport: { ...originalFixture.transport, https: { enabled: false, listening: false } } }],
@@ -412,6 +413,12 @@ try {
     ['identity-repair', { ...readyFixture, phase: 'degraded', error: 'identity_restore_required' }],
   ]) {
     installFixture(changes); await evaluate('webBrowser.panel.refresh({force:true})');
+    if(name==='startup-preparing') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'Setting up HTTPS');
+      for(const action of ['enable','recheck','retry','disable','check-updates','update-now'])
+        assert.equal(await evaluate(`document.getElementById('secure-web-access-${action}').disabled`), true, 'Startup setup progress disables overlapping panel actions');
+      assert.equal(await evaluate("document.getElementById('secure-web-access-authorize').hasAttribute('href')"), false);
+    }
     if(name==='retry-pending')assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Setting up HTTPS');
     if(name==='recovered-receipt'){assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Connect household browsers');assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"),/Last action: Set up HTTPS request failed/);}
     if (name==='password-required') assert.equal(await evaluate("document.getElementById('secure-web-access-enable').disabled"), true);
