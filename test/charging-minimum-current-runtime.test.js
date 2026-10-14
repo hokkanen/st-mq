@@ -3,6 +3,7 @@ import { admitChargingObservation } from './helpers/charging-observation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { setTimeout as scheduleTimeout } from 'node:timers';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { createShellyEvseAdapter } from '../src/charging/shelly-evse.js';
 import { createChargingTeslaCapture } from '../src/charging/teslamate.js';
@@ -317,15 +318,26 @@ test(`BMW pause survives restoration ${boundary} before the controller saves com
 test('a lost restoration acknowledgement preserves Stop across Charge now and restart without replay', async t => {
   const f = await bmwPauseRestorationFixture(t), before = f.writes.length;
   const pauseUntil = f.item('charger2').identification.pauseUntil;
-  // This MQTT fixture owns no live socket. Advance the real adapter's unref'd
-  // RPC deadline explicitly so a lost reply does not end the test process.
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+  // This MQTT fixture owns no live socket. Expire only the dropped Set reply's
+  // original RPC callback; real Store admission/yield timers must keep running.
+  let lastRpcDeadline;
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+    const timer = scheduleTimeout(callback, delay, ...args);
+    if (delay === 5000) lastRpcDeadline = { timer, callback };
+    return timer;
+  });
   f.onCurrentWrite(() => {
+    // The real adapter registers this deadline immediately before publishing
+    // the Set. Capture it before the notification can create parallel reads.
+    const deadline = lastRpcDeadline;
+    assert.ok(deadline);
+    assert.equal(f.writes.at(-1).role, 'current_limit');
+    assert.equal(f.writes.at(-1).value, 16);
     f.notifyCurrent(16); f.observe();
-    queueMicrotask(() => t.mock.timers.tick(5000));
+    queueMicrotask(() => { clearTimeout(deadline.timer); deadline.callback(); });
   }); f.dropCurrentReply();
-  f.advance(5000); f.setMeasuredCurrent(0); await f.update();
-  t.mock.timers.reset();
+  try { f.advance(5000); f.setMeasuredCurrent(0); await f.update(); }
+  finally { t.mock.restoreAll(); }
   assert.equal(f.item('charger2').controller.status().currentTest.phase, 'uncertain');
   await f.update();
   assert.equal(f.fields.start_charging.value, false, 'Unconfirmed restoration cannot release the owned Stop');

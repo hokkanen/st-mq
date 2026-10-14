@@ -17,6 +17,10 @@ The source socket remains open until the transport settles, so fixture cleanup
 cannot mask a stuck body read. Unit transport checks preserve caller/close versus
 deadline error codes, reject cancelled empty command replies and remove completed
 request listeners. These fixtures make no external provider or device requests.
+The Shelly lost-restoration-reply fixture expires only the selected native RPC
+callback; real Store admission and yield timers continue on their usual scheduler.
+Global timer freezing cannot stand in for a native deadline while persistence is
+still active.
 
 Time admission regressions in `test/time-evidence.test.js` and
 `test/time-evidence-integration.test.js` cover original timestamp preservation,
