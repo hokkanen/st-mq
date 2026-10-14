@@ -10,6 +10,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   has passed, so the leftover native schedule cannot block local OCPP restoration.
   External schedules and failed cleanup keep their existing guards.
 
+- Reject appliance datapoints from a positively failed native frame-integrity
+  check before recording a new received setting or field clock. Missing integrity
+  metadata remains distinct from a known failed frame.
+
 - Preserve original appliance field evidence when a positively identified partial
   Tuya status packet arrives before its query reply. Delayed complete replies
   still withdraw omitted fields, and ambiguous or shared-source correlation

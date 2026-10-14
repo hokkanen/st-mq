@@ -1,11 +1,12 @@
 """Current SDK status/receive and patched continuous loop; no network calls.
 
-The SDK's real query/receive/first-frame selection and cache producers execute.
+The SDK's real query/receive/first-frame selection and decoded-response consumers execute.
 Frames and decoded JSON are controlled at the existing validated-frame boundary;
 this does not simulate encryption or prove a household packet's cause.
 """
 import ast, asyncio, hashlib, importlib.util, json, logging, pathlib, socket, sys, threading, time, unittest
 from collections import deque
+from contextlib import contextmanager
 from copy import deepcopy
 from types import SimpleNamespace
 sys.dont_write_bytecode = True
@@ -18,12 +19,12 @@ CONSTANTS = SimpleNamespace(**vars(CT), PREFIX_55AA_VALUE=0x55AA)
 class MessagePayload:
     def __init__(self, cmd):self.cmd = cmd
 SDK = o.extracted_class(SOURCE.read_bytes(), 'XenonDevice', {
-    'status', 'receive', '_send_receive', '_process_message', '_get_retcode'
+    'status', 'receive', '_send_receive', '_process_message', '_get_retcode', '_get_socket'
 }, {'CT':CT, 'MessagePayload':MessagePayload, 'parse_header':lambda p:p,
     'log':logging.getLogger('synthetic-sdk'), 'socket':socket, 'time':time,
     'DecodeError':type('DecodeError',(Exception,),{}),
     'error_json':lambda code:{'Err':str(code),'Error':'Synthetic native failure'},
-    'ERR_DEVTYPE':902,'ERR_PAYLOAD':904,'ERR_CONNECT':905,'ERR_TIMEOUT':902,'ERR_OFFLINE':901})
+    'ERR_DEVTYPE':902,'ERR_PAYLOAD':904,'ERR_CONNECT':905,'ERR_TIMEOUT':902,'ERR_OFFLINE':901,'ERR_KEY_OR_VER':914})
 Device = o.extracted_class(o.PATCHED['device.py'], 'TuyaLocalDevice', {
     '_observe_local_dps', '_clear_local_observations', '_reset_cached_state', 'local_observations',
     'get_property', '_get_cached_state', '_get_pending_properties', '_get_pending_updates',
@@ -51,6 +52,9 @@ def frame(data, seq, cmd=10, **changes):
 class Wire:
     def __init__(self):self.frames=deque();self.sent=[];self.closed=False
     def sendall(self,p):self.sent.append(p)
+    def settimeout(self,value):self.timeout=value
+    def setsockopt(self,*args):pass
+    def connect(self,address):self.connected=address
     def close(self):self.closed=True
     def next(self):
         if not self.frames:raise socket.timeout()
@@ -63,7 +67,9 @@ def fixture(api=None, record=None):
     n=api or SDK.__new__(SDK)
     if api is None:
         n.id='synthetic-native';n.parent=None;n.children={};n.received_wrong_cid_queue=[]
-        n.socket=Wire();n.socketPersistent=True;n.version=3.3;n.seqno=1;n.raw_sent=None;n.raw_recv=[]
+        n.socket=Wire();n.socketPersistent=True;n.auto_ip=False;n.address='127.0.0.1';n.port=6668
+        n.local_key=b'0000000000000000';n.socketNODELAY=False;n.connection_timeout=0.05
+        n.version=3.3;n.seqno=1;n.raw_sent=None;n.raw_recv=[]
         n.cmd_retcode=None;n.dev_type='default';n.retry=False;n.socketRetryLimit=1;n.sendWait=None
         n._get_socket=lambda _:True;n._check_socket_close=lambda *_:None
         n.set_socketPersistent=lambda value:setattr(n,'socketPersistent',value)
@@ -89,6 +95,18 @@ def fixture(api=None, record=None):
         n.socket.frames.append(frame(ALL,n.seqno));r=d._status_for_local_observations()
         d._cached_state.update(r['dps']);d._cached_state['updated_at']=o.CLOCK[0];d._observe_local_dps(r['dps'],d._local_reply_full)
     return n,d
+
+@contextmanager
+def first_open(n,wire):
+    # Execute the actual pinned SDK socket-opening producer. Only its native
+    # socket factory is in-memory; no real connection, discovery or key lookup.
+    namespace=SDK._get_socket.__globals__;old=namespace['socket']
+    proxy=SimpleNamespace(**{name:getattr(socket,name) for name in ('AF_INET','AF_INET6','SOCK_STREAM','IPPROTO_TCP','TCP_NODELAY','timeout')})
+    proxy.socket=lambda *args:wire
+    namespace['socket']=proxy;n.socket=None
+    n._get_socket=SDK._get_socket.__get__(n,SDK)
+    try:yield
+    finally:namespace['socket']=old
 
 async def collect(n,d,frames,second_query=False,callback=None):
     n.socket.frames.extend(frames);seen=[]
@@ -138,7 +156,7 @@ class QueryReplyTests(unittest.TestCase):
         seen=asyncio.run(collect(n,d,[frame({'6':49},999,8),frame({'6':48},a)],callback=change))
         self.assertTrue(seen[1]['full']);self.assertNotIn('1',seen[1]['observations'])
     def test_bad_integrity_retcode_or_header_cannot_exempt_a_status_call(self):
-        for changes in ({'crc_good':False},{'crc_good':None},{'retcode':1},{'retcode':None},{'retcode':False},{'seqno':True},{'cmd':True},{'prefix':None}):
+        for changes in ({'crc_good':None},{'retcode':1},{'retcode':None},{'retcode':False},{'seqno':True},{'cmd':True},{'prefix':None}):
             n,d=fixture();o.CLOCK[0]+=31
             invalid=frame({'6':49},999,8)
             for key,value in changes.items():setattr(invalid,key,value)
@@ -397,5 +415,110 @@ class QueryReplyTests(unittest.TestCase):
             release.set();self.assertTrue(await asyncio.to_thread(finished.wait,1))
             self.assertEqual(set(d.local_observations),{'identity'})
         asyncio.run(run())
+
+class InvalidFrameEvidenceTests(unittest.TestCase):
+    def test_matched_full_corrupt_frame_never_publishes_false_power(self):
+        async def run():
+            n,d=fixture();o.CLOCK[0]+=31;received=[]
+            corrupt=frame({**ALL,'1':False},n.seqno,crc_good=False)
+            n.socket.frames.append(corrupt)
+            native_receive=n._receive
+            def receive():
+                value=native_receive();d._running=False;return value
+            n._receive=receive
+            d._children=[SimpleNamespace(on_receive=lambda *args:received.append(args),schedule_update_ha_state=lambda:None)]
+            await d.receive_loop()
+            self.assertEqual(received,[])
+            self.assertEqual(set(d.local_observations),{'identity'})
+            self.assertIsNone(d._local_query_ticket)
+        asyncio.run(run())
+
+    def test_corrupt_incremental_receive_and_pending_query_reply_are_discarded(self):
+        for pending in (False,True):
+            n,d=fixture();a=n.seqno
+            if pending:
+                n.socket.frames.append(frame({'6':49},999,8));d._status_for_local_observations()
+            n.socket.frames.append(frame({**ALL,'1':False},a,10 if pending else 8,crc_good=False))
+            self.assertIsNone(d._receive_for_local_observations())
+            self.assertEqual(set(d.local_observations),{'identity'})
+            self.assertIsNone(d._local_query_ticket)
+
+    def test_first_open_status_applies_integrity_before_sync_publication(self):
+        for bad in (False,True):
+            n,d=fixture();d._running=False;wire=Wire()
+            wire.frames.append(frame({**ALL,'1':False},n.seqno,crc_good=not bad))
+            o.CLOCK[0]+=31
+            with first_open(n,wire):o.Device._refresh_cached_state(d)
+            self.assertEqual(wire.connected,('127.0.0.1',6668))
+            self.assertEqual('1' in d.local_observations,not bad)
+            if not bad:self.assertFalse(d.local_observations['1']['value'])
+
+    def test_first_open_status_applies_integrity_before_continuous_publication(self):
+        async def run(bad):
+            n,d=fixture();wire=Wire();received=[]
+            wire.frames.append(frame({**ALL,'1':False},n.seqno,crc_good=not bad))
+            native_receive=n._receive
+            def receive():value=native_receive();d._running=False;return value
+            n._receive=receive;o.CLOCK[0]+=31
+            d._children=[SimpleNamespace(on_receive=lambda *args:received.append(args),schedule_update_ha_state=lambda:None,
+                _config=SimpleNamespace(dps=lambda:[]))]
+            with first_open(n,wire):await d.receive_loop()
+            self.assertEqual(wire.connected,('127.0.0.1',6668))
+            self.assertEqual(bool(received),not bad)
+        for bad in (False,True):asyncio.run(run(bad))
+
+    def test_shared_source_failed_metadata_conservatively_withdraws(self):
+        n,d=fixture();fixture(n,d._local_source_record)
+        n.socket.frames.append(frame({**ALL,'1':False},n.seqno,crc_good=False))
+        self.assertIsNone(d._status_for_local_observations())
+        self.assertEqual(set(d.local_observations),{'identity'})
+
+    def test_child_parent_only_integrity_is_not_borrowed(self):
+        n,d=fixture();d.dev_cid='synthetic-child'
+        bad_parent=SimpleNamespace(raw_recv=[frame(ALL,999,crc_good=False)],
+            _send_receive=lambda *_args,**_kwargs:{'dps':ALL})
+        n.parent=bad_parent
+        reply=d._status_for_local_observations()
+        self.assertIsNotNone(reply)
+        self.assertTrue(d._local_reply_full)
+        self.assertFalse(d._local_observation_source_exclusive())
+
+    def test_actual_sync_consumer_cannot_cache_or_timestamp_corrupt_power(self):
+        n,d=fixture();d._running=False;before=deepcopy(d._cached_state);o.CLOCK[0]+=31
+        n.socket.frames.append(frame({**ALL,'1':False},n.seqno,crc_good=False))
+        o.Device._refresh_cached_state(d)
+        self.assertEqual(d._cached_state,before)
+        self.assertTrue(d.get_property('1'),'HA cached request/display is separate from native observations')
+        self.assertEqual(set(d.local_observations),{'identity'})
+
+    def test_known_failed_frame_is_rejected_even_in_conservative_overlap_mode(self):
+        n,d=fixture();a=n.seqno
+        n.socket.frames.append(frame({'6':49},999,8));d._status_for_local_observations()
+        n.socket.frames.append(frame({'6':48},998,8));d._status_for_local_observations()
+        self.assertTrue(d._local_query_ambiguous)
+        n.socket.frames.append(frame({**ALL,'1':False},a,crc_good=False))
+        self.assertIsNone(d._receive_for_local_observations())
+        self.assertEqual(set(d.local_observations),{'identity'})
+
+    def test_missing_unknown_or_stale_integrity_is_not_guessed_as_failure(self):
+        for mode in ('unknown','missing','stale'):
+            n,d=fixture();f=frame({**ALL,'1':False},n.seqno)
+            if mode=='unknown':f.crc_good=None
+            elif mode=='missing':del f.crc_good
+            else:
+                n.raw_recv=[frame(ALL,999,crc_good=False)]
+                n.status=lambda:{'dps':{**ALL,'1':False}}
+            if mode!='stale':n.socket.frames.append(f)
+            reply=d._status_for_local_observations()
+            self.assertIsNotNone(reply,mode)
+            self.assertTrue(d._local_reply_full)
+
+    def test_good_integrity_remains_a_genuine_received_report(self):
+        n,d=fixture();before=d.local_observations['1']['timestamp'];o.CLOCK[0]+=31
+        n.socket.frames.append(frame({**ALL,'1':False},n.seqno))
+        reply=d._status_for_local_observations();self.assertTrue(d._local_reply_is_current(reply))
+        d._observe_local_dps(reply['dps'],d._local_reply_full)
+        self.assertFalse(d.local_observations['1']['value'])
+        self.assertGreater(d.local_observations['1']['timestamp'],before)
 
 if __name__=='__main__':unittest.main(verbosity=2)
