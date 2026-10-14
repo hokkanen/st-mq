@@ -9,6 +9,15 @@ Run checks from the repository root. Ordinary tests, browser fixtures, container
 checks and Garage simulations use synthetic data. The separately invoked live
 suite contacts configured providers; see [live testing](live-testing.md).
 
+`test/provider-http-cancellation.test.js` runs the real HTTP transport and
+application reload/shutdown against held loopback responses in bounded child
+processes. Explicit garbage collection covers cancellation before headers,
+after headers and after a valid but incomplete JSON prefix on each test runtime.
+The source socket remains open until the transport settles, so fixture cleanup
+cannot mask a stuck body read. Unit transport checks preserve caller/close versus
+deadline error codes, reject cancelled empty command replies and remove completed
+request listeners. These fixtures make no external provider or device requests.
+
 Time admission regressions in `test/time-evidence.test.js` and
 `test/time-evidence-integration.test.js` cover original timestamp preservation,
 bounded source-clock leads, causal temperature/learning prefixes, voltage restart

@@ -97,10 +97,17 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
     let reader, response;
+    // Fetch cancellation after headers is not sufficient on every supported
+    // Node runtime. Cancel the admitted reader too, so a held body cannot keep
+    // acquisition shutdown waiting after its original signal has been aborted.
+    const cancelReader = () => { if (reader) void reader.cancel().catch(() => {}); };
+    signal.addEventListener('abort', cancelReader, { once: true });
     try {
       if ((scheduling || takeover || ocppSetup) && !canControl()) throw new ProviderError('controller-authority-revoked');
       if (signal.aborted) throw new ProviderError('provider-request-aborted');
       response = await fetchImpl(url.href, { ...options, method, redirect: 'error', signal });
+      if (signal.aborted) throw new ProviderError(options.signal?.aborted || closed
+        ? 'provider-request-aborted' : 'provider-request-timeout');
       if (!response.ok) throw new ProviderError('provider-http-error', response.status,
         retryDelay(response.headers.get('retry-after')));
       const declared = Number(response.headers.get('content-length'));
@@ -113,6 +120,10 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
       const chunks = []; let bytes = 0;
       while (true) {
         const { done, value } = await reader.read();
+        // Reader cancellation can resolve a pending read as EOF. It is still
+        // cancellation, never a complete response or an acknowledged write.
+        if (signal.aborted) throw new ProviderError(options.signal?.aborted || closed
+          ? 'provider-request-aborted' : 'provider-request-timeout');
         if (done) break;
         bytes += value.byteLength;
         if (bytes > maxBytes) throw new ProviderError('provider-response-too-large');
@@ -124,6 +135,7 @@ export function createHttp({ fetchImpl = globalThis.fetch, timeoutMs = 10_000, m
       throw new ProviderError(options.signal?.aborted || closed ? 'provider-request-aborted'
         : controller.signal.aborted ? 'provider-request-timeout' : 'provider-network-error');
     } finally {
+      signal.removeEventListener('abort', cancelReader);
       clearTimeout(timer); pending.delete(controller);
       if (reader) await reader.cancel().catch(() => {});
       else if (response?.body) await response.body.cancel().catch(() => {});

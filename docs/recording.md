@@ -34,6 +34,13 @@ the session's explicit one-day approval and binding deadline are durable chargin
 intent, not electricity-price observations. A read-only replica does not fetch
 or reconstruct transient predictions from copied history.
 
+The shared provider HTTP transport keeps its original finite request deadline
+through response-body consumption. Caller cancellation, provider shutdown and
+that deadline also cancel an admitted body reader after headers arrive. A
+cancelled read that resolves as end-of-stream is still a failed request, never
+usable partial JSON or an acknowledged device write. Diagnostics retain the
+existing aborted/timeout codes without provider URLs or response bodies.
+
 One SignalR connection subscribes to the configured Charger 1 and Equalizer,
 requesting their current observations when it connects and subscribing again
 after reconnect. The cache keeps each field's original measurement timestamp.
