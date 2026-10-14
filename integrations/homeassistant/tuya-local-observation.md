@@ -34,7 +34,21 @@ connection requires new reports. The identity digest comes from Tuya Local's
 native `unique_id` (the configured device ID for an appliance without a child
 ID). The bridge requires it to match the selected private identity.
 
-The patch does not change native service behavior, connection locking or retries.
+The patch preserves native connection locking and the existing retry handler.
+It also forwards TinyTuya's returned command errors to that handler before
+marking the requested datapoints sent. Previously, a returned connection error
+could be discarded and the pending write marked sent without a successful
+transport result. A successful `nowait` result still means only a transport
+attempt, not device receipt or a new observation. The handler's existing retry
+count, reset behavior and empty-status exception remain unchanged.
+Each locked retry reads the current unsent entries instead of replaying an
+earlier failed batch. A successful result marks only the exact entries captured
+for that attempt: a newer command, even one requesting the same value, remains
+unsent until its own attempt. Removed entries are not recreated, and an empty
+batch sends nothing and leaves native protocol-health flags and failure counts
+unchanged. This does not cancel an already in-flight native attempt
+or change the existing exhausted-retry reset; neither command bookkeeping nor
+successful transport supplies received device evidence.
 The bridge checks an expiring, identity-bound command before passing it to the
 native Home Assistant service. Once handed off, Tuya Local's own delivery and
 retry behavior applies; MQTT expiry is not a device-local cancellation guarantee.
@@ -46,6 +60,11 @@ This adapter supports only the exact reviewed **2026.9.2** source hashes listed
 in `tuya-local-observation.json`. An unknown or partially patched source is
 rejected before mutation. Review a changed upstream source before updating the
 adapter; a matching version label alone is insufficient.
+An earlier patch's bytes are unsupported. To replace an already patched
+installation, stop Core and deliberately restore both exact reviewed pristine
+source files from their private backup before checking and applying the current
+bundle. Keep a separate backup of the installed files for operational rollback;
+the installer does not translate an earlier patch or select it at runtime.
 
 Run the installer in an environment with Python 3 and write access to Home
 Assistant Core's `custom_components/tuya_local` directory, such as a suitable
@@ -85,4 +104,8 @@ optimistic entity state.
 Offline validation: `node --test test/tuya-local-observation.test.js`. The test
 executes patched upstream methods using synthetic native replies and checks
 partial reports, pending values, reconnects, physical identity, scoped attributes,
-exact source checks, backups, idempotence and installation rollback.
+returned command errors, native retries, exact source checks, backups, idempotence
+and installation rollback. Pending-command interleavings check newer opposite
+and same-value choices, lock waits, removal, multiple datapoints and retry order.
+These synthetic checks do not identify the cause of
+an unconfirmed live command or prove physical delivery.

@@ -28,6 +28,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   cannot survive dispatch latency. Same-price alternatives retain joint service,
   electrical and cost checks; adopted programs keep their original boundaries.
 
+- Preserve newer Tuya pending commands when an older native attempt returns, and
+  retry the current unsent settings instead of an obsolete batch. Existing retry
+  limits and independently received device observations remain unchanged.
+
+- Forward reported Tuya command failures to its existing native retry handler
+  without marking failed writes sent or treating requested settings as fresh
+  device observations. The source patch remains pinned and fail closed.
+
 - Allow guarded native Easee handback when retained disconnect evidence belongs
   to a proven earlier session, preserving the event and current restoration,
   native instruction and ownership checks.
