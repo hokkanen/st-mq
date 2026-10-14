@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve a later current unsent command queued behind a failed Tuya setting
+  write, while discarding that handler's initial failed commands. Keep native
+  retries and unavailable feedback unchanged; source loss cannot revive intent.
+
 - Keep Web access action buttons the same height on phones when a label wraps.
 
 - Preserve a current unsent native command queued behind a failed ordinary Tuya

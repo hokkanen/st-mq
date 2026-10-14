@@ -836,7 +836,19 @@ loop through exhausted retries with a real native-lock waiter. It checks that
 only current unsent entries survive, newer opposite/same-value requests supersede,
 removed/sent entries stay removed, and changed physical identity/API/protocol/owner
 or shutdown retains nothing. Actual initial protocol selection precedes the
-source snapshot; setting-write terminal reset remains on its original path.
+source snapshot. Unmarked callbacks retain the native terminal reset behavior.
+
+`test/tuya-local-write-command-retention.test.js` drives the actual current native
+setting producer, retry handler and pinned SDK with a real native-lock waiter and
+controlled memory transport. After three failed attempts, a healthy transport
+serves only the newer queued entry. Same-value/opposite supersession, new
+datapoints, sent/removed/initial entries, source loss, same-shaped selected-record
+replacement and observed protocol
+A→B→A are covered. The actual initial protocol selector and terminal automatic
+protocol reset retain their native behavior. A failed following request receives
+only its own existing retry budget and is not recreated. Pending entries never
+become native feedback; cache/field/clock resets stay intact. These fixtures use
+the validated-frame boundary, not a new encrypted-wire or household proof.
 
 The fullscreen suite checks the page controls, chart entry/exit restoration,
 external fullscreen changes and fallback behavior with synthetic data.

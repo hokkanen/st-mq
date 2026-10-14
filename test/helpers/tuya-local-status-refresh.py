@@ -171,12 +171,19 @@ class StatusRefreshTests(unittest.TestCase):
             replacement=q.SDK.__new__(q.SDK)
             replacement.__dict__.update(f.n.__dict__)
             f.d._api=replacement
+        def replace_selected_record(f):
+            old=f.d._local_source_record
+            new=dict(old)
+            self.assertIsNot(new,old);self.assertEqual(new,old)
+            f.d._hass.data['tuya_local'][f.n.id]=new
+            f.d._local_source_record=new
         changes={
             'socket':lambda f:setattr(f.n,'socket',q.Wire()),
             'protocol':lambda f:setattr(f.n,'version',3.4),
             'owner':lambda f:f.d._local_source_record.update(stmq_observation_reader=None),
             'entity':lambda f:f.d._children.clear(),
             'API':replace_api,
+            'same-shaped selected record':replace_selected_record,
             'late Off':lambda f:f.d._add_properties_to_pending_updates({'1':False}),
         }
         for label,change in changes.items():

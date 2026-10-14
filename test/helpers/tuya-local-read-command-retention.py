@@ -106,11 +106,18 @@ class ReadCommandRetentionTests(unittest.TestCase):
             replacement.__dict__.update(f.n.__dict__)
             f.d._api=replacement
             f.d._local_source_record['tuyadevice']=replacement
+        def replace_selected_record(f):
+            old=f.d._local_source_record
+            new=dict(old)
+            self.assertIsNot(new,old);self.assertEqual(new,old)
+            f.d._hass.data['tuya_local'][f.n.id]=new
+            f.d._local_source_record=new
         changes={
             'owner':lambda f:f.d._local_source_record.update(stmq_observation_reader=None),
             'identity':lambda f:setattr(f.n,'id','different-synthetic-native'),
             'protocol':lambda f:setattr(f.n,'version',3.4),
             'record':lambda f:f.d._hass.data['tuya_local'].update({f.n.id:dict(f.d._local_source_record)}),
+            'same-shaped selected record':replace_selected_record,
             'shutdown':lambda f:setattr(f.d._hass,'is_stopping',True),
             'API':replace_api,
             'lock':lambda f:f.d._local_source_record.update(tuyadevicelock=asyncio.Lock()),

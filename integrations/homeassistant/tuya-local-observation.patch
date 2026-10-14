@@ -206,7 +206,7 @@
          self._api.set_socketPersistent(False)
          if self._api.parent:
              self._api.parent.set_socketPersistent(False)
-@@ -536,6 +598,273 @@
+@@ -536,6 +598,278 @@
                  f"Failed to refresh device state for {self.name}.",
              )
  
@@ -291,7 +291,9 @@
 +            return None
 +        return (
 +            self._api, self.unique_id, self._api.version,
-+            self._local_source_record, self._api_lock, self._local_source_token,
++            # Keep the record alive while its identity participates in equality.
++            self._local_source_record, id(self._local_source_record),
++            self._api_lock, self._local_source_token,
 +        )
 +
 +    def _local_status_refresh_source(self):
@@ -304,7 +306,10 @@
 +            or not self._local_observation_source_exclusive()
 +        ):
 +            return None
-+        return (self._api, self._api.version, self._local_source_record, self._local_source_token, entity)
++        # A same-shaped replacement is a different selected record. The strong
++        # record reference also prevents id reuse during this source episode.
++        return (self._api, self._api.version, self._local_source_record,
++                id(self._local_source_record), self._local_source_token, entity)
 +
 +    def _request_local_status_refresh(self, connection, queried=False):
 +        source = self._local_status_refresh_source()
@@ -480,20 +485,22 @@
      def get_property(self, dps_id):
          cached_state = self._get_cached_state()
          return cached_state.get(dps_id)
-@@ -554,16 +883,24 @@
+@@ -554,16 +888,26 @@
          """
          self._cached_state[dps_id] = value
  
 -    def _reset_cached_state(self):
-+    def _reset_cached_state(self, keep_pending=False, keep_unsent=False):
++    def _reset_cached_state(self, keep_pending=False, keep_unsent=False, keep_newer=None):
 +        self._clear_local_observations("cache-reset")
          self._cached_state = {"updated_at": 0}
 -        self._pending_updates = {}
 +        if not keep_pending:
 +            self._pending_updates = {
 +                key: entry for key, entry in self._pending_updates.items()
-+                if not entry["sent"]
-+            } if keep_unsent else {}
++                if not entry["sent"] and (
++                    keep_unsent or keep_newer is not None and keep_newer.get(key) is not entry
++                )
++            } if keep_unsent or keep_newer is not None else {}
          self._last_connection = 0
          self._last_full_poll = 0
  
@@ -508,7 +515,7 @@
                  self._cached_state = self._cached_state | new_state.get("dps", {})
                  self._cached_state["updated_at"] = time()
                  for entity in self._children:
-@@ -643,29 +980,43 @@
+@@ -643,29 +987,44 @@
          await self._send_pending_updates()
  
      async def _send_pending_updates(self):
@@ -517,6 +524,7 @@
 +        await self._retry_on_failed_connection(
 +            self._set_values,
 +            "Failed to update device state.",
++            write=True,
 +        )
 +
 +    def _set_values(self):
@@ -565,15 +573,17 @@
 +                entry["sent"] = True
 +        return result
 +
-+    async def _retry_on_failed_connection(self, func, error_message, pending_scope=None, read=False):
++    async def _retry_on_failed_connection(self, func, error_message, pending_scope=None, read=False, write=False):
          if self._api_protocol_version_index is None:
              await self._rotate_api_protocol_version()
          auto = (self._protocol_configured == "auto") and (
-@@ -682,13 +1033,18 @@
+@@ -682,13 +1041,28 @@
              )
          )
  
 +        read_source = None
++        write_source = None
++        write_cohort = None
          last_err_code = None
          last_err_msg = None
          for i in range(connections):
@@ -582,13 +592,21 @@
                      async with self._api_lock:
 +                        if read and i == 0:
 +                            read_source = self._current_pending_command_source()
++                        if write:
++                            current_source = self._current_pending_command_source()
++                            if i == 0:
++                                write_source = current_source
++                                write_cohort = self._pending_updates.copy() if current_source is not None else None
++                            elif current_source != write_source:
++                                # Observed source movement cannot rearm this handler.
++                                write_source = None
                          retval = await self._hass.async_add_executor_job(func)
 +                    if retval is _NO_PENDING_UPDATES or retval is _SKIP_LOCAL_STATUS:
 +                        return None
                      if isinstance(retval, dict) and "Error" in retval:
                          last_err_code = retval.get("Err")
                          last_err_msg = retval.get("Error")
-@@ -713,12 +1069,20 @@
+@@ -713,12 +1087,29 @@
                      connections,
                  )
                  # Ensure we have a fresh connection for the next attempt
@@ -606,11 +624,20 @@
 +                    ), keep_unsent=(
 +                        pending_scope is None and read_source is not None
 +                        and self._current_pending_command_source() == read_source
++                    ), keep_newer=(
++                        write_cohort if write_source is not None
++                        and self._current_pending_command_source() == write_source
++                        # The existing terminal failure may rotate an automatic
++                        # protocol after reset; do not retain across that change.
++                        and not (self._protocol_configured == "auto" and (
++                            not self._api_protocol_working
++                            or self._api_working_protocol_failures + 1 > self._AUTO_FAILURE_RESET_COUNT
++                        )) else None
 +                    ))
                      self._api_working_protocol_failures += 1
                      if (
                          self._api_working_protocol_failures
-@@ -860,6 +1224,11 @@
+@@ -860,6 +1251,11 @@
          "tuyadevice": device._api,
          "tuyadevicelock": device._api_lock,
      }

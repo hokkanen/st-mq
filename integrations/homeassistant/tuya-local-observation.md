@@ -99,7 +99,7 @@ for that attempt: a newer command, even one requesting the same value, remains
 unsent until its own attempt. Removed entries are not recreated, and an empty
 batch sends nothing and leaves native protocol-health flags and failure counts
 unchanged. This does not cancel an already in-flight native attempt
-or change a setting-write exhausted-retry reset; neither command bookkeeping nor
+or grant another attempt to an initial failed setting; neither command bookkeeping nor
 successful transport supplies received device evidence.
 The bridge checks an expiring, identity-bound command before passing it to the
 native Home Assistant service. Once handed off, Tuya Local's own delivery and
@@ -128,6 +128,10 @@ cancel pending work and cannot admit its later reply. Original field receipt
 clocks, query correlation and conservative omission rules remain unchanged.
 The first native dispatch separately rechecks the captured observation generation
 and shutdown state after lock/executor waits; neither becomes a new budget key.
+Source comparisons bind the selected record by object identity while retaining
+its strong reference. A same-shaped replacement cannot compare as the original
+owner or reuse its identity while the scoped work remains active. The same
+binding applies to ordinary-read and setting-write command retention below.
 
 Unsent commands defer the added read, and a newly queued command before its first
 native attempt cancels it. A command arriving after a read starts waits for the
@@ -139,7 +143,8 @@ introduced. If only this added read exhausts its retries while its exact source
 remains current, the terminal cache reset preserves the actual current pending
 entries. It never restores an earlier snapshot, recreates a removed request or
 replays a superseded value. The ordinary status-read boundary below separately
-retains only unsent current intent; setting-write resets remain unchanged.
+retains only unsent current intent. The setting-write boundary below separately
+preserves a later accepted command without retaining that handler's failed intent.
 
 This avoids one demonstrated offline delay until the next periodic full poll. It
 does not diagnose a household withdrawal or guarantee immediate device recovery.
@@ -159,11 +164,41 @@ existing reset. Shared, child and unproved sources retain their existing behavio
 
 Sent overlays are removed. Newer opposite or same-value entries retain their
 own objects and supersede the earlier request; removed entries are not recreated.
-No pending-command snapshot is restored. A setting-write terminal failure keeps
-its existing reset behavior. This preserves a command already accepted by the
+No pending-command snapshot is restored. This preserves a command already accepted by the
 native integration, not fresh feedback or new command permission; only a later
 device report confirms physical execution. Native polling, locking, retry counts,
 protocol selection and backoff remain unchanged.
+
+## Commands queued behind a failed setting write
+
+A later native command can wait behind a setting handler that exhausts its
+existing retries. At the first native-lock admission, after initial protocol
+selection, the setting producer captures its current source and the entry objects
+already belonging to that handler. Its terminal reset discards those initial
+failed entries and sent overlays. It retains only currently existing, unsent
+replacement or new-datapoint objects accepted after that admission, while the
+same physical identity/API/protocol/lock/selected owner remains current. Newer
+same-value requests still have distinct objects. Removed requests are never
+recreated, and no earlier value snapshot is restored.
+
+Known source movement, including a same-shaped selected-record replacement,
+during any later locked attempt permanently declines this
+handler's retention, even if the original tuple returns. Shutdown, unknown source
+ownership and an existing terminal automatic-protocol reselection also decline
+retention. The newer request may already have appeared in a failed retry of the
+earlier handler; ownership follows its later accepted entry, not a claim that it
+was never attempted. Its existing queued callback can then send the current value.
+If that later callback also exhausts its retries, its own initial cohort is
+discarded; the failed request is not rearmed.
+
+Only the actual setting producer marks this boundary. Generic unmarked callbacks,
+shared/child/forced-DPS or changed-source paths cannot acquire it. Cache and native
+field/clock withdrawal, failure counters, retry counts, protocol selection,
+locking, polling and backoff remain unchanged. No new task, query, send timer or
+retry budget is added. A nowait transport result still cannot confirm appliance
+state or renew a native observation clock; independently received feedback is
+required. This fixes an offline-qualified bookkeeping loss, not the cause of a
+household connection withdrawal.
 
 ## Native field withdrawal diagnostics
 

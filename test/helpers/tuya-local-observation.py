@@ -71,6 +71,9 @@ Entity = extracted_class(PATCHED['entity.py'], 'TuyaLocalEntity', {'extra_state_
 def device_fixture():
     device = Device.__new__(Device)
     device._children = []
+    # Actual constructor default: this small transport fixture has no running
+    # monitor or registered exclusive source, so it cannot grant retention.
+    device._running = False
     device._name = 'Synthetic appliance'
     device.dev_cid = None
     device.dev_id = 'synthetic-native-device'
