@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readFile, rm, lstat, chown, cp, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, lstat, chown, cp, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
@@ -235,6 +235,34 @@ test('altered cached certificate metadata is rejected before lock or interrupted
   resumed.start(); const view = await diagnosed(resumed);
   assert.equal(view.error, 'certificate_integrity_failed'); assert.equal(view.certificate, null); assert.equal(activated, 0);
   assert.equal(await readFile(path, 'utf8'), before); await assert.rejects(lstat(resolve(context.directory, 'https', 'manager.lock')), { code: 'ENOENT' });
+});
+
+test('genuinely absent HTTPS state starts disabled without creating state or installing a helper', async t => {
+  const context = await setup(t);
+  context.manager.start(); await context.manager.close();
+  assert.equal(context.manager.status().phase, 'disabled');
+  assert.equal(context.manager.status().warning, null);
+  await assert.rejects(lstat(resolve(context.directory, 'https')), { code: 'ENOENT' });
+  for (const key of ['install', 'discover', 'helperStart', 'certificate', 'preflight']) assert.equal(context.calls[key], 0);
+  assert.deepEqual(context.calls.activations, []);
+});
+
+test('explicit falsy HTTPS state is rejected before storage admission or installation', async t => {
+  for (const value of [false, 0, '', null]) await t.test(JSON.stringify(value), async t => {
+    const context = await setup(t), directory = resolve(context.directory, 'https'), path = resolve(directory, 'state.json');
+    await mkdir(directory, { mode: 0o700 });
+    const bytes = Buffer.from(JSON.stringify(value)); await writeFile(path, bytes, { mode: 0o600 });
+    const beforeHash = createHash('sha256').update(bytes).digest('hex');
+    const beforeCalls = structuredClone(context.calls);
+    context.manager.start();
+    await assert.rejects(context.manager.action({ action: 'set-update-policy', policy: 'manual' }), { code: 'https_state_invalid' });
+    assert.equal(context.manager.status().phase, 'degraded');
+    assert.equal(context.manager.status().warning, 'https_state_invalid');
+    assert.deepEqual(await readFile(path), bytes);
+    assert.equal(createHash('sha256').update(await readFile(path)).digest('hex'), beforeHash);
+    assert.deepEqual(await readdir(directory), ['state.json'], 'No lock, claim, staging or operation journal is admitted');
+    assert.deepEqual(context.calls, beforeCalls, 'No helper, download, certificate or listener activation occurs');
+  });
 });
 
 test('null-like and retired nested records fail closed without rewriting current state', async t => {

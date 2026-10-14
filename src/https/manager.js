@@ -142,8 +142,9 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   }
   async function load() {
     if (loaded) return;
-    const saved = await readJson(statePath());
-    if (!saved) { loaded = true; return; }
+    const missing = Symbol('missing HTTPS state');
+    const saved = await readJson(statePath(), { missing });
+    if (saved === missing) { loaded = true; return; }
     state = validateState(saved); validatePairBinding();
     const active = state.certificate;
     let acceptedMaterial = null;

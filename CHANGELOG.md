@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Reject malformed saved HTTPS manager state before setup can replace it.
+  Only a genuinely missing state file initializes a new disabled installation.
+
 - Distinguish a scheduled local OCPP settings check from a cloud check currently
   running. Current local readings remain separate from unchecked setup settings,
   saved retry deadlines and the original confirmation clocks.

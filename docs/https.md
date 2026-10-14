@@ -168,6 +168,11 @@ weakening permissions on controller data. The helper receives a sanitized
 environment, no inherited application credentials, no effective/permitted/ambient
 capabilities, and no privilege escalation. An unavailable privilege facility
 blocks only the helper and reports the failed preflight.
+
+A genuinely missing manager state file starts with HTTPS disabled. An explicit
+malformed state file, including a JSON null or other scalar, is rejected before
+storage admission; it is preserved and cannot authorize helper installation or
+replace saved installation evidence with fresh defaults.
 The root adapter also refuses a sibling identity path inside a repository and
 requires its parent to permit unprivileged traversal. Select an external
 `web.https_directory` if a custom location prevents that traversal; it does not
