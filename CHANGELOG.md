@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Distinguish a scheduled local OCPP settings check from a cloud check currently
+  running. Current local readings remain separate from unchecked setup settings,
+  saved retry deadlines and the original confirmation clocks.
+
 - Close incomplete local OCPP connection handshakes during shutdown, so a silent
   connection cannot delay listener release and paired handover. Charger retry
   timing and authenticated control checks are unchanged.

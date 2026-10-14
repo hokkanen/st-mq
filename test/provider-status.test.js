@@ -1031,6 +1031,29 @@ test('completed charger setup schedules a connection check without implying anot
   assert.doesNotMatch(JSON.stringify(display), /Next setup attempt|property readings|ST-MQ/);
 });
 
+test('a settings check waiting on its saved deadline is separate from current local readings and a running check', () => {
+  const localOcpp = { configured: true, connected: true, available: true,
+    setup: { state: 'checking', reason: null, busy: false, endpointSource: 'configured',
+      nextAttemptAt: now + 60_000, lastSuccessAt: now - 3600_000 } };
+  const original = structuredClone(localOcpp);
+  const waiting = easeeLocalConnectionDisplay({ localOcpp }, options);
+  assert.equal(waiting.setup.label, 'Waiting for settings check');
+  assert.equal(waiting.setup.tone, 'pending');
+  assert.match(waiting.setup.detail, /Waiting.*next.*check.*Next settings check 10:01/);
+  assert.doesNotMatch(waiting.setup.detail, /confirmed|Checking the charger/);
+  assert.equal(waiting.readings.label, 'Available');
+  assert.deepEqual(localOcpp, original, 'Presentation preserves the original status and saved clocks');
+  localOcpp.setup.busy = true;
+  const running = easeeLocalConnectionDisplay({ localOcpp }, options);
+  assert.equal(running.setup.label, 'Checking charger');
+  assert.match(running.setup.detail, /Checking.*settings.*cloud/);
+  assert.match(running.setup.detail, /Next setup attempt 10:01/);
+  assert.equal(running.readings.label, 'Available');
+  localOcpp.available = false;
+  localOcpp.setup.busy = false;
+  assert.equal(easeeLocalConnectionDisplay({ localOcpp }, options).readings.label, 'Waiting for readings');
+});
+
 test('connection recovery shows its own wait and stops promising retries after the bounded attempts', () => {
   const localOcpp = { configured: true, connected: false, available: false, setup: {
     state: 'connecting', reason: 'waiting-connection', nextAttemptAt: now + 60_000,

@@ -517,6 +517,14 @@ the listener keeps accepting connections. Reapplication is an attempted recovery
 not proof of receipt or restored physical charging; installed hardware recovery
 still needs validation.
 
+After restart or handover, a saved future settings-check deadline may delay the
+next cloud request. The panel shows that wait separately from a settings check
+currently running, and reports current local readings independently. Local
+availability does not confirm unchecked charger settings, renew the saved cloud
+confirmation clock or trigger another cloud request. Known setup failures,
+foreign settings and unfinished setup intent retain their existing diagnostics;
+an earlier cause not recorded in saved state remains unknown after restart.
+
 Missing, stale or unknown cloud data supplies no new contrary instruction. It
 does not become synthetic fresh `enabled`, `none` or zero-current evidence and
 does not erase a known Stop or manual schedule. A returning observation keeps its

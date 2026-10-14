@@ -16,9 +16,9 @@ function config(overrides = {}) {
 function fixture(overrides = {}) {
   const installation = overrides.installation ?? ocppInstallation(config());
   let saved = overrides.saved ?? null, current = overrides.current ?? null, now = AT, active = true;
-  const calls = [], listener = { listening: true, ready: true, available: false, error: null };
-  let count = 0;
-  const state = { get: () => structuredClone(saved), set: value => { saved = structuredClone(value); } };
+  const calls = [], controlCalls = [], listener = { listening: true, ready: true, available: false, error: null };
+  let count = 0, stateWrites = 0;
+  const state = { get: () => structuredClone(saved), set: value => { stateWrites++; saved = structuredClone(value); } };
   const api = {
     async get() { calls.push('get'); if (!current) throw Object.assign(new Error('fixture-not-found'), { status: 404 }); return structuredClone(current); },
     async observations() { calls.push('observations'); return { observations: [[80, 344], [141, 1], [250, true]]
@@ -32,11 +32,13 @@ function fixture(overrides = {}) {
     },
     async apply(body) { calls.push('apply'); assert.equal(body.version, current.version); assert.equal(saved.intent.version, body.version); },
   };
-  const make = () => createOcppSetup({ prepareControl: async () => {}, commitControl: async () => {}, installation, state, api, listener: { status: () => ({ ...listener }) }, clock: () => now, canControl: () => active });
+  const make = () => createOcppSetup({ prepareControl: async target => { controlCalls.push(['prepare', target]); },
+    commitControl: async target => { controlCalls.push(['commit', target]); },
+    installation, state, api, listener: { status: () => ({ ...listener }) }, clock: () => now, canControl: () => active });
   const setup = make();
-  return { setup, make, api, calls, listener, state, installation,
+  return { setup, make, api, calls, controlCalls, listener, state, installation,
     advance: ms => { now += ms; }, revoke: () => { active = false; },
-    get saved() { return saved; }, get current() { return current; }, set current(value) { current = value; } };
+    get saved() { return saved; }, get stateWrites() { return stateWrites; }, get current() { return current; }, set current(value) { current = value; } };
 }
 const foreign = () => ({ version: 'fixture-foreign-version', connectivityMode: 'DualProtocol',
   websocketConnectionArgs: { url: 'ws://192.0.2.99:9001/ocpp', caCertificate: null, caCertificateDomain: null },
@@ -229,19 +231,103 @@ test('listener recovery clears setup warnings before the healthy cloud deadline'
   assert.deepEqual(f.calls, calls, 'Recovery does not request or reapply cloud configuration');
 });
 
-test('startup listener checks do not persist a warning or bypass pending cloud verification', async () => {
+test('installed setup restart displays a scheduled check separately from current local readings', async () => {
   const f = fixture(); await f.setup.runDue();
   f.listener.available = true; f.advance(30001); await f.setup.runDue();
-  const setup = f.make(), calls = [...f.calls];
+  const setup = f.make(), calls = [...f.calls], controls = structuredClone(f.controlCalls), saved = structuredClone(f.saved), stateWrites = f.stateWrites;
   f.listener.ready = false;
   assert.equal(setup.status().state, 'waiting-listener');
-  f.listener.ready = true;
+  Object.assign(f.listener, { ready: true, available: false, connected: false, transportConnected: false, connectionGeneration: 0 });
+  assert.equal(setup.status().state, 'checking');
+  assert.equal(setup.status().reason, null);
+  Object.assign(f.listener, { connected: true, transportConnected: true });
+  assert.equal(setup.status().state, 'checking', 'Current socket evidence does not replace a settings check');
+  f.listener.available = true;
+  assert.equal(setup.status().state, 'checking');
+  f.api.get = async () => { f.calls.push('unexpected-cloud-read'); throw new Error('Synthetic offline cloud'); };
   await setup.runDue();
   assert.equal(setup.status().state, 'checking');
   assert.equal(setup.status().reason, null);
+  assert.equal(setup.status().busy, false);
+  assert.equal(setup.status().canAdopt, false);
+  assert.equal(setup.status().revision, null);
+  assert.equal(setup.status().lastSuccessAt, saved.lastSuccessAt, 'Local availability cannot renew the earlier cloud confirmation clock');
+  assert.equal(setup.status().nextAttemptAt, saved.nextAttemptAt);
+  const display = easeeLocalConnectionDisplay({ localOcpp: { ...f.listener, setup: setup.status() } },
+    { now: AT + 30001, formatTime: value => new Date(value).toISOString() });
+  assert.equal(display.setup.label, 'Waiting for settings check');
+  assert.equal(display.readings.label, 'Available');
+  assert.match(display.setup.detail, /Next settings check/);
+  assert.doesNotMatch(display.setup.detail, /Checking.*settings|confirmed/);
+  assert.deepEqual(f.saved, saved, 'Reporting current readiness performs no durable write');
+  assert.equal(f.stateWrites, stateWrites);
   assert.deepEqual(f.calls, calls);
-  f.advance(3600001); await setup.runDue();
-  assert.equal(setup.status().state, 'ready');
+  assert.deepEqual(f.controlCalls, controls, 'Reporting does not acquire or hand away native control');
+});
+
+test('installed current local readings retain known cloud failure and foreign-configuration diagnostics', async t => {
+  for (const kind of ['rate-limit', 'foreign']) await t.test(kind, async () => {
+    const f = fixture(); await f.setup.runDue();
+    f.listener.available = true; f.advance(30001); await f.setup.runDue();
+    const controls = structuredClone(f.controlCalls), writes = f.calls.filter(value => ['store', 'apply'].includes(value));
+    f.advance(3600001);
+    if (kind === 'rate-limit') f.api.get = async () => {
+      f.calls.push('rate-limited-get');
+      throw Object.assign(new Error('fixture-rate-limit'), { status: 429, retryAfterMs: 120000 });
+    };
+    else f.current = foreign();
+    await f.setup.runDue();
+    const status = f.setup.status(), saved = structuredClone(f.saved), calls = [...f.calls];
+    assert.equal(status.state, kind === 'rate-limit' ? 'retrying' : 'blocked');
+    assert.equal(status.reason, kind === 'rate-limit' ? 'cloud-rate-limit' : 'foreign-configuration');
+    assert.equal(status.canAdopt, kind === 'foreign');
+    assert.equal(f.listener.available, true);
+    await f.setup.runDue();
+    assert.deepEqual(f.saved, saved); assert.deepEqual(f.calls, calls);
+    assert.deepEqual(f.controlCalls, controls);
+    assert.deepEqual(f.calls.filter(value => ['store', 'apply'].includes(value)), writes);
+    const restart = f.make();
+    assert.equal(restart.status().state, 'checking', 'Saved timing and current readings cannot confirm unverified settings');
+    assert.equal(restart.status().reason, null, 'An earlier unsaved reason is not guessed after restart');
+    assert.equal(restart.status().nextAttemptAt, saved.nextAttemptAt);
+    assert.equal(restart.status().lastSuccessAt, saved.lastSuccessAt);
+    const display = easeeLocalConnectionDisplay({ localOcpp: { ...f.listener, setup: restart.status() } },
+      { now: AT + 3630002, formatTime: value => new Date(value).toISOString() });
+    assert.equal(display.setup.label, 'Waiting for settings check');
+    assert.equal(display.readings.label, 'Available');
+    assert.doesNotMatch(display.setup.detail, /confirmed|Setup complete/);
+    await restart.runDue();
+    assert.deepEqual(f.saved, saved); assert.deepEqual(f.calls, calls);
+    assert.deepEqual(f.controlCalls, controls);
+  });
+});
+
+test('current local availability cannot complete uninstalled, pending or actively checked setup', async t => {
+  for (const kind of ['absent', 'intent', 'adoption', 'in-flight']) await t.test(kind, async () => {
+    const f = fixture();
+    if (kind !== 'absent') {
+      await f.setup.runDue(); f.listener.available = true; f.advance(30001); await f.setup.runDue();
+    }
+    f.listener.available = true;
+    if (kind === 'intent') f.state.set({ ...f.saved, intent: {
+      fingerprint: f.saved.ownedFingerprint, base: f.saved.ownedFingerprint, version: f.current.version } });
+    if (kind === 'adoption') f.state.set({ ...f.saved, adoptionFingerprint: f.saved.ownedFingerprint });
+    const saved = structuredClone(f.saved), calls = [...f.calls], controls = structuredClone(f.controlCalls), setup = f.make();
+    if (kind === 'in-flight') {
+      f.advance(3600001);
+      let release; const gate = new Promise(resolve => { release = resolve; });
+      const get = f.api.get;
+      f.api.get = async () => { await gate; return get(); };
+      const running = setup.runDue();
+      assert.equal(setup.status().state, 'checking'); assert.equal(setup.status().busy, true);
+      release(); await running;
+      assert.equal(setup.status().state, 'ready');
+    } else {
+      assert.equal(setup.status().state, 'checking');
+      assert.deepEqual(f.saved, saved); assert.deepEqual(f.calls, calls); assert.deepEqual(f.controlCalls, controls);
+    }
+    await setup.close(); await f.setup.close();
+  });
 });
 
 test('listener recovery with applied setup still waits for fresh local readings', async () => {
@@ -361,7 +447,7 @@ test('restart exposes saved setup clocks while preserving failure backoff and un
   assert.equal(status.lastSuccessAt, lastSuccessAt, 'Status reads preserve the original successful setup clock.');
   const display = easeeLocalConnectionDisplay({ localOcpp: { ...f.listener, setup: status } },
     { now: AT + 3630002, formatTime: at => `fixture-clock-${at}` });
-  assert.ok(display.setup.detail.includes(`Next setup attempt fixture-clock-${saved.nextAttemptAt}`));
+  assert.ok(display.setup.detail.includes(`Next settings check fixture-clock-${saved.nextAttemptAt}`));
   assert.deepEqual(f.saved, saved, 'Rendering status never writes saved setup state.');
   await restarted.runDue();
   assert.deepEqual(f.calls, calls, 'No cloud read, Store or Apply runs before the saved failure deadline.');

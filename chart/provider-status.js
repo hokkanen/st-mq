@@ -699,7 +699,10 @@ export function easeeLocalConnectionDisplay(health, { now, formatTime } = {}) {
   const local = health?.localOcpp;
   if (!local || typeof local !== 'object') return null;
   const setup = local.setup ?? {}, known = Object.hasOwn(localSetupStates, setup.state);
-  const [stateLabel, stateExplanation] = known ? localSetupStates[setup.state]
+  const waitingForCheck = setup.state === 'checking' && setup.busy === false;
+  const [stateLabel, stateExplanation] = waitingForCheck
+    ? ['Waiting for settings check', 'Waiting for the next local connection settings check through Easee cloud.']
+    : known ? localSetupStates[setup.state]
     : ['Checking setup', 'Waiting for automatic local connection setup status.'];
   const controlPending = Object.hasOwn(localPendingReasons, setup.reason);
   const recovery = setup.recovery;
@@ -719,7 +722,7 @@ export function easeeLocalConnectionDisplay(health, { now, formatTime } = {}) {
   const timing = exhausted ? ' Automatic recovery has reached its three-attempt limit. Check the charger and network. Local OCPP remains enabled.'
     : recoveryTiming || (typeof formatTime === 'function' && Number.isFinite(now)
     && Number.isSafeInteger(setup.nextAttemptAt) && setup.nextAttemptAt > now
-    ? ` ${setup.state === 'ready' ? 'Next connection check' : 'Next setup attempt'} ${formatTime(setup.nextAttemptAt)}.` : '');
+    ? ` ${setup.state === 'ready' ? 'Next connection check' : waitingForCheck ? 'Next settings check' : 'Next setup attempt'} ${formatTime(setup.nextAttemptAt)}.` : '');
   const readings = setup.state === 'disabled' ? ['Not enabled', 'Local charger readings are disabled. Cloud readings use their own connection and availability checks.', 'pending']
     : local.error ? ['Needs attention', 'The local listener needs attention. Available cloud readings remain the backup.', 'attention']
     : local.available === true ? ['Available', 'Fresh charger electricity readings are available through local OCPP.', 'available']
