@@ -141,10 +141,15 @@ test('completion waiting follows the current operation past the former local pol
   const observedFormerLimit = new Promise(done => { crossed = done; });
   const { manager, installStarted } = await setup(t, { holdInstall: held });
   const accepted = await manager.action({ action: 'enable' }); await fixtureBoundary(t, installStarted);
-  let reads = 0, result = null;
+  let pollTurns = 0, readThisTurn = false, result = null;
   const observed = { status: () => {
     const value = manager.status();
-    if (++reads === 201) crossed();
+    // Identity checks may reread status synchronously. Count each yielding
+    // polling turn once so extra reads cannot shorten the controlled hold.
+    if (!readThisTurn) {
+      readThisTurn = true; queueMicrotask(() => { readThisTurn = false; });
+      if (++pollTurns === 201) crossed();
+    }
     return value;
   } };
   const completion = settled(t, observed).then(value => { result = { value }; }, error => { result = { error }; });
