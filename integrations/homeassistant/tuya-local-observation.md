@@ -208,9 +208,23 @@ startup with no held fields and repeated empty clears stay silent. Eligibility
 and the last warning time are memory-only for that current device instance;
 neither supplies source health or command permission.
 
-The new message contains only `ST-MQ native-field-withdrawal:` and one authored
-category. It includes no device names, identifiers, addresses, payloads, values
-or exception text. Existing upstream messages have their own logging behavior.
+The message contains `ST-MQ native-field-withdrawal:` and one authored category.
+When `connection-context-changed` removes held fields before or after a native
+call, an optional fixed suffix identifies that boundary and the observed members:
+`boundary=before-call|after-call members=1..7`. The mask uses bit 1 for API object
+identity, bit 2 for socket object identity (including `None`) and bit 4 for the
+protocol value. Comparisons use only the tuples already captured by those two
+callers, inside the diagnostic exception boundary. The boundary must be an exact
+built-in string and the protocol comparison an exact boolean; malformed or
+ambiguous detail retains the category alone. The suffix shares the existing warning cap and adds no native
+read, query, timer, database write or observation-clock renewal.
+
+These flags describe tuple changes, including initial socket establishment;
+they do not identify an actor, network failure or disconnect duration. Earlier
+warnings without member detail cannot retrospectively identify a member. No
+device names, identifiers, addresses, payloads, protocol values, object
+representations or exception text are included. Existing upstream messages have
+their own logging behavior.
 
 | Category | Existing producer boundary |
 | --- | --- |

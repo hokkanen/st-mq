@@ -34,7 +34,10 @@ class Sink(logging.Handler):
     def __init__(self):
         super().__init__(); self.records = []; self.fail = False
     def emit(self, record):
-        if record.msg != 'ST-MQ native-field-withdrawal: %s': return
+        if record.msg not in {
+            'ST-MQ native-field-withdrawal: %s',
+            'ST-MQ native-field-withdrawal: %s boundary=%s members=%d',
+        }: return
         self.records.append(record.getMessage())
         if self.fail: raise RuntimeError('Synthetic secret-like sink failure')
 
@@ -60,8 +63,9 @@ class WithdrawalDiagnosticsTests(unittest.TestCase):
         d._refresh_task = None
         d.register_entity(entity(profile, kind))
         return n, d
-    def logged(self, reason):
-        self.assertEqual(self.sink.records, [PREFIX + reason])
+    def logged(self, reason, boundary=None, members=None):
+        detail = '' if boundary is None else f' boundary={boundary} members={members}'
+        self.assertEqual(self.sink.records, [PREFIX + reason + detail])
     def withdrawn(self, d, before, cached=True):
         self.assertEqual(d.local_observations, {'identity': before['identity']})
         if cached: self.assertIs(d.get_property('1'), True)
@@ -88,7 +92,7 @@ class WithdrawalDiagnosticsTests(unittest.TestCase):
         self.assertIsNone(d._receive_for_local_observations())
         self.withdrawn(d, before)
         self.assertEqual(len(n.socket.sent), 0); self.assertGreater(sent, 0)
-        self.logged('connection-context-changed')
+        self.logged('connection-context-changed', 'after-call', 2)
     def test_silent_failed_frame_integrity_now_names_existing_evidence_rejection(self):
         n, d = self.fixture(); before = d.local_observations; sent = len(n.socket.sent)
         n.socket.frames.append(q.frame(q.ALL, 99, 8, crc_good=False))
@@ -180,8 +184,105 @@ class WithdrawalDiagnosticsTests(unittest.TestCase):
         n.socket = q.Wire(); n.socket.frames.append(q.frame(q.ALL, 99, 8))
         result = d._receive_for_local_observations()
         self.assertIsInstance(result, dict)
-        self.withdrawn(d, before); self.logged('connection-context-changed')
+        self.withdrawn(d, before); self.logged('connection-context-changed', 'before-call', 2)
         self.assertEqual(n.socket.sent, [])
+
+    def test_actual_before_call_names_each_captured_member_combination_without_new_reads(self):
+        for mask in range(1, 8):
+            with self.subTest(mask=mask):
+                MONOTONIC[0] += 30; self.sink.records.clear()
+                n, d = self.fixture(); before = d.local_observations
+                old = (n, n.socket, n.version)
+                replacement, _ = q.fixture() if mask & 1 else (n, None)
+                replacement.socket = q.Wire() if mask & 2 else old[1]
+                replacement.version = 3.4 if mask & 4 else old[2]
+                d._api = replacement
+                replacement.socket.frames.append(q.frame(q.ALL, 99, 8))
+                native_receive = replacement.receive; calls = []
+                def receive():
+                    calls.append(True); return native_receive()
+                replacement.receive = receive
+                sent = len(replacement.socket.sent)
+                result = d._receive_for_local_observations()
+                self.assertIsInstance(result, dict)
+                self.withdrawn(d, before)
+                self.assertEqual(calls, [True])
+                self.assertEqual(len(replacement.socket.sent), sent)
+                self.logged('connection-context-changed', 'before-call', mask)
+                self.assertIsNone(d._local_query_ticket)
+                self.assertEqual(d._local_status_refresh is not None, mask == 2)
+
+    def test_actual_after_call_names_each_captured_member_combination_and_rejects_old_reply(self):
+        for mask in range(1, 8):
+            with self.subTest(mask=mask):
+                MONOTONIC[0] += 30; self.sink.records.clear()
+                n, d = self.fixture(); before = d.local_observations
+                old = (n, n.socket, n.version)
+                replacement, _ = q.fixture() if mask & 1 else (n, None)
+                calls = []; sent = len(n.socket.sent)
+                def receive():
+                    calls.append(True)
+                    replacement.socket = q.Wire() if mask & 2 else old[1]
+                    replacement.version = 3.4 if mask & 4 else old[2]
+                    d._api = replacement
+                    return q.frame(q.ALL, 99, 8)
+                n._receive = receive
+                self.assertIsNone(d._receive_for_local_observations())
+                self.withdrawn(d, before)
+                self.assertEqual(calls, [True])
+                self.assertEqual(len(old[1].sent), sent)
+                self.logged('connection-context-changed', 'after-call', mask)
+                self.assertIsNone(d._local_query_ticket)
+                self.assertEqual(d._local_status_refresh is not None, mask == 2)
+
+    def test_unknown_or_exceptional_detail_keeps_generic_category_without_rendering_objects(self):
+        class PrivateValue:
+            def __eq__(self, other): raise RuntimeError('Synthetic private protocol failure')
+            def __repr__(self): raise AssertionError('Private object must never be rendered')
+        class PrivateBoundary:
+            def __hash__(self): return hash('before-call')
+            def __eq__(self, other): return other == 'before-call'
+            def __str__(self): raise AssertionError('Private boundary must never be rendered')
+        class PrivateString(str):
+            def __str__(self): raise AssertionError('String subclass must never be rendered')
+        class IntegerLike:
+            def __int__(self): return 1
+        class AmbiguousProtocol:
+            def __init__(self, result): self.result = result
+            def __ne__(self, other): return self.result
+        private = PrivateValue(); api = object(); socket = object()
+        malformed = [None, [], (), ((), (), 'before-call'),
+                     ((api, socket, 3.3), (api, socket, 3.4), 'Synthetic private boundary'),
+                     ((api, socket, private), (api, socket, 3.3), 'after-call'),
+                     ((api, socket, 3.3), (api, socket, 3.3), 'before-call'),
+                     ((api, socket, 3.3), (api, socket, 3.4), PrivateBoundary()),
+                     ((api, socket, 3.3), (api, socket, 3.4), PrivateString('before-call'))]
+        for comparison in (1, 0, IntegerLike()):
+            malformed.append(((api, socket, AmbiguousProtocol(comparison)),
+                              (api, object(), 3.3), 'after-call'))
+        for detail in malformed:
+            MONOTONIC[0] += 30; self.sink.records.clear()
+            n, d = self.fixture(); before = d.local_observations
+            updates = []; d._children[0].schedule_update_ha_state = lambda: updates.append(True)
+            generation = d._local_query_generation
+            d._clear_local_observations('connection-context-changed', detail)
+            self.withdrawn(d, before); self.assertEqual(updates, [True])
+            self.assertIsNot(d._local_query_generation, generation)
+            self.logged('connection-context-changed')
+
+    def test_context_detail_shares_existing_rate_cap_and_failed_sink_isolation(self):
+        n, d = self.fixture(); before = d.local_observations
+        detail = ((n, n.socket, 3.3), (n, object(), 3.3), 'after-call')
+        updates = []; d._children[0].schedule_update_ha_state = lambda: updates.append(True)
+        self.sink.fail = True
+        d._clear_local_observations('connection-context-changed', detail)
+        self.withdrawn(d, before); self.assertEqual(updates, [True])
+        self.logged('connection-context-changed', 'after-call', 2)
+        MONOTONIC[0] = 129.999; d._observe_local_dps(q.ALL); d.pause()
+        self.logged('connection-context-changed', 'after-call', 2)
+        MONOTONIC[0] = 130; d._observe_local_dps(q.ALL); d._reset_cached_state()
+        self.assertEqual(self.sink.records, [PREFIX+'connection-context-changed boundary=after-call members=2',
+                                            PREFIX+'cache-reset'])
     def test_actual_cache_reset_withdraws_without_source_clock_renewal(self):
         n, d = self.fixture(); before = d.local_observations
         d._reset_cached_state()
