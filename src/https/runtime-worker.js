@@ -93,6 +93,16 @@ function tarNumber(block, offset, size) {
 }
 function tarText(block, start, size) { return block.subarray(start, start + size).toString('utf8').replace(/\0.*$/, ''); }
 
+export async function writeArchiveChunk(file, chunk) {
+  let offset = 0;
+  while (offset < chunk.length) {
+    const remaining = chunk.length - offset;
+    const { bytesWritten } = await file.write(chunk, offset, remaining);
+    if (!Number.isSafeInteger(bytesWritten) || bytesWritten <= 0 || bytesWritten > remaining) throw httpsError('vendor_archive_write_failed');
+    offset += bytesWritten;
+  }
+}
+
 // An intentionally narrow streaming tar reader. Executable content is extracted
 // only after the vendor signature has authenticated the complete compressed
 // archive. No links, extension records, ownership or special files are accepted.
@@ -100,7 +110,7 @@ export async function extractArchive(path, destination, { version, arch }) {
   const prefix = `tailscale_${version}_${arch}/`; const seen = new Set(); const binaries = new Map();
   let pending = Buffer.alloc(0); let entry = null; let expansion = 0; let zeroBlocks = 0;
   const stream = createReadStream(path).pipe(createGunzip());
-  const writeEntry = async chunk => { if (entry.file) await entry.file.write(chunk); };
+  const writeEntry = async chunk => { if (entry.file) await writeArchiveChunk(entry.file, chunk); };
   try {
     for await (const chunk of stream) {
       expansion += chunk.length;
@@ -112,8 +122,8 @@ export async function extractArchive(path, destination, { version, arch }) {
             const bytes = Math.min(pending.length, entry.remaining);
             await writeEntry(pending.subarray(0, bytes)); pending = pending.subarray(bytes); entry.remaining -= bytes;
             if (entry.remaining) break;
-            if (entry.file) { await entry.file.sync(); await entry.file.close(); entry.file = null; }
           }
+          if (entry.file) { await entry.file.sync(); await entry.file.close(); entry.file = null; }
           const bytes = Math.min(pending.length, entry.padding); pending = pending.subarray(bytes); entry.padding -= bytes;
           if (entry.padding) break;
           entry = null; continue;
@@ -143,7 +153,10 @@ export async function extractArchive(path, destination, { version, arch }) {
   } catch (error) { stream.destroy(); if (entry?.file) await entry.file.close().catch(() => {}); throw error; }
   for (const name of ['tailscale', 'tailscaled']) {
     const file = await open(resolve(destination, name), 'r'); const header = Buffer.alloc(64);
-    try { await file.read(header, 0, 64, 0); } finally { await file.close(); }
+    try {
+      if ((await file.stat()).size !== binaries.get(name)) throw httpsError('vendor_archive_extraction_size_mismatch');
+      await file.read(header, 0, 64, 0);
+    } finally { await file.close(); }
     if (header.subarray(0, 4).toString('hex') !== '7f454c46' || header[4] !== 2 || header[5] !== 1 ||
         ![2, 3].includes(header.readUInt16LE(16)) || header.readUInt16LE(18) !== (arch === 'amd64' ? 62 : 183)) throw httpsError('helper_executable_format_invalid');
     // Public immutable executables can be executed through a pre-opened fd by
