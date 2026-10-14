@@ -41,6 +41,14 @@ could be discarded and the pending write marked sent without a successful
 transport result. A successful `nowait` result still means only a transport
 attempt, not device receipt or a new observation. The handler's existing retry
 count, reset behavior and empty-status exception remain unchanged.
+Each locked retry reads the current unsent entries instead of replaying an
+earlier failed batch. A successful result marks only the exact entries captured
+for that attempt: a newer command, even one requesting the same value, remains
+unsent until its own attempt. Removed entries are not recreated, and an empty
+batch sends nothing and leaves native protocol-health flags and failure counts
+unchanged. This does not cancel an already in-flight native attempt
+or change the existing exhausted-retry reset; neither command bookkeeping nor
+successful transport supplies received device evidence.
 The bridge checks an expiring, identity-bound command before passing it to the
 native Home Assistant service. Once handed off, Tuya Local's own delivery and
 retry behavior applies; MQTT expiry is not a device-local cancellation guarantee.
@@ -97,5 +105,7 @@ Offline validation: `node --test test/tuya-local-observation.test.js`. The test
 executes patched upstream methods using synthetic native replies and checks
 partial reports, pending values, reconnects, physical identity, scoped attributes,
 returned command errors, native retries, exact source checks, backups, idempotence
-and installation rollback. These synthetic checks do not identify the cause of
+and installation rollback. Pending-command interleavings check newer opposite
+and same-value choices, lock waits, removal, multiple datapoints and retry order.
+These synthetic checks do not identify the cause of
 an unconfirmed live command or prove physical delivery.

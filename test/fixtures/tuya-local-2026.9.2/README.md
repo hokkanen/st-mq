@@ -12,7 +12,8 @@ The supported installed `device.py` build has SHA-256
 Its lock placement and disconnected-socket backoff differ from the source served
 by the upstream tag at review time. The adapter retains that existing locking
 and retry handler. It forwards returned command errors before marking pending
-writes sent; the source fixture itself stays pristine. The installer accepts only
+writes sent and keeps each attempt's pending-entry lineage; the source fixture
+itself stays pristine. The installer accepts only
 the reviewed source bytes, not every installation bearing the same version label.
 The complete original and patched hashes are in
 `integrations/homeassistant/tuya-local-observation.json`.

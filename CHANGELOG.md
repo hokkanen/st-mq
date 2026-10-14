@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve newer Tuya pending commands when an older native attempt returns, and
+  retry the current unsent settings instead of an obsolete batch. Existing retry
+  limits and independently received device observations remain unchanged.
+
 - Forward reported Tuya command failures to its existing native retry handler
   without marking failed writes sent or treating requested settings as fresh
   device observations. The source patch remains pinned and fail closed.

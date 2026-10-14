@@ -46,9 +46,10 @@ Device = extracted_class(PATCHED['device.py'], 'TuyaLocalDevice', {
     '_remove_properties_from_pending_updates', 'anticipate_property_value', 'receive_loop',
     '_refresh_cached_state', 'async_refresh', 'unique_id', 'name',
     '_set_values', '_retry_on_failed_connection', '_get_unsent_properties',
+    '_send_pending_updates', '_add_properties_to_pending_updates',
 }, {'time': lambda: CLOCK[0], 'deepcopy': deepcopy, 'sha256': hashlib.sha256,
     '_LOGGER': logging.getLogger('synthetic-tuya'), 'log_json': lambda value: '<synthetic>',
-    '_ERROR_HINTS': {},
+    '_ERROR_HINTS': {}, '_NO_PENDING_UPDATES': object(),
     'get_device_id': lambda value: value['device_id'] + ':' + value['device_cid'],
     'CONF_DEVICE_ID': 'device_id', 'CONF_DEVICE_CID': 'device_cid'})
 Entity = extracted_class(PATCHED['entity.py'], 'TuyaLocalEntity', {'extra_state_attributes'},
@@ -213,7 +214,7 @@ class CommandTransportTests(unittest.TestCase):
         pending, observed = deepcopy(device._pending_updates), device.local_observations
         last_connection = device._last_connection
         CLOCK[0] += 1
-        self.assertIs(device._set_values({'1': False}), failure)
+        self.assertIs(device._set_values(), failure)
         self.assertEqual(device._pending_updates, pending)
         self.assertEqual(device._last_connection, last_connection)
         self.assertEqual(device.local_observations, observed)
@@ -224,7 +225,7 @@ class CommandTransportTests(unittest.TestCase):
         device, attempts = self.command_device([None])
         observed = device.local_observations
         CLOCK[0] += 1
-        self.assertIsNone(device._set_values({'1': False}))
+        self.assertIsNone(device._set_values())
         self.assertTrue(device._pending_updates['1']['sent'])
         self.assertEqual(device._last_connection, CLOCK[0])
         self.assertEqual(device.local_observations, observed)
@@ -235,7 +236,7 @@ class CommandTransportTests(unittest.TestCase):
 
     def test_returned_error_reaches_the_existing_retry_before_success(self):
         device, attempts = self.command_device([{'Error': 'Synthetic unavailable socket', 'Err': '905'}, None])
-        result = asyncio.run(device._retry_on_failed_connection(lambda: device._set_values({'1': False}), 'Synthetic send failed'))
+        result = asyncio.run(device._retry_on_failed_connection(lambda: device._set_values(), 'Synthetic send failed'))
         self.assertIsNone(result)
         self.assertEqual(len(attempts), 2)
         self.assertTrue(device._pending_updates['1']['sent'])
@@ -244,7 +245,7 @@ class CommandTransportTests(unittest.TestCase):
 
     def test_exhausted_returned_errors_use_existing_reset_without_false_send(self):
         device, attempts = self.command_device([{'Error': 'Synthetic unavailable socket', 'Err': '905'}] * 3)
-        result = asyncio.run(device._retry_on_failed_connection(lambda: device._set_values({'1': False}), 'Synthetic send failed'))
+        result = asyncio.run(device._retry_on_failed_connection(lambda: device._set_values(), 'Synthetic send failed'))
         self.assertIsNone(result)
         self.assertEqual(len(attempts), 3)
         self.assertEqual(device._api_working_protocol_failures, 1)
@@ -255,7 +256,7 @@ class CommandTransportTests(unittest.TestCase):
     def test_existing_empty_status_error_exception_cannot_invent_a_sent_command(self):
         device, attempts = self.command_device([{'Error': 'Synthetic empty status', 'Err': '900'}])
         observed = device.local_observations
-        result = asyncio.run(device._retry_on_failed_connection(lambda: device._set_values({'1': False}), 'Synthetic send failed'))
+        result = asyncio.run(device._retry_on_failed_connection(lambda: device._set_values(), 'Synthetic send failed'))
         self.assertIsNone(result, 'Existing native 900 status-query exception is retained')
         self.assertEqual(len(attempts), 1)
         self.assertFalse(device._pending_updates['1']['sent'])
@@ -263,14 +264,150 @@ class CommandTransportTests(unittest.TestCase):
 
     def test_exception_retry_and_core_stopping_keep_existing_behavior(self):
         device, attempts = self.command_device([OSError('Synthetic connection failure'), None])
-        asyncio.run(device._retry_on_failed_connection(lambda: device._set_values({'1': False}), 'Synthetic send failed'))
+        asyncio.run(device._retry_on_failed_connection(lambda: device._set_values(), 'Synthetic send failed'))
         self.assertEqual(len(attempts), 2)
         self.assertTrue(device._pending_updates['1']['sent'])
         device, attempts = self.command_device([])
         device._hass.is_stopping = True
-        asyncio.run(device._retry_on_failed_connection(lambda: device._set_values({'1': False}), 'Synthetic send failed'))
+        asyncio.run(device._retry_on_failed_connection(lambda: device._set_values(), 'Synthetic send failed'))
         self.assertEqual(attempts, [])
         self.assertFalse(device._pending_updates['1']['sent'])
+
+
+class PendingCommandLineageTests(unittest.TestCase):
+    setUp = CommandTransportTests.setUp
+    command_device = CommandTransportTests.command_device
+    # Exercise the actual pending-entry producer and send/retry/lock path. The
+    # synthetic transport callback represents another HA service updating the
+    # pending map while the older executor-owned native attempt is in flight.
+    def replacing_send(self, device, outcomes, replacement):
+        attempts = []
+        results = iter(outcomes)
+        def send(properties, *, nowait):
+            attempts.append((deepcopy(properties), nowait))
+            if len(attempts) == 1:
+                CLOCK[0] += 1
+                replacement()
+            result = next(results)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        device._api.set_multiple_values = send
+        return attempts
+
+    def test_newer_opposite_choice_is_not_marked_sent_by_older_success(self):
+        device, _ = self.command_device([])
+        observed = device.local_observations
+        attempts = self.replacing_send(device, [None, None],
+                                      lambda: device._add_properties_to_pending_updates({'1': True}))
+        asyncio.run(device._send_pending_updates())
+        newer = deepcopy(device._pending_updates['1'])
+        self.assertEqual(newer, {'value': True, 'updated_at': CLOCK[0], 'sent': False})
+        self.assertEqual(device.local_observations, observed)
+        asyncio.run(device._send_pending_updates())
+        self.assertEqual(attempts, [({'1': False}, True), ({'1': True}, True)])
+        self.assertTrue(device._pending_updates['1']['sent'])
+
+    def test_newer_same_value_is_a_distinct_unsent_choice(self):
+        device, _ = self.command_device([])
+        original = device._pending_updates['1']
+        attempts = self.replacing_send(device, [None],
+                                      lambda: device._add_properties_to_pending_updates({'1': False}))
+        asyncio.run(device._send_pending_updates())
+        self.assertIsNot(device._pending_updates['1'], original)
+        self.assertFalse(device._pending_updates['1']['sent'])
+        self.assertEqual(attempts, [({'1': False}, True)])
+
+    def test_entry_removed_during_success_is_not_recreated_or_retried(self):
+        device, _ = self.command_device([])
+        observed = device.local_observations
+        attempts = self.replacing_send(device, [None], lambda: device._pending_updates.clear())
+        asyncio.run(device._send_pending_updates())
+        self.assertEqual(attempts, [({'1': False}, True)])
+        self.assertEqual(device._pending_updates, {})
+        self.assertEqual(device.local_observations, observed)
+
+    def test_multiple_datapoints_only_mark_the_exact_attempted_entries(self):
+        device, _ = self.command_device([])
+        device._add_properties_to_pending_updates({'2': 55, '4': 'low', '19': 7})
+        original = dict(device._pending_updates)
+        observed = device.local_observations
+        def replace():
+            device._add_properties_to_pending_updates({'1': True, '2': 55, '20': 9})
+            device._pending_updates.pop('4')
+        attempts = self.replacing_send(device, [None, None], replace)
+        asyncio.run(device._send_pending_updates())
+        self.assertFalse(device._pending_updates['1']['sent'])
+        self.assertFalse(device._pending_updates['2']['sent'])
+        self.assertFalse(device._pending_updates['20']['sent'])
+        self.assertTrue(device._pending_updates['19']['sent'])
+        self.assertIs(device._pending_updates['19'], original['19'])
+        self.assertNotIn('4', device._pending_updates)
+        self.assertEqual(device.local_observations, observed)
+        asyncio.run(device._send_pending_updates())
+        self.assertEqual(attempts, [({'1': False, '2': 55, '4': 'low', '19': 7}, True),
+                                    ({'1': True, '2': 55, '20': 9}, True)])
+
+    def test_returned_error_retries_the_newer_opposite_choice(self):
+        device, _ = self.command_device([])
+        attempts = self.replacing_send(device, [{'Error': 'Synthetic socket failure', 'Err': '905'}, None],
+                                      lambda: device._add_properties_to_pending_updates({'1': True}))
+        asyncio.run(device._send_pending_updates())
+        self.assertEqual(attempts, [({'1': False}, True), ({'1': True}, True)])
+        self.assertTrue(device._pending_updates['1']['sent'])
+        self.assertEqual(device._api_working_protocol_failures, 0)
+        self.assertEqual(set(device.local_observations), {'identity'})
+
+    def test_exception_retries_the_newer_same_value_entry(self):
+        device, _ = self.command_device([])
+        original = device._pending_updates['1']
+        attempts = self.replacing_send(device, [OSError('Synthetic failure'), None],
+                                      lambda: device._add_properties_to_pending_updates({'1': False}))
+        asyncio.run(device._send_pending_updates())
+        self.assertIsNot(device._pending_updates['1'], original)
+        self.assertFalse(original['sent'])
+        self.assertTrue(device._pending_updates['1']['sent'])
+        self.assertEqual(attempts, [({'1': False}, True), ({'1': False}, True)])
+
+    def test_removed_failed_batch_sends_no_empty_retry(self):
+        device, _ = self.command_device([])
+        device._api_working_protocol_failures = 4
+        attempts = self.replacing_send(device, [{'Error': 'Synthetic socket failure', 'Err': '905'}],
+                                      lambda: device._pending_updates.clear())
+        asyncio.run(device._send_pending_updates())
+        self.assertEqual(attempts, [({'1': False}, True)])
+        self.assertEqual(device._pending_updates, {})
+        self.assertEqual(device._api_working_protocol_failures, 4,
+                         'A skipped retry is not successful native protocol evidence')
+
+    def test_choice_changed_while_waiting_for_native_lock_is_the_first_attempt(self):
+        device, attempts = self.command_device([None])
+        async def run():
+            await device._api_lock.acquire()
+            send = asyncio.create_task(device._send_pending_updates())
+            await asyncio.sleep(0)
+            CLOCK[0] += 1
+            device._add_properties_to_pending_updates({'1': True})
+            device._api_lock.release()
+            await send
+        asyncio.run(run())
+        self.assertEqual(attempts, [({'1': True}, True)])
+        self.assertTrue(device._pending_updates['1']['sent'])
+
+    def test_no_pending_or_only_sent_entries_never_send_an_empty_batch(self):
+        for pending in [{}, {'1': {'value': False, 'updated_at': CLOCK[0], 'sent': True}}]:
+            with self.subTest(pending=pending):
+                device, attempts = self.command_device([])
+                device._pending_updates = deepcopy(pending)
+                device._api_protocol_working = False
+                device._api_working_protocol_failures = 4
+                observed, last_connection = device.local_observations, device._last_connection
+                asyncio.run(device._send_pending_updates())
+                self.assertEqual(attempts, [])
+                self.assertEqual(device._last_connection, last_connection)
+                self.assertEqual(device.local_observations, observed)
+                self.assertFalse(device._api_protocol_working)
+                self.assertEqual(device._api_working_protocol_failures, 4)
 
 
 class InstallerTests(unittest.TestCase):
