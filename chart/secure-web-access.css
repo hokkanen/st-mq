@@ -45,6 +45,7 @@
 @media (max-width: 480px) {
   .secure-web-access-update-groups { grid-template-columns: minmax(0, 1fr); }
   .secure-web-access-facts > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .secure-web-access-actions { align-items: stretch; }
   .secure-web-access-actions button { flex: 1 1 110px; }
   .secure-web-access-actions #secure-web-access-disable { margin-left: 0; }
   .secure-web-access-update-controls { align-items: stretch; }

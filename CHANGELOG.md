@@ -6,6 +6,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep Web access action buttons the same height on phones when a label wraps.
+
 - Request one earlier native status refresh after the supported dehumidifier's
   socket replacement withdraws current fields. Preserve unknown observations,
   original report clocks and late commands through that added read; repeated
