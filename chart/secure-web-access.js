@@ -247,7 +247,9 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     releaseSummary: admin ? !state.updates?.installed ? 'Set up HTTPS to install the tested helper release.'
       : newerRelease ? 'A newer eligible release is available.' : checkedRelease === 0 ? checkClockKnown
         ? 'Up to date with the last checked release.' : 'Installed and observed release match; check time unknown.'
-      : checkedRelease === -1 ? 'The installed helper is newer than the last checked release.'
+      : checkedRelease === -1 ? checkClockKnown
+        ? 'The installed helper is newer than the last checked release.'
+        : 'The installed helper is newer than the observed release; check time unknown.'
       : 'Check releases to compare the installed helper with the current supported release.' : '',
     updatePolicyAvailable: admin && !peerOwner,
     updateSummary: peerOwner ? 'Certificate helper updates are managed on the paired certificate-owner computer.'

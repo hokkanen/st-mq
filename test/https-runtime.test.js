@@ -473,15 +473,18 @@ for (const boundary of ['closed', 'changed-pair', 'wrong-version']) test(`a curr
   currentPairId = 'authentication-pair'; await current.close();
 });
 
-test('current admitted release state with an unknown check clock cannot claim a last checked release', async t => {
+for (const comparison of ['matching', 'older']) test(`current admitted ${comparison} release state with an unknown check clock cannot claim a last checked release`, async t => {
   const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
   await context.manager.action({ action: 'check-updates' }); await settled(context.manager); await context.manager.close();
   const path = resolve(context.directory, 'https', 'state.json'); const saved = JSON.parse(await readFile(path, 'utf8'));
-  saved.updates.lastSuccessfulCheck = null; await atomicJson(path, saved);
+  saved.updates.lastSuccessfulCheck = null;
+  if (comparison === 'older') saved.updates.latest = '1.104.0';
+  await atomicJson(path, saved);
   const current = restart(t, context); current.start();
   for (let i = 0; i < 200 && current.status().phase !== 'ready'; i++) await wait(5);
   const status = current.status(); assert.equal(status.error, null, 'The actual current strict state reader admits the null observation clock');
-  assert.equal(status.updates.latest, status.updates.installed); assert.equal(status.updates.lastSuccessfulCheck, null);
+  assert.equal(status.updates.latest, comparison === 'older' ? '1.104.0' : status.updates.installed);
+  assert.equal(status.updates.lastSuccessfulCheck, null);
   const view = secureWebAccessView(status, { admin: true }); assert.equal(view.checked, 'Not checked');
   assert.doesNotMatch(view.releaseSummary, /last checked|Up to date/, 'A missing source clock cannot become a claim that a timed release check exists');
   await current.close();
