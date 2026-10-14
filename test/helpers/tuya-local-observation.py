@@ -37,7 +37,13 @@ def extracted_class(source, class_name, methods, globals_):
     node.bases = []
     node.body = [row for row in node.body if isinstance(row, (ast.FunctionDef, ast.AsyncFunctionDef)) and row.name in methods]
     namespace = dict(globals_)
-    exec(compile(ast.Module(body=[node], type_ignores=[]), '<pinned-tuya-local-source>', 'exec'), namespace)
+    # Execute only the current pure export contract and skipped-read marker,
+    # alongside selected methods; no HA imports or integration startup.
+    constants = [row for row in tree.body if isinstance(row, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id in {
+                     '_LOCAL_OBSERVATION_FIELDS', '_LOCAL_OBSERVATION_PROFILE', '_SKIP_LOCAL_STATUS'
+                 } for target in row.targets)]
+    exec(compile(ast.Module(body=constants + [node], type_ignores=[]), '<pinned-tuya-local-source>', 'exec'), namespace)
     return namespace[class_name]
 
 

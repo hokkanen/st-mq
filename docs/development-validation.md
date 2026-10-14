@@ -802,6 +802,15 @@ skip; it never opens a device connection. Ordinary device and UI tests use
 synthetic observations. Live commissioning results belong in the task record,
 with private IDs and readings excluded from logs and screenshots.
 
+`test/tuya-local-status-refresh.test.js` exercises the current native receive loop
+and pinned SDK at a controlled validated-frame boundary. It checks one consumed
+refresh budget per current source episode, genuine field recovery, invalid power,
+poll-only behavior, original clocks and cancellation/source movement across native
+lock/executor waits. Actual queued command entries and supersession are retained
+through the added read's terminal failure only while that source remains current.
+Separate AES/CRC socket-reopen probes validate parser reachability; neither test
+boundary establishes the cause of a household withdrawal or physical delivery.
+
 The fullscreen suite checks the page controls, chart entry/exit restoration,
 external fullscreen changes and fallback behavior with synthetic data.
 

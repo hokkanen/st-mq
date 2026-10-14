@@ -63,6 +63,10 @@ local integration and bridge in this order:
    preserves private backups before changing Python files. A separately reviewed
    Home Assistant restart loads the patch. The adapter exposes confirmed raw
    device replies in the humidifier's `local_observations` attribute.
+   A bounded current-source refresh can request an earlier native status read
+   after socket replacement withdraws those fields. Unknown fields stay unknown
+   until genuinely received; this does not change the recording grace, physical
+   association, native commands or five-minute restart protection.
 3. Generate the two automations using `dehumidifierAutomations({ id, label,
    prefix, humidifierEntity, fanSpeedEntity, deviceIdentity })`, with prefix
    `stmq/garage/caravan_dehumidifier`. `humidifierEntity` must be the native

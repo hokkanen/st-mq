@@ -51,8 +51,8 @@ loss of source exclusivity uses conservative omission handling on that connectio
 until its API/socket/protocol or native cache resets. This is uncertainty handling,
 not proof that every subsequent packet is complete. Shared API wrappers, child
 sources, forced-DPS configurations and unproved protocols retain the existing fail-closed polling behavior;
-protocol 3.5's different response sequence rules are not guessed. No extra query,
-queue drain, retry or socket reset is introduced. In particular, this correction
+protocol 3.5's different response sequence rules are not guessed. Sequence
+classification adds no query, queue drain, retry or socket reset. In particular, it
 does not identify the cause of an earlier household bridge withdrawal.
 
 While the single ticket or conservative connection state is active, the existing
@@ -99,12 +99,50 @@ for that attempt: a newer command, even one requesting the same value, remains
 unsent until its own attempt. Removed entries are not recreated, and an empty
 batch sends nothing and leaves native protocol-health flags and failure counts
 unchanged. This does not cancel an already in-flight native attempt
-or change the existing exhausted-retry reset; neither command bookkeeping nor
+or change the ordinary exhausted-retry reset; neither command bookkeeping nor
 successful transport supplies received device evidence.
 The bridge checks an expiring, identity-bound command before passing it to the
 native Home Assistant service. Once handed off, Tuya Local's own delivery and
 retry behavior applies; MQTT expiry is not a device-local cancellation guarantee.
 Only a genuine subsequent device reply confirms the resulting state.
+
+## Bounded status refresh after connection withdrawal
+
+On the current registered DESD8LW humidifier, an established socket replacement
+can withdraw native fields while the ordinary entity cache still looks recent.
+The discarded reply remains unusable. For the exclusively owned direct protocol
+3.3 persistent source, the adapter can request one earlier invocation of the
+existing full-status retry handler. A current scheduled status read already
+serves a replacement detected before that read; it does not add another request.
+Poll-only, temporary polling, shared/child APIs, forced-DPS and other profiles or
+protocols retain their existing polling paths.
+
+The memory-only budget belongs to the actual API, protocol, selected source owner
+and registered entity. It is consumed before native lock/executor waits. Further
+socket replacement, errors, omissions or partial/cache/pending values cannot
+rearm it. The budget renews only after all four exported fields have genuinely
+arrived on the current admitted source, including boolean native power, as required
+by the bridge. Unsupported power values remain unknown; the adapter adds no new
+humidity or fan interpretation. Cleared generations and changed source ownership
+cancel pending work and cannot admit its later reply. Original field receipt
+clocks, query correlation and conservative omission rules remain unchanged.
+The first native dispatch separately rechecks the captured observation generation
+and shutdown state after lock/executor waits; neither becomes a new budget key.
+
+Unsent commands defer the added read, and a newly queued command before its first
+native attempt cancels it. A command arriving after a read starts waits for the
+existing native lock and socket timeout, just as during an ordinary full read.
+The added read uses the existing retry count, backoff and protocol handling; one
+handler invocation may therefore send multiple wire queries. No new polling
+interval, repeated refresh cadence, connection reset or serialization policy is
+introduced. If only this added read exhausts its retries while its exact source
+remains current, the terminal cache reset preserves the actual current pending
+entries. It never restores an earlier snapshot, recreates a removed request or
+replays a superseded value. Ordinary status/reset behavior is unchanged.
+
+This avoids one demonstrated offline delay until the next periodic full poll. It
+does not diagnose a household withdrawal or guarantee immediate device recovery.
+The source patch still needs the separately reviewed Core restart below.
 
 ## Native field withdrawal diagnostics
 
@@ -210,3 +248,10 @@ clear caller and the full-omission producer, checks nested clears, constructor a
 profile scope, the exact monotonic rate boundary, sink failure and fixed-message
 privacy. It uses the same controlled decoded-frame boundary; logging assertions
 do not independently validate encryption or CRC parsing.
+`test/tuya-local-status-refresh.test.js` additionally runs the actual native loop,
+SDK status/receive consumers and command retry handler at that controlled frame
+boundary. It covers consumed budgets, complete/partial/invalid power, current
+source and generation changes, queued/cancelled/in-flight work, poll-only behavior
+and late superseding commands. Controlled executor gates compare ordinary and
+added reads without claiming measured household command latency. Separate
+source-pinned AES/CRC probes qualify the actual socket-reopen/parser path.

@@ -11,17 +11,20 @@
  
  import tinytuya
  from homeassistant.const import (
-@@ -32,6 +34,9 @@
+@@ -32,6 +34,12 @@
  from .helpers.log import log_json
  
  _LOGGER = logging.getLogger(__name__)
 +
 +# Internal skipped-command result; not a native reply or protocol health proof.
 +_NO_PENDING_UPDATES = object()
++_SKIP_LOCAL_STATUS = object()
++_LOCAL_OBSERVATION_FIELDS = ("1", "2", "4", "6")
++_LOCAL_OBSERVATION_PROFILE = ("electriq_desd8lw_dehumidifier", "humidifier")
  
  # Extra context for tinytuya error codes whose message does not fully describe
  # the possible causes.  Error 914 in particular is reported for any failure to
-@@ -140,10 +145,13 @@
+@@ -140,10 +148,15 @@
              # Retries cause problems for other children of the parent device
              self._api.parent.set_socketRetryLimit(1)
  
@@ -31,11 +34,13 @@
          self._poll_only = poll_only
          self._temporary_poll = False
 +        self._local_diagnostic_profile = False
++        self._local_observation_entity = None
++        self._local_status_refresh = None
 +        self._local_withdrawal_logged_at = None
          self._reset_cached_state()
  
          self._hass = hass
-@@ -225,6 +233,7 @@
+@@ -225,6 +238,7 @@
          self._children.clear()
          self._force_dps.clear()
          if self._refresh_task:
@@ -43,19 +48,17 @@
              self._api.set_socketPersistent(False)
              if self._api.parent:
                  self._api.parent.set_socketPersistent(False)
-@@ -239,6 +248,11 @@
+@@ -239,6 +253,9 @@
          should_poll = len(self._children) == 0 and not self._hass.is_running
  
          self._children.append(entity)
-+        if (
-+            entity._config._device.config_type == "electriq_desd8lw_dehumidifier"
-+            and entity._config.entity == "humidifier"
-+        ):
++        if (entity._config._device.config_type, entity._config.entity) == _LOCAL_OBSERVATION_PROFILE:
 +            self._local_diagnostic_profile = True
++            self._local_observation_entity = entity
          for dp in entity._config.dps():
              if dp.force and dp.id not in self._force_dps:
                  self._force_dps.append(int(dp.id))
-@@ -269,6 +283,7 @@
+@@ -269,6 +286,7 @@
                          log_json(poll),
                      )
                      full_poll = poll.pop("full_poll", False)
@@ -63,7 +66,7 @@
                      self._cached_state = self._cached_state | poll
                      self._cached_state["updated_at"] = time()
                      self._remove_properties_from_pending_updates(poll)
-@@ -307,6 +322,7 @@
+@@ -307,6 +325,7 @@
          finally:
              # Ensure the persistent connection is closed when the loop exits
              # and device appears as unavailable
@@ -71,7 +74,7 @@
              self._api.set_socketPersistent(False)
              if self._api.parent:
                  self._api.parent.set_socketPersistent(False)
-@@ -319,6 +335,7 @@
+@@ -319,6 +338,7 @@
      def pause(self):
          self._temporary_poll = True
          _LOGGER.debug("%s pausing connection temporarily", self.name, False)
@@ -79,7 +82,7 @@
          self._api.set_socketPersistent(False)
          if self._api.parent:
              self._api.parent.set_socketPersistent(False)
-@@ -354,6 +371,7 @@
+@@ -354,6 +374,7 @@
                      # has been established.  Until then, we need to rotate
                      # the protocol version, which seems to require a fresh
                      # connection.
@@ -87,7 +90,17 @@
                      persist = not self.should_poll
                      _LOGGER.debug(
                          "%s persistant connection set to %s", self.name, persist
-@@ -372,6 +390,8 @@
+@@ -363,7 +384,8 @@
+                         self._api.parent.set_socketPersistent(persist)
+                     self._last_full_poll = 0  # ensure we start with a full poll
+ 
+-                needs_full_poll = now - self._last_full_poll > self._CACHE_TIMEOUT
++                refresh = self._take_local_status_refresh()
++                needs_full_poll = refresh is not None or now - self._last_full_poll > self._CACHE_TIMEOUT
+                 if now - last_cache > self._CACHE_TIMEOUT or (
+                     persist and needs_full_poll
+                 ):
+@@ -372,20 +394,44 @@
                          and not dps_updated
                          and self._api_protocol_working
                      ):
@@ -96,23 +109,47 @@
                          poll = await self._retry_on_failed_connection(
                              lambda: self._api.updatedps(self._force_dps),
                              f"Failed to update device dps for {self.name}",
-@@ -379,11 +399,13 @@
+                         )
                          dps_updated = True
                      else:
++                        status_call = self._status_for_local_observations
++                        status_started = False
++                        if refresh is not None:
++                            source, connection, generation = refresh
++
++                            def status_call():
++                                nonlocal status_started
++                                current = (self._api, self._api.socket, self._api.version)
++                                if (
++                                    self._local_status_refresh_source() != source
++                                    or (not status_started and current != connection)
++                                    or (not status_started and generation is not self._local_query_generation)
++                                    or (not status_started and self._get_unsent_properties())
++                                ):
++                                    return _SKIP_LOCAL_STATUS
++                                status_started = True
++                                return self._status_for_local_observations()
++
                          poll = await self._retry_on_failed_connection(
 -                            lambda: self._api.status(),
-+                            self._status_for_local_observations,
++                            status_call,
                              f"Failed to fetch device status for {self.name}",
++                            pending_scope=refresh[0] if refresh is not None else None,
                          )
                          dps_updated = False
 -                        full_poll = True
+-                    self._last_full_poll = now
+-                    last_heartbeat = now  # reset heartbeat timer on full poll
 +                        if not self._local_reply_is_current(poll):
 +                            poll = None
 +                        full_poll = self._local_reply_full
-                     self._last_full_poll = now
-                     last_heartbeat = now  # reset heartbeat timer on full poll
++                    if refresh is None or status_started:
++                        self._last_full_poll = now
++                        last_heartbeat = now  # reset heartbeat timer on full poll
                  elif persist:
-@@ -393,9 +415,20 @@
+                     if now - last_heartbeat > self._HEARTBEAT_INTERVAL:
+                         await self._hass.async_add_executor_job(
+@@ -393,9 +439,20 @@
                              True,
                          )
                          last_heartbeat = now
@@ -136,7 +173,7 @@
                      # Ignore Payload error 904, as 3.4 protocol devices seem to return
                      # this when there is no new data, instead of just returning nothing.
                      if poll and "Err" in poll and poll["Err"] == "904":
-@@ -411,6 +444,7 @@
+@@ -411,6 +468,7 @@
                          if poll["Err"] in {"901", "902", "905", "906", "914"}:
                              force_backoff = True
                              persist = False
@@ -144,7 +181,7 @@
                              self._api.set_socketPersistent(False)
                              if self._api.parent:
                                  self._api.parent.set_socketPersistent(False)
-@@ -443,6 +477,7 @@
+@@ -443,6 +501,7 @@
                  # Close the persistent connection when exiting the loop
                  persist = False
                  _LOGGER.debug("%s receive loop interrupted", self.name)
@@ -152,7 +189,7 @@
                  self._api.set_socketPersistent(False)
                  if self._api.parent:
                      self._api.parent.set_socketPersistent(False)
-@@ -455,6 +490,7 @@
+@@ -455,6 +514,7 @@
                      t,
                  )
                  persist = False
@@ -160,7 +197,7 @@
                  self._api.set_socketPersistent(False)
                  if self._api.parent:
                      self._api.parent.set_socketPersistent(False)
-@@ -465,6 +501,7 @@
+@@ -465,6 +525,7 @@
              await asyncio.sleep(5 if force_backoff else 0.1)
  
          # Close the persistent connection when exiting the loop
@@ -168,7 +205,7 @@
          self._api.set_socketPersistent(False)
          if self._api.parent:
              self._api.parent.set_socketPersistent(False)
-@@ -536,6 +573,205 @@
+@@ -536,6 +597,262 @@
                  f"Failed to refresh device state for {self.name}.",
              )
  
@@ -205,6 +242,9 @@
 +            pass
 +
 +    def _clear_local_observations(self, reason):
++        refresh = getattr(self, "_local_status_refresh", None)
++        if refresh is not None:
++            self._local_status_refresh = (refresh[0], None)
 +        self._local_query_generation = object()
 +        self._local_query_ticket = None
 +        self._local_query_ambiguous = False
@@ -242,6 +282,39 @@
 +            and record.get("stmq_observation_reader") is self._local_source_token
 +        )
 +
++    def _local_status_refresh_source(self):
++        entity = getattr(self, "_local_observation_entity", None)
++        if (
++            not self._running or self._hass.is_stopping or self._poll_only or self._temporary_poll
++            or self._api.version != 3.3
++            or entity is None or not any(child is entity for child in self._children)
++            or (entity._config._device.config_type, entity._config.entity) != _LOCAL_OBSERVATION_PROFILE
++            or not self._local_observation_source_exclusive()
++        ):
++            return None
++        return (self._api, self._api.version, self._local_source_record, self._local_source_token, entity)
++
++    def _request_local_status_refresh(self, connection, queried=False):
++        source = self._local_status_refresh_source()
++        refresh = getattr(self, "_local_status_refresh", None)
++        if source is not None and (refresh is None or refresh[0] != source):
++            # Socket movement cannot replenish this source episode's budget.
++            self._local_status_refresh = (source, None if queried else connection)
++
++    def _take_local_status_refresh(self):
++        refresh = getattr(self, "_local_status_refresh", None)
++        if refresh is None or refresh[1] is None:
++            return None
++        current = (self._api, self._api.socket, self._api.version)
++        if self._local_status_refresh_source() != refresh[0] or current != refresh[1]:
++            self._local_status_refresh = (refresh[0], None)
++            return None
++        if self._get_unsent_properties():
++            return None
++        # Consume before lock/executor waits or any native status attempt.
++        self._local_status_refresh = (refresh[0], None)
++        return (*refresh, self._local_query_generation)
++
 +    def _local_observation_source_context(self):
 +        data = getattr(getattr(self, "_hass", None), "data", {})
 +        record = data.get(DOMAIN, {}).get(self.dev_id)
@@ -271,7 +344,14 @@
 +    def _native_reply_for_local_observations(self, query):
 +        api = self._api
 +        context = (api, getattr(api, "socket", None), getattr(api, "version", None))
-+        if self._local_query_context not in (None, context):
++        previous = self._local_query_context
++        refresh_needed = False
++        if previous not in (None, context):
++            refresh_needed = (
++                bool(self._local_observations) and previous[0] is api
++                and previous[2] == context[2] and previous[1] is not None
++                and previous[1] is not context[1]
++            )
 +            self._clear_local_observations("connection-context-changed")
 +        self._local_query_context = context
 +        generation = self._local_query_generation
@@ -290,6 +370,11 @@
 +        self._local_reply_full = query
 +        current = (self._api, getattr(self._api, "socket", None), getattr(self._api, "version", None))
 +        if current != context:
++            refresh_needed = refresh_needed or (
++                bool(self._local_observations) and current[0] is api
++                and current[2] == context[2] and context[1] is not None
++                and current[1] is not context[1]
++            )
 +            self._clear_local_observations("connection-context-changed")
 +            self._local_query_context = current
 +            # An initially unopened socket may produce its first fresh reply.
@@ -297,7 +382,11 @@
 +            if context[1] is None and current[0] is api and current[2] == context[2]:
 +                context = current
 +            else:
++                if refresh_needed and current[0] is api and current[2] == context[2]:
++                    self._request_local_status_refresh(current)
 +                return None
++        if refresh_needed:
++            self._request_local_status_refresh(current, queried=query)
 +        self._local_reply_result = result
 +        self._local_reply_context = context
 +        self._local_reply_source = source
@@ -365,22 +454,31 @@
 +            if removed:
 +                self._diagnose_local_withdrawal("full-classification-omission")
 +        reported_at = int(time() * 1000)
-+        for key in ("1", "2", "4", "6"):
++        for key in _LOCAL_OBSERVATION_FIELDS:
 +            if key in dps:
 +                self._local_observations[key] = {
 +                    "value": deepcopy(dps[key]), "timestamp": reported_at
 +                }
++        if (
++            all(key in self._local_observations for key in _LOCAL_OBSERVATION_FIELDS)
++            and type(self._local_observations["1"]["value"]) is bool
++        ):
++            self._local_status_refresh = None
 +
      def get_property(self, dps_id):
          cached_state = self._get_cached_state()
          return cached_state.get(dps_id)
-@@ -555,15 +791,19 @@
+@@ -554,16 +871,21 @@
+         """
          self._cached_state[dps_id] = value
  
-     def _reset_cached_state(self):
+-    def _reset_cached_state(self):
++    def _reset_cached_state(self, keep_pending=False):
 +        self._clear_local_observations("cache-reset")
          self._cached_state = {"updated_at": 0}
-         self._pending_updates = {}
+-        self._pending_updates = {}
++        if not keep_pending:
++            self._pending_updates = {}
          self._last_connection = 0
          self._last_full_poll = 0
  
@@ -395,7 +493,7 @@
                  self._cached_state = self._cached_state | new_state.get("dps", {})
                  self._cached_state["updated_at"] = time()
                  for entity in self._children:
-@@ -643,27 +883,41 @@
+@@ -643,29 +965,43 @@
          await self._send_pending_updates()
  
      async def _send_pending_updates(self):
@@ -442,6 +540,8 @@
 -        for key in properties.keys():
 -            pending_updates[key]["updated_at"] = now
 -            pending_updates[key]["sent"] = True
+-
+-    async def _retry_on_failed_connection(self, func, error_message):
 +        for key, entry in attempted.items():
 +            # New commands always replace the entry, including same-value
 +            # commands. Only the exact attempted entry may be marked sent.
@@ -449,19 +549,21 @@
 +                entry["updated_at"] = now
 +                entry["sent"] = True
 +        return result
- 
-     async def _retry_on_failed_connection(self, func, error_message):
++
++    async def _retry_on_failed_connection(self, func, error_message, pending_scope=None):
          if self._api_protocol_version_index is None:
-@@ -689,6 +943,8 @@
+             await self._rotate_api_protocol_version()
+         auto = (self._protocol_configured == "auto") and (
+@@ -689,6 +1025,8 @@
                  if not self._hass.is_stopping:
                      async with self._api_lock:
                          retval = await self._hass.async_add_executor_job(func)
-+                    if retval is _NO_PENDING_UPDATES:
++                    if retval is _NO_PENDING_UPDATES or retval is _SKIP_LOCAL_STATUS:
 +                        return None
                      if isinstance(retval, dict) and "Error" in retval:
                          last_err_code = retval.get("Err")
                          last_err_msg = retval.get("Error")
-@@ -713,6 +969,7 @@
+@@ -713,12 +1051,17 @@
                      connections,
                  )
                  # Ensure we have a fresh connection for the next attempt
@@ -469,7 +571,18 @@
                  self._api.set_socketPersistent(False)
                  if self._api.parent:
                      self._api.parent.set_socketPersistent(False)
-@@ -860,6 +1117,11 @@
+ 
+                 if i + 1 == connections:
+-                    self._reset_cached_state()
++                    # An added read cannot erase a later same-source command.
++                    self._reset_cached_state(keep_pending=(
++                        pending_scope is not None
++                        and self._local_status_refresh_source() == pending_scope
++                    ))
+                     self._api_working_protocol_failures += 1
+                     if (
+                         self._api_working_protocol_failures
+@@ -860,6 +1203,11 @@
          "tuyadevice": device._api,
          "tuyadevicelock": device._api_lock,
      }

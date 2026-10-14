@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Request one earlier native status refresh after the supported dehumidifier's
+  socket replacement withdraws current fields. Preserve unknown observations,
+  original report clocks and late commands through that added read; repeated
+  replacement does not create a new refresh loop.
+
 - Await actual HTTPS fixture operation completion under the test case deadline,
   preserving operation identity and cancellation cleanup during queued publication.
 
