@@ -1,10 +1,10 @@
 {
   "version": "2026.9.2",
-  "patchSha256": "6cb20a34dea6304c8afdb1e8cc6354588e07b061ceeeaba76d8fc85d2cc8b141",
+  "patchSha256": "1cef0798a711ab2381b0cb6786bfc1b52dfb4ced2ce68c827985b899c16b6381",
   "files": {
     "device.py": {
       "originalSha256": "9ec422f63e53b5c366e5fd9b1abd886beaa5e7d27a1a631a48253b91148b3bdb",
-      "patchedSha256": "e13d6d1d8ab8aeeef5a33be6f9ed275b9a71e624316d60e23aade12b281e0599"
+      "patchedSha256": "5363c6f4a31f5b652009dab5e097e8c35855343b0fdc3287e3c29efa011128bd"
     },
     "entity.py": {
       "originalSha256": "31e69b3ffd0f26036d6711746e565bf1e65304eae88730a19c37bbaac4c5dbd2",

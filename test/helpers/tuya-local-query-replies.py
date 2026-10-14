@@ -26,7 +26,7 @@ SDK = o.extracted_class(SOURCE.read_bytes(), 'XenonDevice', {
     'error_json':lambda code:{'Err':str(code),'Error':'Synthetic native failure'},
     'ERR_DEVTYPE':902,'ERR_PAYLOAD':904,'ERR_CONNECT':905,'ERR_TIMEOUT':902,'ERR_OFFLINE':901,'ERR_KEY_OR_VER':914})
 Device = o.extracted_class(o.PATCHED['device.py'], 'TuyaLocalDevice', {
-    '_observe_local_dps', '_clear_local_observations', '_reset_cached_state', 'local_observations',
+    '_observe_local_dps', '_clear_local_observations', '_diagnose_local_withdrawal', '_reset_cached_state', 'local_observations',
     'get_property', '_get_cached_state', '_get_pending_properties', '_get_pending_updates',
     '_remove_properties_from_pending_updates', 'receive_loop', 'async_receive', 'should_poll',
     'has_returned_state', 'unique_id', 'name', '_retry_on_failed_connection',
@@ -34,7 +34,7 @@ Device = o.extracted_class(o.PATCHED['device.py'], 'TuyaLocalDevice', {
     '_status_for_local_observations', '_receive_for_local_observations', '_native_reply_for_local_observations',
     '_local_observation_source_context', '_local_reply_is_current',
 }, {'asyncio':asyncio, 'CancelledError':asyncio.CancelledError, 'time':lambda:o.CLOCK[0],
-    'deepcopy':deepcopy,'sha256':hashlib.sha256,'_LOGGER':logging.getLogger('synthetic-query'),
+    'deepcopy':deepcopy,'sha256':hashlib.sha256,'monotonic':time.monotonic,'_LOGGER':logging.getLogger('synthetic-query'),
     'log_json':lambda value:'<synthetic>','_ERROR_HINTS':{},'_NO_PENDING_UPDATES':object(),
     'tinytuya':CONSTANTS,'DOMAIN':'tuya_local','get_device_id':lambda v:v['device_id']+':'+v['device_cid'],
     'CONF_DEVICE_ID':'device_id','CONF_DEVICE_CID':'device_cid'})
@@ -205,7 +205,7 @@ class QueryReplyTests(unittest.TestCase):
             if kind=='socket':n.socket=Wire()
             elif kind=='api':n,d2=fixture();d._api=n
             elif kind=='version':n.version=3.5
-            else:d._clear_local_observations()
+            else:d._clear_local_observations("cache-reset")
             n.socket.frames.append(frame({'6':48},a));result=d._receive_for_local_observations();d._observe_local_dps(result['dps'],d._local_reply_full)
             self.assertIsNone(d._local_query_ticket);self.assertNotIn('1',d.local_observations)
 
@@ -301,7 +301,7 @@ class QueryReplyTests(unittest.TestCase):
             d._children=[SimpleNamespace(on_receive=lambda *args:received.append(args),schedule_update_ha_state=lambda:None)]
             async def executor(fn,*args):
                 result=fn(*args)
-                d._clear_local_observations();d._running=False
+                d._clear_local_observations("cache-reset");d._running=False
                 return result
             d._hass.async_add_executor_job=executor
             await d.receive_loop()
@@ -340,7 +340,7 @@ class QueryReplyTests(unittest.TestCase):
     def test_current_generation_invalidated_inside_native_status_cannot_repopulate(self):
         n,d=fixture()
         def status():
-            d._clear_local_observations()
+            d._clear_local_observations("cache-reset")
             return {'dps':ALL}
         n.status=status
         self.assertIsNone(d._status_for_local_observations())
@@ -360,7 +360,7 @@ class QueryReplyTests(unittest.TestCase):
         n,d=fixture();d._running=False
         Sync=o.Device
         def status():
-            d._clear_local_observations()
+            d._clear_local_observations("cache-reset")
             return {'dps':ALL}
         n.status=status;old_cache=deepcopy(d._cached_state)
         Sync._refresh_cached_state(d)

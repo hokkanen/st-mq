@@ -106,6 +106,44 @@ native Home Assistant service. Once handed off, Tuya Local's own delivery and
 retry behavior applies; MQTT expiry is not a device-local cancellation guarantee.
 Only a genuine subsequent device reply confirms the resulting state.
 
+## Native field withdrawal diagnostics
+
+The dedicated DESD8LW humidifier profile emits a fixed warning when an existing
+producer actually removes held native fields. Other profiles, healthy reports,
+startup with no held fields and repeated empty clears stay silent. Eligibility
+and the last warning time are memory-only for that current device instance;
+neither supplies source health or command permission.
+
+The new message contains only `ST-MQ native-field-withdrawal:` and one authored
+category. It includes no device names, identifiers, addresses, payloads, values
+or exception text. Existing upstream messages have their own logging behavior.
+
+| Category | Existing producer boundary |
+| --- | --- |
+| `monitor-stopped` | Native monitor stop or normal receive-generator exit |
+| `receive-loop-ended` | Receive-loop finalization |
+| `connection-paused` | Temporary native connection pause |
+| `connection-mode-changed` | Poll/persistent mode or missing-socket transition |
+| `forced-read-with-pending-query` | Forced-DPS read with unresolved query evidence |
+| `native-transport-error` | Existing low-level native error handling |
+| `receive-cancelled` | Receive cancellation |
+| `receive-exception` | Existing receive exception handling |
+| `reply-context-changed` | Consumer rejects a reply after its source changes |
+| `connection-context-changed` | Native-call API/socket/protocol context changes |
+| `failed-frame-integrity-flag` | Existing explicitly failed frame-integrity rejection |
+| `cache-reset` | Native cache reset |
+| `native-call-retry` | Existing native-call retry after failure |
+| `full-classification-omission` | Full/conservative classification removes omitted fields |
+
+Warnings are capped at one per 30 monotonic seconds per instance. Nested clears
+emit only for the first actual withdrawal, and a failed diagnostic sink cannot
+prevent evidence removal or alter native calls. Rapid flapping can suppress later
+messages: this is deliberately incomplete diagnostic evidence. The category
+identifies the producer branch, not a firmware, network or hardware cause. Native
+field clocks, observation admission, query/retry counts and control remain on
+their existing paths. Installing this diagnostic source still requires the
+separately planned Home Assistant restart described below.
+
 ## Apply the reviewed patch
 
 This adapter supports only the exact reviewed **2026.9.2** source hashes listed
@@ -167,3 +205,8 @@ replacement. Its SDK fixture executes first-frame selection and decoded-response
 handling at a controlled validated-frame boundary; separate offline AES/CRC probes
 qualify wire-parser reachability. These synthetic checks do not identify the cause of
 an unconfirmed live command or prove physical delivery.
+`test/tuya-local-withdrawal-diagnostics.test.js` additionally executes every current
+clear caller and the full-omission producer, checks nested clears, constructor and
+profile scope, the exact monotonic rate boundary, sink failure and fixed-message
+privacy. It uses the same controlled decoded-frame boundary; logging assertions
+do not independently validate encryption or CRC parsing.

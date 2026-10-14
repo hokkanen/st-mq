@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+from time import monotonic
 import sys
 from types import SimpleNamespace
 import unittest
@@ -41,7 +42,7 @@ def extracted_class(source, class_name, methods, globals_):
 
 
 Device = extracted_class(PATCHED['device.py'], 'TuyaLocalDevice', {
-    '_observe_local_dps', '_clear_local_observations', '_reset_cached_state', 'local_observations',
+    '_observe_local_dps', '_clear_local_observations', '_diagnose_local_withdrawal', '_reset_cached_state', 'local_observations',
     'get_property', '_get_cached_state', '_get_pending_properties', '_get_pending_updates',
     '_remove_properties_from_pending_updates', 'anticipate_property_value', 'receive_loop',
     '_refresh_cached_state', 'async_refresh', 'unique_id', 'name',
@@ -51,7 +52,7 @@ Device = extracted_class(PATCHED['device.py'], 'TuyaLocalDevice', {
     '_status_for_local_observations', '_receive_for_local_observations', '_native_reply_for_local_observations',
     '_local_observation_source_context', '_local_reply_is_current',
 }, {'time': lambda: CLOCK[0], 'deepcopy': deepcopy, 'sha256': hashlib.sha256,
-    '_LOGGER': logging.getLogger('synthetic-tuya'), 'log_json': lambda value: '<synthetic>',
+    'monotonic': monotonic, '_LOGGER': logging.getLogger('synthetic-tuya'), 'log_json': lambda value: '<synthetic>',
     '_ERROR_HINTS': {}, '_NO_PENDING_UPDATES': object(),
     'tinytuya': SimpleNamespace(DP_QUERY=10, DP_QUERY_NEW=16, STATUS=8, PREFIX_55AA_VALUE=0x55AA), 'DOMAIN': 'tuya_local',
     'get_device_id': lambda value: value['device_id'] + ':' + value['device_cid'],
@@ -169,8 +170,8 @@ class ObservationSourceTests(unittest.TestCase):
         text = PATCHED['device.py'].decode()
         for match in re.finditer(r'(?m)^([ ]*)self\._api\.set_socketPersistent\(False\)$', text):
             preceding = text[:match.start()].rstrip().splitlines()[-1].strip()
-            self.assertEqual(preceding, 'self._clear_local_observations()')
-        self.assertIn('self._clear_local_observations()\n                    persist = not self.should_poll', text)
+            self.assertRegex(preceding, r'^self\._clear_local_observations\("[a-z-]+"\)$')
+        self.assertIn('self._clear_local_observations("connection-mode-changed")\n                    persist = not self.should_poll', text)
 
     def test_only_dedicated_humidifier_exposes_observed_attributes(self):
         device = device_fixture()

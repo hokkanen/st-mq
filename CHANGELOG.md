@@ -25,6 +25,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   viewer refresh, avoiding an unnecessary failed request. Pending publications,
   failed cleanup and repeated checkpoint races remain unavailable.
 
+- Add bounded Tuya native field withdrawal reasons without private data for the
+  dedicated dehumidifier profile. Diagnostics preserve existing evidence and
+  native control behavior; loading the patch requires a separate Core restart.
+
 - Discard abandoned local OCPP connection handshakes from the pending save queue,
   allowing another connecting client to proceed without obsolete work. Connected
   clients still require durable state admission and current control authority.

@@ -1,9 +1,11 @@
 --- a/device.py
 +++ b/device.py
-@@ -6,6 +6,8 @@
+@@ -5,7 +5,9 @@
+ import asyncio
  import logging
  from asyncio.exceptions import CancelledError
- from time import time
+-from time import time
++from time import time, monotonic
 +from copy import deepcopy
 +from hashlib import sha256
  
@@ -19,7 +21,7 @@
  
  # Extra context for tinytuya error codes whose message does not fully describe
  # the possible causes.  Error 914 in particular is reported for any failure to
-@@ -140,6 +145,7 @@
+@@ -140,10 +145,13 @@
              # Retries cause problems for other children of the parent device
              self._api.parent.set_socketRetryLimit(1)
  
@@ -27,15 +29,33 @@
          self._refresh_task = None
          self._protocol_configured = protocol_version
          self._poll_only = poll_only
-@@ -225,6 +231,7 @@
+         self._temporary_poll = False
++        self._local_diagnostic_profile = False
++        self._local_withdrawal_logged_at = None
+         self._reset_cached_state()
+ 
+         self._hass = hass
+@@ -225,6 +233,7 @@
          self._children.clear()
          self._force_dps.clear()
          if self._refresh_task:
-+            self._clear_local_observations()
++            self._clear_local_observations("monitor-stopped")
              self._api.set_socketPersistent(False)
              if self._api.parent:
                  self._api.parent.set_socketPersistent(False)
-@@ -269,6 +276,7 @@
+@@ -239,6 +248,11 @@
+         should_poll = len(self._children) == 0 and not self._hass.is_running
+ 
+         self._children.append(entity)
++        if (
++            entity._config._device.config_type == "electriq_desd8lw_dehumidifier"
++            and entity._config.entity == "humidifier"
++        ):
++            self._local_diagnostic_profile = True
+         for dp in entity._config.dps():
+             if dp.force and dp.id not in self._force_dps:
+                 self._force_dps.append(int(dp.id))
+@@ -269,6 +283,7 @@
                          log_json(poll),
                      )
                      full_poll = poll.pop("full_poll", False)
@@ -43,40 +63,40 @@
                      self._cached_state = self._cached_state | poll
                      self._cached_state["updated_at"] = time()
                      self._remove_properties_from_pending_updates(poll)
-@@ -307,6 +315,7 @@
+@@ -307,6 +322,7 @@
          finally:
              # Ensure the persistent connection is closed when the loop exits
              # and device appears as unavailable
-+            self._clear_local_observations()
++            self._clear_local_observations("receive-loop-ended")
              self._api.set_socketPersistent(False)
              if self._api.parent:
                  self._api.parent.set_socketPersistent(False)
-@@ -319,6 +328,7 @@
+@@ -319,6 +335,7 @@
      def pause(self):
          self._temporary_poll = True
          _LOGGER.debug("%s pausing connection temporarily", self.name, False)
-+        self._clear_local_observations()
++        self._clear_local_observations("connection-paused")
          self._api.set_socketPersistent(False)
          if self._api.parent:
              self._api.parent.set_socketPersistent(False)
-@@ -354,6 +364,7 @@
+@@ -354,6 +371,7 @@
                      # has been established.  Until then, we need to rotate
                      # the protocol version, which seems to require a fresh
                      # connection.
-+                    self._clear_local_observations()
++                    self._clear_local_observations("connection-mode-changed")
                      persist = not self.should_poll
                      _LOGGER.debug(
                          "%s persistant connection set to %s", self.name, persist
-@@ -372,6 +383,8 @@
+@@ -372,6 +390,8 @@
                          and not dps_updated
                          and self._api_protocol_working
                      ):
 +                        if self._local_query_ticket or self._local_query_ambiguous:
-+                            self._clear_local_observations()
++                            self._clear_local_observations("forced-read-with-pending-query")
                          poll = await self._retry_on_failed_connection(
                              lambda: self._api.updatedps(self._force_dps),
                              f"Failed to update device dps for {self.name}",
-@@ -379,11 +392,13 @@
+@@ -379,11 +399,13 @@
                          dps_updated = True
                      else:
                          poll = await self._retry_on_failed_connection(
@@ -92,7 +112,7 @@
                      self._last_full_poll = now
                      last_heartbeat = now  # reset heartbeat timer on full poll
                  elif persist:
-@@ -393,9 +408,20 @@
+@@ -393,9 +415,20 @@
                              True,
                          )
                          last_heartbeat = now
@@ -116,39 +136,39 @@
                      # Ignore Payload error 904, as 3.4 protocol devices seem to return
                      # this when there is no new data, instead of just returning nothing.
                      if poll and "Err" in poll and poll["Err"] == "904":
-@@ -411,6 +437,7 @@
+@@ -411,6 +444,7 @@
                          if poll["Err"] in {"901", "902", "905", "906", "914"}:
                              force_backoff = True
                              persist = False
-+                            self._clear_local_observations()
++                            self._clear_local_observations("native-transport-error")
                              self._api.set_socketPersistent(False)
                              if self._api.parent:
                                  self._api.parent.set_socketPersistent(False)
-@@ -443,6 +470,7 @@
+@@ -443,6 +477,7 @@
                  # Close the persistent connection when exiting the loop
                  persist = False
                  _LOGGER.debug("%s receive loop interrupted", self.name)
-+                self._clear_local_observations()
++                self._clear_local_observations("receive-cancelled")
                  self._api.set_socketPersistent(False)
                  if self._api.parent:
                      self._api.parent.set_socketPersistent(False)
-@@ -455,6 +483,7 @@
+@@ -455,6 +490,7 @@
                      t,
                  )
                  persist = False
-+                self._clear_local_observations()
++                self._clear_local_observations("receive-exception")
                  self._api.set_socketPersistent(False)
                  if self._api.parent:
                      self._api.parent.set_socketPersistent(False)
-@@ -465,6 +494,7 @@
+@@ -465,6 +501,7 @@
              await asyncio.sleep(5 if force_backoff else 0.1)
  
          # Close the persistent connection when exiting the loop
-+        self._clear_local_observations()
++        self._clear_local_observations("monitor-stopped")
          self._api.set_socketPersistent(False)
          if self._api.parent:
              self._api.parent.set_socketPersistent(False)
-@@ -536,6 +566,177 @@
+@@ -536,6 +573,205 @@
                  f"Failed to refresh device state for {self.name}.",
              )
  
@@ -160,7 +180,31 @@
 +            **deepcopy(self._local_observations),
 +        }
 +
-+    def _clear_local_observations(self):
++    def _diagnose_local_withdrawal(self, reason):
++        # Diagnostic eligibility survives child shutdown; it is not evidence.
++        if not getattr(self, "_local_diagnostic_profile", False):
++            return
++        try:
++            if reason not in {
++                "monitor-stopped", "receive-loop-ended", "connection-paused",
++                "connection-mode-changed", "forced-read-with-pending-query",
++                "native-transport-error", "receive-cancelled", "receive-exception",
++                "reply-context-changed", "connection-context-changed",
++                "failed-frame-integrity-flag", "cache-reset", "native-call-retry",
++                "full-classification-omission",
++            }:
++                return
++            now = monotonic()
++            previous = getattr(self, "_local_withdrawal_logged_at", None)
++            if previous is not None and now - previous < 30:
++                return
++            self._local_withdrawal_logged_at = now
++            _LOGGER.warning("ST-MQ native-field-withdrawal: %s", reason)
++        except Exception:
++            # A failed diagnostic sink cannot change native evidence or calls.
++            pass
++
++    def _clear_local_observations(self, reason):
 +        self._local_query_generation = object()
 +        self._local_query_ticket = None
 +        self._local_query_ambiguous = False
@@ -172,6 +216,7 @@
 +        changed = bool(getattr(self, "_local_observations", {}))
 +        self._local_observations = {}
 +        if changed:
++            self._diagnose_local_withdrawal(reason)
 +            for entity in self._children:
 +                entity.schedule_update_ha_state()
 +
@@ -214,7 +259,7 @@
 +            and source[0] is recorded[0] and source[1] is recorded[1]
 +        ):
 +            return True
-+        self._clear_local_observations()
++        self._clear_local_observations("reply-context-changed")
 +        return False
 +
 +    def _status_for_local_observations(self):
@@ -227,7 +272,7 @@
 +        api = self._api
 +        context = (api, getattr(api, "socket", None), getattr(api, "version", None))
 +        if self._local_query_context not in (None, context):
-+            self._clear_local_observations()
++            self._clear_local_observations("connection-context-changed")
 +        self._local_query_context = context
 +        generation = self._local_query_generation
 +        source = self._local_observation_source_context()
@@ -245,7 +290,7 @@
 +        self._local_reply_full = query
 +        current = (self._api, getattr(self._api, "socket", None), getattr(self._api, "version", None))
 +        if current != context:
-+            self._clear_local_observations()
++            self._clear_local_observations("connection-context-changed")
 +            self._local_query_context = current
 +            # An initially unopened socket may produce its first fresh reply.
 +            # Replaced API/protocol/established socket cannot publish old data.
@@ -267,7 +312,7 @@
 +        ):
 +            # Decodable payload is not received evidence after a known failed
 +            # frame-integrity check. Unknown metadata is not guessed as failure.
-+            self._clear_local_observations()
++            self._clear_local_observations("failed-frame-integrity-flag")
 +            return None
 +        if not self._local_observation_source_exclusive():
 +            if self._local_query_ticket or self._local_query_ambiguous:
@@ -315,7 +360,10 @@
 +        # Only these four independently reported DESD8LW fields are exported.
 +        # Heartbeats, errors and pending command overlays cannot renew them.
 +        if full_poll:
++            removed = self._local_observations.keys() - dps.keys()
 +            self._local_observations = {}
++            if removed:
++                self._diagnose_local_withdrawal("full-classification-omission")
 +        reported_at = int(time() * 1000)
 +        for key in ("1", "2", "4", "6"):
 +            if key in dps:
@@ -326,11 +374,11 @@
      def get_property(self, dps_id):
          cached_state = self._get_cached_state()
          return cached_state.get(dps_id)
-@@ -555,15 +756,19 @@
+@@ -555,15 +791,19 @@
          self._cached_state[dps_id] = value
  
      def _reset_cached_state(self):
-+        self._clear_local_observations()
++        self._clear_local_observations("cache-reset")
          self._cached_state = {"updated_at": 0}
          self._pending_updates = {}
          self._last_connection = 0
@@ -347,7 +395,7 @@
                  self._cached_state = self._cached_state | new_state.get("dps", {})
                  self._cached_state["updated_at"] = time()
                  for entity in self._children:
-@@ -643,27 +848,41 @@
+@@ -643,27 +883,41 @@
          await self._send_pending_updates()
  
      async def _send_pending_updates(self):
@@ -404,7 +452,7 @@
  
      async def _retry_on_failed_connection(self, func, error_message):
          if self._api_protocol_version_index is None:
-@@ -689,6 +908,8 @@
+@@ -689,6 +943,8 @@
                  if not self._hass.is_stopping:
                      async with self._api_lock:
                          retval = await self._hass.async_add_executor_job(func)
@@ -413,15 +461,15 @@
                      if isinstance(retval, dict) and "Error" in retval:
                          last_err_code = retval.get("Err")
                          last_err_msg = retval.get("Error")
-@@ -713,6 +934,7 @@
+@@ -713,6 +969,7 @@
                      connections,
                  )
                  # Ensure we have a fresh connection for the next attempt
-+                self._clear_local_observations()
++                self._clear_local_observations("native-call-retry")
                  self._api.set_socketPersistent(False)
                  if self._api.parent:
                      self._api.parent.set_socketPersistent(False)
-@@ -860,6 +1082,11 @@
+@@ -860,6 +1117,11 @@
          "tuyadevice": device._api,
          "tuyadevicelock": device._api_lock,
      }
