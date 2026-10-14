@@ -24,12 +24,18 @@ then. A greater lead, invalid timestamp or future local receipt is rejected.
 Simply waiting until a previously rejected large lead passes cannot validate it.
 
 The pending queue in `src/acquisition/source-time-pending.js` is connection-local
-and bounded by count and monotonic lifetime. Timers recheck the original report
+and bounded by count and a monotonic deadline for a still-future source clock.
+Timers recheck the original report
 automatically; another device message or polling cycle is not required. Ordered
 transition streams retain unplug, permission and subsequent reconnect order.
 Disconnect, replacement, rollback and queue failure keep evidence and command
 permission fenced. Neither repeated packets nor wall-clock rollback extend a
-queued report's lifetime. A correlated read waits only for its own reply; this
+source-clock wait. If writer admission runs after that deadline but the original
+source clock is already ready, the queue admits the report with its original
+source and receipt clocks. Each consumer still checks the report's remaining
+freshness, required fields and current connection; writer delay cannot renew
+evidence or grant permission before admission. A correlated read waits only for
+its own reply; this
 does not retry a device command.
 
 For a native metered Shelly switch, a partial `NotifyStatus` containing only

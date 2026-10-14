@@ -44,13 +44,51 @@ test('clock rollback, monotonic expiry, duplicate delivery and reconnect cannot 
   const checkpoint = f.queue.checkpoint();
   f.at(100_000, 4999);
   f.queue.defer(1, 'duplicate', { sourceTime: 100_400, receivedAt: 100_000 });
-  f.at(100_500, 5000); f.queue.drain();
+  f.at(100_300, 5000); f.queue.drain();
   assert.equal(f.ready.length, 0); assert.deepEqual(f.rejected, [{ value: 'old', reason: 'expired' }]);
   f.queue.clear(); f.queue.restore(checkpoint); assert.equal(f.queue.size, 0);
   f.at(100_000, 6000); f.queue.defer(2, 'rollback', { sourceTime: 100_004, receivedAt: 100_000 });
   f.at(99_999, 6001); f.queue.drain();
   assert.equal(f.queue.size, 0); assert.equal(f.ready.length, 0);
   assert.equal(f.rejected.at(-1).reason, 'future-receipt-time');
+});
+
+test('writer delay cannot expire an already source-ready packet or renew its original clocks', () => {
+  const f = fixture({ ordered: true });
+  f.queue.defer('first', 'stop', { sourceTime: 100_801, receivedAt: 100_000 });
+  f.queue.defer('second', 'start', { sourceTime: 100_500, receivedAt: 100_500 });
+  f.at(105_400, 5400);
+  f.queue.defer('first', 'changed duplicate', { sourceTime: 105_800, receivedAt: 105_400 });
+  f.queue.drain();
+  assert.deepEqual(f.ready, [
+    { value: 'stop', receivedAt: 100_000, admittedAt: 105_400 },
+    { value: 'start', receivedAt: 100_500, admittedAt: 105_400 },
+  ]);
+  assert.deepEqual(f.rejected, []);
+  assert.equal(f.queue.size, 0);
+});
+
+test('delayed ready admission still respects rollback, generation cancellation and invalid receipt time', () => {
+  let fail = true;
+  const ready = [];
+  const f = fixture({ onReady(value, receivedAt, admittedAt) {
+    if (fail) { fail = false; throw new Error('synthetic commit failure'); }
+    ready.push({ value, receivedAt, admittedAt });
+  } });
+  f.queue.defer('packet', 'original', { sourceTime: 100_801, receivedAt: 100_000 });
+  const checkpoint = f.queue.checkpoint();
+  f.at(105_400, 5400);
+  assert.throws(() => f.queue.drain(), /commit failure/);
+  assert.equal(f.queue.size, 1);
+  f.queue.drain();
+  assert.deepEqual(ready, [{ value: 'original', receivedAt: 100_000, admittedAt: 105_400 }]);
+  f.queue.clear(); f.queue.restore(checkpoint);
+  assert.equal(f.queue.size, 0, 'A ready report from a ended generation cannot be restored');
+  f.at(106_000, 6000);
+  f.queue.defer('future', 'rollback', { sourceTime: 106_400, receivedAt: 106_000 });
+  f.at(105_999, 12000); f.queue.drain();
+  assert.equal(f.rejected.at(-1).reason, 'future-receipt-time');
+  assert.equal(ready.length, 1);
 });
 
 test('bounded overflow retains an ordered head and failed admission retries before later packets', () => {
