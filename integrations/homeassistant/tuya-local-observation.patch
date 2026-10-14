@@ -19,7 +19,15 @@
  
  # Extra context for tinytuya error codes whose message does not fully describe
  # the possible causes.  Error 914 in particular is reported for any failure to
-@@ -225,6 +230,7 @@
+@@ -140,6 +145,7 @@
+             # Retries cause problems for other children of the parent device
+             self._api.parent.set_socketRetryLimit(1)
+ 
++        self._register_local_observation_source(hass, name)
+         self._refresh_task = None
+         self._protocol_configured = protocol_version
+         self._poll_only = poll_only
+@@ -225,6 +231,7 @@
          self._children.clear()
          self._force_dps.clear()
          if self._refresh_task:
@@ -27,7 +35,7 @@
              self._api.set_socketPersistent(False)
              if self._api.parent:
                  self._api.parent.set_socketPersistent(False)
-@@ -269,6 +275,7 @@
+@@ -269,6 +276,7 @@
                          log_json(poll),
                      )
                      full_poll = poll.pop("full_poll", False)
@@ -35,7 +43,7 @@
                      self._cached_state = self._cached_state | poll
                      self._cached_state["updated_at"] = time()
                      self._remove_properties_from_pending_updates(poll)
-@@ -307,6 +314,7 @@
+@@ -307,6 +315,7 @@
          finally:
              # Ensure the persistent connection is closed when the loop exits
              # and device appears as unavailable
@@ -43,7 +51,7 @@
              self._api.set_socketPersistent(False)
              if self._api.parent:
                  self._api.parent.set_socketPersistent(False)
-@@ -319,6 +327,7 @@
+@@ -319,6 +328,7 @@
      def pause(self):
          self._temporary_poll = True
          _LOGGER.debug("%s pausing connection temporarily", self.name, False)
@@ -51,7 +59,7 @@
          self._api.set_socketPersistent(False)
          if self._api.parent:
              self._api.parent.set_socketPersistent(False)
-@@ -354,6 +363,7 @@
+@@ -354,6 +364,7 @@
                      # has been established.  Until then, we need to rotate
                      # the protocol version, which seems to require a fresh
                      # connection.
@@ -59,7 +67,56 @@
                      persist = not self.should_poll
                      _LOGGER.debug(
                          "%s persistant connection set to %s", self.name, persist
-@@ -411,6 +421,7 @@
+@@ -372,6 +383,8 @@
+                         and not dps_updated
+                         and self._api_protocol_working
+                     ):
++                        if self._local_query_ticket or self._local_query_ambiguous:
++                            self._clear_local_observations()
+                         poll = await self._retry_on_failed_connection(
+                             lambda: self._api.updatedps(self._force_dps),
+                             f"Failed to update device dps for {self.name}",
+@@ -379,11 +392,13 @@
+                         dps_updated = True
+                     else:
+                         poll = await self._retry_on_failed_connection(
+-                            lambda: self._api.status(),
++                            self._status_for_local_observations,
+                             f"Failed to fetch device status for {self.name}",
+                         )
+                         dps_updated = False
+-                        full_poll = True
++                        if not self._local_reply_is_current(poll):
++                            poll = None
++                        full_poll = self._local_reply_full
+                     self._last_full_poll = now
+                     last_heartbeat = now  # reset heartbeat timer on full poll
+                 elif persist:
+@@ -393,9 +408,20 @@
+                             True,
+                         )
+                         last_heartbeat = now
+-                    poll = await self._hass.async_add_executor_job(
+-                        self._api.receive,
+-                    )
++                    if self._local_query_ticket or self._local_query_ambiguous:
++                        # Correlation metadata shares the native command lock.
++                        # This is one existing receive, with its native timeout.
++                        async with self._api_lock:
++                            poll = await self._hass.async_add_executor_job(
++                                self._receive_for_local_observations,
++                            )
++                    else:
++                        poll = await self._hass.async_add_executor_job(
++                            self._receive_for_local_observations,
++                        )
++                    if not self._local_reply_is_current(poll):
++                        poll = None
++                    full_poll = self._local_reply_full
+                     # Ignore Payload error 904, as 3.4 protocol devices seem to return
+                     # this when there is no new data, instead of just returning nothing.
+                     if poll and "Err" in poll and poll["Err"] == "904":
+@@ -411,6 +437,7 @@
                          if poll["Err"] in {"901", "902", "905", "906", "914"}:
                              force_backoff = True
                              persist = False
@@ -67,7 +124,7 @@
                              self._api.set_socketPersistent(False)
                              if self._api.parent:
                                  self._api.parent.set_socketPersistent(False)
-@@ -443,6 +454,7 @@
+@@ -443,6 +470,7 @@
                  # Close the persistent connection when exiting the loop
                  persist = False
                  _LOGGER.debug("%s receive loop interrupted", self.name)
@@ -75,7 +132,7 @@
                  self._api.set_socketPersistent(False)
                  if self._api.parent:
                      self._api.parent.set_socketPersistent(False)
-@@ -455,6 +467,7 @@
+@@ -455,6 +483,7 @@
                      t,
                  )
                  persist = False
@@ -83,7 +140,7 @@
                  self._api.set_socketPersistent(False)
                  if self._api.parent:
                      self._api.parent.set_socketPersistent(False)
-@@ -465,6 +478,7 @@
+@@ -465,6 +494,7 @@
              await asyncio.sleep(5 if force_backoff else 0.1)
  
          # Close the persistent connection when exiting the loop
@@ -91,7 +148,7 @@
          self._api.set_socketPersistent(False)
          if self._api.parent:
              self._api.parent.set_socketPersistent(False)
-@@ -536,6 +550,35 @@
+@@ -536,6 +566,170 @@
                  f"Failed to refresh device state for {self.name}.",
              )
  
@@ -104,11 +161,146 @@
 +        }
 +
 +    def _clear_local_observations(self):
++        self._local_query_generation = object()
++        self._local_query_ticket = None
++        self._local_query_ambiguous = False
++        self._local_query_context = None
++        self._local_reply_full = True
++        self._local_reply_result = None
++        self._local_reply_context = None
++        self._local_reply_source = None
 +        changed = bool(getattr(self, "_local_observations", {}))
 +        self._local_observations = {}
 +        if changed:
 +            for entity in self._children:
 +                entity.schedule_update_ha_state()
++
++    def _register_local_observation_source(self, hass, name):
++        # Reuse the upstream API/lock record; no separate device registry.
++        self._local_source_token = object()
++        self._local_source_record = None
++        if not self.dev_cid and name != "Test":
++            record = hass.data[DOMAIN].get(self.dev_id)
++            if record and record.get("tuyadevice") is self._api:
++                key = "stmq_observation_reader"
++                record[key] = self._local_source_token if key not in record else None
++                self._local_source_record = record
++
++    def _local_observation_source_exclusive(self):
++        record = self._local_source_record
++        return (
++            not self.dev_cid and not self._api.parent and not self._force_dps
++            and not getattr(self._api, "children", {}) and record is not None
++            and self._hass.data.get(DOMAIN, {}).get(self.dev_id) is record
++            and record.get("tuyadevice") is self._api
++            and record.get("tuyadevicelock") is self._api_lock
++            and record.get("stmq_observation_reader") is self._local_source_token
++        )
++
++    def _local_observation_source_context(self):
++        data = getattr(getattr(self, "_hass", None), "data", {})
++        record = data.get(DOMAIN, {}).get(self.dev_id)
++        owner = record.get("stmq_observation_reader") if isinstance(record, dict) else None
++        return (record, owner)
++
++    def _local_reply_is_current(self, result):
++        context = (self._api, getattr(self._api, "socket", None), getattr(self._api, "version", None))
++        source = self._local_observation_source_context()
++        recorded = self._local_reply_source
++        if result is None or result is not self._local_reply_result:
++            return False
++        if (
++            context == self._local_reply_context and recorded is not None
++            and source[0] is recorded[0] and source[1] is recorded[1]
++        ):
++            return True
++        self._clear_local_observations()
++        return False
++
++    def _status_for_local_observations(self):
++        return self._native_reply_for_local_observations(True)
++
++    def _receive_for_local_observations(self):
++        return self._native_reply_for_local_observations(False)
++
++    def _native_reply_for_local_observations(self, query):
++        api = self._api
++        context = (api, getattr(api, "socket", None), getattr(api, "version", None))
++        if self._local_query_context not in (None, context):
++            self._clear_local_observations()
++        self._local_query_context = context
++        generation = self._local_query_generation
++        source = self._local_observation_source_context()
++        if query and self._local_query_ticket is not None:
++            # Overlapping queries lose the single-ticket proof. Until this
++            # connection resets, omissions conservatively withdraw evidence.
++            self._local_query_ticket = None
++            self._local_query_ambiguous = True
++        previous_recv = getattr(api, "raw_recv", None)
++        previous_sent = getattr(api, "raw_sent", None)
++        previous_frame = previous_recv[-1] if isinstance(previous_recv, list) and previous_recv else None
++        result = api.status() if query else api.receive()
++        if generation is not self._local_query_generation:
++            return None
++        self._local_reply_full = query
++        current = (self._api, getattr(self._api, "socket", None), getattr(self._api, "version", None))
++        if current != context:
++            self._clear_local_observations()
++            self._local_query_context = current
++            # An initially unopened socket may produce its first fresh reply.
++            # Replaced API/protocol/established socket cannot publish old data.
++            if context[1] is None and current[0] is api and current[2] == context[2]:
++                self._local_reply_result = result
++                self._local_reply_context = current
++                self._local_reply_source = source
++                return result
++            return None
++        self._local_reply_result = result
++        self._local_reply_context = context
++        self._local_reply_source = source
++        if not isinstance(result, dict) or "Err" in result or not isinstance(result.get("dps"), dict):
++            return result
++        if not self._local_observation_source_exclusive():
++            if self._local_query_ticket or self._local_query_ambiguous:
++                self._local_query_ticket = None
++                self._local_query_ambiguous = True
++            self._local_reply_full = query or self._local_query_ambiguous
++            return result
++        if self._local_query_ambiguous:
++            self._local_reply_full = True
++            return result
++        received = getattr(api, "raw_recv", None)
++        frame = received[-1] if isinstance(received, list) and received is not previous_recv and received else None
++        sent = getattr(api, "raw_sent", None)
++        valid = (
++            context[1] is not None and context[2] == 3.3 and "cid" not in result
++            and frame is not None and frame is not previous_frame and getattr(frame, "crc_good", None) is True
++            and type(getattr(frame, "seqno", None)) is int and frame.seqno >= 0
++            and type(getattr(frame, "cmd", None)) is int
++            and type(getattr(frame, "retcode", None)) is int and frame.retcode == 0
++            and getattr(frame, "prefix", None) == tinytuya.PREFIX_55AA_VALUE
++        )
++        sent_query = (
++            query and sent is not None and sent is not previous_sent
++            and type(getattr(sent, "seqno", None)) is int and sent.seqno >= 0
++            and type(getattr(sent, "cmd", None)) is int
++            and sent.cmd in (tinytuya.DP_QUERY, tinytuya.DP_QUERY_NEW)
++            and getattr(sent, "prefix", None) == tinytuya.PREFIX_55AA_VALUE
++        )
++        if valid and sent_query and frame.cmd == tinytuya.STATUS and frame.seqno != sent.seqno:
++            self._local_query_ticket = (sent.seqno, sent.cmd)
++            self._local_reply_full = False
++        elif not query and self._local_query_ticket is not None:
++            if valid and (frame.seqno, frame.cmd) == self._local_query_ticket:
++                self._local_reply_full = True
++                self._local_query_ticket = None
++            elif valid and frame.cmd == tinytuya.STATUS and frame.seqno != self._local_query_ticket[0]:
++                self._local_reply_full = False
++            else:
++                self._local_reply_full = True
++                self._local_query_ticket = None
++                self._local_query_ambiguous = True
++        return result
 +
 +    def _observe_local_dps(self, dps, full_poll=False):
 +        if not isinstance(dps, dict):
@@ -127,7 +319,7 @@
      def get_property(self, dps_id):
          cached_state = self._get_cached_state()
          return cached_state.get(dps_id)
-@@ -555,6 +598,7 @@
+@@ -555,15 +749,19 @@
          self._cached_state[dps_id] = value
  
      def _reset_cached_state(self):
@@ -135,15 +327,20 @@
          self._cached_state = {"updated_at": 0}
          self._pending_updates = {}
          self._last_connection = 0
-@@ -564,6 +608,7 @@
-         new_state = self._api.status()
+         self._last_full_poll = 0
+ 
+     def _refresh_cached_state(self):
+-        new_state = self._api.status()
++        new_state = self._status_for_local_observations()
++        if not self._local_reply_is_current(new_state):
++            return
          if new_state:
              if "Err" not in new_state:
-+                self._observe_local_dps(new_state.get("dps", {}), True)
++                self._observe_local_dps(new_state.get("dps", {}), self._local_reply_full)
                  self._cached_state = self._cached_state | new_state.get("dps", {})
                  self._cached_state["updated_at"] = time()
                  for entity in self._children:
-@@ -643,27 +688,41 @@
+@@ -643,27 +841,41 @@
          await self._send_pending_updates()
  
      async def _send_pending_updates(self):
@@ -200,7 +397,7 @@
  
      async def _retry_on_failed_connection(self, func, error_message):
          if self._api_protocol_version_index is None:
-@@ -689,6 +748,8 @@
+@@ -689,6 +901,8 @@
                  if not self._hass.is_stopping:
                      async with self._api_lock:
                          retval = await self._hass.async_add_executor_job(func)
@@ -209,7 +406,7 @@
                      if isinstance(retval, dict) and "Error" in retval:
                          last_err_code = retval.get("Err")
                          last_err_msg = retval.get("Error")
-@@ -713,6 +774,7 @@
+@@ -713,6 +927,7 @@
                      connections,
                  )
                  # Ensure we have a fresh connection for the next attempt
@@ -217,6 +414,18 @@
                  self._api.set_socketPersistent(False)
                  if self._api.parent:
                      self._api.parent.set_socketPersistent(False)
+@@ -860,6 +1075,11 @@
+         "tuyadevice": device._api,
+         "tuyadevicelock": device._api_lock,
+     }
++    if device._local_source_record is not None:
++        # Preserve constructor ownership through the upstream factory record.
++        record = hass.data[DOMAIN][get_device_id(config)]
++        record["stmq_observation_reader"] = device._local_source_record.get("stmq_observation_reader")
++        device._local_source_record = record
+ 
+     return device
+ 
 --- a/entity.py
 +++ b/entity.py
 @@ -115,6 +115,11 @@

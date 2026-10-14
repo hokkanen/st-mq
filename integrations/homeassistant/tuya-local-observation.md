@@ -34,6 +34,40 @@ connection requires new reports. The identity digest comes from Tuya Local's
 native `unique_id` (the configured device ID for an appliance without a child
 ID). The bridge requires it to match the selected private identity.
 
+TinyTuya 1.20.0 can return an unsolicited partial `STATUS` frame from
+`status()` before the corresponding query reply. Calling `status()` alone is
+therefore insufficient proof that the first returned datapoints are a complete
+read. On an exclusively owned, direct protocol 3.3 API/socket without forced-DPS
+reads, the adapter can
+recognize a newly decoded configured-socket frame with good CRC, zero frame
+return code and a different sequence from the freshly sent supported query. It
+records those present fields incrementally, retaining other original field
+clocks. CRC is an integrity check, not proof of cryptographic authentication.
+
+One memory-only query ticket also recognizes the delayed matching complete reply
+in the existing receive loop. That reply withdraws omitted fields, including an
+empty `dps` object. A second query before resolution, unqualified correlation or
+loss of source exclusivity uses conservative omission handling on that connection
+until its API/socket/protocol or native cache resets. This is uncertainty handling,
+not proof that every subsequent packet is complete. Shared API wrappers, child
+sources, forced-DPS configurations and unproved protocols retain the existing fail-closed polling behavior;
+protocol 3.5's different response sequence rules are not guessed. No extra query,
+queue drain, retry or socket reset is introduced. In particular, this correction
+does not identify the cause of an earlier household bridge withdrawal.
+
+While the single ticket or conservative connection state is active, the existing
+receive uses the existing native command lock so its response metadata cannot
+race a command. A silent native read can delay that command by the existing
+socket timeout; no new timeout is added. Cancellation, errors and connection
+reset preserve the native close behavior, release the lock and revoke old reply
+generation. The consumer checks the original result identity, API/socket/protocol and
+currently selected source owner again after the executor await. A revoked or
+replaced source cannot repopulate cleared observations. If forced-DPS reads are
+activated while a ticket is held, observations are withdrawn before that existing
+read can consume an unclassified query reply. The
+adapter adds no guarantee that arbitrary stream behavior is interruptible within
+an absolute wall-clock deadline.
+
 The patch preserves native connection locking and the existing retry handler.
 It also forwards TinyTuya's returned command errors to that handler before
 marking the requested datapoints sent. Previously, a returned connection error
@@ -101,11 +135,16 @@ installation. HACS may replace the patch during an integration update. A missing
 observation attribute makes the bridge unavailable rather than falling back to
 optimistic entity state.
 
-Offline validation: `node --test test/tuya-local-observation.test.js`. The test
-executes patched upstream methods using synthetic native replies and checks
+Offline validation: `node --test test/tuya-local-observation.test.js`. The tests
+execute patched upstream methods and the pinned current SDK query/receive producers using synthetic native replies and checks
 partial reports, pending values, reconnects, physical identity, scoped attributes,
 returned command errors, native retries, exact source checks, backups, idempotence
 and installation rollback. Pending-command interleavings check newer opposite
 and same-value choices, lock waits, removal, multiple datapoints and retry order.
-These synthetic checks do not identify the cause of
+`test/tuya-local-query-replies.test.js` additionally checks delayed complete and
+empty replies, overlapping queries, shared API ownership, frame integrity and
+return codes, stale metadata, cancellation, native timeout lock waits and source
+replacement. Its SDK fixture executes first-frame selection and decoded-response
+handling at a controlled validated-frame boundary; separate offline AES/CRC probes
+qualify wire-parser reachability. These synthetic checks do not identify the cause of
 an unconfirmed live command or prove physical delivery.

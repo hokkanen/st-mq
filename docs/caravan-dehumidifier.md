@@ -91,6 +91,11 @@ native entity metadata establishes the supported controls. Missing adapter data,
 restored states or a different physical identity leave the bridge unavailable.
 Home Assistant's `last_reported` and a successful `update_entity` call cannot
 substitute for received device evidence.
+The adapter distinguishes positively identified unsolicited partial status
+packets from the delayed matched complete query reply; the latter still removes
+omitted power evidence. Unqualified or overlapping query correlation remains
+conservative. This changes neither the independent recording/qualification gate
+nor restoration timing. See the [adapter contract](../integrations/homeassistant/tuya-local-observation.md).
 
 ## MQTT contract
 
