@@ -286,6 +286,27 @@ test('reenabling the exact inactive native connection releases a real own cloud 
   assert.deepEqual(x.transitions.map(({ phase }) => phase), ['inspect-owned-cloud', 'prepare', 'complete']);
 });
 
+test('an unchanged passed cloud delay is cleared on unplug before native restoration', async t => {
+  const x = await ownedCloudHandoverFixture(t), f = x.f;
+  f.advance(x.plan.startAt - f.now + 1000);
+  f.observations = f.observations.map(row => ({ ...row,
+    value: row.id === 109 ? 1 : row.id === 96 ? 50 : row.value,
+    timestamp: new Date(f.now).toISOString() }));
+  const unplugged = await x.controller.update({ enabled: true, maximumAmps: 16,
+    plan: x.plan, timezone: 'Europe/Helsinki' });
+  assert.equal(unplugged.phase, 'disconnected'); assert.equal(unplugged.owned, null);
+  assert.equal(unplugged.snapshot.schedule.enabled, 'none'); x.item.request = null;
+  const provider = f.make(); await provider.reconcileOcpp();
+  assert.equal(provider.localOcppStatus().setup.state, 'connecting');
+  assert.equal(f.current.connectivityMode, 'DualProtocol');
+  const mutations = writes(f); assert.equal(mutations.length, 3);
+  assert(mutations[0].path.endsWith('/schedules/delayed/disable'));
+  assert(mutations[1].path.includes('/connection-details/'));
+  assert(mutations[2].path.includes('/connections/chargers/'));
+  assert.equal(x.item.adapter.ownershipNamespace, 'ocpp');
+  assert.deepEqual(x.settings, { automatic: true });
+});
+
 test('native commissioning permits matching saved and current session boundaries at the cleanup preflight', async t => {
   const x = await ownedCloudHandoverFixture(t), state = initialOcppControllerState(x.nativeScope);
   state.session = { transactionId: null, connected: true,

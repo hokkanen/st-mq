@@ -380,7 +380,9 @@ export function createChargingController({ adapter, initialState = null, saveSta
       state.disconnected = true; state.released = false; state.provisional = false; state.execution = null;
       delete state.lastMissedTransition;
       state.manual = null; state.automaticTakeover = null;
-      if (state.owned && now >= state.owned.startAt && !state.vehicleDisconnect?.cleanupPending) state.owned = null;
+      // A passed release time does not remove a native delayed schedule. Keep
+      // exact ownership until normal readback or guarded disconnect cleanup
+      // confirms it is gone; otherwise commissioning sees an orphaned delay.
     } else if (connection === true) {
       state.disconnected = false;
       if (prior?.connected === false) state.released = false;

@@ -1005,6 +1005,59 @@ test('disconnect relinquishes an owned future start without installing a replace
   assert.ok(h.writes[1].url.endsWith('/delayed/disable'));
 });
 
+test('disconnect clears an unchanged own cloud delay after its start has passed', async () => {
+  const h = harness(); await h.update();
+  const owned = structuredClone(h.saved.owned);
+  h.now = owned.startAt + 1000; h.mode = 1;
+  const result = await h.update();
+  assert.equal(result.phase, 'disconnected'); assert.equal(result.owned, null);
+  assert.equal(result.execution, null); assert.equal(h.schedules.enabled, 'none');
+  assert.equal(h.writes.length, 2); assert.ok(h.writes[1].url.endsWith('/delayed/disable'));
+  assert.equal(h.writes[1].body, null, 'cleanup sends no Start or replacement schedule');
+});
+
+test('passed own delay retains disconnect cleanup across authority loss and restart', async () => {
+  const h = harness(); await h.update(); const owned = structuredClone(h.saved.owned);
+  h.now = owned.startAt + 1000; h.mode = 1; h.allowed = false;
+  await h.update(); assert.equal(h.writes.length, 1);
+  assert.deepEqual(h.saved.owned, owned, 'failed authority cannot discard the physical cleanup duty');
+  h.restart(); h.allowed = true;
+  const result = await h.update();
+  assert.equal(result.phase, 'disconnected'); assert.equal(result.owned, null);
+  assert.equal(h.schedules.enabled, 'none'); assert.equal(h.writes.length, 2);
+  assert.ok(h.writes[1].url.endsWith('/delayed/disable'));
+});
+
+test('disconnect preserves a later external delay after the previous own start passed', async () => {
+  const h = harness(); await h.update(); h.now = h.saved.owned.startAt + 1000; h.mode = 1;
+  h.schedules.delayed.maximumAmps = 12; const external = structuredClone(h.schedules);
+  const result = await h.update();
+  assert.equal(result.phase, 'disconnected'); assert.equal(result.owned, null);
+  assert.deepEqual(h.schedules, external); assert.equal(h.writes.length, 1);
+});
+
+test('a native Stop on unplug keeps a passed own delay and sends no cleanup command', async () => {
+  const h = harness(); await h.update(); const owned = structuredClone(h.saved.owned);
+  h.now = owned.startAt + 1000; h.mode = 1; h.enabled = false;
+  const result = await h.update();
+  assert.equal(h.writes.length, 1); assert.deepEqual(result.owned, owned);
+  assert.equal(h.schedules.enabled, 'delayed');
+});
+
+test('failed passed-delay unplug cleanup preserves ownership until fresh restart readback', async () => {
+  const h = harness(); await h.update(); const owned = structuredClone(h.saved.owned);
+  h.now = owned.startAt + 1000; h.mode = 1;
+  h.writeHook = () => { throw new Error('synthetic lost cleanup reply'); };
+  await h.update(); assert.deepEqual(h.saved.owned, owned);
+  assert.equal(h.saved.pending.action, 'clear'); assert.equal(h.schedules.enabled, 'delayed');
+  h.writeHook = null; h.restart();
+  const result = await h.update();
+  assert.equal(result.phase, 'disconnected'); assert.equal(result.owned, null);
+  assert.equal(result.pending, null); assert.equal(h.schedules.enabled, 'none');
+  assert.equal(h.writes.length, 3);
+  assert(h.writes.slice(1).every(write => write.url.endsWith('/delayed/disable')));
+});
+
 test('unbounded manual schedules remain protected while automatic charging is off', async () => {
   const h = harness(); await h.update({ enabled: false, timezone: 'UTC', readyBy: '21:00' });
   h.schedules = normalizeScheduleState({ enabled: 'delayed', delayed: { timezone: 'UTC', startTime: '23:00', maximumAmps: 16 } });

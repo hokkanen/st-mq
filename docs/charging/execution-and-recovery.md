@@ -125,6 +125,13 @@ fresh read. Request or readback failure never supplies that proof. Original
 execution, release times, missed pauses and native instruction priority remain
 separate from the rejected proposal.
 
+A confirmed unplug clears an unchanged application-owned cloud delay through
+the same guarded native readback even when its scheduled start has passed.
+Elapsed time does not prove that the native schedule disappeared. Lost command
+authority, a native Stop and an uncertain cleanup preserve the remaining duty
+across same-version restart; a different external schedule remains untouched.
+This cleanup neither starts charging nor grants authority to a new connection.
+
 Shelly current adjustment has independent permission through `limiterEnabled`.
 It remains active with Automatic scheduling off. A current setting carried into
 a new confirmed physical connection supplies initial device readback, not a

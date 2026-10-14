@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Clear an unchanged owned Easee cloud delay after unplugging even when its start
+  has passed, so the leftover native schedule cannot block local OCPP restoration.
+  External schedules and failed cleanup keep their existing guards.
+
 - Preserve connected native Easee session references when native-control
   deactivation to cloud cannot prove the same separately admitted backend boundary. Cleanup waits
   without discarding profiles or duties; a confirmed disconnect still permits
