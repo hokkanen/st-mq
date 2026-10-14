@@ -141,7 +141,7 @@ See [Home Assistant setup](../DOCS.md) for import paths and
 ### Copying Ubuntu configuration to HA for pair mode
 
 The HA Configuration form describes the fields below. In ST-MQ's
-**Data & settings → Connections & configuration → Configuration**, expand
+**Data & settings → Configuration**, expand
 **Copying Ubuntu configuration to HA for pair mode?** for the same checklist.
 This guidance is available before enabling pair mode and does not rewrite
 configuration. Review the destination settings before importing the file.
@@ -239,7 +239,7 @@ database, or remove existing equipment restoration obligations.
 
 ## Check and review before applying
 
-In **Data & settings → Connections & configuration → Configuration**, admins
+In **Data & settings → Configuration**, admins
 choose **Check & review configuration** after saving their changes. This reads
 the same source and runs the same configuration checks as application, without
 saving imports, reconnecting providers or sending device commands. Errors leave
@@ -295,7 +295,11 @@ fields, including explicit empty values.
 
 Choose **Apply reviewed configuration** as admin to rotate or clear passwords without
 restarting. Clearing the family password disables family login; clearing both
-disables direct app access. Every accepted Home Assistant ingress session has
+withholds authenticated network access; standalone bootstrap remains local and
+Home Assistant bootstrap continues through ingress.
+An enabled LAN HTTP backup requires network credentials: disable that listener
+and restart before clearing its required admin password.
+Every accepted Home Assistant ingress session has
 full ST-MQ admin access, independently of these passwords or the Home Assistant
 user's administrator flag. The administrator-only sidebar entry controls
 visibility, not ingress authorization. The family role applies only to direct
@@ -312,10 +316,18 @@ equipment authority, restoration or freeze protection. The role is not configura
 parameters, equipment tests, heating-plan one-cycle approvals, pairing,
 configuration, integration setup and electrical limits remain admin-only.
 
-Standalone loopback access permits an empty admin password when family access
-is disabled. Listening beyond loopback requires the passwords described above.
-Use a trusted local network or an authenticated HTTPS reverse proxy for remote
-direct access. Credentials are concealed in API responses; the direct-access
+Standalone loopback recovery permits an empty admin password when family access
+is disabled. Home Assistant recovery requires application credentials; ingress
+provides initial bootstrap. Network HTTPS and the explicit LAN HTTP
+backup require the passwords described above. **Data & settings → Web access**
+owns HTTPS setup, certificates and helper update policy; it downloads the private
+Tailscale helper only after administrator setup. The `web` section owns listener
+wiring and the explicit HTTP opt-in, independently of those installation choices.
+`web.https_directory` optionally selects private HTTPS state without relocating
+controller data or the database. Empty uses persistent `/data/st-mq/https` on
+Home Assistant; standalone uses an external installation-specific state path.
+See [secure web access](https.md) for DNS, backup, pairing and recovery instructions.
+Credentials are concealed in API responses; the direct-access
 browser keeps its entered password in session storage for that tab. **Log out**
 returns to the password prompt without stopping previously requested operations.
 For ingress, use Home Assistant to log out.
@@ -427,7 +439,7 @@ rear/front readings and explains protection behavior. Its **Pipe model & setting
 compares configured and reported parameters and explains the pipe calculation,
 including its fixed safety factor of 2. That factor is a model assumption, not a
 configurable or independently reported parameter. The live fold links to
-**Connections & configuration → Garage freeze protection**, below **Home floor
+**Connections & electricity rates → Garage freeze protection**, below **Home floor
 preheating**, for installation and setup; that section links back to Garage.
 Installation approval, margin, pipe geometry and heat transfer come only from
 `garage.protection`;
@@ -448,8 +460,7 @@ Detection runs on startup and **Apply reviewed configuration**; it does not rewr
 configuration file. Supply `server_url` explicitly if detection is ambiguous or
 the charger needs a different reachable address or proxy. Paired operation uses
 the shared virtual IP; an explicit URL must exactly match that shared endpoint.
-The live **Local OCPP connection** under **Data & settings → Connections &
-configuration → Charging → Charger 1 · Connection & capabilities** shows the
+The live **Local OCPP connection** under **Data & settings → Connections & electricity rates → Charging → Charger 1 · Connection & capabilities** shows the
 effective base URL and its source. See [Easee endpoint setup](charging/integrations/easee.md#endpoint-and-pairing) for
 detection limits, stable addressing and proxy requirements.
 
@@ -739,7 +750,7 @@ larger sections without adding another configuration format.
 
 | Sections, in file order | Settings they own |
 | --- | --- |
-| `controller`, `garage`, `charging`, `electricity` | Topology, Home operation/heating and web access passwords, Garage presets, local-protection sender and pump adapter, charger/vehicle sources, permanent charging defaults and report retention, electricity tariffs and optional private Finnish price-forecast acquisition. |
+| `controller`, `web`, `garage`, `charging`, `electricity` | Topology, Home operation/heating and web access passwords; independent HTTPS/HTTP listener wiring, private HTTPS storage and LAN resolver; Garage presets, local-protection sender and pump adapter, charger/vehicle sources, permanent charging defaults and report retention, electricity tariffs and optional private Finnish price-forecast acquisition. |
 | `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, primary broker access, optional `mqtt.ha` access for the four HA-hosted integrations, and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging/integrations/easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
 | `equipment` | The current MQTT/Shelly equipment inventory and device mappings. |
 | `acquisition`, `recording` | Provider polling/freshness and recording/storage settings. |

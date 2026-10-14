@@ -253,12 +253,32 @@ test('explicit indoor weights load through the public schema and survive disable
 });
 
 test('network binding requires authentication and add-on persistent path is independent of cwd', () => {
-  assert.throws(() => loadConfig({ STMQ_HOST: '0.0.0.0' }, '/missing-repository'), /token/i);
-  const cfg = loadConfig({ STMQ_ADDON: '1', STMQ_HOST: '0.0.0.0', STMQ_API_TOKEN: 'a'.repeat(32) });
+  assert.throws(() => loadConfig({ STMQ_HOST: '0.0.0.0' }, '/missing-repository'), /loopback/i);
+  const cfg = loadConfig({ STMQ_ADDON: '1', STMQ_API_TOKEN: 'a'.repeat(32) });
   assert.equal(cfg.dbPath, '/config/st-mq/simulation.sqlite');
   assert.equal(cfg.dataDir, '/data/st-mq');
+  assert.equal(cfg.web.httpsDirectory, '/data/st-mq/https');
   assert.equal(Object.hasOwn(cfg,'legacyDbPath'),false);
   assert.equal(cfg.addon, true);
+});
+test('HTTPS uses its own external installation storage without relocating controller state', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-https-config-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const env = { STMQ_DATA_DIR: join(directory, 'controller-data'), XDG_STATE_HOME: join(directory, 'private-state') };
+  const first = loadConfig(env, '/missing-repository');
+  assert.equal(first.dataDir, env.STMQ_DATA_DIR);
+  assert.equal(first.dbPath, join(env.STMQ_DATA_DIR, 'simulation.sqlite'));
+  assert.match(first.web.httpsDirectory, /private-state\/st-mq\/https-[a-f0-9]{16}$/);
+  assert.equal(loadConfig(env, '/missing-repository').web.httpsDirectory, first.web.httpsDirectory);
+  assert.notEqual(loadConfig({ ...env, STMQ_DATA_DIR: join(directory, 'second-installation') }, '/missing-repository').web.httpsDirectory,
+    first.web.httpsDirectory);
+  const file = join(directory, 'private-config.json');
+  const httpsDirectory = join(directory, 'explicit-https');
+  writeFileSync(file, JSON.stringify({ web: { https_directory: httpsDirectory } }), { mode: 0o600 });
+  const explicit = loadConfig({ ...env, STMQ_CONFIG: file }, '/missing-repository');
+  assert.equal(explicit.web.httpsDirectory, httpsDirectory);
+  assert.equal(explicit.dataDir, first.dataDir);
+  assert.equal(explicit.dbPath, first.dbPath);
 });
 test('family credentials are optional, distinct from admin and validated for network access', () => {
   const admin = 'synthetic-admin-password-at-least-24';
@@ -268,8 +288,8 @@ test('family credentials are optional, distinct from admin and validated for net
   assert.throws(() => loadConfig({ STMQ_FAMILY_API_TOKEN: family }, '/missing-repository'), /requires an admin/);
   assert.throws(() => loadConfig({ STMQ_API_TOKEN: admin, STMQ_FAMILY_API_TOKEN: admin }, '/missing-repository'), /must be different/);
   assert.throws(() => loadConfig({ STMQ_API_TOKEN: admin, STMQ_FAMILY_API_TOKEN: 42 }, '/missing-repository'), /must be a string/);
-  assert.throws(() => loadConfig({ STMQ_HOST: '0.0.0.0', STMQ_API_TOKEN: admin,
-    STMQ_FAMILY_API_TOKEN: 'synthetic-short' }, '/missing-repository'), /family.*at least 24/);
+  assert.equal(loadConfig({ STMQ_ADDON: '1', STMQ_API_TOKEN: admin,
+    STMQ_FAMILY_API_TOKEN: 'synthetic-short' }, '/missing-repository').familyToken, 'synthetic-short');
   const local = loadConfig({ STMQ_API_TOKEN: 'synthetic-admin', STMQ_FAMILY_API_TOKEN: 'synthetic-family' }, '/missing-repository');
   assert.equal(local.familyToken, 'synthetic-family');
 });
@@ -278,9 +298,9 @@ test('sparse family credentials load and reload without changing their private s
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'fixture.json');
   const controller = { web_token: 'synthetic-admin-password-at-least-24', web_family_token: 'synthetic-family-password-at-least-24' };
-  const source = JSON.stringify({ controller });
+  const source = JSON.stringify({ controller, web: { lan_http_enabled: true } });
   writeFileSync(path, source, { mode: 0o600 });
-  const config = loadConfig({ STMQ_CONFIG: path, STMQ_HOST: '0.0.0.0' }, directory);
+  const config = loadConfig({ STMQ_CONFIG: path }, directory);
   assert.equal(config.token, controller.web_token);
   assert.equal(config.familyToken, controller.web_family_token);
   assert.equal(readFileSync(path, 'utf8'), source);
@@ -289,13 +309,13 @@ test('sparse family credentials load and reload without changing their private s
   assert.equal(overridden.token, 'synthetic-environment-admin-password');
   assert.equal(overridden.familyToken, 'synthetic-environment-family-password');
   assert.equal(loadConfig({ STMQ_CONFIG: path, STMQ_FAMILY_API_TOKEN: '' }, directory).familyToken, '');
-  writeFileSync(path, JSON.stringify({ controller: { ...controller, web_family_token: '' } }), { mode: 0o600 });
+  writeFileSync(path, JSON.stringify({ controller: { ...controller, web_family_token: '' }, web: { lan_http_enabled: true } }), { mode: 0o600 });
   const cleared = await configurationSource(config).prepare();
   assert.equal(cleared.config.familyToken, '');
   assert.equal(cleared.config.token, controller.web_token);
   for (const invalid of [{ web_token: '', web_family_token: controller.web_family_token },
     { ...controller, web_family_token: controller.web_token }, { ...controller, web_family_token: 'synthetic-short' }]) {
-    writeFileSync(path, JSON.stringify({ controller: invalid }), { mode: 0o600 });
+    writeFileSync(path, JSON.stringify({ controller: invalid, web: { lan_http_enabled: true } }), { mode: 0o600 });
     await assert.rejects(configurationSource(config).prepare(), error => /web token/.test(error.message)
       && !Object.values(invalid).filter(Boolean).some(value => error.message.includes(value)));
   }
@@ -354,7 +374,7 @@ test('explicit standalone options configure permanent settings without enabling 
       winter_day_transfer_ct_per_kwh_ex_vat: 5, effective_date: '2026-01-01' },
     entsoe: { token: 'synthetic-should-not-be-exposed' },
   } }));
-  const config = loadConfig({ STMQ_CONFIG: path, STMQ_HOST: '0.0.0.0', STMQ_DATABASE_DIR: join(directory, 'shared') }, directory);
+  const config = loadConfig({ STMQ_CONFIG: path, STMQ_DATABASE_DIR: join(directory, 'shared') }, directory);
   assert.equal(Object.hasOwn(config.settings, 'mode'), false);
   assert.equal(config.settings.comfort.maxDropC, 0.7);
   assert.deepEqual(config.connections, {});
@@ -423,7 +443,7 @@ test('add-on allows ingress bootstrap with no direct token and validates the can
   const path = join(directory, 'secrets.json');
   writeFileSync(path, JSON.stringify({ controller: { web_token: '' } }));
   const config = loadConfig({ STMQ_ADDON: '1', STMQ_CONFIG: path, STMQ_INGRESS_PORT: '8099' }, directory);
-  assert.equal(config.host, '0.0.0.0');
+  assert.equal(config.host, '127.0.0.1');
   assert.equal(config.token, '');
   assert.equal(config.ingressPort, 8099);
   const initial = await configurationSource(config).prepare({ startup: true });
@@ -494,7 +514,7 @@ test('add-on schema has explicit VAT basis, public database mount and no old sch
   assert.equal(addon.host_network, true);
   assert.equal(addon.ingress_port, 0, 'Supervisor assigns an ingress port without a fixed host-port collision');
   assert.equal(addon.ports, undefined, 'Host networking uses application listeners, not port mappings');
-  assert.equal(addon.webui, 'http://[HOST]:[PORT:1234]');
+  assert.equal(addon.webui, undefined, 'Ingress owns the Home Assistant Open Web UI entrance');
   assert.equal(addon.panel_admin, true, 'Show the panel only to HA administrators; ingress sessions retain app admin access');
   assert.equal(addon.options.temp_to_hours, undefined);
   assert.equal(addon.schema.temp_to_hours, undefined);

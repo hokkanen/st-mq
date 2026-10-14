@@ -33,14 +33,14 @@ the independent feature controls and Garage local temperature regulation.
    Home Assistant ingress through your Home Assistant login. Every accepted
    ingress session has full ST-MQ admin access. Save settings on the app's **Configuration**
    tab. Set an admin password of at least 24 characters in `web_token`
-   for optional direct access at `http://<HA-host-address>:1234`. Optionally set a different family
+   for optional [HTTPS setup](docs/https.md) under **Data & settings → Web access**. Optionally set a different family
    password of at least 24 characters in `web_family_token`. Leave
    `controller.input: simulated` for initial review; Home defaults to Pause; Garage control is disabled by default.
 3. Start ST-MQ and choose **Open Web UI** in Home Assistant. Ingress needs no
    separate application password or router port forwarding. **Start on boot**
    keeps ST-MQ running after a host restart; **Show in sidebar** adds the
    **Home Energy** entry and is optional.
-   Direct access, when enabled, asks for either
+   Direct HTTPS and explicitly enabled LAN HTTP backup ask for either
    configured password and selects its role. The **Home Energy** UI clearly labels simulation.
    The header button switches between dark and light themes. The browser remembers
    the last choice across page loads, with green dark as the initial default.
@@ -95,8 +95,7 @@ the independent feature controls and Garage local temperature regulation.
    selected. All four amounts and the tariff are configurable.
 9. Set the occupied preferred drop with `controller.max_drop_c` (default **1.5°C**).
    It does not constrain away cooling. Permanent settings are reported in the UI;
-   change them in options, then use **Data & settings → Connections & configuration →
-   Configuration → Check & review configuration**, inspect the diff, then choose
+   change them in options, then use **Data & settings → Configuration → Check & review configuration**, inspect the diff, then choose
    **Apply reviewed configuration** (admin only).
    Browser-saved values cannot override these settings. Unknown or retired
    options prevent normal operation; use configuration recovery to correct them.
@@ -156,7 +155,9 @@ resolved through Supervisor. The import must contain actual values, not new
 `!secret` references. Providing a value replaces that field's saved reference.
 
 The **Configuration** section also reports live access status. Setting a valid
-`controller.web_token` and applying enables direct admin access on port 1234.
+`controller.web_token` enables password authentication for the local recovery
+entrance and permits explicit HTTPS setup in **Web access**. It does not open a
+network listener by itself.
 `controller.web_family_token` optionally enables family access with a different
 password. Family can read all pages, operate firewood (removal within 15 minutes),
 DHWR, manual heating and Away/Pause, garage doors and all EV card
@@ -288,9 +289,11 @@ earlier learning chart samples.
 
 ## Using the application
 
-Empty direct-access passwords leave port 1234 closed; Home Assistant ingress
-remains available through Home Assistant login with full application admin
-access. Saved app options own permanent settings. See the
+Home Assistant ingress remains available through Home Assistant login with full
+application admin access. Port 1234 is local loopback recovery; on Home Assistant
+it requires application credentials. Optional HTTPS and LAN HTTP backup are
+disabled initially; see [secure web access](docs/https.md). Saved app options own
+permanent settings. See the
 [configuration guide](docs/configuration.md) for reviewed changes, password
 roles, electricity rates and the controls that retain independent intent.
 
@@ -501,10 +504,10 @@ After saving options, use the review/apply workflow above for supported live
 changes, or restart for input/topology and other startup-only settings. If ingress
 reports the app is unavailable, first confirm ST-MQ is running and inspect its
 startup log. An unavailable Supervisor or invalid ingress assignment blocks
-startup; ST-MQ does not guess a fixed port. Port 1234 is deliberately closed
-while direct passwords are empty;
-use **Open Web UI** through ingress in that case. Recovery always uses ingress,
-regardless of configured direct-access passwords.
+startup; ST-MQ does not guess a fixed port. Port 1234 remains loopback recovery
+and cannot replace ingress bootstrap when application passwords are empty.
+Use **Open Web UI** through ingress. Configuration recovery always uses ingress
+on Home Assistant, regardless of application passwords.
 
 ## Reproducing deployment checks
 

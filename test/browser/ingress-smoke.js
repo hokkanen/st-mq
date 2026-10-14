@@ -19,7 +19,7 @@ const importPath = join(directory, 'secrets.json');
 const prefix = '/api/hassio_ingress/synthetic-browser-session/';
 const uploadPath = '/addon_configs/synthetic_repository_st-mq/secrets.json';
 const now = Date.parse('2026-09-07T12:00:00Z');
-const requests = [], pending = new Map(), errors = [];
+const requests = [], pending = new Map(), errors = [], stalledAuxiliary = new Set();
 let app, proxy, socket, id = 0, rejectStatus = false, cleanupPending = false, metadataAvailable = true, stallReads = null;
 
 try {
@@ -50,19 +50,26 @@ try {
   configurationSource(config).prepare = args => source.prepare(args);
   app = await start({ config, clock: () => now });
   assert.equal(app.webAccess.status().ingress.enabled, true);
-  assert.equal(app.webAccess.status().direct.enabled, false);
+  assert.equal(app.webAccess.status().recovery.enabled, true);
+  assert.equal(app.webAccess.status().https.enabled, false);
   // Model the trusted Supervisor TCP peer; spoofed headers cannot grant this.
   app.webAccess.ingressServer.on('connection', connection =>
     Object.defineProperty(connection, 'remoteAddress', { value: '172.30.32.2' }));
   seedChartFixture(app.store, now);
-  const upstream = `http://127.0.0.1:${app.server.address().port}`;
+  const upstream = `http://127.0.0.1:${app.webAccess.ingressServer.address().port}`;
   proxy = createServer(async (request, response) => {
     try {
       if (request.url === '/favicon.ico') { response.writeHead(204); response.end(); return; }
       requests.push({ method: request.method, path: request.url, authorization: Boolean(request.headers.authorization) });
       if (!request.url.startsWith(prefix)) { response.writeHead(404); response.end(); return; }
       const path = `/${request.url.slice(prefix.length)}`;
-      if (stallReads === 'chart-events' && (path.startsWith('/api/chart?') || path.startsWith('/api/events?'))) return;
+      if (stallReads === 'chart-events' && (path.startsWith('/api/chart?') || path.startsWith('/api/events?'))) {
+        await new Promise(resolve => {
+          const resume = () => { stalledAuxiliary.delete(resume); response.removeListener('close', resume); resolve(); };
+          stalledAuxiliary.add(resume); response.once('close', resume);
+        });
+        if (response.destroyed) return;
+      }
       if (stallReads === 'status-body' && path === '/api/status') {
         response.writeHead(200, { 'Content-Type': 'application/json' }); response.write('{'); return;
       }
@@ -85,7 +92,6 @@ try {
           status.settingsReload.configuration = { environment: 'home-assistant', defaultsPath: '/st-mq/config.json',
             privatePath: '/data/options.json', importPath: '/config/secrets.json', externalImportPath: uploadPath };
           if (!metadataAvailable) delete status.settingsReload.configuration;
-          status.settingsReload.access = { ingress: { enabled: true }, direct: { enabled: false, tokenRequired: true } };
           status.settingsReload.result = { cleanupPending };
         }
         response.writeHead(result.status, forwarded); response.end(JSON.stringify(status));
@@ -144,7 +150,7 @@ try {
   assert.match(instructions, /freshly saved options/);
   assert.match(instructions, /Omitted fields keep saved values/);
   assert.match(instructions, /failed import keeps the file/);
-  assert.match(await evaluate("document.getElementById('settings-access').textContent"), /Host dashboard access.*host login.*Direct access is disabled/);
+  assert.match(await evaluate("document.getElementById('settings-access').textContent"), /Host dashboard access.*host login.*Set up HTTPS in Web access/);
   assert.equal(await evaluate("document.getElementById('settings-reload').textContent"), 'Check & review configuration');
 
   const writesBeforeHelp = requests.filter(request => request.method === 'POST').length;
@@ -197,7 +203,11 @@ try {
     'Status rendering after reviewed application preserves the open guide');
 
   await evaluate("document.getElementById('recording-details').open = true; document.getElementById('recording-overview-details').open = true; document.getElementById('energy-audit-details').open = true;");
-  await until("document.getElementById('recording-overview-message').textContent.includes('Database snapshot:')");
+  await until("document.getElementById('recording-overview-message').textContent.startsWith('Inventory:') && !document.getElementById('recording-overview-content').hasAttribute('aria-busy')");
+  assert.equal(await evaluate("document.getElementById('recording-overview-message').classList.contains('form-error')"), false,
+    'The inventory refresh completed successfully through ingress');
+  assert.equal(await evaluate("document.getElementById('recording-overview-content').querySelectorAll('[data-overview-key]').length > 0"), true,
+    'The recording response rendered its dataset inventory, including collapsed groups');
   await until("document.getElementById('energy-audit-content').children.length > 0");
   for (const path of ['api/status', 'api/chart?', 'api/events?', 'api/settings/preview', 'api/settings/reload', 'api/recording-overview', 'api/energy-audits']) {
     assert.ok(requests.some(request => request.path.startsWith(`${prefix}${path}`)), `Browser requested ${path} through ingress`);
@@ -231,7 +241,9 @@ try {
     await new Promise(resolve => setTimeout(resolve, 50));
   assert.ok(requests.filter(row => row.path === `${prefix}api/status`).length >= 2,
     'Status polling continues while the first chart/event reads are stalled');
+  assert.ok(stalledAuxiliary.size > 0, 'Actual chart/event responses remain pending during independent status polling');
   stallReads = null;
+  for (const resume of [...stalledAuxiliary]) resume();
   await until("document.getElementById('history')?.dataset.ready === 'true'", 1400);
   stallReads = 'status-body'; requests.length = 0;
   await send('Page.reload');
@@ -255,6 +267,7 @@ try {
     'whole-body read timeout retries and monitoring staleness recovers online', 'expired HA session directs user back to Home Assistant'] }));
   await send('Page.close');
 } finally {
+  for (const resume of [...stalledAuxiliary]) resume();
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   if (proxy) await new Promise(resolve => { proxy.close(resolve); proxy.closeAllConnections(); });
   await app?.close(); rmSync(directory, { recursive: true, force: true });

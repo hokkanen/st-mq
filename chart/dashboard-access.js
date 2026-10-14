@@ -6,7 +6,7 @@ export const readOnlyMessage = 'View only: database edits, settings changes and 
 
 /** Pair management and read-only database verification remain usable on a slave. */
 export function assertDashboardWrite(path, data, status) {
-  if (data === undefined || isPairManagementRequest(path, data, status)) return;
+  if (data === undefined || path === '/api/web-access' || isPairManagementRequest(path, data, status)) return;
   if (status && path === '/api/database-verification' && data && typeof data === 'object' && !Array.isArray(data) && !Object.keys(data).length) return;
   if (status && path === '/api/recording-backups/verify' && data && typeof data === 'object' && !Array.isArray(data)
     && Object.keys(data).join(',') === 'sourceId' && /^[a-f0-9]{64}$/.test(data.sourceId ?? '')) return;

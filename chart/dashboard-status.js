@@ -62,7 +62,7 @@ export function settingsReloadScope(status = {}) {
     'Heating strategy, comfort limits and learning settings',
     'Electricity rates',
     'Adaptive recording budget, backup folder and verification schedule',
-    'Admin and family passwords and direct-access availability',
+    'Admin and family passwords',
   ];
   if (['mqtt', 'providers'].includes(status?.input)) {
     reloadable.push('Provider connections, location, sensor topics and polling intervals',
@@ -70,7 +70,7 @@ export function settingsReloadScope(status = {}) {
   }
   const restartRequired = [
     'Input mode',
-    'Web address and port',
+    'Web address and port, including LAN HTTP backup enablement',
     'Data and database locations',
     'Topology, instance role, pairing and mirroring connections',
     'Environment variables, including overrides',
@@ -93,17 +93,18 @@ export function settingsReloadScope(status = {}) {
     if (isFilePath(configuration.externalImportPath)) instructions.push(`To import settings, upload the file to ${configuration.externalImportPath} using SSH.`);
     instructions.push('Use a plain JSON options object without an outer options wrapper. Omitted fields keep saved values, arrays replace saved arrays, and explicit empty values clear fields.');
     instructions.push('As admin, choose Check & review configuration, inspect the changes, then Apply reviewed configuration. A successful import saves its values in the host dashboard and removes the uploaded file; a failed import keeps the file for correction.');
-    if (reload.access?.ingress?.enabled === true) access.push('Host dashboard access is enabled and uses your host login.');
-    if (reload.access?.direct?.enabled === false) access.push('Direct access is disabled. Set controller.web_token to at least 24 characters and apply to enable it.');
-    else if (reload.access?.direct?.enabled === true) access.push('Direct access is enabled and requires your admin or family password. Clear both controller.web_token and controller.web_family_token and apply to disable it.');
   } else if (configuration?.environment === 'ubuntu') {
     if (isFilePath(configuration.privatePath)) instructions.push(`Edit the permanent private JSON file at ${configuration.privatePath}.`
       + (isFilePath(configuration.defaultsPath) ? ` It overrides the options defaults in ${configuration.defaultsPath}.` : ''));
     instructions.push('Use a plain JSON options object without an outer options wrapper. Include the settings you want to override; omitted settings use the defaults.');
     instructions.push('Save the file, then as admin choose Check & review configuration. Inspect the changes and choose Apply reviewed configuration. The private file stays in place for future starts and changes.');
-    if (reload.access?.direct?.enabled === true) access.push(reload.access.direct.tokenRequired
-      ? 'Direct access is enabled and requires your admin or family password.'
-      : 'Local access is enabled. Loopback access works without a password.');
   }
+  if (reload?.access?.ingress?.enabled === true) access.push('Host dashboard access is enabled and uses your host login.');
+  if (reload?.access?.recovery?.enabled === true) access.push(reload.access.recovery.tokenRequired
+    ? 'Loopback recovery is enabled and requires your admin or family password.'
+    : 'Loopback recovery is enabled and works without a password. Use an SSH tunnel for remote recovery.');
+  if (reload?.access?.https?.enabled === true) access.push('HTTPS is listening and requires your admin or family password. Manage its certificate helper in Web access.');
+  else if (configuration) access.push('Set up HTTPS in Web access. Network entrances require controller.web_token with at least 24 characters.');
+  if (reload?.access?.lanHttp?.configured === true) access.push('Unencrypted LAN HTTP backup is configured. Passwords and household data can be intercepted or modified on that connection.');
   return { available, message, reloadable, restartRequired, instructions, access, location, pairCopyHelp };
 }

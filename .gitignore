@@ -2,6 +2,9 @@
 dist/
 node_modules/
 /var
+# Defense in depth for root-adapter helper directories. Runtime validation also
+# rejects placing a root-owned helper identity in a repository checkout.
+**/.*-https-helper/
 
 # Household CSV imports and database snapshots belong outside the checkout.
 share/

@@ -38,6 +38,8 @@ import { createEquipmentPanel, dhwrReadingSummary } from './equipment.js';
 import { createGarageDoorPanel } from './garage-doors.js';
 import { renderFloorPreheat } from './floor-preheat.js';
 import { assertWebRequest, createWebSession, createAccessControls, bindPasswordVisibility } from './web-access.js';
+import { createSecureWebAccessPanel } from './secure-web-access.js';
+import './secure-web-access.css';
 import { setStatusDetail, closeStatusDetails } from './status-details.js';
 import { priceStatuses, renderCurrentPrice } from './current-price.js';
 import { homeHeatingConfirmation, setHeatingStatusDetail } from './heating-status.js';
@@ -150,6 +152,7 @@ function lockScreen({ authenticationFailed = false } = {}) {
   const hadPassword = Boolean(session.token), hadStatus = Boolean(lastStatus);
   session.logout(); ++refreshSequence; lastStatus = undefined; webAccess = undefined; dashboardStatusReceived = false;
   configurationReview.clear(); configurationReview.update();
+  secureWebAccess.clear();
   document.body.dataset.authenticated = 'false';
   closeStatusDetails(document);
   for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
@@ -191,6 +194,11 @@ function showError(error, { connection = true } = {}) {
 }
 const recordingHealth = createRecordingHealth({ document, request: api,
   reviewBackup: options => historyRecovery.open(options), downloadBackup, onContextChange: resetRecordingContext });
+const secureWebAccess = createSecureWebAccessPanel({ document, request: api, getAccess: () => webAccess, ingress,
+  onAccess: access => {
+    webAccess = access; accessControls.update(access);
+    document.body.dataset.authenticated = 'true'; $('auth').hidden = true;
+  } });
 function resetRecordingContext(health) {
   const context = JSON.stringify([health.scope, health.contextId]);
   if (context === recordingContext) return;
@@ -832,6 +840,7 @@ function render(s) {
   statusReceivedMonotonicAt = performance.now();
   if (s.recordingHealth?.version === 2) resetRecordingContext(s.recordingHealth);
   recordingHealth.update(s);
+  secureWebAccess.update(s);
   readOnlyControls.update(s);
   garageControls.update(s);
   automationControls.update(s);
@@ -988,6 +997,7 @@ async function refresh({ forceChart = false, background = false } = {}) {
       // this older status request was pending.
       if (pairRevision === pairStatusRevision) pairPanel.unavailable();
       showError(error);
+      void secureWebAccess.refresh();
       void recordingHealth.refresh();
       void refreshPairing();
     }

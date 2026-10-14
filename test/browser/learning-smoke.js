@@ -320,8 +320,10 @@ try {
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#providers > [data-provider]')].map(row => row.dataset.provider)"),
     ['electricity', 'market', 'vehicle-telemetry', 'main-temperatures'], 'The overview has four current source categories, including combined temperatures and weather');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#connections-details > .controller-fold')].map(fold => fold.id)"),
-    ['mqtt-devices-details', 'charging-setup-details', 'floor-preheat-details', 'garage-protection-configuration-details', 'electricity-details', 'controls-details'],
-    'Connection settings include MQTT, charging setup, Home floor preheating, Garage freeze protection, rates and configuration');
+    ['mqtt-devices-details', 'charging-setup-details', 'floor-preheat-details', 'garage-protection-configuration-details', 'electricity-details'],
+    'Connection settings include MQTT, charging setup, Home floor preheating, Garage freeze protection and rates');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#providers-controls > details')].map(fold => fold.id)"),
+    ['connections-details', 'secure-web-access-details', 'controls-details'], 'Web access sits above the separate final Configuration fold');
   assert.equal(await evaluate("!document.getElementById('connections-details').open && [...document.querySelectorAll('#providers .provider-fold > summary')].every(summary=>summary.checkVisibility())"), true, 'Source categories remain accessible with configuration closed');
   assert.equal((await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`).then(r => r.json())).observations.garage.value, 16.4,
     'The temperature catalogue receives the actual garage observation');

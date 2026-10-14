@@ -83,7 +83,7 @@ source reports unavailable. A BLU H&T supplies temperature only.
 
 ## Sender installation
 
-Use **Connections & configuration → Garage freeze protection**, directly below
+Use **Connections & electricity rates → Garage freeze protection**, directly below
 **Home floor preheating**, for installation and setup guidance.
 The linked **Garage → Freeze protection** fold, below **Normal temperature**,
 contains live air/pipe/reserve readings and explains active protection. Its

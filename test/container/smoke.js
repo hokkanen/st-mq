@@ -197,11 +197,14 @@ assert.deepEqual(addonManifest.map.find(mapping => mapping.type === 'app_config'
 assert.ok(addonManifest.map.includes('share:rw'));
 assert.ok(addonManifest.arch.includes(process.arch === 'arm64' ? 'aarch64' : 'amd64'));
 
-// A fresh add-on can start with only ingress; direct access never opens empty.
+// A fresh add-on retains ingress and independent loopback bootstrap. Neither
+// optional LAN listener opens merely because the application starts.
 const ingressOnly = await start({ config: loadConfig({ ...process.env, STMQ_INPUT: 'simulated',
-  STMQ_PORT: '0', STMQ_INGRESS_PORT: '0', STMQ_API_TOKEN: '', STMQ_HOST: '0.0.0.0' }) });
+  STMQ_PORT: '0', STMQ_INGRESS_PORT: '0', STMQ_API_TOKEN: '', STMQ_HOST: '127.0.0.1' }) });
 try {
-  assert.equal(ingressOnly.webAccess.status().direct.enabled, false);
+  assert.equal(ingressOnly.webAccess.status().recovery.enabled, true);
+  assert.equal(ingressOnly.webAccess.status().https.enabled, false);
+  assert.equal(ingressOnly.webAccess.status().lanHttp.enabled, false);
   assert.equal(ingressOnly.webAccess.status().ingress.enabled, true);
   const base = `http://127.0.0.1:${ingressOnly.webAccess.ingressServer.address().port}`;
   assert.equal((await fetch(`${base}/api/status`, {

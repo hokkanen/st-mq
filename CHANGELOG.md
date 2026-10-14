@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Add optional trusted LAN HTTPS using native TLS and a private Tailscale
+  certificate helper. Keep authenticated loopback recovery and Home Assistant
+  ingress independent, with explicit unencrypted LAN HTTP backup and warnings.
+  Certificate renewal and authenticated helper updates do not restart control.
+
 - Clear an unchanged owned Easee cloud delay after unplugging even when its start
   has passed, so the leftover native schedule cannot block local OCPP restoration.
   External schedules and failed cleanup keep their existing guards.

@@ -14,7 +14,7 @@ const family = 'synthetic-browser-configuration-family';
 const now = Date.parse('2026-09-30T12:00:00Z');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const requests = [], errors = [], layouts = [], pending = new Map();
-let app, browser, socket, sequence = 0;
+let app, browser, socket, sequence = 0, navigations = 0;
 
 try {
   const configuration = join(directory, 'fixture-config.json');
@@ -57,6 +57,7 @@ try {
       if (message.error) request.reject(new Error(message.error.message)); else request.resolve(message.result);
     } else if (message.method === 'Runtime.exceptionThrown') errors.push(
       message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
+    else if (message.method === 'Page.frameNavigated' && !message.params.frame.parentId) navigations++;
   };
   const send = (method, params = {}) => new Promise((resolve, reject) => {
     const id = ++sequence, timer = setTimeout(() => {
@@ -94,6 +95,13 @@ try {
       for (let parent = root; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
       root.scrollIntoView({block:'start',behavior:'instant'});return true;
     })()`);
+  };
+  const logout = async () => {
+    const before = navigations;
+    await evaluate("document.getElementById('web-logout').click();true");
+    for (let attempt = 0; attempt < 200 && navigations === before; attempt++) await pause(30);
+    assert(navigations > before, 'Sign-out reloads the document before the next login');
+    await until("document.getElementById('auth') && !document.getElementById('auth').hidden && document.getElementById('token')");
   };
   const preview = async () => {
     await until("!document.getElementById('settings-reload').disabled");
@@ -174,8 +182,7 @@ try {
     Authorization:'Bearer '+sessionStorage.getItem('stmq-token')},body:'{}'}).then(response=>response.status)`), 403,
     'The API also rejects family preview requests');
   assert.equal(reloads(), 0);
-  await evaluate("document.getElementById('web-logout').click();true");
-  await until("!document.getElementById('auth').hidden");
+  await logout();
   await login(admin);
   assert.match(await evaluate("document.getElementById('settings-reload').textContent"), /check.*review/i);
   assert.equal(await evaluate("document.getElementById('settings-pair-copy-help').hidden"), true,
@@ -276,8 +283,7 @@ try {
   // An existing administrator review must disappear when the next session is family.
   await write(cancelled);
   await preview();
-  await evaluate("document.getElementById('web-logout').click();true");
-  await until("!document.getElementById('auth').hidden");
+  await logout();
   await login(family);
   assert.equal(await evaluate("document.getElementById('settings-review').checkVisibility()"), false);
   assert.equal(await evaluate("document.getElementById('settings-reload').checkVisibility()"), false);
