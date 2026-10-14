@@ -357,17 +357,23 @@ for (const boundary of ['different current', 'new same-value current', 'differen
 test(`an external ${boundary} supersedes the pending BMW restoration`, async t => {
   const f = await bmwPauseRestorationFixture(t), before = f.writes.length;
   const externalValue = boundary === 'new same-value current' ? 16 : 8;
-  let observed;
+  let observed, admission;
   const external = () => {
     const control = f.item('charger2').controller.status();
     if (control.currentTest.phase !== 'restoring'
       || boundary !== 'different current before acknowledgement' && !control.currentTest.pending.acceptedAt) return false;
     f.advance(1000); f.notifyCurrent(externalValue);
-    f.observe(); observed = structuredClone(f.item('charger2').identification);
+    // Receipt can precede the notification's Store admission while an owned
+    // restore is in flight. Only admitted external evidence supersedes it.
+    admission = f.adapter.waitForInputAdmission().then(ready => {
+      assert.equal(ready, true);
+      f.observe(); observed = structuredClone(f.item('charger2').identification);
+    });
   };
   if (boundary === 'different current before acknowledgement') f.onCurrentWrite(external);
   else f.onCurrentReadback(external);
   f.advance(5000); f.setMeasuredCurrent(0); await f.update();
+  assert.ok(admission); await admission;
   assert.ok(observed); assert.equal(observed.phase, 'inconclusive');
   assert.equal(observed.reason, 'interrupted');
   assert.equal(f.item('charger2').vehicleMatch, null);
@@ -376,6 +382,51 @@ test(`an external ${boundary} supersedes the pending BMW restoration`, async t =
   assert.equal(f.fields.current_limit.value, externalValue, 'The newer native setting owns the result');
   assert.equal(f.writes.slice(before).filter(row => row.role === 'current_limit').length, 1,
     'Supersession never repeats the restoration write');
+});
+
+test('a received newer same-value current supersedes BMW restoration only after native admission', async t => {
+  const f = await bmwPauseRestorationFixture(t), before = f.writes.length;
+  const original = structuredClone(f.item('charger2').identification);
+  const admitted = f.store.runWrite;
+  let release, intercepted = false, observation;
+  const gate = new Promise(resolve => { release = resolve; });
+  t.after(() => { release(); f.store.runWrite = admitted; });
+  f.onCurrentReadback(() => {
+    const control = f.item('charger2').controller.status();
+    if (control.currentTest.phase !== 'restoring' || !control.currentTest.pending.acceptedAt) return false;
+    f.store.runWrite = (action, options) => {
+      if (!intercepted) { intercepted = true; return gate.then(() => admitted(action, options)); }
+      return admitted(action, options);
+    };
+    f.advance(1000);
+    const receivedAt = f.now;
+    f.notifyCurrent(16);
+    assert.equal(intercepted, true, 'Hold the actual received notification at Store admission');
+    f.observe();
+    assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-input-persistence-pending');
+    assert.equal(f.item('charger2').identification.phase, 'pausing');
+    assert.equal(f.item('charger2').identification.pauseUntil, original.pauseUntil);
+    assert.equal(f.writes.slice(before).filter(row => row.role === 'start_charging' && row.value).length, 0,
+      'Unadmitted evidence cannot release the owned Stop');
+    release();
+    observation = f.adapter.waitForInputAdmission().then(ready => {
+      assert.equal(ready, true);
+      f.observe();
+      const current = f.item('charger2').identification, native = f.adapter.snapshot().fields.current_limit;
+      assert.equal(current.phase, 'inconclusive');
+      assert.equal(current.reason, 'interrupted');
+      assert.equal(current.id, original.id);
+      assert.equal(native.value, 16);
+      assert.equal(native.measuredAt, receivedAt, 'Admission preserves the newer native source clock');
+      assert.equal(native.receivedAt, receivedAt, 'Admission does not manufacture another receipt');
+    });
+  });
+  f.advance(5000); f.setMeasuredCurrent(0); await f.update();
+  assert.ok(observation); await observation;
+  await f.update();
+  assert.equal(f.item('charger2').controller.status().currentTest.phase, 'superseded');
+  assert.equal(f.writes.slice(before).filter(row => row.role === 'current_limit').length, 1,
+    'The newer admitted instruction never replays the original restoration');
 });
 
 for (const delayed of [false, true])
