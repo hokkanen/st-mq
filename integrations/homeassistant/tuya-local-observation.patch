@@ -133,7 +133,27 @@
                  self._cached_state = self._cached_state | new_state.get("dps", {})
                  self._cached_state["updated_at"] = time()
                  for entity in self._children:
-@@ -713,6 +755,7 @@
+@@ -657,13 +699,18 @@
+         )
+ 
+     def _set_values(self, properties):
+-        self._api.set_multiple_values(properties, nowait=True)
++        result = self._api.set_multiple_values(properties, nowait=True)
++        # TinyTuya can return a connection error without raising. Preserve it
++        # for the existing retry handler before marking requested values sent.
++        if isinstance(result, dict) and "Error" in result:
++            return result
+         now = time()
+         self._last_connection = now
+         pending_updates = self._get_pending_updates()
+         for key in properties.keys():
+             pending_updates[key]["updated_at"] = now
+             pending_updates[key]["sent"] = True
++        return result
+ 
+     async def _retry_on_failed_connection(self, func, error_message):
+         if self._api_protocol_version_index is None:
+@@ -713,6 +760,7 @@
                      connections,
                  )
                  # Ensure we have a fresh connection for the next attempt
