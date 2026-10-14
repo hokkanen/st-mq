@@ -320,6 +320,12 @@ and newer versions; Node 22's default isolated runner also applies the command-l
 timeout to the entire file, which can cancel a long file of successful short tests.
 Use `npm test -- --test-name-pattern=...` to select matching cases.
 
+HTTPS fixture completion waits observe the original accepted operation until its
+terminal state is published, under the test case's cancellation and deadline.
+They do not impose a separate one-second poll limit on filesystem publication.
+Controlled held-work cases verify both delayed completion and cancellation;
+their owned gates release before manager cleanup even if a fake SDK ignores abort.
+
 The optional extended Node package runs separately:
 
 ```sh

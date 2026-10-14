@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { setTimeout as waitForPoll } from 'node:timers/promises';
 import { createServer } from 'node:http';
 import { createHttpsManager } from '../src/https/manager.js';
 import { verifySigningBundle, verifyArtifactHash, releaseCandidate, architecture } from '../src/https/distribution.js';
@@ -17,9 +18,36 @@ import { secureWebAccessView } from '../chart/secure-web-access.js';
 
 const hostname = 'fixture.test-tailnet.ts.net';
 const wait = ms => new Promise(resolveWait => setTimeout(resolveWait, ms));
-async function settled(manager) {
-  for (let i = 0; i < 200 && manager.status().operation?.state === 'running'; i++) await wait(5);
-  assert.notEqual(manager.status().operation?.state, 'running'); return manager.status();
+async function settled(t, manager) {
+  const originalId = manager.status().operation?.id;
+  while (manager.status().operation?.state === 'running') {
+    // The node:test deadline owns cancellation. Publication has no independent
+    // one-second deadline; the actual operation must finish its durable work.
+    await waitForPoll(5, undefined, { signal: t.signal });
+    assert.equal(manager.status().operation?.id, originalId, 'Wait for the original accepted operation');
+  }
+  t.signal.throwIfAborted();
+  const observed = manager.status();
+  assert.notEqual(observed.operation?.state, 'running'); return observed;
+}
+function heldFixtureWork(t) {
+  let release;
+  const promise = new Promise(done => { release = done; });
+  // A fake SDK may ignore cancellation. Release its owned gate before manager
+  // cleanup waits for the real operation, including whole-test cancellation.
+  t.signal.addEventListener('abort', release, { once: true });
+  if (t.signal.aborted) release();
+  t.after(() => { t.signal.removeEventListener('abort', release); release(); });
+  return { promise, release };
+}
+async function fixtureBoundary(t, promise) {
+  let abort;
+  const cancelled = new Promise((_resolve, reject) => {
+    abort = () => reject(t.signal.reason);
+    t.signal.addEventListener('abort', abort, { once: true });
+  });
+  try { t.signal.throwIfAborted(); return await Promise.race([promise, cancelled]); }
+  finally { t.signal.removeEventListener('abort', abort); }
 }
 async function diagnosed(manager) { for (let i = 0; i < 200 && !manager.status().error; i++) await wait(5); assert.ok(manager.status().error); return manager.status(); }
 async function actionWhenIdle(manager, input) {
@@ -89,22 +117,88 @@ test('optional HTTPS starts with no files, downloads, network checks or helper w
   manager.start(); await wait(20);
   assert.equal(manager.status().phase, 'disabled'); assert.equal(calls.install, 0); assert.equal(calls.discover, 0); assert.equal(calls.helperStart, 0);
   await assert.rejects(lstat(resolve(directory, 'https')), { code: 'ENOENT' });
-  const record = await manager.action({ action: 'update-now' }); assert.ok(record.id); await settled(manager);
+  const record = await manager.action({ action: 'update-now' }); assert.ok(record.id); await settled(t, manager);
   assert.equal(manager.status().operation.error, 'https_setup_required'); assert.equal(calls.install, 0);
 });
 
 test('explicit setup installs only its helper, activates validated certificate, redacts family state and is resumable', async t => {
   const { manager, calls } = await setup(t);
   const operation = await manager.action({ action: 'enable' }); assert.ok(operation.id);
-  const view = await settled(manager);
+  const view = await settled(t, manager);
   assert.equal(view.phase, 'ready'); assert.equal(view.hostname, hostname); assert.equal(view.certificate.generation, 1);
   assert.equal(calls.install, 1); assert.equal(calls.helperStart, 1); assert.equal(calls.certificate, 1);
-  await manager.action({ action: 'recheck' }); await settled(manager);
+  await manager.action({ action: 'recheck' }); await settled(t, manager);
   assert.equal(calls.install, 1); assert.equal(calls.certificate, 1, 'Rechecks do not force issuance');
   const family = manager.status({ admin: false }); assert.equal(family.enabled, true); assert.equal('hostname' in family, false); assert.equal('helper' in family, false); assert.equal('operation' in family, false);
   for (const field of ['environment', 'setup', 'dns']) assert.equal(field in family, false);
-  await manager.action({ action: 'disable' }); await settled(manager);
+  await manager.action({ action: 'disable' }); await settled(t, manager);
   assert.equal(manager.status().enabled, false); assert.equal(calls.helperStop, 1); assert.ok(manager.status().certificate.expiresAt);
+});
+
+test('completion waiting follows the current operation past the former local poll budget', { timeout: 15000 }, async t => {
+  let crossed;
+  const { promise: held, release } = heldFixtureWork(t);
+  const observedFormerLimit = new Promise(done => { crossed = done; });
+  const { manager, installStarted } = await setup(t, { holdInstall: held });
+  const accepted = await manager.action({ action: 'enable' }); await fixtureBoundary(t, installStarted);
+  let reads = 0, result = null;
+  const observed = { status: () => {
+    const value = manager.status();
+    if (++reads === 201) crossed();
+    return value;
+  } };
+  const completion = settled(t, observed).then(value => { result = { value }; }, error => { result = { error }; });
+  try {
+    await fixtureBoundary(t, observedFormerLimit);
+    await new Promise(done => setImmediate(done));
+    assert.equal(result, null, 'An accepted operation stays pending until its actual fixture work completes');
+    assert.equal(manager.status().operation.id, accepted.id);
+    assert.equal(manager.status().operation.state, 'running');
+    release(); await completion;
+    assert.equal(result.error, undefined);
+    assert.equal(result.value.operation.id, accepted.id);
+    assert.equal(result.value.operation.state, 'completed');
+    assert.equal(result.value.phase, 'ready');
+  } finally { release(); await completion; }
+});
+
+test('completion waiting obeys test cancellation without completing or replacing the operation', { timeout: 15000 }, async t => {
+  let entered;
+  const { promise: held, release } = heldFixtureWork(t);
+  const observedWait = new Promise(done => { entered = done; });
+  const { manager, installStarted } = await setup(t, { holdInstall: held });
+  const accepted = await manager.action({ action: 'enable' }); await fixtureBoundary(t, installStarted);
+  let reads = 0;
+  const observed = { status: () => {
+    const value = manager.status();
+    if (++reads === 2) entered();
+    return value;
+  } };
+  const cancellation = new AbortController();
+  const waiting = settled({ signal: AbortSignal.any([t.signal, cancellation.signal]) }, observed);
+  try {
+    await fixtureBoundary(t, observedWait); cancellation.abort();
+    await assert.rejects(waiting, { name: 'AbortError' });
+    assert.equal(manager.status().operation.id, accepted.id);
+    assert.equal(manager.status().operation.state, 'running', 'Cancelling a test wait grants no completion or reset');
+    release(); const completed = await settled(t, manager);
+    assert.equal(completed.operation.id, accepted.id); assert.equal(completed.operation.state, 'completed');
+  } finally { release(); await settled(t, manager); }
+});
+
+test('test cancellation releases held fixture work before actual manager cleanup', { timeout: 15000 }, async t => {
+  const cancellation = new AbortController();
+  const scope = { signal: AbortSignal.any([t.signal, cancellation.signal]), after: t.after.bind(t) };
+  const { promise: held, release } = heldFixtureWork(scope);
+  const { manager, calls, installStarted } = await setup(t, { holdInstall: held });
+  await manager.action({ action: 'enable' }); await fixtureBoundary(t, installStarted);
+  const waiting = settled(scope, manager);
+  try {
+    cancellation.abort(); await assert.rejects(waiting, { name: 'AbortError' });
+    await manager.close();
+    assert.equal(calls.helperStart, 0, 'The cancelled held SDK cannot resurrect the helper during cleanup');
+    assert.equal(calls.activations.length, 0);
+  } finally { release(); await manager.close(); }
 });
 
 test('missing add-on host identity blocks downloads and Retry resumes without resetting saved state', async t => {
@@ -116,7 +210,7 @@ test('missing add-on host identity blocks downloads and Retry resumes without re
     return { identity, socketDirectory: identity, socket: resolve(identity, 's'), uid: process.getuid(), gid: process.getgid(), root: false };
   } } });
   context.config.addon = true;
-  await context.manager.action({ action: 'enable' }); const failed = await settled(context.manager);
+  await context.manager.action({ action: 'enable' }); const failed = await settled(t, context.manager);
   assert.equal(failed.operation.error, 'helper_installation_binding_unavailable');
   assert.equal(context.calls.install, 0); assert.equal(context.calls.preflight, 0); assert.equal(context.calls.helperStart, 0);
   assert.equal(contexts[0].addon, true); assert.equal(contexts[0].restoreFenced, false);
@@ -126,7 +220,7 @@ test('missing add-on host identity blocks downloads and Retry resumes without re
   await context.manager.close();
   available = true;
   const resumed = restart(t, context); await resumed.action({ action: 'retry' });
-  assert.equal((await settled(resumed)).phase, 'ready'); assert.equal(context.calls.install, 1);
+  assert.equal((await settled(t, resumed)).phase, 'ready'); assert.equal(context.calls.install, 1);
   assert.equal(JSON.parse(await readFile(resolve(context.directory, 'https', 'state.json'), 'utf8')).machineName, saved.machineName);
 });
 
@@ -179,7 +273,7 @@ test('LAN DNS checks retain address evidence and do not conflate TLS readiness w
         resolve6: async name => { queries.push(['AAAA', name]); if (scenario.aaaa instanceof Error) throw scenario.aaaa; return scenario.aaaa; } };
     } } });
     config.web.httpsHost = scenario.host ?? '192.0.2.44'; config.web.lanResolver = '192.0.2.53';
-    await manager.action({ action: 'enable' }); const view = await settled(manager);
+    await manager.action({ action: 'enable' }); const view = await settled(t, manager);
     assert.equal(view.phase, 'ready'); assert.equal(view.dns.state, scenario.expected);
     assert.deepEqual(view.dns.a, scenario.a instanceof Error ? [] : scenario.a);
     assert.deepEqual(view.dns.aaaa, scenario.aaaa instanceof Error ? [] : scenario.aaaa);
@@ -193,7 +287,7 @@ test('duplicate setup clicks share one durable operation and cannot install conc
   t.after(() => release());
   const operations = await Promise.all(Array.from({ length: 30 }, () => manager.action({ action: 'enable' })));
   assert.equal(new Set(operations.map(operation => operation.id)).size, 1);
-  await installStarted; assert.equal(calls.install, 1); release(); await settled(manager); assert.equal(calls.helperStart, 1);
+  await installStarted; assert.equal(calls.install, 1); release(); await settled(t, manager); assert.equal(calls.helperStart, 1);
 });
 
 test('initial operation journal failure is rejected synchronously without a detached rejection', async t => {
@@ -214,17 +308,17 @@ test('closing during an outstanding install cannot resurrect a helper or listene
 
 test('network outages do not quarantine a valid candidate and explicit Retry recovers initial setup', async t => {
   const { manager, calls } = await setup(t, { downloadFailures: 1 });
-  await manager.action({ action: 'enable' }); await settled(manager);
+  await manager.action({ action: 'enable' }); await settled(t, manager);
   assert.equal(manager.status().operation.error, 'vendor_download_unavailable');
-  await manager.action({ action: 'retry' }); await settled(manager);
+  await manager.action({ action: 'retry' }); await settled(t, manager);
   assert.equal(manager.status().phase, 'ready'); assert.equal(calls.install, 2);
 });
 
 test('explicit Retry permits a previously quarantined failed preflight without silently restoring an old identity', async t => {
   const { manager, calls } = await setup(t, { preflightFailures: 1 });
-  await manager.action({ action: 'enable' }); await settled(manager);
+  await manager.action({ action: 'enable' }); await settled(t, manager);
   assert.equal(manager.status().operation.error, 'helper_command_failed');
-  await manager.action({ action: 'retry' }); await settled(manager);
+  await manager.action({ action: 'retry' }); await settled(t, manager);
   assert.equal(manager.status().phase, 'ready'); assert.equal(calls.install, 2); assert.equal(calls.helperStart, 1);
 });
 
@@ -239,22 +333,22 @@ test('invalid/obsolete state and path traversal fail closed before mutations', a
 
 test('pending authorization stays resumable and its private link is admin only', async t => {
   const { manager, setRunning, calls } = await setup(t); setRunning(false);
-  await manager.action({ action: 'enable' }); await settled(manager);
+  await manager.action({ action: 'enable' }); await settled(t, manager);
   assert.equal(manager.status().phase, 'authorization_required'); assert.equal(manager.status().helper.authorizationUrl, 'https://login.tailscale.com/a/synthetic');
   assert.equal(JSON.stringify(manager.status({ admin: false })).includes('login.tailscale.com'), false);
-  setRunning(true); await manager.action({ action: 'recheck' }); await settled(manager);
+  setRunning(true); await manager.action({ action: 'recheck' }); await settled(t, manager);
   assert.equal(manager.status().phase, 'ready'); assert.equal(calls.install, 1);
 });
 
 for (const action of ['recheck', 'enable']) test(`an explicit ${action} adopts a same-helper rename only after a matching new certificate is published`, async t => {
   const context = await setup(t); const { manager, calls } = context;
-  await manager.action({ action: 'enable' }); const original = await settled(manager);
+  await manager.action({ action: 'enable' }); const original = await settled(t, manager);
   const renamed = 'renamed.test-tailnet.ts.net'; context.setReportedHostname(renamed); context.setCertificateId(2);
   await manager.configure(); await diagnosed(manager); await wait(10);
   const waiting = manager.status();
   assert.equal(waiting.error, 'helper_hostname_changed'); assert.equal(waiting.hostname, hostname);
   assert.equal(waiting.certificate.generation, original.certificate.generation); assert.equal(calls.certificate, 1);
-  await manager.action({ action }); const adopted = await settled(manager);
+  await manager.action({ action }); const adopted = await settled(t, manager);
   assert.equal(adopted.operation.state, 'completed');
   assert.equal(adopted.hostname, renamed); assert.equal(adopted.url, `https://${renamed}:8443`);
   assert.equal(adopted.certificate.hostname, renamed); assert.equal(adopted.certificate.generation, 2);
@@ -274,7 +368,7 @@ for (const failure of ['validation', 'activation', 'durable-write', 'pair-bindin
       assert.equal(operation, 'receive'); delivered.push(structuredClone(envelope)); peerGeneration = envelope.generation;
     } };
   const context = await setup(t, { pair }); context.config.topology = 'pair';
-  await context.manager.action({ action: 'enable', owner: 'local' }); const old = await settled(context.manager); await context.manager.close();
+  await context.manager.action({ action: 'enable', owner: 'local' }); const old = await settled(t, context.manager); await context.manager.close();
   let notify, release; const entered = new Promise(done => { notify = done; }), held = new Promise(done => { release = done; });
   const renamed = 'renamed.test-tailnet.ts.net'; const activated = [];
   const current = restart(t, context, { pair,
@@ -299,7 +393,7 @@ for (const failure of ['validation', 'activation', 'durable-write', 'pair-bindin
   const statePath = resolve(context.directory, 'https', 'state.json'), backupPath = resolve(context.directory, 'https', 'state-before-failed-rename.json');
   if (failure === 'durable-write') { await rename(statePath, backupPath); await mkdir(statePath); }
   if (failure === 'pair-binding') currentPairId = 'changed-pair';
-  release(); const failed = await settled(current);
+  release(); const failed = await settled(t, current);
   assert.equal(failed.operation.state, 'failed'); assert.equal(failed.hostname, hostname); assert.equal(failed.url, old.url);
   assert.equal(failed.certificate.generation, 1); assert.equal(failed.certificate.fingerprint, old.certificate.fingerprint);
   assert.equal(delivered.some(envelope => envelope.generation === 2), false);
@@ -320,7 +414,7 @@ test('an authenticated bound certificate owner can deliver a strictly newer same
       ? { nodeId: 'peer-node', ownerId: 'peer-node', pairId: 'rename-pair', enabled: true }
       : { pairId: 'rename-pair', ownerId: 'peer-node', hostname, generation: 1, certificate: { cert: 'fixture-peer-original', key: 'fixture-key-original' } } };
   const { manager, config, calls } = await setup(t, { pair }); config.topology = 'pair';
-  await manager.action({ action: 'enable', owner: 'peer' }); const original = await settled(manager);
+  await manager.action({ action: 'enable', owner: 'peer' }); const original = await settled(t, manager);
   assert.equal(original.hostname, hostname);
   const renamed = 'renamed.test-tailnet.ts.net';
   await manager.acceptCertificate({ pairId: 'rename-pair', ownerId: 'peer-node', hostname: renamed,
@@ -349,9 +443,9 @@ test('an authenticated bound certificate owner can deliver a strictly newer same
 });
 
 test('explicit rename cannot adopt a different Tailscale network', async t => {
-  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(t, context.manager);
   context.setReportedHostname('renamed.other-tailnet.ts.net'); context.setCertificateId(2);
-  await context.manager.action({ action: 'recheck' }); const blocked = await settled(context.manager);
+  await context.manager.action({ action: 'recheck' }); const blocked = await settled(t, context.manager);
   assert.equal(blocked.operation.error, 'helper_tailnet_changed'); assert.equal(blocked.hostname, hostname);
   assert.equal(blocked.certificate.generation, 1); assert.equal(context.calls.certificate, 1);
 });
@@ -379,9 +473,9 @@ test('explicit rename requires a fresh successful effective restriction readback
     helper.certificate = async () => ({ cert: `fixture-restricted-cert-${certificateId}`, key: `fixture-restricted-key-${certificateId}` });
     return helper;
   } } });
-  await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  await context.manager.action({ action: 'enable' }); await settled(t, context.manager);
   name = 'renamed.test-tailnet.ts.net'; invalid = true; certificateId = 2;
-  await context.manager.action({ action: 'recheck' }); const refused = await settled(context.manager);
+  await context.manager.action({ action: 'recheck' }); const refused = await settled(t, context.manager);
   assert.equal(refused.operation.error, 'helper_restrictions_not_confirmed'); assert.equal(activeHelper.expectedStop, true);
   assert.equal(refused.helper.state, 'stopped'); assert.equal(refused.hostname, hostname); assert.equal(refused.certificate.generation, 1);
   await assert.rejects(lstat(resolve(context.directory, 'https', 'certificates', '2.json')), { code: 'ENOENT' });
@@ -421,14 +515,14 @@ for (const scenario of ['enable', 'retry', 'stale-pending-recheck', 'restriction
     helper.certificate = async () => ({ cert: 'fixture-authenticated-cert', key: 'fixture-authenticated-key' });
     return helper;
   } } });
-  await context.manager.action({ action: 'enable' }); const original = await settled(context.manager);
+  await context.manager.action({ action: 'enable' }); const original = await settled(t, context.manager);
   if (scenario === 'stale-pending-recheck') assert.equal(original.helper.state, 'authorization_required');
   const before = upCalls, beforeRestrictions = restrictions;
   backend = 'Running'; prefs.Hostname = 'synthetic-owner-chosen-hostname';
   if (scenario === 'restriction-refusal') prefs.ShieldsUp = false;
   if (scenario === 'current-needs-login') backend = 'NeedsLogin';
   const action = ['restriction-refusal', 'current-needs-login'].includes(scenario) ? 'retry' : scenario === 'stale-pending-recheck' ? 'recheck' : scenario;
-  await context.manager.action({ action }); const observed = await settled(context.manager);
+  await context.manager.action({ action }); const observed = await settled(t, context.manager);
   if (scenario === 'restriction-refusal') {
     assert.equal(observed.operation.error, 'helper_restrictions_not_confirmed'); assert.equal(observed.helper.state, 'stopped');
     assert.equal(activeHelper.expectedStop, true); assert.equal(upCalls, before);
@@ -460,13 +554,13 @@ for (const boundary of ['closed', 'changed-pair', 'wrong-version']) test(`a curr
     authorize: async () => { upCalls++; return base.authorize(); },
   }; };
   const current = restart(t, context, { pair });
-  await current.action({ action: 'enable', owner: 'local' }); await settled(current);
+  await current.action({ action: 'enable', owner: 'local' }); await settled(t, current);
   const beforeUp = upCalls, beforeRestrictions = restrictions; hold = true;
   await current.action({ action: 'retry' }); await entered;
   let closing;
   if (boundary === 'closed') closing = current.close();
   if (boundary === 'changed-pair') currentPairId = 'changed-authentication-pair';
-  release(); const failed = await settled(current);
+  release(); const failed = await settled(t, current);
   assert.equal(failed.operation.error, { closed: 'https_manager_closed', 'changed-pair': 'https_pair_identity_changed', 'wrong-version': 'helper_running_version_mismatch' }[boundary]);
   assert.equal(upCalls, beforeUp); assert.equal(restrictions, beforeRestrictions); assert.equal(failed.certificate.generation, 1);
   if (closing) await closing;
@@ -474,8 +568,8 @@ for (const boundary of ['closed', 'changed-pair', 'wrong-version']) test(`a curr
 });
 
 for (const comparison of ['matching', 'older']) test(`current admitted ${comparison} release state with an unknown check clock cannot claim a last checked release`, async t => {
-  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
-  await context.manager.action({ action: 'check-updates' }); await settled(context.manager); await context.manager.close();
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(t, context.manager);
+  await context.manager.action({ action: 'check-updates' }); await settled(t, context.manager); await context.manager.close();
   const path = resolve(context.directory, 'https', 'state.json'); const saved = JSON.parse(await readFile(path, 'utf8'));
   saved.updates.lastSuccessfulCheck = null;
   if (comparison === 'older') saved.updates.latest = '1.104.0';
@@ -491,7 +585,7 @@ for (const comparison of ['matching', 'older']) test(`current admitted ${compari
 });
 
 for (const recovery of ['interrupted-restart', 'forward-retry']) test(`a state rename followed by failed directory sync retains complete certificate material for ${recovery}`, { timeout: 15000 }, async t => {
-  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(t, context.manager);
   const renamed = 'renamed.test-tailnet.ts.net'; context.setReportedHostname(renamed); context.setCertificateId(2);
   const directory = resolve(context.directory, 'https'), statePath = resolve(directory, 'state.json');
   const scratch = await open(resolve(context.directory, 'file-handle-prototype'), 'wx', 0o600);
@@ -521,12 +615,12 @@ for (const recovery of ['interrupted-restart', 'forward-retry']) test(`a state r
     assert.equal(context.manager.status().hostname, hostname); assert.equal(context.manager.status().certificate.generation, 1);
     await lstat(resolve(directory, 'certificates', '1.json'));
   } finally {
-    clearTimeout(timer); prototype.sync = originalSync; release(); await settled(context.manager);
+    clearTimeout(timer); prototype.sync = originalSync; release(); await settled(t, context.manager);
   }
   if (recovery === 'forward-retry') {
     assert.equal(JSON.parse(await readFile(statePath, 'utf8')).certificate.generation, 1);
     context.setCertificateId(3);
-    await context.manager.action({ action: 'recheck' }); const recovered = await settled(context.manager);
+    await context.manager.action({ action: 'recheck' }); const recovered = await settled(t, context.manager);
     assert.equal(recovered.operation.state, 'completed'); assert.equal(recovered.hostname, renamed);
     assert.equal(recovered.certificate.generation, 3, 'Different new issuer material advances beyond the uncertain immutable orphan');
     await assert.rejects(lstat(resolve(directory, 'certificates', '2.json')), { code: 'ENOENT' });
@@ -545,11 +639,11 @@ for (const recovery of ['interrupted-restart', 'forward-retry']) test(`a state r
 });
 
 test('owner generation allocation rejects safe-integer exhaustion without replacing an accepted generation', async t => {
-  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(t, context.manager);
   await atomicJson(resolve(context.directory, 'https', 'certificates', `${Number.MAX_SAFE_INTEGER}.json`),
     { version: 1, hostname, generation: Number.MAX_SAFE_INTEGER, certificate: { cert: 'fixture-orphan', key: 'fixture-orphan' } });
   context.setReportedHostname('renamed.test-tailnet.ts.net'); context.setCertificateId(2);
-  await context.manager.action({ action: 'recheck' }); const blocked = await settled(context.manager);
+  await context.manager.action({ action: 'recheck' }); const blocked = await settled(t, context.manager);
   assert.equal(blocked.operation.error, 'certificate_generation_invalid'); assert.equal(blocked.hostname, hostname);
   assert.equal(blocked.certificate.generation, 1); await lstat(resolve(context.directory, 'https', 'certificates', '1.json'));
   await assert.rejects(lstat(resolve(context.directory, 'https', 'certificates', '2.json')), { code: 'ENOENT' });
@@ -579,8 +673,8 @@ async function securityFixture(t, initialInfo) {
 test('current vendor urgent evidence is durable once, preserves its original clock and resolves on explicit RunningLatest', async t => {
   const fixture = await securityFixture(t, { UrgentSecurityUpdate: true, LatestVersion: '1.104.2' });
   const { manager, context } = fixture;
-  await manager.action({ action: 'enable' }); await settled(manager);
-  await manager.action({ action: 'check-updates' }); await settled(manager);
+  await manager.action({ action: 'enable' }); await settled(t, manager);
+  await manager.action({ action: 'check-updates' }); await settled(t, manager);
   const path = resolve(context.directory, 'https', 'state.json');
   const originalBytes = await readFile(path), originalStat = await stat(path, { bigint: true });
   const originalSignal = JSON.parse(originalBytes).updates.securitySignal;
@@ -596,7 +690,7 @@ test('current vendor urgent evidence is durable once, preserves its original clo
     assert.equal(manager.status().helper.securityObservedAt, originalSignal.observedAt);
   }
   fixture.setInfo({ RunningLatest: true }); fixture.advance(1000);
-  await actionWhenIdle(manager, { action: 'recheck' }); const resolved = await settled(manager);
+  await actionWhenIdle(manager, { action: 'recheck' }); const resolved = await settled(t, manager);
   assert.equal(resolved.helper.runningLatest, true); assert.equal(resolved.helper.securityUpdate, false);
   const saved = JSON.parse(await readFile(path, 'utf8')).updates.securitySignal;
   assert.equal(saved.urgent, false); assert.equal(saved.observedAt, originalSignal.observedAt); assert(saved.resolvedAt > saved.observedAt);
@@ -609,7 +703,7 @@ test('current vendor urgent evidence is durable once, preserves its original clo
 
 test('failed urgent-signal persistence retries identical evidence and keeps the successfully saved warning across restart', async t => {
   const fixture = await securityFixture(t); const { context, manager } = fixture;
-  await manager.action({ action: 'enable' }); await settled(manager);
+  await manager.action({ action: 'enable' }); await settled(t, manager);
   const directory = resolve(context.directory, 'https'), path = resolve(directory, 'state.json');
   const scratch = await open(resolve(context.directory, 'security-file-handle-prototype'), 'wx', 0o600);
   const prototype = Object.getPrototypeOf(scratch), originalSync = prototype.sync; await scratch.close(); let injected = false;
@@ -622,12 +716,12 @@ test('failed urgent-signal persistence retries identical evidence and keeps the 
   };
   fixture.setInfo({ UrgentSecurityUpdate: true });
   try {
-    await manager.action({ action: 'recheck' }); const failed = await settled(manager);
+    await manager.action({ action: 'recheck' }); const failed = await settled(t, manager);
     assert.equal(injected, true); assert.equal(failed.operation.state, 'failed');
     assert.equal(JSON.parse(await readFile(path, 'utf8')).updates.securitySignal, null);
     assert.equal(JSON.stringify(failed).includes('private warning persistence detail'), false);
   } finally { prototype.sync = originalSync; }
-  await manager.action({ action: 'recheck' }); const saved = await settled(manager);
+  await manager.action({ action: 'recheck' }); const saved = await settled(t, manager);
   assert.equal(saved.operation.state, 'completed'); assert.equal(saved.helper.securityUpdate, true);
   assert.equal(JSON.parse(await readFile(path, 'utf8')).updates.securitySignal.urgent, true);
   await manager.close(); const restarted = restart(t, context); restarted.start();
@@ -637,14 +731,14 @@ test('failed urgent-signal persistence retries identical evidence and keeps the 
 
 test('current package equality does not imply security metadata or an eligible update', async t => {
   const fixture = await securityFixture(t); const { manager, context } = fixture;
-  await manager.action({ action: 'enable' }); await settled(manager);
-  await manager.action({ action: 'check-updates' }); const checked = await settled(manager);
+  await manager.action({ action: 'enable' }); await settled(t, manager);
+  await manager.action({ action: 'check-updates' }); const checked = await settled(t, manager);
   assert.equal(checked.updates.installed, '1.104.1'); assert.equal(checked.updates.latest, '1.104.1'); assert.equal(checked.updates.candidate, null);
   assert.equal(checked.helper.securityUpdate, null); assert.equal(checked.helper.runningLatest, null);
   const view = secureWebAccessView(checked, { admin: true }); assert.equal(view.updateAvailable, false);
   assert.match(view.releaseSummary, /Up to date/); assert.equal(view.securityStatus, 'Not reported'); assert.equal(view.securityWarning, '');
   const installations = context.calls.install, starts = context.calls.helperStart;
-  await manager.action({ action: 'update-now' }); const refused = await settled(manager);
+  await manager.action({ action: 'update-now' }); const refused = await settled(t, manager);
   assert.equal(refused.operation.error, 'helper_update_not_available'); assert.equal(context.calls.install, installations); assert.equal(context.calls.helperStart, starts);
   await manager.close();
 });
@@ -676,7 +770,7 @@ test('restart resumes previously requested HTTPS enrollment when the helper lost
     };
     return helper;
   } } });
-  await context.manager.action({ action: 'enable' }); const first = await settled(context.manager);
+  await context.manager.action({ action: 'enable' }); const first = await settled(t, context.manager);
   assert.equal(first.phase, 'authorization_required'); assert.equal(Boolean(first.helper.authorizationUrl), true);
   const identity = await readFile(resolve(identities[0], 'tailscaled.state'));
   assert.equal(authorizations, 1); await context.manager.close();
@@ -693,7 +787,7 @@ test('restart resumes previously requested HTTPS enrollment when the helper lost
 });
 
 for (const backend of ['Running', 'NeedsMachineAuth', 'NeedsLogin']) test(`restart observes ${backend} with existing authorization evidence without requesting another sign-in`, async t => {
-  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(t, context.manager);
   await context.manager.close(); let authorizations = 0; let reads = 0;
   const observation = { Version: '1.104.1-fixture', BackendState: backend, CertDomains: backend === 'Running' ? [hostname] : [],
     AuthURL: backend === 'NeedsLogin' ? 'https://login.tailscale.com/a/currentfixture' : '' };
@@ -708,8 +802,8 @@ for (const backend of ['Running', 'NeedsMachineAuth', 'NeedsLogin']) test(`resta
 });
 
 test('a disabled saved HTTPS installation does not resume authorization on restart', async t => {
-  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
-  await context.manager.action({ action: 'disable' }); await settled(context.manager); await context.manager.close();
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(t, context.manager);
+  await context.manager.action({ action: 'disable' }); await settled(t, context.manager); await context.manager.close();
   const starts = context.calls.helperStart; let authorizations = 0;
   const current = restart(t, context, { dependencies: { createHelper: options => ({
     ...context.dependencies.createHelper(options), authorize: async () => { authorizations++; },
@@ -740,9 +834,9 @@ test('updating the runtime resumes pending enrollment on its newly started helpe
   // setup captures dependency values at construction; use the actual manager
   // with these current adapters before its first explicit setup.
   await context.manager.close(); const current = restart(t, context);
-  await current.action({ action: 'enable' }); const first = await settled(current);
+  await current.action({ action: 'enable' }); const first = await settled(t, current);
   assert.equal(first.phase, 'authorization_required'); assert.equal(authorizations, 1);
-  await current.action({ action: 'update-now' }); const updated = await settled(current);
+  await current.action({ action: 'update-now' }); const updated = await settled(t, current);
   assert.equal(updated.operation.state, 'completed'); assert.equal(updated.phase, 'authorization_required');
   assert.equal(updated.helper.version, '1.104.2'); assert.equal(Boolean(updated.helper.authorizationUrl), true);
   assert.equal(updated.updates.candidate, null);
@@ -786,7 +880,7 @@ test('resumed startup authorization still stops a helper whose effective restric
     };
     return helper;
   } } });
-  await context.manager.action({ action: 'enable' }); await settled(context.manager); await context.manager.close();
+  await context.manager.action({ action: 'enable' }); await settled(t, context.manager); await context.manager.close();
   const current = restart(t, context); current.start(); const failed = await diagnosed(current);
   assert.equal(failed.error, 'helper_restrictions_not_confirmed'); assert.equal(failed.phase, 'degraded');
   assert.equal(activeHelper.expectedStop, true); assert.equal(failed.helper.state, 'stopped');
@@ -797,7 +891,7 @@ test('resumed startup authorization still stops a helper whose effective restric
 
 test('pending startup enrollment renders progress and an unavailable link keeps explicit Retry guidance after failure', async t => {
   const context = await setup(t); context.setRunning(false);
-  await context.manager.action({ action: 'enable' }); await settled(context.manager); await context.manager.close();
+  await context.manager.action({ action: 'enable' }); await settled(t, context.manager); await context.manager.close();
   let release, notify, successful = false, authorizations = 0, reads = 0;
   const held = new Promise(done => { release = done; }), entered = new Promise(done => { notify = done; });
   const observation = () => ({ Version: '1.104.1-fixture', BackendState: 'NeedsLogin',
@@ -824,7 +918,7 @@ test('pending startup enrollment renders progress and an unavailable link keeps 
   await current.configure(); await wait(20);
   assert(reads > beforeReads, 'Current status was polled after the failed startup attempt');
   assert.equal(authorizations, 1, 'Polling cannot repeatedly start interactive authorization');
-  successful = true; await current.action({ action: 'retry' }); const retried = await settled(current);
+  successful = true; await current.action({ action: 'retry' }); const retried = await settled(t, current);
   assert.equal(authorizations, 2); assert.equal(retried.error, null); assert.equal(retried.helper.restrictionsVerified, true);
   const resumed = secureWebAccessView(retried, { admin: true });
   assert.equal(resumed.next.title, 'Sign in to Tailscale'); assert.equal(Boolean(resumed.authorizationUrl), true);
@@ -833,7 +927,7 @@ test('pending startup enrollment renders progress and an unavailable link keeps 
 });
 
 test('closing during a new helper observation cannot begin implicit startup enrollment afterward', async t => {
-  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(t, context.manager);
   await context.manager.close(); let reads = 0, authorizations = 0, notify, release;
   const entered = new Promise(done => { notify = done; }), held = new Promise(done => { release = done; });
   const observation = { Version: '1.104.1-fixture', BackendState: 'NeedsLogin', AuthURL: '' };
@@ -857,7 +951,7 @@ test('a failed enrollment start is reported and Retry confirms restrictions befo
       return pending;
     },
   }) } });
-  await manager.action({ action: 'enable' }); const failed = await settled(manager);
+  await manager.action({ action: 'enable' }); const failed = await settled(t, manager);
   assert.equal(failed.operation.state, 'failed');
   assert.equal(failed.operation.error, 'helper_authorization_start_failed');
   assert.equal(failed.phase, 'degraded');
@@ -866,7 +960,7 @@ test('a failed enrollment start is reported and Retry confirms restrictions befo
   assert.equal(JSON.stringify(failed).includes('private diagnostic'), false);
   assert.equal(restrictions, 1, 'The initial helper restrictions remain enforced');
   usable = true;
-  await manager.action({ action: 'retry' }); const retried = await settled(manager);
+  await manager.action({ action: 'retry' }); const retried = await settled(t, manager);
   assert.equal(retried.operation.state, 'completed');
   assert.equal(retried.phase, 'authorization_required');
   assert.equal(retried.helper.authorizationUrl, pending.AuthURL);
@@ -888,10 +982,10 @@ test('Retry through the real enrollment producer preserves a start failure until
     return helper;
   } } });
   await manager.action({ action: 'enable' });
-  assert.equal((await settled(manager)).operation.error, 'helper_authorization_start_failed');
+  assert.equal((await settled(t, manager)).operation.error, 'helper_authorization_start_failed');
   for (const invalid of [' ', 'not-a-url', 'http://login.tailscale.com/a/synthetic', 'https://elsewhere.invalid/a/synthetic']) {
     AuthURL = invalid;
-    await manager.action({ action: 'retry' }); const failed = await settled(manager);
+    await manager.action({ action: 'retry' }); const failed = await settled(t, manager);
     assert.equal(failed.operation.state, 'failed');
     assert.equal(failed.operation.error, 'helper_authorization_start_failed');
     assert.equal(failed.error, 'helper_authorization_start_failed');
@@ -902,7 +996,7 @@ test('Retry through the real enrollment producer preserves a start failure until
     assert.equal(JSON.stringify(failed).includes(invalid.trim()) && invalid.trim().length > 0, false);
   }
   AuthURL = 'https://login.tailscale.com/a/synthetic';
-  await manager.action({ action: 'retry' }); const pending = await settled(manager);
+  await manager.action({ action: 'retry' }); const pending = await settled(t, manager);
   assert.equal(pending.operation.state, 'completed');
   assert.equal(pending.phase, 'authorization_required');
   assert.equal(pending.error, null);
@@ -911,7 +1005,7 @@ test('Retry through the real enrollment producer preserves a start failure until
   assert.equal(calls.install, 1, 'All retries retain the existing runtime and identity');
   assert.equal(JSON.stringify(manager.status({ admin: false })).includes(AuthURL), false);
   AuthURL = '';
-  await manager.action({ action: 'retry' }); const withdrawn = await settled(manager);
+  await manager.action({ action: 'retry' }); const withdrawn = await settled(t, manager);
   assert.equal(withdrawn.operation.state, 'failed');
   assert.equal(withdrawn.error, 'helper_authorization_start_failed');
   assert.equal(withdrawn.helper.authorizationUrl, null, 'A later failed enrollment cannot republish an earlier authorization link');
@@ -944,14 +1038,14 @@ test('Retry restarts a helper stopped by a failed post-enrollment restriction re
     };
     return helper;
   } } });
-  await manager.action({ action: 'enable' }); const failed = await settled(manager);
+  await manager.action({ action: 'enable' }); const failed = await settled(t, manager);
   assert.equal(failed.operation.state, 'failed');
   assert.equal(failed.operation.error, 'helper_restrictions_not_confirmed');
   assert.equal(activeHelper.expectedStop, true, 'The real restriction producer stops the unqualified helper');
   assert.equal(failed.helper.state, 'stopped');
   assert.equal(failed.helper.authorizationUrl ?? null, null);
   recoveryAllowed = true;
-  await manager.action({ action: 'retry' }); const recovered = await settled(manager);
+  await manager.action({ action: 'retry' }); const recovered = await settled(t, manager);
   assert.equal(recovered.operation.state, 'completed');
   assert.equal(starts, 2, 'Retry starts a fresh helper object against the existing identity');
   assert.equal(identities[1], identities[0]);
@@ -968,7 +1062,7 @@ test('a peer certificate recipient never installs or starts a certificate helper
   const { manager, config, calls } = await setup(t, { pair, dependencies: {
     helperLocations: async () => assert.fail('Certificate recipients cannot look up or admit a helper identity'),
   } }); config.topology = 'pair'; config.addon = true;
-  await manager.action({ action: 'enable', owner: 'peer' }); await settled(manager);
+  await manager.action({ action: 'enable', owner: 'peer' }); await settled(t, manager);
   assert.equal(manager.status().phase, 'ready'); assert.equal(calls.install, 0); assert.equal(calls.helperStart, 0);
   await manager.acceptCertificate(envelope);
   await assert.rejects(manager.acceptCertificate({ ...envelope, generation: 4 }), { code: 'certificate_generation_replayed' });
@@ -984,8 +1078,8 @@ test('local owner retains renewal responsibility while its enabled peer is offli
     delivered++; return {};
   } };
   const { manager, config, calls } = await setup(t, { pair }); config.topology = 'pair';
-  await manager.action({ action: 'enable', owner: 'local' }); await settled(manager); assert.ok(delivered > 0);
-  offline = true; await manager.action({ action: 'disable' }); await settled(manager);
+  await manager.action({ action: 'enable', owner: 'local' }); await settled(t, manager); assert.ok(delivered > 0);
+  offline = true; await manager.action({ action: 'disable' }); await settled(t, manager);
   assert.equal(manager.status().enabled, false); assert.equal(manager.status().pair.peerRenewalRequired, true); assert.equal(calls.helperStop, 0);
 });
 
@@ -1005,12 +1099,12 @@ test('simultaneous conflicting pair-owner choices cannot both install and failed
   const pairB = { configuration: () => ({ pairId: 'race-pair', localId: 'b', peerId: 'a' }), request: request('b', () => a, 'a') };
   const aa = await setup(t, { pair: pairA }); const bb = await setup(t, { pair: pairB }); a = aa.manager; b = bb.manager; aa.config.topology = bb.config.topology = 'pair';
   await Promise.all([a.action({ action: 'enable', owner: 'local' }), b.action({ action: 'enable', owner: 'local' })]);
-  await Promise.all([settled(a), settled(b)]);
+  await Promise.all([settled(t, a), settled(t, b)]);
   assert.equal(aa.calls.install + bb.calls.install, 0); assert.equal(aa.calls.helperStart + bb.calls.helperStart, 0);
   assert.equal(a.pairStatus().ownerId, null); assert.equal(b.pairStatus().ownerId, null);
-  await a.action({ action: 'enable', owner: 'local' }); await settled(a);
+  await a.action({ action: 'enable', owner: 'local' }); await settled(t, a);
   assert.equal(a.status().phase, 'ready');
-  await b.action({ action: 'enable', owner: 'peer' }); await settled(b);
+  await b.action({ action: 'enable', owner: 'peer' }); await settled(t, b);
   assert.equal(b.status().phase, 'ready'); assert.equal(bb.calls.install, 0);
 });
 
@@ -1020,7 +1114,7 @@ test('a stored valid peer certificate restarts offline without depending on the 
     { nodeId: 'peer-node', pairId: 'offline-pair', ownerId: 'peer-node', enabled: true } :
     { pairId: 'offline-pair', ownerId: 'peer-node', hostname, generation: 3, certificate: { cert: 'peer-stored', key: 'peer-key' } } };
   const context = await setup(t, { pair }); context.config.topology = 'pair';
-  await context.manager.action({ action: 'enable', owner: 'peer' }); await settled(context.manager); await context.manager.close();
+  await context.manager.action({ action: 'enable', owner: 'peer' }); await settled(t, context.manager); await context.manager.close();
   peerId = null; let activations = 0;
   const offlinePair = { configuration: pair.configuration, request: async () => { throw Object.assign(Error(), { code: 'https_peer_unavailable' }); } };
   const resumed = restart(t, context, { pair: offlinePair, onCertificate: async ({ certificate }) => { activations++; return { listening: true, fingerprint: certificate.metadata.fingerprint }; } });
@@ -1035,7 +1129,7 @@ test('a stored valid peer certificate restarts offline without depending on the 
 });
 
 test('altered cached certificate metadata is rejected before lock or interrupted-operation mutation', async t => {
-  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager); await context.manager.close();
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(t, context.manager); await context.manager.close();
   const path = resolve(context.directory, 'https', 'state.json'); const value = JSON.parse(await readFile(path, 'utf8'));
   value.certificate.expiresAt += 90 * 86400000; value.operation.state = 'running'; await atomicJson(path, value);
   const before = await readFile(path, 'utf8'); let activated = 0;
@@ -1074,7 +1168,7 @@ test('explicit falsy HTTPS state is rejected before storage admission or install
 });
 
 test('null-like and retired nested records fail closed without rewriting current state', async t => {
-  const context = await setup(t); await context.manager.action({ action: 'set-update-policy', policy: 'manual' }); await settled(context.manager); await context.manager.close();
+  const context = await setup(t); await context.manager.action({ action: 'set-update-policy', policy: 'manual' }); await settled(t, context.manager); await context.manager.close();
   const path = resolve(context.directory, 'https', 'state.json'); const initial = JSON.parse(await readFile(path, 'utf8'));
   for (const [field, wrong] of [['certificate', false], ['runtime', 0], ['highestVersion', false], ['operation', []]]) {
     const value = structuredClone(initial); value[field] = wrong; await atomicJson(path, value); const before = await readFile(path, 'utf8');
@@ -1091,7 +1185,7 @@ test('failed certificate activation never exports an uncommitted generation to a
   const pair = { configuration: () => ({ pairId: 'publication-pair', localId: 'local-node', peerId: 'peer-node' }), request: async () =>
     ({ nodeId: 'peer-node', pairId: 'publication-pair', ownerId: 'local-node', enabled: true, generation: 1 }) };
   const context = await setup(t, { pair, dependencies: { now: () => currentTime } }); context.config.topology = 'pair';
-  await context.manager.action({ action: 'enable', owner: 'local' }); await settled(context.manager); await context.manager.close();
+  await context.manager.action({ action: 'enable', owner: 'local' }); await settled(t, context.manager); await context.manager.close();
   context.setCertificateId(2); currentTime += 31 * 86400000;
   const resumed = restart(t, context, { pair, onCertificate: async ({ certificate, generation }) => {
     if (generation === 2) { ready(); await held; return { listening: false, error: 'tls_port_unavailable' }; }
