@@ -68,6 +68,24 @@ read can consume an unclassified query reply. The
 adapter adds no guarantee that arbitrary stream behavior is interruptible within
 an absolute wall-clock deadline.
 
+For an exclusively owned direct SDK source, a newly decoded `55AA` frame whose
+integrity result is explicitly `false` is not usable device evidence even if its
+encrypted body decodes. This applies to the first reply after a socket opens as
+well as established status/receive calls. The adapter withdraws local observations
+and discards the reply before either consumer can publish fields or renew clocks.
+Full encrypted-wire protocol 3.3 CRC fixtures qualify this boundary; CRC does not
+supply cryptographic authentication.
+
+If a shared API exposes a failed integrity flag during the call, observations
+are conservatively withdrawn without claiming the metadata belongs to that exact
+returned body. A child API's parent-only metadata is not borrowed; this guard
+makes no integrity claim for missing, stale, unknown or unattributed metadata.
+Those cases retain the existing conservative classification. No SDK callsite,
+retry or socket reset is added. Rejection leaves the old cache age unchanged, so
+the existing loop may select an additional normal status poll while waiting for
+usable data. This is evidence admission, not a traffic-reduction claim or proof
+that a live household packet had an integrity error.
+
 The patch preserves native connection locking and the existing retry handler.
 It also forwards TinyTuya's returned command errors to that handler before
 marking the requested datapoints sent. Previously, a returned connection error
@@ -143,7 +161,8 @@ and installation rollback. Pending-command interleavings check newer opposite
 and same-value choices, lock waits, removal, multiple datapoints and retry order.
 `test/tuya-local-query-replies.test.js` additionally checks delayed complete and
 empty replies, overlapping queries, shared API ownership, frame integrity and
-return codes, stale metadata, cancellation, native timeout lock waits and source
+return codes, known invalid-integrity present fields, stale/unknown metadata,
+cancellation, native timeout lock waits and source
 replacement. Its SDK fixture executes first-frame selection and decoded-response
 handling at a controlled validated-frame boundary; separate offline AES/CRC probes
 qualify wire-parser reachability. These synthetic checks do not identify the cause of

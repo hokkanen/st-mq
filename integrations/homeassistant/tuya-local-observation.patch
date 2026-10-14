@@ -148,7 +148,7 @@
          self._api.set_socketPersistent(False)
          if self._api.parent:
              self._api.parent.set_socketPersistent(False)
-@@ -536,6 +566,170 @@
+@@ -536,6 +566,177 @@
                  f"Failed to refresh device state for {self.name}.",
              )
  
@@ -250,16 +250,25 @@
 +            # An initially unopened socket may produce its first fresh reply.
 +            # Replaced API/protocol/established socket cannot publish old data.
 +            if context[1] is None and current[0] is api and current[2] == context[2]:
-+                self._local_reply_result = result
-+                self._local_reply_context = current
-+                self._local_reply_source = source
-+                return result
-+            return None
++                context = current
++            else:
++                return None
 +        self._local_reply_result = result
 +        self._local_reply_context = context
 +        self._local_reply_source = source
 +        if not isinstance(result, dict) or "Err" in result or not isinstance(result.get("dps"), dict):
 +            return result
++        received = getattr(api, "raw_recv", None)
++        frame = received[-1] if isinstance(received, list) and received is not previous_recv and received else None
++        if (
++            frame is not None and frame is not previous_frame
++            and getattr(frame, "prefix", None) == tinytuya.PREFIX_55AA_VALUE
++            and getattr(frame, "crc_good", None) is False
++        ):
++            # Decodable payload is not received evidence after a known failed
++            # frame-integrity check. Unknown metadata is not guessed as failure.
++            self._clear_local_observations()
++            return None
 +        if not self._local_observation_source_exclusive():
 +            if self._local_query_ticket or self._local_query_ambiguous:
 +                self._local_query_ticket = None
@@ -269,8 +278,6 @@
 +        if self._local_query_ambiguous:
 +            self._local_reply_full = True
 +            return result
-+        received = getattr(api, "raw_recv", None)
-+        frame = received[-1] if isinstance(received, list) and received is not previous_recv and received else None
 +        sent = getattr(api, "raw_sent", None)
 +        valid = (
 +            context[1] is not None and context[2] == 3.3 and "cid" not in result
@@ -319,7 +326,7 @@
      def get_property(self, dps_id):
          cached_state = self._get_cached_state()
          return cached_state.get(dps_id)
-@@ -555,15 +749,19 @@
+@@ -555,15 +756,19 @@
          self._cached_state[dps_id] = value
  
      def _reset_cached_state(self):
@@ -340,7 +347,7 @@
                  self._cached_state = self._cached_state | new_state.get("dps", {})
                  self._cached_state["updated_at"] = time()
                  for entity in self._children:
-@@ -643,27 +841,41 @@
+@@ -643,27 +848,41 @@
          await self._send_pending_updates()
  
      async def _send_pending_updates(self):
@@ -397,7 +404,7 @@
  
      async def _retry_on_failed_connection(self, func, error_message):
          if self._api_protocol_version_index is None:
-@@ -689,6 +901,8 @@
+@@ -689,6 +908,8 @@
                  if not self._hass.is_stopping:
                      async with self._api_lock:
                          retval = await self._hass.async_add_executor_job(func)
@@ -406,7 +413,7 @@
                      if isinstance(retval, dict) and "Error" in retval:
                          last_err_code = retval.get("Err")
                          last_err_msg = retval.get("Error")
-@@ -713,6 +927,7 @@
+@@ -713,6 +934,7 @@
                      connections,
                  )
                  # Ensure we have a fresh connection for the next attempt
@@ -414,7 +421,7 @@
                  self._api.set_socketPersistent(False)
                  if self._api.parent:
                      self._api.parent.set_socketPersistent(False)
-@@ -860,6 +1075,11 @@
+@@ -860,6 +1082,11 @@
          "tuyadevice": device._api,
          "tuyadevicelock": device._api_lock,
      }

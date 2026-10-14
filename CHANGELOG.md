@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Reject appliance datapoints from a positively failed native frame-integrity
+  check before recording a new received setting or field clock. Missing integrity
+  metadata remains distinct from a known failed frame.
+
 - Preserve original appliance field evidence when a positively identified partial
   Tuya status packet arrives before its query reply. Delayed complete replies
   still withdraw omitted fields, and ambiguous or shared-source correlation
