@@ -169,9 +169,15 @@ test('uncertain Charger 2 commands keep recording fresh capacity without replay 
   assert.equal(pending.value, 14);
   const commands = f.commands.length;
   const rows = () => f.store.observations({ signal: 'charger2_current_allowance' });
+  const recordHistory = async () => {
+    f.runtime.recordLimiterHistory();
+    // The captured transition precedes this barrier in the real Store queue.
+    // Inspect committed history without turning another cache read into input.
+    await f.store.runWrite(() => {});
+  };
   for (const [load, expected] of [[11, 14], [16, 9], [20, 0], [0, 16]]) {
     f.household.currentA = load;
-    f.advance(60_000); await f.settle(); f.runtime.recordLimiterHistory();
+    f.advance(60_000); await f.settle(); await recordHistory();
     assert.deepEqual(control().pending, pending, 'Uncertain execution retains the original pending command');
     assert.equal(control().reason, 'evse-command-unconfirmed');
     assert.equal(f.view('charger2').limiter.applicationStatus, 'pending');
@@ -179,14 +185,14 @@ test('uncertain Charger 2 commands keep recording fresh capacity without replay 
     assert.equal(rows().at(-1).value, expected);
   }
   const count = rows().length;
-  f.advance(5000); await f.settle(); f.runtime.recordLimiterHistory();
+  f.advance(5000); await f.settle(); await recordHistory();
   assert.equal(rows().length, count, 'Unchanged capacity extends coverage without another observation');
   const adapter = f.runtime.chargers.charger2.adapter, snapshot = adapter.snapshot;
   try {
     for (const observationReady of [true, false]) {
       adapter.snapshot = () => ({ ...snapshot(), controlReady: false, observationReady, error: 'evse-control-unavailable' });
       f.household.currentA = 13;
-      f.advance(60_000); await f.settle(); f.runtime.recordLimiterHistory();
+      f.advance(60_000); await f.settle(); await recordHistory();
       assert.equal(control().snapshot.controlReady, false);
       assert.equal(control().phase, observationReady ? 'uncertain' : 'unavailable',
         'Fresh observations retain the uncertain instruction while command access is blocked');
@@ -196,14 +202,14 @@ test('uncertain Charger 2 commands keep recording fresh capacity without replay 
     }
   } finally { adapter.snapshot = snapshot; }
   // A real acquisition gap stays unknown; new calculations cannot fill it.
-  f.advance(6 * 3600_000); f.runtime.recordLimiterHistory();
+  f.advance(6 * 3600_000); await recordHistory();
   assert.equal(rows().at(-1).raw.allowance.mode, 'unknown');
-  await f.restart(); f.runtime.recordLimiterHistory();
+  await f.restart(); await recordHistory();
   assert.deepEqual(control().pending, pending, 'Restart retains the uncertain command');
   assert.equal(rows().at(-1).value, 12);
   assert(rows().some(row => row.raw.allowance.mode === 'unknown'), 'Restart does not backfill the gap');
   f.household.feedsSynchronized = false;
-  f.advance(5000); await f.settle(); f.runtime.recordLimiterHistory();
+  f.advance(5000); await f.settle(); await recordHistory();
   assert.equal(rows().at(-1).raw.allowance.mode, 'fallback');
   assert.equal(rows().at(-1).value, 12);
   assert.equal(f.commands.length, commands, 'No uncertain write is retried and no Start is sent');

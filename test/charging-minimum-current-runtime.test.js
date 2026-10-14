@@ -18,7 +18,7 @@ const START = 1_800_000_000_000;
 async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetadata = true, currentWritable = true,
   teslaPluggedIn = true, initialCurrentA = 12, economicStartAt = START, admissionStatus = () => null } = {}) {
   let now = START, runtime, adapter, meterAt = START, acceptCurrentWrite = true, measuredCurrentA = null, currentWriteHook = null,
-    phaseMeasuredAt = null, statusReadHook = null, currentReadbackHook = null, phaseReadbackHook = null, dropCurrentReply = false, partialNotifications = false, partialNotificationHook = null, firstStopped = false, firstStatusAt = START,
+    phaseMeasuredAt = null, statusReadHook = null, currentReadbackHook = null, beforeCurrentReadbackHook = null, phaseReadbackHook = null, dropCurrentReply = false, partialNotifications = false, partialNotificationHook = null, firstStopped = false, firstStatusAt = START,
     firstSourceAt = null, firstNative = {};
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: {
@@ -44,7 +44,7 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
   client.subscribe = (topics, _options, done) => done(null, topics.map(topic => ({ topic, qos: 0 })));
   client.publish = (_topic, payload, _options, done) => {
     const frame = JSON.parse(payload), role = frame.params.role;
-    let result, respond = true;
+    let result, respond = true, replyBoundary;
     if (frame.method === 'Shelly.GetDeviceInfo') result = { id: 'synthetic-minimum-second' };
     else if (frame.method === 'Service.GetConfig') result = { id: 0, auto_balance: { enable: false }, auto_charge: true };
     else if (frame.method === 'Service.GetStatus') result = { state: 'running' };
@@ -56,7 +56,7 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
       writes.push({ method: frame.method, ...frame.params, at: now });
       now++; if (role !== 'current_limit' || acceptCurrentWrite) fields[role] = { value: frame.params.value, at: now };
       if (role === 'current_limit' && dropCurrentReply) { dropCurrentReply = false; respond = false; }
-      if (role === 'current_limit' && currentWriteHook) { const hook = currentWriteHook; currentWriteHook = null; hook(); }
+      if (role === 'current_limit' && currentWriteHook) { const hook = currentWriteHook; currentWriteHook = null; replyBoundary = hook(); }
       if (partialNotifications) {
         fields[role].at = Math.floor(now / 1000) * 1000;
         client.emit('message', 'synthetic/minimum-current/evse/events/rpc', Buffer.from(JSON.stringify({
@@ -73,7 +73,11 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
         last_update_ts: (role === 'phase_info' ? phaseMeasuredAt ?? now : fields[role].at) / 1000,
         ...(['start_charging', 'current_limit'].includes(role) ? { source: fields[role].source ?? 'rpc' } : {}) };
     }
-    done?.(); if (respond) queueMicrotask(() => {
+    if (role === 'current_limit' && frame.method.endsWith('.GetStatus') && beforeCurrentReadbackHook) {
+      replyBoundary = beforeCurrentReadbackHook();
+      if (replyBoundary !== false) beforeCurrentReadbackHook = null;
+    }
+    const acknowledge = () => { if (respond) queueMicrotask(() => {
       client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
         id: frame.id, src: 'synthetic-minimum-second', dst: frame.src, result })), {});
       // Real correlated readback is visible before Promise.all refresh and the
@@ -83,7 +87,12 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
       if (role === 'phase_info' && frame.method.endsWith('.GetStatus') && phaseReadbackHook) {
         const hook = phaseReadbackHook; phaseReadbackHook = null; hook();
       }
-    });
+    }); };
+    done?.();
+    // A scenario may hold its synthetic reply until received input is admitted.
+    // The adapter keeps its original RPC deadline throughout that explicit wait.
+    if (replyBoundary?.then) void replyBoundary.then(acknowledge, () => {});
+    else acknowledge();
   };
   const capture = createChargingTeslaCapture({ settings: config.connections.teslamate, clock: () => now,
     brokerIdentity: 'synthetic-minimum-broker', admissionStatus });
@@ -151,7 +160,9 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     setPhysicalSourceTime(value) { phaseMeasuredAt = value; },
     onCurrentWrite(hook) { currentWriteHook = hook; },
     onStatusRead(hook) { statusReadHook = hook; },
-    onCurrentReadback(hook) { currentReadbackHook = hook; },
+    onCurrentReadback(hook, { beforeReply = false } = {}) {
+      if (beforeReply) beforeCurrentReadbackHook = hook; else currentReadbackHook = hook;
+    },
     onPhaseReadback(hook) { phaseReadbackHook = hook; },
     dropCurrentReply() { dropCurrentReply = true; },
     setPartialNotifications(hook) { partialNotifications = true; partialNotificationHook = hook; },
@@ -284,13 +295,17 @@ test(`BMW pause survives restoration ${boundary} before the controller saves com
   const f = await bmwPauseRestorationFixture(t), before = f.writes.length;
   const original = structuredClone(f.item('charger2').identification);
   const deadline = f.item('charger2').controller.status().currentTest.expiresAt;
-  let observed;
+  let observed, admission;
   const inspect = () => {
     const control = f.item('charger2').controller.status();
     if (control.currentTest.phase !== 'restoring' || control.snapshot.fields.current_limit.value !== 16) return false;
     f.observe(); observed = { control, identification: structuredClone(f.item('charger2').identification) };
   };
-  if (boundary === 'notification before acknowledgement') f.onCurrentWrite(() => { f.notifyCurrent(16); inspect(); });
+  if (boundary === 'notification before acknowledgement') f.onCurrentWrite(() => {
+    f.notifyCurrent(16);
+    admission = f.adapter.waitForInputAdmission().then(ready => { assert.equal(ready, true); inspect(); });
+    return admission;
+  });
   else {
     if (boundary === 'whole-second readback') f.onCurrentWrite(() => {
       f.fields.current_limit.at = Math.floor(f.now / 1000) * 1000;
@@ -298,6 +313,7 @@ test(`BMW pause survives restoration ${boundary} before the controller saves com
     f.onCurrentReadback(inspect);
   }
   f.advance(5000); f.setMeasuredCurrent(0); await f.update();
+  if (admission) await admission;
   assert.ok(observed, 'The real adapter exposed the new current before controller completion');
   assert.equal(observed.control.currentTest.phase, 'restoring');
   assert.equal(observed.control.currentTest.pending.acceptedAt === null, boundary === 'notification before acknowledgement');
@@ -420,7 +436,10 @@ test('a received newer same-value current supersedes BMW restoration only after 
       assert.equal(native.measuredAt, receivedAt, 'Admission preserves the newer native source clock');
       assert.equal(native.receivedAt, receivedAt, 'Admission does not manufacture another receipt');
     });
-  });
+    // Keep the restore in flight until this newer instruction is published;
+    // completing its earlier readback first would exercise a later instruction.
+    return observation;
+  }, { beforeReply: true });
   f.advance(5000); f.setMeasuredCurrent(0); await f.update();
   assert.ok(observation); await observation;
   await f.update();
