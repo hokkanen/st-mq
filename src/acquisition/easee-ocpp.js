@@ -105,6 +105,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   const configured = Boolean(config.enabled && config.password && chargerId);
   const identity = config.charge_point_id || chargerId;
   let server, sockets, socket, timer, startPromise, booted = false, lastMessageAt = null, connectedAt = null, error = null, closed = false;
+  const transportSockets = new Set();
   let ownsConnection = false, telemetryConfigured = false, meterTriggerUnsupported = false;
   let connectorStatus = null, connectorStatusAt = null, connectorReceivedAt = null, connectorStatusExplicit = false;
   let preparingAttempted = false, remoteStartStatus = 'idle';
@@ -744,6 +745,11 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         } else refreshAuthority();
         if (closed) return;
         server = createServer((_request, response) => { response.writeHead(404); response.end(); });
+        server.on('connection', connection => {
+          if (closed) { connection.destroy(); return; }
+          transportSockets.add(connection);
+          connection.once('close', () => transportSockets.delete(connection));
+        });
         sockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024,
           handleProtocols: protocols => protocols.has('ocpp1.6') ? 'ocpp1.6' : false });
         server.on('upgrade', async (request, stream, head) => {
@@ -946,6 +952,9 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       await startPromise;
       clearInterval(timer); socket?.terminate();
       for (const client of sockets?.clients ?? []) client.terminate();
+      // Incomplete HTTP/WebSocket handshakes are not WebSocketServer clients.
+      // They must not hold server.close(), controller release or VIP handover.
+      for (const connection of transportSockets) connection.destroy();
       if (server?.listening) await new Promise(resolve => server.close(resolve));
       sockets?.close(); reset(); stateReady = false; ownsConnection = false;
     },

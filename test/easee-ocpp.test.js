@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:net';
+import { createServer, connect as connectTcp } from 'node:net';
 import { once } from 'node:events';
 import WebSocket from 'ws';
 import { createEaseeOcpp, localOcppConfiguration, ocppMeterReadings } from '../src/acquisition/easee-ocpp.js';
@@ -360,6 +360,54 @@ test('listener bind failures are retryable, concurrent starts join, and close dr
   assert.equal(closing.status().listening, false);
   // Binding the same fixture port verifies close did not leave a listener behind.
   blocker.listen(port, '127.0.0.1'); await once(blocker, 'listening');
+});
+
+for (const headers of ['', 'GET /ocpp/fixture-charger HTTP/1.1\r\n']) {
+  test(`shutdown drains a ${headers ? 'partial HTTP handshake' : 'silent TCP connection'} before releasing the listener`, async t => {
+    const f = await fixture(t), client = connectTcp(f.port, '127.0.0.1');
+    client.on('error', () => {});
+    const disconnected = new Promise(resolve => client.once('close', resolve));
+    await once(client, 'connect');
+    if (headers) client.write(headers);
+    await new Promise(resolve => setImmediate(resolve));
+    const writes = f.writes;
+    let deadline;
+    try {
+      await Promise.race([f.local.close(), new Promise((_, reject) => {
+        deadline = setTimeout(() => reject(new Error('Half-open transport held listener shutdown')), 1000);
+      })]);
+      await disconnected;
+      assert.equal(f.local.status().listening, false);
+      assert.equal(f.local.status().ready, false);
+      assert.equal(f.writes, writes, 'Closing an unauthenticated transport cannot write transaction authority');
+      const replacement = createServer();
+      replacement.listen(f.port, '127.0.0.1'); await once(replacement, 'listening');
+      await new Promise(resolve => replacement.close(resolve));
+    } finally { clearTimeout(deadline); client.destroy(); }
+  });
+}
+
+test('shutdown drains incomplete handshakes alongside a revoked authenticated connection and pending local request', async t => {
+  const f = await fixture(t), native = await f.connect({ autoReply: false });
+  await native.call('MeterValues', meter());
+  const client = connectTcp(f.port, '127.0.0.1'); client.on('error', () => {});
+  await once(client, 'connect'); client.write('GET / HTTP/1.1\r\n');
+  const disconnected = once(native.ws, 'close');
+  const request = f.local.request('GetCompositeSchedule', { connectorId: 1, duration: 60 });
+  const rejected = assert.rejects(request, error => ['ocpp-disconnected', 'ocpp-request-revoked'].includes(error.code));
+  f.permitted = false; f.local.refreshAuthority();
+  assert.equal(f.local.status().ready, false, 'Authority is revoked before transport cleanup finishes');
+  const writes = f.writes;
+  let deadline;
+  try {
+    await Promise.race([f.local.close(), new Promise((_, reject) => {
+      deadline = setTimeout(() => reject(new Error('Half-open transport held revoked shutdown')), 1000);
+    })]);
+    await Promise.all([disconnected, rejected]);
+    assert.equal(f.writes, writes);
+    assert.equal(f.local.status().transportConnected, false);
+    await assert.rejects(f.local.request('GetCompositeSchedule', { connectorId: 1, duration: 60 }), { code: 'ocpp-unavailable' });
+  } finally { clearTimeout(deadline); client.destroy(); }
 });
 
 test('passive listeners neither initialize nor rewrite transaction state', async t => {

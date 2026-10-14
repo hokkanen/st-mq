@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Close incomplete local OCPP connection handshakes during shutdown, so a silent
+  connection cannot delay listener release and paired handover. Charger retry
+  timing and authenticated control checks are unchanged.
+
 - Clear an unchanged owned Easee cloud delay after unplugging even when its start
   has passed, so the leftover native schedule cannot block local OCPP restoration.
   External schedules and failed cleanup keep their existing guards.

@@ -345,6 +345,11 @@ rewriting or applying charger configuration. Fresh authenticated local readings 
 installation when its setup journal is genuinely absent; an unconnected initial
 installation still requires confirmed commissioning.
 
+Shutdown closes incomplete HTTP/WebSocket handshakes as well as authenticated
+connections before releasing the listener. A silent or partial handshake cannot
+hold the role/address handover until the HTTP timeout. This does not change the
+charger's retry timing or the separate bounded cloud recovery below.
+
 An ordinary stop, crash, suspension or power loss is a local connection outage.
 A new charge or Easee app Start can wait for ST-MQ approval while the controller
 is unavailable. Restart ST-MQ to restore local control. Returning to cloud
