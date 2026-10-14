@@ -29,6 +29,15 @@ and native energy. Adapter suites additionally cover asynchronous receipt clocks
 automatic deferred admission, ordered session/permission transitions, disconnect
 and transaction rollback. Large skew remains invalid; freshness, authorization
 and physical deadlines receive no general grace. See [time and evidence](time-evidence.md).
+`test/caravan-writer-source-admission.test.js` uses the actual MQTT admission and
+Store queue to hold a ready report behind a writer for more than five seconds.
+It also injects a synchronous delay at the real Store COMMIT entry, without
+claiming a measured disk or fsync delay. Both paths preserve original clocks,
+qualified demand and the historical gap; expired required evidence and a real
+disconnect remain unavailable.
+The Shelly EVSE suite holds the same writer boundary across a native permission
+Stop. Its original event/source/receipt clocks remain distinct from a later
+correlated setting readback; neither pending nor admitted Stop sends a Start.
 
 History recovery checks must validate and inventory the source without making a
 trial database or importing rows. Acceptance and model impact are assessed once,

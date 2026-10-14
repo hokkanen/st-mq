@@ -971,6 +971,55 @@ test('deferred Shelly unplug and replug preserve both physical boundaries before
   assert.notEqual(session.sessionId, original);
   assert.equal(session.lastDisconnectedAt, NOW + 1400); assert.equal(session.connectedAt, NOW + 3400);
 });
+test('writer-delayed ready native Stop retains original permission clocks and never grants Start', async t => {
+  const store = new Store(':memory:'), f = fixture(t, {}, store);
+  t.after(() => { f.adapter.close(); store.close(); });
+  await f.ready();
+  const scope = f.adapter.snapshot().session;
+  const plan = { periods: [{ startAt: NOW, endAt: null }] };
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    initialState: { version: 1, association: f.adapter.association, sessionId: scope.sessionId,
+      phase: 'released', reason: 'economic-window', manual: null, ownedPause: false, pending: null,
+      lastStart: true, lastStartAt: NOW, execution: { planId: 'delayed-permission-plan', deadlineAt: NOW + 7200_000,
+        finalStartAt: NOW, periods: plan.periods } } });
+  t.after(() => controller.close());
+  f.setNow(NOW + 1000);
+  const receivedAt = f.now(), sourceAt = receivedAt + 801;
+  f.delta('start_charging', { value: false, source: 'sys' }, { eventAt: sourceAt });
+  while (store.writeQueueStatus().pending) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.adapter.snapshot().fields.start_charging.value, true);
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  await assert.rejects(f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: true },
+    { mutation: true }), { code: 'evse-control-unavailable' });
+  let release, started = false;
+  const held = new Promise(resolve => { release = resolve; });
+  const publication = store.runPublication(async () => { started = true; await held; });
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(started, true);
+  f.setNow(receivedAt + 5400);
+  await new Promise(resolve => setTimeout(resolve, 5400));
+  assert(store.writeQueueStatus().pending >= 2);
+  release(); await publication;
+  const limit = performance.now() + 2000;
+  while (store.writeQueueStatus().pending) {
+    assert(performance.now() < limit); await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  const event = f.adapter.snapshot().permissionEvents[0];
+  assert.equal(event.value, false); assert.equal(event.eventAt, sourceAt);
+  assert.equal(event.receivedAt, receivedAt); assert.equal(event.admittedAt, f.now());
+  assert.equal(event.valueUpdatedAt, null, 'A partial event supplies no invented native value clock');
+  const field = f.adapter.snapshot().fields.start_charging;
+  assert.equal(field.value, false);
+  assert.equal(field.measuredAt, Math.floor(sourceAt / 1000) * 1000,
+    'The correlated setting readback retains its genuine whole-second source clock');
+  assert.equal(field.receivedAt, f.now());
+  assert.equal(field.readback.receivedAt, f.now(), 'A new correlated query has its own genuine receipt');
+  assert.equal(field.admittedAt, undefined, 'The ordinary query cannot borrow the event admission proof');
+  await controller.update({ enabled: true, plan });
+  assert.equal(f.adapter.snapshot().fields.start_charging.value, false);
+  assert.equal(controller.status().scheduleConfirmed, false);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0,
+    'A delayed native Stop restricts the existing execution; it supplies no replacement Start');
+});
 test('deferred Shelly transitions survive commit failure with original clocks and ordered admission', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-time-rollback-'));
   const store = new Store(join(directory, 'recording.sqlite'));

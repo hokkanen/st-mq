@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Admit an already-ready source report after a delayed database writer instead
+  of treating that delay as an expired future timestamp. Original measurement,
+  receipt, freshness and connection checks remain intact; a timestamp that is
+  still ahead retains its bounded wait.
+
 - Preserve connected native Easee session references when native-control
   deactivation to cloud cannot prove the same separately admitted backend boundary. Cleanup waits
   without discarding profiles or duties; a confirmed disconnect still permits

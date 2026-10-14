@@ -285,6 +285,10 @@ The original phase deadline continues to run. With previously fresh, qualified
 evidence, automatic power holds its existing demand during this brief wait;
 cold or missing air evidence still protects Off. Actual stale evidence,
 connection loss and rejected timestamps still invalidate the check.
+Writer congestion does not by itself reject a required report whose original
+timestamp has already arrived when admission runs. The five-second monotonic
+bound still expires a timestamp that remains ahead; required evidence must
+remain fresh at actual admission, and all original clocks remain unchanged.
 When an already recorded, qualified state survives only this bounded wait,
 recording resumes as soon as the required report is admitted. The recorder saves
 a separate availability event at that time, retaining the original appliance

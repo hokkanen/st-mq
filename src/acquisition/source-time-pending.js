@@ -1,7 +1,8 @@
 import { classifySourceTime } from '../domain/time-evidence.js';
 
 /** A short, connection-local quarantine. Waiting never changes receipt/source
- * clocks, and repeated packets cannot renew the bounded monotonic lifetime. */
+ * clocks; monotonic expiry bounds a still-future clock, not writer admission of
+ * a report that is already ready. Consumers retain their original freshness. */
 export function createSourceTimePending({ clock = Date.now, monotonicClock = () => performance.now(),
   dispatch = action => action(), onReady, onReject = () => {}, ordered = false, limit = 128, maxWaitMs = 5000,
   setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout } = {}) {
@@ -33,11 +34,15 @@ export function createSourceTimePending({ clock = Date.now, monotonicClock = () 
     for (const [key, row] of pending) {
       const order = orderOf(row.value);
       if (order !== null && waiting.has(order)) continue;
-      if (row.generation !== generation || monotonicClock() >= row.deadline) {
+      if (row.generation !== generation) {
         pending.delete(key); onReject(row.value, 'expired'); continue;
       }
       const admission = classifySourceTime({ sourceTime: row.sourceTime, receivedAt: row.receivedAt, now });
-      if (admission.status === 'pending') { if (order !== null) waiting.add(order); continue; }
+      if (admission.status === 'pending') {
+        if (monotonicClock() >= row.deadline) { pending.delete(key); onReject(row.value, 'expired'); continue; }
+        if (order !== null) waiting.add(order);
+        continue;
+      }
       pending.delete(key);
       if (admission.status === 'ready') {
         try { onReady(row.value, row.receivedAt, now); }
@@ -54,7 +59,7 @@ export function createSourceTimePending({ clock = Date.now, monotonicClock = () 
       if (status !== 'pending' && !(order !== null && [...pending.values()].some(row => orderOf(row.value) === order) && status === 'ready')) return false;
       const prior = pending.get(key);
       // Keys identify packets, not mutable sensor slots. Repeated delivery of
-      // one key must preserve the first packet and its admission deadline.
+      // one key must preserve the first packet and its source-wait deadline.
       if (prior) return true;
       if (ordered && !prior && pending.size >= limit) { onReject(value, 'overflow'); return true; }
       pending.delete(key);
