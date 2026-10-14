@@ -359,12 +359,17 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       await instance.start(); await instance.restrictions(); assertOpen();
       const observed = await instance.status(); const expectedVersion = state.runtime.evidence.runtimeVersion;
       if (!(observed.Version === expectedVersion || observed.Version?.startsWith(`${expectedVersion}-`))) throw httpsError('helper_running_version_mismatch');
-      helperStatus = { state: 'running', version: observed.Version.split('-')[0], runningVersion: observed.Version, restrictionsVerified: true };
+      helperStatus = { state: observed.BackendState === 'Running' ? 'running' : observed.BackendState === 'NeedsLogin' ? 'authorization_required' : 'approval_or_connection_pending',
+        version: observed.Version.split('-')[0], runningVersion: observed.Version, restrictionsVerified: true };
     } catch (error) { await instance.stop(); if (helper === instance) helper = null; throw error; }
   }
   async function observeHelper({ authorize = false } = {}) {
     if (!helper) await startHelper();
     const observation = authorize ? await helper.authorize(state.machineName) : await helper.status();
+    if (authorize) {
+      await helper.restrictions();
+      if (lastError === 'helper_authorization_start_failed') lastError = null;
+    }
     const expectedVersion = state.runtime.evidence.runtimeVersion;
     if (!(observation.Version === expectedVersion || observation.Version?.startsWith(`${expectedVersion}-`))) throw httpsError('helper_running_version_mismatch');
     const previousSecurity = state.updates.securitySignal;

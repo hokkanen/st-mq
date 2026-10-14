@@ -236,6 +236,36 @@ test('pending authorization stays resumable and its private link is admin only',
   assert.equal(manager.status().phase, 'ready'); assert.equal(calls.install, 1);
 });
 
+test('a failed enrollment start is reported and Retry confirms restrictions before exposing its current link', async t => {
+  let usable = false; let restrictions = 0;
+  const pending = { Version: '1.104.1-fixture', BackendState: 'NeedsLogin', AuthURL: 'https://login.tailscale.com/a/synthetic' };
+  const { manager, calls } = await setup(t, { dependencies: { createHelper: () => ({
+    start: async () => {}, stop: async () => {}, restrictions: async () => { restrictions++; },
+    status: async () => ({ ...pending, AuthURL: '' }),
+    authorize: async () => {
+      if (!usable) throw Object.assign(Error('Synthetic private diagnostic'), { code: 'helper_authorization_start_failed' });
+      return pending;
+    },
+  }) } });
+  await manager.action({ action: 'enable' }); const failed = await settled(manager);
+  assert.equal(failed.operation.state, 'failed');
+  assert.equal(failed.operation.error, 'helper_authorization_start_failed');
+  assert.equal(failed.phase, 'degraded');
+  assert.equal(failed.helper.state, 'authorization_required', 'A running process does not establish an authenticated connection');
+  assert.equal(failed.error, 'helper_authorization_start_failed');
+  assert.equal(JSON.stringify(failed).includes('private diagnostic'), false);
+  assert.equal(restrictions, 1, 'The initial helper restrictions remain enforced');
+  usable = true;
+  await manager.action({ action: 'retry' }); const retried = await settled(manager);
+  assert.equal(retried.operation.state, 'completed');
+  assert.equal(retried.phase, 'authorization_required');
+  assert.equal(retried.helper.authorizationUrl, pending.AuthURL);
+  assert.equal(retried.error, null, 'A confirmed new enrollment clears only the previous enrollment-start failure');
+  assert.equal(restrictions, 2, 'Enrollment is followed by a complete restriction readback');
+  assert.equal(calls.install, 1, 'Retry preserves the installed runtime and identity');
+  assert.equal(JSON.stringify(manager.status({ admin: false })).includes('login.tailscale.com'), false);
+});
+
 test('a peer certificate recipient never installs or starts a certificate helper and rejects replay', async t => {
   const envelope = { pairId: 'fixture-pair', ownerId: 'peer-node', hostname, generation: 5, certificate: { cert: 'fixture-peer', key: 'fixture-key' } };
   const pair = { configuration: () => ({ pairId: 'fixture-pair', localId: 'local-node', peerId: 'peer-node' }), request: async operation => operation === 'status' ?

@@ -253,9 +253,19 @@ export class CertificateHelper {
     if (!effectiveRestrictions(prefs, serve)) { await this.stop(); throw httpsError('helper_restrictions_not_confirmed'); }
   }
   async authorize(machineName) {
-    try { await this.cli(['up', '--timeout=12s', `--hostname=${machineName}`, ...RESTRICTION_FLAGS], { timeout: 15000 }); }
-    catch { /* Pending browser authorization is determined from structured status. */ }
-    return this.status();
+    // The pinned vendor's up interface excludes these newer set-only flags.
+    // restrictions() has already applied and confirmed all of them with set.
+    const upFlags = RESTRICTION_FLAGS.filter(flag => !['--webclient=false', '--auto-update=false', '--update-check=true'].includes(flag));
+    let failed = false;
+    try { await this.cli(['up', '--timeout=12s', `--hostname=${machineName}`, ...upFlags], { timeout: 15000 }); }
+    catch { failed = true; }
+    const observation = await this.status();
+    // Waiting for browser/account approval times out normally. A command that
+    // never produced an enrollment link must not masquerade as successful setup.
+    if (failed && observation.BackendState !== 'Running' && observation.BackendState !== 'NeedsMachineAuth' &&
+        (typeof observation.AuthURL !== 'string' || !observation.AuthURL))
+      throw httpsError('helper_authorization_start_failed');
+    return observation;
   }
   status() { return localApi(this.locations.socket, '/localapi/v0/status'); }
   async certificate(hostname, minValidity) {
