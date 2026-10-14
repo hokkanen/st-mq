@@ -19,7 +19,7 @@ Use TeslaMate's native `teslamate/<namespace>/cars/<carId>/` topics, omitting th
 namespace segment when none is configured. All configured topics must describe
 the same car. Home context compares its reported geofence to the configured home
 geofence. Verify the broker subscription and current logger-health messages in
-**Data & settings → Connections & configuration → Charging → Tesla**.
+**Data & settings → Connections & electricity rates → Charging → Tesla**.
 
 Transport, subscription, live logger health and individual field evidence are
 separate. A sleeping healthy car is not an unhealthy feed. Reconnection needs a

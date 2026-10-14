@@ -3,6 +3,8 @@ import { heatingStrategy } from '../domain/heating-strategy.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { isAbsolute, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { isIP } from 'node:net';
+import { createHash } from 'node:crypto';
 import { configuredPriceSettings } from './contract.js';
 import { configurationPaths, createConfigurationSource, readConfigurationOptions, validateTopologyOptions } from './configuration-source.js';
 import { pairConfiguration } from '../pairing/config.js';
@@ -98,6 +100,29 @@ export function recordingConfiguration(input = {}, { databaseDir = '.' } = {}) {
       : directory.startsWith('~') ? resolve(`${homedir()}${directory.slice(1)}`) : resolve(directory),
     fullVerificationIntervalMs: Math.round(interval(input.full_verification_interval_hours, 0, 0, 8760, 'full_verification_interval_hours') * 3_600_000),
   };
+}
+
+export function webConfiguration(input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration section: web.');
+  if (Object.keys(input).some(key => !['https_host', 'https_port', 'https_directory', 'lan_http_enabled', 'lan_http_host', 'lan_http_port', 'lan_resolver'].includes(key)))
+    throw new Error('Unknown configuration field in web: [unsupported field].');
+  const current = (field, fallback) => input[field] === undefined ? fallback : input[field];
+  const settings = { httpsHost: current('https_host', '0.0.0.0'), httpsPort: current('https_port', 8443),
+    httpsDirectory: current('https_directory', ''), lanHttpEnabled: current('lan_http_enabled', false),
+    lanHttpHost: current('lan_http_host', '0.0.0.0'), lanHttpPort: current('lan_http_port', 1236),
+    lanResolver: current('lan_resolver', '') };
+  for (const [field, value] of [['https_host', settings.httpsHost], ['lan_http_host', settings.lanHttpHost]])
+    if (typeof value !== 'string' || isIP(value) !== 4) throw new Error(`Invalid configuration field: web.${field}. Use an IPv4 listening address.`);
+  for (const [field, value] of [['https_port', settings.httpsPort], ['lan_http_port', settings.lanHttpPort]])
+    if (!Number.isInteger(value) || value < 1 || value > 65535) throw new Error(`Invalid configuration field: web.${field}.`);
+  if (typeof settings.lanHttpEnabled !== 'boolean') throw new Error('Invalid configuration field: web.lan_http_enabled.');
+  if (typeof settings.httpsDirectory !== 'string' || settings.httpsDirectory.length > 4096 || settings.httpsDirectory.includes('\0') ||
+      settings.httpsDirectory !== '' && !isAbsolute(settings.httpsDirectory))
+    throw new Error('Invalid configuration field: web.https_directory. Use an absolute private path or leave empty.');
+  if (typeof settings.lanResolver !== 'string' || settings.lanResolver !== '' && isIP(settings.lanResolver) !== 4)
+    throw new Error('Invalid configuration field: web.lan_resolver. Use an IPv4 LAN DNS resolver or leave empty.');
+  if (settings.httpsPort === settings.lanHttpPort) throw new Error('HTTPS and LAN HTTP ports must differ.');
+  return settings;
 }
 
 export function acquisitionConfiguration(input = {}) {
@@ -302,7 +327,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       'temperature_report_interval_minutes') * 60_000);
     mqtt.temperatureReportGraceMs = Math.round(interval(mqtt.temperature_report_grace_seconds, 300, 0, 900,
       'temperature_report_grace_seconds') * 1000);
-    const { mirror: _mirror, pair: _pair, charging: _charging, ...providerOptions } = options;
+    const { mirror: _mirror, pair: _pair, charging: _charging, web: _web, ...providerOptions } = options;
     connections = { ...providerOptions, mqtt, teslamate: teslamateConfiguration(options.teslamate),
       equipment };
     if (options.easee) connections.easee = { ...options.easee, local_ocpp: localOcppConfiguration(options.easee.local_ocpp) };
@@ -315,26 +340,37 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   const floorPreheat = floorOverrideConfiguration(options.controller?.floor_preheat);
   const port = Number(env.STMQ_PORT ?? 1234);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid STMQ_PORT');
-  const host = env.STMQ_HOST ?? (addon ? '0.0.0.0' : '127.0.0.1');
+  const host = env.STMQ_HOST ?? '127.0.0.1';
+  if (!['127.0.0.1', '::1', 'localhost'].includes(host))
+    throw new Error('STMQ_HOST must be loopback for recovery. Use web.lan_http_enabled for explicitly unencrypted LAN access.');
+  const web = webConfiguration(options.web);
+  if (!web.httpsDirectory) {
+    const namespace = `https-${createHash('sha256').update(dataDir).digest('hex').slice(0, 16)}`;
+    web.httpsDirectory = addon ? resolve(dataDir, 'https') : env.XDG_STATE_HOME
+      ? resolve(env.XDG_STATE_HOME, 'st-mq', namespace) : process.getuid?.() === 0
+        ? resolve('/var/lib', `st-mq-${namespace}`) : resolve(homedir(), '.local', 'state', 'st-mq', namespace);
+  }
   const token = env.STMQ_API_TOKEN ?? options.controller?.web_token ?? '';
   const familyToken = env.STMQ_FAMILY_API_TOKEN ?? options.controller?.web_family_token ?? '';
   if (typeof token !== 'string') throw new Error('The web token must be a string.');
   if (typeof familyToken !== 'string') throw new Error('The family web token must be a string.');
-  if (!bootstrap && (addon ? token !== '' && token.length < 24 : !['127.0.0.1', '::1', 'localhost'].includes(host) && token.length < 24))
+  if (!bootstrap && ((addon && token !== '' || web.lanHttpEnabled) && token.length < 24))
     throw new Error('Network access requires a web token with at least 24 characters.');
   if (!bootstrap && familyToken) {
     if (!token) throw new Error('Family access requires an admin web token.');
     if (familyToken === token) throw new Error('Admin and family web tokens must be different.');
-    if ((addon || !['127.0.0.1', '::1', 'localhost'].includes(host)) && familyToken.length < 24)
+    if ((addon || web.lanHttpEnabled) && familyToken.length < 24)
       throw new Error('Network family access requires a web token with at least 24 characters.');
   }
   const ingressPort = Number(env.STMQ_INGRESS_PORT ?? supervisorIngressPort ?? 8099);
   if (!Number.isInteger(ingressPort) || ingressPort < 0 || ingressPort > 65535 || addon && ingressPort !== 0 && ingressPort === port)
     throw new Error('The ingress port must be valid and different from the direct port.');
+  if ([web.httpsPort, web.lanHttpPort].includes(port)) throw new Error('Recovery, HTTPS and LAN HTTP ports must differ.');
+  if (addon && [web.httpsPort, web.lanHttpPort].includes(ingressPort)) throw new Error('The ingress port must differ from the HTTPS and LAN HTTP ports.');
   const databaseName = input === 'simulated' ? 'simulation.sqlite' : 'st-mq.sqlite';
   const verification = env.STMQ_H66_VERIFICATION ?? options.controller?.h66_verification_file;
   const config = { addon, topology, role, input, dataDir, databaseDir, dbPath: resolve(databaseDir, databaseName),
-    host, port, token, familyToken, ingressPort, ingressHost: env.STMQ_INGRESS_HOST ?? '0.0.0.0', configuration,
+    host, port, token, familyToken, web, ingressPort, ingressHost: env.STMQ_INGRESS_HOST ?? '0.0.0.0', configuration,
     connections, priceSettings: configuredPriceSettings(options.electricity),
     electricityForecast: { enabled: options.electricity?.forecast_enabled === true },
     charging: chargingConfiguration(options.charging),
@@ -355,6 +391,8 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       preheatRoomBoostC: options.controller?.preheat_room_boost_c ?? 5,
       comfort: { targetC: null, maxRiseC: options.controller?.max_rise_c ?? 1.5, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1.5 : Number(env.STMQ_MAX_DROP_C) } }) };
   config.pair = pairConfiguration(options.pair, env, config);
+  if (config.topology === 'pair' && [config.web.httpsPort, config.web.lanHttpPort].includes(config.pair.port))
+    throw new Error('Pair, HTTPS and LAN HTTP ports must differ.');
   if (config.topology === 'pair' && haMqtt && new URL(haMqtt.address).hostname === config.pair.vip.address)
     throw new Error('mqtt.ha.address must use the fixed HA broker address, not the pairing virtual IP.');
   if (config.topology === 'pair' && config.connections.easee?.local_ocpp?.enabled) {
@@ -362,7 +400,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     const expected = `ws://${config.pair.vip.address}:${ocpp.port}/ocpp`;
     if (ocpp.server_url && ocpp.server_url !== expected || !['0.0.0.0', config.pair.vip.address].includes(ocpp.host))
       throw new Error('Paired OCPP must use the shared virtual IP; leave server_url empty and bind to 0.0.0.0 or the virtual address.');
-    if ([config.port, config.ingressPort, config.pair.port].includes(ocpp.port))
+    if ([config.port, config.ingressPort, config.web.httpsPort, config.web.lanHttpPort, config.pair.port].includes(ocpp.port))
       throw new Error('The local OCPP port must differ from the web and pair ports.');
   }
   configurationSources.set(config, source);

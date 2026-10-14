@@ -980,8 +980,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     $('equipment-check-message').classList.toggle('form-error', Boolean(checkMessage && error));
   }
   for (const link of document.querySelectorAll('[data-open-mqtt-settings], [data-open-configuration]')) link.addEventListener('click', () => {
-    $('connections-details').open = true;
-    $(link.hasAttribute('data-open-configuration') ? 'controls-details' : 'mqtt-devices-details').open = true;
+    const target = $(link.hasAttribute('data-open-configuration') ? 'controls-details' : 'mqtt-devices-details');
+    for (let fold = target; fold; fold = fold.parentElement?.closest('details')) fold.open = true;
   });
   for (const link of document.querySelectorAll('[data-open-garage-protection]')) link.addEventListener('click', event => {
     if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;

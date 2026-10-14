@@ -90,11 +90,14 @@ function fixture(t, initial = { controller: { input: 'simulated', max_drop_c: 1.
   };
 }
 
-test('add-on bootstrap with no token exposes ingress and leaves direct access disabled', async t => {
+test('add-on bootstrap with no token exposes ingress and retains password-gated loopback recovery', async t => {
   const f = fixture(t);
   const app = await f.launch();
   assert.equal(app.webAccess.status().ingress.enabled, true);
-  assert.equal(app.webAccess.status().direct.enabled, false);
+  assert.equal(app.webAccess.status().recovery.enabled, true);
+  assert.equal(app.webAccess.status().https.enabled, false);
+  assert.equal(app.webAccess.status().lanHttp.enabled, false);
+  assert.equal((await fetch(`${endpoint(app.server)}/api/status`)).status, 401);
   const response = await fetch(`${endpoint(app.webAccess.ingressServer)}/api/status`);
   assert.equal(response.status, 200);
   const status = await response.json();
@@ -135,7 +138,7 @@ test('startup import is saved before storage/runtime and removed only after succ
   };
   const app = await f.launch();
   assert.equal(app.engine.settings.comfort.maxDropC, 0.5);
-  assert.equal(app.webAccess.status().direct.enabled, true);
+  assert.equal(app.webAccess.status().recovery.enabled, true);
   assert.equal(existsSync(f.paths.importPath), false);
   assert.deepEqual(f.events, ['prepare-startup', 'persist', 'supervisor-save', 'persisted', 'complete']);
   assert.equal((await fetch(`${endpoint(app.server)}/api/status`, { headers: authorization(firstToken) })).status, 200);
@@ -191,12 +194,12 @@ test('ingress import saves Supervisor, applies runtime/token, then cleans up; to
   f.writeImport({ controller: { max_drop_c: 0.5, web_token: firstToken } });
   f.hooks.persist = () => {
     assert.equal(app.engine, originalEngine);
-    assert.equal(app.webAccess.status().direct.enabled, false);
+    assert.equal(app.webAccess.status().recovery.enabled, true);
   };
   f.hooks.complete = () => {
     assert.equal(app.engine.settings.comfort.maxDropC, 0.5);
     assert.notEqual(app.engine, originalEngine);
-    assert.equal(app.webAccess.status().direct.enabled, true);
+    assert.equal(app.webAccess.status().recovery.enabled, true);
     assert.equal(f.saved.controller.web_token, firstToken);
   };
   assert.equal((await f.reload()).status, 200);
@@ -218,8 +221,8 @@ test('ingress import saves Supervisor, applies runtime/token, then cleans up; to
   assert.equal((await fetch(`${base}/api/status`, { headers: authorization(secondToken) })).status, 200);
   f.writeImport({ controller: { web_token: '' } });
   assert.equal((await f.reload()).status, 200);
-  assert.equal(app.webAccess.status().direct.enabled, false);
-  assert.equal(direct.listening, false);
+  assert.equal(app.webAccess.status().recovery.enabled, true);
+  assert.equal(direct.listening, true);
   assert.equal(app.webAccess.ingressServer, ingress);
   assert.equal((await fetch(`${endpoint(ingress)}/api/status`)).status, 200);
 });
@@ -279,7 +282,7 @@ test('startup-only changes and pending equipment restoration reject before Super
   assert.equal(f.posts, 0);
   assert.equal(app.engine, originalEngine);
   assert.equal(existsSync(f.paths.importPath), true);
-  assert.equal(app.webAccess.status().direct.enabled, false);
+  assert.equal(app.webAccess.status().recovery.enabled, true);
   app.engine.executor.restore = restore;
   assert.equal((await f.reload()).status, 200);
   assert.equal(f.posts, 1);
@@ -296,13 +299,13 @@ test('Supervisor save failure retains import and previous runtime; retry enables
   assert.match((await response.json()).error, /could not be saved/);
   assert.equal(app.engine, originalEngine);
   assert.equal(app.engine.executor.closed, false);
-  assert.equal(app.webAccess.status().direct.enabled, false);
+  assert.equal(app.webAccess.status().recovery.enabled, true);
   assert.equal(existsSync(f.paths.importPath), true);
   assert.equal(f.saved.controller.max_drop_c, 1.5);
   f.faults.save = false;
   assert.equal((await f.reload()).status, 200);
   assert.equal(app.engine.settings.comfort.maxDropC, 0.5);
-  assert.equal(app.webAccess.status().direct.enabled, true);
+  assert.equal(app.webAccess.status().recovery.enabled, true);
   assert.equal(existsSync(f.paths.importPath), false);
 });
 
@@ -325,13 +328,13 @@ test('runtime failure after Supervisor save retains import and restores old acce
   assert.match((await response.json()).error, /previous configuration was restored/);
   assert.equal(app.engine.settings.comfort.maxDropC, 1.5);
   assert.equal(f.saved.controller.max_drop_c, 0.5);
-  assert.equal(app.webAccess.status().direct.enabled, false);
+  assert.equal(app.webAccess.status().recovery.enabled, true);
   assert.equal(existsSync(f.paths.importPath), true);
   response = await f.reload();
   assert.equal(response.status, 200);
   assert.equal(f.posts, 1);
   assert.equal(app.engine.settings.comfort.maxDropC, 0.5);
-  assert.equal(app.webAccess.status().direct.enabled, true);
+  assert.equal(app.webAccess.status().recovery.enabled, true);
   assert.equal(existsSync(f.paths.importPath), false);
 });
 
@@ -344,7 +347,7 @@ test('cleanup failure keeps applied runtime and reports pending cleanup; retry d
   assert.equal(response.status, 200);
   assert.equal((await response.json()).settingsReload.result.cleanupPending, true);
   assert.equal(app.engine.settings.comfort.maxDropC, 0.5);
-  assert.equal(app.webAccess.status().direct.enabled, true);
+  assert.equal(app.webAccess.status().recovery.enabled, true);
   assert.equal(f.saved.controller.web_token, firstToken);
   assert.equal(existsSync(f.paths.importPath), true);
   f.faults.cleanup = false;

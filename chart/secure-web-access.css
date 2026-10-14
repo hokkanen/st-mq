@@ -1,0 +1,24 @@
+.secure-web-access-body { font-size: 12px; line-height: 1.6; }
+#providers-controls > :is(#secure-web-access-details, #controls-details) { margin-top: 12px; }
+.secure-web-access-body > p { margin: 0 0 12px; }
+.secure-web-access-facts { display: grid; gap: 7px; margin: 12px 0; }
+.secure-web-access-facts > div { display: grid; grid-template-columns: minmax(110px, 0.4fr) minmax(0, 1fr); gap: 8px 16px; }
+.secure-web-access-facts dt { color: var(--muted); }
+.secure-web-access-facts dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.secure-web-access-facts a { color: var(--accent); }
+.secure-web-access-actions, .secure-web-access-update-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin: 12px 0; }
+.secure-web-access-actions button, .secure-web-access-update-controls button { margin: 0; min-height: 40px; }
+.secure-web-access-update-controls label { display: grid; gap: 5px; flex: 1 1 160px; min-width: 0; }
+.secure-web-access-owner-choice { margin: 12px 0; }
+.secure-web-access-owner-choice label { display: grid; gap: 5px; max-width: 260px; }
+.secure-web-access-owner-choice p { margin: 8px 0; }
+.secure-web-access-notice { border-left: 2px solid var(--stale); padding-left: 10px; }
+.secure-web-access-authorization { overflow-wrap: anywhere; }
+.secure-web-access-body .equipment-fold code { overflow-wrap: anywhere; }
+.web-unsafe-warning { margin: 16px 0; border-color: var(--stale); color: var(--text); }
+@media (max-width: 480px) {
+  .secure-web-access-facts > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .secure-web-access-update-controls { align-items: stretch; }
+  .secure-web-access-update-controls label { flex-basis: 100%; }
+  .secure-web-access-update-controls button { flex: 1 1 120px; }
+}

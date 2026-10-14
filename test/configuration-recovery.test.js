@@ -18,7 +18,7 @@ async function fixture(t, { addon = false, saved = valid(), upload } = {}) {
     importPath: addon ? join(directory, 'secrets.json') : null,
     receiptPath: addon ? join(directory, 'private', 'configuration-import.json') : null };
   const env = { STMQ_CONFIG: paths.privatePath, STMQ_DATA_DIR: join(directory, 'data'),
-    STMQ_DATABASE_DIR: join(directory, 'db'), STMQ_HOST: '0.0.0.0', STMQ_PORT: '0',
+    STMQ_DATABASE_DIR: join(directory, 'db'), STMQ_HOST: '127.0.0.1', STMQ_PORT: '0',
     ...(addon ? { STMQ_ADDON: '1', SUPERVISOR_TOKEN: 'fixture-supervisor-token' } : {}) };
   let ingressPort, current = structuredClone(saved), writes = 0, app;
   if (addon) {

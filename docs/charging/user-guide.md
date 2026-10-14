@@ -182,7 +182,7 @@ transaction or restore cloud control. See [outages and recovery](execution-and-r
 ## Device information and setup
 
 Follow **Charging setup & documentation** from either card, or open
-**Data & settings → Connections & configuration → Charging**. This is the home
+**Data & settings → Connections & electricity rates → Charging**. This is the home
 for installation information rather than duplicating it in daily session folds.
 
 The hardware cards identify the charger role, integration, model and available

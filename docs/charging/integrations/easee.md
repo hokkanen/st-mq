@@ -714,7 +714,7 @@ readiness checks and handover limits.
 An outstanding OCPP restoration obligation still requires compatible peer
 settings and listener readiness even when local OCPP is configured as disabled.
 
-Open **Data & settings → Connections & configuration → Charging** and expand
+Open **Data & settings → Connections & electricity rates → Charging** and expand
 **Charger 1 · Connection & capabilities** to inspect **Local OCPP connection**. **Charger setup** reports missing prerequisites, cloud setup
 progress or retry, native control readiness and an existing cloud schedule
 waiting to hand over; **Local readings** separately reports the socket and fresh

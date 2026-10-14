@@ -36,7 +36,7 @@ const effectiveFields = [
   ['runtime.mirror.sourceDirectory', c => c.mirror?.sourceDirectory],
   ...['host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'addon'].map(key => [`runtime.${key}`, c => c[key]]),
 ];
-const startupKeys = ['topology', 'role', 'input', 'host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'addon', 'mirror', 'pair'];
+const startupKeys = ['topology', 'role', 'input', 'host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'addon', 'mirror', 'pair', 'web'];
 export function configurationRestartRequired(before, after) {
   const keys = startupKeys.filter(key => !isDeepStrictEqual(before[key], after[key]));
   if (!isDeepStrictEqual(before.recording?.backupDirectory, after.recording?.backupDirectory)) keys.push('recording.backup_directory');

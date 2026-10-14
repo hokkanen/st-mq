@@ -105,11 +105,12 @@ test('verification API pins current database ownership and preserves an explicit
   assert.equal(released, 4, 'Both accepted and refused requests release their snapshot');
 });
 
-test('add-on without a token starts only ingress, which rejects direct and spoofed proxy requests', async t => {
+test('add-on without a token retains authenticated loopback recovery and ingress rejects spoofed proxy requests', async t => {
   const { access } = await setup(t);
   assert.equal(access.status().ingress.enabled, true);
-  assert.equal(access.status().direct.enabled, false);
-  assert.equal(access.server, access.ingressServer);
+  assert.equal(access.status().recovery.enabled, true);
+  assert.notEqual(access.server, access.ingressServer);
+  assert.equal((await fetch(`${endpoint(access.server)}/api/status`)).status, 401);
   for (const path of ['/', '/api/status']) {
     const response = await fetch(`${endpoint(access.ingressServer)}${path}`, { headers: {
       'X-Forwarded-For': '172.30.32.2', 'X-Real-IP': '172.30.32.2', 'X-Forwarded-Host': 'ha.invalid',
@@ -132,14 +133,14 @@ for (const address of ['172.30.32.2', '::ffff:172.30.32.2']) {
   });
 }
 
-test('direct access enables, rotates and disables live while ingress remains running', async t => {
+test('recovery passwords rotate and clear live while both recovery and ingress remain running', async t => {
   const { access, config } = await setup(t);
   const ingress = access.ingressServer;
   const ingressPort = ingress.address().port;
   await access.apply({ ...config, token: firstToken });
   const direct = access.server;
   const base = endpoint(direct);
-  assert.equal(access.status().direct.enabled, true);
+  assert.equal(access.status().recovery.enabled, true);
   assert.equal((await fetch(`${base}/api/status`)).status, 401);
   assert.equal((await fetch(`${base}/api/status`, { headers: authorization(firstToken) })).status, 200);
   assert.equal((await fetch(`${base}/api/status`, { headers: {
@@ -150,8 +151,8 @@ test('direct access enables, rotates and disables live while ingress remains run
   assert.equal((await fetch(`${base}/api/status`, { headers: authorization(firstToken) })).status, 401);
   assert.equal((await fetch(`${base}/api/status`, { headers: authorization(secondToken) })).status, 200);
   await access.apply(config);
-  assert.equal(access.status().direct.enabled, false);
-  assert.equal(direct.listening, false);
+  assert.equal(access.status().recovery.enabled, true);
+  assert.equal(direct.listening, true);
   assert.equal(access.ingressServer, ingress);
   assert.equal(ingress.address().port, ingressPort);
 });
@@ -221,27 +222,20 @@ test('a direct reload can remove its own token and complete without a close dead
     signal: AbortSignal.timeout(2000),
   });
   assert.equal(response.status, 200);
-  assert.equal(access.status().direct.enabled, false);
-  assert.equal(direct.listening, false);
+  assert.equal(access.status().recovery.enabled, true);
+  assert.equal(direct.listening, true);
 });
 
-test('preflight bind failure leaves ingress available; reservation denies access and can roll back', async t => {
-  const blocker = createServer();
-  await new Promise(resolve => blocker.listen(0, '127.0.0.1', resolve));
-  t.after(() => { if (blocker.listening) blocker.close(); });
-  const port = blocker.address().port;
-  const { access, config } = await setup(t, configuration({ port }));
-  await assert.rejects(access.prepare({ ...config, token: firstToken }), { code: 'EADDRINUSE' });
-  assert.equal(access.status().ingress.enabled, true);
-  assert.equal(access.status().direct.enabled, false);
-  await new Promise(resolve => blocker.close(resolve));
-  const transaction = await access.prepare({ ...config, token: firstToken });
-  const response = await fetch(`http://127.0.0.1:${port}/api/status`, { headers: authorization(firstToken) });
-  assert.equal(response.status, 503);
+test('credential preparation and rollback never publish an uncommitted password', async t => {
+  const { access, config } = await setup(t, configuration({ token: firstToken }));
+  const server = access.server, base = endpoint(server);
+  const transaction = await access.prepare({ ...config, token: secondToken });
+  assert.equal((await fetch(`${base}/api/status`, { headers: authorization(firstToken) })).status, 200);
+  assert.equal((await fetch(`${base}/api/status`, { headers: authorization(secondToken) })).status, 401);
   await transaction.rollback();
-  assert.equal(access.status().direct.enabled, false);
+  assert.equal(access.server, server);
   await access.apply({ ...config, token: secondToken });
-  assert.equal((await fetch(`http://127.0.0.1:${port}/api/status`, { headers: authorization(secondToken) })).status, 200);
+  assert.equal((await fetch(`${base}/api/status`, { headers: authorization(secondToken) })).status, 200);
 });
 
 test('standalone loopback access remains token optional and accepts live token changes', async t => {
@@ -275,7 +269,7 @@ test('a reserved startup listener rejects API requests until the controller is r
   assert.ok(reads > 0);
 });
 
-test('an occupied ingress port identifies the ingress setting and leaves no direct listener', async t => {
+test('an occupied ingress port identifies the ingress setting and closes its reserved recovery listener', async t => {
   const blocker = createServer();
   await new Promise(resolve => blocker.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => blocker.close(resolve)));
@@ -291,16 +285,16 @@ test('an occupied ingress port identifies the ingress setting and leaves no dire
     return true;
   });
   assert.equal(access.status().ingress.enabled, false);
-  assert.equal(access.status().direct.enabled, false);
+  assert.equal(access.status().recovery.enabled, false);
   assert.equal(blocker.listening, true);
 });
 
 test('invalid direct credentials and binding changes fail without changing active access', async t => {
   const { access, config } = await setup(t, configuration({ token: firstToken }));
   await assert.rejects(access.apply({ ...config, token: 'synthetic-short' }), /at least 24/);
-  await assert.rejects(access.apply({ ...config, host: '0.0.0.0' }), /Restart/);
+  await assert.rejects(access.apply({ ...config, host: '0.0.0.0' }), /loopback/);
   assert.equal((await fetch(`${endpoint(access.server)}/api/status`, { headers: authorization(firstToken) })).status, 200);
-  assert.throws(() => createWebAccess({ config: configuration({ addon: false, host: '0.0.0.0' }) }), /at least 24/);
+  assert.throws(() => createWebAccess({ config: configuration({ addon: false, host: '0.0.0.0' }) }), /loopback/);
 });
 
 test('standalone createAppServer remains compatible with a fixed token', async t => {

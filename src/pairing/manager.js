@@ -1263,7 +1263,18 @@ export class PairManager {
 
   async handlePeer(operation, body) {
     if (this.closed || this.stopping) throw pairError('stopped');
-    if ((this.state.invalid || this.state.value.reset) && operation !== 'status') throw pairError('protected_history');
+    if ((this.state.invalid || this.state.value.reset) && !['status', 'https-status'].includes(operation)) throw pairError('protected_history');
+    if (operation === 'https-status' || operation === 'https-get') {
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length)
+        throw pairError('peer_protocol_failed');
+      const hook = operation === 'https-status' ? this.hooks.webCertificateStatus : this.hooks.webCertificateGet;
+      if (!hook) throw pairError('peer_protocol_failed');
+      return hook();
+    }
+    if (operation === 'https-receive') {
+      if (!this.hooks.webCertificateReceive) throw pairError('peer_protocol_failed');
+      return this.hooks.webCertificateReceive(body);
+    }
     if (operation === 'status') {
       if (body.claim) {
         await this.observeClaim(body.claim);

@@ -149,7 +149,7 @@ enabled and fresh sender status and local write authority permit it. The sender
 validates and persists them; matching fresh readback confirms the configuration.
 A command acknowledgement alone does not establish that protection is ready.
 
-The live fold links to **Connections & configuration → Garage freeze protection**,
+The live fold links to **Connections & electricity rates → Garage freeze protection**,
 directly below **Home floor preheating**, for installation and setup. That section
 links back to Garage for live readings, settings and model details.
 Closing a linked section or its parent clears that section's URL anchor, so a

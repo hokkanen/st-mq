@@ -91,12 +91,12 @@ test('reload scope distinguishes live provider configuration from startup and en
 test('configuration instructions use the actual standalone private path and preserve its permanent role', () => {
   const scope = settingsReloadScope({ settingsReload: { available: true,
     configuration: { environment: 'ubuntu', defaultsPath: '/opt/example/config.json', privatePath: '/etc/example/secrets.json' },
-    access: { ingress: { enabled: false }, direct: { enabled: true, tokenRequired: false } } } });
+    access: { ingress: { enabled: false }, recovery: { enabled: true, tokenRequired: false }, https: { enabled: false }, lanHttp: { configured: false } } } });
   assert.match(scope.instructions.join(' '), /\/etc\/example\/secrets.json/);
   assert.match(scope.instructions.join(' '), /\/opt\/example\/config.json/);
   assert.match(scope.instructions.join(' '), /stays in place/);
   assert.match(scope.instructions.join(' '), /omitted settings use the defaults/);
-  assert.match(scope.access.join(' '), /Loopback access works without a password/);
+  assert.match(scope.access.join(' '), /Loopback recovery is enabled and works without a password/);
   assert.doesNotMatch(scope.instructions.join(' '), /upload|removes|Home Assistant/i);
   assert.deepEqual(scope.location.rows, [
     { label: 'Folder', value: '/etc/example' }, { label: 'File name', value: 'secrets.json' },
@@ -109,22 +109,25 @@ test('Home Assistant configuration instructions distinguish sparse import, saved
   const reload = { available: true,
     configuration: { environment: 'home-assistant', defaultsPath: '/st-mq/config.json', privatePath: '/data/options.json',
       importPath: '/config/secrets.json', externalImportPath: '/addon_configs/example_st-mq/secrets.json' },
-    access: { ingress: { enabled: true }, direct: { enabled: false, tokenRequired: true } } };
+    access: { ingress: { enabled: true }, recovery: { enabled: true, tokenRequired: true }, https: { enabled: false }, lanHttp: { configured: false } } };
   const scope = settingsReloadScope({ settingsReload: reload });
   assert.match(scope.instructions.join(' '), /\/addon_configs\/example_st-mq\/secrets.json/);
   assert.match(scope.instructions.join(' '), /freshly saved options/);
   assert.match(scope.instructions.join(' '), /Omitted fields keep saved values, arrays replace saved arrays/);
   assert.match(scope.instructions.join(' '), /failed import keeps the file/);
   assert.match(scope.access.join(' '), /host login/);
-  assert.match(scope.access.join(' '), /Direct access is disabled/);
+  assert.match(scope.access.join(' '), /Set up HTTPS in Web access/);
+  assert.match(scope.access.join(' '), /Loopback recovery is enabled and requires your admin or family password/);
   assert.deepEqual(scope.location.rows, [
     { label: 'Folder', value: '/addon_configs/example_st-mq' }, { label: 'File name', value: 'secrets.json' },
     { label: 'Full path', value: '/addon_configs/example_st-mq/secrets.json' },
     { label: 'Inside app', value: '/config/secrets.json' },
   ]);
   assert.equal(scope.location.message, '');
-  reload.access.direct.enabled = true;
-  assert.match(settingsReloadScope({ settingsReload: reload }).access.join(' '), /Clear both controller.web_token and controller.web_family_token and apply to disable/);
+  reload.access.https.enabled = true;
+  assert.match(settingsReloadScope({ settingsReload: reload }).access.join(' '), /HTTPS is listening and requires your admin or family password/);
+  reload.access.lanHttp.configured = true;
+  assert.match(settingsReloadScope({ settingsReload: reload }).access.join(' '), /Unencrypted LAN HTTP backup is configured/);
   reload.configuration.externalImportPath = null;
   const missingSlug = settingsReloadScope({ settingsReload: reload });
   assert.doesNotMatch(missingSlug.instructions.join(' '), /<.*slug|undefined|null/);

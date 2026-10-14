@@ -72,6 +72,7 @@ the configuration is valid and the application is restarted. See
 | Topic | Documentation |
 | --- | --- |
 | Configuration, access and electricity rates | [Configuration](docs/configuration.md) |
+| Trusted LAN HTTPS and HTTP backup | [Secure web access](docs/https.md) |
 | Home heating and manual controls | [Learning and control](docs/learning-and-control.md), [automation and restoration](docs/automation-and-manual-control.md), [planning explorer](docs/heating-plan-explorer.md) |
 | Garage and local protection | [Garage heating](docs/garage.md), [adapter contract](docs/garage-adapter.md), [CN105 integration](docs/shelly-pill-handoff.md) |
 | Charging | [Overview and user guide](docs/charging.md), [policies](docs/charging/policies.md), [architecture](docs/charging/architecture.md), [integration guides](docs/charging.md#supported-equipment-and-capability-differences), [physical development tools](docs/charging/testing.md) |

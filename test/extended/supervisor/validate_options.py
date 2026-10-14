@@ -235,11 +235,11 @@ class SupervisorOptions(unittest.IsolatedAsyncioTestCase):
     def test_recursive_ui_schema_preserves_every_field(self):
         self.assertEqual(ui_paths(UiOptions(self.coresys)(self.config['schema'])), schema_paths(MANIFEST['schema']))
 
-    def test_host_network_webui_resolves_without_ignored_port_mappings(self):
+    def test_host_network_uses_ingress_without_an_insecure_network_webui_link(self):
         self.assertTrue(self.config['host_network'])
         self.assertEqual(self.config['ingress_port'], 0)
         self.assertTrue(self.config['panel_admin'])
-        self.assertEqual(self.app.webui, 'http://[HOST]:1234')
+        self.assertIsNone(self.app.webui)
 
     async def test_production_serializer_sparse_equipment_import_passes_actual_api(self):
         options = json.loads(Path('/generated-options.json').read_text())

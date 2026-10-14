@@ -17,7 +17,6 @@
   "panel_icon": "mdi:home-lightning-bolt",
   "panel_title": "Home Energy",
   "panel_admin": true,
-  "webui": "http://[HOST]:[PORT:1234]",
   "map": [
     "share:rw",
     {
@@ -83,6 +82,15 @@
         "renew_seconds": 300,
         "lease_seconds": 900
       }
+    },
+    "web": {
+      "https_host": "0.0.0.0",
+      "https_port": 8443,
+      "https_directory": "",
+      "lan_http_enabled": false,
+      "lan_http_host": "0.0.0.0",
+      "lan_http_port": 1236,
+      "lan_resolver": ""
     },
     "garage": {
       "enabled": false,
@@ -551,6 +559,15 @@
         "renew_seconds": "int(30,450)",
         "lease_seconds": "int(60,900)"
       }
+    },
+    "web": {
+      "https_host": "str",
+      "https_port": "int(1,65535)",
+      "https_directory": "str",
+      "lan_http_enabled": "bool",
+      "lan_http_host": "str",
+      "lan_http_port": "int(1,65535)",
+      "lan_resolver": "str"
     },
     "garage": {
       "enabled": "bool",

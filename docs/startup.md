@@ -102,7 +102,7 @@ electricity rates and the admin/family access policy.
 | `STMQ_DATA_DIR` | `./var`, or `/data/st-mq` in the app |
 | `STMQ_DATABASE_DIR` | Same as data directory on Linux; `/config/st-mq` in HA |
 | `STMQ_PORT` | `1234` |
-| `STMQ_HOST` | `127.0.0.1` on standalone; optional app direct access listens on `0.0.0.0` |
+| `STMQ_HOST` | Loopback recovery only, default `127.0.0.1` on both platforms; use `web` for optional network listeners |
 | `STMQ_API_TOKEN` | Admin password; overrides `controller.web_token`; at least 24 characters for direct network access |
 | `STMQ_FAMILY_API_TOKEN` | Optional family password; overrides `controller.web_family_token`; distinct from admin and at least 24 characters for direct network access |
 | `STMQ_CONFIG` | Standalone private override JSON; defaults to `$XDG_CONFIG_HOME/st-mq/secrets.json`, or `~/.config/st-mq/secrets.json`. In the app, overrides only the initial/fallback Supervisor export path. |
@@ -113,6 +113,12 @@ electricity rates and the admin/family access policy.
 [deploy/st-mq.service](../deploy/st-mq.service) is a standalone systemd example.
 Adapt its paths and service account before installing it. Stop the previous
 command owner before commissioning a replacement instance.
+
+Optional [secure web access](https.md) is set up from **Data & settings → Web
+access**. It downloads its private certificate helper only after administrator
+setup, keeps ingress and loopback recovery independent, and supports an explicit
+unencrypted LAN HTTP backup. Listener configuration changes require the ordinary
+controlled restart; HTTPS setup, renewal and helper updates do not restart control.
 
 ## Configuration recovery
 
@@ -171,12 +177,14 @@ restrictions; only explicit integration changes request cloud handback. Avoid
 `kill -9`.
 Do not stop an unfamiliar process or a separate production installation.
 
-ST-MQ checks its web listeners before constructing the controller, opening device
+ST-MQ checks its mandatory recovery and ingress listeners before constructing the controller, opening device
 MQTT connections, starting provider requests or running the first control tick.
 A failed bind exits with status 1 and identifies the address and configuration
 setting. The existing process is left running. HTTP API requests return status 503 until
 the new instance has completed startup. This port check does not replace the
 controller authority protection used by instances on different hosts or ports.
+Optional HTTPS and LAN HTTP backup failures are reported separately and do not
+stop the controller or its mandatory recovery paths.
 
 If a different application intentionally owns port 1234, set `STMQ_PORT` to an
 available port for the single ST-MQ instance. For an additional isolated UI or
@@ -196,11 +204,12 @@ setup is needed. If Supervisor cannot provide a valid assignment, startup fails
 with an actionable error instead of choosing a fixed port. `STMQ_INGRESS_PORT`
 is an explicit override for isolated container fixtures and custom deployments.
 
-Direct access still uses host port 1234 and is opened only when an admin password
-is configured. Host-network listeners cannot be remapped through the app's
-Network settings. Resolve a conflicting direct listener before restarting
-ST-MQ. Startup also rejects an ingress assignment that collides with another
-ST-MQ listener.
+Local loopback recovery uses host port 1234. Optional HTTPS uses 8443, and an
+explicitly enabled LAN HTTP backup uses 1236. Host-network listeners cannot be
+remapped through the app's Network settings. Resolve a conflicting recovery
+listener before restarting ST-MQ. Startup also rejects an ingress assignment
+that collides with another configured listener. See [secure web access](https.md)
+for setup and the unsafe HTTP backup option.
 
 The Node.js experimental SQLite warning is informational and is unrelated to
 `EADDRINUSE`. The port conflict is the startup failure to resolve.

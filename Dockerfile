@@ -17,7 +17,7 @@ FROM node:22.23.2-alpine
 ARG BUILD_VERSION=0.9.5-dev.4
 ARG BUILD_ARCH
 LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="app" io.hass.arch="aarch64|amd64"
-ENV NODE_ENV=production STMQ_ADDON=1 STMQ_HOST=0.0.0.0 STMQ_DATA_DIR=/data/st-mq STMQ_DATABASE_DIR=/config/st-mq
+ENV NODE_ENV=production STMQ_ADDON=1 STMQ_HOST=127.0.0.1 STMQ_DATA_DIR=/data/st-mq STMQ_DATABASE_DIR=/config/st-mq
 WORKDIR /st-mq
 RUN apk add --no-cache openssh-client iproute2 iputils
 COPY --from=sqlite-tools /usr/local/bin/sqlite3_rsync /usr/local/bin/sqlite3_rsync
@@ -34,6 +34,7 @@ COPY docs/floor-preheat.md ./docs/floor-preheat.md
 COPY test/live/ ./test/live/
 COPY config.json ./
 RUN install -m 0755 /st-mq/scripts/pair-vip-addon /usr/local/bin/st-mq-vip
-# Default direct web, peer and OCPP ports; Supervisor assigns ingress at runtime.
-EXPOSE 1234 1244 9001
+# Independent recovery, opt-in web listeners, peer and OCPP ports. Supervisor
+# assigns ingress at runtime; HTTPS failure never owns the application lifecycle.
+EXPOSE 1234 1236 8443 1244 9001
 CMD ["node", "src/main.js"]

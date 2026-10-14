@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
@@ -40,16 +41,22 @@ function requestHost(req, ingress) {
   try { return new URL(`http://${host}`).host === host.toLowerCase() ? host.toLowerCase() : null; }
   catch { return null; }
 }
-async function body(req) {
+async function body(req, timeoutMs = 0) {
   if (!req.headers['content-type']?.startsWith('application/json')) throw Object.assign(new Error('JSON content type required'), { statusCode: 400 });
-  let size = 0;
-  const chunks = [];
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > 8192) throw Object.assign(new Error('Request too large'), { statusCode: 400 });
-    chunks.push(chunk);
-  }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  // Small JSON commands have their own short input budget. Large authenticated
+  // backup uploads use the recovery owner's separate bounded streaming budget.
+  const deadline = timeoutMs > 0 ? setTimeout(() => req.destroy(Object.assign(new Error('Request body timed out'), { statusCode: 408 })), timeoutMs) : null;
+  deadline?.unref();
+  try {
+    let size = 0;
+    const chunks = [];
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > 8192) throw Object.assign(new Error('Request too large'), { statusCode: 400 });
+      chunks.push(chunk);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } finally { clearTimeout(deadline); }
 }
 function numberParam(url, key, fallback, max) {
   const n = Number(url.searchParams.get(key) ?? fallback);
@@ -92,7 +99,7 @@ function chargingReportQuery(url, kind) {
 }
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '', familyToken = '',
-  getAccess, ingress = false, role = 'master', topology = 'standalone', getReadContext, syncStatus,
+  getAccess, ingress = false, tls, transportLimits, webTransport, role = 'master', topology = 'standalone', getReadContext, syncStatus,
   pairContext, controlAuthority, historyRecovery, recordingHealth, databaseExport, databaseVerification,
   backupCatalog, backupInspection, getDatabaseExportDirectory,
   reloadSettings, previewSettings, settingsReloadStatus = () => ({ available: false, busy: false,
@@ -117,7 +124,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
     || Boolean(controlAuthority && !controlAuthority.canControl());
   const recovering = () => Boolean(historyRecovery?.busy() || pairContext?.recovering?.());
   const readOnlyMessage = 'This computer is read-only. Database edits, settings changes and device commands require the active master.';
-  const server = createServer(async (req, res) => {
+  const handler = async (req, res) => {
     let acceptedAccess, completingReload = false, readContext, webAccess;
     const json = (code, value) => {
       // Revocation also covers reads that were awaiting chart/database work.
@@ -126,6 +133,13 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         const current = access();
         if (!current.enabled) { code = 503; value = { error: 'Direct web access is disabled' }; }
         else if (current !== acceptedAccess) { code = 401; value = { error: 'Authentication required' }; }
+      }
+      const unreadBody = !req.complete && (Number(req.headers['content-length']) > 0 || req.headers['transfer-encoding']);
+      if (code >= 400 && unreadBody) {
+        // A refusal does not own a long upload budget. Flush the error and
+        // release clients that leave their declared body unfinished.
+        res.setHeader('Connection', 'close');
+        res.once('finish', () => req.socket.destroySoon());
       }
       res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       res.end(JSON.stringify(value));
@@ -141,10 +155,16 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
       if (url.pathname.startsWith('/api/')) {
         const host = requestHost(req, ingress);
         if (!host) return json(403, { error: 'Unrecognized request host' });
+        if (acceptedAccess.hostname && ((host !== `${acceptedAccess.hostname}:${req.socket.localPort}`
+          && !(req.socket.localPort === 443 && host === acceptedAccess.hostname))
+          || req.socket.servername && req.socket.servername !== acceptedAccess.hostname))
+          return json(403, { error: 'Use the configured HTTPS hostname' });
         if (!ingress && !acceptedAccess.token && !/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(host)) return json(403, { error: 'Unrecognized local host' });
         // Same-origin JSON writes prevent cross-site requests, including on a
         // loopback installation where no bearer token is configured.
-        if (req.headers.origin && new URL(req.headers.origin).host !== host) return json(403, { error: 'Cross-origin request rejected' });
+        if (req.headers.origin && (new URL(req.headers.origin).host !== host
+          || !ingress && new URL(req.headers.origin).protocol !== (req.socket.encrypted ? 'https:' : 'http:')))
+          return json(403, { error: 'Cross-origin request rejected' });
         const stillAuthorized = () => {
           const current = access();
           if (!current.enabled) { json(503, { error: 'Direct web access is disabled' }); return false; }
@@ -158,6 +178,14 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (!stillAuthorized()) return;
         if (webAccess.role === 'family' && !familyRouteAllowed(req.method, url.pathname))
           return json(403, { error: 'Admin access is required for this action.' });
+        if (url.pathname === '/api/web-access' && ['GET', 'POST'].includes(req.method)) {
+          if (!webTransport) return json(409, { error: 'Web access management is unavailable.' });
+          if (req.method === 'GET') return json(200, { ...webTransport.status({ admin: true }), webAccess });
+          const input = await body(req, transportLimits?.bodyTimeoutMs);
+          if (!stillAuthorized()) return;
+          if (settingsReloadStatus().stopping) return json(503, { error: 'The application is shutting down.' });
+          return json(202, await webTransport.action(input));
+        }
         const downloads = {
           '/api/downloads/floor-preheat-guide': ['../../docs/floor-preheat.md', 'floor-preheat.md', 'text/markdown'],
         };
@@ -177,7 +205,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (url.pathname === '/api/pair/action' && req.method === 'POST') {
           if (!pairContext) return json(409, { error: 'Paired operation is not configured.' });
-          const input = await body(req);
+          const input = await body(req, transportLimits?.bodyTimeoutMs);
           if (!stillAuthorized()) return;
           if (settingsReloadStatus().stopping) return json(503, { error: 'The application is shutting down.' });
           return json(202, pairContext.requestAction(input));
@@ -188,7 +216,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             readContext = await getReadContext?.();
             return json(200, databaseVerification.status({ store: readContext ? readContext.store : store }));
           }
-          const input = await body(req);
+          const input = await body(req, transportLimits?.bodyTimeoutMs);
           if (!stillAuthorized()) return;
           if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
             return json(400, { error: 'Start database verification with an empty JSON object.' });
@@ -203,7 +231,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return json(200, await backupInspection.list({ force: url.searchParams.get('refresh') === 'true' }));
         }
         if (url.pathname === '/api/recording-backups/verify' && req.method === 'POST') {
-          const input = await body(req);
+          const input = await body(req, transportLimits?.bodyTimeoutMs);
           if (!stillAuthorized()) return;
           if (settingsReloadStatus().busy || settingsReloadStatus().stopping)
             return json(409, { error: 'Wait for configuration work to finish before checking a saved copy.' });
@@ -259,14 +287,14 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (url.pathname === '/api/history-recovery/action' && req.method === 'POST') {
           if (!historyRecovery) return json(409, { error: readOnlyMessage });
-          const input = await body(req);
+          const input = await body(req, transportLimits?.bodyTimeoutMs);
           if (!stillAuthorized()) return;
           if (unavailable()) return json(503, { error: unavailable() });
           if (writesBlocked()) return json(409, { error: readOnlyMessage });
           return json(202, await historyRecovery.action(input));
         }
         if (saveDatabase) {
-          const input = await body(req);
+          const input = await body(req, transportLimits?.bodyTimeoutMs);
           if (!stillAuthorized()) return;
           if (unavailable()) return json(503, { error: unavailable() });
           if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
@@ -288,6 +316,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           const sync = syncStatus?.();
           const current = (readContext ? engine : getEngine()).status();
           return { ...current, topology, role, webAccess,
+            ...(webTransport ? { webTransport: webTransport.status({ admin: false }) } : {}),
             ...(current.fireplace ? { fireplace: fireplaceStatus(current.fireplace, current.now ?? engine.clock()) } : {}),
             ...(current.sensorChanges ? { sensorChanges: sensorChangesStatus(current.sensorChanges) } : {}), settingsReload: settingsReloadStatus(),
             ...(sync ? { sync } : {}), ...(controlAuthority ? { controlAuthority: controlAuthority.status(),
@@ -296,7 +325,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
               readOnly: writesBlocked() } : {}) };
         };
         const mutate = async action => {
-          const input = await body(req);
+          const input = await body(req, transportLimits?.bodyTimeoutMs);
           // A credential can be rotated while a client slowly uploads a body.
           // Recheck before any control or configuration mutation is dispatched.
           if (!stillAuthorized()) return;
@@ -687,6 +716,10 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             : { error: refused ? 'The paired request was rejected. Review the action requirements and current status.'
               : 'The paired request could not be confirmed. Recheck its saved outcome before trying again.' });
         }
+        if (/^\/api\/web-access(?:\?|$)/.test(req.url))
+          return json(error.statusCode ?? (error instanceof SyntaxError ? 400 : 503), {
+            error: typeof error.publicMessage === 'string' ? error.publicMessage
+              : 'Web access could not be updated. Refresh its status before retrying.' });
         if (Object.hasOwn(EQUIPMENT_COMMAND_ERRORS, error?.code))
           return json(409, { code: error.code, error: EQUIPMENT_COMMAND_ERRORS[error.code] });
         const fireplaceWrite = req.method === 'POST' && /^\/api\/(?:fireplace(?:\/remove)?|sensor-changes(?:\/(?:revert|retry-rebuild))?)(?:\?|$)/.test(req.url);
@@ -695,7 +728,9 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           : error instanceof SyntaxError && /^\/api\/settings\//.test(req.url) ? 'The request must contain valid JSON.' : error.message });
       }
     } finally { readContext?.release?.(); }
-  });
+  };
+  const { bodyTimeoutMs: _bodyTimeoutMs, ...limits } = transportLimits ?? {};
+  const server = tls ? createHttpsServer({ ...limits, ...tls }, handler) : createServer(limits, handler);
   if (overviewService && overviewService !== chartService) server.once('close', () => { void overviewService.close(); });
   if (ownInspection) server.once('close', () => { void backupInspection.close(); });
   return server;

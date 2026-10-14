@@ -2,7 +2,7 @@
 
 The planned ground-floor circuit controller is **one SONOFF 4CH PRO R3** with
 four connections. The dashboard presents this device in **Data & settings →
-Connections & configuration → Home floor preheating**, directly above
+Connections & electricity rates → Home floor preheating**, directly above
 **Garage freeze protection**.
 
 | Connection | Floor circuit | Pipe length |

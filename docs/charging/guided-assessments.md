@@ -2,7 +2,7 @@
 
 [Charging overview](../charging.md) · [Code map](architecture.md)
 
-Open **Data & settings → Connections & configuration → Charging → Guided assessments & installation checks**. These server-side observers assess ordinary charging with independently recorded assumptions; they have no actuator. For selected hardware experiments and command-line evidence tools, use [testing and physical development](testing.md).
+Open **Data & settings → Connections & electricity rates → Charging → Guided assessments & installation checks**. These server-side observers assess ordinary charging with independently recorded assumptions; they have no actuator. For selected hardware experiments and command-line evidence tools, use [testing and physical development](testing.md).
 
 ## Prepare an assessment
 

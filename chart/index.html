@@ -30,6 +30,7 @@
     </div>
   </header>
   <main>
+    <p id="web-unsafe-warning" class="notice web-unsafe-warning" role="status" hidden></p>
     <section id="primary-replication-notice" class="notice replica-notice" aria-labelledby="primary-replication-title" role="status" hidden>
       <h2 id="primary-replication-title">Database mirroring</h2>
       <p id="primary-replication-summary"></p>
@@ -424,7 +425,7 @@
                   <p id="price-status" class="muted" hidden></p><p id="weather-status" class="muted" hidden></p>
                 </div>
                 <details id="connections-details" class="dashboard-disclosure">
-                  <summary><span>Connections &amp; configuration</span><small>MQTT, topics &amp; electricity rates</small></summary>
+                  <summary><span>Connections &amp; electricity rates</span><small>MQTT, devices &amp; topics</small></summary>
                   <details id="mqtt-devices-details" class="section-fold controller-fold">
                     <summary><span>MQTT</span><small> · Devices &amp; topics</small></summary>
                     <div class="section-fold-body">
@@ -517,6 +518,69 @@
                       <p class="muted">Rates are set in the configuration.</p>
                     </div>
                   </details>
+                </details>
+                  <details id="secure-web-access-details" class="section-fold controller-fold">
+                    <summary><span>Web access</span><small id="secure-web-access-state" class="equipment-device-status" data-state="pending">Status unavailable</small></summary>
+                    <div class="section-fold-body secure-web-access-body">
+                      <p id="secure-web-access-summary" class="muted">Loading this computer’s web access status…</p>
+                      <dl class="secure-web-access-facts">
+                        <div><dt>HTTPS</dt><dd id="secure-web-access-https">Unknown</dd></div>
+                        <div><dt>Certificate expires</dt><dd id="secure-web-access-expiry">Unknown</dd></div>
+                        <div><dt>HTTP LAN backup</dt><dd id="secure-web-access-http">Unknown</dd></div>
+                      </dl>
+                      <p class="family-access-note">Admin access is required to set up HTTPS or manage this computer’s certificate helper.</p>
+                      <div id="secure-web-access-admin" data-admin-only hidden>
+                        <p class="muted">HTTPS is built into this application. Setting up a certificate owner downloads a dedicated Tailscale helper on that computer. Disabling HTTPS keeps the helper identity and certificate saved.</p>
+                        <p id="secure-web-access-standby" class="muted" hidden>Web access is managed on this computer, including while it is a standby.</p>
+                        <p id="secure-web-access-owner" class="muted" hidden></p>
+                        <p id="secure-web-access-peer-renewal" class="secure-web-access-notice" role="status" hidden></p>
+                        <p id="secure-web-access-security-warning" class="secure-web-access-notice form-error" role="status" hidden></p>
+                        <div id="secure-web-access-owner-choice" class="secure-web-access-owner-choice" hidden>
+                          <label for="secure-web-access-owner-select">Certificate owner<select id="secure-web-access-owner-select" aria-describedby="secure-web-access-owner-help" disabled><option value="local">This computer</option><option value="peer">Paired computer</option></select></label>
+                          <p id="secure-web-access-owner-help" class="muted">The owner issues and renews the certificate independently of the master/standby role. Choose Paired computer only after setting it up as the certificate owner there.</p>
+                        </div>
+                        <div class="secure-web-access-actions">
+                          <button id="secure-web-access-enable" type="button" disabled>Set up HTTPS</button>
+                          <button id="secure-web-access-recheck" class="secondary-button" type="button" disabled>Recheck</button>
+                          <button id="secure-web-access-retry" class="secondary-button" type="button" hidden disabled>Retry</button>
+                          <button id="secure-web-access-disable" class="secondary-button" type="button" hidden disabled>Disable HTTPS</button>
+                          <button id="secure-web-access-restore-identity" class="secondary-button" type="button" hidden disabled>Restore saved identity</button>
+                        </div>
+                        <p id="secure-web-access-authorization" class="secure-web-access-authorization" hidden><a id="secure-web-access-authorize" target="_blank" rel="noopener noreferrer">Authorize certificate helper in Tailscale ↗</a></p>
+                        <p id="secure-web-access-message" class="muted" role="status" aria-live="polite"></p>
+                        <details id="secure-web-access-network-details" class="equipment-fold">
+                          <summary>Address &amp; recovery access</summary>
+                          <dl class="secure-web-access-facts">
+                            <div><dt>HTTPS address</dt><dd><a id="secure-web-access-url" target="_blank" rel="noopener noreferrer" hidden></a><span id="secure-web-access-url-empty">Not yet available</span></dd></div>
+                            <div><dt>LAN DNS check</dt><dd id="secure-web-access-dns">Not checked</dd></div>
+                            <div><dt>Loopback recovery</dt><dd id="secure-web-access-recovery">Unknown</dd></div>
+                            <div><dt>Home Assistant ingress</dt><dd id="secure-web-access-ingress">Unknown</dd></div>
+                          </dl>
+                          <p id="secure-web-access-dns-help" class="muted">Certificate issuance can be completed before configuring household DNS.</p>
+                          <p id="secure-web-access-hosts-help" class="muted" hidden>A test computer can map the exact hostname to this installation’s LAN address in its hosts file: <code id="secure-web-access-hosts-entry"></code>. Open the HTTPS address above. The raw IP address does not match the certificate.</p>
+                          <p class="muted">LAN HTTP backup is disabled by default. To enable it, set <code>web.lan_http_enabled</code> to <code>true</code> in this computer’s private configuration and restart. HTTP exposes passwords and household data to interception or modification. Keep it within a trusted LAN firewall boundary.</p>
+                          <p class="muted">Loopback recovery remains available through an SSH tunnel. Home Assistant ingress uses the host login when available.</p>
+                        </details>
+                        <details id="secure-web-access-update-details" class="equipment-fold">
+                          <summary>Certificate helper updates</summary>
+                          <dl class="secure-web-access-facts">
+                            <div><dt>Installed helper</dt><dd id="secure-web-access-helper">Not installed</dd></div>
+                            <div><dt>Reported node key expiry</dt><dd id="secure-web-access-key-expiry">Not reported</dd></div>
+                            <div><dt>Tested setup release</dt><dd id="secure-web-access-tested">Not reported</dd></div>
+                            <div><dt>Available release</dt><dd id="secure-web-access-latest">Not checked</dd></div>
+                            <div><dt>Last release check</dt><dd id="secure-web-access-update-check">Not checked</dd></div>
+                          </dl>
+                          <div class="secure-web-access-update-controls">
+                            <label for="secure-web-access-update-policy">Update policy<select id="secure-web-access-update-policy" disabled><option value="automatic">Automatic</option><option value="manual">Manual approval</option></select></label>
+                            <button id="secure-web-access-check-updates" class="secondary-button" type="button" disabled>Check releases</button>
+                            <button id="secure-web-access-update-now" class="secondary-button" type="button" disabled>Install update</button>
+                          </div>
+                          <p id="secure-web-access-update-summary" class="muted"></p>
+                          <p class="muted">Release checks do not establish security advisory coverage. Review <a href="https://tailscale.com/security-bulletins" target="_blank" rel="noopener noreferrer">Tailscale security bulletins ↗</a>.</p>
+                        </details>
+                      </div>
+                    </div>
+                  </details>
                   <details id="controls-details" class="section-fold controller-fold">
                     <summary><span>Configuration</span><small> · File &amp; settings</small></summary>
                     <div class="section-fold-body">
@@ -593,7 +657,6 @@
                       </section>
                     </div>
                   </details>
-                </details>
               </article>
       </div>
       <div class="controller-column">

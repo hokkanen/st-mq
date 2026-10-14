@@ -98,6 +98,19 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     canControl: () => !closed && Boolean(manager?.canControl()),
     recovering: () => Boolean(runtime?.historyRecovery?.busy()),
     configurationSource: configurationSource(config), runtimeConfiguration,
+    // Certificate ownership is node-local installation state. These messages
+    // reuse the authenticated-encrypted peer channel without entering database
+    // replication, control ownership or the handover readiness gate.
+    webCertificates: {
+      configuration: () => ({ pairId: config.pair.pairId, vipAddress: config.pair.vip.address,
+        localId: manager?.state?.invalid ? null : manager?.state?.value?.nodeId ?? null,
+        peerId: manager?.peerState?.nodeId ?? null }),
+      request: (operation, body = {}) => {
+        if (!['status', 'receive', 'get'].includes(operation) || closed || closing)
+          return Promise.reject(pairError('peer_unavailable'));
+        return manager.peer.request(`https-${operation}`, body, { timeoutMs: 10_000 });
+      },
+    },
     status: () => {
       const status = manager.status(), reset = resetStatus();
       const historyBusy = Boolean(runtime?.historyRecovery?.working()), job = runtime?.historyRecovery?.currentJob();
@@ -169,6 +182,18 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   };
   const hooks = {
     dbPath: () => runtime?.store?.path ?? primaryPath,
+    webCertificateStatus: () => ({ nodeId: manager?.state?.value?.nodeId ?? null,
+      ...(runtime?.webAccess?.httpsManager?.pairStatus?.() ?? { enabled: false, ready: false }) }),
+    webCertificateGet: () => {
+      const web = runtime?.webAccess?.httpsManager;
+      if (!web) throw pairError('peer_busy');
+      return web.exportCertificate();
+    },
+    webCertificateReceive: body => {
+      const web = runtime?.webAccess?.httpsManager;
+      if (!web) throw pairError('peer_busy');
+      return web.acceptCertificate(body);
+    },
     admitStorageWrite: () => runtime?.store && !runtime.store.readOnly ? runtime.store.runWrite(() => {}) : undefined,
     async writeLineage({ dbPath, value }) {
       const owner = manager, active = runtime, token = controllerToken;

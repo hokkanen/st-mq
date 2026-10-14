@@ -14,7 +14,7 @@ or switch to another source when a device stops responding.
 
 The MQTT device entries and topic defaults live in the public `config.json`
 `options.equipment` section. Broker credentials remain in the private configuration
-file shown by **Data & settings → Connections & configuration → Configuration**. Device topics do not
+file shown by **Data & settings → Configuration**. Device topics do not
 need to be repeated in that file. A private `equipment.devices` override replaces
 the complete public list; arrays are not merged by device ID.
 
@@ -299,7 +299,7 @@ including native Shelly status, RPC request and temporary reply topics. Generic
 MQTT also exposes last live/retained packet receipt and subscription status, so a
 quiet publisher can be distinguished from a missing broker route. Command payloads,
 broker credentials and native hardware identities are not exposed in diagnostics.
-Under **Data & settings → Connections & configuration → MQTT**, devices are
+Under **Data & settings → Connections & electricity rates → MQTT**, devices are
 grouped by location, including H66, heating commands and the Shelly EVSE charger
 in Garage. Each expanded card starts with its purpose, followed by current check
 details when available, incoming/request/command topics and packet diagnostics.
@@ -308,7 +308,7 @@ subscription status and last accepted live packet time independently of physical
 charger readiness.
 
 Independent BMW/Tesla connection cards live in the **Vehicles** group under
-**Connections & configuration → MQTT**, with topics and packet diagnostics beside
+**Connections & electricity rates → MQTT**, with topics and packet diagnostics beside
 the other MQTT connections. **Data & settings → Vehicle telemetry** lists each
 named feed, its availability, report time and description directly, without
 another disclosure. Vehicle names and providers

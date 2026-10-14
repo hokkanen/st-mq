@@ -22,7 +22,7 @@ controller retains the real user target and external enable through network loss
 uses fresh local sensing, preserves ordinary OFF, and explicitly selects HEAT/ON
 for local frost rescue. Absent protection fields mean unavailable, not safe.
 
-See **Connections & configuration → Garage freeze protection**, below
+See **Connections & electricity rates → Garage freeze protection**, below
 **Home floor preheating**, for installation and setup. The linked
 **Garage → Freeze protection** fold below **Normal temperature** shows live readings,
 compares configured and reported protection settings, and explains the pipe model
