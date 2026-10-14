@@ -139,6 +139,13 @@ by Equalizer does not release its entitlement to Shelly. Accepted progress,
 changed requests, deadlines, priority, native restrictions and session changes
 can legitimately revise the plan.
 
+A started cloud program's planned pause does not withdraw Charger 1's current
+commitment until the native pause is confirmed. An unsent or unconfirmed
+replacement retains its admitted native permission, including a zero draw
+caused by Equalizer. A confirmed own pause and the initial future wait remain
+outside current sharing. This accounting grants no new Start permission and
+does not replace native Stop, fault, authorization or source-health checks.
+
 Charger 1 measured current is needed to subtract its contribution from the
 property meter. It must not redistribute the planned allocation, either directly
 or through replanning. There is no live peer-draw sharing or opportunistic

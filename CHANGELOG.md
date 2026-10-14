@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep Charger 1's current commitment when a planned cloud pause was unsent or
+  remains unconfirmed, so Charger 2 cannot mistake the period boundary for newly
+  available capacity. Confirmed pauses and native restrictions remain separate.
+
 - Allow guarded native Easee handback when retained disconnect evidence belongs
   to a proven earlier session, preserving the event and current restoration,
   native instruction and ownership checks.
