@@ -390,6 +390,10 @@ try {
     }
   };
   await captureLayout('ready-details', { details: true });
+  for(const id of ['helper','key-expiry'])
+    assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').closest('section').getAttribute('aria-labelledby')`), 'secure-web-access-local-title');
+  for(const id of ['tested','latest','update-check'])
+    assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').closest('section').getAttribute('aria-labelledby')`), 'secure-web-access-release-title');
   const readyFixture = structuredClone(fixture);
   const installFixture = next => { for (const key of Object.keys(fixture)) delete fixture[key]; Object.assign(fixture, structuredClone(next)); };
   for (const [name, changes] of [
@@ -401,6 +405,9 @@ try {
     ['startup-preparing', { ...originalFixture, enabled: true, phase: 'preparing', operation: { action: 'enable', state: 'completed' } }],
     ['retry-pending', { ...originalFixture, enabled: true, phase: 'degraded', error: 'helper_authorization_start_failed', operation: { state: 'running', action: 'retry', error: null } }],
     ['recovered-receipt', { ...readyFixture, error: null, operation: { action: 'enable', state: 'failed', completedAt: Date.parse('2026-10-14T11:59:59Z'), error: 'helper_authorization_start_failed' } }],
+    ['current-release', { ...readyFixture, helper: { ...readyFixture.helper, securityUpdate: null, runningLatest: null }, updates: { ...readyFixture.updates, installed: '1.104.1', latest: '1.104.1', candidate: '1.104.1' } }],
+    ['urgent-release', { ...readyFixture, helper: { ...readyFixture.helper, securityUpdate: true, securityObservedAt: Date.parse('2026-10-14T11:45:00Z') }, updates: { ...readyFixture.updates, installed: '1.104.1', latest: '1.104.2', candidate: '1.104.2' } }],
+    ['renamed-pending', { ...readyFixture, phase: 'degraded', error: 'helper_hostname_changed' }],
     ['authorize', { ...readyFixture, certificate: null, phase: 'authorization_required', helper: { state: 'authorization_required', authorizationUrl: 'https://login.tailscale.com/a/synthetic-authorization' }, transport: { ...originalFixture.transport, https: { enabled: false, listening: false } } }],
     ['missing-link', { ...readyFixture, certificate: null, phase: 'authorization_required', helper: { state: 'authorization_required' }, transport: { ...originalFixture.transport, https: { enabled: false, listening: false } } }],
     ['setup-failed', { ...readyFixture, certificate: null, phase: 'degraded', error: 'helper_authorization_start_failed', helper: { state: 'authorization_required' }, transport: { ...originalFixture.transport, https: { enabled: false, listening: false } } }],
@@ -421,6 +428,23 @@ try {
     }
     if(name==='retry-pending')assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Setting up HTTPS');
     if(name==='recovered-receipt'){assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Connect household browsers');assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"),/Last action: Set up HTTPS request failed/);}
+    if(name==='current-release') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-update-now').hidden"), true);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-update-now').disabled"), true);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-security-warning').hidden"), true);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-security-status').textContent"), 'Not reported');
+      assert.match(await evaluate("document.getElementById('secure-web-access-release-summary').textContent"), /Up to date/);
+    }
+    if(name==='urgent-release') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-update-now').hidden"), false);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-security-warning').hidden"), false);
+      assert.match(await evaluate("document.getElementById('secure-web-access-security-help').textContent"), /urgent security update/);
+      assert.match(await evaluate("document.getElementById('secure-web-access-security-reported').textContent"), /Vendor signal reported/);
+    }
+    if(name==='renamed-pending') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'Update the HTTPS hostname');
+      assert.match(await evaluate("document.getElementById('secure-web-access-message').textContent"), /Select Recheck/);
+    }
     if (name==='password-required') assert.equal(await evaluate("document.getElementById('secure-web-access-enable').disabled"), true);
     if (name==='expired-certificate') assert.equal(await evaluate("document.getElementById('secure-web-access-state').textContent"), 'HTTPS unavailable');
     if (name==='peer-certificate') assert.equal(await evaluate("document.getElementById('secure-web-access-authorize').hasAttribute('href')"), false);

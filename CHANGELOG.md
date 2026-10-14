@@ -6,6 +6,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Adopt an explicitly renamed Tailscale certificate hostname through Recheck or
+  Enable HTTPS, publishing the matching certificate and address together. Keep
+  complete generations through storage interruptions and allow forward retry.
+- Offer helper installation updates only for eligible newer releases, group local
+  helper details separately from release checks, and keep vendor security signals
+  distinct from package availability and unknown advisory coverage.
+
 - Resume an already requested HTTPS sign-in after its certificate helper restarts
   and loses the temporary enrollment URL. Keep the saved identity and show startup
   progress; status polling does not repeatedly request login.

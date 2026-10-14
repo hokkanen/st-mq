@@ -20,6 +20,14 @@
 .secure-web-access-owner-choice p { margin: 8px 0; }
 .secure-web-access-notice { border-left: 2px solid var(--stale); padding-left: 10px; }
 .secure-web-access-body .secure-web-access-notice { font-size: 12px; }
+.secure-web-access-security { margin: 14px 0; padding: 10px 12px; border: 1px solid var(--stale); border-radius: 6px; overflow-wrap: anywhere; }
+.secure-web-access-security strong { font-size: 12px; font-weight: 550; }
+.secure-web-access-security p { margin: 5px 0; }
+.secure-web-access-security p:empty { display: none; }
+.secure-web-access-update-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; margin: 12px 0; }
+.secure-web-access-update-groups h4 { font-size: 12px; font-weight: 550; margin: 0; }
+.secure-web-access-update-groups .secure-web-access-facts { margin: 8px 0; }
+.secure-web-access-update-groups p { margin: 8px 0; }
 .secure-web-access-authorization { overflow-wrap: anywhere; }
 .secure-web-access-link-action { display: inline-flex; align-items: center; min-height: 42px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 6px; text-decoration: none; }
 .secure-web-access-link-action:hover { background: var(--surface-soft); }
@@ -35,6 +43,7 @@
 #secure-web-access-message:empty { display: none; }
 .web-unsafe-warning { margin: 16px 0; border-color: var(--stale); color: var(--text); }
 @media (max-width: 480px) {
+  .secure-web-access-update-groups { grid-template-columns: minmax(0, 1fr); }
   .secure-web-access-facts > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .secure-web-access-actions button { flex: 1 1 110px; }
   .secure-web-access-actions #secure-web-access-disable { margin-left: 0; }

@@ -87,6 +87,7 @@ function validateState(value) {
   return value;
 }
 function clone(value) { return structuredClone(value); }
+function sameTailnet(a, b) { return a.slice(a.indexOf('.') + 1) === b.slice(b.indexOf('.') + 1); }
 function nodeKeyExpiry(value) {
   const timestamp = typeof value === 'string' ? Date.parse(value) : NaN;
   // A zero/default Go time is not evidence that an unattended key expired.
@@ -198,22 +199,37 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       else expiryCheck();
     }, wait); expiryTimer.unref();
   }
-  async function activate(material, generation) {
+  async function activate(material, generation, hostname = state.hostname) {
     assertOpen();
-    const result = await onCertificate({ certificate: material, hostname: state.hostname, generation });
+    const result = await onCertificate({ certificate: material, hostname, generation });
     if (!result?.listening) throw httpsError(result?.error ?? 'https_listener_activation_failed');
     if (result.fingerprint && result.fingerprint !== material.metadata.fingerprint) throw httpsError('certificate_served_fingerprint_mismatch');
     phase = 'ready'; lastError = null; expiryCheck(); return result;
   }
-  async function installCertificate(material, { generation = (state.certificate?.generation ?? 0) + 1, hostname = state.hostname } = {}) {
+  async function installCertificate(material, { generation, hostname = state.hostname } = {}) {
     const metadata = await certificateValidator(material, hostname, { directory: directory(), now: clock() });
+    if (metadata.hostname !== hostname) throw httpsError('certificate_hostname_mismatch');
     assertOpen();
+    validatePairBinding();
+    if (generation === undefined) {
+      // An interrupted atomic state save may already have selected a staged
+      // generation. Keep it complete and issue fresh material beyond it rather
+      // than overwriting an immutable generation or colliding forever on Retry.
+      let highest = state.certificate?.generation ?? 0;
+      for (const file of await readdir(resolve(directory(), 'certificates'))) {
+        if (!/^\d+\.json$/.test(file)) continue;
+        const existing = Number(file.slice(0, -5));
+        if (!Number.isSafeInteger(existing) || existing < 1 || String(existing) !== file.slice(0, -5)) throw httpsError('certificate_generation_invalid');
+        highest = Math.max(highest, existing);
+      }
+      generation = highest + 1;
+    }
     if (!Number.isSafeInteger(generation) || generation < 1) throw httpsError('certificate_generation_invalid');
     if (state.certificate && generation <= state.certificate.generation) {
       if (generation === state.certificate.generation && metadata.fingerprint === state.certificate.fingerprint) return;
       throw httpsError('certificate_generation_replayed');
     }
-    const oldCertificate = certificate; const oldRecord = state.certificate;
+    const oldCertificate = certificate; const oldRecord = state.certificate; const oldHostname = state.hostname;
     const stored = { version: 1, hostname, generation, certificate: { cert: material.cert, key: material.key } };
     const path = resolve(directory(), 'certificates', `${generation}.json`);
     const staged = await readJson(path, { limit: 96 * 1024 });
@@ -221,17 +237,23 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     if (!staged) await atomicJson(path, stored);
     const candidate = { ...stored.certificate, metadata };
     const nextRecord = { generation, ...metadata };
+    let publicationAttempted = false;
     try {
-      if (state.enabled) await activate(candidate, generation);
+      if (state.enabled) await activate(candidate, generation, hostname);
       assertOpen();
-      await atomicJson(statePath(), { ...state, certificate: nextRecord });
-      state.certificate = nextRecord; certificate = candidate;
+      validatePairBinding();
+      publicationAttempted = true;
+      await atomicJson(statePath(), { ...state, hostname, certificate: nextRecord });
+      state.hostname = hostname; state.certificate = nextRecord; certificate = candidate;
       publishedCertificate = { record: clone(nextRecord), material: clone(stored.certificate), hostname };
       certificateError = null;
     } catch (error) {
-      if (oldCertificate && state.enabled) await activate(oldCertificate, oldRecord.generation).catch(() => onDisable());
+      if (oldCertificate && state.enabled) await activate(oldCertificate, oldRecord.generation, oldHostname).catch(() => onDisable());
       else await onDisable().catch(() => {});
-      await rm(path, { force: true }); throw error;
+      // rename may have succeeded before a directory fsync failed. The selected
+      // state can survive either way after a crash; never remove its material.
+      if (!publicationAttempted) await rm(path, { force: true });
+      throw error;
     }
     expiryCheck();
     // Keep the accepted current and previous generations only; cleanup never
@@ -257,7 +279,8 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     try {
       const result = await task('discover', { cache: state.updates.cache, arch: architecture() });
       const candidate = releaseCandidate(result.metadata);
-      state.updates.cache = result; state.updates.latest = candidate.version; state.updates.candidate = candidate.eligible ? candidate : null;
+      state.updates.cache = result; state.updates.latest = candidate.version;
+      state.updates.candidate = candidate.eligible && (!state.runtime || compareVersions(candidate.version, state.runtime.evidence.runtimeVersion) > 0) ? candidate : null;
       state.updates.lastSuccessfulCheck = clock(); state.updates.error = candidate.eligible ? null : 'helper_major_or_version_unsupported';
       await persist(); return candidate;
     } catch (error) { state.updates.error = errorCode(error); await persist(); throw error; }
@@ -316,6 +339,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       state.transaction.stage = 'production_state_opened'; await persist();
       await startHelper();
       state.highestVersion = candidate.version; state.updates.installed = candidate.version; state.transaction = null;
+      if (state.updates.candidate && compareVersions(state.updates.candidate.version, candidate.version) <= 0) state.updates.candidate = null;
       delete state.quarantined[candidate.version]; await persist();
       await collectRuntimes();
     } catch (error) {
@@ -360,7 +384,16 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
         version: observed.Version.split('-')[0], runningVersion: observed.Version, restrictionsVerified: true };
     } catch (error) { await instance.stop(); if (helper === instance) helper = null; throw error; }
   }
-  async function observeHelper({ authorize = false } = {}) {
+  async function verifyHelperRestrictions(instance) {
+    try { await instance.restrictions(); }
+    catch (error) {
+      await instance.stop();
+      if (helper === instance) helper = null;
+      helperStatus = { state: 'stopped', version: null };
+      throw error;
+    }
+  }
+  async function observeHelper({ authorize = false, adoptHostname = false } = {}) {
     if (!helper) await startHelper();
     const instance = helper;
     let observation;
@@ -386,57 +419,70 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       throw error;
     }
     if (authorize) {
-      const instance = helper;
-      try { await instance.restrictions(); }
-      catch (error) {
-        await instance.stop();
-        if (helper === instance) helper = null;
-        helperStatus = { state: 'stopped', version: null };
-        throw error;
-      }
+      await verifyHelperRestrictions(instance);
       if (lastError === 'helper_authorization_start_failed' &&
           (observation.BackendState === 'Running' || observation.BackendState === 'NeedsMachineAuth' || helperAuthorizationUrl(observation.AuthURL))) lastError = null;
     }
     const expectedVersion = state.runtime.evidence.runtimeVersion;
     if (!(observation.Version === expectedVersion || observation.Version?.startsWith(`${expectedVersion}-`))) throw httpsError('helper_running_version_mismatch');
     const previousSecurity = state.updates.securitySignal;
-    if (observation.ClientVersion?.UrgentSecurityUpdate === true) {
+    const saveSecuritySignal = async next => {
+      state.updates.securitySignal = next;
+      try { await persist(); }
+      catch (error) { state.updates.securitySignal = previousSecurity; throw error; }
+    };
+    const versionInfo = observation.ClientVersion;
+    const currentVersionInfo = versionInfo && typeof versionInfo === 'object' && !Array.isArray(versionInfo)
+      && ['UrgentSecurityUpdate', 'RunningLatest'].every(key => !Object.hasOwn(versionInfo, key) || typeof versionInfo[key] === 'boolean')
+      ? versionInfo : null;
+    if (currentVersionInfo?.UrgentSecurityUpdate === true) {
       let latest = null;
-      try { stableVersion(observation.ClientVersion.LatestVersion); latest = observation.ClientVersion.LatestVersion; } catch { /* Positive urgent signal remains useful without an interpretable target. */ }
-      state.updates.securitySignal = { urgent: true, observedAt: clock(), runningVersion: observation.Version?.split('-')[0] ?? null,
-        latestVersion: latest };
-      await persist();
-    } else if (previousSecurity?.urgent && observation.ClientVersion?.UrgentSecurityUpdate === false && typeof observation.ClientVersion.LatestVersion === 'string') {
+      try { stableVersion(currentVersionInfo.LatestVersion); latest = currentVersionInfo.LatestVersion; } catch { /* Positive urgent signal remains useful without an interpretable target. */ }
+      const runningVersion = observation.Version.split('-')[0];
+      if (!previousSecurity?.urgent || previousSecurity.runningVersion !== runningVersion || previousSecurity.latestVersion !== latest) {
+        await saveSecuritySignal({ urgent: true, observedAt: clock(), runningVersion, latestVersion: latest });
+      }
+    } else if (previousSecurity?.urgent && currentVersionInfo) {
+      let resolved = currentVersionInfo.RunningLatest === true;
       try {
-        if (compareVersions(observation.Version.split('-')[0], previousSecurity.latestVersion ?? observation.ClientVersion.LatestVersion) >= 0) {
-          state.updates.securitySignal = { ...previousSecurity, urgent: false, resolvedAt: clock() }; await persist();
-        }
+        resolved ||= currentVersionInfo.UrgentSecurityUpdate === false && typeof currentVersionInfo.LatestVersion === 'string'
+          && compareVersions(observation.Version.split('-')[0], previousSecurity.latestVersion ?? currentVersionInfo.LatestVersion) >= 0;
       } catch { /* Unsupported vendor values cannot clear a known warning. */ }
+      if (resolved) await saveSecuritySignal({ ...previousSecurity, urgent: false, resolvedAt: clock() });
     }
     helperStatus = { state: observation.BackendState === 'Running' ? 'running' : observation.BackendState === 'NeedsLogin' ? 'authorization_required' : 'approval_or_connection_pending',
       version: observation.Version?.split('-')[0] ?? null, runningVersion: observation.Version ?? null, authorizationUrl: helperAuthorizationUrl(observation.AuthURL),
       nodeKeyExpiresAt: nodeKeyExpiry(observation.Self?.KeyExpiry), nodeKeyExpired: observation.Self?.Expired === true ? true : null,
-      securityUpdate: state.updates.securitySignal?.urgent === true ? true : null, securityObservedAt: state.updates.securitySignal?.observedAt ?? null, restrictionsVerified: true };
+      securityUpdate: state.updates.securitySignal?.urgent === true ? true
+        : currentVersionInfo && (currentVersionInfo.UrgentSecurityUpdate === false || currentVersionInfo.RunningLatest === true) ? false : null,
+      runningLatest: currentVersionInfo && typeof currentVersionInfo.RunningLatest === 'boolean' ? currentVersionInfo.RunningLatest : null,
+      securityObservedAt: state.updates.securitySignal?.observedAt ?? null, restrictionsVerified: true };
     const names = observation.CertDomains;
     if (observation.BackendState !== 'Running') { if (!certificate) phase = helperStatus.state; return null; }
     if (!Array.isArray(names) || names.length !== 1) { if (!certificate) phase = 'certificate_settings_required'; return null; }
     const hostname = certificateHostname(names[0]);
-    if (state.hostname && state.hostname !== hostname) throw httpsError('helper_hostname_changed');
+    helperStatus.reportedHostname = hostname;
+    if (state.hostname && state.hostname !== hostname) {
+      if (!adoptHostname) throw httpsError('helper_hostname_changed');
+      if (!sameTailnet(state.hostname, hostname)) throw httpsError('helper_tailnet_changed');
+      await verifyHelperRestrictions(instance); assertOpen(); validatePairBinding();
+      if (helper !== instance || !responsible()) throw httpsError('https_certificate_owner_mismatch');
+    }
     if (!state.hostname) { state.hostname = hostname; await persist(); }
     restartFailures = 0; return hostname;
   }
-  async function renew({ authorize = false } = {}) {
+  async function renew({ authorize = false, adoptHostname = false } = {}) {
     if (!responsible()) return;
     await checkOwnerChoice();
     if (state.transaction?.stage === 'production_state_opened' && helperStatus.state === 'repair_required') throw httpsError('helper_stateful_update_requires_repair');
     await ensureRuntime();
-    const hostname = await observeHelper({ authorize });
+    const hostname = await observeHelper({ authorize, adoptHostname });
     if (!hostname) return;
-    const due = !certificate || state.certificate.expiresAt - clock() <= certificate.metadata.renewalWindowMs;
+    const due = !certificate || hostname !== state.hostname || state.certificate.expiresAt - clock() <= certificate.metadata.renewalWindowMs;
     if (due) {
       if (!certificate) phase = 'renewal_pending';
       const material = await helper.certificate(hostname, renewalMinimumValidity(certificate?.metadata));
-      await installCertificate(material);
+      await installCertificate(material, { hostname });
     } else if (state.enabled) await activate(certificate, state.certificate.generation);
     await deliverPeer();
   }
@@ -481,10 +527,10 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     if (!state.pairId || localOwner() || !envelope || envelope.pairId !== state.pairId || envelope.ownerId !== state.ownerId ||
         Object.keys(envelope).some(key => !['pairId', 'ownerId', 'hostname', 'generation', 'certificate'].includes(key))) throw httpsError('https_certificate_owner_mismatch');
     const hostname = certificateHostname(envelope.hostname);
-    if (state.hostname && state.hostname !== hostname) throw httpsError('https_peer_hostname_changed');
-    const previous = state.hostname; state.hostname = hostname;
-    try { await installCertificate(envelope.certificate, { generation: envelope.generation, hostname }); }
-    catch (error) { state.hostname = previous; throw error; }
+    if (state.hostname && state.hostname !== hostname && (!sameTailnet(state.hostname, hostname)
+        || !Number.isSafeInteger(envelope.generation) || envelope.generation <= (state.certificate?.generation ?? 0)))
+      throw httpsError('https_peer_hostname_changed');
+    await installCertificate(envelope.certificate, { generation: envelope.generation, hostname });
   }
   async function work(action, input) {
     validatePairBinding();
@@ -513,7 +559,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
             throw httpsError(localOwner() ? 'https_peer_owner_conflict' : 'https_peer_owner_not_configured');
         }
         state.enabled = true; phase = 'preparing'; await persist();
-        if (localOwner()) await renew({ authorize: true }); else { phase = 'peer_certificate_pending'; await pullPeer(); }
+        if (localOwner()) await renew({ authorize: true, adoptHostname: true }); else { phase = 'peer_certificate_pending'; await pullPeer(); }
         await checkDns(); return;
       } catch (error) {
         // Roll back only a new tentative choice that admitted no runtime or
@@ -538,8 +584,10 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     if (action === 'check-updates') { await checkUpdates(); return; }
     if (action === 'update-now') {
       if (!localOwner()) throw httpsError('https_helper_owner_required');
-      if (!state.runtime && !state.enabled && !state.peerRenewalRequired) throw httpsError('https_setup_required');
-      const candidate = await checkUpdates(); await installRuntime(candidate, { retry: input.retry === true });
+      if (!state.runtime) throw httpsError('https_setup_required');
+      const candidate = await checkUpdates();
+      if (!candidate.eligible || compareVersions(candidate.version, state.runtime.evidence.runtimeVersion) <= 0) throw httpsError('helper_update_not_available');
+      await installRuntime(candidate, { retry: input.retry === true });
       if (responsible()) await renew(); else if (helper) { await helper.stop(); helper = null; helperStatus.state = 'stopped'; } return;
     }
     if (action === 'retry') {
@@ -555,7 +603,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
         await installRuntime(state.updates.candidate, { retry: true });
     }
     if (state.enabled && !localOwner()) await pullPeer();
-    else if (responsible()) await renew({ authorize: action === 'retry' || helperStatus.state === 'authorization_required' });
+    else if (responsible()) await renew({ authorize: action === 'retry' || helperStatus.state === 'authorization_required', adoptHostname: action === 'recheck' });
     if (certificate && state.enabled) await activate(certificate, state.certificate.generation);
     await checkDns();
   }
@@ -600,10 +648,11 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       setup: { credentialsReady: typeof config().token === 'string' && config().token.length >= 24 &&
         (!config().familyToken || typeof config().familyToken === 'string' && config().familyToken.length >= 24 && config().familyToken !== config().token) },
       hostname: state.hostname, url: state.hostname ? `https://${state.hostname}:${config().web?.httpsPort ?? 8443}` : null,
-      certificate: clone(publishedCertificate?.record ?? null), helper: { ...clone(helperStatus), securityUpdate: state.updates.securitySignal?.urgent === true ? true : null,
+      certificate: clone(publishedCertificate?.record ?? null), helper: { ...clone(helperStatus), securityUpdate: state.updates.securitySignal?.urgent === true ? true : helperStatus.securityUpdate ?? null,
         securityObservedAt: state.updates.securitySignal?.observedAt ?? null },
       updates: { policy: state.updates.policy, installed: state.runtime?.evidence.runtimeVersion ?? null, latest: state.updates.latest,
-        candidate: state.updates.candidate?.version ?? null, testedVersion: BOOTSTRAP_VERSION, lastAttempt: state.updates.lastAttempt,
+        candidate: state.runtime && state.updates.candidate?.eligible && compareVersions(state.updates.candidate.version, state.runtime.evidence.runtimeVersion) > 0
+          ? state.updates.candidate.version : null, testedVersion: BOOTSTRAP_VERSION, lastAttempt: state.updates.lastAttempt,
         lastSuccessfulCheck: state.updates.lastSuccessfulCheck, error: state.updates.error,
         securityCoverage: 'incomplete', bulletinUrl: 'https://tailscale.com/security-bulletins' },
       dns: { ...clone(dns), resolver: config().web?.lanResolver || null, expectedAddress: expectedDnsAddress() },

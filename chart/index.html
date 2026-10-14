@@ -532,7 +532,12 @@
                         <p id="secure-web-access-standby" class="muted" hidden>These settings apply to this computer. They can be managed while it is a standby.</p>
                         <p id="secure-web-access-owner" class="muted" hidden></p>
                         <p id="secure-web-access-peer-renewal" class="secure-web-access-notice" role="status" hidden></p>
-                        <p id="secure-web-access-security-warning" class="secure-web-access-notice form-error" role="status" hidden></p>
+                        <div id="secure-web-access-security-warning" class="secure-web-access-security" role="status" hidden>
+                          <strong>Security update reported</strong>
+                          <p id="secure-web-access-security-help"></p>
+                          <p id="secure-web-access-security-reported" class="muted"></p>
+                          <a href="https://tailscale.com/security-bulletins" target="_blank" rel="noopener noreferrer">Review Tailscale security bulletins ↗</a>
+                        </div>
                         <div id="secure-web-access-owner-choice" class="secure-web-access-owner-choice" hidden>
                           <label for="secure-web-access-owner-select">Issue and renew the certificate on<select id="secure-web-access-owner-select" aria-describedby="secure-web-access-owner-help" disabled><option value="local">This computer</option><option value="peer">Paired computer</option></select></label>
                           <p id="secure-web-access-owner-help" class="muted">Use one certificate owner for the pair. Choose Paired computer only after setting it up there. Changing the master does not change this choice.</p>
@@ -563,7 +568,7 @@
                             <li><strong>Connect browsers.</strong> Map the exact certificate hostname to the server’s LAN address, or the shared pair VIP. Household DNS instructions are below. Open the full HTTPS address on each intended device and sign in normally; a new address has its own browser session.</li>
                           </ol>
                           <p class="secure-web-access-setup-links"><a href="https://console.tailscale.com/admin/dns" target="_blank" rel="noopener noreferrer">Tailscale DNS settings ↗</a><a href="https://console.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">Tailscale Machines ↗</a><a href="https://tailscale.com/docs/how-to/set-up-https-certificates" target="_blank" rel="noopener noreferrer">Certificate guide ↗</a></p>
-                          <p class="muted">You can finish certificate setup before changing router DNS. Disabling HTTPS keeps the helper identity and certificate saved. Recovery access and Home Assistant ingress remain available independently.</p>
+                          <p class="muted">You can finish certificate setup before changing router DNS. Disabling HTTPS keeps the helper identity and certificate saved. A paired computer can use its saved certificate while the owner is offline; renewal needs the owner. Recovery access and Home Assistant ingress remain available independently.</p>
                         </details>
                         <details id="secure-web-access-network-details" class="equipment-fold">
                           <summary>Household DNS &amp; recovery</summary>
@@ -587,18 +592,30 @@
                         <details id="secure-web-access-update-details" class="equipment-fold">
                           <summary>Certificate renewal &amp; helper updates</summary>
                           <p id="secure-web-access-last-error" class="muted" hidden></p>
-                          <dl class="secure-web-access-facts">
-                            <div id="secure-web-access-problem-row" hidden><dt id="secure-web-access-problem-label">Current problem code</dt><dd><code id="secure-web-access-problem-code"></code></dd></div>
-                            <div><dt>Installed helper</dt><dd id="secure-web-access-helper">Not installed</dd></div>
-                            <div><dt>Reported node key expiry</dt><dd id="secure-web-access-key-expiry">Not reported</dd></div>
-                            <div><dt>Tested setup release</dt><dd id="secure-web-access-tested">Not reported</dd></div>
-                            <div><dt>Available release</dt><dd id="secure-web-access-latest">Not checked</dd></div>
-                            <div><dt>Last release check</dt><dd id="secure-web-access-update-check">Not checked</dd></div>
-                          </dl>
+                          <dl class="secure-web-access-facts"><div id="secure-web-access-problem-row" hidden><dt id="secure-web-access-problem-label">Current problem code</dt><dd><code id="secure-web-access-problem-code"></code></dd></div></dl>
+                          <div class="secure-web-access-update-groups">
+                            <section aria-labelledby="secure-web-access-local-title">
+                              <h4 id="secure-web-access-local-title">This computer</h4>
+                              <dl class="secure-web-access-facts">
+                                <div><dt>Installed helper</dt><dd id="secure-web-access-helper">Not installed</dd></div>
+                                <div><dt>Reported node key expiry</dt><dd id="secure-web-access-key-expiry">Not reported</dd></div>
+                              </dl>
+                              <p class="muted">Security update status: <span id="secure-web-access-security-status">Not reported</span></p>
+                            </section>
+                            <section aria-labelledby="secure-web-access-release-title">
+                              <h4 id="secure-web-access-release-title">Tailscale releases</h4>
+                              <dl class="secure-web-access-facts">
+                                <div><dt>Tested setup release</dt><dd id="secure-web-access-tested">Not reported</dd></div>
+                                <div><dt>Available release</dt><dd id="secure-web-access-latest">Not checked</dd></div>
+                                <div><dt>Last release check</dt><dd id="secure-web-access-update-check">Not checked</dd></div>
+                              </dl>
+                              <p id="secure-web-access-release-summary" class="muted"></p>
+                            </section>
+                          </div>
                           <div class="secure-web-access-update-controls">
                             <label for="secure-web-access-update-policy">Update policy<select id="secure-web-access-update-policy" disabled><option value="automatic">Automatic</option><option value="manual">Manual approval</option></select></label>
                             <button id="secure-web-access-check-updates" class="secondary-button" type="button" disabled>Check releases</button>
-                            <button id="secure-web-access-update-now" class="secondary-button" type="button" disabled>Install update</button>
+                            <button id="secure-web-access-update-now" class="secondary-button" type="button" hidden disabled>Install update</button>
                           </div>
                           <p id="secure-web-access-update-summary" class="muted"></p>
                           <p class="muted">Release checks do not establish security advisory coverage. Review <a href="https://tailscale.com/security-bulletins" target="_blank" rel="noopener noreferrer">Tailscale security bulletins ↗</a>.</p>

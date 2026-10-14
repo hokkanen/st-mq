@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, lstat, chown, cp, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, lstat, chown, cp, symlink, rename, stat, open, readlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
@@ -22,6 +22,13 @@ async function settled(manager) {
   assert.notEqual(manager.status().operation?.state, 'running'); return manager.status();
 }
 async function diagnosed(manager) { for (let i = 0; i < 200 && !manager.status().error; i++) await wait(5); assert.ok(manager.status().error); return manager.status(); }
+async function actionWhenIdle(manager, input) {
+  for (let i = 0; i < 200; i++) {
+    try { return await manager.action(input); }
+    catch (error) { if (error.code !== 'https_manager_busy') throw error; await wait(5); }
+  }
+  assert.fail('The controlled startup finishes before its next explicit action');
+}
 function restart(t, context, { pair = null, dependencies = {}, onCertificate } = {}) {
   const manager = createHttpsManager({ getConfig: () => context.config, pair,
     onCertificate: onCertificate ?? (async ({ certificate }) => ({ listening: true, fingerprint: certificate.metadata.fingerprint })),
@@ -32,12 +39,13 @@ async function setup(t, changes = {}) {
   const directory = await mkdtemp(resolve(tmpdir(), 'stmq-https-manager-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const config = { dataDir: directory, token: 'synthetic-admin-password-long-enough', topology: 'standalone', web: { httpsHost: '127.0.0.1', httpsPort: 8443, lanResolver: '' } };
-  const calls = { install: 0, discover: 0, helperStart: 0, helperStop: 0, certificate: 0, activations: [], disabled: 0, preflight: 0 };
+  const calls = { install: 0, discover: 0, helperStart: 0, helperStop: 0, certificate: 0, certificateNames: [], activations: [], activationNames: [], disabled: 0, preflight: 0 };
   let installNotify; const installStarted = new Promise(ready => { installNotify = ready; });
-  let running = true; let certificateId = 1;
+  let running = true; let certificateId = 1; let reportedHostname = hostname;
   const metadataByCertificate = new Map();
-  const metadata = material => {
-    if (!metadataByCertificate.has(material.cert)) metadataByCertificate.set(material.cert, { hostname, fingerprint: createHash('sha256').update(material.cert).digest('hex'), notBefore: Date.now() - 86400000, expiresAt: Date.now() + 60 * 86400000, renewalWindowMs: 30 * 86400000 });
+  const metadata = (material, expectedHostname = hostname) => {
+    if (!metadataByCertificate.has(material.cert)) metadataByCertificate.set(material.cert, { hostname: expectedHostname, fingerprint: createHash('sha256').update(material.cert).digest('hex'), notBefore: Date.now() - 86400000, expiresAt: Date.now() + 60 * 86400000, renewalWindowMs: 30 * 86400000 });
+    if (metadataByCertificate.get(material.cert).hostname !== expectedHostname) throw Object.assign(Error(), { code: 'certificate_hostname_mismatch' });
     return cloneMetadata(metadataByCertificate.get(material.cert));
   };
   const cloneMetadata = value => structuredClone(value);
@@ -59,21 +67,21 @@ async function setup(t, changes = {}) {
       return { identity, socketDirectory: identity, socket: resolve(identity, 's'), uid: process.getuid(), gid: process.getgid(), root: false };
     },
     preflightRuntime: async () => { calls.preflight++; if (calls.preflight <= (changes.preflightFailures ?? 0)) throw Object.assign(Error(), { code: 'helper_command_failed' }); },
-    validateCertificate: async material => { if (material.cert === 'invalid') throw Object.assign(Error(), { code: 'certificate_chain_untrusted' }); return metadata(material); },
-    inspectCertificate: material => metadata(material),
+    validateCertificate: async (material, expectedHostname) => { if (material.cert === 'invalid') throw Object.assign(Error(), { code: 'certificate_chain_untrusted' }); return metadata(material, expectedHostname); },
+    inspectCertificate: (material, expectedHostname) => metadata(material, expectedHostname),
     createHelper: ({ locations }) => ({
       start: async () => { calls.helperStart++; await writeFile(resolve(locations.identity, 'tailscaled.state'), '{}', { mode: 0o600 }); },
-      restrictions: async () => {}, status: async () => ({ Version: '1.104.1-fixture', BackendState: running ? 'Running' : 'NeedsLogin', CertDomains: running ? [hostname] : [], AuthURL: running ? '' : 'https://login.tailscale.com/a/synthetic' }),
-      authorize: async () => ({ Version: '1.104.1-fixture', BackendState: running ? 'Running' : 'NeedsLogin', CertDomains: running ? [hostname] : [], AuthURL: running ? '' : 'https://login.tailscale.com/a/synthetic' }),
-      certificate: async () => { calls.certificate++; return { cert: `fixture-cert-${certificateId}`, key: `fixture-key-${certificateId}` }; },
+      restrictions: async () => {}, status: async () => ({ Version: '1.104.1-fixture', BackendState: running ? 'Running' : 'NeedsLogin', CertDomains: running ? [reportedHostname] : [], AuthURL: running ? '' : 'https://login.tailscale.com/a/synthetic' }),
+      authorize: async () => ({ Version: '1.104.1-fixture', BackendState: running ? 'Running' : 'NeedsLogin', CertDomains: running ? [reportedHostname] : [], AuthURL: running ? '' : 'https://login.tailscale.com/a/synthetic' }),
+      certificate: async name => { calls.certificate++; calls.certificateNames.push(name); return { cert: `fixture-cert-${certificateId}`, key: `fixture-key-${certificateId}` }; },
       stop: async () => { calls.helperStop++; },
     }), ...changes.dependencies,
   };
   const manager = createHttpsManager({ getConfig: () => config,
-    onCertificate: async ({ certificate, generation }) => { calls.activations.push(generation); return changes.activationError ? { listening: false, error: 'tls_port_unavailable' } : { listening: true, fingerprint: certificate.metadata.fingerprint }; },
+    onCertificate: async ({ certificate, generation, hostname: name }) => { calls.activations.push(generation); calls.activationNames.push(name); return changes.activationError ? { listening: false, error: 'tls_port_unavailable' } : { listening: true, fingerprint: certificate.metadata.fingerprint }; },
     onDisable: async () => { calls.disabled++; }, pair: changes.pair ?? null, dependencies });
   t.after(() => manager.close());
-  return { directory, config, calls, manager, dependencies, metadata, installStarted, setRunning: value => { running = value; }, setCertificateId: value => { certificateId = value; } };
+  return { directory, config, calls, manager, dependencies, metadata, installStarted, setRunning: value => { running = value; }, setCertificateId: value => { certificateId = value; }, setReportedHostname: value => { reportedHostname = value; } };
 }
 
 test('optional HTTPS starts with no files, downloads, network checks or helper when unconfigured', async t => {
@@ -238,6 +246,307 @@ test('pending authorization stays resumable and its private link is admin only',
   assert.equal(manager.status().phase, 'ready'); assert.equal(calls.install, 1);
 });
 
+for (const action of ['recheck', 'enable']) test(`an explicit ${action} adopts a same-helper rename only after a matching new certificate is published`, async t => {
+  const context = await setup(t); const { manager, calls } = context;
+  await manager.action({ action: 'enable' }); const original = await settled(manager);
+  const renamed = 'renamed.test-tailnet.ts.net'; context.setReportedHostname(renamed); context.setCertificateId(2);
+  await manager.configure(); await diagnosed(manager); await wait(10);
+  const waiting = manager.status();
+  assert.equal(waiting.error, 'helper_hostname_changed'); assert.equal(waiting.hostname, hostname);
+  assert.equal(waiting.certificate.generation, original.certificate.generation); assert.equal(calls.certificate, 1);
+  await manager.action({ action }); const adopted = await settled(manager);
+  assert.equal(adopted.operation.state, 'completed');
+  assert.equal(adopted.hostname, renamed); assert.equal(adopted.url, `https://${renamed}:8443`);
+  assert.equal(adopted.certificate.hostname, renamed); assert.equal(adopted.certificate.generation, 2);
+  assert.equal(calls.certificateNames.at(-1), renamed); assert.equal(calls.activationNames.at(-1), renamed);
+  assert.equal(JSON.stringify(manager.status({ admin: false })).includes(renamed), false);
+  await manager.close(); const current = restart(t, context); current.start();
+  for (let i = 0; i < 200 && current.status().phase !== 'ready'; i++) await wait(5);
+  assert.equal(current.status().hostname, renamed); assert.equal(current.status().certificate.generation, 2);
+  await current.close();
+});
+
+for (const failure of ['validation', 'activation', 'durable-write', 'pair-binding']) test(`a renamed certificate ${failure} failure keeps the old durable address and published peer generation`, async t => {
+  let peerGeneration = 0; let currentPairId = 'rename-publication'; const delivered = [];
+  const pair = { configuration: () => ({ pairId: currentPairId, localId: 'local-node', peerId: 'peer-node' }),
+    request: async (operation, envelope) => {
+      if (operation === 'status') return { nodeId: 'peer-node', pairId: 'rename-publication', ownerId: 'local-node', enabled: true, generation: peerGeneration };
+      assert.equal(operation, 'receive'); delivered.push(structuredClone(envelope)); peerGeneration = envelope.generation;
+    } };
+  const context = await setup(t, { pair }); context.config.topology = 'pair';
+  await context.manager.action({ action: 'enable', owner: 'local' }); const old = await settled(context.manager); await context.manager.close();
+  let notify, release; const entered = new Promise(done => { notify = done; }), held = new Promise(done => { release = done; });
+  const renamed = 'renamed.test-tailnet.ts.net'; const activated = [];
+  const current = restart(t, context, { pair,
+    dependencies: { validateCertificate: async (material, name) => {
+      if (name === renamed && failure === 'validation') { notify(); await held; throw Object.assign(Error('Synthetic private validation detail'), { code: 'certificate_chain_untrusted' }); }
+      return context.dependencies.validateCertificate(material, name);
+    } },
+    onCertificate: async ({ certificate, generation, hostname: name }) => {
+      activated.push({ generation, name });
+      if (generation === 2) {
+        notify(); await held;
+        if (failure === 'activation') return { listening: false, error: 'tls_port_unavailable' };
+      }
+      return { listening: true, fingerprint: certificate.metadata.fingerprint };
+    } });
+  current.start(); for (let i = 0; i < 200 && current.status().phase !== 'ready'; i++) await wait(5); await wait(10);
+  context.setReportedHostname(renamed); context.setCertificateId(2);
+  await actionWhenIdle(current, { action: 'recheck' }); await entered;
+  assert.equal(current.status().hostname, hostname); assert.equal(current.status().url, old.url);
+  assert.equal(current.status().certificate.generation, 1);
+  const exported = await current.exportCertificate(); assert.equal(exported.hostname, hostname); assert.equal(exported.generation, 1);
+  const statePath = resolve(context.directory, 'https', 'state.json'), backupPath = resolve(context.directory, 'https', 'state-before-failed-rename.json');
+  if (failure === 'durable-write') { await rename(statePath, backupPath); await mkdir(statePath); }
+  if (failure === 'pair-binding') currentPairId = 'changed-pair';
+  release(); const failed = await settled(current);
+  assert.equal(failed.operation.state, 'failed'); assert.equal(failed.hostname, hostname); assert.equal(failed.url, old.url);
+  assert.equal(failed.certificate.generation, 1); assert.equal(failed.certificate.fingerprint, old.certificate.fingerprint);
+  assert.equal(delivered.some(envelope => envelope.generation === 2), false);
+  assert.equal(JSON.stringify(failed).includes('private validation detail'), false);
+  if (failure === 'durable-write') { await rm(statePath, { recursive: true }); await rename(backupPath, statePath); }
+  if (failure === 'pair-binding') currentPairId = 'rename-publication';
+  const saved = JSON.parse(await readFile(statePath, 'utf8')); assert.equal(saved.hostname, hostname); assert.equal(saved.certificate.generation, 1);
+  if (failure !== 'validation') assert.deepEqual(activated.at(-1), { generation: 1, name: hostname }, 'Rollback reactivates the old certificate with its original hostname');
+  await current.close(); const recovered = restart(t, context, { pair }); recovered.start();
+  for (let i = 0; i < 200 && recovered.status().error !== 'helper_hostname_changed'; i++) await wait(5);
+  assert.equal(recovered.status().hostname, hostname); assert.equal(recovered.status().certificate.generation, 1);
+  await recovered.close();
+});
+
+test('an authenticated bound certificate owner can deliver a strictly newer same-tailnet renamed certificate', async t => {
+  const pair = { configuration: () => ({ pairId: 'rename-pair', localId: 'local-node', peerId: 'peer-node' }),
+    request: async operation => operation === 'status'
+      ? { nodeId: 'peer-node', ownerId: 'peer-node', pairId: 'rename-pair', enabled: true }
+      : { pairId: 'rename-pair', ownerId: 'peer-node', hostname, generation: 1, certificate: { cert: 'fixture-peer-original', key: 'fixture-key-original' } } };
+  const { manager, config, calls } = await setup(t, { pair }); config.topology = 'pair';
+  await manager.action({ action: 'enable', owner: 'peer' }); const original = await settled(manager);
+  assert.equal(original.hostname, hostname);
+  const renamed = 'renamed.test-tailnet.ts.net';
+  await manager.acceptCertificate({ pairId: 'rename-pair', ownerId: 'peer-node', hostname: renamed,
+    generation: 2, certificate: { cert: 'fixture-peer-renamed', key: 'fixture-key-renamed' } });
+  const accepted = manager.status(); assert.equal(accepted.hostname, renamed); assert.equal(accepted.certificate.generation, 2);
+  assert.equal(calls.activationNames.at(-1), renamed); assert.equal(calls.install, 0); assert.equal(calls.helperStart, 0);
+  const rejected = [
+    { pairId: 'different-pair', ownerId: 'peer-node', hostname, generation: 3 },
+    { pairId: 'rename-pair', ownerId: 'different-owner', hostname, generation: 3 },
+    { pairId: 'rename-pair', ownerId: 'peer-node', hostname, generation: 2 },
+    { pairId: 'rename-pair', ownerId: 'peer-node', hostname, generation: 1 },
+    { pairId: 'rename-pair', ownerId: 'peer-node', hostname: 'renamed.other-tailnet.ts.net', generation: 3 },
+  ];
+  const before = await readFile(resolve(config.dataDir, 'https', 'state.json'));
+  for (const envelope of rejected) {
+    await assert.rejects(manager.acceptCertificate({ ...envelope, certificate: { cert: 'fixture-rejected', key: 'fixture-rejected' } }));
+    assert.deepEqual(await readFile(resolve(config.dataDir, 'https', 'state.json')), before);
+    assert.equal(manager.status().hostname, renamed); assert.equal(manager.status().certificate.generation, 2);
+  }
+  const stagedPath = resolve(config.dataDir, 'https', 'certificates', '3.json');
+  await atomicJson(stagedPath, { version: 1, hostname: renamed, generation: 3, certificate: { cert: 'fixture-staged-third', key: 'fixture-staged-key' } });
+  const stagedBytes = await readFile(stagedPath);
+  await assert.rejects(manager.acceptCertificate({ pairId: 'rename-pair', ownerId: 'peer-node', hostname: renamed, generation: 3,
+    certificate: { cert: 'fixture-different-third', key: 'fixture-different-key' } }), { code: 'certificate_generation_collision' });
+  assert.deepEqual(await readFile(stagedPath), stagedBytes); assert.equal(manager.status().certificate.generation, 2);
+});
+
+test('explicit rename cannot adopt a different Tailscale network', async t => {
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  context.setReportedHostname('renamed.other-tailnet.ts.net'); context.setCertificateId(2);
+  await context.manager.action({ action: 'recheck' }); const blocked = await settled(context.manager);
+  assert.equal(blocked.operation.error, 'helper_tailnet_changed'); assert.equal(blocked.hostname, hostname);
+  assert.equal(blocked.certificate.generation, 1); assert.equal(context.calls.certificate, 1);
+});
+
+test('explicit rename requires a fresh successful effective restriction readback from its current helper', async t => {
+  let activeHelper, name = hostname, invalid = false, certificateId = 1;
+  const prefs = { CorpDNS: false, RouteAll: false, ShieldsUp: true, RunSSH: false, RunWebClient: false,
+    ExitNodeID: '', ExitNodeIP: '', ExitNodeAllowLANAccess: false, AdvertiseRoutes: null, AdvertiseTags: null,
+    AppConnector: { Advertise: false }, AutoUpdate: { Apply: false, Check: true }, RemoteConfig: false };
+  const server = createServer((request, response) => {
+    if (activeHelper?.expectedStop) { response.writeHead(503); response.end(); return; }
+    const body = request.url === '/localapi/v0/serve-config' ? {} : request.url === '/localapi/v0/prefs'
+      ? { ...prefs, ShieldsUp: !invalid } : { Version: '1.104.1-fixture', BackendState: 'Running', CertDomains: [name], AuthURL: '' };
+    response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(body));
+  });
+  t.after(() => new Promise(done => server.close(done)));
+  const context = await setup(t, { dependencies: { createHelper: options => {
+    const helper = new CertificateHelper(options);
+    helper.start = async () => {
+      activeHelper = helper; helper.expectedStop = false;
+      await writeFile(resolve(options.locations.identity, 'tailscaled.state'), '{}', { mode: 0o600 });
+      if (!server.listening) await new Promise(done => server.listen(options.locations.socket, done));
+    };
+    helper.cli = async () => {};
+    helper.certificate = async () => ({ cert: `fixture-restricted-cert-${certificateId}`, key: `fixture-restricted-key-${certificateId}` });
+    return helper;
+  } } });
+  await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  name = 'renamed.test-tailnet.ts.net'; invalid = true; certificateId = 2;
+  await context.manager.action({ action: 'recheck' }); const refused = await settled(context.manager);
+  assert.equal(refused.operation.error, 'helper_restrictions_not_confirmed'); assert.equal(activeHelper.expectedStop, true);
+  assert.equal(refused.helper.state, 'stopped'); assert.equal(refused.hostname, hostname); assert.equal(refused.certificate.generation, 1);
+  await assert.rejects(lstat(resolve(context.directory, 'https', 'certificates', '2.json')), { code: 'ENOENT' });
+  await context.manager.close();
+});
+
+for (const recovery of ['interrupted-restart', 'forward-retry']) test(`a state rename followed by failed directory sync retains complete certificate material for ${recovery}`, { timeout: 15000 }, async t => {
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  const renamed = 'renamed.test-tailnet.ts.net'; context.setReportedHostname(renamed); context.setCertificateId(2);
+  const directory = resolve(context.directory, 'https'), statePath = resolve(directory, 'state.json');
+  const scratch = await open(resolve(context.directory, 'file-handle-prototype'), 'wx', 0o600);
+  const prototype = Object.getPrototypeOf(scratch), originalSync = prototype.sync; await scratch.close();
+  let notify, release, injected = false, paused = false, timer;
+  const entered = new Promise(done => { notify = done; }), held = new Promise(done => { release = done; });
+  prototype.sync = async function (...args) {
+    const path = await readlink(`/proc/self/fd/${this.fd}`).catch(() => null);
+    if (!injected && path === directory && JSON.parse(await readFile(statePath, 'utf8')).certificate?.generation === 2) {
+      injected = true; throw Object.assign(Error('Synthetic parent directory sync failed after rename'), { code: 'synthetic_parent_sync_failed' });
+    }
+    if (injected && !paused && path?.startsWith(resolve(directory, '.write-'))
+        && JSON.parse(await readFile(path, 'utf8')).operation?.state === 'failed') {
+      paused = true; notify(); await held;
+    }
+    return originalSync.apply(this, args);
+  };
+  let selectedBytes;
+  try {
+    await context.manager.action({ action: 'recheck' });
+    await Promise.race([entered, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('The current failed-operation write boundary is reached')), 5000); })]);
+    clearTimeout(timer); assert.equal(injected, true); assert.equal(paused, true);
+    selectedBytes = await readFile(statePath); const selected = JSON.parse(selectedBytes);
+    assert.equal(selected.hostname, renamed); assert.equal(selected.certificate.generation, 2);
+    const material = JSON.parse(await readFile(resolve(directory, 'certificates', '2.json'), 'utf8'));
+    assert.equal(material.hostname, selected.hostname); assert.equal(material.generation, selected.certificate.generation);
+    assert.equal(context.manager.status().hostname, hostname); assert.equal(context.manager.status().certificate.generation, 1);
+    await lstat(resolve(directory, 'certificates', '1.json'));
+  } finally {
+    clearTimeout(timer); prototype.sync = originalSync; release(); await settled(context.manager);
+  }
+  if (recovery === 'forward-retry') {
+    assert.equal(JSON.parse(await readFile(statePath, 'utf8')).certificate.generation, 1);
+    context.setCertificateId(3);
+    await context.manager.action({ action: 'recheck' }); const recovered = await settled(context.manager);
+    assert.equal(recovered.operation.state, 'completed'); assert.equal(recovered.hostname, renamed);
+    assert.equal(recovered.certificate.generation, 3, 'Different new issuer material advances beyond the uncertain immutable orphan');
+    await assert.rejects(lstat(resolve(directory, 'certificates', '2.json')), { code: 'ENOENT' });
+    await context.manager.close();
+  } else {
+    await context.manager.close();
+    // Simulate interruption at the exact captured filesystem boundary, using
+    // the same fixture installation and complete current generation bytes.
+    await atomicJson(statePath, JSON.parse(selectedBytes));
+    const recovered = restart(t, context); recovered.start();
+    for (let i = 0; i < 200 && recovered.status().phase !== 'ready'; i++) await wait(5);
+    assert.equal(recovered.status().hostname, renamed); assert.equal(recovered.status().certificate.generation, 2);
+    assert.equal(recovered.status().operation.state, 'interrupted'); assert.equal(context.calls.certificate, 2);
+    await recovered.close();
+  }
+});
+
+test('owner generation allocation rejects safe-integer exhaustion without replacing an accepted generation', async t => {
+  const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(context.manager);
+  await atomicJson(resolve(context.directory, 'https', 'certificates', `${Number.MAX_SAFE_INTEGER}.json`),
+    { version: 1, hostname, generation: Number.MAX_SAFE_INTEGER, certificate: { cert: 'fixture-orphan', key: 'fixture-orphan' } });
+  context.setReportedHostname('renamed.test-tailnet.ts.net'); context.setCertificateId(2);
+  await context.manager.action({ action: 'recheck' }); const blocked = await settled(context.manager);
+  assert.equal(blocked.operation.error, 'certificate_generation_invalid'); assert.equal(blocked.hostname, hostname);
+  assert.equal(blocked.certificate.generation, 1); await lstat(resolve(context.directory, 'https', 'certificates', '1.json'));
+  await assert.rejects(lstat(resolve(context.directory, 'https', 'certificates', '2.json')), { code: 'ENOENT' });
+});
+
+async function securityFixture(t, initialInfo) {
+  const context = await setup(t); await context.manager.close();
+  let info = initialInfo, now = Date.now(), reads = 0;
+  const baseHelper = context.dependencies.createHelper;
+  const observation = async base => {
+    reads++; const value = await base.status();
+    return info === undefined ? value : { ...value, ClientVersion: structuredClone(info) };
+  };
+  context.dependencies.now = () => now;
+  context.dependencies.createHelper = options => { const base = baseHelper(options); return { ...base,
+    status: async () => observation(base), authorize: async () => observation(base) };
+  };
+  const manager = restart(t, context);
+  const poll = async () => {
+    const before = reads; await manager.configure();
+    for (let i = 0; i < 200 && reads <= before; i++) await wait(5);
+    assert(reads > before); await wait(20);
+  };
+  return { context, manager, poll, setInfo: value => { info = value; }, advance: ms => { now += ms; } };
+}
+
+test('current vendor urgent evidence is durable once, preserves its original clock and resolves on explicit RunningLatest', async t => {
+  const fixture = await securityFixture(t, { UrgentSecurityUpdate: true, LatestVersion: '1.104.2' });
+  const { manager, context } = fixture;
+  await manager.action({ action: 'enable' }); await settled(manager);
+  await manager.action({ action: 'check-updates' }); await settled(manager);
+  const path = resolve(context.directory, 'https', 'state.json');
+  const originalBytes = await readFile(path), originalStat = await stat(path, { bigint: true });
+  const originalSignal = JSON.parse(originalBytes).updates.securitySignal;
+  assert.equal(originalSignal.urgent, true); assert.equal(manager.status().helper.securityUpdate, true);
+  fixture.advance(1000);
+  for (let i = 0; i < 3; i++) await fixture.poll();
+  assert.deepEqual(await readFile(path), originalBytes);
+  const unchangedStat = await stat(path, { bigint: true });
+  assert.equal(unchangedStat.ino, originalStat.ino); assert.equal(unchangedStat.mtimeNs, originalStat.mtimeNs, 'Identical positive reports do not rewrite or fsync state each poll');
+  for (const unknown of [undefined, { UrgentSecurityUpdate: 'true', RunningLatest: true }, { UrgentSecurityUpdate: true, RunningLatest: 'true' }]) {
+    fixture.setInfo(unknown); await fixture.poll();
+    assert.equal(manager.status().helper.securityUpdate, true, 'Absent or malformed metadata cannot erase an unresolved real warning');
+    assert.equal(manager.status().helper.securityObservedAt, originalSignal.observedAt);
+  }
+  fixture.setInfo({ RunningLatest: true }); fixture.advance(1000);
+  await actionWhenIdle(manager, { action: 'recheck' }); const resolved = await settled(manager);
+  assert.equal(resolved.helper.runningLatest, true); assert.equal(resolved.helper.securityUpdate, false);
+  const saved = JSON.parse(await readFile(path, 'utf8')).updates.securitySignal;
+  assert.equal(saved.urgent, false); assert.equal(saved.observedAt, originalSignal.observedAt); assert(saved.resolvedAt > saved.observedAt);
+  const view = secureWebAccessView(resolved, { admin: true }); assert.equal(view.securityWarning, ''); assert.match(view.securityStatus, /Running latest.*reported by Tailscale/);
+  fixture.setInfo(undefined); await fixture.poll();
+  assert.equal(manager.status().helper.securityUpdate, null); assert.equal(manager.status().helper.runningLatest, null);
+  assert.equal(secureWebAccessView(manager.status(), { admin: true }).securityStatus, 'Not reported');
+  await manager.close();
+});
+
+test('failed urgent-signal persistence retries identical evidence and keeps the successfully saved warning across restart', async t => {
+  const fixture = await securityFixture(t); const { context, manager } = fixture;
+  await manager.action({ action: 'enable' }); await settled(manager);
+  const directory = resolve(context.directory, 'https'), path = resolve(directory, 'state.json');
+  const scratch = await open(resolve(context.directory, 'security-file-handle-prototype'), 'wx', 0o600);
+  const prototype = Object.getPrototypeOf(scratch), originalSync = prototype.sync; await scratch.close(); let injected = false;
+  prototype.sync = async function (...args) {
+    const target = await readlink(`/proc/self/fd/${this.fd}`).catch(() => null);
+    if (!injected && target === directory && JSON.parse(await readFile(path, 'utf8')).updates.securitySignal?.urgent === true) {
+      injected = true; throw Object.assign(Error('Synthetic private warning persistence detail'), { code: 'synthetic_security_sync_failed' });
+    }
+    return originalSync.apply(this, args);
+  };
+  fixture.setInfo({ UrgentSecurityUpdate: true });
+  try {
+    await manager.action({ action: 'recheck' }); const failed = await settled(manager);
+    assert.equal(injected, true); assert.equal(failed.operation.state, 'failed');
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).updates.securitySignal, null);
+    assert.equal(JSON.stringify(failed).includes('private warning persistence detail'), false);
+  } finally { prototype.sync = originalSync; }
+  await manager.action({ action: 'recheck' }); const saved = await settled(manager);
+  assert.equal(saved.operation.state, 'completed'); assert.equal(saved.helper.securityUpdate, true);
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).updates.securitySignal.urgent, true);
+  await manager.close(); const restarted = restart(t, context); restarted.start();
+  for (let i = 0; i < 200 && restarted.status().phase !== 'ready'; i++) await wait(5);
+  assert.equal(restarted.status().helper.securityUpdate, true); await restarted.close();
+});
+
+test('current package equality does not imply security metadata or an eligible update', async t => {
+  const fixture = await securityFixture(t); const { manager, context } = fixture;
+  await manager.action({ action: 'enable' }); await settled(manager);
+  await manager.action({ action: 'check-updates' }); const checked = await settled(manager);
+  assert.equal(checked.updates.installed, '1.104.1'); assert.equal(checked.updates.latest, '1.104.1'); assert.equal(checked.updates.candidate, null);
+  assert.equal(checked.helper.securityUpdate, null); assert.equal(checked.helper.runningLatest, null);
+  const view = secureWebAccessView(checked, { admin: true }); assert.equal(view.updateAvailable, false);
+  assert.match(view.releaseSummary, /Up to date/); assert.equal(view.securityStatus, 'Not reported'); assert.equal(view.securityWarning, '');
+  const installations = context.calls.install, starts = context.calls.helperStart;
+  await manager.action({ action: 'update-now' }); const refused = await settled(manager);
+  assert.equal(refused.operation.error, 'helper_update_not_available'); assert.equal(context.calls.install, installations); assert.equal(context.calls.helperStart, starts);
+  await manager.close();
+});
+
 test('restart resumes previously requested HTTPS enrollment when the helper lost its private sign-in URL', async t => {
   let activeHelper; let AuthURL = ''; let authorizations = 0; let starts = 0;
   const identities = [];
@@ -334,9 +643,18 @@ test('updating the runtime resumes pending enrollment on its newly started helpe
   await current.action({ action: 'update-now' }); const updated = await settled(current);
   assert.equal(updated.operation.state, 'completed'); assert.equal(updated.phase, 'authorization_required');
   assert.equal(updated.helper.version, '1.104.2'); assert.equal(Boolean(updated.helper.authorizationUrl), true);
+  assert.equal(updated.updates.candidate, null);
   assert.equal(authorizations, 2); assert.equal(context.calls.install, 2); assert.equal(context.calls.helperStart, 2);
   await current.configure(); await wait(20); assert.equal(authorizations, 2, 'The new instance is not enrolled again by status polling');
   await current.close();
+  const statePath = resolve(context.directory, 'https', 'state.json'), saved = JSON.parse(await readFile(statePath, 'utf8'));
+  saved.updates.candidate = releaseCandidate({ TarballsVersion: '1.104.2', Tarballs: { [architecture()]: `tailscale_1.104.2_${architecture()}.tgz` } });
+  await atomicJson(statePath, saved);
+  const resumed = restart(t, context); resumed.start();
+  for (let i = 0; i < 200 && resumed.status().helper?.version !== '1.104.2'; i++) await wait(5);
+  assert.equal(resumed.status().updates.candidate, null, 'A current saved vendor candidate equal to installed grants no update availability after restart');
+  assert.equal(secureWebAccessView(resumed.status(), { admin: true }).updateAvailable, false);
+  assert.equal(context.calls.install, 2); await resumed.close();
 });
 
 test('resumed startup authorization still stops a helper whose effective restrictions fail readback', async t => {

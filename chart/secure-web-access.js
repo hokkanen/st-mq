@@ -30,6 +30,11 @@ const failures = {
   https_certificate_owner_fixed: 'This HTTPS state already has a fixed certificate owner. Re-enable it using that owner. Changing the owner requires preserving the current state and explicitly setting up fresh HTTPS state.',
   https_peer_owner_conflict: 'The paired computer reports a different certificate owner. Review Web access on both computers and agree on one owner before retrying setup.',
   helper_authorization_start_failed: 'The certificate helper could not start Tailscale authorization. No sign-in link was received. Choose Retry setup; the installed helper and saved identity are preserved.',
+  helper_hostname_changed: 'The certificate name changed in Tailscale. Select Recheck to issue a matching certificate and update the HTTPS address. The saved address changes only after successful publication; update household DNS afterward.',
+  helper_tailnet_changed: 'The certificate helper reports a different Tailscale network. Restore its original account and network before selecting Recheck; this action cannot adopt a different network or reset the saved identity.',
+  https_peer_hostname_changed: 'The paired certificate owner supplied a changed name without an eligible newer certificate for the same Tailscale network. Recheck the certificate owner; the saved address and certificate remain in place.',
+  helper_update_not_available: 'No eligible newer helper release is available. Check releases again later; Set up HTTPS owns initial installation.',
+  helper_major_or_version_unsupported: 'The observed release is outside this helper’s supported update contract. The installed helper remains in place; review Tailscale releases and security bulletins.',
 };
 const failure = (value, environment) => {
   if (value === 'helper_installation_binding_unavailable') return environment === 'home-assistant'
@@ -60,6 +65,18 @@ function ipv4(value) {
     && value !== '0.0.0.0' ? value : null;
 }
 
+function versionParts(value) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(typeof value === 'string' ? value : '');
+  return match && match.slice(1).every(part => Number.isSafeInteger(Number(part)) && String(Number(part)) === part)
+    ? match.slice(1).map(Number) : null;
+}
+function releaseDifference(candidate, installed) {
+  const next = versionParts(candidate), current = versionParts(installed);
+  if (!next || !current || next[0] !== 1 || next[1] % 2 !== 0) return null;
+  for (let i = 0; i < 3; i++) if (next[i] !== current[i]) return Math.sign(next[i] - current[i]);
+  return 0;
+}
+
 const actionLabels = { enable: 'Set up HTTPS', disable: 'Disable HTTPS', retry: 'Retry setup', recheck: 'Recheck',
   'check-updates': 'Check releases', 'update-now': 'Install helper update', 'set-update-policy': 'Change update policy',
   'restore-identity': 'Restore saved identity' };
@@ -80,6 +97,10 @@ function nextStep(state, { tlsReady, certificateValid, certificateExpired, uncon
   }[state.operation.action] ?? 'Setting up HTTPS', help: 'The current operation is running. The status updates here when it completes.' };
   if (state.phase === 'preparing') return { title: 'Setting up HTTPS',
     help: 'Preparing this computer’s certificate access. The status updates here when the operation completes.' };
+  if (errorCode === 'helper_hostname_changed') return { title: 'Update the HTTPS hostname',
+    help: failures.helper_hostname_changed };
+  if (errorCode === 'helper_tailnet_changed') return { title: 'Review the Tailscale network',
+    help: failures.helper_tailnet_changed };
   if (errorCode) return { title: 'Resolve the setup problem', help: errorCode === 'identity_restore_required'
     ? 'Review the reported problem below. Restore the saved identity only after its previous owner is stopped and fenced.'
     : 'Review the reported problem below. Retry setup after its cause is resolved; recovery access remains available.' };
@@ -162,7 +183,8 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     ? helperAuthorizationUrl(state.helper?.authorizationUrl) : null;
   const expectedAddress = admin ? ipv4(dns.expectedAddress) : null;
   const dnsPending = admin && state.phase === 'ready' && tlsReady && dns.state !== 'ready';
-  const helperSetup = state.enabled === true || retainedRenewal || Boolean(state.updates?.installed);
+  const newerRelease = releaseDifference(state.updates?.candidate, state.updates?.installed) === 1;
+  const checkedRelease = releaseDifference(state.updates?.latest, state.updates?.installed);
   const listener = value => value?.listening === true ? `Listening${Number.isInteger(value.address?.port) && value.address.port > 0 ? ` · port ${value.address.port}` : ''}`
     : value?.enabled === false ? 'Disabled' : value?.listening === false ? 'Unavailable' : 'Unknown';
   return {
@@ -189,7 +211,7 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     authorizationUrl,
     next: admin && Object.hasOwn(phases, state.phase) ? nextStep(state, { tlsReady, certificateValid, certificateExpired, unconfirmed, peerOwner, retainedRenewal, savedSetup, authorizationUrl, errorCode }) : null,
     setupAvailable: Object.hasOwn(phases, state.phase) && state.setup?.credentialsReady !== false,
-    retryAvailable: state.enabled === true && (Boolean(errorCode) || unavailable
+    retryAvailable: state.enabled === true && !['helper_hostname_changed', 'helper_tailnet_changed'].includes(errorCode) && (Boolean(errorCode) || unavailable
       || ['degraded', 'repair_required', 'certificate_settings_required'].includes(state.phase)
       || state.phase === 'authorization_required' && !authorizationUrl),
     accountLinks: admin && !peerOwner && ['approval_or_connection_pending', 'certificate_settings_required'].includes(state.phase),
@@ -204,18 +226,26 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     curlCommand: url ? `curl --resolve '${hostname}:${new URL(url).port || '443'}:${expectedAddress ?? '<LAN-address>'}' '${url}'` : '',
     dnsInstructions: hostname ? `Add a local DNS A-record for ${hostname} pointing to ${expectedAddress ?? 'the server’s reserved LAN IPv4 address'}.${state.pair?.paired ? ' Use the shared pair VIP rather than either computer’s individual address.' : ' Reserve that address in DHCP.'}`
       : `After certificate setup, map the exact certificate hostname to ${state.pair?.paired ? 'the shared pair VIP' : 'the server’s reserved LAN IPv4 address'}.`,
-    helper: admin ? state.helper?.version ?? 'Not installed' : null,
+    helper: admin ? state.updates?.installed ?? state.helper?.version ?? 'Not installed' : null,
     keyExpiry: admin ? state.helper?.nodeKeyExpired === true ? 'Expired (reported by Tailscale)' : keyExpiry(state.helper?.nodeKeyExpiresAt, now) : null,
     keyExpired: admin && (state.helper?.nodeKeyExpired === true || Number.isFinite(new Date(state.helper?.nodeKeyExpiresAt ?? NaN).getTime())
       && new Date(state.helper.nodeKeyExpiresAt).getTime() <= now),
     securityWarning: admin && state.helper?.securityUpdate === true
-      ? 'Tailscale reports an urgent security update for this helper. Check and install a signed update, and review the security bulletins. Advisory coverage is incomplete.' : '',
+      ? 'Tailscale reports an urgent security update for this helper. Check eligible signed releases; advisory coverage is incomplete.' : '',
+    securityReported: admin && state.helper?.securityUpdate === true && state.helper?.securityObservedAt
+      ? `Vendor signal reported ${date(state.helper.securityObservedAt)}.` : '',
+    securityStatus: admin ? state.helper?.securityUpdate === true ? 'Urgent update reported'
+      : state.helper?.runningLatest === true ? 'Running latest · reported by Tailscale' : state.helper?.securityUpdate === false ? 'No urgent update reported' : 'Not reported' : null,
     tested: admin ? state.updates?.testedVersion ?? 'Not reported' : null,
     installed: admin ? state.updates?.installed ?? null : null,
     latest: admin ? state.updates?.latest ?? 'Not checked' : null,
     checked: admin ? state.updates?.lastSuccessfulCheck ? date(state.updates.lastSuccessfulCheck) : 'Not checked' : null,
     policy: state.updates?.policy === 'manual' ? 'manual' : 'automatic',
-    updateAvailable: admin && !peerOwner && helperSetup && Boolean(state.updates?.candidate),
+    updateAvailable: admin && !peerOwner && newerRelease,
+    releaseSummary: admin ? !state.updates?.installed ? 'Set up HTTPS to install the tested helper release.'
+      : newerRelease ? 'A newer eligible release is available.' : checkedRelease === 0 ? 'Up to date with the last checked release.'
+      : checkedRelease === -1 ? 'The installed helper is newer than the last checked release.'
+      : 'Check releases to compare the installed helper with the current supported release.' : '',
     updatePolicyAvailable: admin && !peerOwner,
     updateSummary: peerOwner ? 'Certificate helper updates are managed on the paired certificate-owner computer.'
       : state.updates?.policy === 'manual' ? 'Signed stable releases wait for explicit installation approval.'
@@ -250,7 +280,8 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     setText('secure-web-access-owner', view.owner);
     setText('secure-web-access-peer-renewal', view.peerRenewal);
     $('secure-web-access-peer-renewal').hidden = !view.peerRenewal;
-    setText('secure-web-access-security-warning', view.securityWarning);
+    setText('secure-web-access-security-help', view.securityWarning);
+    setText('secure-web-access-security-reported', view.securityReported);
     $('secure-web-access-security-warning').hidden = !view.securityWarning;
     const available = admin && !pending && !view.busy && Object.hasOwn(phases, state.phase);
     for (const action of ['enable', 'recheck', 'retry', 'disable', 'check-updates', 'update-now', 'restore-identity'])
@@ -263,6 +294,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     $('secure-web-access-disable').hidden = !view.enabled;
     $('secure-web-access-retry').hidden = !view.retryAvailable || view.restoreIdentity;
     $('secure-web-access-update-policy').disabled = !available || !view.updatePolicyAvailable;
+    $('secure-web-access-update-now').hidden = !view.updateAvailable;
     $('secure-web-access-owner-select').disabled = !available || !view.pairSetup;
     if ($('secure-web-access-update-policy').value !== view.policy) $('secure-web-access-update-policy').value = view.policy;
     const authorization = $('secure-web-access-authorize');
@@ -290,6 +322,8 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     setText('secure-web-access-tested', view.tested ?? 'Not reported');
     setText('secure-web-access-latest', view.latest ?? 'Not checked');
     setText('secure-web-access-update-check', view.checked ?? 'Not checked');
+    setText('secure-web-access-security-status', view.securityStatus ?? 'Not reported');
+    setText('secure-web-access-release-summary', view.releaseSummary);
     setText('secure-web-access-update-summary', admin ? view.updateSummary : '');
     setText('secure-web-access-problem-code', view.problemCode);
     setText('secure-web-access-problem-label', view.historicalProblem ? 'Last action problem code' : 'Current problem code');

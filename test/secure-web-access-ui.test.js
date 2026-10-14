@@ -450,7 +450,7 @@ test('helper installation requires setup and stays on the certificate owner whil
   const unconfigured = { ...ready, enabled: false, phase: 'disabled', helper: {},
     updates: { policy: 'manual', installed: null, candidate: '1.104.2' } };
   assert.equal(secureWebAccessView(unconfigured, { admin: true }).updateAvailable, false);
-  assert.equal(secureWebAccessView({ ...unconfigured, enabled: true }, { admin: true }).updateAvailable, true);
+  assert.equal(secureWebAccessView({ ...unconfigured, enabled: true }, { admin: true }).updateAvailable, false, 'Set up HTTPS owns initial installation');
   assert.equal(secureWebAccessView({ ...unconfigured, updates: { ...unconfigured.updates, installed: '1.104.1' } }, { admin: true }).updateAvailable, true);
   const peer = { ...ready, pair: { paired: true, ownerId: 'synthetic-peer-owner', localOwner: false } };
   const view = secureWebAccessView(peer, { admin: true });
@@ -473,4 +473,34 @@ test('helper installation requires setup and stays on the certificate owner whil
   assert.match(secureWebAccessView({ ...peer, error: 'https_pair_owner_setup_required' }, { admin: true }).error, /Preserve its directory.*fresh external web.https_directory.*select the paired certificate owner/);
   assert.match(secureWebAccessView({ ...peer, error: 'https_certificate_owner_fixed' }, { admin: true }).error, /Re-enable it using that owner/);
   assert.match(secureWebAccessView({ ...peer, error: 'https_peer_owner_conflict' }, { admin: true }).error, /Review Web access on both computers/);
+});
+
+test('helper update availability requires an eligible actually newer release and current security remains separate', async () => {
+  for (const candidate of ['1.104.1', '1.104.0', '1.103.9', '2.0.0', '01.104.2', 'invalid', null]) {
+    const source = { ...ready, updates: { ...ready.updates, installed: '1.104.1', latest: candidate, candidate } };
+    assert.equal(secureWebAccessView(source, { admin: true }).updateAvailable, false, String(candidate));
+  }
+  assert.equal(secureWebAccessView({ ...ready, updates: { ...ready.updates, candidate: '1.106.0' } }, { admin: true }).updateAvailable, true);
+  const source = { ...ready, helper: { state: 'stopped', version: null, securityUpdate: null },
+    updates: { ...ready.updates, installed: '1.104.1', latest: '1.104.1', candidate: '1.104.1' } };
+  const view = secureWebAccessView(source, { admin: true });
+  assert.equal(view.helper, '1.104.1', 'A stopped process does not mean the accepted runtime is uninstalled');
+  assert.equal(view.updateAvailable, false); assert.match(view.releaseSummary, /Up to date/);
+  assert.equal(view.securityStatus, 'Not reported'); assert.equal(view.securityWarning, '');
+  const { document, nodes } = fixture(); let writes = 0;
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, request: async (_path, body) => { if (body) writes++; return source; } });
+  await panel.refresh({ force: true }); assert.equal(nodes.get('secure-web-access-update-now').hidden, true);
+  assert.equal(nodes.get('secure-web-access-update-now').disabled, true); assert.equal(await panel.run('update-now'), false); assert.equal(writes, 0);
+  const current = secureWebAccessView({ ...source, helper: { securityUpdate: false, runningLatest: true } }, { admin: true });
+  assert.match(current.securityStatus, /Running latest.*reported by Tailscale/); assert.equal(current.securityWarning, '');
+});
+
+test('a current hostname mismatch gives the deliberate Recheck action without changing its saved address', () => {
+  const source = { ...ready, phase: 'degraded', error: 'helper_hostname_changed', helper: { state: 'running', reportedHostname: 'renamed.example-tail.ts.net' } };
+  const view = secureWebAccessView(source, { admin: true });
+  assert.equal(view.next.title, 'Update the HTTPS hostname'); assert.match(view.next.help, /Select Recheck.*matching certificate.*household DNS/);
+  assert.equal(view.url, httpsAccessUrl(ready.url, ready.hostname)); assert.equal(view.retryAvailable, false); assert.doesNotMatch(view.error, /needs attention/);
+  const changedNetwork = secureWebAccessView({ ...source, error: 'helper_tailnet_changed' }, { admin: true });
+  assert.equal(changedNetwork.next.title, 'Review the Tailscale network'); assert.match(changedNetwork.error, /original account.*cannot adopt a different network/);
+  assert.equal(changedNetwork.url, httpsAccessUrl(ready.url, ready.hostname)); assert.equal(changedNetwork.retryAvailable, false);
 });

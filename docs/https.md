@@ -96,9 +96,9 @@ A pending sign-in URL belongs to the helper's current daemon session. After an
 application or helper-runtime restart, previously requested setup or retained
 peer renewal resumes that request once if the new restricted helper needs login
 and has no usable current URL. The saved identity, runtime and certificate remain
-in place; an earlier URL is never restored from a cache. Fresh or disabled
-installations do not acquire setup permission. An authenticated helper, an
-existing current sign-in URL or pending account approval does not start another
+in place; an earlier URL is never restored from a cache. Fresh installations or
+disabled installations without a renewal duty do not acquire setup permission.
+An authenticated helper, an existing current sign-in URL or pending account approval does not start another
 login request. The panel shows setup progress while requesting a new URL; a
 failure retains explicit Retry guidance, and ordinary polling does not repeat the
 interactive request. Signing in and approving the node remain administrator
@@ -115,8 +115,18 @@ Funnel requirement. The dedicated helper uses userspace networking and does not
 take over host DNS, routes, SSH or general-purpose Tailscale access.
 
 Certificate names appear in public Certificate Transparency records. Choose a
-non-sensitive node name before issuance. The pinned canonical hostname cannot
-silently follow an account-side rename.
+non-sensitive node name before issuance. Background renewal detects an account-side
+hostname rename and preserves the current address and any valid certificate.
+After explicitly renaming this dedicated node in Tailscale, select **Recheck** or
+**Enable HTTPS** on its certificate owner to adopt the name. The helper must be
+authenticated and restricted, report exactly one authorized certificate domain,
+and retain the same Tailscale network suffix. A different account or network is
+not adopted. The new certificate is validated and activated before the address
+and certificate generation are published together; a failed replacement keeps
+the previous live address and certificate. Update household DNS or temporary
+hosts-file entries for the new name after successful publication. The exact
+bound peer can receive its owner's validated newer generation for that same
+network; older or same-generation name changes remain refused.
 
 ## Before router DNS is available
 
@@ -235,12 +245,35 @@ version, latest observed candidate, and failed/stale checks. The updater manages
 only this private helper; it does not update host Tailscale, Node, dependencies,
 Home Assistant, ST-MQ or router firmware.
 
+**This computer** groups the installed helper and reported node-key expiry;
+**Tailscale releases** groups the tested setup release, observed available release
+and last successful release check. **Install update** appears only for an eligible
+release strictly newer than the accepted installed helper. Initial installation
+belongs to **Set up HTTPS**, and equal or older releases never reinstall it.
+Being up to date with the last checked release does not establish security
+advisory coverage. An urgent warning requires a positive Tailscale vendor signal;
+absent or malformed update metadata remains unknown and cannot erase a saved
+unresolved warning. A current explicit `RunningLatest:true` observation can
+resolve that warning even when the vendor omits false flags or the latest
+version. Identical positive reports preserve their first observation clock and
+do not rewrite state on every poll. The official security-bulletin link remains
+available independently of the vendor signal; it is not an automated advisory
+assessment.
+
 Certificates are validated for the full hostname, matching key, validity and normal
 public trust before activation. Renewal and activation are serialized; a failed
 replacement retains the previous valid certificate. A stored valid certificate
 can serve HTTPS without the helper or Internet connection. Expiration withholds
 only HTTPS and closes its connections; ingress, recovery and an explicitly enabled
 HTTP backup remain independent.
+
+A storage failure after atomic state replacement can leave either complete
+generation selected after an interruption. Such an operation is reported as
+failed, without promising which state will survive a crash. The candidate material
+is retained so a selected generation stays complete; a later owner retry issues
+fresh material at a newer unused generation rather than overwriting an uncertain
+one. Current-format restart reads the selected complete state and keeps the
+original failed or interrupted action receipt separate from current readiness.
 
 Tailscale identity is stateful. A saved directory or same-major version does not
 prove that an old daemon can safely run after a failed update. Changed-state
