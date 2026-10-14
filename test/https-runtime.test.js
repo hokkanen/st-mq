@@ -600,7 +600,7 @@ test('current vendor urgent evidence is durable once, preserves its original clo
   assert.equal(resolved.helper.runningLatest, true); assert.equal(resolved.helper.securityUpdate, false);
   const saved = JSON.parse(await readFile(path, 'utf8')).updates.securitySignal;
   assert.equal(saved.urgent, false); assert.equal(saved.observedAt, originalSignal.observedAt); assert(saved.resolvedAt > saved.observedAt);
-  const view = secureWebAccessView(resolved, { admin: true }); assert.equal(view.securityWarning, ''); assert.match(view.securityStatus, /Running latest.*reported by Tailscale/);
+  const view = secureWebAccessView(resolved, { admin: true }); assert.equal(view.securityWarning, ''); assert.equal(view.securityStatus, 'No urgent update reported');
   fixture.setInfo(undefined); await fixture.poll();
   assert.equal(manager.status().helper.securityUpdate, null); assert.equal(manager.status().helper.runningLatest, null);
   assert.equal(secureWebAccessView(manager.status(), { admin: true }).securityStatus, 'Not reported');

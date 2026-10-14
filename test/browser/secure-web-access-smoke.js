@@ -44,7 +44,7 @@ const fixture = {
   },
 };
 const originalFixture = structuredClone(fixture);
-const requests = [], errors = [], layouts = [], folds = [], blocked = [], pending = new Map();
+const requests = [], errors = [], layouts = [], metadataLayouts = [], folds = [], blocked = [], pending = new Map();
 const pause = ms => new Promise(resolvePause => setTimeout(resolvePause, ms));
 let server, browser, socket, sequence = 0;
 const page = (await readFile(join(root, 'chart/index.html'), 'utf8'))
@@ -309,6 +309,15 @@ try {
   assert.match(await evaluate("document.getElementById('secure-web-access-key-expiry').textContent"), /16 Oct 2026.*2d 2h left/);
   assert.match(await evaluate("document.getElementById('secure-web-access-security-warning').textContent"), /urgent security update.*coverage is incomplete/);
   assert.equal(await evaluate("document.getElementById('secure-web-access-security-warning').checkVisibility()"), true);
+  for(const section of ['setup','network','update']) {
+    await evaluate(`(()=>{const fold=document.getElementById('secure-web-access-${section}-details');fold.open=false;fold.querySelector(':scope>summary').focus();return true;})()`);
+    await key('Enter'); assert.equal(await evaluate(`document.getElementById('secure-web-access-${section}-details').open`),true);
+    await evaluate('webBrowser.panel.refresh({force:true})');
+    assert.equal(await evaluate(`document.activeElement===document.querySelector('#secure-web-access-${section}-details>summary')`),true,'Polling preserves focused native summary');
+    assert.equal(await evaluate(`document.getElementById('secure-web-access-${section}-details').open`),true,'Polling preserves expanded instructions');
+    await key(' '); assert.equal(await evaluate(`document.getElementById('secure-web-access-${section}-details').open`),false);
+    await key('Enter'); assert.equal(await evaluate(`document.getElementById('secure-web-access-${section}-details').open`),true);
+  }
   fixture.helper.authorizationUrl = 'https://login.tailscale.com/a/stale-authorization';
   fixture.dns = { ...fixture.dns, state: 'mismatch', resolver: '192.0.2.53', a: ['192.0.2.50'], aaaa: ['2001:db8::1'] };
   await evaluate('webBrowser.panel.refresh({force:true})');
@@ -387,10 +396,37 @@ try {
         const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
         await writeFile(join(screenshots, `${name}-${theme}-${width}.png`), Buffer.from(shot.data, 'base64'));
       }
+      if (details) {
+        const facts = await evaluate(`(()=>{
+          const groups=document.querySelector('.secure-web-access-update-groups');
+          return {groups:groups.getBoundingClientRect().toJSON(),rows:[...groups.querySelectorAll('dl > div')].map(row=>{
+            const label=row.querySelector('dt'),value=row.querySelector('dd'),a=label.getBoundingClientRect(),b=value.getBoundingClientRect();
+            return {label:label.textContent,value:value.textContent,labelBox:a.toJSON(),valueBox:b.toJSON(),
+              labelWeight:getComputedStyle(label).fontWeight,valueWeight:getComputedStyle(value).fontWeight};})};
+        })()`);
+        metadataLayouts.push({name,theme,width,...facts});
+        for(const row of facts.rows) {
+          assert(!row.label.endsWith(':'), 'Metadata labels use the shared colon-free row format');
+          assert.equal(row.labelWeight, '500', 'Metadata labels share one weight');
+          assert.equal(row.valueWeight, '550', 'Metadata values share one emphasis');
+          if(width<=390) assert(row.valueBox.top>=row.labelBox.bottom+1, 'Mobile values follow their labels with a visible gap');
+          else assert(Math.abs(row.labelBox.top-row.valueBox.top)<.2, 'Wide metadata labels and values align at the top');
+        }
+        if(screenshots) for(const section of ['network','update']) {
+          await evaluate(`document.getElementById('secure-web-access-${section}-details').scrollIntoView({block:'start',behavior:'instant'});true`);
+          const shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+          await writeFile(join(screenshots,`${name}-${section}-${theme}-${width}.png`),Buffer.from(shot.data,'base64'));
+        }
+        if(screenshots && name==='current-release') {
+          const clip=await evaluate(`(()=>{const r=document.getElementById('secure-web-access-details').getBoundingClientRect();return{x:r.x+scrollX,y:r.y+scrollY,width:r.width,height:r.height,scale:1};})()`);
+          const shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip});
+          await writeFile(join(screenshots,`${name}-full-fold-${theme}-${width}.png`),Buffer.from(shot.data,'base64'));
+        }
+      }
     }
   };
   await captureLayout('ready-details', { details: true });
-  for(const id of ['helper','key-expiry'])
+  for(const id of ['helper','key-expiry','security-status'])
     assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').closest('section').getAttribute('aria-labelledby')`), 'secure-web-access-local-title');
   for(const id of ['tested','latest','update-check'])
     assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').closest('section').getAttribute('aria-labelledby')`), 'secure-web-access-release-title');
@@ -405,8 +441,14 @@ try {
     ['startup-preparing', { ...originalFixture, enabled: true, phase: 'preparing', operation: { action: 'enable', state: 'completed' } }],
     ['retry-pending', { ...originalFixture, enabled: true, phase: 'degraded', error: 'helper_authorization_start_failed', operation: { state: 'running', action: 'retry', error: null } }],
     ['recovered-receipt', { ...readyFixture, error: null, operation: { action: 'enable', state: 'failed', completedAt: Date.parse('2026-10-14T11:59:59Z'), error: 'helper_authorization_start_failed' } }],
-    ['current-release', { ...readyFixture, helper: { ...readyFixture.helper, securityUpdate: null, runningLatest: null }, updates: { ...readyFixture.updates, installed: '1.104.1', latest: '1.104.1', candidate: '1.104.1', lastSuccessfulCheck: Date.parse('2026-10-14T11:59:30Z') } }],
+    ['current-release', { ...readyFixture, helper: { ...readyFixture.helper, securityUpdate: null, runningLatest: true }, updates: { ...readyFixture.updates, installed: '1.104.1', latest: '1.104.1', candidate: '1.104.1', lastSuccessfulCheck: Date.parse('2026-10-14T11:59:30Z') } }],
     ['urgent-release', { ...readyFixture, helper: { ...readyFixture.helper, securityUpdate: true, securityObservedAt: Date.parse('2026-10-14T11:45:00Z') }, updates: { ...readyFixture.updates, installed: '1.104.1', latest: '1.104.2', candidate: '1.104.2' } }],
+    ['retained-urgent', { ...readyFixture, helper: { state: 'stopped', securityUpdate: true, securityObservedAt: Date.parse('2026-10-13T11:45:00Z') } }],
+    ['unknown-destination', { ...readyFixture, dns: { state: 'address_confirmation_required', expectedAddress: '0.0.0.0' }, transport: { ...readyFixture.transport, recovery: { listening: true, address: { address: '0.0.0.0', port: 1234 } } } }],
+    ['loopback-destination', { ...readyFixture, dns: { state: 'ready', expectedAddress: '127.0.0.1' } }],
+    ['custom-ports', { ...readyFixture, url: `https://${hostname}:9443/`, dns: { state: 'unavailable', expectedAddress: '192.0.2.74' }, transport: { ...readyFixture.transport, recovery: { listening: true, address: { address: '::1', port: 4321 } }, https: { enabled: true, listening: true, address: { address: '0.0.0.0', port: 9443 } } } }],
+    ['default-port', { ...readyFixture, url: `https://${hostname}/`, transport: { ...readyFixture.transport, https: { enabled: true, listening: true, address: { address: '0.0.0.0', port: 443 } } } }],
+    ['long-hostname', { ...readyFixture, hostname: `synthetic-${'a'.repeat(50)}.example-tail.ts.net`, url: `https://synthetic-${'a'.repeat(50)}.example-tail.ts.net:8443/` }],
     ['renamed-pending', { ...readyFixture, phase: 'degraded', error: 'helper_hostname_changed' }],
     ['authorize', { ...readyFixture, certificate: null, phase: 'authorization_required', helper: { state: 'authorization_required', authorizationUrl: 'https://login.tailscale.com/a/synthetic-authorization' }, transport: { ...originalFixture.transport, https: { enabled: false, listening: false } } }],
     ['missing-link', { ...readyFixture, certificate: null, phase: 'authorization_required', helper: { state: 'authorization_required' }, transport: { ...originalFixture.transport, https: { enabled: false, listening: false } } }],
@@ -427,7 +469,7 @@ try {
       assert.equal(await evaluate("document.getElementById('secure-web-access-authorize').hasAttribute('href')"), false);
     }
     if(name==='retry-pending')assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Setting up HTTPS');
-    if(name==='recovered-receipt'){assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Connect household browsers');assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"),/Last action: Set up HTTPS request failed/);}
+    if(name==='recovered-receipt'){assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Connect household browsers');assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"),/Last action · Set up HTTPS request failed/);}
     if(name==='current-release') {
       assert.equal(await evaluate("document.getElementById('secure-web-access-update-now').hidden"), true);
       assert.equal(await evaluate("document.getElementById('secure-web-access-update-now').disabled"), true);
@@ -441,6 +483,24 @@ try {
       assert.match(await evaluate("document.getElementById('secure-web-access-security-help').textContent"), /urgent security update/);
       assert.match(await evaluate("document.getElementById('secure-web-access-security-reported').textContent"), /Vendor signal reported/);
     }
+    if(name==='retained-urgent') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-security-warning').hidden"),false);
+      assert.match(await evaluate("document.getElementById('secure-web-access-security-reported').textContent"),/13 Oct 2026/);
+      assert.match(await evaluate("document.getElementById('secure-web-access-security-help').textContent"),/was reported/);
+    }
+    if(['unknown-destination','loopback-destination'].includes(name)) {
+      for(const id of ['hosts','curl']) assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}-help').hidden`),true);
+      for(const id of ['hosts-entry','curl-command']) assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').textContent`),'');
+      assert.match(await evaluate("document.getElementById('secure-web-access-browser-instructions').textContent"),name==='loopback-destination'?/reaches only this computer/:/LAN destination is not reported/);
+      if(name==='loopback-destination') assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Review the local-only destination');
+      if(name==='unknown-destination') assert.doesNotMatch(await evaluate("document.getElementById('secure-web-access-recovery-help').textContent"),/http:\/\/0\.0\.0\.0/);
+    }
+    if(name==='custom-ports') {
+      assert.match(await evaluate("document.getElementById('secure-web-access-browser-instructions').textContent"),/HTTPS for.*9443.*192\.0\.2\.74/);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-curl-command').textContent"),`curl --resolve '${hostname}:9443:192.0.2.74' 'https://${hostname}:9443/'`);
+      assert.match(await evaluate("document.getElementById('secure-web-access-recovery-help').textContent"),/http:\/\/\[::1\]:4321.*network namespace/);
+    }
+    if(name==='default-port') assert.equal(await evaluate("document.getElementById('secure-web-access-curl-command').textContent"),`curl --resolve '${hostname}:443:192.0.2.50' 'https://${hostname}/'`);
     if(name==='renamed-pending') {
       assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'Update the HTTPS hostname');
       assert.match(await evaluate("document.getElementById('secure-web-access-message').textContent"), /Select Recheck/);
@@ -448,7 +508,7 @@ try {
     if (name==='password-required') assert.equal(await evaluate("document.getElementById('secure-web-access-enable').disabled"), true);
     if (name==='expired-certificate') assert.equal(await evaluate("document.getElementById('secure-web-access-state').textContent"), 'HTTPS unavailable');
     if (name==='peer-certificate') assert.equal(await evaluate("document.getElementById('secure-web-access-authorize').hasAttribute('href')"), false);
-    await captureLayout(name);
+    await captureLayout(name,{details:['current-release','retained-urgent','unknown-destination','loopback-destination','custom-ports','default-port','long-hostname'].includes(name)});
   }
   installFixture(readyFixture); await evaluate('webBrowser.panel.refresh({force:true})');
   await evaluate("webBrowser.controlRole('master');true");
@@ -502,6 +562,7 @@ try {
   assert.equal(await evaluate("document.getElementById('secure-web-access-url').hasAttribute('href')"), false);
   assert.equal(await evaluate("document.getElementById('secure-web-access-curl-command').textContent"), '');
   assert.equal(await evaluate("document.getElementById('secure-web-access-dns-a').textContent"), '');
+  for(const id of ['browser-instructions','recovery-help','lan-backup-help']) assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').textContent`),'');
   assert.equal(await evaluate("document.getElementById('secure-web-access-security-warning').checkVisibility()"), false);
   assert.equal(await evaluate("document.getElementById('secure-web-access-restore-identity').checkVisibility()"), false);
   assert.equal(await evaluate("document.getElementById('web-unsafe-warning').checkVisibility()"), true);
@@ -536,7 +597,7 @@ try {
   }
   assert.deepEqual(errors, [], 'No uncaught browser errors');
   assert.deepEqual(blocked, [], 'No external browser requests were attempted');
-  if (screenshots) await writeFile(join(screenshots, 'geometry.json'), JSON.stringify({layouts,folds,triangleLayouts,runtimeStyles,baselineStyles,baselineCompared:Boolean(baselinePage)}, null, 2));
+  if (screenshots) await writeFile(join(screenshots, 'geometry.json'), JSON.stringify({layouts,metadataLayouts,folds,triangleLayouts,runtimeStyles,baselineStyles,baselineCompared:Boolean(baselinePage)}, null, 2));
   console.log(`Secure web access browser checks passed: restored Connections/Configuration folds, standby/admin/family/signed-out boundaries, keyboard setup, authorization, DNS/hosts guidance, certificate/node-key expiry, cached urgent update, retained peer renewal, fenced identity restoration, custom policy selector, updates, cancel/focus, HTTP warning, all setup states, centered headers/buttons, 320/390/1440px and both themes.${baselinePage ? ' Other fold types match pre-HTTPS geometry; shared section-fold titles/statuses are centered, including Home learning.' : ''}${screenshots ? ` Synthetic screenshots: ${screenshots}` : ''}`);
 } finally {
   socket?.close(); for (const request of pending.values()) clearTimeout(request.timer);

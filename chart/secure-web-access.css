@@ -5,9 +5,9 @@
 .secure-web-access-body a { color: var(--accent); }
 .secure-web-access-body a:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 2px; }
 .secure-web-access-facts { display: grid; gap: 7px; margin: 12px 0; }
-.secure-web-access-facts > div { display: grid; grid-template-columns: minmax(110px, .4fr) minmax(0, 1fr); gap: 4px 16px; }
-.secure-web-access-facts dt { color: var(--muted); }
-.secure-web-access-facts dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.secure-web-access-facts > div { display: grid; grid-template-columns: minmax(110px, .4fr) minmax(0, 1fr); align-items: start; gap: 4px 16px; }
+.secure-web-access-facts dt { color: var(--muted); font-weight: 500; }
+.secure-web-access-facts dd { min-width: 0; margin: 0; font-weight: 550; overflow-wrap: anywhere; }
 .secure-web-access-next { margin: 16px 0 12px; }
 .secure-web-access-next h3 { margin: 0 0 5px; font-size: 13px; font-weight: 550; }
 .secure-web-access-next p { margin: 5px 0; }
@@ -20,7 +20,7 @@
 .secure-web-access-owner-choice p { margin: 8px 0; }
 .secure-web-access-notice { border-left: 2px solid var(--stale); padding-left: 10px; }
 .secure-web-access-body .secure-web-access-notice { font-size: 12px; }
-.secure-web-access-security { margin: 14px 0; padding: 10px 12px; border: 1px solid var(--stale); border-radius: 6px; overflow-wrap: anywhere; }
+.secure-web-access-security { margin: 14px 0; padding: 10px 12px; border: 1px solid var(--border); border-left: 3px solid var(--stale); border-radius: 6px; overflow-wrap: anywhere; }
 .secure-web-access-security strong { font-size: 12px; font-weight: 550; }
 .secure-web-access-security p { margin: 5px 0; }
 .secure-web-access-security p:empty { display: none; }
@@ -44,7 +44,7 @@
 .web-unsafe-warning { margin: 16px 0; border-color: var(--stale); color: var(--text); }
 @media (max-width: 480px) {
   .secure-web-access-update-groups { grid-template-columns: minmax(0, 1fr); }
-  .secure-web-access-facts > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .secure-web-access-facts > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .secure-web-access-actions button { flex: 1 1 110px; }
   .secure-web-access-actions #secure-web-access-disable { margin-left: 0; }
   .secure-web-access-update-controls { align-items: stretch; }

@@ -103,8 +103,8 @@ test('actual background certificate recovery separates current readiness from th
   const current = manager.status();
   assert.equal(current.error, null); assert.equal(current.operation.id, failed.id); assert.equal(current.operation.state, 'failed');
   const view = secureWebAccessView({ ...current, transport: { https: { enabled: true, listening: true } } }, { admin: true, now: now() });
-  assert.equal(view.next.title, 'Connect household browsers'); assert.equal(view.error, '');
-  assert.match(view.receipt.text, /Last action: Set up HTTPS request failed/);
+  assert.equal(view.next.title, 'Review the local-only destination'); assert.equal(view.error, '');
+  assert.match(view.receipt.text, /Last action · Set up HTTPS request failed/);
   assert.equal(view.receipt.at, failed.completedAt, 'Background recovery never renews the old receipt clock');
 });
 
@@ -119,4 +119,15 @@ test('an actual issued certificate selects renewal at expiry while listener loss
   const expired = secureWebAccessView({ ...current, transport: { https: { enabled: true, listening: true } } }, { admin: true, now: now() });
   assert.equal(expired.label, 'HTTPS unavailable'); assert.equal(expired.next.title, 'Renew the certificate');
   assert.doesNotMatch(expired.next.help, /Complete Tailscale sign-in/);
+});
+
+test('a current configured loopback destination remains visible without household mapping examples', async t => {
+  const { manager, now } = await fixture(t);
+  await manager.action({ action: 'enable' }); await until(() => manager.status().operation.state !== 'running');
+  const current = manager.status(); assert.equal(current.phase, 'ready'); assert.equal(current.dns.expectedAddress, '127.0.0.1');
+  const view = secureWebAccessView(current, { admin: true, now: now() });
+  assert.equal(view.expectedAddress, '127.0.0.1 · this computer only');
+  assert.equal(view.hostsEntry, ''); assert.equal(view.curlCommand, '');
+  assert.match(view.browserInstructions, /HTTPS for fixture\.test-tailnet\.ts\.net uses port 8443.*reaches only this computer/);
+  assert.match(view.dnsInstructions, /loopback destination cannot provide household access/);
 });

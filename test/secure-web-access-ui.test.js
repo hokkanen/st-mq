@@ -18,6 +18,55 @@ const ready = {
   updates: { policy: 'manual', installed: '1.104.1', latest: '1.104.2', candidate: '1.104.2' },
 };
 
+test('network guidance uses the reported destination and exact HTTPS port, with no runnable unknown-address examples', () => {
+  const source = { ...ready, url: `https://${ready.hostname}:9443`,
+    dns: { state: 'unavailable', expectedAddress: '192.0.2.74' },
+    transport: { recovery: { listening: true, address: { address: '127.0.0.1', port: 4321 } } } };
+  const before = structuredClone(source);
+  const view = secureWebAccessView(source, { admin: true });
+  assert.equal(view.hostsEntry, `192.0.2.74 ${ready.hostname}`);
+  assert.equal(view.curlCommand, `curl --resolve '${ready.hostname}:9443:192.0.2.74' 'https://${ready.hostname}:9443/'`);
+  for (const expectedAddress of [undefined, null, '0.0.0.0', '::', 'bad', '192.0.2.74;bad']) {
+    const unknown = secureWebAccessView({ ...source, dns: { expectedAddress } }, { admin: true });
+    assert.equal(unknown.hostsEntry, ''); assert.equal(unknown.curlCommand, '');
+    assert.match(unknown.browserInstructions, /LAN destination.*not reported/);
+    assert.doesNotMatch(unknown.browserInstructions, /0\.0\.0\.0|192\.0\.2\.74/);
+  }
+  assert.match(view.browserInstructions, /HTTPS for.*9443.*192\.0\.2\.74/);
+  assert.match(view.recoveryHelp, /http:\/\/127\.0\.0\.1:4321.*this application/);
+  assert.deepEqual(source, before, 'Rendering never changes addresses, policy or source evidence');
+  const wildcard = secureWebAccessView({ ...source, transport: { recovery: { listening: true,
+    address: { address: '0.0.0.0', port: 4321 } } } }, { admin: true });
+  assert.doesNotMatch(wildcard.recoveryHelp, /http:\/\/0\.0\.0\.0|http:\/\/127/);
+  assert.match(wildcard.recoveryHelp, /not confirmed/);
+  for (const address of ['127.0.0.1', '127.42.0.1']) {
+    const local = secureWebAccessView({ ...ready, dns: { state: 'ready', expectedAddress: address } }, { admin: true });
+    assert.equal(local.expectedAddress, `${address} · this computer only`);
+    assert.equal(local.hostsEntry, ''); assert.equal(local.curlCommand, '');
+    assert.match(local.browserInstructions, /reaches only this computer/);
+    assert.match(local.dnsInstructions, /loopback destination cannot provide household access/);
+    assert.equal(local.next.title, 'Review the local-only destination');
+    assert.match(local.next.help, /Household access is not confirmed.*Household DNS & recovery/);
+  }
+  const standard = secureWebAccessView({ ...source, url: `https://${ready.hostname}`, dns: { expectedAddress: '192.0.2.74' } }, { admin: true });
+  assert.equal(standard.curlCommand, `curl --resolve '${ready.hostname}:443:192.0.2.74' 'https://${ready.hostname}/'`);
+});
+
+test('release currency never replaces unknown vendor security evidence or clears a retained urgent signal', () => {
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const source = { ...ready, helper: { runningLatest: true, securityUpdate: null },
+    updates: { installed: '1.104.1', latest: '1.104.1', lastSuccessfulCheck: now } };
+  const unknown = secureWebAccessView(source, { admin: true, now });
+  assert.equal(unknown.securityStatus, 'Not reported'); assert.equal(unknown.securityWarning, '');
+  const reportedAt = now - 86_400_000;
+  const retained = secureWebAccessView({ ...source, helper: { state: 'stopped', securityUpdate: true,
+    securityObservedAt: reportedAt } }, { admin: true, now });
+  assert.equal(retained.securityStatus, 'Urgent update reported');
+  assert.match(retained.securityWarning, /urgent security update.*was reported/);
+  assert.match(retained.securityReported, /13 Oct 2026/);
+  assert.equal(source.helper.securityUpdate, null);
+});
+
 test('a valid certificate is distinct from listener and household DNS readiness', () => {
   const view = secureWebAccessView(ready, { admin: true });
   assert.equal(view.label, 'HTTPS ready locally');
@@ -29,6 +78,7 @@ test('a valid certificate is distinct from listener and household DNS readiness'
   assert.equal(secureWebAccessView({ ...ready, transport: {} }).https, 'Unknown');
   const familyView = secureWebAccessView(ready);
   for (const field of ['url', 'hostname', 'authorizationUrl', 'helper', 'latest', 'checked', 'installed']) assert.equal(familyView[field], null, field);
+  for (const field of ['browserInstructions', 'recoveryHelp', 'lanBackupHelp']) assert.equal(familyView[field], '', field);
   assert.equal(familyView.error, '');
   assert.equal(familyView.updateAvailable, false);
 });
@@ -58,8 +108,8 @@ test('setup without router DNS reaches local HTTPS and gives temporary certifica
   assert.equal(view.curlCommand, `curl --resolve '${ready.hostname}:8443:192.0.2.1' '${ready.url}/'`);
   assert.doesNotMatch(view.curlCommand, /(?:^|\s)-k(?:\s|$)|--insecure/);
   const unknown = secureWebAccessView({ ...ready, dns: { state: 'not_configured', expectedAddress: '0.0.0.0' } }, { admin: true });
-  assert.equal(unknown.hostsEntry, `<LAN address> ${ready.hostname}`);
-  assert.match(unknown.curlCommand, /<LAN-address>/);
+  assert.equal(unknown.hostsEntry, ''); assert.equal(unknown.curlCommand, '');
+  assert.match(unknown.browserInstructions, /LAN destination is not reported/);
   assert.equal(secureWebAccessView(ready).next, null);
 });
 
@@ -74,7 +124,7 @@ test('current next action distinguishes local setup, authorization and paired ce
   const enrollment = secureWebAccessView({ ...ready, phase: 'authorization_required', helper: { ...ready.helper, state: 'authorization_required' } }, { admin: true, now });
   assert.equal(enrollment.authorizationUrl, ready.helper.authorizationUrl);
   assert.equal(enrollment.next.title, 'Sign in to Tailscale');
-  assert.match(enrollment.next.help, /link below.*Return here and select Recheck/);
+  assert.match(enrollment.next.help, /link below.*then select Recheck/);
   const unknown = secureWebAccessView({ ...ready, helper: {}, transport: {}, certificate: { expiresAt: now - 1 } }, { admin: true, now });
   assert.equal(unknown.authorizationUrl, null);
   assert.equal(unknown.next.title, 'Renew the certificate');
@@ -95,7 +145,7 @@ test('current next action distinguishes local setup, authorization and paired ce
   assert.doesNotMatch(disabledPeer.next.help, /sign in|local helper|dedicated certificate helper/);
   const disabledLocal = secureWebAccessView({ ...ready, enabled: false, phase: 'disabled' }, { admin: true, now });
   assert.equal(disabledLocal.enableLabel, 'Enable HTTPS');
-  assert.match(disabledLocal.next.help, /reuse the saved HTTPS setup.*any saved certificate.*If renewed authorization is needed/);
+  assert.match(disabledLocal.next.help, /reuse the saved HTTPS setup.*any saved certificate.*Renewed authorization uses the current sign-in link/);
 
 });
 
@@ -138,7 +188,7 @@ test('a running Retry reports the current action and retains its last problem se
   await panel.refresh({ force: true });
   assert.equal(nodes.get('secure-web-access-next-title').textContent, 'Setting up HTTPS');
   assert.equal(nodes.get('secure-web-access-message').classList.contains('form-error'), false);
-  assert.match(nodes.get('secure-web-access-last-error').textContent, /^Last reported problem:/);
+  assert.match(nodes.get('secure-web-access-last-error').textContent, /^Last reported problem ·/);
   assert.equal(nodes.get('secure-web-access-last-error').hidden, false);
   assert.equal(nodes.get('secure-web-access-retry').disabled, true);
   const unknown = secureWebAccessView({ ...ready, phase: 'degraded', error: 'synthetic_unknown_failure' }, { admin: true });
@@ -154,7 +204,7 @@ test('current recovery is independent of a recent failed action receipt and its 
   const view = secureWebAccessView(recovered, { admin: true, now });
   assert.equal(view.next.title, 'Check access on each device');
   assert.equal(view.error, ''); assert.equal(view.historicalProblem, true);
-  assert.match(view.receipt.text, /Last action: Set up HTTPS request failed/);
+  assert.match(view.receipt.text, /Last action · Set up HTTPS request failed/);
   assert.equal(view.receipt.at, operation.completedAt, 'Receipt keeps the actual operation clock');
   for (const completedAt of [now + 1, null, 'invalid', '2026-10-14T11:59:59Z', NaN])
     assert.equal(secureWebAccessView({ ...recovered, operation: { ...operation, completedAt } }, { admin: true, now }).receipt, null,
@@ -213,7 +263,11 @@ test('HTTPS and authorization links reject unexpected hosts, credentials and exe
     assert.equal(helperAuthorizationUrl(value), null, value);
   for (const value of ['javascript:alert(1)', 'http://synthetic-access.example-tail.ts.net/',
     'https://attacker.invalid/', 'https://token@synthetic-access.example-tail.ts.net/',
-    `${ready.url}/outside`, `${ready.url}/?secret=bad`, `${ready.url}/#bad`]) assert.equal(httpsAccessUrl(value, ready.hostname), null, value);
+    `${ready.url}/outside`, `${ready.url}/?secret=bad`, `${ready.url}/#bad`, `https://${ready.hostname}:0/`]) {
+    assert.equal(httpsAccessUrl(value, ready.hostname), null, value);
+    const rejected = secureWebAccessView({ ...ready, url: value, dns: { expectedAddress: '192.0.2.74' } }, { admin: true });
+    assert.equal(rejected.hostsEntry, ''); assert.equal(rejected.curlCommand, '');
+  }
   assert.equal(httpsAccessUrl('https://192.0.2.1/', '192.0.2.1'), null, 'Raw IP cannot stand in for the certificate hostname');
 });
 
@@ -322,7 +376,7 @@ test('an uncertain request reply and a durable completed operation remain distin
     } });
   await panel.refresh({ force: true }); await panel.run('recheck'); await panel.refresh({ force: true });
   assert.match(nodes.get('secure-web-access-request-receipt').textContent, /request reply was lost/);
-  assert.match(nodes.get('secure-web-access-receipt').textContent, /Last action: Recheck request processed/);
+  assert.match(nodes.get('secure-web-access-receipt').textContent, /Last action · Recheck request processed/);
   assert.equal(nodes.get('secure-web-access-next-title').textContent, 'Check access on each device');
   now += 86_399_999; await panel.refresh({ force: true });
   assert.equal(nodes.get('secure-web-access-request-receipt').hidden, false);
@@ -492,7 +546,7 @@ test('helper update availability requires an eligible actually newer release and
   await panel.refresh({ force: true }); assert.equal(nodes.get('secure-web-access-update-now').hidden, true);
   assert.equal(nodes.get('secure-web-access-update-now').disabled, true); assert.equal(await panel.run('update-now'), false); assert.equal(writes, 0);
   const current = secureWebAccessView({ ...source, helper: { securityUpdate: false, runningLatest: true } }, { admin: true });
-  assert.match(current.securityStatus, /Running latest.*reported by Tailscale/); assert.equal(current.securityWarning, '');
+  assert.equal(current.securityStatus, 'No urgent update reported'); assert.equal(current.securityWarning, '');
 });
 
 test('a current hostname mismatch gives the deliberate Recheck action without changing its saved address', () => {

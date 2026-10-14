@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Clarify Web access guidance using reported hostnames, destinations and ports;
+  omit runnable examples for unknown or loopback-only household destinations.
+  Align helper metadata and distinguish unknown security status from release
+  currency while retaining reported urgent warnings.
+
 - Reuse fresh authenticated certificate-helper status for setup and Retry, confirm
   restrictions without another login or reapplying the bootstrap hostname, and
   preserve unknown release-check clocks in the Web access display.

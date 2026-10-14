@@ -563,12 +563,12 @@
                           <summary>How HTTPS setup works</summary>
                           <p class="muted">This application installs a dedicated Tailscale helper to obtain and renew its certificate. HTTPS uses the normal application sign-in. Existing Home Assistant or host Tailscale installations remain separate.</p>
                           <ol class="secure-web-access-steps">
-                            <li><strong>Set up and authorize.</strong> Select Set up HTTPS, then use the authorization link that appears here to sign in to Tailscale. Complete device approval or Tailnet Lock requirements in Tailscale Machines, then select Recheck.</li>
+                            <li><strong>Set up and authorize.</strong> Select Set up HTTPS, then use the displayed authorization link to sign in to Tailscale. Complete device approval or Tailnet Lock requirements in Tailscale Machines, then select Recheck.</li>
                             <li><strong>Enable certificates.</strong> Enable MagicDNS and HTTPS certificates in Tailscale DNS settings. Choose a non-sensitive node name before issuance; certificate names enter public transparency records. Review or disable this dedicated node’s key expiry in Machines so renewal can continue unattended. A valid certificate does not verify that policy.</li>
-                            <li><strong>Connect browsers.</strong> Map the exact certificate hostname to the server’s LAN address, or the shared pair VIP. Household DNS instructions are below. Open the full HTTPS address on each intended device and sign in normally; a new address has its own browser session.</li>
+                            <li><strong>Connect browsers.</strong> <span id="secure-web-access-browser-instructions">The HTTPS address and LAN destination require current status.</span> Open the full HTTPS address on each intended device and sign in normally; a new address has its own browser session.</li>
                           </ol>
                           <p class="secure-web-access-setup-links"><a href="https://console.tailscale.com/admin/dns" target="_blank" rel="noopener noreferrer">Tailscale DNS settings ↗</a><a href="https://console.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">Tailscale Machines ↗</a><a href="https://tailscale.com/docs/how-to/set-up-https-certificates" target="_blank" rel="noopener noreferrer">Certificate guide ↗</a></p>
-                          <p class="muted">You can finish certificate setup before changing router DNS. Disabling HTTPS keeps the helper identity and certificate saved. A paired computer can use its saved certificate while the owner is offline; renewal needs the owner. Recovery access and Home Assistant ingress remain available independently.</p>
+                          <p class="muted">Certificate issuance is independent of household DNS. Disabling HTTPS preserves the saved helper identity and certificate. A paired computer can use its valid saved certificate while the owner is offline; renewal requires the owner. Recovery access and Home Assistant ingress have separate readiness.</p>
                         </details>
                         <details id="secure-web-access-network-details" class="equipment-fold">
                           <summary>Household DNS &amp; recovery</summary>
@@ -584,10 +584,10 @@
                           </dl>
                           <p id="secure-web-access-dns-help" class="muted">Certificate issuance can be completed before configuring household DNS.</p>
                           <p class="muted">For a server-side DNS check, set <code>web.lan_resolver</code> to the household resolver’s IPv4 address in Configuration, apply through the normal save and restart workflow, then Recheck. Review both A and AAAA answers. Client VPN or browser encrypted DNS can use a different resolver.</p>
-                          <p id="secure-web-access-hosts-help" class="muted" hidden>Before router DNS is ready, add this temporary entry to a test computer’s hosts file: <code id="secure-web-access-hosts-entry"></code>. Replace any LAN address placeholder with the reserved server address or shared pair VIP. On Linux/macOS use <code>/etc/hosts</code>; on Windows use <code>C:\Windows\System32\drivers\etc\hosts</code>, with administrator access. Open the exact HTTPS address above, then remove the entry when household DNS is working.</p>
-                          <p id="secure-web-access-curl-help" class="muted" hidden>A command-line test can bypass DNS while still checking the certificate: <code id="secure-web-access-curl-command"></code>. Replace any LAN address placeholder. Keep certificate verification enabled; the raw IP address or an unrelated alias does not match the certificate.</p>
-                          <p class="muted">LAN HTTP backup is disabled by default. To enable it, set <code>web.lan_http_enabled</code> to <code>true</code> in this computer’s private configuration and restart. HTTP exposes passwords and household data to interception or modification. Keep it within a trusted LAN firewall boundary.</p>
-                          <p class="muted">Loopback recovery remains available through an SSH tunnel. Home Assistant ingress uses the host login when available.</p>
+                          <p id="secure-web-access-hosts-help" class="muted" hidden>A temporary hosts-file entry uses the reported destination and certificate hostname <code id="secure-web-access-hosts-entry"></code>. On Linux/macOS use <code>/etc/hosts</code>; on Windows use <code>C:\Windows\System32\drivers\etc\hosts</code>, with administrator access. Open the exact HTTPS address above and remove the entry after household DNS resolves correctly.</p>
+                          <p id="secure-web-access-curl-help" class="muted" hidden>A certificate-checked command-line test bypasses DNS using the reported destination <code id="secure-web-access-curl-command"></code>. Keep certificate verification enabled; a raw IP address or unrelated alias does not match the certificate.</p>
+                          <p id="secure-web-access-lan-backup-help" class="muted">LAN HTTP backup is disabled by default. Its listener port requires current status.</p>
+                          <p id="secure-web-access-recovery-help" class="muted">Recovery and Home Assistant ingress have separate readiness.</p>
                         </details>
                         <details id="secure-web-access-update-details" class="equipment-fold">
                           <summary>Certificate renewal &amp; helper updates</summary>
@@ -595,19 +595,19 @@
                           <dl class="secure-web-access-facts"><div id="secure-web-access-problem-row" hidden><dt id="secure-web-access-problem-label">Current problem code</dt><dd><code id="secure-web-access-problem-code"></code></dd></div></dl>
                           <div class="secure-web-access-update-groups">
                             <section aria-labelledby="secure-web-access-local-title">
-                              <h4 id="secure-web-access-local-title">This computer</h4>
+                              <h4 id="secure-web-access-local-title">Local certificate helper</h4>
                               <dl class="secure-web-access-facts">
-                                <div><dt>Installed helper</dt><dd id="secure-web-access-helper">Not installed</dd></div>
-                                <div><dt>Reported node key expiry</dt><dd id="secure-web-access-key-expiry">Not reported</dd></div>
+                                <div><dt>Installed version</dt><dd id="secure-web-access-helper">Not installed</dd></div>
+                                <div><dt>Node key expiry</dt><dd id="secure-web-access-key-expiry">Not reported</dd></div>
+                                <div><dt>Security update</dt><dd id="secure-web-access-security-status">Not reported</dd></div>
                               </dl>
-                              <p class="muted">Security update status: <span id="secure-web-access-security-status">Not reported</span></p>
                             </section>
                             <section aria-labelledby="secure-web-access-release-title">
-                              <h4 id="secure-web-access-release-title">Tailscale releases</h4>
+                              <h4 id="secure-web-access-release-title">Release checks</h4>
                               <dl class="secure-web-access-facts">
-                                <div><dt>Tested setup release</dt><dd id="secure-web-access-tested">Not reported</dd></div>
-                                <div><dt>Available release</dt><dd id="secure-web-access-latest">Not checked</dd></div>
-                                <div><dt>Last release check</dt><dd id="secure-web-access-update-check">Not checked</dd></div>
+                                <div><dt>Tested version</dt><dd id="secure-web-access-tested">Not reported</dd></div>
+                                <div><dt>Observed release</dt><dd id="secure-web-access-latest">Not checked</dd></div>
+                                <div><dt>Last check</dt><dd id="secure-web-access-update-check">Not checked</dd></div>
                               </dl>
                               <p id="secure-web-access-release-summary" class="muted"></p>
                             </section>

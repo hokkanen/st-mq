@@ -147,10 +147,14 @@ On a test computer, an explicit hosts-file entry can map the exact hostname to
 the server's LAN address: `<LAN-address> <exact-certificate-hostname>`. Use
 `/etc/hosts` on Linux/macOS or `C:\Windows\System32\drivers\etc\hosts` on Windows,
 with administrator access. Remove the temporary entry after household DNS works.
-The panel fills the address from the configured pair VIP or an explicit HTTPS
-IPv4 binding when known; otherwise it labels the address as a placeholder for
-the server's reserved LAN address. A wildcard listener is not a discoverable LAN
-address. For a command-line TLS check, use the real hostname and
+The panel fills examples only when the reported pair VIP or explicit HTTPS IPv4
+binding is a usable household destination, and includes the current HTTPS port.
+Unknown or wildcard destinations produce guidance rather than runnable placeholders.
+A reported loopback destination remains visible as this-computer-only and supplies
+no household hosts-file or command example. A wildcard listener is not a
+discoverable LAN address. Loopback recovery guidance uses its reported endpoint
+and identifies the application computer or network namespace. For a command-line
+TLS check, use the real hostname and
 `curl --resolve <hostname>:8443:<LAN-address> https://<hostname>:8443/`; do not use
 `-k` or disable browser certificate validation. Raw-IP HTTPS and unrelated aliases
 do not match the certificate.
@@ -252,14 +256,18 @@ version, latest observed candidate, and failed/stale checks. The updater manages
 only this private helper; it does not update host Tailscale, Node, dependencies,
 Home Assistant, ST-MQ or router firmware.
 
-**This computer** groups the installed helper and reported node-key expiry;
-**Tailscale releases** groups the tested setup release, observed available release
-and last successful release check. **Install update** appears only for an eligible
+**Local certificate helper** groups the installed version, reported node-key expiry
+and vendor security-update status in consistent label/value rows. **Release checks**
+groups the tested setup version, latest observed release and last successful check.
+**Install update** appears only for an eligible
 release strictly newer than the accepted installed helper. Initial installation
 belongs to **Set up HTTPS**, and equal or older releases never reinstall it.
 Being up to date with the last checked release does not establish security
 advisory coverage. When the release-check clock is unknown, matching observed
 versions are labeled as a comparison rather than a claim that a timed check occurred.
+The display uses the explicit security-update status separately from release
+currency; an unknown status does not imply safety. A positive urgent signal receives
+a restrained warning and retains its original reported clock when the helper stops.
 An urgent warning requires a positive Tailscale vendor signal; absent or malformed
 update metadata remains unknown and cannot erase a saved
 unresolved warning. A current explicit `RunningLatest:true` observation can

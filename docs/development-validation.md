@@ -258,6 +258,10 @@ keyboard focus and mounted disclosure state. Its layout cases cover both themes
 at 320, 390 and 1440 px, all ten rounded section folds including Home learning,
 and the distinct leading markers for comparisons and Recording details. Long
 status text and a visible recording warning badge are included. The fixture uses
+reported default and alternate HTTPS ports, unknown/wildcard/loopback household
+destinations, application-local recovery endpoints, unknown security status despite
+matching releases, retained urgent evidence and aligned label/value metadata.
+Expanded DNS and helper disclosures are checked at each width and theme. It uses
 synthetic endpoint responses, blocks external browser requests and never starts
 a certificate helper or accesses installation configuration.
 

@@ -4,7 +4,7 @@ import { actionReceiptRecent } from './action-receipts.js';
 export { helperAuthorizationUrl };
 
 const phases = {
-  disabled: ['Disabled', 'HTTPS is disabled. Recovery access remains available.'],
+  disabled: ['Disabled', 'HTTPS is disabled. Recovery access has separate readiness.'],
   preparing: ['Preparing', 'Preparing the certificate helper.'],
   authorization_required: ['Authorization required', 'Authorize this computer’s dedicated certificate helper in Tailscale.'],
   approval_or_connection_pending: ['Approval or connection pending', 'Tailscale has not confirmed the helper connection. Check device approval or Tailnet Lock in Tailscale, then recheck.'],
@@ -12,7 +12,7 @@ const phases = {
   renewal_pending: ['Certificate pending', 'Waiting for a certificate.'],
   ready: ['HTTPS ready locally', 'A valid certificate is available. Household devices still need the exact hostname to resolve to the installation’s LAN address.'],
   degraded: ['Needs attention', 'HTTPS needs attention. Review the reported problem and retry.'],
-  repair_required: ['Repair required', 'Saved HTTPS state could not be admitted. Recovery access remains available; review this computer’s HTTPS state before retrying.'],
+  repair_required: ['Repair required', 'Saved HTTPS state could not be admitted. Recovery access has separate readiness; review this computer’s HTTPS state before retrying.'],
   peer_certificate_pending: ['Peer certificate pending', 'Waiting for the paired certificate owner to provide a valid certificate.'],
 };
 const failures = {
@@ -20,7 +20,7 @@ const failures = {
   tls_port_unavailable: 'The HTTPS port is already in use. Change web.https_port in private configuration and restart, then retry.',
   http_port_unavailable: 'The LAN HTTP backup port is already in use. Review web.lan_http_port in private configuration.',
   invalid_certificate: 'The replacement certificate could not be validated. A previous valid certificate stays in use where available.',
-  https_management_unavailable: 'HTTPS management is unavailable on this computer. Recovery access remains available.',
+  https_management_unavailable: 'HTTPS management is unavailable on this computer. Recovery access has separate readiness.',
   https_operation_interrupted: 'The previous web access operation was interrupted. Review its current status and retry.',
   identity_restore_required: 'A restored certificate helper identity needs explicit review before it can be used again. Keep the original owner fenced and follow the HTTPS restoration guide.',
   helper_storage_outside_checkout_required: 'HTTPS needs private storage outside the checkout. Configure web.https_directory with an external private path and restart before setup.',
@@ -64,6 +64,12 @@ function ipv4(value) {
     && value.split('.').every(part => String(Number(part)) === part && Number(part) <= 255)
     && value !== '0.0.0.0' ? value : null;
 }
+const port = value => Number.isInteger(value) && value > 0 && value <= 65535 ? value : null;
+function loopbackUrl(listener) {
+  const host = listener?.address?.address, number = port(listener?.address?.port);
+  if (listener?.listening !== true || !number || !['127.0.0.1', '::1'].includes(host)) return null;
+  return `http://${host === '::1' ? '[::1]' : host}:${number}`;
+}
 
 function versionParts(value) {
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(typeof value === 'string' ? value : '');
@@ -85,54 +91,56 @@ function operationReceipt(operation, now) {
   if (!operation || !actionLabels[operation.action] || !['completed', 'failed', 'interrupted'].includes(operation.state)) return null;
   const at = operation.completedAt;
   if (!actionReceiptRecent(at, now)) return null;
-  return { at, error: operation.error ?? '', text: `Last action: ${actionLabels[operation.action]} request ${
+  return { at, error: operation.error ?? '', text: `Last action · ${actionLabels[operation.action]} request ${
     operation.state === 'completed' ? 'processed' : operation.state === 'interrupted' ? 'interrupted' : 'failed'} · ${date(at)}.` };
 }
 
-function nextStep(state, { tlsReady, certificateValid, certificateExpired, unconfirmed, peerOwner, retainedRenewal, savedSetup, authorizationUrl, errorCode }) {
+function nextStep(state, { tlsReady, certificateValid, certificateExpired, unconfirmed, peerOwner, retainedRenewal, savedSetup, authorizationUrl, errorCode, localDestination }) {
   if (state.operation?.state === 'running') return { title: {
     'check-updates': 'Checking helper releases', 'update-now': 'Updating the certificate helper',
     'set-update-policy': 'Saving the update policy', 'restore-identity': 'Restoring the certificate identity',
     disable: 'Disabling HTTPS',
-  }[state.operation.action] ?? 'Setting up HTTPS', help: 'The current operation is running. The status updates here when it completes.' };
+  }[state.operation.action] ?? 'Setting up HTTPS', help: 'The current operation is running. Status updates when it completes.' };
   if (state.phase === 'preparing') return { title: 'Setting up HTTPS',
-    help: 'Preparing this computer’s certificate access. The status updates here when the operation completes.' };
+    help: 'Preparing this computer’s certificate access. Status updates when the operation completes.' };
   if (errorCode === 'helper_hostname_changed') return { title: 'Update the HTTPS hostname',
     help: failures.helper_hostname_changed };
   if (errorCode === 'helper_tailnet_changed') return { title: 'Review the Tailscale network',
     help: failures.helper_tailnet_changed };
   if (errorCode) return { title: 'Resolve the setup problem', help: errorCode === 'identity_restore_required'
     ? 'Review the reported problem below. Restore the saved identity only after its previous owner is stopped and fenced.'
-    : 'Review the reported problem below. Retry setup after its cause is resolved; recovery access remains available.' };
+    : 'Review the reported problem below. Retry setup after its cause is resolved; recovery access has separate readiness.' };
   if (state.setup?.credentialsReady === false) return { title: 'Set an admin password first',
     help: 'In Configuration, set controller.web_token to at least 24 characters. If a family password is configured, it must also have at least 24 characters and differ from the admin password.' };
   if (!state.enabled && state.phase === 'disabled' && !retainedRenewal) return { title: savedSetup ? 'Re-enable HTTPS' : 'Set up secure browser access',
     help: peerOwner ? 'Select Enable HTTPS to use the certificate from the already selected paired owner. Complete any certificate renewal on that computer.'
       : state.pair?.paired && !state.pair.ownerId
       ? 'Choose which computer will issue and renew the certificate, then select Set up HTTPS. This choice stays separate from the master/standby role.'
-      : savedSetup ? 'Select Enable HTTPS to reuse the saved HTTPS setup. Its helper identity and any saved certificate stay in place. If renewed authorization is needed, its current sign-in link will appear here.'
-      : 'Select Set up HTTPS, then sign in to Tailscale using the link shown here. An existing host or Home Assistant Tailscale connection does not enroll this dedicated certificate helper.' };
+      : savedSetup ? 'Select Enable HTTPS to reuse the saved HTTPS setup. Its helper identity and any saved certificate stay in place. Renewed authorization uses the current sign-in link displayed in this panel.'
+      : 'Select Set up HTTPS, then sign in to Tailscale using the displayed authorization link. An existing host or Home Assistant Tailscale connection does not enroll this dedicated certificate helper.' };
   if (certificateExpired && state.helper?.state !== 'authorization_required') return { title: peerOwner ? 'Renew the certificate on the paired computer' : 'Renew the certificate',
-    help: peerOwner ? 'The saved certificate has expired. Open Web access on the paired certificate owner to renew it, then select Recheck here.'
-      : 'The saved certificate has expired. Select Recheck to request renewal, then review any reported problem. Recovery access remains available.' };
+    help: peerOwner ? 'The saved certificate has expired. Open Web access on the paired certificate owner to renew it, then select Recheck on this computer.'
+      : 'The saved certificate has expired. Select Recheck to request renewal, then review any reported problem. Recovery access has separate readiness.' };
   if (certificateValid && state.enabled === true && state.transport?.https?.listening === false && ['ready', 'degraded'].includes(state.phase))
     return { title: 'Recover the HTTPS listener', help: 'A valid certificate is saved, but this computer’s HTTPS listener is stopped. Select Recheck, then review any listener or port problem reported below.' };
   if (peerOwner && !tlsReady) return { title: 'Finish setup on the paired computer',
     help: 'Open Web access on the paired certificate owner. This computer receives its certificate from that owner; it does not need a separate Tailscale sign-in.' };
   if (state.phase === 'authorization_required' || state.helper?.state === 'authorization_required')
     return authorizationUrl ? { title: 'Sign in to Tailscale',
-      help: 'Open the authorization link below and approve this dedicated certificate node if prompted. Return here and select Recheck.' }
+      help: 'Open the authorization link below and complete any required approval for this dedicated certificate node, then select Recheck.' }
       : { title: 'Authorization link unavailable',
         help: 'No authorization link was received from the certificate helper. Select Retry setup to request one. Its installed runtime and saved identity are preserved.' };
   if (state.phase === 'approval_or_connection_pending' || state.helper?.state === 'approval_or_connection_pending') return { title: 'Check Tailscale approval',
     help: 'Tailscale has not confirmed this helper’s connection. Check Machines for device approval or Tailnet Lock requirements, then select Recheck.' };
   if (state.phase === 'certificate_settings_required') return { title: 'Enable certificates in Tailscale',
-    help: 'Open Tailscale DNS settings below, enable MagicDNS and HTTPS certificates, then select Retry setup. Household router DNS can wait.' };
+    help: 'Open Tailscale DNS settings below, enable MagicDNS and HTTPS certificates, then select Retry setup. Certificate issuance is independent of household DNS.' };
+  if (tlsReady && localDestination) return { title: 'Review the local-only destination',
+    help: 'The reported loopback destination reaches only this computer. Household access is not confirmed; review the destination and listener scope in Household DNS & recovery.' };
   if (tlsReady) return { title: state.dns?.state === 'ready' ? 'Check access on each device' : 'Connect household browsers',
     help: 'Open the exact HTTPS address below on each intended device. If its hostname does not resolve, use the household DNS or temporary hosts-file instructions. A check on this computer does not verify other devices.' };
-  if (!state.enabled && retainedRenewal) return { title: 'Certificate renewal remains assigned here',
+  if (!state.enabled && retainedRenewal) return { title: 'Certificate renewal remains assigned to this computer',
     help: 'This computer still renews the paired computer’s certificate. Its local HTTPS is disabled; review the helper’s renewal status below.' };
-  if (unconfirmed) return { title: 'Confirm HTTPS readiness', help: 'Current certificate or listener evidence is missing. Select Recheck to refresh it; recovery access remains available.' };
+  if (unconfirmed) return { title: 'Confirm HTTPS readiness', help: 'Current certificate or listener evidence is missing. Select Recheck to refresh it; recovery access has separate readiness.' };
   return { title: 'Finish certificate setup', help: 'Complete Tailscale sign-in and certificate settings, then select Recheck. Certificate issuance does not require household router DNS.' };
 }
 
@@ -141,7 +149,7 @@ export function httpsAccessUrl(value, hostname) {
   try {
     const url = new URL(value);
     return url.protocol === 'https:' && url.hostname === hostname && !url.username && !url.password
-      && url.pathname === '/' && !url.search && !url.hash ? url.href : null;
+      && (!url.port || port(Number(url.port))) && url.pathname === '/' && !url.search && !url.hash ? url.href : null;
   } catch { return null; }
 }
 
@@ -182,12 +190,16 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     && errorCode !== 'helper_authorization_start_failed' && state.helper?.state === 'authorization_required'
     ? helperAuthorizationUrl(state.helper?.authorizationUrl) : null;
   const expectedAddress = admin ? ipv4(dns.expectedAddress) : null;
+  const localDestination = expectedAddress?.startsWith('127.') === true;
+  const householdAddress = localDestination ? null : expectedAddress;
+  const recoveryUrl = admin ? loopbackUrl(transport.recovery) : null;
+  const backupPort = admin ? port(transport.lanHttp?.address?.port) : null;
   const dnsPending = admin && state.phase === 'ready' && tlsReady && dns.state !== 'ready';
   const newerRelease = releaseDifference(state.updates?.candidate, state.updates?.installed) === 1;
   const checkedRelease = releaseDifference(state.updates?.latest, state.updates?.installed);
   const checkClockKnown = typeof state.updates?.lastSuccessfulCheck === 'number'
     && Number.isFinite(state.updates.lastSuccessfulCheck) && state.updates.lastSuccessfulCheck >= 0;
-  const listener = value => value?.listening === true ? `Listening${Number.isInteger(value.address?.port) && value.address.port > 0 ? ` · port ${value.address.port}` : ''}`
+  const listener = value => value?.listening === true ? `Listening${port(value.address?.port) ? ` · port ${value.address.port}` : ''}`
     : value?.enabled === false ? 'Disabled' : value?.listening === false ? 'Unavailable' : 'Unknown';
   return {
     label: unavailable ? 'HTTPS unavailable' : unconfirmed ? 'HTTPS not confirmed' : retainedRenewal && !state.enabled ? 'Disabled · peer renewal retained'
@@ -197,7 +209,7 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     summary: unavailable ? Number.isFinite(expiresAt) && expiresAt <= now
       ? 'The certificate has expired. HTTPS is unavailable; recovery access remains separate. Review certificate renewal below.'
       : 'The HTTPS listener is unavailable. Recovery access remains separate; review the reported problem and retry.'
-      : unconfirmed ? 'Current listener or certificate evidence is missing. Recheck to confirm HTTPS readiness; recovery access remains available.'
+      : unconfirmed ? 'Current listener or certificate evidence is missing. Recheck to confirm HTTPS readiness; recovery access has separate readiness.'
       : dnsPending ? dns.state === 'mismatch' ? 'HTTPS is running, but the checked DNS address does not match the expected LAN address. Review household DNS below.'
         : 'This computer has a valid certificate and its HTTPS listener is running. Household DNS has not been verified.' : phase[1],
     https: state.enabled === true && tls?.listening === false ? 'Not listening' : listener(tls), expiry: date(certificate?.expiresAt),
@@ -208,36 +220,48 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     enableLabel: savedSetup ? 'Enable HTTPS' : 'Set up HTTPS',
     pairSetup: admin && state.pair?.paired === true && !state.pair.ownerId,
     owner: admin && state.pair?.paired === true && state.pair.ownerId
-      ? `Certificate renewal: ${state.pair.localOwner === true ? 'This computer' : 'Paired computer'} · independent of the master/standby role.` : '',
+      ? `Certificate renewal · ${state.pair.localOwner === true ? 'This computer' : 'Paired computer'} · independent of the master/standby role.` : '',
     peerRenewal: retainedRenewal ? 'This computer retains certificate renewal for the paired computer. Disabling this HTTPS entrance does not stop the helper while that duty remains; the peer must confirm that its HTTPS is disabled.' : '',
     authorizationUrl,
-    next: admin && Object.hasOwn(phases, state.phase) ? nextStep(state, { tlsReady, certificateValid, certificateExpired, unconfirmed, peerOwner, retainedRenewal, savedSetup, authorizationUrl, errorCode }) : null,
+    next: admin && Object.hasOwn(phases, state.phase) ? nextStep(state, { tlsReady, certificateValid, certificateExpired, unconfirmed, peerOwner, retainedRenewal, savedSetup, authorizationUrl, errorCode, localDestination }) : null,
     setupAvailable: Object.hasOwn(phases, state.phase) && state.setup?.credentialsReady !== false,
     retryAvailable: state.enabled === true && !['helper_hostname_changed', 'helper_tailnet_changed'].includes(errorCode) && (Boolean(errorCode) || unavailable
       || ['degraded', 'repair_required', 'certificate_settings_required'].includes(state.phase)
       || state.phase === 'authorization_required' && !authorizationUrl),
     accountLinks: admin && !peerOwner && ['approval_or_connection_pending', 'certificate_settings_required'].includes(state.phase),
     dnsText: `${dnsText}${dns.checkedAt ? ` · ${date(dns.checkedAt)}` : ''}`,
-    dnsHelp: hostname ? `Map ${hostname} to this installation’s LAN address in household DNS. Certificate issuance does not require router DNS changes. A successful check on this computer does not verify other household devices.`
+    dnsHelp: localDestination ? `The reported destination ${expectedAddress} is loopback and reaches only this computer. Confirm the server’s reserved LAN address or shared pair VIP for household access. Certificate issuance does not require router DNS changes.`
+      : hostname ? 'Certificate issuance does not require router DNS changes. A successful check on this computer does not verify other household devices.'
       : 'Certificate issuance can be completed before configuring household DNS.',
     dnsResolver: admin ? ipv4(dns.resolver) ?? 'Not configured' : '',
-    expectedAddress: expectedAddress ?? 'Confirm the reserved LAN IPv4 address',
+    expectedAddress: expectedAddress ? `${expectedAddress}${localDestination ? ' · this computer only' : ''}` : 'Confirm the reserved LAN IPv4 address',
     dnsA: admin ? Array.isArray(dns.a) && dns.a.length ? dns.a.join(', ') : dns.checkedAt && dns.state !== 'not_configured' && dns.state !== 'unavailable' ? 'No answers' : 'Not checked' : '',
     dnsAAAA: admin ? Array.isArray(dns.aaaa) && dns.aaaa.length ? dns.aaaa.join(', ') : dns.checkedAt && dns.state !== 'not_configured' && dns.state !== 'unavailable' ? 'No answers' : 'Not checked' : '',
-    hostsEntry: hostname ? `${expectedAddress ?? '<LAN address>'} ${hostname}` : '',
-    curlCommand: url ? `curl --resolve '${hostname}:${new URL(url).port || '443'}:${expectedAddress ?? '<LAN-address>'}' '${url}'` : '',
-    dnsInstructions: hostname ? `Add a local DNS A-record for ${hostname} pointing to ${expectedAddress ?? 'the server’s reserved LAN IPv4 address'}.${state.pair?.paired ? ' Use the shared pair VIP rather than either computer’s individual address.' : ' Reserve that address in DHCP.'}`
+    hostsEntry: hostname && householdAddress ? `${householdAddress} ${hostname}` : '',
+    curlCommand: url && householdAddress ? `curl --resolve '${hostname}:${new URL(url).port || '443'}:${householdAddress}' '${url}'` : '',
+    browserInstructions: !admin ? '' : url ? `HTTPS for ${hostname} uses port ${new URL(url).port || '443'}. ${localDestination
+      ? `The reported destination ${expectedAddress} reaches only this computer. Household access requires a reserved server LAN address or shared pair VIP.`
+      : householdAddress ? `Household DNS must map this hostname to the expected LAN destination ${householdAddress}.`
+      : 'The LAN destination is not reported. Confirm the reserved server IPv4 address or shared pair VIP before configuring hostname mapping.'}`
+      : 'The certificate hostname and HTTPS address are not reported yet. Use the exact address once available; browser access requires a valid certificate, a listening HTTPS entrance and matching hostname resolution.',
+    recoveryHelp: !admin ? '' : recoveryUrl ? `The reported loopback endpoint is ${recoveryUrl} ${state.environment === 'home-assistant'
+      ? 'inside this application’s network namespace. Home Assistant ingress is a separate recovery entrance; another SSH add-on does not automatically share this listener.'
+      : 'on this application’s computer. Remote loopback recovery requires an SSH tunnel to that listener.'}`
+      : 'The recovery endpoint is not confirmed. Recovery and Home Assistant ingress have separate status; a wildcard listener is not a client address.',
+    lanBackupHelp: admin ? `LAN HTTP backup is disabled by default.${backupPort ? ` The reported listener uses port ${backupPort}.` : ' Its listener port is not reported.'} To enable it, set web.lan_http_enabled to true in this computer’s private configuration and restart. HTTP exposes passwords and household data to interception or modification; restrict it to a trusted LAN firewall boundary.` : '',
+    dnsInstructions: localDestination ? 'A loopback destination cannot provide household access. Confirm the reserved server LAN IPv4 address or shared pair VIP before configuring the hostname mapping.'
+      : hostname ? `Add a local DNS A-record for ${hostname} pointing to ${householdAddress ?? 'the server’s reserved LAN IPv4 address'}.${state.pair?.paired ? ' Use the shared pair VIP rather than either computer’s individual address.' : ' Reserve that address in DHCP.'}`
       : `After certificate setup, map the exact certificate hostname to ${state.pair?.paired ? 'the shared pair VIP' : 'the server’s reserved LAN IPv4 address'}.`,
     helper: admin ? state.updates?.installed ?? state.helper?.version ?? 'Not installed' : null,
     keyExpiry: admin ? state.helper?.nodeKeyExpired === true ? 'Expired (reported by Tailscale)' : keyExpiry(state.helper?.nodeKeyExpiresAt, now) : null,
     keyExpired: admin && (state.helper?.nodeKeyExpired === true || Number.isFinite(new Date(state.helper?.nodeKeyExpiresAt ?? NaN).getTime())
       && new Date(state.helper.nodeKeyExpiresAt).getTime() <= now),
     securityWarning: admin && state.helper?.securityUpdate === true
-      ? 'Tailscale reports an urgent security update for this helper. Check eligible signed releases; advisory coverage is incomplete.' : '',
+      ? 'An urgent security update for this helper was reported by Tailscale. Check eligible signed releases; advisory coverage is incomplete.' : '',
     securityReported: admin && state.helper?.securityUpdate === true && state.helper?.securityObservedAt
       ? `Vendor signal reported ${date(state.helper.securityObservedAt)}.` : '',
     securityStatus: admin ? state.helper?.securityUpdate === true ? 'Urgent update reported'
-      : state.helper?.runningLatest === true ? 'Running latest · reported by Tailscale' : state.helper?.securityUpdate === false ? 'No urgent update reported' : 'Not reported' : null,
+      : state.helper?.securityUpdate === false ? 'No urgent update reported' : 'Not reported' : null,
     tested: admin ? state.updates?.testedVersion ?? 'Not reported' : null,
     installed: admin ? state.updates?.installed ?? null : null,
     latest: admin ? state.updates?.latest ?? 'Not checked' : null,
@@ -317,7 +341,10 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     for (const [field, id] of [['dnsResolver', 'dns-resolver'], ['expectedAddress', 'expected-address'], ['dnsA', 'dns-a'], ['dnsAAAA', 'dns-aaaa']])
       setText(`secure-web-access-${id}`, admin ? view[field] : '');
     setText('secure-web-access-dns-instructions', admin ? view.dnsInstructions : '');
-    $('secure-web-access-hosts-help').hidden = !view.hostname;
+    setText('secure-web-access-browser-instructions', admin ? view.browserInstructions : '');
+    setText('secure-web-access-recovery-help', admin ? view.recoveryHelp : '');
+    setText('secure-web-access-lan-backup-help', admin ? view.lanBackupHelp : '');
+    $('secure-web-access-hosts-help').hidden = !view.hostsEntry;
     setText('secure-web-access-hosts-entry', view.hostsEntry);
     $('secure-web-access-curl-help').hidden = !view.curlCommand;
     setText('secure-web-access-curl-command', view.curlCommand);
@@ -333,7 +360,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     setText('secure-web-access-problem-code', view.problemCode);
     setText('secure-web-access-problem-label', view.historicalProblem ? 'Last action problem code' : 'Current problem code');
     $('secure-web-access-problem-row').hidden = !view.problemCode;
-    setText('secure-web-access-last-error', view.busy && view.error ? `Last reported problem: ${view.error}` : '');
+    setText('secure-web-access-last-error', view.busy && view.error ? `Last reported problem · ${view.error}` : '');
     $('secure-web-access-last-error').hidden = !view.busy || !view.error;
     if (localReceipt && !actionReceiptRecent(localReceipt.at, now())) localReceipt = null;
     setText('secure-web-access-receipt', view.receipt?.text ?? '');
@@ -403,7 +430,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
       return true;
     } catch (error) {
       if (generation === epoch && error.status !== 401) {
-        localReceipt = { at: now(), text: `Last request: ${actionLabels[action] ?? 'Web access'} · ${date(now())}. ${error.message || 'The reply could not be confirmed.'}` };
+        localReceipt = { at: now(), text: `Last request · ${actionLabels[action] ?? 'Web access'} · ${date(now())}. ${error.message || 'The reply could not be confirmed.'}` };
       }
       return false;
     } finally {
