@@ -47,9 +47,13 @@ Device = extracted_class(PATCHED['device.py'], 'TuyaLocalDevice', {
     '_refresh_cached_state', 'async_refresh', 'unique_id', 'name',
     '_set_values', '_retry_on_failed_connection', '_get_unsent_properties',
     '_send_pending_updates', '_add_properties_to_pending_updates',
+    '_register_local_observation_source', '_local_observation_source_exclusive',
+    '_status_for_local_observations', '_receive_for_local_observations', '_native_reply_for_local_observations',
+    '_local_observation_source_context', '_local_reply_is_current',
 }, {'time': lambda: CLOCK[0], 'deepcopy': deepcopy, 'sha256': hashlib.sha256,
     '_LOGGER': logging.getLogger('synthetic-tuya'), 'log_json': lambda value: '<synthetic>',
     '_ERROR_HINTS': {}, '_NO_PENDING_UPDATES': object(),
+    'tinytuya': SimpleNamespace(DP_QUERY=10, DP_QUERY_NEW=16, STATUS=8, PREFIX_55AA_VALUE=0x55AA), 'DOMAIN': 'tuya_local',
     'get_device_id': lambda value: value['device_id'] + ':' + value['device_cid'],
     'CONF_DEVICE_ID': 'device_id', 'CONF_DEVICE_CID': 'device_cid'})
 Entity = extracted_class(PATCHED['entity.py'], 'TuyaLocalEntity', {'extra_state_attributes'},
@@ -64,6 +68,9 @@ def device_fixture():
     device.dev_id = 'synthetic-native-device'
     device._api = SimpleNamespace(id=device.dev_id, parent=None, set_socketPersistent=lambda value: None)
     device._FAKE_IT_TIMEOUT = 5
+    device._force_dps = []
+    device._local_source_record = None
+    device._local_source_token = object()
     device._reset_cached_state()
     return device
 

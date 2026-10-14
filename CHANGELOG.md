@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve original appliance field evidence when a positively identified partial
+  Tuya status packet arrives before its query reply. Delayed complete replies
+  still withdraw omitted fields, and ambiguous or shared-source correlation
+  remains fail-closed.
+
 - Preserve connected native Easee session references when native-control
   deactivation to cloud cannot prove the same separately admitted backend boundary. Cleanup waits
   without discarding profiles or duties; a confirmed disconnect still permits
