@@ -350,6 +350,11 @@ connections before releasing the listener. A silent or partial handshake cannot
 hold the role/address handover until the HTTP timeout. This does not change the
 charger's retry timing or the separate bounded cloud recovery below.
 
+A client that disconnects before its WebSocket upgrade is admitted releases its
+pending database save. An independently connecting client keeps its own durable
+admission, and listener shutdown still cancels all pending upgrades. A completed
+save does not authorize attachment of a disconnected client.
+
 An ordinary stop, crash, suspension or power loss is a local connection outage.
 A new charge or Easee app Start can wait for ST-MQ approval while the controller
 is unavailable. Restart ST-MQ to restore local control. Returning to cloud

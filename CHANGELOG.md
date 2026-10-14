@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Discard abandoned local OCPP connection handshakes from the pending save queue,
+  allowing another connecting client to proceed without obsolete work. Connected
+  clients still require durable state admission and current control authority.
+
 - Confirm Home Assistant HTTPS installation identity through authenticated
   Supervisor host information when container identity files are unavailable.
   Preserve saved identities on failure. Show the next HTTPS setup action clearly,

@@ -129,8 +129,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     stateReady = false; error = 'transaction-state-unavailable';
     socket?.terminate(); reset();
   }
-  function runState(operation, { connection, bytes = 0 } = {}) {
-    const current = () => !closed && canControl() && (connection === undefined || socket === connection);
+  function runState(operation, { connection, bytes = 0, signal = cancellation.signal } = {}) {
+    const current = () => !closed && !signal.aborted && canControl() && (connection === undefined || socket === connection);
     const execute = () => {
       if (!current()) throw requestError('ocpp-request-revoked');
       const prior = admitted;
@@ -138,7 +138,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       state?.afterRollback?.(() => storageFailed(connection ?? socket));
       try { return operation(); } finally { admitted = prior; }
     };
-    try { return state?.runWrite ? state.runWrite(execute, { signal: cancellation.signal, isCurrent: current, priority: 'control', bytes })
+    try { return state?.runWrite ? state.runWrite(execute, { signal, isCurrent: current, priority: 'control', bytes })
       : Promise.resolve(execute()); }
     catch (error) { return Promise.reject(error); }
   }
@@ -760,7 +760,16 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
             stream.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return;
           }
           let ready = false;
-          try { ready = await runState(() => { refreshAuthority(); return prepareState(); }); } catch { /* Admission did not grant this connection. */ }
+          const admission = new AbortController(), disconnected = () => admission.abort();
+          // A client EOF can leave the server's writable half open while its
+          // upgrade waits for SQLite. Retire that save without waiting for close.
+          stream.once('end', disconnected);
+          stream.once('close', disconnected);
+          try {
+            ready = await runState(() => { refreshAuthority(); return prepareState(); },
+              { signal: AbortSignal.any([cancellation.signal, admission.signal]) });
+          } catch { /* Admission did not grant this connection. */ }
+          finally { stream.off('end', disconnected); stream.off('close', disconnected); }
           if (!ready || stream.destroyed || closed || !canControl()) {
             if (!stream.destroyed) stream.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n'); return;
           }
