@@ -290,7 +290,7 @@ export async function startReplica({ config, clock = Date.now,
     };
   }
 
-  async function getReadContext() {
+  async function getReadContext(rechecked = false) {
     await refresh();
     if (closed) throw Object.assign(new Error('Slave viewer is closed'), { statusCode: 503 });
     const snapshot = current;
@@ -304,9 +304,18 @@ export async function startReplica({ config, clock = Date.now,
         } catch (error) {
           // No context exists yet for the server's release finally. Reject the
           // original read failure after releasing this unleased transaction.
-          if (opened) try { snapshot.store.db.exec('ROLLBACK'); }
+          let rolledBack = false;
+          if (opened) try { snapshot.store.db.exec('ROLLBACK'); rolledBack = true; }
           catch (cleanupError) {
             try { if (error && typeof error === 'object') error.cleanupError ??= cleanupError; } catch {}
+          }
+          if (!rechecked && rolledBack && !closed && error instanceof ReplicaCheckpointMismatchError) {
+            // A worker pin can finish after a newer publication. Only that
+            // current generation permits one new, fully verified read lease.
+            let latest;
+            try { latest = await readPublication(directory); }
+            catch { /* An unreadable manifest retains the original refusal. */ }
+            if (latest && latest.generation !== snapshot.publication.generation) return getReadContext(true);
           }
           throw error;
         }

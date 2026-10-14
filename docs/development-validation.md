@@ -131,6 +131,14 @@ retain the original full donor. The paired MQTT
 source-context tests exercise actual recording and equipment consumers across
 handover and restart so a transport change cannot create a new device identity.
 
+`test/replica-checkpoint-diagnostic.test.js` holds the actual chart-worker readiness
+boundary while another verified peer publication completes. The original request
+must open that current generation once, preserving its source clock. A further
+publication race, failed rollback, missing or unreadable manifest still refuses
+the read. The same suite retains the real SQLite-COMMIT-before-manifest refusal
+and unknown-error privacy checks; no cached database or weaker fence supplies a
+successful response.
+
 `test/incremental-replication.test.js` compares identical changes over 1 and 32 MiB
 of synthetic payload, verifies equal bounded transfer size and database inode
 reuse, injects a disconnect during a multi-frame transaction, and exercises crash

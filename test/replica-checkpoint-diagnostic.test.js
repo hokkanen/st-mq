@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, open, readlink, stat, rm } from 'node:fs/promises';
+import { mkdtemp, open, readlink, stat, rm, rename } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { Store } from '../src/storage/store.js';
 import { startReplica } from '../src/app/replica.js';
+import { createChartService } from '../src/app/chart-service.js';
 import { createSourceSnapshot } from '../src/replication/transport.js';
 import { ownedDirectory, publishSnapshot, readReplicaPublication } from '../src/replication/publication.js';
 import { acceptPeerPublication, applyPeerPublication } from '../src/replication/journal-publication.js';
@@ -17,7 +18,7 @@ const mismatch = { code: 'replica_checkpoint_mismatch',
   error: 'The read-only snapshot no longer matches its database checkpoint. Wait for verified synchronization, then refresh.' };
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 
-async function fixture(t) {
+async function fixture(t, { makeChartService, readPublication } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'stmq-replica-diagnostic-'));
   const source = new Store(join(root, 'source.sqlite'));
   let app;
@@ -33,13 +34,179 @@ async function fixture(t) {
     host: '127.0.0.1', port: 0, token: '', dataDir: root, dbPath: publication.dbPath, databaseDir: directory,
     mirror: { directory, intervalMs: 60_000 }, recording: { backupDirectory: join(root, 'backups'), fullVerificationIntervalMs: 0 },
     connections: {}, h66: { enabled: false, writeEnabled: false } },
-    makeChartService: () => ({ pin: async () => {}, close: async () => {} }), clock: () => now, installSignalHandlers: false });
+    makeChartService: makeChartService ?? (() => ({ pin: async () => {}, close: async () => {} })),
+    readPublication, clock: () => now, installSignalHandlers: false });
   const request = async path => {
     const response = await fetch(`http://127.0.0.1:${app.server.address().port}${path}`, { signal: AbortSignal.timeout(5000) });
     return { status: response.status, body: await response.json() };
   };
   return { root, source, directory, publication, app, request, now };
 }
+
+function chartBoundaries(t) {
+  const pending = [], all = [];
+  let created = 0;
+  t.after(() => { for (const boundary of all) boundary.released.resolve(); });
+  return {
+    get created() { return created; },
+    arm() {
+      const boundary = { entered: deferred(), released: deferred(), store: null };
+      pending.push(boundary); all.push(boundary); return boundary;
+    },
+    makeChartService({ store }) {
+      created++;
+      const service = createChartService({ store }), pin = service.pin.bind(service);
+      const boundary = pending.shift();
+      service.pin = async (...args) => {
+        await pin(...args);
+        if (boundary) {
+          boundary.store = store;
+          boundary.entered.resolve();
+          await boundary.released.promise;
+        }
+      };
+      return service;
+    },
+  };
+}
+
+function publicationUpdates(f) {
+  const transfers = new PeerTransfers(join(f.root, 'changes'));
+  const peer = { request: (operation, value) => operation === 'peer-transfer'
+    ? transfers.export({ dbPath: f.source.path, ...value }) : transfers.chunk(value) };
+  let publication = f.publication;
+  return async label => {
+    f.source.event(label, { synthetic: true }, f.now);
+    const target = f.source.checkpoint();
+    const transfer = await receivePeerTransfer({ directory: join(f.root, 'receive'), peer, after: publication.checkpoint });
+    publication = await applyPeerPublication({ directory: f.directory, transfer,
+      metadata: { ...publication, generation: randomUUID() } });
+    assert.ok(sameCheckpoint(publication.checkpoint, target));
+    return publication;
+  };
+}
+
+test('a completed newer publication is verified after an older chart-worker refresh loses its checkpoint', async t => {
+  const charts = chartBoundaries(t), f = await fixture(t, charts), update = publicationUpdates(f);
+  const inode = (await stat(f.publication.dbPath)).ino;
+  const first = await update('synthetic-first-published-event');
+  const boundary = charts.arm(), waiting = f.request('/api/recording-health');
+  await boundary.entered.promise;
+  assert.ok(sameCheckpoint(boundary.store.checkpoint(), first.checkpoint));
+  const second = await update('synthetic-second-published-event');
+  assert.ok(sameCheckpoint((await readReplicaPublication(f.directory)).checkpoint, second.checkpoint));
+  assert.ok(sameCheckpoint(await databaseCheckpoint({ dbPath: f.publication.dbPath }), second.checkpoint));
+  assert.ok(sameCheckpoint(boundary.store.checkpoint(), first.checkpoint), 'The old read transaction remains coherent');
+  boundary.released.resolve();
+  assert.equal((await waiting).status, 200, 'A completed current publication can satisfy this original request');
+  assert.ok(sameCheckpoint(f.app.store.checkpoint(), second.checkpoint));
+  assert.equal(charts.created, 3, 'Only one new verified generation is opened for this request');
+  assert.equal((await stat(f.publication.dbPath)).ino, inode);
+  const status = await f.request('/api/status');
+  assert.equal(status.status, 200);
+  assert.equal(status.body.sync.generation, second.generation);
+  assert.equal(status.body.sync.snapshotAt, second.sourceAt, 'Publication time is not replaced by the retry clock');
+});
+
+test('a second completed publication race still refuses after the one verified read attempt', async t => {
+  const charts = chartBoundaries(t), f = await fixture(t, charts), update = publicationUpdates(f);
+  await update('synthetic-first-published-event');
+  const first = charts.arm(), waiting = f.request('/api/recording-health');
+  await first.entered.promise;
+  const second = await update('synthetic-second-published-event'), retry = charts.arm();
+  first.released.resolve();
+  await retry.entered.promise;
+  assert.ok(sameCheckpoint(retry.store.checkpoint(), second.checkpoint));
+  const third = await update('synthetic-third-published-event');
+  assert.ok(sameCheckpoint((await readReplicaPublication(f.directory)).checkpoint, third.checkpoint));
+  retry.released.resolve();
+  assert.deepEqual(await waiting, { status: 503, body: mismatch });
+  assert.equal(charts.created, 3, 'This request cannot chase successive publications');
+  assert.equal((await f.request('/api/recording-health')).status, 200);
+  assert.ok(sameCheckpoint(f.app.store.checkpoint(), third.checkpoint));
+});
+
+test('a failed rollback does not admit a newer publication or expose its cleanup failure', async t => {
+  const charts = chartBoundaries(t), f = await fixture(t, charts), update = publicationUpdates(f);
+  await update('synthetic-first-published-event');
+  const boundary = charts.arm(), waiting = f.request('/api/recording-health');
+  await boundary.entered.promise;
+  const second = await update('synthetic-second-published-event');
+  const exec = boundary.store.db.exec.bind(boundary.store.db);
+  let rollbacks = 0;
+  const mocked = t.mock.method(boundary.store.db, 'exec', sql => {
+    if (sql === 'ROLLBACK' && ++rollbacks === 2) throw Error('Synthetic private cleanup failure');
+    return exec(sql);
+  });
+  t.after(() => { mocked.mock.restore(); });
+  boundary.released.resolve();
+  assert.deepEqual(await waiting, { status: 503, body: mismatch });
+  assert.equal(charts.created, 2, 'Cleanup failure cannot open the next generation');
+  mocked.mock.restore();
+  exec('ROLLBACK');
+  assert.ok(sameCheckpoint(await databaseCheckpoint({ dbPath: f.publication.dbPath }), second.checkpoint));
+  assert.equal((await f.request('/api/recording-health')).status, 200);
+});
+
+test('an unreadable current manifest retains the original verified checkpoint refusal', async t => {
+  const charts = chartBoundaries(t); let unreadable = false;
+  const f = await fixture(t, { ...charts, readPublication: directory => {
+    if (unreadable) throw Error('Synthetic private manifest failure');
+    return readReplicaPublication(directory);
+  } }), update = publicationUpdates(f);
+  await update('synthetic-first-published-event');
+  const boundary = charts.arm(), waiting = f.request('/api/recording-health');
+  await boundary.entered.promise;
+  const second = await update('synthetic-second-published-event');
+  unreadable = true; boundary.released.resolve();
+  assert.deepEqual(await waiting, { status: 503, body: mismatch });
+  assert.equal(charts.created, 2);
+  unreadable = false;
+  assert.equal((await f.request('/api/recording-health')).status, 200);
+  assert.ok(sameCheckpoint(f.app.store.checkpoint(), second.checkpoint));
+});
+
+test('a missing current manifest cannot make the advanced database a readable fallback', async t => {
+  const charts = chartBoundaries(t), f = await fixture(t, charts), update = publicationUpdates(f);
+  await update('synthetic-first-published-event');
+  const boundary = charts.arm(), waiting = f.request('/api/recording-health');
+  await boundary.entered.promise;
+  const second = await update('synthetic-second-published-event');
+  const manifest = join(f.directory, 'publication.json'), held = join(f.directory, 'publication-held.json');
+  await rename(manifest, held);
+  boundary.released.resolve();
+  assert.deepEqual(await waiting, { status: 503, body: mismatch });
+  assert.equal(charts.created, 2);
+  assert.ok(sameCheckpoint(await databaseCheckpoint({ dbPath: f.publication.dbPath }), second.checkpoint));
+  await rename(held, manifest);
+  assert.equal((await f.request('/api/recording-health')).status, 200);
+  assert.ok(sameCheckpoint(f.app.store.checkpoint(), second.checkpoint));
+});
+
+test('closing the viewer during the fresh-manifest check cannot acquire a new read lease', async t => {
+  const charts = chartBoundaries(t), entered = deferred(), released = deferred();
+  let holdManifest = false;
+  t.after(() => released.resolve());
+  const f = await fixture(t, { ...charts, readPublication: async directory => {
+    const publication = await readReplicaPublication(directory);
+    if (holdManifest) { holdManifest = false; entered.resolve(); await released.promise; }
+    return publication;
+  } }), update = publicationUpdates(f);
+  await update('synthetic-first-published-event');
+  const boundary = charts.arm();
+  const waiting = f.request('/api/recording-health').then(response => ({ response }), () => ({ transportLost: true }));
+  await boundary.entered.promise;
+  await update('synthetic-second-published-event');
+  holdManifest = true; boundary.released.resolve();
+  await entered.promise;
+  const closing = f.app.close();
+  released.resolve();
+  const result = await waiting;
+  await closing;
+  assert.ok(result.transportLost || result.response.status !== 200);
+  assert.equal(charts.created, 2, 'A closed viewer cannot open the next generation');
+  assert.throws(() => f.app.store.checkpoint(), 'The original reader is closed too');
+});
 
 test('real incremental publication exposes only a typed status/health refusal and preserves the fence through recovery', async t => {
   const f = await fixture(t), inode = (await stat(f.publication.dbPath)).ino;

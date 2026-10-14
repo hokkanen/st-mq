@@ -446,6 +446,13 @@ checkpoint readable; restart reconciles the durable publication receipt and
 retries the same saved delivery after a lost acknowledgement. A receiver keeps
 one writable SQLite database while read-only viewers pin coherent transactions.
 
+A new read is refused while the committed database and current publication
+checkpoint disagree. If a newer publication completes during a viewer refresh,
+the request may verify that current generation once after releasing the failed
+read transaction. An unchanged, missing or unreadable publication, failed cleanup,
+or another checkpoint race still leaves the request unavailable. This does not
+serve newer database rows under old snapshot metadata or change source clocks.
+
 A receiver with no base needs a full initial snapshot. Independent histories and
 explicit exceptional repairs can also need a full snapshot; these exports retain
 full integrity and byte-content validation. Normal synchronization, startup and

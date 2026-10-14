@@ -10,6 +10,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   and loses the temporary enrollment URL. Keep the saved identity and show startup
   progress; status polling does not repeatedly request login.
 
+- Verify a newer completed read-only publication once when it arrives during a
+  viewer refresh, avoiding an unnecessary failed request. Pending publications,
+  failed cleanup and repeated checkpoint races remain unavailable.
+
 - Discard abandoned local OCPP connection handshakes from the pending save queue,
   allowing another connecting client to proceed without obsolete work. Connected
   clients still require durable state admission and current control authority.
