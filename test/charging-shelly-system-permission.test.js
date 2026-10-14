@@ -448,13 +448,66 @@ test('SYS false can outlast the old startup window and current deadline without 
   assert.notEqual(f.item().identification.completedAt, null, 'Its original active testing budget expires normally');
   assert.equal(starts(f).length, 1);
   const terminal = structuredClone(f.item().identification);
-  f.advance(1000); f.permission(true); await f.update();
+  f.advance(1000); f.permission(true);
+  assert.equal(await f.adapter.waitForInputAdmission(), true,
+    'Receipt alone does not establish a durably admitted native Enable');
+  await f.update();
   assert.equal(f.item().controller.status().devicePermissionHeld, false);
   assert.equal(f.item().controller.status().manual, null);
   assert.equal(f.item().identification.id, terminal.id);
   assert.equal(f.item().identification.attempt, terminal.attempt);
   assert.equal(f.item().identification.completedAt, terminal.completedAt);
   assert.equal(starts(f).length, 1, 'A later device Enable does not grant another identification Start');
+});
+
+test('a received SYS Enable remains held until its original observation is admitted', async t => {
+  const f = await startedFixture(t), before = f.item().controller.status();
+  f.advance(2200); f.permission(false); await f.update();
+  f.advance(20_000); await f.update();
+  f.advance(before.currentTest.expiresAt - f.now + 1000); f.measure(0); await f.update();
+  assert.equal(f.item().controller.status().devicePermissionHeld, true);
+  const terminal = structuredClone(f.item().identification), writes = f.writes.length;
+  f.advance(1000);
+  // Hold this received packet at the existing Store admission boundary. The
+  // next ordinary reconcile may safely return before that observation commits.
+  const admitted = f.store.runWrite;
+  let release, intercepted = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  f.store.runWrite = (action, options) => {
+    if (!intercepted) { intercepted = true; return gate.then(() => admitted(action, options)); }
+    return admitted(action, options);
+  };
+  try {
+    const eventAt = f.now, receivedAt = f.now;
+    f.permission(true); assert.equal(intercepted, true);
+    await f.update();
+    assert.equal(f.item().controller.status().devicePermissionHeld, true);
+    assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-input-persistence-pending');
+    assert.equal(f.writes.length, writes, 'An unadmitted Enable grants no actuator permission');
+    release(); assert.equal(await f.adapter.waitForInputAdmission(), true);
+    const event = f.adapter.snapshot().permissionEvents.find(row => row.value === true && row.eventAt === eventAt);
+    // A correlated native query may admit this value first; the later duplicate
+    // notification then needs no additional permission event. Any produced
+    // event still retains the original source/receipt rather than the wait.
+    if (event) {
+      assert.equal(event.eventAt, eventAt); assert.equal(event.receivedAt, receivedAt);
+      assert.equal(event.valueUpdatedAt, null, 'A value-only event does not invent a native last-change clock');
+    }
+    await f.update();
+    assert.equal(f.item().controller.status().devicePermissionHeld, false);
+    assert.equal(f.now, receivedAt, 'Joining admission does not renew the original source clock');
+    assert.equal(f.item().identification.id, terminal.id);
+    assert.equal(f.item().identification.completedAt, terminal.completedAt);
+    assert.equal(starts(f).length, 1, 'Admission cannot grant another identification Start');
+    const nativeAt = Math.floor(eventAt / 1000) * 1000, observed = f.adapter.snapshot().fields.start_charging;
+    assert.equal(observed.measuredAt, nativeAt);
+    assert.ok(observed.receivedAt >= receivedAt && observed.readback.requestedAt >= receivedAt,
+      'The correlated component readback keeps its receipt separate from the original event');
+    f.advance(1000); await f.adapter.refresh({ force: true });
+    const held = f.adapter.snapshot().fields.start_charging;
+    assert.equal(held.measuredAt, nativeAt, 'A later native query cannot renew the unchanged setting clock');
+    assert.equal(held.receivedAt, f.now);
+  } finally { release(); f.store.runWrite = admitted; }
 });
 
 test('a preserved SYS-interrupted attempt still requires independent physical and vehicle current evidence', async t => {

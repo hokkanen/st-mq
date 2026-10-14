@@ -158,6 +158,10 @@ Independently observed native/manual activity is likewise accounted for without
 granting the economic scheduler new permission to change that activity.
 Charger 2's prospective current command uses Charger 1's confirmed permission,
 so an unconfirmed replacement cannot manufacture spare capacity.
+An elapsed cloud period is not a confirmed pause: if the next native instruction
+was unsent or remains unconfirmed, the started program retains its native current
+commitment until the charger confirms waiting. Initial waits and confirmed own
+pauses do not acquire that commitment, and native restrictions still apply.
 Below the capacity needed to run both cars, balanced sharing retains an existing
 allocation for at most its current 15-minute slice. Accepted session progress
 keeps repeated replanning from continually favoring the same car; changed limits,

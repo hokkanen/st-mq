@@ -127,7 +127,18 @@ function currentSharingActive(control, now) {
     || snapshot.appControl?.stopped || snapshot.appControl?.enabled === false
     || snapshot.appControl?.faulted || snapshot.appControl?.authorizationBlocked) return false;
   const execution = control.execution?.periods;
-  if (execution?.length) return execution.some(row => row.startAt <= now && (row.endAt === null || row.endAt > now));
+  if (execution?.length) {
+    if (execution.some(row => row.startAt <= now && (row.endAt === null || row.endAt > now))) return true;
+    // Cloud pauses require a native schedule readback. An elapsed planned
+    // period alone cannot release the peer's entitlement when its replacement
+    // was unsent or remains unconfirmed. Keep initial waits and confirmed own
+    // pauses out; OCPP/Shelly retain their separate native permission paths.
+    if (snapshot.transport === 'ocpp' || snapshot.transport === 'shelly-evse'
+      || execution[0].startAt > now
+      || control.phase === 'paused' && control.execution.pauseConfirmedThrough > now
+      || snapshot.pluggedIn !== true || !Number.isSafeInteger(control.session.connectedAt)
+      || control.session.connectedAt > snapshot.readAt || control.vehicleDisconnect?.awaitingConnection) return false;
+  }
   if (snapshot.transport === 'shelly-evse')
     return snapshot.fields?.start_charging?.value === true || control.ownedPause === true;
   if (snapshot.transport === 'ocpp') return snapshot.transactionConfirmed === true
