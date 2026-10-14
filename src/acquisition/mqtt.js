@@ -17,6 +17,7 @@ import { createShellyEvseAdapter } from '../charging/shelly-evse.js';
 import { createChargingTeslaCapture, decodeChargingTeslaField } from '../charging/teslamate.js';
 import { mqttRouting } from './mqtt-routing.js';
 import { storageFailureCode } from '../storage/write-health.js';
+import { attachMqttStartupDiagnostic } from './startup-diagnostic.js';
 
 export { decodeMqttTemperature } from './mqtt-temperature.js';
 
@@ -115,6 +116,39 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       admittingVehicleReplay: null });
   }
   const primary = channels.get('primary'), client = primary.client;
+  const startupConnections = { observedConnections: 0, countsClipped: false };
+  const startupCounts = () => ({ subscriptionRequests: 0, subscriptionCallbacks: 0,
+    acceptedCallbacks: 0, rejectedCallbacks: 0, committedCallbacks: 0,
+    admissionFailures: 0, countsClipped: false });
+  primary.startupCounts = startupCounts();
+  const countStartup = (counts, key) => {
+    if (!counts) return;
+    if (counts[key] < 65535) counts[key]++;
+    else counts.countsClipped = true;
+  };
+  const readinessFailure = (error, stage, cause) => {
+    try {
+      let queue = null;
+      try { queue = store.writeQueueStatus?.(); } catch { /* Queue evidence remains unknown. */ }
+      const knownQueue = queue && ['pending', 'queued', 'activeJobs'].every(key => Number.isSafeInteger(queue[key]) && queue[key] >= 0)
+        && (queue.waitingSince === null || Number.isFinite(queue.waitingSince))
+        && (queue.oldestPendingMs === null || Number.isFinite(queue.oldestPendingMs) && queue.oldestPendingMs >= 0);
+      const counts = primary.startupCounts;
+      return attachMqttStartupDiagnostic(error, { stage, cause,
+        connected: primary.connected, subscriptionsReady: primary.subscriptionsReady,
+        readinessFailed: primary.readinessFailed, receptionFailed: primary.receptionFailed,
+        observedConnections: startupConnections.observedConnections,
+        subscriptionRequests: counts.subscriptionRequests, subscriptionCallbacks: counts.subscriptionCallbacks,
+        acceptedCallbacks: counts.acceptedCallbacks, rejectedCallbacks: counts.rejectedCallbacks,
+        committedCallbacks: counts.committedCallbacks, admissionFailures: counts.admissionFailures,
+        replayAdmissionsPending: primary.pendingReceipts, recordingPending: primary.recordingPending,
+        queuePending: knownQueue ? queue.pending : null, queueQueued: knownQueue ? queue.queued : null,
+        queueActive: knownQueue ? queue.activeJobs : null,
+        queueWaiting: knownQueue ? queue.waitingSince !== null : null,
+        queueOldestPendingMs: knownQueue ? queue.oldestPendingMs : null,
+        countsClipped: counts.countsClipped || startupConnections.countsClipped });
+    } catch { return error; }
+  };
   const evseConfig = engine.charging?.configuration?.chargers?.charger2;
   const primaryIdentity = routing.identity('primary');
   const evse = evseConfig?.enabled ? createShellyEvseAdapter({ config: evseConfig,
@@ -351,13 +385,18 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     channel.readinessFailed ||= failed;
     channel.subscriptionsReady = true;
     channel.ready = channel.connected && !channel.readinessFailed && !channel.receptionFailed;
-    for (const finish of [...channel.readinessWaiters]) finish(channel.ready ? null : new Error('MQTT primary subscriptions unavailable'));
+    for (const finish of [...channel.readinessWaiters]) finish(channel.ready ? null
+      : readinessFailure(new Error('MQTT primary subscriptions unavailable'), 'primary-subscriptions', 'unavailable'));
   };
   const primaryReady = () => new Promise((resolve, reject) => {
     if (primary.ready) { resolve(); return; }
-    if (stopped || stopping || primary.readinessFailed) { reject(new Error('MQTT primary subscriptions unavailable')); return; }
+    if (stopped || stopping || primary.readinessFailed) {
+      reject(readinessFailure(new Error('MQTT primary subscriptions unavailable'), 'primary-subscriptions',
+        stopped || stopping ? 'closed' : 'unavailable')); return;
+    }
     const finish = error => { clearTimeout(timer); primary.readinessWaiters.delete(finish); error ? reject(error) : resolve(); };
-    const timer = setTimeout(() => finish(new Error('MQTT primary subscription readiness timed out')), 10_000);
+    const timer = setTimeout(() => finish(readinessFailure(new Error('MQTT primary subscription readiness timed out'),
+      'primary-subscriptions', 'timeout')), 10_000);
     primary.readinessWaiters.add(finish);
   });
   const ready = async () => {
@@ -367,11 +406,15 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     // for their SUBACK as well, without waiting for a device to be online.
     while (evse && evse.snapshot().mqtt.subscriptionStatus !== 'subscribed') {
       if (stopped || stopping || !primary.connected || evse.snapshot().mqtt.subscriptionStatus === 'failed' || Date.now() >= deadline)
-        throw new Error('MQTT primary charger subscriptions unavailable');
+        throw readinessFailure(new Error('MQTT primary charger subscriptions unavailable'), 'charger-subscriptions',
+          // This existing branch combines transport, grant and deadline causes.
+          // Do not infer its winning condition by reading a later wall clock.
+          stopped || stopping ? 'closed' : 'unavailable');
       await new Promise(resolve => setTimeout(resolve, 25));
     }
     if (stopped || stopping || !primary.connected || !primary.ready)
-      throw new Error('MQTT primary subscriptions unavailable');
+      throw readinessFailure(new Error('MQTT primary subscriptions unavailable'), 'primary-subscriptions',
+        stopped || stopping ? 'closed' : 'unavailable');
   };
   for (const channel of channels.values()) {
     const { client, vehicleSubscriptions } = channel;
@@ -434,6 +477,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       const generation = ++channel.generation;
       channel.receptionFailed = false; channel.receptionOutcomes.clear();
       channel.connected = true; channel.ready = false; channel.subscriptionsReady = false; channel.readinessFailed = false;
+      const counts = isPrimary ? channel.startupCounts = startupCounts() : null;
+      if (isPrimary) countStartup(startupConnections, 'observedConnections');
       const currentSubscription = () => channel.connected && !stopped && !stopping && generation === channel.generation;
       let pending = 1;
       const replayVehicle = ({ id, messages, current, overflow, receive, clear, failedAdmission }) => {
@@ -486,18 +531,25 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       };
       const subscribe = (topic, options, callback) => {
         pending++;
+        countStartup(counts, 'subscriptionRequests');
         let acknowledged = false;
         const done = (error, granted) => {
           if (acknowledged || !currentSubscription()) return;
           acknowledged = true;
-          channel.readinessFailed ||= subscriptionRejected(topic, error, granted);
+          const rejected = subscriptionRejected(topic, error, granted);
+          channel.readinessFailed ||= rejected;
+          countStartup(counts, 'subscriptionCallbacks');
+          countStartup(counts, rejected ? 'rejectedCallbacks' : 'acceptedCallbacks');
           void write(() => {
             try { callback(error, granted); }
             finally {
-              const finish = () => { if (--pending === 0 && currentSubscription()) finishReadiness(channel); };
+              const finish = () => {
+                countStartup(counts, 'committedCallbacks');
+                if (--pending === 0 && currentSubscription()) finishReadiness(channel);
+              };
               if (store.afterCommit) store.afterCommit(finish); else finish();
             }
-          }, { isCurrent: currentSubscription });
+          }, { isCurrent: currentSubscription, onFailure: () => countStartup(counts, 'admissionFailures') });
         };
         try { client.subscribe(topic, options, done); }
         catch { done(new Error('MQTT subscription failed')); }
@@ -832,11 +884,15 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         } catch { report('caravan-shutdown-restoration-pending'); }
       }
       if (restore && canControl()) await floorOverride.release({ reason: 'application-shutdown', now: engine.clock() }).catch(() => report('floor-shutdown-restoration-pending'));
+      // Freeze pending readiness evidence before cancellation clears the queue.
+      const readinessClosed = primary.readinessWaiters.size
+        ? readinessFailure(new Error('MQTT closed'), 'primary-subscriptions', 'closed') : null;
       stopping = true;
       cancellation.abort();
       for (const channel of channels.values()) {
         channel.generation++; channel.vehicleSubscriptions.clear(); channel.equipmentSubscriptionBuffer = null; channel.teslaSubscriptionBuffer = null;
-        for (const finish of [...channel.pendingSubscriptions, ...channel.readinessWaiters]) finish(new Error('MQTT closed'));
+        for (const finish of [...channel.pendingSubscriptions, ...channel.readinessWaiters])
+          finish(channel === primary && readinessClosed ? readinessClosed : new Error('MQTT closed'));
       }
       clearInterval(maintenance);
       clearInterval(shellyMaintenance);

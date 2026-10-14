@@ -11,6 +11,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   original report clocks and late commands through that added read; repeated
   replacement does not create a new refresh loop.
 
+- Distinguish MQTT connection, subscription callback and durable admission phases
+  in bounded paired startup failure diagnostics. Preserve readiness deadlines,
+  protected fallback and private broker/device data.
+
 - Await actual HTTPS fixture operation completion under the test case deadline,
   preserving operation identity and cancellation cleanup during queued publication.
 

@@ -67,6 +67,17 @@ current-schema backup, or follow the [coordinated paired fresh-start procedure](
 for Home Assistant and Ubuntu. Deleting only `st-mq.sqlite` is insufficient when
 saved pair authority points to a different active database.
 
+An MQTT readiness failure may add bounded `acquisition` evidence to that same
+`paired-startup-failed` log. `stage` separates initial primary subscriptions from
+the charger's separate subscription wait. Current connection, delivered subscribe
+callbacks, completed durable callbacks and pending write counts remain distinct.
+For example, all callbacks can arrive while their storage admission is still
+pending. These counts describe the failure snapshot, not its hardware or network
+cause. Missing queue evidence stays null. Details contain no broker/device
+identifiers, topics, raw errors or payloads; successful startup emits no extra log.
+The ten-second wait, durable gate and protected recovery remain unchanged. Resolve
+the reported problem and review current roles before explicitly retrying promotion.
+
 If normal dashboard status fails while the paired application is in protected
 recovery, **Paired computers** loads through its separate authenticated management
 read. An admin can still review **Reset pairing → Start fresh** and its archive

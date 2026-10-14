@@ -20,6 +20,7 @@ import { acquireReceiverLock } from '../replication/receiver.js';
 import { installJournal } from '../storage/journal.js';
 import { checkedRecoverySource as checkedSource, emptyRecoverySource } from '../recovery/source-check.js';
 import { learningVersion } from '../app/committed-learning.js';
+import { mqttStartupDiagnostic } from '../acquisition/startup-diagnostic.js';
 
 const ACTIONS = new Set(['handover', 'promote', 'check-recovery', 'recover', 'rejoin']);
 const PEER_OPERATIONS = new Set(['status', 'snapshot', 'checkpoint', 'verify-checkpoint', 'peer-anchor',
@@ -53,6 +54,7 @@ const publicSync = sync => ({ state: ['waiting', 'syncing', 'ready', 'error'].in
  * never raw error text. */
 export function startupFailureDiagnostic(error, code) {
   const database = databaseErrorDetails(error);
+  const acquisition = mqttStartupDiagnostic(error);
   if (database && (code === 'runtime_failed' || code === error?.code)) code = database.code;
   const location = typeof error?.stack === 'string' ? error.stack.split('\n').slice(1).flatMap(line => {
     if (!/^\s+at /.test(line)) return [];
@@ -65,7 +67,8 @@ export function startupFailureDiagnostic(error, code) {
       ...Object.fromEntries(Object.entries(database).filter(([key]) => key !== 'code')),
       guidance: databaseErrorGuidance(database),
     } : {}),
-    ...(location ? { location: `src/${location}` } : {}) };
+    ...(location ? { location: `src/${location}` } : {}),
+    ...(acquisition ? { acquisition } : {}) };
 }
 
 export function peerFailureDiagnostic(error, operation) {

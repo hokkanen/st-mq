@@ -13,6 +13,7 @@ import { startPaired } from '../src/pairing/runtime.js';
 import { startupFailureDiagnostic } from '../src/pairing/manager.js';
 import { databaseErrorDetails } from '../src/storage/database-errors.js';
 import { readReplicaPublication } from '../src/replication/publication.js';
+import { attachMqttStartupDiagnostic } from '../src/acquisition/startup-diagnostic.js';
 
 const now = Date.parse('2026-01-09T12:00Z');
 const failure = code => Object.assign(new Error('synthetic private diagnostic'), { code });
@@ -24,7 +25,7 @@ async function fixture(t) {
     await rm(root, { recursive: true, force: true });
   });
   async function open(name, { role = 'master', releaseError = null, brokerError = null, runtimeError = null,
-    reportStartupFailure = null } = {}) {
+    reportStartupFailure = null, runtimeFailure = null } = {}) {
     const directory = join(root, name);
     const config = { ...loadConfig({ XDG_CONFIG_HOME: root, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory),
       input: 'mqtt', role: 'slave', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
@@ -49,6 +50,7 @@ async function fixture(t) {
       // snapshot verifier and protected HTTP viewer still run end to end.
       startRuntime: async ({ config: current }) => {
         primaryStarts++;
+        if (runtimeFailure) throw runtimeFailure;
         if (runtimeError) throw failure(runtimeError);
         // Checkpoint lineage uses the active runtime's normal write admission.
         const store = new Store(current.dbPath);
@@ -151,6 +153,30 @@ test('an asynchronously rejecting diagnostic sink cannot interrupt protected fal
   assert.equal(view.pair.error, 'runtime_failed');
   assert.equal(instance.diagnostics.length, 1);
   assert.doesNotMatch(JSON.stringify(instance.diagnostics), /synthetic asynchronous|synthetic private/);
+});
+
+test('trusted MQTT readiness evidence cannot weaken protected fallback or a throwing diagnostic sink', async t => {
+  const error = attachMqttStartupDiagnostic(new Error('synthetic private MQTT credential'), {
+    stage: 'primary-subscriptions', cause: 'timeout', connected: true, subscriptionsReady: false,
+    readinessFailed: false, receptionFailed: false, observedConnections: 1, subscriptionRequests: 2,
+    subscriptionCallbacks: 2, acceptedCallbacks: 2, rejectedCallbacks: 0, committedCallbacks: 0,
+    admissionFailures: 0, replayAdmissionsPending: 0, recordingPending: 0,
+    queuePending: 4, queueQueued: 4, queueActive: 0, queueWaiting: true, queueOldestPendingMs: 10000, countsClipped: false,
+  });
+  const f = await fixture(t), instance = await f.open('controller', { runtimeFailure: error,
+    reportStartupFailure: () => { throw new Error('synthetic private sink failure'); } });
+  const view = await status(instance.app);
+  assert.equal(view.readOnly, true); assert.equal(view.pair.role, 'protected');
+  assert.equal(view.pair.canControl, false); assert.equal(view.pair.error, 'runtime_failed');
+  assert.equal(instance.diagnostics.length, 1);
+  assert.equal(instance.diagnostics[0].acquisition.connected, true);
+  assert.equal(instance.diagnostics[0].acquisition.subscriptionCallbacks, 2);
+  assert.equal(instance.diagnostics[0].acquisition.committedCallbacks, 0);
+  assert.doesNotMatch(JSON.stringify(instance.diagnostics), /credential|private|sink/);
+  await f.close(instance.app);
+  const restarted = await f.open('controller');
+  assert.equal(restarted.primaryStarts(), 0);
+  assert.equal((await status(restarted.app)).pair.role, 'protected');
 });
 
 test('schema diagnostics expose only numeric versions and fixed recovery guidance', () => {

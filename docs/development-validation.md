@@ -326,6 +326,16 @@ They do not impose a separate one-second poll limit on filesystem publication.
 Controlled held-work cases verify both delayed completion and cancellation;
 their owned gates release before manager cleanup even if a fake SDK ignores abort.
 
+`test/mqtt-startup-readiness-diagnostic.test.js` drives real MQTT.js protocol
+packets through an owned in-memory stream and holds a real synthetic SQLite writer.
+It distinguishes delivered SUBACK callbacks from Store commit admission using the
+unchanged ten-second wall timer, and covers close, transport loss, absent CONNACK,
+rejected grants, unknown queue evidence and stale callbacks after replacement.
+No household broker or equipment is contacted. `test/mqtt-startup-diagnostic.test.js`
+checks bounded immutable provenance and private-value refusal; paired startup tests
+retain protected fallback even when the diagnostic sink fails. These diagnostic
+fixtures do not qualify native reconnect budgets or infer the cause of a live timeout.
+
 The optional extended Node package runs separately:
 
 ```sh
