@@ -407,7 +407,10 @@ test(`repeated SYS cycles ${delivery} preserve the original attempt and physical
       assert.equal(f.fields.start_charging.value, false);
       assert.equal(f.fields.current_limit.value, 6);
     }
-    f.advance(1500); f.permission(true, 'sys', { omitSource: true }); await f.update();
+    f.advance(1500); f.permission(true, 'sys', { omitSource: true });
+    assert.equal(await f.adapter.waitForInputAdmission(), true,
+      'Received SYS permission must be admitted before asserting its reconciled release');
+    await f.update();
     assert.equal(f.item().controller.status().manual, null);
     assert.equal(f.item().controller.status().devicePermissionHeld, false);
     assertOriginalAttempt(f, before, attempt);
@@ -416,6 +419,45 @@ test(`repeated SYS cycles ${delivery} preserve the original attempt and physical
   assert.equal(f.item().vehicleMatch, null, 'Native cycles do not identify a vehicle');
   assert.equal(starts(f).length, 1);
   assert.deepEqual(currentWrites(f).map(row => row.value), [6]);
+});
+
+test('a repeated SYS Enable between reconciles holds the original active attempt until admission', async t => {
+  const f = await startedFixture(t), before = f.item().controller.status(), attempt = structuredClone(f.item().identification);
+  f.advance(2200); f.permission(false);
+  assert.equal(await f.adapter.waitForInputAdmission(), true);
+  await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().fields.start_charging.value, false);
+  const writes = f.writes.length, runWrite = f.store.runWrite;
+  let release, entered = false, eventBytes;
+  const gate = new Promise(resolve => { release = resolve; });
+  f.store.runWrite = (action, options) => {
+    if (!entered && options.bytes === eventBytes) { entered = true; return gate.then(() => runWrite(action, options)); }
+    return runWrite(action, options);
+  };
+  try {
+    f.advance(1500); const eventAt = f.now, nativeAt = Math.floor(eventAt / 1000) * 1000;
+    eventBytes = Buffer.byteLength(JSON.stringify({ src: DEVICE, method: 'NotifyStatus',
+      params: { ts: eventAt / 1000, 'boolean:201': { value: true } } })) + Buffer.byteLength(`${PREFIX}/events/rpc`);
+    f.permission(true, 'sys', { omitSource: true }); assert.equal(entered, true);
+    f.runtime.telemetry(f.now);
+    assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-input-persistence-pending');
+    assert.equal(f.item().controller.status().devicePermissionHeld, true);
+    assert.equal(f.item().controller.status().manual, null);
+    assert.equal(f.writes.length, writes, 'Received permission cannot authorize a new write');
+    assertOriginalAttempt(f, before, attempt);
+    f.advance(250); release(); assert.equal(await f.adapter.waitForInputAdmission(), true);
+    const event = f.adapter.snapshot().permissionEvents.find(row => row.value === true && row.eventAt === eventAt);
+    assert.ok(event, 'The admitted SYS Enable is captured before reconciliation consumes it');
+    assert.equal(event.eventAt, eventAt); assert.equal(event.receivedAt, eventAt);
+    assert.equal(event.valueUpdatedAt, null, 'Partial notification keeps its actual missing native clock');
+    await f.update();
+    assert.equal(f.item().controller.status().devicePermissionHeld, false);
+    assert.equal(f.item().controller.status().manual, null);
+    assertOriginalAttempt(f, before, attempt);
+    assert.equal(f.adapter.snapshot().fields.start_charging.measuredAt, nativeAt,
+      'The correlated component clock is the original native update, not admission time');
+    assert.equal(starts(f).length, 1); assert.deepEqual(currentWrites(f).map(row => row.value), [6]);
+  } finally { release(); f.store.runWrite = runWrite; await f.adapter.waitForInputAdmission(); }
 });
 
 test('read-only telemetry previews a SYS false hold without consuming its event or cancelling the attempt', async t => {
