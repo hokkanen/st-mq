@@ -92,14 +92,14 @@ marking the requested datapoints sent. Previously, a returned connection error
 could be discarded and the pending write marked sent without a successful
 transport result. A successful `nowait` result still means only a transport
 attempt, not device receipt or a new observation. The handler's existing retry
-count, reset behavior and empty-status exception remain unchanged.
+count, cache/evidence reset and empty-status exception remain unchanged.
 Each locked retry reads the current unsent entries instead of replaying an
 earlier failed batch. A successful result marks only the exact entries captured
 for that attempt: a newer command, even one requesting the same value, remains
 unsent until its own attempt. Removed entries are not recreated, and an empty
 batch sends nothing and leaves native protocol-health flags and failure counts
 unchanged. This does not cancel an already in-flight native attempt
-or change the ordinary exhausted-retry reset; neither command bookkeeping nor
+or change a setting-write exhausted-retry reset; neither command bookkeeping nor
 successful transport supplies received device evidence.
 The bridge checks an expiring, identity-bound command before passing it to the
 native Home Assistant service. Once handed off, Tuya Local's own delivery and
@@ -138,11 +138,32 @@ interval, repeated refresh cadence, connection reset or serialization policy is
 introduced. If only this added read exhausts its retries while its exact source
 remains current, the terminal cache reset preserves the actual current pending
 entries. It never restores an earlier snapshot, recreates a removed request or
-replays a superseded value. Ordinary status/reset behavior is unchanged.
+replays a superseded value. The ordinary status-read boundary below separately
+retains only unsent current intent; setting-write resets remain unchanged.
 
 This avoids one demonstrated offline delay until the next periodic full poll. It
 does not diagnose a household withdrawal or guarantee immediate device recovery.
 The source patch still needs the separately reviewed Core restart below.
+
+## Commands queued behind an ordinary status read
+
+An ordinary periodic status read can exhaust its retries while a newer native
+command waits for the same lock. Its terminal reset still withdraws observations
+and clears the cache and connection/poll clocks. For a current exclusively owned
+direct API without forced-DPS or child sources, it retains only the actual
+currently unsent command entries. The first read dispatch captures the API,
+physical identity, selected protocol and exact selected API/lock/owner record
+after initial protocol selection and lock admission. Terminal retention requires
+that same source; changed identity, API, protocol, ownership or shutdown uses the
+existing reset. Shared, child and unproved sources retain their existing behavior.
+
+Sent overlays are removed. Newer opposite or same-value entries retain their
+own objects and supersede the earlier request; removed entries are not recreated.
+No pending-command snapshot is restored. A setting-write terminal failure keeps
+its existing reset behavior. This preserves a command already accepted by the
+native integration, not fresh feedback or new command permission; only a later
+device report confirms physical execution. Native polling, locking, retry counts,
+protocol selection and backoff remain unchanged.
 
 ## Native field withdrawal diagnostics
 
@@ -255,3 +276,9 @@ source and generation changes, queued/cancelled/in-flight work, poll-only behavi
 and late superseding commands. Controlled executor gates compare ordinary and
 added reads without claiming measured household command latency. Separate
 source-pinned AES/CRC probes qualify the actual socket-reopen/parser path.
+`test/tuya-local-read-command-retention.test.js` executes the whole periodic
+status/receive producer and current native command path at the controlled frame
+boundary. It checks current unsent entries, late supersession, multiple datapoints,
+removed/sent entries, physical source and selected-owner loss, actual initial
+protocol selection, and unchanged setting-write terminal failure. It does not
+prove device delivery or household latency.

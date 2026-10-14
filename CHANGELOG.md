@@ -8,6 +8,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 - Keep Web access action buttons the same height on phones when a label wraps.
 
+- Preserve a current unsent native command queued behind a failed ordinary Tuya
+  status read. Withdraw unavailable feedback as before; changed sources, sent
+  values and superseded or removed requests cannot supply a replay.
+
 - Request one earlier native status refresh after the supported dehumidifier's
   socket replacement withdraws current fields. Preserve unknown observations,
   original report clocks and late commands through that added read; repeated

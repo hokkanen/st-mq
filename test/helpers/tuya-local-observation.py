@@ -57,6 +57,7 @@ Device = extracted_class(PATCHED['device.py'], 'TuyaLocalDevice', {
     '_register_local_observation_source', '_local_observation_source_exclusive',
     '_status_for_local_observations', '_receive_for_local_observations', '_native_reply_for_local_observations',
     '_local_observation_source_context', '_local_reply_is_current',
+    '_current_pending_command_source',
 }, {'time': lambda: CLOCK[0], 'deepcopy': deepcopy, 'sha256': hashlib.sha256,
     'monotonic': monotonic, '_LOGGER': logging.getLogger('synthetic-tuya'), 'log_json': lambda value: '<synthetic>',
     '_ERROR_HINTS': {}, '_NO_PENDING_UPDATES': object(),

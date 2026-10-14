@@ -33,6 +33,7 @@ Device = o.extracted_class(o.PATCHED['device.py'], 'TuyaLocalDevice', {
     '_register_local_observation_source', '_local_observation_source_exclusive', '_set_values', '_get_unsent_properties',
     '_status_for_local_observations', '_receive_for_local_observations', '_native_reply_for_local_observations',
     '_local_observation_source_context', '_local_reply_is_current',
+    '_current_pending_command_source',
     '_local_status_refresh_source', '_request_local_status_refresh', '_take_local_status_refresh',
 }, {'asyncio':asyncio, 'CancelledError':asyncio.CancelledError, 'time':lambda:o.CLOCK[0],
     'deepcopy':deepcopy,'sha256':hashlib.sha256,'monotonic':time.monotonic,'_LOGGER':logging.getLogger('synthetic-query'),

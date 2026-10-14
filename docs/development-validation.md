@@ -821,6 +821,13 @@ through the added read's terminal failure only while that source remains current
 Separate AES/CRC socket-reopen probes validate parser reachability; neither test
 boundary establishes the cause of a household withdrawal or physical delivery.
 
+The native read-command-retention suite also drives the complete periodic status
+loop through exhausted retries with a real native-lock waiter. It checks that
+only current unsent entries survive, newer opposite/same-value requests supersede,
+removed/sent entries stay removed, and changed physical identity/API/protocol/owner
+or shutdown retains nothing. Actual initial protocol selection precedes the
+source snapshot; setting-write terminal reset remains on its original path.
+
 The fullscreen suite checks the page controls, chart entry/exit restoration,
 external fullscreen changes and fallback behavior with synthetic data.
 
