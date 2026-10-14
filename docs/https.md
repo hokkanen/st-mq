@@ -1,6 +1,7 @@
 # Secure web access
 
-Open **Data & settings → Web access**, immediately above **Configuration**.
+Open **Data & settings → Connections & configuration → Web access**,
+immediately above **Configuration**.
 Home Assistant ingress and local HTTP recovery work before HTTPS is configured.
 Setting up HTTPS never restarts heating, charging or recording. The optional
 listener and certificate helper report their own failures.
@@ -34,10 +35,24 @@ load measurements do not qualify physical Raspberry Pi behavior.
 
 ## Guided setup
 
-Web access has a six-step checklist. Its statuses come from current password,
-helper, certificate, listener and DNS evidence; they are not saved progress
-preferences. Client access and the unattended node-key-expiry policy remain
-explicit manual checks rather than automatically completed steps.
+Web access shows this computer’s current status and the next action to take.
+An authorization link appears beside the actions only when the helper provides a
+current, validated Tailscale sign-in URL. Detailed setup instructions, household
+DNS and recovery checks, and certificate renewal/helper updates have separate
+closed disclosures. Opening or refreshing the panel preserves those disclosures
+and keyboard focus.
+
+HTTPS being requested, a stored certificate, a listening HTTPS port and household
+DNS verification are separate observations. Client access and the unattended
+node-key-expiry policy remain manual checks; neither is marked complete by a
+server-side check or a valid certificate.
+
+The panel keeps recent actions for 24 hours using their original operation clocks.
+An earlier failed request can remain visible after HTTPS recovers; it is labeled
+as a past action and does not change current readiness or block a fresh sign-in
+link. A lost request reply and a later observed operation result remain separate
+evidence. Current unresolved problems remain visible independently of receipt
+expiry.
 
 1. Configure an admin password of at least 24 characters in
    `controller.web_token`. An optional distinct family password must meet the
@@ -51,11 +66,11 @@ explicit manual checks rather than automatically completed steps.
    approval or Tailnet Lock requirement. A recipient node directs setup to its
    paired certificate owner. Existing system-wide or HA Tailscale installations
    remain separate.
-3. Follow the checklist links to [Tailscale DNS settings](https://console.tailscale.com/admin/dns)
+3. Use the setup guide links to [Tailscale DNS settings](https://console.tailscale.com/admin/dns)
    and enable MagicDNS and HTTPS certificates. In [Machines](https://console.tailscale.com/admin/machines),
    review or disable expiry for this dedicated node so unattended certificate
    renewal can continue. A valid certificate does not verify that policy.
-4. Choose **Recheck** or **Retry** to finish certificate issuance and start this
+4. Choose **Recheck** or **Retry setup** to finish certificate issuance and start this
    computer's HTTPS listener. The panel shows the exact URL and reports local
    readiness independently of household DNS. Keep using ingress or recovery
    until the chosen HTTPS URL works; the panel never navigates automatically.
@@ -69,6 +84,13 @@ explicit manual checks rather than automatically completed steps.
    open the full HTTPS URL on each intended browser device and
    log in normally. A changed origin has separate browser storage; credentials
    are not copied automatically between origins.
+
+If setup reports **Authorization link unavailable**, it did not receive a usable
+sign-in URL. Choose **Retry setup** to request one; a retry preserves the installed
+helper runtime and saved identity. A failed authorization command is reported as
+a setup failure, separately from waiting for browser sign-in, account approval or
+a connection. The panel never invents an enrollment link or hides the failure
+behind an approval prompt.
 
 The external steps are Tailscale account authorization and settings, a stable LAN
 address and local DNS mapping, and a browser check on each intended device. The
@@ -88,7 +110,7 @@ silently follow an account-side rename.
 
 Development, setup, authorization and certificate issuance can finish with an
 ISP-controlled router. The UI separates local TLS readiness from LAN DNS readiness
-and can report **HTTPS ready locally · household DNS pending**. An unconfigured
+and can report **HTTPS ready · DNS not verified**. An unconfigured
 server check is not evidence that the household's DNS is missing or broken.
 It does not leave a working ingress/recovery page automatically.
 
@@ -123,9 +145,9 @@ from authenticated Supervisor `GET /info`. The raw identity and Supervisor token
 are not exposed in status or helper process environment.
 
 For Home Assistant, check Supervisor health and the add-on's Supervisor API
-access, then choose **Retry**. For standalone Linux, restore read access to a
+access, then choose **Retry setup**. For standalone Linux, restore read access to a
 supported identity source (`/etc/machine-id`, `/sys/class/dmi/id/product_uuid` or
-`/sys/firmware/devicetree/base/serial-number`), then retry. Preserve the managed
+`/sys/firmware/devicetree/base/serial-number`), then choose **Retry setup**. Preserve the managed
 directory; deleting it is not a repair. A changed machine binding still requires
 the existing explicit fenced-owner identity restoration described below.
 
@@ -195,8 +217,8 @@ roots are reviewed application source in `src/https/official-roots.js`; they are
 not installation secrets. Native Raspberry Pi and Supervisor validation remain
 separate from these container checks.
 
-After explicit setup, choose automatic compatible stable updates or notify/manual
-installation. Update status distinguishes the tested anchor, installed/running
+After explicit setup, choose automatic compatible stable updates or manual
+installation in **Certificate renewal & helper updates**. Update status distinguishes the tested anchor, installed/running
 version, latest observed candidate, and failed/stale checks. The updater manages
 only this private helper; it does not update host Tailscale, Node, dependencies,
 Home Assistant, ST-MQ or router firmware.

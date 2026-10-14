@@ -8,9 +8,17 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 - Confirm Home Assistant HTTPS installation identity through authenticated
   Supervisor host information when container identity files are unavailable.
-  Preserve saved identities on failure. Guide account authorization, certificate
-  settings, later household DNS and browser verification through a Web access
-  checklist, with temporary certificate-checked testing before router setup.
+  Preserve saved identities on failure. Show the next HTTPS setup action clearly,
+  with a current authorization link when available and a useful retry path when
+  it is missing. Keep certificate, listener and household DNS checks distinct.
+
+- Repair dedicated HTTPS helper enrollment and reapply its verified network
+  restrictions when retrying. Preserve installed identity state on failed setup.
+
+- Keep Web access and Configuration inside Connections & configuration. Use
+  compact setup, DNS and renewal disclosures; preserve current readiness beside
+  recent action receipts. Center matching fold titles, statuses and markers,
+  including Home learning, and keep recording warning badges spaced on phones.
 
 - Reject malformed saved HTTPS manager state before setup can replace it.
   Only a genuinely missing state file initializes a new disabled installation.

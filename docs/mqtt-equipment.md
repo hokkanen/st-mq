@@ -299,7 +299,7 @@ including native Shelly status, RPC request and temporary reply topics. Generic
 MQTT also exposes last live/retained packet receipt and subscription status, so a
 quiet publisher can be distinguished from a missing broker route. Command payloads,
 broker credentials and native hardware identities are not exposed in diagnostics.
-Under **Data & settings → Connections & electricity rates → MQTT**, devices are
+Under **Data & settings → Connections & configuration → MQTT**, devices are
 grouped by location, including H66, heating commands and the Shelly EVSE charger
 in Garage. Each expanded card starts with its purpose, followed by current check
 details when available, incoming/request/command topics and packet diagnostics.
@@ -308,7 +308,7 @@ subscription status and last accepted live packet time independently of physical
 charger readiness.
 
 Independent BMW/Tesla connection cards live in the **Vehicles** group under
-**Connections & electricity rates → MQTT**, with topics and packet diagnostics beside
+**Connections & configuration → MQTT**, with topics and packet diagnostics beside
 the other MQTT connections. **Data & settings → Vehicle telemetry** lists each
 named feed, its availability, report time and description directly, without
 another disclosure. Vehicle names and providers

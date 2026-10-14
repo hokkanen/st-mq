@@ -21,7 +21,7 @@ Show actual controller readback independently from the sender's requested minimu
 The live fold includes **Pipe model & settings**, comparing configured and reported
 parameters from `garage.protection`. Its model details explain the pipe estimate,
 reserve and fixed safety factor of 2, separately from the sender's parameter
-readback. A link opens **Connections & electricity rates → Garage freeze protection**,
+readback. A link opens **Connections & configuration → Garage freeze protection**,
 below **Home floor preheating**, for installation and setup; that section links back
 to Garage. Settings are read-only; ST-MQ applies only loaded configuration and
 requires matching fresh readback for confirmation. Offline or missing protection

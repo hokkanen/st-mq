@@ -11,11 +11,11 @@ const ready = {
   url: 'https://synthetic-access.example-tail.ts.net:8443',
   certificate: { expiresAt: '2026-12-01T12:00:00Z' },
   environment: 'home-assistant', setup: { credentialsReady: true },
-  helper: { state: 'running', version: '1.90.1', authorizationUrl: 'https://login.tailscale.com/a/synthetic-authorization' },
+  helper: { state: 'running', version: '1.104.1', authorizationUrl: 'https://login.tailscale.com/a/synthetic-authorization' },
   transport: { https: { enabled: true, listening: true, address: { port: 8443 } }, recovery: { enabled: true, listening: true, address: { port: 1234 } },
     ingress: { enabled: false }, lanHttp: { enabled: false } },
   dns: { state: 'ready', checkedAt: '2026-10-14T12:00:00Z', resolver: '192.0.2.53', expectedAddress: '192.0.2.1', a: ['192.0.2.1'], aaaa: [] },
-  updates: { policy: 'manual', installed: '1.90.1', latest: '1.90.2', candidate: '1.90.2' },
+  updates: { policy: 'manual', installed: '1.104.1', latest: '1.104.2', candidate: '1.104.2' },
 };
 
 test('a valid certificate is distinct from listener and household DNS readiness', () => {
@@ -33,50 +33,160 @@ test('a valid certificate is distinct from listener and household DNS readiness'
   assert.equal(familyView.updateAvailable, false);
 });
 
+test('ready wording requires current certificate and listener evidence, including the certificate clock', () => {
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const expired = secureWebAccessView({ ...ready, certificate: { expiresAt: now - 1 } }, { admin: true, now });
+  assert.equal(expired.label, 'HTTPS unavailable'); assert.equal(expired.tone, 'attention');
+  assert.match(expired.summary, /certificate has expired/);
+  for (const changes of [{ certificate: null }, { certificate: { expiresAt: 'invalid' } }, { transport: {} }]) {
+    const view = secureWebAccessView({ ...ready, ...changes }, { admin: true, now });
+    assert.equal(view.label, 'HTTPS not confirmed'); assert.equal(view.tone, 'pending');
+    assert.doesNotMatch(view.summary, /listener is running|valid certificate/);
+  }
+  const mismatch = secureWebAccessView({ ...ready, dns: { state: 'mismatch' } }, { admin: true, now });
+  assert.equal(mismatch.label, 'HTTPS ready · DNS mismatch');
+  assert.match(mismatch.summary, /checked DNS address does not match/);
+});
+
 test('setup without router DNS reaches local HTTPS and gives temporary certificate-checked testing instructions', () => {
   const view = secureWebAccessView({ ...ready, dns: { state: 'not_configured', resolver: null, expectedAddress: '192.0.2.1' } }, { admin: true });
-  assert.equal(view.label, 'HTTPS ready locally · household DNS pending');
+  assert.equal(view.label, 'HTTPS ready · DNS not verified');
   assert.equal(view.dnsText, 'Check not configured');
-  assert.match(view.summary, /unconfigured check does not establish whether household DNS is already working/);
-  assert.equal(view.setupSteps.tls.state, 'available');
-  assert.equal(view.setupSteps.dns.state, 'pending');
+  assert.match(view.summary, /listener is running.*DNS has not been verified/);
+  assert.match(view.next.help, /each intended device.*does not verify other devices/);
   assert.equal(view.hostsEntry, `192.0.2.1 ${ready.hostname}`);
   assert.equal(view.curlCommand, `curl --resolve '${ready.hostname}:8443:192.0.2.1' '${ready.url}/'`);
   assert.doesNotMatch(view.curlCommand, /(?:^|\s)-k(?:\s|$)|--insecure/);
-  assert.match(view.setupSteps.client.help, /A and AAAA.*client VPN or browser encrypted DNS/);
-  assert.match(view.setupSteps.client.help, /web\.lan_resolver.*save and restart workflow, then Recheck/);
-  assert.equal(view.setupSteps.client.state, 'pending', 'Server evidence never completes client verification');
   const unknown = secureWebAccessView({ ...ready, dns: { state: 'not_configured', expectedAddress: '0.0.0.0' } }, { admin: true });
   assert.equal(unknown.hostsEntry, `<LAN address> ${ready.hostname}`);
   assert.match(unknown.curlCommand, /<LAN-address>/);
-  assert.deepEqual(secureWebAccessView(ready).setupSteps, {});
+  assert.equal(secureWebAccessView(ready).next, null);
 });
 
-test('setup checklist reports current evidence rather than treating a saved enrollment link or certificate as authority', () => {
+test('current next action distinguishes local setup, authorization and paired certificate delivery', () => {
   const now = Date.parse('2026-10-14T12:00:00Z');
   const view = secureWebAccessView(ready, { admin: true, now });
   assert.equal(view.authorizationUrl, null, 'A stale AuthURL on a running helper is withheld');
-  assert.equal(view.setupSteps.authorize.label, 'Connection reported');
-  assert.equal(view.setupSteps.prepare.label, 'Passwords ready');
-  const pairedSetup = secureWebAccessView({ ...ready, pair: { paired: true } }, { admin: true, now });
-  assert.equal(pairedSetup.setupSteps.prepare.label, 'Choose certificate owner');
-  assert.equal(pairedSetup.setupSteps.prepare.state, 'pending', 'Preparation stays incomplete until the paired owner is selected');
-  assert.equal(view.setupSteps.account.label, 'Review key expiry', 'Issuance does not verify unattended key-expiry policy');
+  assert.equal(view.next.title, 'Check access on each device');
+  const pairedSetup = secureWebAccessView({ ...ready, enabled: false, phase: 'disabled', pair: { paired: true } }, { admin: true, now });
+  assert.equal(pairedSetup.pairSetup, true);
+  assert.match(pairedSetup.next.help, /Choose which computer.*separate from the master/);
   const enrollment = secureWebAccessView({ ...ready, phase: 'authorization_required', helper: { ...ready.helper, state: 'authorization_required' } }, { admin: true, now });
   assert.equal(enrollment.authorizationUrl, ready.helper.authorizationUrl);
-  assert.equal(enrollment.setupSteps.authorize.state, 'pending');
-  const unknown = secureWebAccessView({ ...ready, setup: {}, helper: { authorizationUrl: ready.helper.authorizationUrl }, transport: {}, certificate: { expiresAt: now - 1 } }, { admin: true, now });
+  assert.equal(enrollment.next.title, 'Sign in to Tailscale');
+  assert.match(enrollment.next.help, /link below.*Return here and select Recheck/);
+  const unknown = secureWebAccessView({ ...ready, helper: {}, transport: {}, certificate: { expiresAt: now - 1 } }, { admin: true, now });
   assert.equal(unknown.authorizationUrl, null);
-  assert.equal(unknown.setupSteps.prepare.label, 'Not checked');
-  assert.equal(unknown.setupSteps.authorize.label, 'Waiting for setup');
-  assert.equal(unknown.setupSteps.tls.state, 'pending');
-  assert.equal(secureWebAccessView({ ...ready, setup: { credentialsReady: false } }, { admin: true, now }).setupSteps.prepare.label, 'Passwords required');
-  const recipient = secureWebAccessView({ ...ready, pair: { paired: true, ownerId: 'synthetic-owner', localOwner: false },
-    helper: { ...ready.helper, state: 'authorization_required' } }, { admin: true, now });
+  assert.equal(unknown.next.title, 'Renew the certificate');
+  const passwords = secureWebAccessView({ ...ready, enabled: false, phase: 'disabled', setup: { credentialsReady: false } }, { admin: true, now });
+  assert.equal(passwords.next.title, 'Set an admin password first');
+  assert.match(passwords.next.help, /controller\.web_token.*24 characters.*family password/);
+  assert.equal(passwords.setupAvailable, false);
+  const recipient = secureWebAccessView({ ...ready, phase: 'peer_certificate_pending', pair: { paired: true, ownerId: 'synthetic-owner', localOwner: false },
+    helper: { ...ready.helper, state: 'authorization_required' }, transport: { https: { listening: false } } }, { admin: true, now });
   assert.equal(recipient.authorizationUrl, null);
-  assert.equal(recipient.setupSteps.authorize.label, 'Managed on paired computer');
-  assert.match(recipient.setupSteps.dns.help, /shared pair VIP rather than either computer/);
-  assert.match(recipient.setupSteps.account.help, /paired certificate owner/);
+  assert.equal(recipient.next.title, 'Finish setup on the paired computer');
+  assert.match(recipient.dnsInstructions, /shared pair VIP rather than either computer/);
+  assert.equal(recipient.accountLinks, false);
+  const disabledPeer = secureWebAccessView({ ...ready, enabled: false, phase: 'disabled',
+    pair: { paired: true, ownerId: 'synthetic-owner', localOwner: false } }, { admin: true, now });
+  assert.equal(disabledPeer.enableLabel, 'Enable HTTPS'); assert.equal(disabledPeer.next.title, 'Re-enable HTTPS');
+  assert.match(disabledPeer.next.help, /certificate from the already selected paired owner/);
+  assert.doesNotMatch(disabledPeer.next.help, /sign in|local helper|dedicated certificate helper/);
+  const disabledLocal = secureWebAccessView({ ...ready, enabled: false, phase: 'disabled' }, { admin: true, now });
+  assert.equal(disabledLocal.enableLabel, 'Enable HTTPS');
+  assert.match(disabledLocal.next.help, /reuse the saved HTTPS setup.*any saved certificate.*If renewed authorization is needed/);
+
+});
+
+test('authorization without an enrollment URL gives an honest retry path instead of promising a missing link', () => {
+  const source = { ...ready, phase: 'authorization_required', helper: { state: 'authorization_required' },
+    certificate: null, transport: { https: { enabled: false, listening: false } } };
+  const view = secureWebAccessView(source, { admin: true });
+  assert.equal(view.authorizationUrl, null);
+  assert.equal(view.next.title, 'Authorization link unavailable');
+  assert.match(view.next.help, /No authorization link was received.*Retry setup.*saved identity are preserved/);
+  assert.doesNotMatch(view.next.help, /link below|use the enrollment link here/);
+  assert.equal(view.retryAvailable, true);
+  assert.equal(view.https, 'Not listening', 'Requested HTTPS and listener readiness have separate meanings');
+  assert.equal(view.hasCertificate, false);
+  const failed = secureWebAccessView({ ...source, phase: 'degraded', error: 'helper_authorization_start_failed' }, { admin: true });
+  assert.match(failed.error, /could not start Tailscale authorization.*No sign-in link.*Retry setup.*saved identity/);
+  assert.equal(failed.retryAvailable, true);
+  const cachedFailure = secureWebAccessView({ ...source, phase: 'degraded', error: 'helper_authorization_start_failed',
+    helper: { ...source.helper, authorizationUrl: ready.helper.authorizationUrl } }, { admin: true });
+  assert.equal(cachedFailure.authorizationUrl, null, 'A failed authorization attempt cannot expose a prior cached link');
+  const disabled = secureWebAccessView({ ...source, enabled: false, phase: 'disabled',
+    helper: { ...source.helper, authorizationUrl: ready.helper.authorizationUrl } }, { admin: true });
+  assert.equal(disabled.authorizationUrl, null, 'Disabling setup withholds the prior enrollment action');
+
+  const unsafe = secureWebAccessView({ ...source, helper: { ...source.helper, authorizationUrl: 'https://attacker.invalid/a/test' } }, { admin: true });
+  assert.equal(unsafe.authorizationUrl, null);
+  assert.equal(unsafe.next.title, 'Authorization link unavailable');
+});
+
+test('a running Retry reports the current action and retains its last problem separately', async () => {
+  const source = { ...ready, phase: 'degraded', error: 'helper_authorization_start_failed',
+    operation: { state: 'running', action: 'retry', error: null } };
+  const view = secureWebAccessView(source, { admin: true });
+  assert.equal(view.busy, true); assert.equal(view.next.title, 'Setting up HTTPS');
+  assert.match(view.next.help, /current operation is running/);
+  assert.match(view.error, /could not start Tailscale authorization/);
+  assert.equal(view.problemCode, 'helper_authorization_start_failed');
+  const { document, nodes } = fixture();
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, request: async () => source });
+  await panel.refresh({ force: true });
+  assert.equal(nodes.get('secure-web-access-next-title').textContent, 'Setting up HTTPS');
+  assert.equal(nodes.get('secure-web-access-message').classList.contains('form-error'), false);
+  assert.match(nodes.get('secure-web-access-last-error').textContent, /^Last reported problem:/);
+  assert.equal(nodes.get('secure-web-access-last-error').hidden, false);
+  assert.equal(nodes.get('secure-web-access-retry').disabled, true);
+  const unknown = secureWebAccessView({ ...ready, phase: 'degraded', error: 'synthetic_unknown_failure' }, { admin: true });
+  assert.match(unknown.error, /Web access needs attention.*problem code/);
+  assert.equal(unknown.problemCode, 'synthetic_unknown_failure');
+  assert.equal(secureWebAccessView(source).problemCode, '', 'Family cannot receive diagnostic codes');
+});
+
+test('current recovery is independent of a recent failed action receipt and its original clock', () => {
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const operation = { action: 'enable', state: 'failed', completedAt: now - 1000, error: 'helper_authorization_start_failed' };
+  const recovered = { ...ready, error: null, operation };
+  const view = secureWebAccessView(recovered, { admin: true, now });
+  assert.equal(view.next.title, 'Check access on each device');
+  assert.equal(view.error, ''); assert.equal(view.historicalProblem, true);
+  assert.match(view.receipt.text, /Last action: Set up HTTPS request failed/);
+  assert.equal(view.receipt.at, operation.completedAt, 'Receipt keeps the actual operation clock');
+  for (const completedAt of [now + 1, null, 'invalid', '2026-10-14T11:59:59Z', NaN])
+    assert.equal(secureWebAccessView({ ...recovered, operation: { ...operation, completedAt } }, { admin: true, now }).receipt, null,
+      'Future, missing and non-current timestamp representations do not become recent receipts');
+
+  const enrollment = secureWebAccessView({ ...recovered, phase: 'authorization_required',
+    helper: { state: 'authorization_required', authorizationUrl: ready.helper.authorizationUrl } }, { admin: true, now });
+  assert.equal(enrollment.authorizationUrl, ready.helper.authorizationUrl, 'An older failed attempt cannot suppress the current authorization link');
+  const repairedIdentity = secureWebAccessView({ ...recovered, operation: { ...operation, error: 'identity_restore_required' } }, { admin: true, now });
+  assert.equal(repairedIdentity.restoreIdentity, false, 'A historical identity error grants no current restoration action');
+  const expiredReceipt = secureWebAccessView(recovered, { admin: true, now: now + 86_400_000 });
+  assert.equal(expiredReceipt.receipt, null); assert.equal(expiredReceipt.problemCode, '');
+  const ongoingFault = secureWebAccessView({ ...recovered, phase: 'degraded', error: 'helper_authorization_start_failed' }, { admin: true, now: now + 86_400_000 });
+  assert.equal(ongoingFault.receipt, null); assert.match(ongoingFault.error, /could not start Tailscale authorization/);
+  const processed = secureWebAccessView({ ...enrollment, ...recovered, phase: 'authorization_required',
+    operation: { ...operation, state: 'completed', error: null }, certificate: null,
+    transport: { https: { listening: false } } }, { admin: true, now });
+  assert.match(processed.receipt.text, /request processed/);
+  assert.doesNotMatch(processed.receipt.text, /HTTPS ready|setup completed/i);
+});
+
+test('current expired, stopped and missing HTTPS evidence select the appropriate recovery action', () => {
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const expired = secureWebAccessView({ ...ready, certificate: { expiresAt: now - 1 } }, { admin: true, now });
+  assert.equal(expired.next.title, 'Renew the certificate');
+  assert.match(expired.next.help, /Select Recheck to request renewal/);
+  assert.doesNotMatch(expired.next.help, /Complete Tailscale sign-in/);
+  const stopped = secureWebAccessView({ ...ready, transport: { https: { listening: false } } }, { admin: true, now });
+  assert.equal(stopped.next.title, 'Recover the HTTPS listener');
+  assert.match(stopped.next.help, /valid certificate.*Select Recheck.*port problem/);
+  const missing = secureWebAccessView({ ...ready, transport: {} }, { admin: true, now });
+  assert.equal(missing.next.title, 'Confirm HTTPS readiness');
 });
 
 test('DNS answers and identity failures give bounded actionable evidence without implying client success', () => {
@@ -86,7 +196,6 @@ test('DNS answers and identity failures give bounded actionable evidence without
   assert.equal(view.expectedAddress, '192.0.2.1');
   assert.equal(view.dnsA, '192.0.2.1');
   assert.equal(view.dnsAAAA, '2001:db8::1');
-  assert.equal(view.setupSteps.dns.state, 'attention');
   assert.match(view.error, /Supervisor host identity is unavailable.*Supervisor API access.*Retry.*saved helper identity is preserved/);
   assert.doesNotMatch(view.error, /router|DNS/);
   const linux = secureWebAccessView({ ...ready, environment: 'linux', error: 'helper_installation_binding_unavailable' }, { admin: true });
@@ -194,8 +303,48 @@ test('disabling HTTPS requires confirmation and failed operations preserve an ac
   accepted = true;
   assert.equal(await panel.run('disable'), false);
   assert.deepEqual(requests[1], ['/api/web-access', { action: 'disable' }]);
-  assert.match(nodes.get('secure-web-access-message').textContent, /Retry later/);
+  assert.match(nodes.get('secure-web-access-request-receipt').textContent, /Retry later/);
+  await panel.refresh({ force: true });
+  assert.match(nodes.get('secure-web-access-request-receipt').textContent, /Retry later/, 'Polling preserves the failed action receipt');
   assert.equal(nodes.get('secure-web-access-recheck').disabled, false);
+});
+
+test('an uncertain request reply and a durable completed operation remain distinct through polling', async () => {
+  const { document, nodes } = fixture();
+  let now = Date.parse('2026-10-14T12:00:00Z'), source = structuredClone(ready), fail = true;
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, now: () => now,
+    request: async (_path, body) => {
+      if (body && fail) {
+        source.operation = { id: 'synthetic-operation', action: body.action, state: 'completed', completedAt: now, error: null };
+        throw Error('The request reply was lost.');
+      }
+      return structuredClone(source);
+    } });
+  await panel.refresh({ force: true }); await panel.run('recheck'); await panel.refresh({ force: true });
+  assert.match(nodes.get('secure-web-access-request-receipt').textContent, /request reply was lost/);
+  assert.match(nodes.get('secure-web-access-receipt').textContent, /Last action: Recheck request processed/);
+  assert.equal(nodes.get('secure-web-access-next-title').textContent, 'Check access on each device');
+  now += 86_399_999; await panel.refresh({ force: true });
+  assert.equal(nodes.get('secure-web-access-request-receipt').hidden, false);
+  now += 1; await panel.refresh({ force: true });
+  assert.equal(nodes.get('secure-web-access-request-receipt').hidden, true);
+  assert.equal(nodes.get('secure-web-access-receipt').hidden, true);
+  fail = false; await panel.run('recheck');
+  assert.equal(nodes.get('secure-web-access-request-receipt').hidden, true, 'A newer request clears its prior local receipt');
+});
+
+test('an unknown setup phase cannot authorize client setup commands', async () => {
+  const { document, nodes } = fixture(), writes = [];
+  const source = { ...ready, phase: 'synthetic_unsupported_phase' };
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, request: async (_path, body) => {
+    if (body) writes.push(body); return source;
+  } });
+  await panel.refresh({ force: true });
+  assert.equal(nodes.get('secure-web-access-state').textContent, 'Status unavailable');
+  assert.equal(nodes.get('secure-web-access-next').hidden, true);
+  assert.equal(nodes.get('secure-web-access-recheck').disabled, true);
+  assert.equal(await panel.run('enable'), false); assert.equal(await panel.run('recheck'), false);
+  assert.deepEqual(writes, []);
 });
 
 test('first paired setup submits the explicit selected certificate owner and later re-enable preserves its binding', async () => {
@@ -299,10 +448,10 @@ test('identity restoration discards a confirmation when refreshed evidence alrea
 
 test('helper installation requires setup and stays on the certificate owner while release inspection remains available', async () => {
   const unconfigured = { ...ready, enabled: false, phase: 'disabled', helper: {},
-    updates: { policy: 'manual', installed: null, candidate: '1.90.2' } };
+    updates: { policy: 'manual', installed: null, candidate: '1.104.2' } };
   assert.equal(secureWebAccessView(unconfigured, { admin: true }).updateAvailable, false);
   assert.equal(secureWebAccessView({ ...unconfigured, enabled: true }, { admin: true }).updateAvailable, true);
-  assert.equal(secureWebAccessView({ ...unconfigured, updates: { ...unconfigured.updates, installed: '1.90.1' } }, { admin: true }).updateAvailable, true);
+  assert.equal(secureWebAccessView({ ...unconfigured, updates: { ...unconfigured.updates, installed: '1.104.1' } }, { admin: true }).updateAvailable, true);
   const peer = { ...ready, pair: { paired: true, ownerId: 'synthetic-peer-owner', localOwner: false } };
   const view = secureWebAccessView(peer, { admin: true });
   assert.equal(view.updateAvailable, false); assert.equal(view.updatePolicyAvailable, false);

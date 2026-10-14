@@ -1,4 +1,7 @@
 import { confirmAction } from './confirmation.js';
+import { helperAuthorizationUrl } from '../src/https/authorization-url.js';
+import { actionReceiptRecent } from './action-receipts.js';
+export { helperAuthorizationUrl };
 
 const phases = {
   disabled: ['Disabled', 'HTTPS is disabled. Recovery access remains available.'],
@@ -26,12 +29,14 @@ const failures = {
   https_pair_owner_setup_required: 'This HTTPS state was set up for standalone use. Preserve its directory, configure a fresh external web.https_directory and restart, then explicitly select the paired certificate owner in Web access.',
   https_certificate_owner_fixed: 'This HTTPS state already has a fixed certificate owner. Re-enable it using that owner. Changing the owner requires preserving the current state and explicitly setting up fresh HTTPS state.',
   https_peer_owner_conflict: 'The paired computer reports a different certificate owner. Review Web access on both computers and agree on one owner before retrying setup.',
+  helper_authorization_start_failed: 'The certificate helper could not start Tailscale authorization. No sign-in link was received. Choose Retry setup; the installed helper and saved identity are preserved.',
 };
 const failure = (value, environment) => {
   if (value === 'helper_installation_binding_unavailable') return environment === 'home-assistant'
-    ? 'The Supervisor host identity is unavailable. Check Home Assistant Supervisor health and this add-on’s Supervisor API access, then Retry. The saved helper identity is preserved; do not delete its directory.'
-    : 'This computer’s installation identity could not be confirmed. Restore read access to /etc/machine-id, /sys/class/dmi/id/product_uuid or /sys/firmware/devicetree/base/serial-number, then Retry. The saved helper identity is preserved; do not delete its directory.';
-  return typeof value !== 'string' ? '' : failures[value] ?? value;
+    ? 'The Supervisor host identity is unavailable. Check Home Assistant Supervisor health and this add-on’s Supervisor API access, then Retry setup. The saved helper identity is preserved; do not delete its directory.'
+    : 'This computer’s installation identity could not be confirmed. Restore read access to /etc/machine-id, /sys/class/dmi/id/product_uuid or /sys/firmware/devicetree/base/serial-number, then Retry setup. The saved helper identity is preserved; do not delete its directory.';
+  return typeof value !== 'string' || !value ? '' : failures[value]
+    ?? (/^[a-z][a-z0-9_]+$/.test(value) ? 'Web access needs attention. Review the reported problem code in Certificate renewal & helper updates before retrying.' : value);
 };
 const date = value => {
   if (value === null || value === undefined || value === '') return 'Unknown';
@@ -55,42 +60,59 @@ function ipv4(value) {
     && value !== '0.0.0.0' ? value : null;
 }
 
-function setupChecklist(state, { certificateValid, tlsReady, peerOwner, hostname, expectedAddress, dnsText }) {
-  const helper = state.helper ?? {}, dns = state.dns ?? {};
-  const connected = helper.state === 'running';
-  const step = (state, label, help) => ({ state, label, help });
-  return {
-    prepare: state.setup?.credentialsReady === true ? state.pair?.paired && !state.pair.ownerId
-      ? step('pending', 'Choose certificate owner', 'Choose the certificate owner above before Set up HTTPS. Its renewal duty is separate from the master/standby role.')
-      : step('available', 'Passwords ready', 'Network passwords meet the requirement. Use Set up HTTPS on this computer to enable its entrance.')
-      : step('pending', state.setup?.credentialsReady === false ? 'Passwords required' : 'Not checked',
-        'In Configuration, set controller.web_token to an admin password of at least 24 characters. An optional controller.web_family_token must also meet that requirement and differ from the admin password.'),
-    authorize: peerOwner ? step('pending', 'Managed on paired computer', 'Open Web access on the paired certificate owner to authorize its helper. This computer receives its certificate without a local helper.')
-      : connected ? step('available', 'Connection reported', 'Tailscale reports the dedicated helper connected. Account approval and Tailnet Lock can still require attention after reconnecting.')
-      : step('pending', helper.state === 'authorization_required' ? 'Authorization required' : helper.state === 'approval_or_connection_pending' ? 'Approval or connection pending' : 'Waiting for setup',
-        'After Set up HTTPS, use the enrollment link here. Approve this dedicated node in Tailscale if required, then Recheck. A separate host or Home Assistant Tailscale installation does not enroll this helper.'),
-    account: step(state.phase === 'certificate_settings_required' ? 'attention' : 'pending', certificateValid ? 'Review key expiry' : 'Account settings required',
-      peerOwner ? 'Manage MagicDNS, HTTPS certificates and the unattended node-key-expiry policy for the paired certificate owner.'
-        : 'In Tailscale DNS settings, enable MagicDNS and HTTPS certificates. Choose a non-sensitive node name before issuance: certificate names enter public transparency records. In Machines, review or disable this dedicated node’s key expiry for unattended renewal.'),
-    tls: tlsReady ? step('available', 'Ready locally', 'The certificate is valid and this computer’s HTTPS listener is running. Household DNS can be configured later.')
-      : step('pending', certificateValid ? 'Certificate available · listener pending' : 'Certificate pending', peerOwner
-        ? 'Wait for a validated certificate from the paired owner and this computer’s listener. Recovery and ingress remain available.'
-        : 'Authorize the helper and enable account HTTPS settings, then Recheck or Retry. Router DNS changes are not needed to issue the certificate.'),
-    dns: step(dns.state === 'ready' ? 'available' : dns.state === 'mismatch' ? 'attention' : 'pending', dnsText,
-      hostname ? `When the router or LAN resolver is available, add a local DNS A-record override for ${hostname} to ${expectedAddress ?? 'the server’s reserved LAN IPv4 address'}.${state.pair?.paired ? ' Use the shared pair VIP rather than either computer’s individual address.' : ' Reserve that address in DHCP so it stays stable.'} No public port forwarding is needed.`
-        : `After certificate setup, use the exact shown hostname and ${state.pair?.paired ? 'the shared pair VIP' : 'a reserved server LAN IPv4 address'} for a local DNS A-record override. This router/LAN resolver step can wait.`),
-    client: step('pending', 'Verify each browser device', 'Set web.lan_resolver to the LAN resolver’s IPv4 address in Configuration and apply it through the existing save and restart workflow, then Recheck. Review A and AAAA answers below; a conflicting IPv6 answer, client VPN or browser encrypted DNS can bypass the intended IPv4 mapping. Open the full HTTPS address on each intended device and check normal certificate trust before logging in. A server DNS check does not verify those devices.'),
-  };
+const actionLabels = { enable: 'Set up HTTPS', disable: 'Disable HTTPS', retry: 'Retry setup', recheck: 'Recheck',
+  'check-updates': 'Check releases', 'update-now': 'Install helper update', 'set-update-policy': 'Change update policy',
+  'restore-identity': 'Restore saved identity' };
+
+function operationReceipt(operation, now) {
+  if (!operation || !actionLabels[operation.action] || !['completed', 'failed', 'interrupted'].includes(operation.state)) return null;
+  const at = operation.completedAt;
+  if (!actionReceiptRecent(at, now)) return null;
+  return { at, error: operation.error ?? '', text: `Last action: ${actionLabels[operation.action]} request ${
+    operation.state === 'completed' ? 'processed' : operation.state === 'interrupted' ? 'interrupted' : 'failed'} · ${date(at)}.` };
 }
 
-/** An enrollment link may only open the known upstream login origin. Never
- * insert a supplied URL into markup or let it become an arbitrary navigation. */
-export function helperAuthorizationUrl(value) {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' && url.hostname === 'login.tailscale.com' && !url.port && !url.username && !url.password
-      && /^\/a\/[A-Za-z0-9_-]+\/?$/.test(url.pathname) && !url.search && !url.hash ? url.href : null;
-  } catch { return null; }
+function nextStep(state, { tlsReady, certificateValid, certificateExpired, unconfirmed, peerOwner, retainedRenewal, savedSetup, authorizationUrl, errorCode }) {
+  if (state.operation?.state === 'running') return { title: {
+    'check-updates': 'Checking helper releases', 'update-now': 'Updating the certificate helper',
+    'set-update-policy': 'Saving the update policy', 'restore-identity': 'Restoring the certificate identity',
+    disable: 'Disabling HTTPS',
+  }[state.operation.action] ?? 'Setting up HTTPS', help: 'The current operation is running. The status updates here when it completes.' };
+  if (state.phase === 'preparing') return { title: 'Setting up HTTPS',
+    help: 'Preparing this computer’s certificate access. The status updates here when the operation completes.' };
+  if (errorCode) return { title: 'Resolve the setup problem', help: errorCode === 'identity_restore_required'
+    ? 'Review the reported problem below. Restore the saved identity only after its previous owner is stopped and fenced.'
+    : 'Review the reported problem below. Retry setup after its cause is resolved; recovery access remains available.' };
+  if (state.setup?.credentialsReady === false) return { title: 'Set an admin password first',
+    help: 'In Configuration, set controller.web_token to at least 24 characters. If a family password is configured, it must also have at least 24 characters and differ from the admin password.' };
+  if (!state.enabled && state.phase === 'disabled' && !retainedRenewal) return { title: savedSetup ? 'Re-enable HTTPS' : 'Set up secure browser access',
+    help: peerOwner ? 'Select Enable HTTPS to use the certificate from the already selected paired owner. Complete any certificate renewal on that computer.'
+      : state.pair?.paired && !state.pair.ownerId
+      ? 'Choose which computer will issue and renew the certificate, then select Set up HTTPS. This choice stays separate from the master/standby role.'
+      : savedSetup ? 'Select Enable HTTPS to reuse the saved HTTPS setup. Its helper identity and any saved certificate stay in place. If renewed authorization is needed, its current sign-in link will appear here.'
+      : 'Select Set up HTTPS, then sign in to Tailscale using the link shown here. An existing host or Home Assistant Tailscale connection does not enroll this dedicated certificate helper.' };
+  if (certificateExpired && state.helper?.state !== 'authorization_required') return { title: peerOwner ? 'Renew the certificate on the paired computer' : 'Renew the certificate',
+    help: peerOwner ? 'The saved certificate has expired. Open Web access on the paired certificate owner to renew it, then select Recheck here.'
+      : 'The saved certificate has expired. Select Recheck to request renewal, then review any reported problem. Recovery access remains available.' };
+  if (certificateValid && state.enabled === true && state.transport?.https?.listening === false && ['ready', 'degraded'].includes(state.phase))
+    return { title: 'Recover the HTTPS listener', help: 'A valid certificate is saved, but this computer’s HTTPS listener is stopped. Select Recheck, then review any listener or port problem reported below.' };
+  if (peerOwner && !tlsReady) return { title: 'Finish setup on the paired computer',
+    help: 'Open Web access on the paired certificate owner. This computer receives its certificate from that owner; it does not need a separate Tailscale sign-in.' };
+  if (state.phase === 'authorization_required' || state.helper?.state === 'authorization_required')
+    return authorizationUrl ? { title: 'Sign in to Tailscale',
+      help: 'Open the authorization link below and approve this dedicated certificate node if prompted. Return here and select Recheck.' }
+      : { title: 'Authorization link unavailable',
+        help: 'No authorization link was received from the certificate helper. Select Retry setup to request one. Its installed runtime and saved identity are preserved.' };
+  if (state.phase === 'approval_or_connection_pending' || state.helper?.state === 'approval_or_connection_pending') return { title: 'Check Tailscale approval',
+    help: 'Tailscale has not confirmed this helper’s connection. Check Machines for device approval or Tailnet Lock requirements, then select Recheck.' };
+  if (state.phase === 'certificate_settings_required') return { title: 'Enable certificates in Tailscale',
+    help: 'Open Tailscale DNS settings below, enable MagicDNS and HTTPS certificates, then select Retry setup. Household router DNS can wait.' };
+  if (tlsReady) return { title: state.dns?.state === 'ready' ? 'Check access on each device' : 'Connect household browsers',
+    help: 'Open the exact HTTPS address below on each intended device. If its hostname does not resolve, use the household DNS or temporary hosts-file instructions. A check on this computer does not verify other devices.' };
+  if (!state.enabled && retainedRenewal) return { title: 'Certificate renewal remains assigned here',
+    help: 'This computer still renews the paired computer’s certificate. Its local HTTPS is disabled; review the helper’s renewal status below.' };
+  if (unconfirmed) return { title: 'Confirm HTTPS readiness', help: 'Current certificate or listener evidence is missing. Select Recheck to refresh it; recovery access remains available.' };
+  return { title: 'Finish certificate setup', help: 'Complete Tailscale sign-in and certificate settings, then select Recheck. Certificate issuance does not require household router DNS.' };
 }
 
 export function httpsAccessUrl(value, hostname) {
@@ -115,11 +137,15 @@ export function insecureWebWarning(transport, { protocol, hostname, ingress = fa
 export function secureWebAccessView(state = {}, { admin = false, now = Date.now() } = {}) {
   const transport = state.transport ?? {}, tls = transport.https;
   const phase = phases[state.phase] ?? ['Status unavailable', 'This computer’s HTTPS status is unavailable.'];
-  const unavailable = state.enabled === true && tls?.listening === false && ['ready', 'degraded'].includes(state.phase);
   const busy = state.operation?.state === 'running';
   const certificate = state.certificate;
-  const certificateValid = Number.isFinite(new Date(certificate?.expiresAt ?? NaN).getTime()) && new Date(certificate.expiresAt).getTime() > now;
+  const expiresAt = new Date(certificate?.expiresAt ?? NaN).getTime();
+  const certificateValid = Number.isFinite(expiresAt) && expiresAt > now;
+  const certificateExpired = Number.isFinite(expiresAt) && expiresAt <= now;
   const tlsReady = state.enabled === true && tls?.listening === true && certificateValid;
+  const unavailable = state.enabled === true && ['ready', 'degraded'].includes(state.phase)
+    && (tls?.listening === false || Number.isFinite(expiresAt) && expiresAt <= now);
+  const unconfirmed = state.enabled === true && state.phase === 'ready' && !unavailable && !tlsReady;
   const url = admin ? httpsAccessUrl(state.url, state.hostname) : null;
   const hostname = url ? state.hostname : null;
   const dns = state.dns ?? {};
@@ -127,28 +153,46 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     unavailable: 'Check unavailable', address_confirmation_required: 'Address needs confirmation' }[dns.state] ?? 'Not checked';
   const retainedRenewal = admin && state.pair?.localOwner === true && state.pair.peerRenewalRequired === true;
   const peerOwner = state.pair?.ownerId && state.pair.localOwner === false;
+  const savedSetup = Boolean(state.pair?.ownerId || state.updates?.installed || state.certificate)
+    && !(state.pair?.paired === true && !state.pair.ownerId);
+  const errorCode = state.error ?? state.managementError ?? tls?.error ?? state.updates?.error ?? '';
+  const receipt = admin ? operationReceipt(state.operation, now) : null;
+  const authorizationUrl = admin && !peerOwner && (state.enabled === true || retainedRenewal)
+    && errorCode !== 'helper_authorization_start_failed' && state.helper?.state === 'authorization_required'
+    ? helperAuthorizationUrl(state.helper?.authorizationUrl) : null;
   const expectedAddress = admin ? ipv4(dns.expectedAddress) : null;
   const dnsPending = admin && state.phase === 'ready' && tlsReady && dns.state !== 'ready';
   const helperSetup = state.enabled === true || retainedRenewal || Boolean(state.updates?.installed);
-  const errorCode = state.operation?.error ?? state.error ?? state.updates?.error ?? state.managementError ?? tls?.error ?? '';
   const listener = value => value?.listening === true ? `Listening${Number.isInteger(value.address?.port) && value.address.port > 0 ? ` · port ${value.address.port}` : ''}`
     : value?.enabled === false ? 'Disabled' : value?.listening === false ? 'Unavailable' : 'Unknown';
   return {
-    label: unavailable ? 'HTTPS unavailable' : retainedRenewal && !state.enabled ? 'Disabled · peer renewal retained'
-      : dnsPending ? 'HTTPS ready locally · household DNS pending' : phase[0],
+    label: unavailable ? 'HTTPS unavailable' : unconfirmed ? 'HTTPS not confirmed' : retainedRenewal && !state.enabled ? 'Disabled · peer renewal retained'
+      : dnsPending ? dns.state === 'mismatch' ? 'HTTPS ready · DNS mismatch' : 'HTTPS ready · DNS not verified' : phase[0],
     tone: unavailable || ['degraded', 'repair_required', 'authorization_required', 'certificate_settings_required'].includes(state.phase)
-      ? 'attention' : state.phase === 'ready' ? 'available' : 'pending',
-    summary: unavailable ? 'The HTTPS listener is unavailable. Recovery access remains separate; review the reported problem and retry.'
-      : dnsPending ? 'HTTPS can be tested now without router DNS. Household DNS verification is pending; an unconfigured check does not establish whether household DNS is already working.' : phase[1],
-    https: listener(tls), expiry: date(certificate?.expiresAt),
+      ? 'attention' : state.phase === 'ready' && !unconfirmed ? 'available' : 'pending',
+    summary: unavailable ? Number.isFinite(expiresAt) && expiresAt <= now
+      ? 'The certificate has expired. HTTPS is unavailable; recovery access remains separate. Review certificate renewal below.'
+      : 'The HTTPS listener is unavailable. Recovery access remains separate; review the reported problem and retry.'
+      : unconfirmed ? 'Current listener or certificate evidence is missing. Recheck to confirm HTTPS readiness; recovery access remains available.'
+      : dnsPending ? dns.state === 'mismatch' ? 'HTTPS is running, but the checked DNS address does not match the expected LAN address. Review household DNS below.'
+        : 'This computer has a valid certificate and its HTTPS listener is running. Household DNS has not been verified.' : phase[1],
+    https: state.enabled === true && tls?.listening === false ? 'Not listening' : listener(tls), expiry: date(certificate?.expiresAt),
+    hasCertificate: certificate?.expiresAt !== undefined && certificate?.expiresAt !== null,
     http: transport.lanHttp?.enabled === true ? `${listener(transport.lanHttp)} · unencrypted` : listener(transport.lanHttp),
     recovery: listener(transport.recovery), ingress: listener(transport.ingress),
     admin, enabled: state.enabled === true, busy, url, hostname,
+    enableLabel: savedSetup ? 'Enable HTTPS' : 'Set up HTTPS',
     pairSetup: admin && state.pair?.paired === true && !state.pair.ownerId,
     owner: admin && state.pair?.paired === true && state.pair.ownerId
-      ? `Certificate owner: ${state.pair.localOwner === true ? 'This computer' : 'Paired computer'}. This is independent of the master/standby role.` : '',
+      ? `Certificate renewal: ${state.pair.localOwner === true ? 'This computer' : 'Paired computer'} · independent of the master/standby role.` : '',
     peerRenewal: retainedRenewal ? 'This computer retains certificate renewal for the paired computer. Disabling this HTTPS entrance does not stop the helper while that duty remains; the peer must confirm that its HTTPS is disabled.' : '',
-    authorizationUrl: admin && !peerOwner && state.helper?.state === 'authorization_required' ? helperAuthorizationUrl(state.helper?.authorizationUrl) : null,
+    authorizationUrl,
+    next: admin && Object.hasOwn(phases, state.phase) ? nextStep(state, { tlsReady, certificateValid, certificateExpired, unconfirmed, peerOwner, retainedRenewal, savedSetup, authorizationUrl, errorCode }) : null,
+    setupAvailable: Object.hasOwn(phases, state.phase) && state.setup?.credentialsReady !== false,
+    retryAvailable: state.enabled === true && (Boolean(errorCode) || unavailable
+      || ['degraded', 'repair_required', 'certificate_settings_required'].includes(state.phase)
+      || state.phase === 'authorization_required' && !authorizationUrl),
+    accountLinks: admin && !peerOwner && ['approval_or_connection_pending', 'certificate_settings_required'].includes(state.phase),
     dnsText: `${dnsText}${dns.checkedAt ? ` · ${date(dns.checkedAt)}` : ''}`,
     dnsHelp: hostname ? `Map ${hostname} to this installation’s LAN address in household DNS. Certificate issuance does not require router DNS changes. A successful check on this computer does not verify other household devices.`
       : 'Certificate issuance can be completed before configuring household DNS.',
@@ -158,7 +202,8 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     dnsAAAA: admin ? Array.isArray(dns.aaaa) && dns.aaaa.length ? dns.aaaa.join(', ') : dns.checkedAt && dns.state !== 'not_configured' && dns.state !== 'unavailable' ? 'No answers' : 'Not checked' : '',
     hostsEntry: hostname ? `${expectedAddress ?? '<LAN address>'} ${hostname}` : '',
     curlCommand: url ? `curl --resolve '${hostname}:${new URL(url).port || '443'}:${expectedAddress ?? '<LAN-address>'}' '${url}'` : '',
-    setupSteps: admin ? setupChecklist(state, { certificateValid, tlsReady, peerOwner, hostname, expectedAddress, dnsText }) : {},
+    dnsInstructions: hostname ? `Add a local DNS A-record for ${hostname} pointing to ${expectedAddress ?? 'the server’s reserved LAN IPv4 address'}.${state.pair?.paired ? ' Use the shared pair VIP rather than either computer’s individual address.' : ' Reserve that address in DHCP.'}`
+      : `After certificate setup, map the exact certificate hostname to ${state.pair?.paired ? 'the shared pair VIP' : 'the server’s reserved LAN IPv4 address'}.`,
     helper: admin ? state.helper?.version ?? 'Not installed' : null,
     keyExpiry: admin ? state.helper?.nodeKeyExpired === true ? 'Expired (reported by Tailscale)' : keyExpiry(state.helper?.nodeKeyExpiresAt, now) : null,
     keyExpired: admin && (state.helper?.nodeKeyExpired === true || Number.isFinite(new Date(state.helper?.nodeKeyExpiresAt ?? NaN).getTime())
@@ -175,7 +220,10 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     updateSummary: peerOwner ? 'Certificate helper updates are managed on the paired certificate-owner computer.'
       : state.updates?.policy === 'manual' ? 'Signed stable releases wait for explicit installation approval.'
       : 'Signed stable releases are checked and installed automatically. Existing HTTPS can keep using a valid stored certificate after a helper update fails; some helper failures require repair.',
-    restoreIdentity: admin && (state.error === 'identity_restore_required' || state.operation?.error === 'identity_restore_required'),
+    restoreIdentity: admin && errorCode === 'identity_restore_required',
+    receipt,
+    problemCode: admin && typeof errorCode === 'string' && errorCode ? errorCode : receipt?.error ?? '',
+    historicalProblem: !errorCode && Boolean(receipt?.error),
     error: admin ? failure(errorCode, state.environment) : '',
   };
 }
@@ -186,7 +234,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
   onAccess = () => {}, ingress = false, now = Date.now, confirm = confirmAction }) {
   const $ = id => document.getElementById(id), fold = $('secure-web-access-details');
   const location = document.defaultView?.location ?? {};
-  let state = {}, overview, pending = false, reading, epoch = 0, lastRead = 0, status;
+  let state = {}, overview, pending = false, reading, epoch = 0, lastRead = 0, status, localReceipt;
   const setText = (id, text) => { const node = $(id); if (node && node.textContent !== text) node.textContent = text; };
   function render() {
     const admin = getAccess()?.role === 'admin';
@@ -194,6 +242,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     setText('secure-web-access-state', view.label); $('secure-web-access-state').dataset.state = view.tone;
     setText('secure-web-access-summary', view.summary);
     for (const field of ['https', 'expiry', 'http', 'recovery', 'ingress']) setText(`secure-web-access-${field}`, view[field]);
+    $('secure-web-access-expiry-row').hidden = !view.hasCertificate;
     $('secure-web-access-admin').hidden = !admin;
     $('secure-web-access-standby').hidden = status?.readOnly !== true && status?.role !== 'slave';
     $('secure-web-access-owner-choice').hidden = !view.pairSetup;
@@ -203,33 +252,34 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     $('secure-web-access-peer-renewal').hidden = !view.peerRenewal;
     setText('secure-web-access-security-warning', view.securityWarning);
     $('secure-web-access-security-warning').hidden = !view.securityWarning;
-    const available = admin && !pending && !view.busy && Boolean(state.phase);
+    const available = admin && !pending && !view.busy && Object.hasOwn(phases, state.phase);
     for (const action of ['enable', 'recheck', 'retry', 'disable', 'check-updates', 'update-now', 'restore-identity'])
-      $(`secure-web-access-${action}`).disabled = !available || action === 'update-now' && !view.updateAvailable;
+      $(`secure-web-access-${action}`).disabled = !available || action === 'update-now' && !view.updateAvailable
+        || action === 'enable' && !view.setupAvailable;
     $('secure-web-access-restore-identity').hidden = !view.restoreIdentity;
     $('secure-web-access-restore-identity').disabled = !available || !view.restoreIdentity;
     $('secure-web-access-enable').hidden = view.enabled;
+    setText('secure-web-access-enable', view.enableLabel);
     $('secure-web-access-disable').hidden = !view.enabled;
-    $('secure-web-access-retry').hidden = !view.enabled || view.tone !== 'attention';
+    $('secure-web-access-retry').hidden = !view.retryAvailable || view.restoreIdentity;
     $('secure-web-access-update-policy').disabled = !available || !view.updatePolicyAvailable;
     $('secure-web-access-owner-select').disabled = !available || !view.pairSetup;
     if ($('secure-web-access-update-policy').value !== view.policy) $('secure-web-access-update-policy').value = view.policy;
     const authorization = $('secure-web-access-authorize');
     $('secure-web-access-authorization').hidden = !view.authorizationUrl;
     if (view.authorizationUrl) authorization.setAttribute('href', view.authorizationUrl); else authorization.removeAttribute('href');
-    const link = $('secure-web-access-url'); link.hidden = !view.url; $('secure-web-access-url-empty').hidden = Boolean(view.url);
+    $('secure-web-access-next').hidden = !view.next;
+    setText('secure-web-access-next-title', view.next?.title ?? '');
+    setText('secure-web-access-next-help', view.next?.help ?? '');
+    $('secure-web-access-account-links').hidden = !view.accountLinks;
+    const link = $('secure-web-access-url'); link.hidden = !view.url; $('secure-web-access-address').hidden = !view.url;
     if (view.url) link.setAttribute('href', view.url); else link.removeAttribute('href');
     setText('secure-web-access-url', view.url ?? '');
     setText('secure-web-access-dns', admin ? view.dnsText : 'Not checked');
     setText('secure-web-access-dns-help', admin ? view.dnsHelp : 'Certificate issuance can be completed before configuring household DNS.');
     for (const [field, id] of [['dnsResolver', 'dns-resolver'], ['expectedAddress', 'expected-address'], ['dnsA', 'dns-a'], ['dnsAAAA', 'dns-aaaa']])
       setText(`secure-web-access-${id}`, admin ? view[field] : '');
-    for (const key of ['prepare', 'authorize', 'account', 'tls', 'dns', 'client']) {
-      const step = view.setupSteps[key];
-      setText(`secure-web-access-step-${key}-state`, step?.label ?? 'Not checked');
-      $(`secure-web-access-step-${key}-state`).dataset.state = step?.state ?? 'pending';
-      setText(`secure-web-access-step-${key}-help`, step?.help ?? '');
-    }
+    setText('secure-web-access-dns-instructions', admin ? view.dnsInstructions : '');
     $('secure-web-access-hosts-help').hidden = !view.hostname;
     setText('secure-web-access-hosts-entry', view.hostsEntry);
     $('secure-web-access-curl-help').hidden = !view.curlCommand;
@@ -241,9 +291,19 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     setText('secure-web-access-latest', view.latest ?? 'Not checked');
     setText('secure-web-access-update-check', view.checked ?? 'Not checked');
     setText('secure-web-access-update-summary', admin ? view.updateSummary : '');
+    setText('secure-web-access-problem-code', view.problemCode);
+    setText('secure-web-access-problem-label', view.historicalProblem ? 'Last action problem code' : 'Current problem code');
+    $('secure-web-access-problem-row').hidden = !view.problemCode;
+    setText('secure-web-access-last-error', view.busy && view.error ? `Last reported problem: ${view.error}` : '');
+    $('secure-web-access-last-error').hidden = !view.busy || !view.error;
+    if (localReceipt && !actionReceiptRecent(localReceipt.at, now())) localReceipt = null;
+    setText('secure-web-access-receipt', view.receipt?.text ?? '');
+    $('secure-web-access-receipt').hidden = !view.receipt;
+    setText('secure-web-access-request-receipt', admin ? localReceipt?.text ?? '' : '');
+    $('secure-web-access-request-receipt').hidden = !admin || !localReceipt;
     if (!pending) {
       setText('secure-web-access-message', view.busy ? 'Web access operation is running. Recheck after it completes.' : view.error);
-      $('secure-web-access-message').classList.toggle('form-error', Boolean(view.error));
+      $('secure-web-access-message').classList.toggle('form-error', !view.busy && Boolean(view.error));
     }
     const warning = insecureWebWarning(state.transport, { protocol: location.protocol, hostname: location.hostname, ingress })
       || (!overview?.transport && typeof overview?.warning === 'string' ? overview.warning : '');
@@ -269,8 +329,9 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     return reading;
   }
   async function run(action, extra = {}) {
-    if (pending || state.operation?.state === 'running' || getAccess()?.role !== 'admin') return false;
+    if (pending || state.operation?.state === 'running' || getAccess()?.role !== 'admin' || !Object.hasOwn(phases, state.phase)) return false;
     const actionView = secureWebAccessView(state, { admin: true });
+    if (action === 'enable' && !actionView.setupAvailable) return false;
     if (action === 'update-now' && !actionView.updateAvailable || action === 'set-update-policy' && !actionView.updatePolicyAvailable) return false;
     if (action === 'restore-identity' && !secureWebAccessView(state, { admin: true }).restoreIdentity) return false;
     const generation = epoch;
@@ -289,6 +350,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
       if (generation !== epoch || getAccess()?.role !== 'admin') return false;
       if (action === 'restore-identity' && !secureWebAccessView(state, { admin: true }).restoreIdentity) return false;
       render();
+      localReceipt = null;
       setText('secure-web-access-message', 'Web access request in progress…');
       $('secure-web-access-message').classList.remove('form-error');
       const owner = action === 'enable' && state.pair?.paired === true && !state.pair.ownerId
@@ -302,19 +364,19 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
       return true;
     } catch (error) {
       if (generation === epoch && error.status !== 401) {
-        setText('secure-web-access-message', error.message || 'Web access request failed.');
-        $('secure-web-access-message').classList.add('form-error');
+        localReceipt = { at: now(), text: `Last request: ${actionLabels[action] ?? 'Web access'} · ${date(now())}. ${error.message || 'The reply could not be confirmed.'}` };
       }
       return false;
     } finally {
       if (generation === epoch) {
         pending = false;
-        // Keep the failed request receipt until a successful status refresh.
-        const message = $('secure-web-access-message').textContent, failed = $('secure-web-access-message').classList.contains('form-error');
         render();
-        if (failed) { setText('secure-web-access-message', message); $('secure-web-access-message').classList.add('form-error'); }
-        if (document.activeElement === document.body && previousFocus?.isConnected && !previousFocus.disabled
-          && previousFocus.getClientRects().length) previousFocus.focus({ preventScroll: true });
+        if (document.activeElement === document.body) {
+          const visible = node => node?.isConnected && !node.disabled && node.getClientRects().length;
+          const destination = visible(previousFocus) ? previousFocus
+            : visible($('secure-web-access-authorize')) ? $('secure-web-access-authorize') : $('secure-web-access-recheck');
+          if (visible(destination)) destination.focus({ preventScroll: true });
+        }
       }
     }
   }
@@ -339,7 +401,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
       if (fold.open || !lastRead) void refresh();
     },
     clear() {
-      ++epoch; state = {}; overview = undefined; status = undefined; reading = null; lastRead = 0; pending = false;
+      ++epoch; state = {}; overview = undefined; status = undefined; reading = null; lastRead = 0; pending = false; localReceipt = null;
       $('secure-web-access-owner-select').value = 'local'; render();
     },
   };

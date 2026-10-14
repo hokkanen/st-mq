@@ -319,7 +319,7 @@ configuration, integration setup and electrical limits remain admin-only.
 Standalone loopback recovery permits an empty admin password when family access
 is disabled. Home Assistant recovery requires application credentials; ingress
 provides initial bootstrap. Network HTTPS and the explicit LAN HTTP
-backup require the passwords described above. **Data & settings → Web access**
+backup require the passwords described above. **Data & settings → Connections & configuration → Web access**
 owns HTTPS setup, certificates and helper update policy; it downloads the private
 Tailscale helper only after administrator setup. The `web` section owns listener
 wiring and the explicit HTTP opt-in, independently of those installation choices.
@@ -439,7 +439,7 @@ rear/front readings and explains protection behavior. Its **Pipe model & setting
 compares configured and reported parameters and explains the pipe calculation,
 including its fixed safety factor of 2. That factor is a model assumption, not a
 configurable or independently reported parameter. The live fold links to
-**Connections & electricity rates → Garage freeze protection**, below **Home floor
+**Connections & configuration → Garage freeze protection**, below **Home floor
 preheating**, for installation and setup; that section links back to Garage.
 Installation approval, margin, pipe geometry and heat transfer come only from
 `garage.protection`;
@@ -460,7 +460,7 @@ Detection runs on startup and **Apply reviewed configuration**; it does not rewr
 configuration file. Supply `server_url` explicitly if detection is ambiguous or
 the charger needs a different reachable address or proxy. Paired operation uses
 the shared virtual IP; an explicit URL must exactly match that shared endpoint.
-The live **Local OCPP connection** under **Data & settings → Connections & electricity rates → Charging → Charger 1 · Connection & capabilities** shows the
+The live **Local OCPP connection** under **Data & settings → Connections & configuration → Charging → Charger 1 · Connection & capabilities** shows the
 effective base URL and its source. See [Easee endpoint setup](charging/integrations/easee.md#endpoint-and-pairing) for
 detection limits, stable addressing and proxy requirements.
 

@@ -1,5 +1,4 @@
 #charging-setup-details { scroll-margin-top: 20px; }
-#charging-setup-details > summary { flex-wrap: wrap; }
 #charging-setup-content { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
 #charging-setup-content p { margin: 0 0 12px; }
 #charging-setup-content .equipment-fold { margin: 10px 0; }

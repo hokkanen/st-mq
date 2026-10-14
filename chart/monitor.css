@@ -481,14 +481,15 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 /* The comparison panel uses an ordinary button and hidden wrapper: reopening
    it must not depend on an appliance browser's native nested-details painting. */
 :is(#timing-details, #recording-details) { margin-top: 18px; border-top: 1px solid var(--border); padding: 0; }
-#recording-details > summary, #comparison-toggle { min-height: 48px; padding: 14px 0; font-size: 14px; font-weight: 550; line-height: 1.5; }
+#recording-details > summary, #comparison-toggle { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 14px 0; font-size: 14px; font-weight: 550; line-height: 1.5; }
+#recording-details > summary > span:first-child, #comparison-toggle > span { min-width: 0; }
 #recording-details > summary + * { margin-top: 0; }
 .comparison-heading { margin: 0; font: inherit; }
-#comparison-toggle { display: flex; align-items: center; width: 100%; margin: 0; border: 0; border-radius: 0; background: transparent; color: var(--text); text-align: left; }
-#recording-details > summary { display: flex; align-items: center; list-style: none; }
+#comparison-toggle { width: 100%; margin: 0; border: 0; border-radius: 0; background: transparent; color: var(--text); text-align: left; }
+#recording-details > summary { list-style: none; }
 #recording-details > summary::marker { content: ''; }
 #recording-details > summary::-webkit-details-marker { display: none; }
-#recording-details > summary::before, #comparison-toggle::before { content: ''; flex: 0 0 10px; height: 10px; margin-right: 8px; background: var(--muted); clip-path: polygon(15% 0, 100% 50%, 15% 100%); }
+#recording-details > summary::before, #comparison-toggle::before { content: ''; flex: 0 0 10px; width: 10px; height: 10px; align-self: center; background: var(--muted); clip-path: polygon(15% 0, 100% 50%, 15% 100%); }
 #recording-details[open] > summary::before, #comparison-toggle[aria-expanded="true"]::before { transform: rotate(90deg); background: var(--accent); }
 #comparison-content, .timing-detail-content, .timing-explanations-content { margin-inline-start: 24px; }
 .timing-benefit { padding: 4px 0 8px; }
@@ -567,14 +568,16 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 }
 /* Shared rounded disclosures for learning, connections and temporary controls. */
 .section-fold { min-width: 0; margin: 8px 0 0; border: 1px solid var(--border); border-radius: 8px; }
-.section-fold > summary { position: relative; display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 6px; min-height: 48px; padding: 14px 38px 14px 14px; list-style: none; font-size: 13px; font-weight: 550; border-radius: 7px; }
-.section-fold > summary > small { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--muted); overflow-wrap: anywhere; text-align: right; }
+.section-fold > summary { position: relative; display: flex; align-items: center; gap: 3px 6px; min-height: 48px; padding: 14px 38px 14px 14px; list-style: none; font-size: 13px; font-weight: 550; border-radius: 7px; }
+.section-fold > summary > span { min-width: 0; }
+.section-fold > summary > small { min-width: 0; margin-left: auto; font-size: 11px; font-weight: 400; color: var(--muted); overflow-wrap: anywhere; text-align: right; }
 .learning-section-title { font-size: 13px; font-weight: 550; }
 .learning-section-kind { font-size: 11px; color: var(--muted); }
 .section-fold > summary::after, .learning-support > summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 18px; font-weight: 400; line-height: 1; }
-.section-fold > summary::after { position: absolute; right: 14px; top: 16px; }
+.section-fold > summary::after { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); }
 .section-fold[open] > summary { border-bottom: 1px solid var(--border); background: var(--surface-soft); border-radius: 7px 7px 0 0; }
-.section-fold[open] > summary::after, .learning-support[open] > summary::after { color: var(--accent); transform: rotate(90deg); }
+.section-fold[open] > summary::after { top: calc(50% + .5px); color: var(--accent); transform: translateY(-50%) rotate(90deg); }
+.learning-support[open] > summary::after { color: var(--accent); transform: rotate(90deg); }
 .section-fold > summary::-webkit-details-marker, .learning-support > summary::-webkit-details-marker, .learning-entry > summary::-webkit-details-marker { display: none; }
 .section-fold > summary:hover { background: var(--surface-soft); }
 .section-fold > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
@@ -1602,7 +1605,6 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 }
 
 .floor-preheat-panel { scroll-margin-top: 20px; }
-.floor-preheat-panel > summary { flex-wrap: wrap; }
 @media (max-width: 480px) {
   .floor-preheat-panel .floor-preheat-facts > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
 }
@@ -2193,7 +2195,6 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .garage-target-input button { flex:1 1 12rem; }
 .garage-target-form .muted { margin:0; }
 .garage-protection { scroll-margin-top: 20px; }
-.garage-protection > summary { flex-wrap: wrap; }
 .garage-protection .section-fold-body, .garage-protection-body { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
 .garage-protection-body { --garage-protection-indent: 24px; }
 .garage-protection-body > p { margin: 4px 0 14px; }

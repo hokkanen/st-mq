@@ -20,7 +20,7 @@ a confirmed command is not measured charging.
 
 In the dashboard, charger cards own daily session controls, **Schedule & readings**
 and session reports. Their separate **Help & setup** section holds the usage guide
-and setup link. **Data & settings → Connections & electricity rates → Charging**
+and setup link. **Data & settings → Connections & configuration → Charging**
 owns device information, installation prerequisites, vehicle-feed setup,
 documentation and guided assessments. Each charger card links to that setup area.
 

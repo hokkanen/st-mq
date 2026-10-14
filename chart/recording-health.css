@@ -95,7 +95,7 @@
 .recording-backup-link { display: inline-block; margin-top: 12px; color: var(--text); font-weight: 550; font-size: 12px; text-underline-offset: 3px; }
 .recording-health-checked { color: var(--muted); font-size: 12px; margin: 10px 0 0; line-height: 1.5; }
 .recording-health-checked[data-tone="warning"] { color: var(--stale); }
-.recording-health-badge { margin-left: auto; padding: 3px 9px; border: 1px solid var(--stale); color: var(--stale); border-radius: 12px; font-size: 12px; font-weight: 550; }
+.recording-health-badge { flex: none; white-space: nowrap; margin-left: auto; padding: 3px 9px; border: 1px solid var(--stale); color: var(--stale); border-radius: 12px; font-size: 12px; font-weight: 550; }
 .recording-section-group { margin-top: 24px; min-width: 0; }
 .recording-group-title { color: var(--muted); margin-bottom: 10px; }
 .recording-section-group > .recording-section { margin: 0; border-top: 1px solid var(--border); }

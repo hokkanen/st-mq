@@ -242,6 +242,23 @@ both themes. Preserve focus, quiet background refresh and compact normal states;
 put detailed causes and provenance in existing disclosures. These fixtures use
 synthetic equipment and do not establish physical delivery or device behavior.
 
+`node test/browser/secure-web-access-smoke.js` loads the dashboard’s actual runtime
+stylesheet imports in their production order. It checks optional HTTPS setup,
+missing authorization links, current faults and past receipts, certificate and
+listener readiness, owner/standby/admin/family boundaries, custom selectors,
+keyboard focus and mounted disclosure state. Its layout cases cover both themes
+at 320, 390 and 1440 px, all ten rounded section folds including Home learning,
+and the distinct leading markers for comparisons and Recording details. Long
+status text and a visible recording warning badge are included. The fixture uses
+synthetic endpoint responses, blocks external browser requests and never starts
+a certificate helper or accesses installation configuration.
+
+Set `STMQ_WEB_ACCESS_SCREENSHOT_DIR` to keep the synthetic screenshots and
+geometry results. An optional `STMQ_WEB_ACCESS_BASELINE_DIR` can supply a separately
+prepared public `index.html`, `monitor.js`, `monitor.css` and the styles imported
+by that script for comparison of intentionally unchanged disclosure families.
+That comparison is validation evidence, not a historical application runtime.
+
 `node test/browser/charging-flexibility-smoke.js` uses synthetic charger cards to
 check unchanged resting height at 280–1280px in both themes, guarded keyboard
 interaction, retained comparison snapshots and adoption of changed display values,
@@ -603,6 +620,7 @@ These scripts start their own disposable Chrome processes:
 node test/browser/access-smoke.js
 node test/browser/configuration-smoke.js
 node test/browser/configuration-recovery-smoke.js
+node test/browser/secure-web-access-smoke.js
 node test/browser/equipment-smoke.js
 node test/browser/equipment-smoke.js --dashboard-heights-only
 node test/browser/equipment-smoke.js --caravan-only

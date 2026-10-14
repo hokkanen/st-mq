@@ -425,7 +425,7 @@
                   <p id="price-status" class="muted" hidden></p><p id="weather-status" class="muted" hidden></p>
                 </div>
                 <details id="connections-details" class="dashboard-disclosure">
-                  <summary><span>Connections &amp; electricity rates</span><small>MQTT, devices &amp; topics</small></summary>
+                  <summary><span>Connections &amp; configuration</span><small>MQTT, topics &amp; electricity rates</small></summary>
                   <details id="mqtt-devices-details" class="section-fold controller-fold">
                     <summary><span>MQTT</span><small> · Devices &amp; topics</small></summary>
                     <div class="section-fold-body">
@@ -518,48 +518,56 @@
                       <p class="muted">Rates are set in the configuration.</p>
                     </div>
                   </details>
-                </details>
                   <details id="secure-web-access-details" class="section-fold controller-fold">
                     <summary><span>Web access</span><small id="secure-web-access-state" class="equipment-device-status" data-state="pending">Status unavailable</small></summary>
                     <div class="section-fold-body secure-web-access-body">
                       <p id="secure-web-access-summary" class="muted">Loading this computer’s web access status…</p>
                       <dl class="secure-web-access-facts">
-                        <div><dt>HTTPS</dt><dd id="secure-web-access-https">Unknown</dd></div>
-                        <div><dt>Certificate expires</dt><dd id="secure-web-access-expiry">Unknown</dd></div>
-                        <div><dt>HTTP LAN backup</dt><dd id="secure-web-access-http">Unknown</dd></div>
+                        <div><dt>HTTPS listener</dt><dd id="secure-web-access-https">Unknown</dd></div>
+                        <div id="secure-web-access-expiry-row" hidden><dt>Certificate expires</dt><dd id="secure-web-access-expiry">Unknown</dd></div>
+                        <div><dt>LAN HTTP backup</dt><dd id="secure-web-access-http">Unknown</dd></div>
                       </dl>
-                      <p class="family-access-note">Admin access is required to set up HTTPS or manage this computer’s certificate helper.</p>
+                      <p class="family-access-note">Admin access is required to change web access.</p>
                       <div id="secure-web-access-admin" data-admin-only hidden>
-                        <p class="muted">HTTPS is built into this application. Setting up a certificate owner downloads a dedicated Tailscale helper on that computer. Disabling HTTPS keeps the helper identity and certificate saved.</p>
-                        <p id="secure-web-access-standby" class="muted" hidden>Web access is managed on this computer, including while it is a standby.</p>
+                        <p id="secure-web-access-standby" class="muted" hidden>These settings apply to this computer. They can be managed while it is a standby.</p>
                         <p id="secure-web-access-owner" class="muted" hidden></p>
                         <p id="secure-web-access-peer-renewal" class="secure-web-access-notice" role="status" hidden></p>
                         <p id="secure-web-access-security-warning" class="secure-web-access-notice form-error" role="status" hidden></p>
                         <div id="secure-web-access-owner-choice" class="secure-web-access-owner-choice" hidden>
-                          <label for="secure-web-access-owner-select">Certificate owner<select id="secure-web-access-owner-select" aria-describedby="secure-web-access-owner-help" disabled><option value="local">This computer</option><option value="peer">Paired computer</option></select></label>
-                          <p id="secure-web-access-owner-help" class="muted">The owner issues and renews the certificate independently of the master/standby role. Choose Paired computer only after setting it up as the certificate owner there.</p>
+                          <label for="secure-web-access-owner-select">Issue and renew the certificate on<select id="secure-web-access-owner-select" aria-describedby="secure-web-access-owner-help" disabled><option value="local">This computer</option><option value="peer">Paired computer</option></select></label>
+                          <p id="secure-web-access-owner-help" class="muted">Use one certificate owner for the pair. Choose Paired computer only after setting it up there. Changing the master does not change this choice.</p>
                         </div>
+                        <div id="secure-web-access-next" class="secure-web-access-next" hidden>
+                          <h3 id="secure-web-access-next-title"></h3>
+                          <p id="secure-web-access-next-help" class="muted"></p>
+                          <p id="secure-web-access-authorization" class="secure-web-access-authorization" hidden><a id="secure-web-access-authorize" class="secure-web-access-link-action" target="_blank" rel="noopener noreferrer">Authorize in Tailscale ↗</a></p>
+                          <p id="secure-web-access-account-links" class="secure-web-access-setup-links" hidden><a href="https://console.tailscale.com/admin/dns" target="_blank" rel="noopener noreferrer">Tailscale DNS settings ↗</a><a href="https://console.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">Tailscale Machines ↗</a></p>
+                        </div>
+                        <div id="secure-web-access-address" class="secure-web-access-address" hidden><span class="muted">HTTPS address</span><a id="secure-web-access-url" target="_blank" rel="noopener noreferrer" hidden></a></div>
                         <div class="secure-web-access-actions">
                           <button id="secure-web-access-enable" type="button" disabled>Set up HTTPS</button>
                           <button id="secure-web-access-recheck" class="secondary-button" type="button" disabled>Recheck</button>
-                          <button id="secure-web-access-retry" class="secondary-button" type="button" hidden disabled>Retry</button>
+                          <button id="secure-web-access-retry" type="button" hidden disabled>Retry setup</button>
                           <button id="secure-web-access-disable" class="secondary-button" type="button" hidden disabled>Disable HTTPS</button>
                           <button id="secure-web-access-restore-identity" class="secondary-button" type="button" hidden disabled>Restore saved identity</button>
                         </div>
                         <p id="secure-web-access-message" class="muted" role="status" aria-live="polite"></p>
-                        <details id="secure-web-access-setup-details" class="equipment-fold" open>
-                          <summary>Setup checklist</summary>
+                        <p id="secure-web-access-receipt" class="muted" role="status" aria-live="polite" hidden></p>
+                        <p id="secure-web-access-request-receipt" class="muted" role="status" aria-live="polite" hidden></p>
+                        <details id="secure-web-access-setup-details" class="equipment-fold">
+                          <summary>How HTTPS setup works</summary>
+                          <p class="muted">This application installs a dedicated Tailscale helper to obtain and renew its certificate. HTTPS uses the normal application sign-in. Existing Home Assistant or host Tailscale installations remain separate.</p>
                           <ol class="secure-web-access-steps">
-                            <li><div class="secure-web-access-step-heading"><strong>Prepare passwords &amp; ownership</strong><small id="secure-web-access-step-prepare-state" class="equipment-device-status" data-state="pending">Not checked</small></div><p id="secure-web-access-step-prepare-help" class="muted"></p></li>
-                            <li><div class="secure-web-access-step-heading"><strong>Authorize the certificate helper</strong><small id="secure-web-access-step-authorize-state" class="equipment-device-status" data-state="pending">Waiting for setup</small></div><p id="secure-web-access-step-authorize-help" class="muted"></p><p id="secure-web-access-authorization" class="secure-web-access-authorization" hidden><a id="secure-web-access-authorize" target="_blank" rel="noopener noreferrer">Authorize certificate helper in Tailscale ↗</a></p></li>
-                            <li><div class="secure-web-access-step-heading"><strong>Enable Tailscale certificate settings</strong><small id="secure-web-access-step-account-state" class="equipment-device-status" data-state="pending">Account settings required</small></div><p id="secure-web-access-step-account-help" class="muted"></p><p class="secure-web-access-setup-links"><a href="https://console.tailscale.com/admin/dns" target="_blank" rel="noopener noreferrer">DNS settings ↗</a><a href="https://console.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">Machines &amp; key expiry ↗</a><a href="https://tailscale.com/docs/how-to/set-up-https-certificates" target="_blank" rel="noopener noreferrer">Certificate guide ↗</a></p></li>
-                            <li><div class="secure-web-access-step-heading"><strong>Prepare the HTTPS entrance</strong><small id="secure-web-access-step-tls-state" class="equipment-device-status" data-state="pending">Certificate pending</small></div><p id="secure-web-access-step-tls-help" class="muted"></p><p class="secure-web-access-address"><a id="secure-web-access-url" target="_blank" rel="noopener noreferrer" hidden></a><span id="secure-web-access-url-empty">Address not yet available</span></p></li>
-                            <li><div class="secure-web-access-step-heading"><strong>Configure household DNS when ready</strong><small id="secure-web-access-step-dns-state" class="equipment-device-status" data-state="pending">Not checked</small></div><p id="secure-web-access-step-dns-help" class="muted"></p></li>
-                            <li><div class="secure-web-access-step-heading"><strong>Verify access on household devices</strong><small id="secure-web-access-step-client-state" class="equipment-device-status" data-state="pending">Verify each browser device</small></div><p id="secure-web-access-step-client-help" class="muted"></p></li>
+                            <li><strong>Set up and authorize.</strong> Select Set up HTTPS, then use the authorization link that appears here to sign in to Tailscale. Complete device approval or Tailnet Lock requirements in Tailscale Machines, then select Recheck.</li>
+                            <li><strong>Enable certificates.</strong> Enable MagicDNS and HTTPS certificates in Tailscale DNS settings. Choose a non-sensitive node name before issuance; certificate names enter public transparency records. Review or disable this dedicated node’s key expiry in Machines so renewal can continue unattended. A valid certificate does not verify that policy.</li>
+                            <li><strong>Connect browsers.</strong> Map the exact certificate hostname to the server’s LAN address, or the shared pair VIP. Household DNS instructions are below. Open the full HTTPS address on each intended device and sign in normally; a new address has its own browser session.</li>
                           </ol>
+                          <p class="secure-web-access-setup-links"><a href="https://console.tailscale.com/admin/dns" target="_blank" rel="noopener noreferrer">Tailscale DNS settings ↗</a><a href="https://console.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">Tailscale Machines ↗</a><a href="https://tailscale.com/docs/how-to/set-up-https-certificates" target="_blank" rel="noopener noreferrer">Certificate guide ↗</a></p>
+                          <p class="muted">You can finish certificate setup before changing router DNS. Disabling HTTPS keeps the helper identity and certificate saved. Recovery access and Home Assistant ingress remain available independently.</p>
                         </details>
                         <details id="secure-web-access-network-details" class="equipment-fold">
-                          <summary>Address &amp; recovery access</summary>
+                          <summary>Household DNS &amp; recovery</summary>
+                          <p id="secure-web-access-dns-instructions" class="muted"></p>
                           <dl class="secure-web-access-facts">
                             <div><dt>LAN DNS check</dt><dd id="secure-web-access-dns">Not checked</dd></div>
                             <div><dt>DNS resolver</dt><dd id="secure-web-access-dns-resolver">Not configured</dd></div>
@@ -570,14 +578,17 @@
                             <div><dt>Home Assistant ingress</dt><dd id="secure-web-access-ingress">Unknown</dd></div>
                           </dl>
                           <p id="secure-web-access-dns-help" class="muted">Certificate issuance can be completed before configuring household DNS.</p>
+                          <p class="muted">For a server-side DNS check, set <code>web.lan_resolver</code> to the household resolver’s IPv4 address in Configuration, apply through the normal save and restart workflow, then Recheck. Review both A and AAAA answers. Client VPN or browser encrypted DNS can use a different resolver.</p>
                           <p id="secure-web-access-hosts-help" class="muted" hidden>Before router DNS is ready, add this temporary entry to a test computer’s hosts file: <code id="secure-web-access-hosts-entry"></code>. Replace any LAN address placeholder with the reserved server address or shared pair VIP. On Linux/macOS use <code>/etc/hosts</code>; on Windows use <code>C:\Windows\System32\drivers\etc\hosts</code>, with administrator access. Open the exact HTTPS address above, then remove the entry when household DNS is working.</p>
                           <p id="secure-web-access-curl-help" class="muted" hidden>A command-line test can bypass DNS while still checking the certificate: <code id="secure-web-access-curl-command"></code>. Replace any LAN address placeholder. Keep certificate verification enabled; the raw IP address or an unrelated alias does not match the certificate.</p>
                           <p class="muted">LAN HTTP backup is disabled by default. To enable it, set <code>web.lan_http_enabled</code> to <code>true</code> in this computer’s private configuration and restart. HTTP exposes passwords and household data to interception or modification. Keep it within a trusted LAN firewall boundary.</p>
                           <p class="muted">Loopback recovery remains available through an SSH tunnel. Home Assistant ingress uses the host login when available.</p>
                         </details>
                         <details id="secure-web-access-update-details" class="equipment-fold">
-                          <summary>Certificate helper updates</summary>
+                          <summary>Certificate renewal &amp; helper updates</summary>
+                          <p id="secure-web-access-last-error" class="muted" hidden></p>
                           <dl class="secure-web-access-facts">
+                            <div id="secure-web-access-problem-row" hidden><dt id="secure-web-access-problem-label">Current problem code</dt><dd><code id="secure-web-access-problem-code"></code></dd></div>
                             <div><dt>Installed helper</dt><dd id="secure-web-access-helper">Not installed</dd></div>
                             <div><dt>Reported node key expiry</dt><dd id="secure-web-access-key-expiry">Not reported</dd></div>
                             <div><dt>Tested setup release</dt><dd id="secure-web-access-tested">Not reported</dd></div>
@@ -671,6 +682,7 @@
                       </section>
                     </div>
                   </details>
+                </details>
               </article>
       </div>
       <div class="controller-column">
