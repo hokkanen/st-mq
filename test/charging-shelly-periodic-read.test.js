@@ -350,15 +350,23 @@ test('malformed native reads cannot mint a successful completion', async t => {
 
 test('a real post-commit effect failure leaves reuse unavailable without erasing committed input', async t => {
   const f = await fixture(t), old = await proofFromTimer(t, f), afterCommit = f.store.afterCommit.bind(f.store);
-  let inject = true;
-  const mock = t.mock.method(f.store, 'afterCommit', effect => {
-    afterCommit(effect);
-    if (inject && f.store.transactionDepth) {
-      inject = false; afterCommit(() => { throw new Error('synthetic post-commit effect failure'); });
+  const setState = f.store.setState.bind(f.store);
+  let inject = true, effectFired = false;
+  const mock = t.mock.method(f.store, 'setState', (key, value) => {
+    const result = setState(key, value);
+    if (inject && f.store.transactionDepth && key === `charging:shelly:${f.adapter.association}`
+      && value?.fields?.current_limit?.value === 11 && value.fields.current_limit.measuredAt === f.now()) {
+      inject = false;
+      afterCommit(() => { effectFired = true; throw new Error('synthetic post-commit effect failure'); });
     }
+    return result;
   });
   f.advance(1000); f.fields.current_limit = 11; f.measuredAt.current_limit = f.now();
+  await assert.doesNotReject(f.store.runWrite(() => f.store.afterCommit(() => {})),
+    'The injected effect belongs to the changed native reading, not another queued save');
   assert.equal(await f.adapter.refresh(), undefined);
+  assert.equal(inject, false, 'The changed acquisition state registered its post-commit failure');
+  assert.equal(effectFired, true, 'The real committed transaction executed the injected effect');
   assert.equal(f.adapter.snapshot().controlReady, false);
   assert.equal(f.adapter.snapshot().fields.current_limit.value, 11, 'Actual committed reading remains distinct from effect failure');
   mock.mock.restore(); f.requests.length = 0; await f.adapter.refresh({ completedRead: old }); assertRound(f.requests);
