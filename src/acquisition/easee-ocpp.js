@@ -4,6 +4,7 @@ import { BlockList, isIP } from 'node:net';
 import { WebSocketServer } from 'ws';
 import { chargingDeviceInfo } from '../charging/device-info.js';
 import { MAX_SOURCE_AHEAD_MS } from '../domain/time-evidence.js';
+import { createOcppStartupDiagnostics } from './ocpp-startup-diagnostics.js';
 
 const MAX_AGE_MS = 60_000;
 const MAX_FUTURE_MS = MAX_SOURCE_AHEAD_MS;
@@ -124,6 +125,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   let ledger = null, stateReady = false;
   let admitted = false;
   const cancellation = new AbortController(), maintenance = new Set();
+  const diagnostics = createOcppStartupDiagnostics();
+  let diagnosticFrame = null;
   function storageFailed(connection) {
     if (connection !== socket) return;
     stateReady = false; error = 'transaction-state-unavailable';
@@ -276,6 +279,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   const transportFresh = () => !closed && canControl() && stateReady && socket?.readyState === 1
     && lastMessageAt !== null && clock() >= lastMessageAt && clock() - lastMessageAt <= MAX_AGE_MS;
   function transportActivity(now = clock()) {
+    diagnostics.valid(diagnosticFrame, state);
     // A heartbeat can keep held current evidence healthy, but cannot revive
     // measurements from before an actual feed outage on the same socket.
     if (lastMessageAt !== null && (now < lastMessageAt || now - lastMessageAt > MAX_AGE_MS))
@@ -738,6 +742,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       if (startPromise) return startPromise;
       if (server?.listening) return;
       startPromise = (async () => {
+        diagnostics.start();
         if (canControl()) {
           try { await runState(() => { refreshAuthority(); if (!stateReady) prepareState(); }); }
           catch { if (closed || !canControl()) return; throw requestError('ocpp-unavailable'); }
@@ -747,18 +752,21 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         server = createServer((_request, response) => { response.writeHead(404); response.end(); });
         server.on('connection', connection => {
           if (closed) { connection.destroy(); return; }
+          diagnostics.tcp(connection);
           transportSockets.add(connection);
-          connection.once('close', () => transportSockets.delete(connection));
+          connection.once('close', () => { diagnostics.phase('transport-closed', connection); transportSockets.delete(connection); });
         });
         sockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024,
           handleProtocols: protocols => protocols.has('ocpp1.6') ? 'ocpp1.6' : false });
         server.on('upgrade', async (request, stream, head) => {
+          diagnostics.phase('upgrade-observed', stream);
           const expected = `Basic ${Buffer.from(`${identity}:${config.password}`).toString('base64')}`;
           if (closed || !canControl() || request.url !== `/ocpp/${encodeURIComponent(identity)}`
             || !equal(String(request.headers.authorization ?? ''), expected)
             || !String(request.headers['sec-websocket-protocol'] ?? '').split(',').some(value => value.trim() === 'ocpp1.6')) {
             stream.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return;
           }
+          diagnostics.phase('upgrade-validated', stream);
           let ready = false;
           const admission = new AbortController(), disconnected = () => admission.abort();
           // A client EOF can leave the server's writable half open while its
@@ -766,9 +774,15 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
           stream.once('end', disconnected);
           stream.once('close', disconnected);
           try {
-            ready = await runState(() => { refreshAuthority(); return prepareState(); },
+            diagnostics.phase('upgrade-write-requested', stream);
+            ready = await runState(() => {
+              diagnostics.phase('upgrade-write-entered', stream);
+              refreshAuthority(); const prepared = prepareState();
+              diagnostics.commit('upgrade-write-committed', stream, state); return prepared;
+            },
               { signal: AbortSignal.any([cancellation.signal, admission.signal]) });
-          } catch { /* Admission did not grant this connection. */ }
+            diagnostics.phase('upgrade-write-settled', stream);
+          } catch { diagnostics.phase('admission-failed', stream); /* Admission did not grant this connection. */ }
           finally { stream.off('end', disconnected); stream.off('close', disconnected); }
           if (!ready || stream.destroyed || closed || !canControl()) {
             if (!stream.destroyed) stream.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n'); return;
@@ -779,11 +793,17 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
             const previous = socket; socket = null; previous?.terminate();
             reset(); socket = connection; connectionId = `${instanceId}:${++connectionSequence}`;
             authenticatedConnectionId = connectionId; connectedAt = clock(); evidenceBoundaryAt = connectedAt; error = null;
+            diagnostics.attached(stream, connection, connectionSequence);
             currentSupplyBoundaryAt = connectedAt;
             socket.on('message', (data, binary) => {
               if (socket !== connection) return;
               const receivedAt = clock();
-              void runState(() => receive(data, binary, null, receivedAt), { connection, bytes: data.length })
+              const frame = diagnostics.received(connection, receivedAt);
+              void runState(() => {
+                diagnostics.entered(frame);
+                const prior = diagnosticFrame; diagnosticFrame = frame;
+                try { return receive(data, binary, null, receivedAt); } finally { diagnosticFrame = prior; }
+              }, { connection, bytes: data.length })
                 .catch(failure => {
                   if (!['STORAGE_WRITE_STALE', 'STORAGE_WRITE_CANCELLED', 'ocpp-request-revoked'].includes(failure?.code)) storageFailed(connection);
                 });
@@ -795,7 +815,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         try {
           await new Promise((resolve, reject) => {
             const failed = err => { server.off('listening', listening); reject(err); };
-            const listening = () => { server.off('error', failed); resolve(); };
+            const listening = () => { diagnostics.listening(); server.off('error', failed); resolve(); };
             server.once('error', failed); server.once('listening', listening); server.listen(config.port, config.host);
           });
           error = null;
@@ -956,6 +976,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         controlTransport: configured ? 'ocpp' : null };
     },
     async close() {
+      diagnostics.closeRequested();
       closed = true;
       cancellation.abort();
       await startPromise;
@@ -966,6 +987,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       for (const connection of transportSockets) connection.destroy();
       if (server?.listening) await new Promise(resolve => server.close(resolve));
       sockets?.close(); reset(); stateReady = false; ownsConnection = false;
+      diagnostics.close();
     },
   };
 }

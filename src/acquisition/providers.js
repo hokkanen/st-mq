@@ -13,6 +13,7 @@ import { fetchWeather, fetchOutdoorTemperature } from './weather.js';
 import { ElectricityAccumulator } from '../domain/electricity.js';
 import { recordEaseeSessionChecks } from './easee-session-checks.js';
 import { storageFailureCode } from '../storage/write-health.js';
+import { ocppCommitEffect } from './ocpp-startup-diagnostics.js';
 
 const MINUTE = 60_000;
 const present = value => typeof value === 'string' && value.trim().length > 0;
@@ -184,7 +185,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   devices ??= createDeviceProviders({ connections, http, clock, canControl, streamFactory, ocppFactory,
     retryState: store.getState('providers:health')?.easee,
     ocppState: { get: () => store.getState('easee:ocpp'), set: value => store.setState('easee:ocpp', value),
-      runWrite: (action, options) => write(action, options), afterCommit: effect => store.afterCommit ? store.afterCommit(effect) : effect(),
+      runWrite: (action, options) => write(action, options), afterCommit: ocppCommitEffect(store),
       afterRollback: effect => store.afterRollback?.(effect) },
     ocppSetupState: { get: () => store.getState('easee:ocpp-setup'),
       set: value => write(() => store.setState('easee:ocpp-setup', value), { priority: 'control' }) },

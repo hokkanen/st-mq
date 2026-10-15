@@ -142,12 +142,26 @@ successful response.
 The same actual Store/chart-worker producer also qualifies bounded private refusal
 phase logs: pending/same manifest, missing/unreadable manifest, second race and
 failed rollback keep their original public bodies and SQL/manifest call counts.
+
 Completed rechecks and close retain their original outcomes. A throwing log sink
 cannot alter the real COMMIT-before-manifest refusal or recovery.
 `test/replica-read-refusal-phase.test.js` checks immutable constructor provenance,
 spoofed/accessor input refusal, failed sinks and diagnostic storage, and the
 on-demand 30-second cap with controlled monotonic advances. The cap tests do not
 hold wall time for 30 seconds or change request deadlines.
+
+`test/ocpp-startup-phase-producer.test.js` uses real Store transactions and
+synthetic loopback WebSockets to separate listener/TCP/Upgrade callbacks, held
+writer admission, original message receipt and committed transport acceptance.
+Its synchronous hold at COMMIT entry is a controlled producer delay, not a disk
+or fsync measurement. Failed COMMIT, successful COMMIT with failed follow-up,
+authority loss, dead queued clients, malformed first frames, replacement sockets
+and throwing sinks retain the original admission and authority behavior.
+`test/ocpp-startup-diagnostics.test.js` qualifies real after-commit provenance,
+unknown/nontransactional adapters, fixed private scalar output and lazy finite
+clock/attempt/event/byte limits. Existing OCPP contention/lifecycle suites retain
+shutdown, rebind, session and no-late-write checks. None of these fixtures measures
+a household charger, wire SYN, native hardware retry or physical storage latency.
 
 `test/incremental-replication.test.js` compares identical changes over 1 and 32 MiB
 of synthetic payload, verifies equal bounded transfer size and database inode

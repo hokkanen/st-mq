@@ -355,6 +355,33 @@ pending database save. An independently connecting client keeps its own durable
 admission, and listener shutdown still cancels all pending upgrades. A completed
 save does not authorize attachment of a disconnected client.
 
+The local receiver records bounded private startup phase diagnostics for its
+first four monotonic minutes: the observed listening callback, TCP callback,
+validated Upgrade, write entry and successful commit, authenticated attachment,
+and the first accepted transport envelope. Original WebSocket receipt, Store
+admission and committed success have distinct clocks. Rollback never supplies
+a committed marker; a failed follow-up after successful COMMIT can retain that
+commit evidence. A nontransactional or unknown state adapter cannot assert
+durability. These logs neither change readiness nor create another device retry.
+
+Phase records contain fixed scalar fields and process-local listener/attempt
+serials, capped at 32 attempts, 128 events and 32 KiB per receiver. The generation
+is the native counter at authenticated attachment, not the later counter after a
+BootNotification; out-of-range generations stay unknown. No endpoint, header,
+credential, charger/vehicle/session identifier or frame payload is recorded.
+Expiry and caps are checked only by existing callbacks, with no polling timer;
+missing or truncated records cannot prove absence. Close-requested and completed
+listener closure are separate events. Receiver replacement starts a separate
+ephemeral scope without borrowing another listener's evidence.
+
+The TCP callback is when Node delivers an accepted stream. It does not give wire
+SYN or kernel acceptance time: event-loop delay can precede that callback. A
+qualified passive packet clock is still needed to distinguish this from waiting
+before network arrival. An admitted valid transport envelope does not establish
+supported action semantics, a device outcome or charging permission. Callback
+timestamps cannot retrospectively refine earlier status samples or identify
+hardware backoff, cloud activity or the upstream cause of a reconnect wait.
+
 An ordinary stop, crash, suspension or power loss is a local connection outage.
 A new charge or Easee app Start can wait for ST-MQ approval while the controller
 is unavailable. Restart ST-MQ to restore local control. Returning to cloud
