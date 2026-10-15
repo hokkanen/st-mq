@@ -400,25 +400,24 @@ export class Store {
       } finally { timing.commitMs = performance.now() - commitStarted; }
     } catch (caught) {
       error = caught;
-      if (admitted) {
-        if (this.writer.failed) {
-          // No further writer may run until this connection has exited. A lost
-          // reply is not proof of rollback, and the callback is never replayed.
-          await this.writer.terminate();
-          this.writerFailed = true;
-          if (commitRequested && prepared?.checkpoint && prepared.checkpoint.sequence > boundary.checkpoint.sequence) {
-            try {
-              const actual = this.checkpointAt(prepared.checkpoint.sequence);
-              committed = Boolean(actual && isDeepStrictEqual(actual, prepared.checkpoint));
-            } catch { /* Unknown durability keeps command authority fenced. */ }
-          }
-        } else {
-          try { await this.writer.request('rollback'); }
-          catch { await this.writer.terminate(); this.writerFailed = true; }
-        }
-      } else if (this.writer.failed) {
-        // BEGIN may have succeeded before its acknowledgement was lost.
+      if (this.writer.failed) {
+        // No further writer may run until this connection has exited. BEGIN
+        // may have succeeded before its acknowledgement was lost; likewise a
+        // lost COMMIT reply is not proof of rollback. Never replay the callback.
         await this.writer.terminate(); this.writerFailed = true;
+        if (admitted && commitRequested && prepared?.checkpoint && prepared.checkpoint.sequence > boundary.checkpoint.sequence) {
+          try {
+            const actual = this.checkpointAt(prepared.checkpoint.sequence);
+            committed = Boolean(actual && isDeepStrictEqual(actual, prepared.checkpoint));
+          } catch { /* Unknown durability keeps command authority fenced. */ }
+        }
+      } else {
+        // A negative BEGIN response can follow successful lock acquisition if
+        // reading its checkpoint failed. This admission turn still owns the
+        // connection; release any partial transaction before retry or dispatch.
+        // ROLLBACK also resets an idle writer after ordinary lock contention.
+        try { await this.writer.request('rollback'); }
+        catch { await this.writer.terminate(); this.writerFailed = true; }
       }
     }
     try {
