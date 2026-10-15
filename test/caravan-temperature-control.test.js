@@ -1021,7 +1021,7 @@ test('event-only meter configuration still expires held power used for electrica
   assert.equal(f.history().at(-1).value, null);
 });
 
-for (const mode of ['warm-unqualified', 'hysteresis-unqualified', 'threshold-control', 'missing-air-control', 'stale-air-control', 'future-air-control', 'warm-qualified-control']) {
+for (const mode of ['warm-unqualified', 'rollback-unqualified', 'hysteresis-unqualified', 'threshold-control', 'missing-air-control', 'stale-air-control', 'future-air-control', 'warm-qualified-control']) {
   test(`actual current protective Off publication: ${mode}`, async t => {
     let armed = false, held = false, released = false, entered = 0, gateCalls = 0, release;
     const waiting = new Promise(resolve => { release = () => { if (!released) { released = true; resolve(); } }; });
@@ -1061,14 +1061,17 @@ for (const mode of ['warm-unqualified', 'hysteresis-unqualified', 'threshold-con
       assert.equal(f.guard().qualification.retained, true);
       assert.equal(f.guard().qualification.passedAt, passedAt);
       assert.equal(f.guard().qualification.revision, revision);
+      if (mode === 'rollback-unqualified') assert.throws(() => f.store.transaction(() => {
+        f.air(2.5); throw new Error('synthetic receipt rollback');
+      }), /synthetic receipt rollback/);
       f.advance(1);
-      if (mode === 'warm-unqualified' || mode === 'warm-qualified-control') f.air(3);
+      if (['warm-unqualified', 'rollback-unqualified', 'warm-qualified-control'].includes(mode)) f.air(3);
       if (mode === 'hysteresis-unqualified') f.air(1.5, 50, false, f.now - 179_999);
       if (mode === 'threshold-control') f.air(1);
       if (mode === 'stale-air-control') f.air(3, 50, false, f.now - 180_001);
       if (mode === 'future-air-control') f.air(3, 50, false, f.now + 500);
       await settle();
-      if (['warm-unqualified', 'hysteresis-unqualified'].includes(mode)) {
+      if (['warm-unqualified', 'rollback-unqualified', 'hysteresis-unqualified'].includes(mode)) {
         assert.equal(f.guard().qualified, false, 'the original 30-second recovery boundary has not elapsed');
         assert.equal(f.guard().qualification.retained, true);
         assert.equal(f.guard().locationTest.status, 'passed');
@@ -1092,9 +1095,9 @@ for (const mode of ['warm-unqualified', 'hysteresis-unqualified', 'threshold-con
         offCommands: commands.filter(command => command.power === 'off').length,
         onCommands: commands.filter(command => command.power === 'on').length }));
       assert.equal(commands.some(command => command.power === 'on'), false, 'historical proof never grants a replacement On');
-      const expected = ['warm-unqualified', 'hysteresis-unqualified', 'warm-qualified-control'].includes(mode) ? [] : [{ power: 'off' }];
+      const expected = ['warm-unqualified', 'rollback-unqualified', 'hysteresis-unqualified', 'warm-qualified-control'].includes(mode) ? [] : [{ power: 'off' }];
       assert.deepEqual(commands, expected, 'fresh warm recovery preserves the actual native baseline; current missing evidence still protects Off');
-      if (['warm-unqualified', 'hysteresis-unqualified'].includes(mode)) {
+      if (['warm-unqualified', 'rollback-unqualified', 'hysteresis-unqualified'].includes(mode)) {
         assert.equal(f.state().operation.status, 'failed');
         assert.equal(f.state().operation.code, 'EQUIPMENT_COMMAND_CANCELLED');
         assert.match(f.state().operation.error, /request was not sent/);
@@ -1117,7 +1120,7 @@ for (const mode of ['warm-unqualified', 'hysteresis-unqualified', 'threshold-con
   });
 }
 
-for (const temperature of [1.5, 3]) test(`warm recovery at ${temperature} cancels protective Off before its committed effect starts`, async t => {
+for (const [temperature, rollback] of [[1.5, false], [3, false], [3, true]]) test(`warm recovery at ${temperature} cancels protective Off before its committed effect starts (rollback ${rollback})`, async t => {
   const f = fixture(t); await f.qualify({ temperature: 3 }); await f.sample(1, 'on', 105);
   const proof = f.guard().qualification.passedAt, before = f.sent.length;
   f.restart();
@@ -1127,6 +1130,9 @@ for (const temperature of [1.5, 3]) test(`warm recovery at ${temperature} cancel
     f.advance(1); f.dryer('on'); f.meter(105);
     assert.equal(f.guard().temperatureC, null);
     assert.equal(f.state().operation, null);
+    if (rollback) assert.throws(() => f.store.transaction(() => {
+      f.air(2.5); throw new Error('synthetic receipt rollback');
+    }), /synthetic receipt rollback/);
     f.advance(1); f.air(temperature);
     assert.equal(f.guard().qualified, false);
     assert.equal(f.guard().reason, 'recovering-feedback');
@@ -1138,6 +1144,63 @@ for (const temperature of [1.5, 3]) test(`warm recovery at ${temperature} cancel
   assert.equal(f.state().operation, null, 'a cancelled post-commit effect creates no native command receipt');
   f.advance(1); f.air(0); await settle(); await settle();
   assert.deepEqual(f.sent.slice(before), [{ power: 'off' }], 'the unsent old attempt cannot throttle a new cold boundary');
+});
+
+test('a deferred warm-baseline cancellation cannot replace a newer operation owner', async t => {
+  const f = fixture(t); await f.qualify({ temperature: 3 }); await f.sample(1, 'on', 105);
+  f.restart(); const before = f.sent.length, afterCommit = f.store.afterCommit, effects = [];
+  // Hold only effects of already committed fixture receipts. Restore the real
+  // method before the newer request, without guessing callback names.
+  f.store.afterCommit = function (effect) { return afterCommit.call(this, () => effects.push(effect)); };
+  try {
+    f.advance(1); f.dryer('on'); f.meter(105);
+    assert(effects.length > 0); assert.equal(f.state().operation, null);
+    f.store.afterCommit = afterCommit;
+    f.advance(1); f.air(3); await settle();
+    assert.equal(f.guard().reason, 'recovering-feedback');
+    await f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'fanSpeed', value: 'high' });
+    const newer = f.state().operation;
+    assert.equal(newer.status, 'published');
+    for (const effect of effects.splice(0)) effect();
+    await settle();
+    assert.deepEqual(f.state().operation, newer);
+    assert.deepEqual(f.sent.slice(before), [{ fanSpeed: 'high' }]);
+  } finally {
+    f.store.afterCommit = afterCommit;
+    for (const effect of effects.splice(0)) effect();
+    await settle();
+  }
+});
+
+test('known-unsent warm cancellation cannot clear a newer operation created before its transport rejects', async t => {
+  let armed = false, held = false, release, newer, f;
+  const waiting = new Promise(resolve => { release = resolve; });
+  f = fixture(t, { beforePublish: async (topic, payload, flags) => {
+    if (!armed || topic !== 'fixture/dryer/set' || JSON.parse(payload).power !== 'off') return;
+    held = true; await waiting;
+    // Run the actual byte gate exactly once. Before returning its rejection,
+    // let the real timeout/replacement path admit a new supported request.
+    try { flags.beforePublish(); }
+    catch (error) {
+      assert.equal(f.state().operation.dispatchedAt, undefined);
+      f.advance(10_001); f.capture.tick();
+      await f.policy({ enabled: false });
+      await f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'fanSpeed', value: 'high' });
+      newer = f.state().operation; throw error;
+    }
+    assert.fail('warm recovery must reject the obsolete Off before bytes');
+  } });
+  try {
+    await f.qualify({ temperature: 3 }); await f.sample(1, 'on', 105);
+    const before = f.sent.length; armed = true;
+    f.restart(); f.advance(1); f.dryer('on'); f.meter(105); await settle();
+    assert.equal(held, true);
+    f.advance(1); f.air(3); await settle();
+    release(); await settle(); await settle();
+    assert(newer); assert.equal(newer.setting, 'fanSpeed'); assert.equal(newer.status, 'published');
+    assert.deepEqual(f.state().operation, newer);
+    assert.deepEqual(f.sent.slice(before), [{ fanSpeed: 'high' }]);
+  } finally { release(); await settle(); await settle(); }
 });
 
 test('warm recovery cannot erase an already dispatched uncertain Off or a newer native request', async t => {

@@ -666,8 +666,11 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       && scalar(guard.temperatureC) && guard.temperatureC > guard.offAtC
       && healthy(device, now, true) && caravanPower(device, now, true));
   }
-  function clearTemperatureAttempt(device, state, at, power) {
-    if (device.temperatureGuard !== state || state.lastAttemptAt !== at || state.lastAttemptPower !== power) return;
+  function clearTemperatureAttempt(device, at, power) {
+    // Reception rollback restores this copied state while preserving the
+    // caller's exact operation owner. Clear only its still-current retry slots.
+    const state = device.temperatureGuard;
+    if (state.lastAttemptAt !== at || state.lastAttemptPower !== power) return;
     state.lastAttemptAt = null; state.lastAttemptPower = null;
   }
   function controlTemperature(device, now) {
@@ -701,7 +704,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       const currentAt = engine.clock(), current = temperatureGuardStatus(device, currentAt);
       if (!current?.enabled || value === 'on' && (!current.qualified || !device.temperatureGuard.demand)) return;
       if (value === 'off' && keepTemperatureBaseline(device, current, currentAt)) {
-        if (device.dehumidifierOperation === operation) clearTemperatureAttempt(device, state, now, value);
+        if (device.dehumidifierOperation === operation) clearTemperatureAttempt(device, now, value);
         return;
       }
       void commandDehumidifier(device, 'power', value, 'temperature').catch(() => {});
@@ -1111,7 +1114,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const previousValue = device.dehumidifierState[setting], previousAt = device.dehumidifierReport.fieldTimestamps[setting];
     const timer = setTimeout(() => cancellation.abort(), Math.min(readbackTimeoutMs, 10_000));
     const dispatch = { cancellation, operation, power: device.dehumidifierState.power, powerAt: device.dehumidifierReport.fieldTimestamps.power };
-    const attemptState = device.temperatureGuard, attemptAt = attemptState.lastAttemptAt;
+    const attemptAt = device.temperatureGuard.lastAttemptAt;
     let supersededBeforeDispatch = false;
     dehumidifierDispatches.set(device, dispatch);
     device.dehumidifierOperation = operation;
@@ -1174,7 +1177,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         const failure = unsentEquipmentCommand(error);
         operation.status = 'failed'; operation.error = failure.message; operation.code = failure.code;
         if (device.dehumidifierOperation === operation && dehumidifierDispatches.get(device) === dispatch) {
-          clearTemperatureAttempt(device, attemptState, attemptAt, value);
+          clearTemperatureAttempt(device, attemptAt, value);
           // Cancelling these unsent bytes cannot erase an earlier command's
           // unresolved delivery. Its original callback still owns this receipt.
           if (scalar(previousOperation?.dispatchedAt) && !['observed', 'failed'].includes(previousOperation.status)) {
