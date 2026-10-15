@@ -20,7 +20,11 @@ from settings recorded by the master.
 Use the same ST-MQ release on both computers. The viewer checks the database
 schema without migrating it. If a new snapshot cannot be opened, an already
 running viewer keeps its previous readable generation and reports the problem.
-An older runtime or database is not a supported replication peer. Historical
+The SSH prepare/ready handshake uses version 3 and the exact current physical
+database schema. The receiver refuses another contract before directory
+initialization, recovery or publication work; the sender refuses an incompatible
+ready reply before journal enrollment or snapshot work. An older runtime or
+database is not a supported replication peer. Historical
 version 0.7.5 data enters through the supported [read-only CSV import](csv-import.md)
 on the master, which records it in the current schema before replication.
 

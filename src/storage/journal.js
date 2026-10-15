@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { JOURNALED_TABLES, SCHEMA_VERSION } from './schema.js';
+import { JOURNALED_TABLES, JOURNALED_DATA_VERSION } from './schema.js';
 import { quoteIdentifier as q, journalTextNulExpression } from './journal-schema.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
@@ -29,7 +29,7 @@ export function validCheckpoint(value) {
   return value && Object.keys(value).length === 3 && /^[a-f0-9-]{36}$/.test(value.databaseId)
     && Number.isSafeInteger(value.sequence) && value.sequence >= 0 && /^[a-f0-9]{64}$/.test(value.hash);
 }
-const genesis = databaseId => digest({ version: JOURNAL_VERSION, databaseId, schema: SCHEMA_VERSION, algorithm: LEARNING_ALGORITHM });
+const genesis = databaseId => digest({ version: JOURNAL_VERSION, databaseId, schema: JOURNALED_DATA_VERSION, algorithm: LEARNING_ALGORITHM });
 
 export function initializeJournal(db) {
   const databaseId = randomUUID(), hash = genesis(databaseId);

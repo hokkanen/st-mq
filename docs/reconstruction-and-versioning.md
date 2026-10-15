@@ -23,6 +23,17 @@ must explicitly describe retained evidence, any supported rebuild and any new
 learning epoch. Original observations, frozen forecasts, corrections and their
 provenance keep their historical meaning throughout an upgrade.
 
+The current physical SQLite schema and the current journaled data layout have
+separate identifiers. Physical schema 31 adds the immutable chronological
+coverage index; its journaled rows retain layout 30 and the same genesis/hash
+interpretation. Every fresh schema-31 database uses that one layout. There is no
+older-schema runtime branch or alternate journal decoder. Strict physical-schema
+validation still rejects schema 30 before writable setup. The owner's one-time
+2026-10-15 chart-index conversion exception requires verified backups and rollback,
+unchanged table rows, original database/checkpoint identities and journal hashes,
+and successful full current validation before coordinated code/database adoption.
+It does not authorize startup conversion or journal rehashing.
+
 Given an intact committed learning journal, its saved configuration and initial
 seed, the selected fireplace and sensor-correction revisions, and the matching
 learning algorithm and software, replay must produce the same model checkpoint

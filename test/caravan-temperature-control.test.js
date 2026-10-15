@@ -12,6 +12,7 @@ import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { bluHtEquipment } from '../integrations/shelly/blu-ht.js';
 import { getDatabaseOverview } from '../src/app/database-overview.js';
 import { caravanPowerTimingKey, CARAVAN_NATIVE_RESTART_DELAY_MS } from '../src/domain/caravan-power-timing.js';
+import { createEquipmentActions } from '../chart/equipment.js';
 
 const START = Date.parse('2026-09-22T10:00:00Z');
 const SIGNAL = 'caravan_dehumidifier_state';
@@ -213,6 +214,57 @@ test('a physical location check requires the exact current revision and cannot b
   const obligation = structuredClone(f.store.getState(RESTORE_KEY));
   await assert.rejects(f.capture.recheckDehumidifierLocation(current()));
   assert.deepEqual(f.store.getState(RESTORE_KEY), obligation);
+});
+
+test('a failed physical check can be rechecked through the UI using the actual equipment status', async t => {
+  const f = fixture(t, { knownOff: false });
+  f.air(3); f.dryer('on'); await f.policy({ enabled: false }); f.meter(105); await settle();
+  await f.sample(30_000, 'on', 105);
+  for (let i = 0; i < 8; i++) { f.air(3); await f.sample(60_000, 'on', 105); }
+  f.capture.tick(); await settle();
+  assert.equal(f.guard().locationTest.status, 'failed');
+  assert.equal(f.guard().locationTest.reason, 'baseline-unavailable');
+  assert.equal(f.guard().qualification.canRecheck, true);
+  const snapshot = () => ({ now: f.now, role: 'master', readOnly: false, topology: 'standalone', equipment: f.capture.status() });
+  const before = snapshot(), device = before.equipment.devices.find(row => row.id === 'caravan_dehumidifier');
+  const originalPolicy = { enabled: f.guard().enabled, offAtC: f.guard().offAtC, onAtC: f.guard().onAtC };
+  const sent = f.sent.length, requests = [];
+  const actions = createEquipmentActions({ request: async (path, body) => {
+    requests.push({ path, body });
+    await f.capture.recheckDehumidifierLocation(body);
+    return snapshot();
+  } });
+  actions.update(before);
+  assert.equal(await actions.recheckDehumidifierLocation(device.id), true,
+    'The real status producer must supply the identity consumed by the UI and actual recheck boundary');
+  assert.deepEqual(requests, [{ path: '/api/equipment/dehumidifier/location-check', body: {
+    deviceId: device.id, identity: device.dehumidifier.identity,
+    signature: device.dehumidifier.temperatureControl.qualification.signature,
+    revision: device.dehumidifier.temperatureControl.qualification.revision,
+  } }]);
+  assert.equal(requests[0].body.identity, 'a'.repeat(64));
+  assert.equal(f.guard().qualification.revision, device.dehumidifier.temperatureControl.qualification.revision + 1);
+  assert.equal(f.sent.length, sent, 'Accepting a recheck waits for new stable evidence rather than replaying the failed Off');
+  assert.deepEqual({ enabled: f.guard().enabled, offAtC: f.guard().offAtC, onAtC: f.guard().onAtC }, originalPolicy);
+  await assert.rejects(f.capture.recheckDehumidifierLocation(requests[0].body), /location check/);
+});
+
+test('dehumidifier status identity follows admitted reports without granting live control', async t => {
+  const f = fixture(t, { knownOff: false });
+  assert.equal(f.state().identity, null);
+  f.dryer('on', { identity: 'invalid' });
+  assert.equal(f.state().identity, null, 'An invalid report cannot establish an identity');
+  f.dryer('on');
+  assert.equal(f.state().identity, 'a'.repeat(64));
+  f.capture.receive('fixture/dryer/online', 'offline');
+  assert.equal(f.state().identity, 'a'.repeat(64), 'Identity metadata does not manufacture a fresh observation');
+  assert.equal(f.state().available, false);
+  assert.equal(f.guard().qualification.canRecheck, false);
+  f.authority(false); f.capture.receive('fixture/dryer/online', 'online'); f.advance(1);
+  f.dryer('on', { identity: 'b'.repeat(64) });
+  assert.equal(f.state().identity, 'b'.repeat(64));
+  assert.equal(f.state().available, false, 'A known current identity does not grant command authority');
+  assert.equal(f.guard().qualification.canRecheck, false);
 });
 
 test('location-test dispatch rejects wiring movement after durable intent and before publication', async t => {

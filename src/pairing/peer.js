@@ -4,11 +4,14 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import { pairError } from './state.js';
 import { RECOVERY_ERROR_CODES } from '../recovery/errors.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
+import { SCHEMA_VERSION } from '../storage/schema.js';
 
 const MAX_BODY = 2 * 1024 * 1024;
 const WINDOW = 120000;
 const ROUTE = '/v2/pair';
-const CONTEXT = 'st-mq-pair-v2:POST:/v2/pair';
+// Both directions authenticate the one current physical database contract.
+// An unauthenticated envelope field cannot select an older schema context.
+const CONTEXT = `st-mq-pair-v2:POST:/v2/pair:schema:${SCHEMA_VERSION}`;
 
 function keyFor(token) {
   if (typeof token !== 'string' || token.length < 32) throw pairError('pair_token_invalid');

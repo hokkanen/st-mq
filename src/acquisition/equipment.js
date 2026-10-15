@@ -1550,6 +1550,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           state: device.readings[device.stateSignal]?.coverState ?? null,
           operation: device.coverOperation ? { ...device.coverOperation } : null } } : {}),
         ...(device.kind === 'dehumidifier' ? { dehumidifier: {
+          identity: device.dehumidifierReport?.identity ?? null,
           probeBusy: probeBusy(device),
           available: device.controlsDehumidifier && !closed && canControl() && healthy(device, now)
             && validDehumidifierIdentity(device.dehumidifierReport?.identity),

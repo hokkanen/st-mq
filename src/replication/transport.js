@@ -10,6 +10,7 @@ import { databaseErrorDetails } from '../storage/database-errors.js';
 import { databaseCheckpoint, JOURNAL_DIGEST, sameCheckpoint } from './incremental.js';
 import { checkpointMetadata, peerPublicationBoundary } from './journal-publication.js';
 import { CHANGE_CHUNK_BYTES, PeerTransfers, peerOperation } from './coalesced.js';
+import { SCHEMA_VERSION } from '../storage/schema.js';
 
 const wrapper = fileURLToPath(new URL('../../scripts/replica-ssh.js', import.meta.url));
 const SAFE_PATH = /^[A-Za-z0-9_./-]+$/;
@@ -173,9 +174,9 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
   try {
     onPhase('connecting');
     channel = receiverChannel(config, generation, options);
-    channel.send({ type: 'prepare', version: 2, generation });
+    channel.send({ type: 'prepare', version: 3, schema: SCHEMA_VERSION, generation });
     const ready = await channel.next();
-    if (ready.type !== 'ready' || ready.version !== 2) throw replicationError('protocol_failed');
+    if (ready.type !== 'ready' || ready.version !== 3 || ready.schema !== SCHEMA_VERSION) throw replicationError('protocol_failed');
     await peerOperation('enroll',{dbPath,signal:abort.signal,onYield});
     const enrolled=await peerOperation('anchor',{dbPath,signal:abort.signal});
     if(enrolled.completedSourcePath)await acknowledge(enrolled.checkpoint);

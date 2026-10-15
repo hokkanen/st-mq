@@ -5,7 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
+import { JOURNALED_DATA_VERSION } from '../src/storage/schema.js';
+import { JOURNAL_VERSION } from '../src/storage/journal.js';
+import { LEARNING_ALGORITHM } from '../src/domain/learning-contract.js';
 import { importCsv, exportCsv, parseCsvLine } from '../src/storage/history.js';
 
 function fixture(t) {
@@ -39,6 +43,40 @@ test('current schema contains the acquisition lookup index and no historical tab
   for (const old of ['learning_samples','chart_rollups','chart_rollup_meta']) assert(!names.includes(old));
   assert(store.db.prepare("EXPLAIN QUERY PLAN SELECT signal FROM observations WHERE source='easee' AND import_id IS NULL AND device=? AND received_at=? ORDER BY id")
     .all('synthetic',1000).some(r=>r.detail.includes('observations_easee_acquisition')));
+});
+
+test('physical index schema and the one current journaled data layout have distinct identities', t => {
+  const { store, path } = fixture(t);
+  assert.equal(SCHEMA_VERSION, 31);
+  assert.equal(JOURNALED_DATA_VERSION, 30);
+  const meta = store.db.prepare('SELECT * FROM journal_meta WHERE id=1').get();
+  const expected = createHash('sha256').update(JSON.stringify({ version: JOURNAL_VERSION,
+    databaseId: meta.database_id, schema: JOURNALED_DATA_VERSION, algorithm: LEARNING_ALGORITHM })).digest('hex');
+  assert.equal(meta.genesis_hash, expected);
+  const original = store.checkpoint();
+  store.setState('synthetic-layout-proof', { retained: true });
+  const committed = store.checkpoint();
+  assert.equal(committed.databaseId, original.databaseId);
+  assert.equal(committed.sequence, original.sequence + 1);
+  assert.equal(store.db.prepare('SELECT previous_hash FROM journal_commits WHERE sequence=?').get(committed.sequence).previous_hash, original.hash);
+  store.close();
+  const reopened = new Store(path);
+  try { assert.deepEqual(reopened.checkpoint(), committed); }
+  finally { reopened.close(); }
+});
+
+test('the required chronological coverage index is validated before writable setup', t => {
+  const { store, path } = fixture(t);
+  assert.deepEqual(store.db.prepare("PRAGMA index_info('recorder_coverage_stream_start')").all().map(row => row.name),
+    ['source', 'device', 'signal', 'start_at', 'id']);
+  store.close();
+  const raw = new DatabaseSync(path);
+  raw.exec('DROP INDEX recorder_coverage_stream_start'); raw.close();
+  const bytes = readFileSync(path);
+  for (const readOnly of [false, true]) {
+    assert.throws(() => new Store(path, { readOnly }), { code: 'database_schema_invalid' });
+    assert.deepEqual(readFileSync(path), bytes, 'Opening cannot create the missing index or repair an unsupported structure');
+  }
 });
 
 test('events return a chronological tail and a cursor follows new events', t => {

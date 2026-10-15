@@ -1,7 +1,10 @@
 import { RECOVERY_DEPENDENCY_SCHEMA } from '../recovery/dependencies.js';
 import { journalSchema } from './journal-schema.js';
-// One current schema. Pre-production databases are never migrated.
-export const SCHEMA_VERSION = 30;
+// One current physical schema. Startup never converts an existing database.
+export const SCHEMA_VERSION = 31;
+// Index changes do not change journaled rows or their hash interpretation.
+// This is one current layout, not a decoder for an earlier database schema.
+export const JOURNALED_DATA_VERSION = 30;
 // Original source rows remain immutable evidence. The active views select the
 // current recovery interpretation without erasing history or changing local IDs.
 export const RECOVERABLE_TABLES = ['annotations', 'counters', 'energy_audits', 'events',
@@ -187,6 +190,7 @@ CREATE INDEX observations_stream_receipt ON observations(source,device,signal,un
 CREATE INDEX recorder_coverage_outages ON recorder_coverage(start_at,id) WHERE status<>'fresh';
 CREATE INDEX recorder_coverage_signal_time ON recorder_coverage(signal,end_at,id);
 CREATE INDEX recorder_coverage_stream ON recorder_coverage(source,device,signal,id);
+CREATE INDEX recorder_coverage_stream_start ON recorder_coverage(source,device,signal,start_at,id);
 CREATE INDEX recorder_metrics_bucket ON recorder_metrics(bucket);
 CREATE INDEX recovery_provenance_target ON recovery_provenance(table_name,target_id);
 CREATE INDEX recovery_members_record ON recovery_members(table_name,record_key);

@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { acceptPeerPublication, applyPeerPublication, recoverJournalPublication } from './journal-publication.js';
 import { CHANGE_CHUNK_BYTES, validPeerTransfer } from './coalesced.js';
 import { sameCheckpoint } from './incremental.js';
+import { SCHEMA_VERSION } from '../storage/schema.js';
 import { GENERATION_PATTERN, normalizeSnapshot, ownedDirectory, privateFile,
   pruneReplicaSnapshots, publishSnapshot, replicationError, snapshotDigest } from './publication.js';
 
@@ -54,18 +55,19 @@ export async function runReceiver({ directory, input = process.stdin, output = p
   directory = resolve(directory);
   const lines = createInterface({ input, crlfDelay: Infinity });
   // Attach the iterator before filesystem awaits so an immediate SSH prepare
-  // message cannot be lost while the private directory is being initialized.
+  // message cannot be lost before the first prepare is validated.
   const messages = lines[Symbol.asyncIterator]();
   let unlock, incoming, generation, reset = false, publication, staged;
   const send = value => output.write(`${JSON.stringify(value)}\n`);
   try {
-    await initializeDirectory(directory);
     for await (const line of messages) {
       const message = parseMessage(line);
       if (!generation) {
-        if (message.type !== 'prepare' || message.version !== 2 || !GENERATION_PATTERN.test(message.generation)) {
+        if (message.type !== 'prepare' || message.version !== 3 || message.schema !== SCHEMA_VERSION || !GENERATION_PATTERN.test(message.generation)) {
           throw replicationError('invalid_protocol');
         }
+        // Refuse incompatible peers before ownership, recovery or publication work.
+        await initializeDirectory(directory);
         unlock = await acquireReceiverLock(directory);
         await assertUnpairedDirectory(directory);
         generation = message.generation;
@@ -80,7 +82,7 @@ export async function runReceiver({ directory, input = process.stdin, output = p
         await rm(join(directory, 'publication.json.tmp'), { force: true });
         if (!publication || message.repair === true) { const file = await open(incoming, 'wx', 0o600); await file.close(); }
         else incoming = null;
-        send({ type: 'ready', version: 2, publication });
+        send({ type: 'ready', version: 3, schema: SCHEMA_VERSION, publication });
         continue;
       }
       if(message.type==='peer-apply-begin') {

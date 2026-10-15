@@ -1,3 +1,5 @@
+import { selectedHistoryPredicate } from './schema.js';
+
 /** Immutable recovery rows can retain a longer confirmation of the same
  * original fresh span. Select its most complete source/availability continuation without
  * changing either source row or double-counting their shared prefix. */
@@ -12,8 +14,9 @@ export function selectedCoverageSpan(alias, through = null, futureFallback = fal
     OR ((${alias}.end_at<=${through} AND continuation.end_at<=${through})
       OR (${alias}.end_at>${through} AND continuation.end_at>${through})) AND ${dominates})`
     : `${dominates} ${through === null ? '' : `AND continuation.end_at<=${through}`}`;
-  return `NOT EXISTS (SELECT 1 FROM active_recorder_coverage continuation
+  return `NOT EXISTS (SELECT 1 FROM recorder_coverage continuation INDEXED BY recorder_coverage_stream_start
     WHERE ${alias}.status='fresh' AND ${alias}.samples>0
+      AND ${selectedHistoryPredicate('recorder_coverage', 'continuation')}
       AND continuation.source=${alias}.source AND continuation.device=${alias}.device
       AND continuation.signal=${alias}.signal AND continuation.status='fresh'
       AND continuation.start_at=${alias}.start_at AND continuation.observation_id=${alias}.observation_id
@@ -29,7 +32,7 @@ function nextCoverage(alias, column, through, futureFallback) {
   return `(SELECT next.${column} FROM active_recorder_coverage next
     WHERE next.source=${alias}.source AND next.device=${alias}.device AND next.signal=${alias}.signal
       AND next.end_at>=${alias}.start_at
-      AND (next.start_at>${alias}.start_at OR next.start_at=${alias}.start_at AND next.id>${alias}.id)
+      AND (next.start_at,next.id)>(${alias}.start_at,${alias}.id)
       AND ${selectedCoverageSpan('next', through, futureFallback)}
     ORDER BY next.start_at,next.id LIMIT 1)`;
 }

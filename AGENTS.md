@@ -100,6 +100,12 @@ reset of a known disposable development database is an operational action, not a
 new compatibility/reset-on-startup subsystem. Re-import permitted CSV sources
 into the fresh schema rather than importing an old development database.
 
+For the chronological chart-coverage index on 2026-10-15, the owner approved one
+controlled, data-preserving physical-schema upgrade of the existing paired
+installation, with verified backups, exact journal/history parity and rollback.
+This task-specific exception adds no startup conversion, migration ladder,
+automatic reset or permission to convert other development databases.
+
 Use one current persisted/configuration/API contract. Unknown or retired fields
 and payload versions must fail closed at their relevant boundary, not silently
 be translated, ignored or granted authority. Genuinely missing optional current

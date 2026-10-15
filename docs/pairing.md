@@ -175,7 +175,10 @@ keeps its existing `pairing` name so a configuration rename cannot bypass saved
 authority. Incompatible saved state is rejected before mutation with deliberate
 fresh-start guidance; it is never silently skipped or reset. Pair authority state
 uses version 3 and the encrypted peer protocol uses version 2 (`/v2/pair`). Both
-computers must run this contract; earlier formats are not translated.
+computers must run this contract; earlier formats are not translated. Request
+and response authentication also bind the exact current physical database schema.
+A peer with another schema cannot dispatch even a status or claim operation;
+changing a plaintext envelope field cannot select a different schema context.
 
 Consolidated changed-row deliveries use transient format version 2, with source
 clocks frozen at their exact target checkpoint. This is separate from pairing

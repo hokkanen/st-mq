@@ -1,3 +1,4 @@
+import { SCHEMA_VERSION } from '../src/storage/schema.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
@@ -124,14 +125,14 @@ test('receiver process death mid-transfer leaves a reusable checkpoint and clean
     } };
   }
   const interrupted = receiver();
-  assert.equal((await interrupted.send({ type: 'prepare', version: 2, generation: randomUUID() })).type, 'ready');
+  assert.equal((await interrupted.send({ type: 'prepare', version: 3, schema: SCHEMA_VERSION, generation: randomUUID() })).type, 'ready');
   const begin = { type: 'peer-apply-begin',transfer:transfer.metadata };
   assert.equal((await interrupted.send(begin)).type, 'apply-ready');
   await interrupted.send({ type: 'apply-chunk', offset: 0, data: bytes.subarray(0, CHANGE_CHUNK_BYTES).toString('base64') });
   interrupted.child.kill('SIGKILL'); await interrupted.closed;
   assert.deepEqual(await databaseCheckpoint({ dbPath: f.publication.dbPath }), before);
   const resumed = receiver();
-  assert.equal((await resumed.send({ type: 'prepare', version: 2, generation: randomUUID() })).type, 'ready');
+  assert.equal((await resumed.send({ type: 'prepare', version: 3, schema: SCHEMA_VERSION, generation: randomUUID() })).type, 'ready');
   assert.equal((await resumed.send(begin)).type, 'apply-ready');
   for (let offset = 0; offset < bytes.length; offset += CHANGE_CHUNK_BYTES) {
     const frame = bytes.subarray(offset, offset + CHANGE_CHUNK_BYTES);

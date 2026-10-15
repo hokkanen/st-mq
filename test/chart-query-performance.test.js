@@ -4,6 +4,13 @@ import { Store } from '../src/storage/store.js';
 import { recordedEnergyGroups, recordedEnergyStart } from '../src/storage/energy-history.js';
 import { createChartQueryContext } from '../src/app/chart-query-context.js';
 import { chartRange, getChartData } from '../src/app/chart-data.js';
+import { chartCoverageRows } from '../src/app/chart-coverage.js';
+import { Recorder } from '../src/storage/recorder.js';
+import { createChartService } from '../src/app/chart-service.js';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 
 const DAY = 86_400_000, HOUR = DAY / 24;
 const range = chartRange({ startDate: '2026-09-08' }), now = range.to + HOUR;
@@ -96,4 +103,70 @@ test('chart loading emits truthful stage progress and keeps output independent o
   }
   assert.equal(progress.at(-1).stage, 'preparing-summary', 'Traversal completion is not falsely labelled whole-load completion');
   assert(!Object.hasOwn(progress.at(-1), 'total'));
+});
+
+test('coverage successor lookups seek the immutable chronological index', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const recorder = new Recorder(store), first = range.from - 7 * DAY;
+  for (let hour = 0; hour < 8 * 24; hour++) store.transaction(() => {
+    for (const signal of ['compressor_active', 'dhw_routing', 'operating_mode']) recorder.record({
+      source: 'husdata-h66', device: 'synthetic-coverage', signal, unit: 'state', value: signal === 'operating_mode' ? 1 : hour % 2,
+      sourceTime: first + hour * HOUR, receivedAt: first + hour * HOUR,
+      quality: [], raw: { verified: true, usableForControl: true },
+    });
+  });
+  const reused = store.db.prepare("SELECT COUNT(*) spans,COUNT(DISTINCT observation_id) observations FROM recorder_coverage WHERE signal='operating_mode'").get();
+  assert(reused.spans > 100 && reused.observations === 1,
+    'Unchanged observations can back many separate fresh spans after reporting gaps');
+  const schema = () => store.db.prepare('SELECT type,name,sql FROM sqlite_schema ORDER BY type,name').all();
+  const before = schema(), plans = [];
+  const facade = { db: { prepare(sql) {
+    const statement = store.db.prepare(sql);
+    return { iterate(...bindings) {
+      plans.push(store.db.prepare('EXPLAIN QUERY PLAN ' + sql).all(...bindings));
+      return statement.iterate(...bindings);
+    } };
+  } } };
+  const rows = [...chartCoverageRows(facade, { from: range.from, to: range.to, now,
+    input: 'providers', signals: ['compressor_active', 'operating_mode'] })];
+  assert(rows.some(row => row.value === 0) && rows.some(row => row.value === 1));
+  assert(rows.every(row => ['compressor_active', 'operating_mode'].includes(row.signal)));
+  assert.equal(plans.length, 2);
+  for (const plan of plans) {
+    assert(!plan.some(row => row.detail.includes('MATERIALIZE active_recorder_coverage')));
+    assert(plan.some(row => /SEARCH r USING INDEX recorder_coverage_stream_start .*start_at>/.test(row.detail)),
+      'Successors seek the stream and chronological lower bound rather than sorting or materializing retained history');
+    assert(plan.some(row => /SEARCH continuation USING INDEX recorder_coverage_stream_start .*start_at=/.test(row.detail)),
+      'Equivalent continuations seek their exact start cohort even when many spans reuse an observation');
+    assert(!plan.some(row => row.parent !== 0 && /USE TEMP B-TREE FOR ORDER BY/.test(row.detail)),
+      'Successor subqueries use index order; the final merged output may still need sorting');
+  }
+  assert.deepEqual(schema(), before, 'Read-only projection cannot change the current indexed schema');
+});
+
+test('real read-only chart worker projects Recorder coverage without changing the database', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-coverage-worker-'));
+  const path = join(directory, 'synthetic.sqlite'), store = new Store(path), recorder = new Recorder(store);
+  const service = createChartService({ store });
+  t.after(async () => { await service.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  for (let hour = 0; hour < 4; hour++) store.transaction(() => {
+    for (let minute = 0; minute < 60; minute++) {
+      const at = range.from + hour * HOUR + minute * 60_000;
+      recorder.record({ source: 'husdata-h66', device: 'synthetic-worker', signal: 'compressor_active',
+        unit: 'state', value: Math.floor(minute / 15) % 2, sourceTime: at, receivedAt: at,
+        quality: [], raw: { verified: true, usableForControl: true } });
+    }
+  });
+  const selection = { input: 'providers', startDate: range.startDate, endDate: range.startDate,
+    now: range.from + 4 * HOUR, left: 'compressor_active' };
+  const expected = getChartData({ store, ...selection });
+  store.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  const digest = () => createHash('sha256').update(readFileSync(path)).digest('hex');
+  const before = digest(), schema = store.db.prepare('SELECT type,name,sql FROM sqlite_schema ORDER BY type,name').all();
+  const result = await service.query(selection);
+  await service.close();
+  for (const response of [expected, result]) for (const key of ['elapsedMs', 'cacheHit', 'contentRevision']) delete response.meta[key];
+  assert.deepEqual(result, expected);
+  assert.deepEqual(store.db.prepare('SELECT type,name,sql FROM sqlite_schema ORDER BY type,name').all(), schema);
+  assert.equal(digest(), before, 'Read-only worker leaves the completed synthetic database bytes unchanged');
 });

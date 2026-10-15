@@ -35,7 +35,7 @@ function session(directory) {
     return Promise.race([response, result]);
   };
   return { input, result, generation, incoming: join(directory, `incoming-${generation}.sqlite`),
-    prepare: () => send({ type: 'prepare', version: 2, repair: true, generation }),
+    prepare: () => send({ type: 'prepare', version: 3, schema: SCHEMA_VERSION, repair: true, generation }),
     publish: metadata => send({ type: 'publish', generation, ...metadata }) };
 }
 
@@ -181,7 +181,7 @@ test('receiver lock automatically recovers after SIGKILL with an unfinished inco
   const receiver = spawn(process.execPath, [resolve('scripts/replica-receiver.js'), replica], { stdio: ['pipe', 'pipe', 'ignore'] });
   t.after(() => receiver.kill('SIGKILL'));
   const ready = once(receiver.stdout, 'data');
-  receiver.stdin.write(`${JSON.stringify({ type: 'prepare', version: 2, repair: true, generation: randomUUID() })}\n`);
+  receiver.stdin.write(`${JSON.stringify({ type: 'prepare', version: 3, schema: SCHEMA_VERSION, repair: true, generation: randomUUID() })}\n`);
   assert.equal(JSON.parse(String((await ready)[0])).type, 'ready');
   receiver.kill('SIGKILL');
   await once(receiver, 'close');
@@ -238,7 +238,7 @@ for (const scenario of [
   const lines = createInterface({ input: receiver.stdout }), messages = lines[Symbol.asyncIterator]();
   t.after(() => { lines.close(); receiver.kill('SIGKILL'); });
   const generation = randomUUID();
-  receiver.stdin.write(`${JSON.stringify({ type: 'prepare', version: 2, repair: true, generation })}\n`);
+  receiver.stdin.write(`${JSON.stringify({ type: 'prepare', version: 3, schema: SCHEMA_VERSION, repair: true, generation })}\n`);
   assert.equal(JSON.parse((await messages.next()).value).type, 'ready');
   await copyFile(path, join(replica, `incoming-${generation}.sqlite`));
   const metadata = await snapshotDigest(path);
