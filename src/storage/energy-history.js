@@ -71,11 +71,14 @@ function* rawRows(store, { from, to, now, input, prefix, source, device }) {
   const day = 86_400_000;
   const recent = now - from <= 31 * day;
   const index = recent ? 'observations_signal_time' : 'observations_energy_geometry';
+  // Peer recovery overlays raw observations with a TEMP view. Preserve its
+  // complete donor history; the scoped active view contains only changed keys.
+  const indexHint = store.journalSource === true ? '' : ` INDEXED BY ${index}`;
   // The geometry index streams complete cohorts in start order. JavaScript
   // retains one cohort, one overlap cluster and one gap per logical scope; no full-range
   // sort or source-row array is needed, including multi-year selections.
   const iterator = store.db.prepare(`SELECT id,source,device,signal,value,unit,source_time,received_at,quality,raw
-    FROM observations INDEXED BY ${index}
+    FROM observations${indexHint}
     WHERE signal IN (${ENERGY_SIGNALS.map(signal => `'${signal}'`).join(',')}) AND import_id IS NULL
     AND ${selectedHistoryPredicate('observations', 'observations')}
     AND signal IN (${signals.map(() => '?').join(',')}) AND ${geometry}<?

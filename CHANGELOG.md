@@ -10,6 +10,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   history selection, discarding cached results and late replies from the previous
   selection while preserving the chosen period and controls.
 
+- Recover validated pending electricity intervals from paired journal history
+  without failing on the source's temporary views. Preserve original energy,
+  timestamps, conflict checks and local controller state.
+
 - Seek chronological recording-coverage boundaries through an immutable index,
   preserving recovery and historical timestamps without loading all retained
   coverage into each chart request. Physical schema 31 retains the current
