@@ -8,8 +8,7 @@ import { applyLearningRecord, learningVersion, LEARNING_ALGORITHM } from '../app
 import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
 import { sensorRevision } from '../app/sensor-inputs.js';
 import { HistoryMerge } from './merge.js';
-import { pendingEnergyObservationsFromStates } from '../storage/pending-energy.js';
-import { validEnergyQuality } from '../storage/energy-history.js';
+import { laterObservation, compatiblePendingStates, coverageAfter, compatibleCoverage, publicationRestorationProof } from './restoration-evidence.js';
 import { recoveryFailure } from './errors.js';
 import { RECOVERY_MODEL_TIME } from './dependencies.js';
 import { findLearningPrefix, retainLearningPrefix, prefixSourceId, withPrefixRevisions } from './learning-prefix.js';
@@ -260,64 +259,15 @@ async function restorationConflicts({ apply = false } = {}) {
   } finally { current.close(); }
 }
 
-const laterObservation = (row, maximumAt) => {
-  if (!Number.isFinite(row.source_time) || row.source_time <= maximumAt || row.received_at <= maximumAt) return false;
-  let raw; try { raw = row.raw === null ? null : JSON.parse(row.raw); } catch { return false; }
-  return raw?.intervalStart === undefined || Number.isFinite(raw.intervalStart) && raw.intervalStart >= maximumAt;
-};
-function laterPending(value, maximumAt) {
-  if (value === undefined) return true;
-  let state; try { state = JSON.parse(value); } catch { return false; }
-  if (!state || typeof state !== 'object' || Array.isArray(state)) return false;
-  if (state.pending == null) return true;
-  const pending = state.pending;
-  return Number.isFinite(pending.start) && pending.start >= maximumAt && Number.isFinite(pending.end)
-    && pending.end > pending.start && Number.isFinite(pending.receivedAt) && pending.receivedAt > maximumAt;
-}
-
-function unchangedEarlierPending(key, before, after, previous, now) {
-  if (before === undefined || after === undefined) return false;
-  const oldRows = pendingEnergyObservationsFromStates([{ key, value: before }], { now: previous.pendingAt });
-  const newRows = pendingEnergyObservationsFromStates([{ key, value: after }], { now });
-  if (!oldRows.length || oldRows.length !== newRows.length) return false;
-  // An already overlapping tail may continue accumulating for days. Once its
-  // end is beyond all recovered intervals, extending that same valid stream
-  // cannot add or remove an older overlap. Values may change, but a changed
-  // scope, start or quality must still receive the complete conflict scan.
-  return oldRows.every((old, index) => {
-    const next = newRows[index];
-    return ['source', 'device', 'signal', 'unit', 'quality'].every(key => old[key] === next[key])
-      && validEnergyQuality(JSON.parse(old.quality))
-      && JSON.parse(old.raw).intervalStart === JSON.parse(next.raw).intervalStart
-      && old.source_time > previous.maximumAt && next.source_time >= old.source_time;
-  });
-}
-
-const coverageAfter = (row, maximumAt) => row.start_at > maximumAt && row.end_at >= row.start_at;
-function unchangedEarlierCoverage(before, after, maximumAt) {
-  if (!after) return false;
-  if (Object.keys(before).every(key => before[key] === after[key])) return true;
-  if (coverageAfter(before, maximumAt) && coverageAfter(after, maximumAt)) return true;
-  // Extending a span which already ended beyond every recovered point cannot
-  // add older coverage. The same referenced measurement and status must remain.
-  return ['id', 'source', 'device', 'signal', 'status', 'start_at', 'observation_id'].every(key => before[key] === after[key])
-    && before.end_at > maximumAt && after.end_at >= before.end_at;
-}
-
 async function laterCoverage(current, previous, next, maximumAt) {
-  const known = new Set(previous.rows.map(row => row.id));
-  if (next.rows.some(row => !known.has(row.id) && !coverageAfter(row, maximumAt))) return false;
-  for (const before of previous.rows) {
-    const after = current.db.prepare(`SELECT id,source,device,signal,status,start_at,end_at,source_time,observation_id
-      FROM recorder_coverage WHERE id=?`).get(before.id);
-    if (!unchangedEarlierCoverage(before, after, maximumAt)) return false;
-  }
+  if (!compatibleCoverage(current, previous, next, maximumAt)) return false;
   let cursor = previous.head;
   for (;;) {
     const rows = current.db.prepare('SELECT id,start_at,end_at FROM recorder_coverage WHERE id>? AND id<=? ORDER BY id LIMIT 64')
       .all(cursor, next.head);
     if (!rows.length) return true;
     if (!rows.every(row => coverageAfter(row, maximumAt))) return false;
+    if (rows.length < 64) return true;
     cursor = rows.at(-1).id; await yieldTurn();
   }
 }
@@ -330,14 +280,8 @@ async function verifyRestoration() {
     const pendingAt = Date.now();
     const version = recoveryEvidenceVersion(current, { now: pendingAt });
     if (version === previous.version) return previous;
-    const states = pendingStates(current), before = new Map(previous.pendingStates.map(row => [row.key, row.value])),
-      after = new Map(states.map(row => [row.key, row.value]));
-    const samePending = key => before.get(key) === after.get(key)
-      && learningVersion(pendingEnergyObservationsFromStates([{ key, value: before.get(key) }], { now: previous.pendingAt }))
-        === learningVersion(pendingEnergyObservationsFromStates([{ key, value: after.get(key) }], { now: pendingAt }));
-    let later = [...new Set([...before.keys(), ...after.keys()])].every(key => samePending(key)
-      || laterPending(before.get(key), previous.maximumAt) && laterPending(after.get(key), previous.maximumAt)
-      || unchangedEarlierPending(key, before.get(key), after.get(key), previous, pendingAt));
+    const states = pendingStates(current);
+    let later = compatiblePendingStates(previous, states, pendingAt);
     const coverage = recoveryCoverageEvidence(current);
     if (later) later = await laterCoverage(current, previous.coverage, coverage, previous.maximumAt);
     let cursor = previous.observationHead, checked = 0;
@@ -346,7 +290,11 @@ async function verifyRestoration() {
       if (!rows.length) break;
       later = rows.every(row => laterObservation(row, previous.maximumAt)); cursor = rows.at(-1).id;
       checked += rows.length;
-      progress('catching-up', { processed: checked, unit: 'records' }); await yieldTurn();
+      progress('catching-up', { processed: checked, unit: 'records' });
+      // The pinned final short page is complete. Yield between full batches,
+      // before more work, rather than needlessly ageing this completed proof.
+      if (!later || rows.length < 64) break;
+      await yieldTurn();
     }
     if (later) tail = { ...previous, version, observationHead: observationHead(current), pendingStates: states, pendingAt, coverage };
   } finally { current.close(); }
@@ -512,7 +460,8 @@ async function catchup() {
   progress('publishing', { processed: 0 });
   parentPort.postMessage({ type: 'ready', revision: true, generation, epoch, sourceEpoch, sourceHead,
     sourceSelection: selection, sourceFireplace, sourceSensor, fireplaceRevision: source.fireplaceRevision,
-    sensorRevision: source.sensorRevision, checkpoint, prefixCheckpoint, evidenceVersion, report, modelChanged });
+    sensorRevision: source.sensorRevision, checkpoint, prefixCheckpoint, evidenceVersion,
+    evidenceProof: workerData.active ? publicationRestorationProof(restorationVerified) : null, report, modelChanged });
 }
 
 async function catchupUnchanged() {
@@ -525,6 +474,10 @@ async function catchupUnchanged() {
     AND NOT EXISTS(SELECT 1 FROM recovery_exclusions old WHERE old.generation=?
       AND old.table_name=x.table_name AND old.record_key=x.record_key) LIMIT 1`).get(generation,selection);
   if (affected) fail('New learning depends on this recovery. Review its impact again.');
+  // Admit pending recording before taking the final evidence snapshot. A yield
+  // after verification can make every ready proof stale under a continuous
+  // stream, so publication never reaches its exact-version transaction fence.
+  progress('publishing',{processed:0}); await yieldTurn();
   let evidenceVersion = null;
   if (workerData.active) {
     const current = await verifyRestoration();
@@ -533,10 +486,10 @@ async function catchupUnchanged() {
   }
   sourceHead = through; epoch = sourceEpoch;
   checkpoint = store.getState(`adaptive:${input}`) ?? null;
-  progress('publishing',{processed:0}); await yieldTurn();
   parentPort.postMessage({ type:'ready',revision:true,generation,epoch,sourceEpoch,sourceHead,
     sourceSelection:selection,sourceFireplace,sourceSensor,fireplaceRevision:sourceFireplace,
-    sensorRevision:sourceSensor,checkpoint,evidenceVersion,report,modelChanged:false });
+    sensorRevision:sourceSensor,checkpoint,evidenceVersion,
+    evidenceProof: workerData.active ? publicationRestorationProof(restorationVerified) : null, report,modelChanged:false });
 }
 
 function close() { if (!closed) { closed = true; store.close(); parentPort.close(); } }

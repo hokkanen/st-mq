@@ -12,7 +12,7 @@ export function recoverySource(source) {
     throw new TypeError('Recovery source metadata is invalid');
   return { kind: source.kind, label: source.label };
 }
-export const recoveryCoverageEvidence = store => ({
+export const recoveryCoverageEvidence = (store, { limit, sizesOnly = false } = {}) => ({
   head: store.db.prepare('SELECT COALESCE(MAX(id),0) n FROM recorder_coverage').get().n,
   // Held readings can extend a coverage row without inserting an observation.
   // Only current stream cursors can be extended by live recording; resolve
@@ -20,8 +20,11 @@ export const recoveryCoverageEvidence = store => ({
   rows: store.db.prepare(`WITH current_ids AS MATERIALIZED (
     SELECT DISTINCT json_extract(value,'$.coverageId') id FROM state
     WHERE key LIKE 'recorder:signal:%' AND json_valid(value) AND json_type(value,'$.coverageId')='integer')
-    SELECT c.id,c.source,c.device,c.signal,c.status,c.start_at,c.end_at,c.source_time,c.observation_id
-    FROM current_ids i JOIN recorder_coverage c ON c.id=i.id ORDER BY c.id`).all(),
+    SELECT ${sizesOnly ? `c.id,${['id','source','device','signal','status','start_at','end_at','source_time','observation_id']
+      .map(name => `COALESCE(length(CAST(c.${name} AS BLOB)),0)`).join('+')} bytes`
+      : 'c.id,c.source,c.device,c.signal,c.status,c.start_at,c.end_at,c.source_time,c.observation_id'}
+    FROM current_ids i JOIN recorder_coverage c ON c.id=i.id ORDER BY c.id${limit === undefined ? '' : ' LIMIT ?'}`)
+    .all(...(limit === undefined ? [] : [limit])),
 });
 export function recoveryEvidenceVersion(store, { now = Date.now() } = {}) {
   const energy = store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%' ORDER BY key").all();

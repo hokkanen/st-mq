@@ -210,6 +210,16 @@ review. Until publication, control and charts retain the prior selection; a fail
 revision leaves that selection intact. Published prior epochs and decisions remain
 available as evidence. Abandoned unpublished projections may be discarded.
 
+Accepted saves may finish after the restoration worker verifies its snapshot.
+Inside the publication transaction, a bounded check can refresh that proof only
+across changes which the same verification rules establish cannot change older
+conflicts. It checks at most 64 appended observations and 64 coverage rows,
+128 stream or cursor entries per set, and 256 KiB each for the proof and current
+evidence. It retains original clocks and checks pending receipts becoming eligible
+with time. Unknown, relevant or larger changes return to background checking;
+they are never truncated or accepted from an unchecked version token. Full
+conflict scans remain outside the final writer transaction.
+
 Physical observations can be shared by multiple saved input histories. A revision
 is refused if another input's selected journal depends on evidence it would
 exclude; changing only the current model would leave that other history incorrect.

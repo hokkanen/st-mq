@@ -9,7 +9,7 @@ import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
 import { verifyJournal } from '../src/storage/journal.js';
 import { publishLearning, publicationKey } from '../src/app/learning-publication.js';
 import { peerOperation, PeerTransfers } from '../src/replication/coalesced.js';
-import { recoverHistory, recoveryPreview } from '../src/recovery/service.js';
+import { recoverHistory, recoveryPreview, previewRecoveryRevision, reviseRecovery } from '../src/recovery/service.js';
 import { addFireplace, removeFireplace } from '../src/app/fireplace.js';
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
 import { applyLearningRecord, replayLearningJournal } from '../src/app/committed-learning.js';
@@ -316,5 +316,52 @@ test('history recovery shares publication admission with the dedicated writer an
   assert.deepEqual(store.getState('controller:sentinel'), { permission: 'paused', identity: 'invented-equipment' });
   assert.equal(store.learningEpoch('mqtt'), result.epoch);
   assert.equal(store.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+  verifyJournal(store.db);
+});
+
+test('restoration publishes once when an earlier admitted commit extends already checked evidence', { timeout: 30_000 }, async t => {
+  const { directory, store, stores } = await fixture(t), donorPath = join(directory, 'queued-proof-donor.sqlite');
+  await store.backup(donorPath, { signal: t.signal });
+  const donor = new Store(donorPath); stores.push(donor);
+  const observation = (target, at, device) => target.observation({ source: 'synthetic', device,
+    signal: 'indoor_temperature', value: 21, unit: 'degC', sourceTime: at, receivedAt: at, quality: [] });
+  observation(donor, 100, 'invented-recovered-sensor');
+  const snapshot = join(directory, 'queued-proof-donor-snapshot.sqlite');
+  await donor.backup(snapshot, { signal: t.signal });
+  const preview = await recoveryPreview({ masterPath: store.path, donorPath: snapshot, signal: t.signal });
+  const accepted = await recoverHistory({ store, donorPath: snapshot, preview, signal: t.signal });
+  const args = { store, input: 'mqtt', recoveryId: accepted.report.recoveryId, signal: t.signal };
+  const revert = { ...args, active: false };
+  await reviseRecovery({ ...revert, preview: await previewRecoveryRevision(revert) });
+  const key = 'recorder:energy:["synthetic","synthetic-queued-proof-meter","property"]';
+  const tail = end => ({ lastEnd: end, lastReceivedAt: end,
+    pending: { start: 50, end, receivedAt: end, energies: [0.1, 0.2, 0.3], quality: [] },
+    lastPowers: [1, 2, 3], lastQuality: [], scales: [null, null, null] });
+  await store.runWrite(() => store.setState(key, tail(200)));
+  const restore = { ...args, active: true }, checked = await previewRecoveryRevision(restore);
+  const publish = store.runPublication.bind(store);
+  let attempts = 0;
+  store.runPublication = (operation, options) => {
+    attempts++;
+    if (attempts !== 1) return publish(operation, options);
+    // This write is accepted after the worker prepared its proof, before the
+    // publication queues. Its commit must remain ahead of publication and make
+    // that exact evidence version stale, without relying on timer coincidence.
+    const gate = holdCommit(store);
+    const changing = store.runWrite(() => {
+      observation(store, 300, 'invented-later-sensor');
+      store.setState(key, tail(300));
+    });
+    const publishing = publish(operation, options);
+    return (async () => {
+      try { await gate.ready; } finally { gate.release(); }
+      await changing;
+      return publishing;
+    })();
+  };
+  await reviseRecovery({ ...restore, preview: checked });
+  assert.equal(attempts, 1, 'a harmless admitted suffix is verified under the final lock without restarting reconstruction');
+  assert.equal(store.db.prepare('SELECT COUNT(*) n FROM active_observations').get().n, 2);
+  assert.equal(store.getState(key).pending.end, 300);
   verifyJournal(store.db);
 });
