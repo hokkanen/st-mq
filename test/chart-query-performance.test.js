@@ -7,6 +7,7 @@ import { chartRange, getChartData } from '../src/app/chart-data.js';
 import { chartCoverageRows } from '../src/app/chart-coverage.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { createChartService } from '../src/app/chart-service.js';
+import { historicalHeatPumpIntervals } from '../src/app/chart-heat-pump.js';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -109,8 +110,9 @@ test('coverage successor lookups seek the immutable chronological index', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const recorder = new Recorder(store), first = range.from - 7 * DAY;
   for (let hour = 0; hour < 8 * 24; hour++) store.transaction(() => {
-    for (const signal of ['compressor_active', 'dhw_routing', 'operating_mode']) recorder.record({
-      source: 'husdata-h66', device: 'synthetic-coverage', signal, unit: 'state', value: signal === 'operating_mode' ? 1 : hour % 2,
+    for (const signal of ['compressor_active', 'dhw_routing', 'operating_mode', 'auxiliary_output']) recorder.record({
+      source: 'husdata-h66', device: 'synthetic-coverage', signal, unit: signal === 'auxiliary_output' ? '%' : 'state',
+      value: signal === 'operating_mode' ? 1 : signal === 'auxiliary_output' ? hour % 2 * 50 : hour % 2,
       sourceTime: first + hour * HOUR, receivedAt: first + hour * HOUR,
       quality: [], raw: { verified: true, usableForControl: true },
     });
@@ -136,10 +138,29 @@ test('coverage successor lookups seek the immutable chronological index', t => {
     assert(!plan.some(row => row.detail.includes('MATERIALIZE active_recorder_coverage')));
     assert(plan.some(row => /SEARCH r USING INDEX recorder_coverage_stream_start .*start_at>/.test(row.detail)),
       'Successors seek the stream and chronological lower bound rather than sorting or materializing retained history');
-    assert(plan.some(row => /SEARCH continuation USING INDEX recorder_coverage_stream_start .*start_at=/.test(row.detail)),
+    assert(plan.some(row => /SEARCH \w+ USING INDEX recorder_coverage_stream_start .*start_at=/.test(row.detail)),
       'Equivalent continuations seek their exact start cohort even when many spans reuse an observation');
+    assert(!plan.some(row => /SEARCH \w+ USING INDEX recorder_coverage_signal_time .*end_at[<>]/.test(row.detail)),
+      'Nested continuation bounds do not scan the other starts in a broad signal/end range');
     assert(!plan.some(row => row.parent !== 0 && /USE TEMP B-TREE FOR ORDER BY/.test(row.detail)),
       'Successor subqueries use index order; the final merged output may still need sorting');
+  }
+  const heatPumpPlans = [], heatPumpStore = { db: { prepare(sql) {
+    const statement = store.db.prepare(sql);
+    if (!sql.includes('c.source_time AS confirmed_at')) return statement;
+    return { iterate(...bindings) {
+      heatPumpPlans.push(store.db.prepare('EXPLAIN QUERY PLAN ' + sql).all(...bindings));
+      return statement.iterate(...bindings);
+    } };
+  } } };
+  const intervals = [...historicalHeatPumpIntervals({ store: heatPumpStore, range, now, input: 'providers' })];
+  assert(intervals.length > 0);
+  assert.equal(heatPumpPlans.length, 2, 'Both real heat-pump coverage consumers exercise the through upper bound');
+  for (const plan of heatPumpPlans) {
+    assert(plan.some(row => /SEARCH \w+ USING INDEX recorder_coverage_stream_start .*start_at=/.test(row.detail)),
+      'Heat-pump continuation checks seek their exact stream/start cohort');
+    assert(!plan.some(row => row.parent !== 0 && /SEARCH \w+ USING INDEX recorder_coverage_signal_time .*end_at[<>]/.test(row.detail)),
+      'The through upper bound must not select a broad nested signal/end range');
   }
   assert.deepEqual(schema(), before, 'Read-only projection cannot change the current indexed schema');
 });
