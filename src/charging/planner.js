@@ -484,7 +484,9 @@ function simulate({ starts, periods, jobs, intervals, details = true }) {
           const energyKwh = Math.min(item.remaining, powerKw * (end - at) / HOUR);
           if (details) row.chargers[id] = { currentA, powerKw, currentLimitA: distribution.suggestions[id] ?? null,
             externallyBalanced: Boolean(item.charger.capabilities.externalLoadBalancing) };
-          if (energyKwh > EPS) {
+          // EPS decides completion; it must not discard positive delivery from
+          // a short slice whose epoch-time endpoint rounded down.
+          if (energyKwh > 0) {
             if (details) item.accounting.push({ start: at, end, energyKwh, powerKw, currentA, priceCtPerKwh: cashPrice(interval),
               ...(interval.predicted ? { predicted: true, uncertaintyCtPerKwh: interval.uncertaintyCtPerKwh } : {}) });
             item.costCents += energyKwh * cashPrice(interval);
