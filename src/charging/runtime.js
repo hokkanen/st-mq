@@ -2940,14 +2940,15 @@ export class ChargingRuntime {
       && this.clock() < chargingPlanValidUntil({ now: calculation.at, chargers: [] }, {
         allocations: calculation.allocations, plans: item.plan ? { charger2: item.plan } : {} });
   }
-  async reconcileShellyObservation() {
+  async reconcileShellyObservation(completedRead) {
     const item = this.chargers.charger2;
     if (this.closed || !this.canControl() || !item?.controller || item.adapterPending || item.backendTransition || item.reconcileFlight
       || this.clock() - (item.lastReconcileAt ?? -Infinity) < CURRENT_RECONCILE_MS) return;
     // The ordinary current loop neither queues behind a slow native command
     // nor polls Charger 1's cloud. Current-test/pause deadlines keep their
     // existing scheduler; the controller retains all native command fences.
-    try { await this.reconcile('charger2', { refreshPlan: false }); }
+    const periodicRead = { proof: completedRead, controller: item.controller, adapter: item.adapter, generation: item.adapterGeneration };
+    try { await this.reconcile('charger2', { refreshPlan: false, periodicRead }); }
     catch (error) { item.error = 'charging-reconciliation-unavailable'; throw error; }
   }
   async reconcile(id, options = {}) {
@@ -2988,7 +2989,7 @@ export class ChargingRuntime {
       }
     }
   }
-  async reconcileCharger(id, { replan = false, takeover = null, refreshPlan = true } = {}) {
+  async reconcileCharger(id, { replan = false, takeover = null, refreshPlan = true, periodicRead } = {}) {
     const item = this.charger(id);
     if (item.backendTransition) return;
     if (item.adapterPending) await item.adapterFlight;
@@ -3009,6 +3010,8 @@ export class ChargingRuntime {
     const maximumAmps = scheduleCeiling(controller.status()?.snapshot);
     await controller.update({ enabled: settings.enabled, plan: this.pricesInitialized ? item.plan : null,
       timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, takeover, replan: replan || item.replan, controlsRevision, refreshPlan,
+      ...(periodicRead?.controller === controller && periodicRead.adapter === item.adapter
+        && periodicRead.generation === item.adapterGeneration ? { completedRead: periodicRead.proof } : {}),
       deadlineRequest: deadlineRequest(item),
       chargeNow: item.request?.chargeNow === true ? { connectedAt: sessionConnectedAt(item.request) } : null,
       allocation: id === 'charger2' ? this.allocationContext() : undefined,

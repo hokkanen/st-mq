@@ -22,6 +22,14 @@ callback; real Store admission and yield timers continue on their usual schedule
 Global timer freezing cannot stand in for a native deadline while persistence is
 still active.
 
+`test/charging-shelly-periodic-read.test.js` exercises the actual native adapter,
+controller, runtime and Store with one manually invoked existing polling callback.
+It verifies a single completed read round for an unchanged periodic episode,
+independent acquisition during held Store admission and controller planning,
+one-use owner/session/input fences, rollback and post-commit failure, and fresh
+explicit/takeover/post-write confirmation. Native replies and economic results
+are synthetic; reduced request count is not a measured device-latency improvement.
+
 Time admission regressions in `test/time-evidence.test.js` and
 `test/time-evidence-integration.test.js` cover original timestamp preservation,
 bounded source-clock leads, causal temperature/learning prefixes, voltage restart

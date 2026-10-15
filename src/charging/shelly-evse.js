@@ -89,6 +89,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   let storagePending = 0;
   const admissionWaiters = new Set();
   let sourcePacketSequence = 0;
+  let receivedInputRevision = 0;
+  const completedReads = new WeakMap();
   const sourcePending = createSourceTimePending({ clock, ordered: true, limit: 128,
     dispatch(action) {
       const epoch = generation;
@@ -541,6 +543,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   function receive(topic, payload, packet = {}, receivedAt = clock(), timeAdmission = null) {
     if (closed || !connected || Buffer.byteLength(payload) > 65536
       || !topic.startsWith(`${config.topicPrefix}/`) && topic !== `${source}/rpc`) return;
+    receivedInputRevision++;
     const epoch = generation, body = Buffer.from(payload);
     const metadata = { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId };
     // Receipt stops a correlated reply's network timeout. Persistence still
@@ -677,13 +680,32 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     return accepted;
   }
 
-  async function refresh({ force = false } = {}) {
+  // An ordinary periodic reconciliation may consume its own completed poll
+  // once. Received input fences this before its asynchronous admission; source
+  // clocks and command/readback freshness are never renewed by reuse.
+  // The controller owns the single status observer, including during a poll.
+  const readBoundary = () => [generation, receivedInputRevision, sourcePacketSequence, statusObserver, readinessRevision, verifiedReadinessRevision,
+    state.sessionSequence, state.connection?.connected, state.connection?.sessionId, state.connection?.connectedAt,
+    state.notificationRevision, readAt, serviceAt, ...Object.keys(TYPES).map(role => fieldRevisions.get(role))];
+  const reusableRead = () => Number.isSafeInteger(receivedInputRevision) && !closed && connected && admitted && online && !error && !meterError
+    && !pending.size && !storagePending && !sourcePending.size && !notificationPending.size && !notificationRefreshQueued
+    && basicReady() && Boolean(live('phase_info'));
+  const consumeRead = proof => {
+    const boundary = completedReads.get(proof);
+    completedReads.delete(proof);
+    try {
+      return Boolean(boundary && !polling && canControl() && reusableRead()
+        && readBoundary().every((value, index) => Object.is(value, boundary[index])));
+    } catch { return false; }
+  };
+  async function refresh({ force = false, completedRead } = {}) {
+    if (!force && consumeRead(completedRead)) return;
     // A poll already in flight may have requested a setting before a write was
     // acknowledged. Settle it, then begin a new correlated read for post-write
     // confirmation; receipt after the reply cannot change that request's order.
     if (force && polling) await polling;
     if (polling || !connected || !admitted || closed) return polling;
-    const epoch = generation, readinessAtStart = readinessRevision;
+    const epoch = generation, readinessAtStart = readinessRevision, observerAtStart = statusObserver;
     polling = (async () => {
       if (!discovered) {
         let deviceRead;
@@ -763,6 +785,14 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         verifiedReadinessRevision = readinessRevision; controlReady = true; error = null;
       }
       readAt = clock();
+      try {
+        if (eligible && readinessAtStart === readinessRevision && typeof observerAtStart === 'function'
+          && observerAtStart === statusObserver && reusableRead()) {
+          const proof = Object.freeze({});
+          completedReads.set(proof, readBoundary());
+          return proof;
+        }
+      } catch { /* Unknown reuse proof keeps the ordinary fresh-read path. */ }
     })().catch(cause => {
       if (epoch === generation) { controlReady = false; error = cause.code ?? 'evse-read-unavailable'; }
     }).finally(() => { polling = null; if (epoch === generation) publishStatus(); });
@@ -791,7 +821,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   }
   client.on('connect', connect); client.on('message', receive); client.on('offline', disconnect); client.on('close', disconnect);
   const timer = setInterval(() => {
-    void refresh().then(() => engine.charging?.reconcileShellyObservation?.()).catch(() => {});
+    void refresh().then(completedRead => engine.charging?.reconcileShellyObservation?.(completedRead)).catch(() => {});
   }, 5000); timer.unref?.();
   const settingFresh = (role, now = clock()) => {
     const field = state.fields[role];
@@ -1501,7 +1531,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
         if (!takeoverRequested && takeoverResult?.state !== 'pending') takeoverResult = null;
         enabled = input.enabled === true;
         if (input.replan === true) { await persist(); planningRevision = input.controlsRevision ?? null; }
-        await adapter.refresh();
+        const sameSession = (state.sessionId ?? null) === (requestedSnapshot.session?.sessionId ?? null);
+        const reuseRead = sameSession && !takeoverRequested && !state.automaticTakeover
+          && !state.scheduleTakeoverPending && takeoverResult?.state !== 'pending';
+        await adapter.refresh({ completedRead: reuseRead ? input.completedRead : undefined });
         let snapshot = adapter.snapshot();
         await manageCurrentTest({ snapshot, intentRevision, early: true });
         if (takeoverRequested) await settleTakeoverAdmission();

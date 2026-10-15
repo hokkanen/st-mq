@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Avoid a duplicate completed Shelly read round during unchanged periodic
+  reconciliation while preserving independent polling and fresh command readback.
+
 - Include original local reporter clocks in bounded private checkpoint refusal
   diagnostics, preserving unknown timing and the existing read fence and response.
 
