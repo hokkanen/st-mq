@@ -15,10 +15,11 @@ const prices = [20, 1, 1, 20].map((price, index) => ({ start: START + index * HO
 // Production runtime, planner, controllers, transport adapters and vehicle feeds.
 // Only the physical devices/broker and acquisition clocks are simulated. Device
 // settings keep their source clocks; reads do not manufacture native changes.
-export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false, feedsSynchronized = true } = {}) {
+export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false, feedsSynchronized = true,
+  store = new Store(':memory:') } = {}) {
   let now = START, runtime, heldOcppWrite = null, heldShellyCurrentWrite = null, heldShellyRoleRead = null,
     revokedOcppWrites = 0, rejectShellyWrites = false;
-  const store = new Store(':memory:'), client = new EventEmitter();
+  const client = new EventEmitter();
   const commands = [], profiles = new Map(), reads = { charger1: 0, charger2: 0 };
   const household = { currentA: 0, sourceAt: null, feedsSynchronized };
   const cars = { charger1: { connected: false, allows: true, demandA: 8, connectedAt: null },
@@ -163,7 +164,7 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
     for (const item of Object.values(runtime.chargers)) await item.reconcileFlight;
     await runtime.planningFlight;
   };
-  t.after(async () => { await runtime.close(); shelly.close(); capture.close(); store.close(); });
+  t.after(async () => { await runtime.close(); shelly.close(); capture.close(); await store.close(); });
   return { get runtime() { return runtime; }, get now() { return now; }, store, cars, household, commands, fields, schedules, reads, view, automatic, scope, settle,
     closeAdapter() { shelly.close(); },
     get revokedOcppWrites() { return revokedOcppWrites; },

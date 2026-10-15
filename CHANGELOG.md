@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Restore Shelly **Use automatic** and **Charge now** with the dedicated writer,
+  preserving saved intent and native-input checks before any charger command.
+
 - Avoid unnecessary writer-lock attempts while scanning recovery history when
   no temporary entry needs removal. Actual deletions retain normal transaction
   and journal protection.

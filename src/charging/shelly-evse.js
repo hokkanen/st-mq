@@ -864,7 +864,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
           : !observationReady() ? 'evse-read-unavailable'
             : sourcePending.size ? 'evse-source-time-pending'
               : storagePending ? 'evse-input-persistence-pending' : null);
-  const snapshot = () => ({ association, transport: 'shelly-evse', online: connected && admitted && online, controlReady: basicReady(), currentControlReady: basicReady() && currentReady(),
+  // Snapshot readiness describes admitted native evidence and capability, like
+  // controlReady. Each mutation separately rechecks ready()/Store.canDispatch;
+  // an intent's own persistence turn must not revoke its input eligibility.
+  const snapshot = () => ({ association, transport: 'shelly-evse', online: connected && admitted && online, controlReady: basicReady(), currentControlReady: basicReady() && currentControlReady,
     observationReady: observationReady(), currentObservationReady: observationReady() && currentControlReady,
     commandBlockReason: commandBlockReason(),
     identificationCurrentReady: observationReady() && identificationCurrentReady(),
@@ -889,7 +892,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     permissionOverflow: state.permissionOverflow === true,
     error: error ?? (state.permissionOverflow ? 'evse-permission-event-overflow' : notificationPending.size ? 'evse-notification-readback-required' : ready() && !knownWorkState() ? 'evse-work-state-unavailable'
       : ready() && (!settingFresh('start_charging') || !settingFresh('current_limit')) ? 'evse-read-unavailable' : null), generation,
-    commissioning: { profileSupported, identityMatched: discovered, controlReady: basicReady(), currentControlReady: basicReady() && currentReady(),
+    commissioning: { profileSupported, identityMatched: discovered, controlReady: basicReady(), currentControlReady: basicReady() && currentControlReady,
       controllerLossFallback: 'unverified',
       nativeCaps: service ? { energyKwh: service.global_charge_limit, durationMinutes: service.global_time_limit, autoCharge: service.auto_charge, state: serviceStatus?.state, restricted: Boolean(serviceStatus?.errors?.length || serviceStatus?.flags?.length) } : null } });
   // Public electrical readings retain the native source clock and installation
