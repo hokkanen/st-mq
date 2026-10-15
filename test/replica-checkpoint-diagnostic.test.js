@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, open, readlink, stat, rm, rename } from 'node:fs/promises';
+import filesystem from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -256,6 +258,42 @@ test('closing the viewer during the fresh-manifest check cannot acquire a new re
   assert.throws(() => f.app.store.checkpoint(), 'The original reader is closed too');
 });
 
+test('a slow prepared manifest keeps the old verified publication readable before SQLite apply', async t => {
+  const f = await fixture(t, { makeChartService: ({ store }) => createChartService({ store }) });
+  assert.equal((await f.request('/api/recording-health')).status, 200);
+  f.source.event('synthetic-prepared-manifest', { synthetic: true }, f.now + 1);
+  const target = f.source.checkpoint(), transfers = new PeerTransfers(join(f.root, 'changes'));
+  const peer = { request: (operation, value) => operation === 'peer-transfer'
+    ? transfers.export({ dbPath: f.source.path, ...value }) : transfers.chunk(value) };
+  const transfer = await receivePeerTransfer({ directory: join(f.root, 'receive'), peer, after: f.publication.checkpoint });
+  const probe = await open(join(f.root, 'file-handle-probe'), 'wx', 0o600), prototype = Object.getPrototypeOf(probe);
+  const sync = prototype.sync; await probe.close();
+  const entered = deferred(), released = deferred(); let held = false, publishing, timer;
+  t.after(async () => { released.resolve(); prototype.sync = sync; await publishing?.catch(() => {}); });
+  prototype.sync = async function (...args) {
+    const path = await readlink(`/proc/self/fd/${this.fd}`).catch(() => null);
+    if (!held && path === resolve(f.directory, 'publication.json.tmp')) {
+      held = true; entered.resolve(); await released.promise;
+    }
+    return sync.apply(this, args);
+  };
+  publishing = applyPeerPublication({ directory: f.directory, transfer, metadata: { ...f.publication, generation: randomUUID() } });
+  try { await Promise.race([entered.promise, publishing.then(() => { throw Error('Manifest gate was not reached'); }),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(Error('Manifest gate timed out')), 15_000); })]); }
+  finally { clearTimeout(timer); }
+  assert.ok(sameCheckpoint(await databaseCheckpoint({ dbPath: f.publication.dbPath }), f.publication.checkpoint),
+    'A slow temporary-file fsync must not strand committed rows under the old manifest');
+  assert.ok(sameCheckpoint((await readReplicaPublication(f.directory)).checkpoint, f.publication.checkpoint));
+  for (const path of ['/api/status', '/api/recording-health']) assert.equal((await f.request(path)).status, 200);
+  assert.deepEqual(f.diagnostics, []);
+  released.resolve(); await publishing; prototype.sync = sync;
+  for (const path of ['/api/status', '/api/recording-health']) assert.equal((await f.request(path)).status, 200);
+  assert.ok(sameCheckpoint(f.app.store.checkpoint(), target));
+  const final = await readReplicaPublication(f.directory);
+  assert.equal(final.sourceStartedAt, transfer.metadata.sourceStartedAt);
+  assert.equal(final.sourceAt, transfer.metadata.sourceAt);
+});
+
 test('real incremental publication exposes only a typed status/health refusal and preserves the fence through recovery', async t => {
   const f = await fixture(t, { sinkFailure: 'throw' }), inode = (await stat(f.publication.dbPath)).ino;
   for (const path of ['/api/status', '/api/recording-health']) assert.equal((await f.request(path)).status, 200);
@@ -264,19 +302,19 @@ test('real incremental publication exposes only a typed status/health refusal an
   const peer = { request: (operation, value) => operation === 'peer-transfer'
     ? transfers.export({ dbPath: f.source.path, ...value }) : transfers.chunk(value) };
   const transfer = await receivePeerTransfer({ directory: join(f.root, 'receive'), peer, after: f.publication.checkpoint });
-  const probe = await open(join(f.root, 'file-handle-probe'), 'wx', 0o600), prototype = Object.getPrototypeOf(probe);
-  const sync = prototype.sync; await probe.close();
+  const originalRename = filesystem.rename;
   const entered = deferred(), released = deferred(); let held = false, publishing;
-  t.after(async () => { released.resolve(); prototype.sync = sync; await publishing?.catch(() => {}); });
-  // Hold the actual manifest fsync after the producer has committed its rows.
-  // SQLite application and checkpoint checks remain the production functions.
-  prototype.sync = async function (...args) {
-    const path = await readlink(`/proc/self/fd/${this.fd}`).catch(() => null);
-    if (!held && path === resolve(f.directory, 'publication.json.tmp')) {
+  const restore = () => { filesystem.rename = originalRename; syncBuiltinESMExports(); };
+  t.after(async () => { released.resolve(); restore(); await publishing?.catch(() => {}); });
+  // Keep the real COMMIT-before-publication gap observable after file fsync
+  // moves before apply. A held final rename must still select the same fence.
+  filesystem.rename = async (from, to) => {
+    if (!held && from === resolve(f.directory, 'publication.json.tmp') && to === resolve(f.directory, 'publication.json')) {
       held = true; entered.resolve(); await released.promise;
     }
-    return sync.apply(this, args);
+    return originalRename(from, to);
   };
+  syncBuiltinESMExports();
   publishing = applyPeerPublication({ directory: f.directory, transfer, metadata: { ...f.publication, generation: randomUUID() } });
   let timer;
   try { await Promise.race([entered.promise, new Promise((_, reject) => {
@@ -298,7 +336,7 @@ test('real incremental publication exposes only a typed status/health refusal an
   assert.equal(f.publicationReads.length - reads, 6, 'Each original refusal keeps its existing refresh and one manifest check');
   assert.deepEqual(phaseDiagnostics(f), [phaseDiagnostic('same', { route: 'status' })], 'The health refusal is capped, while both public responses retain their original bodies');
   assert.ok(sameCheckpoint(await databaseCheckpoint({ dbPath: f.publication.dbPath }), target), 'Refused reads cannot mutate the committed database');
-  released.resolve(); await publishing; prototype.sync = sync;
+  released.resolve(); await publishing; restore();
   for (const path of ['/api/status', '/api/recording-health']) assert.equal((await f.request(path)).status, 200);
   const publication = await readReplicaPublication(f.directory);
   assert.ok(sameCheckpoint(publication.checkpoint, target));

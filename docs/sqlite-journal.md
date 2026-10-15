@@ -174,6 +174,21 @@ transport digest and resulting whole-content fingerprint before committing the
 rows, target checkpoint and common peer anchor together. A durable publication
 receipt resolves a crash after commit but before acknowledgement. No partial
 transfer becomes visible as an accepted source state.
+The next manifest's private temporary file is written and synchronized before
+the receiver's final authority checks and SQLite apply. After successful apply,
+the receiver renames it into view and synchronizes the directory, then removes
+and synchronizes the pending receipt. The temporary file alone never grants
+publication authority. Recovery checks the actual database against the durable
+receipt and reconstructs the accepted manifest; it does not trust abandoned or
+incomplete temporary bytes. The next owned preparation replaces its exact
+temporary file. Startup recovery does not gain new permission to delete a file
+that another current owner could still be preparing.
+
+The delivered target and source clocks are unchanged. The existing local
+`verifiedAt` is assigned while preparing that receipt, before apply; it is not a
+measured SQLite commit timestamp. A post-commit rename failure, lost apply reply
+or uncertain directory synchronization retains recovery duties rather than
+acknowledging success. Coherent readers still refuse a real checkpoint mismatch.
 
 Source acknowledgement rebases only transferred keys, in transactions bounded by
 both row count and bytes (one legal oversized record is handled alone). It

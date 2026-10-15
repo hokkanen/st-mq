@@ -445,6 +445,12 @@ atomically. Incomplete frames and disconnected transfers leave the previous
 checkpoint readable; restart reconciles the durable publication receipt and
 retries the same saved delivery after a lost acknowledgement. A receiver keeps
 one writable SQLite database while read-only viewers pin coherent transactions.
+The receiver prepares and synchronizes the next private manifest before applying
+the rows. Its existing authority checks still run immediately before apply.
+Only a successful SQLite apply permits the final manifest rename and directory
+synchronization; acknowledgement follows publication and receipt cleanup. This
+moves temporary-file writes and synchronization out of the committed-database /
+old-manifest interval without eliminating the remaining commit-to-rename race.
 
 A new read is refused while the committed database and current publication
 checkpoint disagree. If a newer publication completes during a viewer refresh,

@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Prepare the next read-only replica manifest before applying synchronized rows,
+  reducing the work between database commit and visible publication. Keep
+  checkpoint refusals, original source clocks and interrupted-publication recovery.
+
 - Avoid a duplicate completed Shelly read round during unchanged periodic
   reconciliation while preserving independent polling and fresh command readback.
 

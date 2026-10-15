@@ -149,9 +149,22 @@ handover and restart so a transport change cannot create a new device identity.
 boundary while another verified peer publication completes. The original request
 must open that current generation once, preserving its source clock. A further
 publication race, failed rollback, missing or unreadable manifest still refuses
-the read. The same suite retains the real SQLite-COMMIT-before-manifest refusal
-and unknown-error privacy checks; no cached database or weaker fence supplies a
-successful response.
+the read. The same suite holds the prepared manifest's file synchronization while
+the old SQLite checkpoint remains readable through the real Store/chart worker
+and HTTP. It separately holds the final rename after actual SQLite COMMIT to
+retain the checkpoint refusal and unknown-error privacy checks; no cached
+database or weaker fence supplies a successful response.
+
+`test/journal-publication-ordering.test.js` uses actual transfer/apply workers and
+fresh synthetic Stores under the receiver lock. Preparation write/fsync failures,
+post-preparation authority/cancellation, row-application rollback, lost worker
+acknowledgement, final rename/directory-sync failure and receipt-removal failure
+must preserve the exact old or committed checkpoint and current recovery receipt.
+Metadata-only and peer-seed publication retain original source clocks and anchor
+semantics. Existing crash tests add incomplete temporary bytes to prove that
+reconciliation selects the durable receipt and actual checkpoint instead of
+trusting staging. These checks do not measure storage latency or identify a
+particular household refusal's cause.
 
 The same actual Store/chart-worker producer also qualifies bounded private refusal
 phase logs: pending/same manifest, missing/unreadable manifest, second race and

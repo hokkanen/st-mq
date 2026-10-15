@@ -3,7 +3,7 @@ import { lstat, readFile, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { peerOperation, validPeerTransfer } from './coalesced.js';
 import { databaseCheckpoint, JOURNAL_DIGEST, sameCheckpoint, validCheckpoint } from './incremental.js';
-import { durableJson, GENERATION_PATTERN, PUBLICATION_FORMAT, readReplicaPublication, replicationError, syncDirectory, validatePublicationDatabasePath } from './publication.js';
+import { durableJson, GENERATION_PATTERN, prepareJson, PUBLICATION_FORMAT, publishPreparedJson, readReplicaPublication, replicationError, syncDirectory, validatePublicationDatabasePath } from './publication.js';
 
 const pendingPath = directory => join(directory, 'journal-publication.json');
 const withoutPath = ({ dbPath, ...publication }) => publication;
@@ -77,11 +77,14 @@ async function applyPublication({ directory, from, to, apply, metadata, signal,
     checkpoint: to, digest: to.hash, digestAlgorithm: JOURNAL_DIGEST,
     verifiedAt: Date.now(), previousGeneration: null };
   await durableJson(pendingPath(directory), { version: 1, from: from, next,...(kind?{kind}:{}) });
+  // Prepare the exact future manifest without exposing it. Once SQLite commits,
+  // only rename/directory synchronization remains before readers can verify it.
+  await prepareJson(join(directory, 'publication.json'), next);
   await guard();
   await beforeCommit();
   await apply(previous.dbPath);
   // A failed acknowledgement leaves the durable receipt for restart/retry.
-  await durableJson(join(directory, 'publication.json'), next);
+  await publishPreparedJson(join(directory, 'publication.json'));
   await removePending(directory);
   return { ...next, dbPath: previous.dbPath };
 }

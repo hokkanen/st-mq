@@ -159,11 +159,17 @@ for (const committed of [false, true]) test(`publication restart selects the ${c
   const next = { ...previous, generation: randomUUID(), checkpoint: transfer.metadata.target,
     digest: transfer.metadata.target.hash, digestAlgorithm: JOURNAL_DIGEST };
   await durableJson(join(f.directory, 'journal-publication.json'), { version: 1, from: transfer.metadata.base, next });
+  // Interrupted preparation is never an alternate publication or a recovery
+  // authority. Reconciliation uses the receipt and actual committed checkpoint.
+  const temporary = join(f.directory, 'publication.json.tmp');
+  await writeFile(temporary, '{"incomplete":');
   if (committed) await peerOperation('apply',{dbPath,path:transfer.path,metadata:transfer.metadata});
   const restored = await recoverJournalPublication(f.directory);
   assert.deepEqual(restored.checkpoint, committed ? transfer.metadata.target : transfer.metadata.base);
   assert.deepEqual((await readReplicaPublication(f.directory)).checkpoint, restored.checkpoint);
   assert.equal((await readdir(f.directory)).includes('journal-publication.json'), false);
+  if (committed) assert.equal((await readdir(f.directory)).includes('publication.json.tmp'), false);
+  else assert.equal(await readFile(temporary, 'utf8'), '{"incomplete":', 'Recovery without path ownership does not delete an unrelated in-flight preparation');
 });
 
 for(const accepted of [false,true]) test(`seed publication recovers a crash ${accepted?'after':'before'} accepting its peer anchor`,async t=>{
