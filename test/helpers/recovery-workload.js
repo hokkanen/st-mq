@@ -28,6 +28,9 @@ export async function recoveryWorkload(t, { records = 1024, windows = 32, payloa
     for (let index = 2; index <= windows + 1; index++) sample(donor, start + index * W);
   });
   const snapshot = await f.snapshot(donor);
+  // Exercise the same persistent writer used by the active application, rather
+  // than qualifying only the direct synchronous fixture connection.
+  await f.master.startWriter();
   let sequence = 0, selectedPhase = 'idle', currentProgress = null;
   const server = createServer((_request, response) => {
     response.setHeader('content-type', 'application/json');

@@ -18,6 +18,7 @@ import { createChargingTeslaCapture, decodeChargingTeslaField } from '../chargin
 import { mqttRouting } from './mqtt-routing.js';
 import { storageFailureCode } from '../storage/write-health.js';
 import { attachMqttStartupDiagnostic } from './startup-diagnostic.js';
+import { retainStorageWithdrawal } from './storage-withdrawal.js';
 
 export { decodeMqttTemperature } from './mqtt-temperature.js';
 
@@ -161,17 +162,17 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     source: 'husdata-h66', device: deviceId, signal: signal === 'integral' ? 'heating_integral' : signal, unit,
   })).filter(row => !equipmentOwnedSignals.includes(row.signal)) : [];
   const markUnavailable = (signals, quality) => {
-    const at = engine.clock(), observations = [];
+    const at = engine.clock(), raw = { usableForControl: false, timeBasis: 'availability-transition' };
+    const observations = signals.map(signal => ({ ...signal, value: null, sourceTime: null, receivedAt: at, quality, raw }));
+    const remember = () => { for (const observation of observations) engine.rememberObservation?.(observation, at); };
+    // Transport withdrawal is immediate evidence, independently of the gap's
+    // eventual persistence. An older rollback cannot revive these readings.
+    if (!store.transactionDepth) retainStorageWithdrawal(store, signals, remember);
     const record = () => {
-      for (const signal of signals) {
-        const raw = { usableForControl: false, timeBasis: 'availability-transition' };
-        engine.recorder?.recordFailure({ ...signal, at, quality, raw });
-        observations.push({ ...signal, value: null, sourceTime: null, receivedAt: at, quality, raw });
-      }
+      for (const signal of signals) engine.recorder?.recordFailure({ ...signal, at, quality, raw });
     };
     write(() => {
       if (store.transaction) store.transaction(record); else record();
-      const remember = () => { for (const observation of observations) engine.rememberObservation?.(observation, at); };
       if (store.afterCommit) store.afterCommit(remember); else remember();
     });
   };

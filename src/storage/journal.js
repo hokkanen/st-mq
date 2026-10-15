@@ -7,6 +7,7 @@ import { assertCurrentChargingSessionCheck } from '../app/charging-session-check
 import { encodeChange, rowHash, emptyContentHash, changeContentHash, patchedValue, registerJournalFunctions } from './journal-codec.js';
 import { capturePeerChanges, verifyPeerHistory } from './journal-peer.js';
 import { captureLearningCheckpoints } from './learning-checkpoints.js';
+import { isWriterDatabase } from './writer-database.js';
 
 export const JOURNAL_VERSION = 2;
 export const MAX_COMMIT_BYTES = 64 * 1024 * 1024;
@@ -381,6 +382,8 @@ function applyRow(db,change,reverse=false) {
     .run(...table.columns.map(column=>after[column]),...key);
 }
 function exclusive(db,operation) {
+  if (isWriterDatabase(db)) throw Object.assign(new Error('Peer maintenance requires its dedicated storage worker. Submit the operation through the existing peer worker.'),
+    { code: 'journal_worker_required' });
   const state=raw(db);
   if (state.transaction) fail('journal_transaction_active');
   state.resetCaptureBudget?.();

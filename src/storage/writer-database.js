@@ -1,5 +1,7 @@
 const pending = () => Object.assign(new Error('A save is still settling. Submit changes through writer admission.'),
   { code: 'STORAGE_WRITE_PENDING' });
+const connections = new WeakSet();
+export const isWriterDatabase = db => connections.has(db);
 
 /** Dependent statements in a synchronous callback use the reserved writer.
  * Other readers see only committed WAL state through their own connection. */
@@ -10,7 +12,7 @@ export function writerDatabase(store, reader, writer) {
     if (store.writerFailed) throw Object.assign(new Error('The storage writer is unavailable.'), { code: 'STORAGE_WRITER_FAILED' });
     if (store.writePending && !store.writerBodyActive) throw pending();
   };
-  return {
+  const database = {
     get isTransaction() { return writing() || reader.isTransaction; },
     get isOpen() { return reader.isOpen; },
     prepare(sql) {
@@ -45,4 +47,6 @@ export function writerDatabase(store, reader, writer) {
       return result;
     },
   };
+  connections.add(database);
+  return database;
 }

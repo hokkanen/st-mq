@@ -66,3 +66,35 @@ for (const outcome of ['commit', 'rollback']) test(`transport withdrawal survive
   assert.equal(store.getState('received'), outcome === 'commit' ? true : null);
   assert.equal(store.canDispatch(), true);
 });
+
+for (const progress of ['replacement', 'deadline']) test(`MQTT worker rollback retains operation ${progress} during durability`, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-acquisition-operation-'));
+  const store = new Store(join(directory, 'fixture.sqlite'));
+  let release;
+  t.after(async () => { release?.(); await store.close(); rmSync(directory, { recursive: true, force: true }); });
+  await store.startWriter();
+  const operation = { status: 'published', requestedAt: 10 };
+  const device = { readings: {}, checks: new Set(), coverOperation: operation };
+  const reception = createMqttReception({ store, engine: {}, admission: createMqttAdmission(), devices: [device], meters: new Map() });
+  let entered;
+  const held = new Promise(resolve => { entered = resolve; });
+  const resumed = new Promise(resolve => { release = resolve; });
+  const request = store.writer.request.bind(store.writer);
+  store.writer.request = async (command, args) => {
+    if (command === 'commit') {
+      entered(); await resumed;
+      throw Object.assign(new Error('Synthetic MQTT COMMIT failure'), { code: 'ERR_SQLITE_ERROR', errcode: 10 });
+    }
+    return request(command, args);
+  };
+  const saved = store.runWrite(() => reception.run(() => { device.readings.power = 2; store.setState('fixture', true); }));
+  const rejected = assert.rejects(saved, /Synthetic MQTT COMMIT failure/);
+  await held;
+  const current = progress === 'replacement' ? { status: 'publishing', requestedAt: 20 }
+    : Object.assign(operation, { status: 'unconfirmed', error: 'Original command deadline expired.' });
+  const expected = structuredClone(current); device.coverOperation = current;
+  release(); await rejected;
+  assert.deepEqual(device.readings, {});
+  assert.equal(device.coverOperation, current, 'A newer receipt keeps its original owner');
+  assert.deepEqual(device.coverOperation, expected, 'Rollback cannot undo independent native completion or deadline evidence');
+});

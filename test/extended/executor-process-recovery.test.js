@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { Store } from '../../src/storage/store.js';
 
 const childURL = new URL('../helpers/executor-crash-child.js', import.meta.url);
-async function fixture(t) {
+async function fixture(t, storage) {
   const directory = await mkdtemp(join(tmpdir(), 'stmq-executor-process-'));
   const path = join(directory, 'history.sqlite'), children = new Set(), commands = [];
   let on = false;
@@ -19,7 +19,7 @@ async function fixture(t) {
   });
   function run(operation, boundary, fence = 'none') {
     return new Promise((resolve, reject) => {
-      const child = fork(childURL, [path, operation, boundary, fence], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], signal: t.signal });
+      const child = fork(childURL, [path, operation, boundary, fence, storage], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], signal: t.signal });
       child.closed = new Promise(resolve => child.once('close', resolve));
       children.add(child);
       let result, stopped = false, stderr = '';
@@ -45,9 +45,9 @@ async function fixture(t) {
   return { run, read, commands, isOn: () => on };
 }
 
-for (const boundary of ['before-on', 'on-before-ack', 'off-clearing-fails', 'after-clear'])
-  test(`real process death ${boundary} preserves the committed circulation restoration obligation`, { timeout: 20000 }, async t => {
-    const f = await fixture(t);
+for (const storage of ['direct', 'worker']) for (const boundary of ['before-on', 'on-before-ack', 'off-clearing-fails', 'after-clear'])
+  test(`real process death ${boundary} preserves the committed circulation restoration obligation (${storage})`, { timeout: 20000 }, async t => {
+    const f = await fixture(t, storage);
     await f.run('start', boundary);
     const saved = f.read(), hadDuty = boundary !== 'after-clear';
     assert.equal(saved.dhwrOutstanding, hadDuty);
@@ -62,9 +62,9 @@ for (const boundary of ['before-on', 'on-before-ack', 'off-clearing-fails', 'aft
     assert(f.commands.slice(priorCommands).every(on => on === false), 'restart must never replay ON');
   });
 
-for (const fence of ['authority', 'identity', 'evidence'])
-  test(`process restart with ${fence} loss preserves the original duty without commanding another relay`, { timeout: 20000 }, async t => {
-    const f = await fixture(t);
+for (const storage of ['direct', 'worker']) for (const fence of ['authority', 'identity', 'evidence'])
+  test(`process restart with ${fence} loss preserves the original duty without commanding another relay (${storage})`, { timeout: 20000 }, async t => {
+    const f = await fixture(t, storage);
     await f.run('start', 'on-before-ack');
     const original = f.read(), priorCommands = f.commands.length;
     await f.run('restore', 'none', fence);

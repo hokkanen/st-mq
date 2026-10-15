@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 /** Commit an equipment delivery and its held state together. Completion
  * callbacks run only after durability, so failed readback cannot acknowledge a
  * physical command and a broker retransmission can retry the same delivery. */
@@ -40,6 +42,12 @@ export function createMqttReception({ store, engine, admission, devices, meters,
       const savedMeters = new Map([...meters].map(([id, meter]) => [id, { meter, state: meter.checkpoint() }]));
       const savedRequests = requests && new Map(requests);
       let receivedRequests;
+      const captureOperations = () => {
+        for (const snapshot of snapshots) for (const operation of snapshot.operations) {
+          operation.receivedReference = snapshot.device[operation.key];
+          operation.receivedValue = structuredClone(operation.receivedReference);
+        }
+      };
       const pending = effects = [];
       const previousAccepted = accepted;
       accepted = onAccepted;
@@ -52,7 +60,8 @@ export function createMqttReception({ store, engine, admission, devices, meters,
           // Pending transport callbacks own these receipt objects. Replacing
           // one with a clone strands its eventual outcome after any failed
           // receipt, even an unrelated device's observation.
-          for (const { key, reference, value } of snapshot.operations) {
+          for (const { key, reference, value, receivedReference, receivedValue } of snapshot.operations) {
+            if (snapshot.device[key] !== receivedReference || !isDeepStrictEqual(snapshot.device[key], receivedValue)) continue;
             if (reference) {
               for (const field of Object.keys(reference)) delete reference[field];
               Object.assign(reference, value);
@@ -82,9 +91,11 @@ export function createMqttReception({ store, engine, admission, devices, meters,
       try {
         result = store.transaction ? store.transaction(receive) : receive();
         receivedRequests = requests && new Map(requests);
+        captureOperations();
       }
       catch (error) {
         receivedRequests = requests && new Map(requests);
+        captureOperations();
         rewind();
         throw error;
       } finally { effects = null; accepted = previousAccepted; }

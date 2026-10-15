@@ -244,6 +244,8 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
     if (writes?.failing) return { ...base, state: 'write-failed', detail: 'A database write failed. New history may be missing; check disk space and storage access.' };
     if (writes?.queue?.waitingSince != null) return { ...base, state: 'write-waiting',
       detail: 'Storage is busy. Received readings are waiting to be saved; control requests wait for durable intent before dispatch.' };
+    if (store?.writePending) return { ...base, state: 'write-waiting',
+      detail: 'A save is in progress. The live view shows the last committed readings until the save settles; control requests wait for durable intent.' };
     if (engine && now - (Number.isFinite(tickAt) ? tickAt : recordingRun.startedAt) > 3 * MINUTE)
       return { ...base, state: 'stalled', detail: 'The recording and controller update loop has not completed for more than three minutes. History may have gaps.' };
     if (parameters === null) return { ...base, state: 'unknown', detail: 'Recording source status could not be read. Refresh to check again.' };

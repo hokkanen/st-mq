@@ -20,6 +20,7 @@ const safeError = error => ({
   ...(error?.committed === true ? { committed: true } : {}),
 });
 const signal = new Int32Array(workerData.syncSignal);
+const syncResponse = new Uint8Array(workerData.syncResponse);
 const syncPort = workerData.syncPort;
 let store, phase = 'idle', closed = false;
 const statements = new Map();
@@ -49,10 +50,15 @@ function statement({ sql, method, params = [], settings = {} }) {
     statements.set(cacheKey, prepared);
     if (statements.size > MAX_STATEMENTS) statements.delete(statements.keys().next().value);
   }
-  if (method === 'iterate') {
+  if (method === 'iterate' || method === 'all') {
     const rows = [];
+    let bytes = 1024;
     for (const row of prepared.iterate(...params)) {
-      if (rows.length >= MAX_RESULT_ROWS) throw failure('STORAGE_WRITER_FRAME_TOO_LARGE');
+      // Bound materialization before collecting a potentially large result.
+      // The final encoded frame has its own exact limit too.
+      bytes += serialize(row).byteLength + 8;
+      if (rows.length >= MAX_RESULT_ROWS || bytes > MAX_FRAME_BYTES)
+        throw failure('STORAGE_WRITER_FRAME_TOO_LARGE');
       rows.push(row);
     }
     return rows;
@@ -85,6 +91,11 @@ function rollback() {
 }
 function execute(op, args, synchronous) {
   if (closed) throw failure('STORAGE_CLOSED');
+  if (op === 'compact') {
+    if (!synchronous || phase !== 'idle' || !keys(args, ['options'])
+      || args.options !== undefined && !keys(args.options, ['maxBytes', 'maxCommits'])) invalid();
+    return store.compactJournal(args.options);
+  }
   if (op === 'statement') {
     if (!synchronous || !keys(args, ['sql', 'method', 'params', 'settings'])) invalid();
     return statement(args);
@@ -121,7 +132,8 @@ function receive(frame, synchronous) {
     response = encode({ id, ok: true, result: execute(message.op, message.args, synchronous) });
   } catch (error) { response = encode({ id, ok: false, error: safeError(error) }); }
   if (synchronous) {
-    syncPort.postMessage(response);
+    syncResponse.set(response);
+    Atomics.store(signal, 1, response.byteLength);
     Atomics.store(signal, 0, 1); Atomics.notify(signal, 0);
   } else parentPort.postMessage(response);
   if (closed) { syncPort.close(); parentPort.close(); }

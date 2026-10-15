@@ -1,4 +1,4 @@
-import { Worker, MessageChannel, receiveMessageOnPort } from 'node:worker_threads';
+import { Worker, MessageChannel } from 'node:worker_threads';
 import { serialize, deserialize } from 'node:v8';
 
 export const WRITER_FRAME_BYTES = 8 * 1024 * 1024;
@@ -29,12 +29,23 @@ export class WriterClient {
     this.pending = new Map(); this.syncTimeoutMs = syncTimeoutMs;
     const { port1, port2 } = new MessageChannel();
     this.port = port1;
-    this.signal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+    this.signal = new Int32Array(new SharedArrayBuffer(2 * Int32Array.BYTES_PER_ELEMENT));
+    this.response = new Uint8Array(new SharedArrayBuffer(WRITER_FRAME_BYTES));
     this.ready = new Promise((resolve, reject) => { this.readyResolve = resolve; this.readyReject = reject; });
     // The owning Store may reconcile a synchronous timeout before it awaits ready.
     void this.ready.catch(() => {});
+    // An input-type switch applies to parent source, never a worker file.
+    // Preserve other flags, including instrumentation preloads.
+    let inputTypeValue = false;
+    const hasInputType = process.execArgv.some(value => value === '--input-type' || value.startsWith('--input-type='));
+    const execArgv = process.execArgv.filter(value => {
+      if (inputTypeValue) { inputTypeValue = false; return false; }
+      if (value === '--input-type') { inputTypeValue = true; return false; }
+      return !value.startsWith('--input-type=');
+    });
     try {
-      this.worker = workerFactory({ workerData: { path, syncPort: port2, syncSignal: this.signal.buffer }, transferList: [port2] });
+      this.worker = workerFactory({ workerData: { path, syncPort: port2, syncSignal: this.signal.buffer,
+        syncResponse: this.response.buffer }, transferList: [port2], ...(hasInputType ? { execArgv } : {}) });
     } catch (error) {
       port1.close(); port2.close(); this.readyReject(error); throw error;
     }
@@ -85,19 +96,30 @@ export class WriterClient {
     if (!this.started || this.busy)
       throw failure('STORAGE_WRITE_PENDING', 'The recording writer is completing an asynchronous boundary.');
     const { id, frame } = this.frame(op, args);
+    Atomics.store(this.signal, 1, 0);
     Atomics.store(this.signal, 0, 0);
     try { this.port.postMessage(frame); }
     catch { throw this.fail(lost()); }
-    const result = Atomics.wait(this.signal, 0, 0, this.syncTimeoutMs);
-    if (result === 'timed-out') {
+    const deadline = performance.now() + this.syncTimeoutMs;
+    // A late notify from the preceding request may wake this wait. Readiness
+    // belongs to the published state, not to the notification itself.
+    while (Atomics.load(this.signal, 0) === 0) {
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) break;
+      Atomics.wait(this.signal, 0, 0, remaining);
+    }
+    if (Atomics.load(this.signal, 0) === 0) {
       const error = this.fail(failure('STORAGE_WRITER_TIMEOUT', 'The recording writer did not answer its bounded statement request.'));
       void this.terminate();
       throw error;
     }
     let message;
     try {
-      const response = receiveMessageOnPort(this.port)?.message;
-      if (!(response instanceof Uint8Array) || response.byteLength > WRITER_FRAME_BYTES) throw lost();
+      // The atomic wake publishes the bytes themselves. Message delivery and a
+      // separate notification must not be treated as one readiness boundary.
+      const length = Atomics.load(this.signal, 1);
+      if (length <= 0 || length > WRITER_FRAME_BYTES) throw lost();
+      const response = this.response.slice(0, length);
       message = deserialize(response);
       if (message?.id !== id) throw lost();
     } catch { const error = this.fail(lost()); void this.terminate(); throw error; }

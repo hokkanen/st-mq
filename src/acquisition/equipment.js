@@ -1185,7 +1185,9 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     try {
       await publish(device.mqtt.commandTopic, JSON.stringify({ [setting]: value,
         identity: operation.identity, requestedAt: operation.requestedAt, expiresAt }),
-      { qos: 1, retain: false, noReplay: true, beforePublish, preparePublish, signal: cancellation.signal }, device.broker);
+      { qos: 1, retain: false, noReplay: true, beforePublish,
+        ...(['location-test', 'location-restoration'].includes(origin) && restoration ? { preparePublish } : {}),
+        signal: cancellation.signal }, device.broker);
       operation.acknowledgedAt = engine.clock();
       if (operation.status === 'publishing') operation.status = operation.observedAt !== undefined ? 'observed' : 'published';
       if (closed || !canControl() || !device.brokerConnected) {

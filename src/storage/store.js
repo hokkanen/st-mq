@@ -300,24 +300,31 @@ export class Store {
   close() {
     if (this.closePending) return this.closePending;
     this.writeQueue.close();
-    if (!this.writer) { this.db.close(); return; }
+    if (!this.writer && !this.writerStartPending) { if (this.db.isOpen) this.db.close(); return; }
     this.closePending = (async () => {
+      // Startup may own a worker before publishing its connection. Join that
+      // lifetime too: callers can release the database path after close.
+      await this.writerStartPending?.catch(() => {});
       await this.writeQueue.idle();
-      try { await this.writer.close(); }
-      finally { this.writerReader.close(); }
+      if (this.writer) {
+        try { await this.writer.close(); }
+        finally { this.writerReader.close(); }
+      } else if (this.db.isOpen) this.db.close();
     })();
     return this.closePending;
   }
 
-  async startWriter() {
-    if (this.writer) return;
+  startWriter() {
+    if (this.writerStartPending) return this.writerStartPending;
+    if (this.writer) return Promise.resolve();
     if (this.readOnly || this.path === ':memory:' || !isMainThread)
-      throw new TypeError('The dedicated writer requires a writable file-backed runtime Store.');
-    await this.runPublication(async () => {
+      return Promise.reject(new TypeError('The dedicated writer requires a writable file-backed runtime Store.'));
+    this.writerStartPending = this.runPublication(async () => {
       const writer = new WriterClient({ path: this.path });
       let reader;
       try {
         await writer.ready;
+        if (this.writeQueue.closed) throw Object.assign(new Error('Recording storage is closed.'), { code: 'STORAGE_CLOSED' });
         reader = new Store(this.path, { readOnly: true });
         this.db.close();
       } catch (error) {
@@ -334,6 +341,7 @@ export class Store {
       this.insertEvent = this.db.prepare('INSERT INTO events (type, payload, at) VALUES (?, ?, ?)');
       this.writeQueue.asyncTransaction = fn => this._workerTransaction(fn);
     });
+    return this.writerStartPending;
   }
 
   canDispatch() { return !this.writePending && !this.writerFailed && !this.writer?.failed && !this.writeQueue.closed; }
@@ -450,7 +458,12 @@ export class Store {
 
   checkpoint() { return readCheckpoint(this.db); }
   journalBase() { return journalBase(this.db); }
-  compactJournal(options) { return compactJournal(this.db,options); }
+  compactJournal(options) {
+    if (!this.writer) return compactJournal(this.db, options);
+    if (this.writePending || this.transactionDepth)
+      throw Object.assign(new Error('Journal maintenance requires an idle writer.'), { code: 'journal_transaction_active' });
+    return this.writer.call('compact', { options });
+  }
   checkpointAt(sequence) { return checkpointAt(this.db, sequence); }
   commonCheckpoint(other) { return commonCheckpoint(this.db, other.db ?? other); }
   exportChanges(options) { return exportChanges(this.db, options); }

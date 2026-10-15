@@ -26,7 +26,7 @@ async function fixture(t, { role = 'master', unavailable = false } = {}) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => {
     await new Promise(resolve => server.close(resolve));
-    store.close(); rmSync(directory, { recursive: true, force: true });
+    await store.close(); rmSync(directory, { recursive: true, force: true });
   });
   return { store, base: `http://127.0.0.1:${server.address().port}`,
     headers: { Authorization: `Bearer ${token}` },
@@ -84,6 +84,33 @@ test('health history remains available during a held writer lock and unavailable
     blocker.close();
   }
   assert.equal(f.store.getState('synthetic-delayed-save'), true);
+});
+
+test('health reports a pending worker save without inventing writer lock contention', async t => {
+  const f = await fixture(t);
+  await f.store.startWriter();
+  const request = f.store.writer.request.bind(f.store.writer);
+  let entered, release;
+  const held = new Promise(resolve => { entered = resolve; });
+  const resumed = new Promise(resolve => { release = resolve; });
+  f.store.writer.request = async (operation, ...args) => {
+    if (operation === 'commit') { entered(); await resumed; }
+    return request(operation, ...args);
+  };
+  const checkpoint = f.store.checkpoint();
+  const saved = f.store.runWrite(() => f.store.setState('pending-worker-health', true));
+  try {
+    await held;
+    const response = await fetch(`${f.base}/api/recording-health`, { headers: f.headers });
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.recording.state, 'write-waiting');
+    assert.match(result.recording.detail, /last committed readings/);
+    assert.equal(result.recording.waitingSince, null);
+    assert.equal(result.recording.history.current.activeJobs, 1);
+    assert.deepEqual(f.store.checkpoint(), checkpoint);
+  } finally { release(); await saved; }
+  assert.equal(f.store.getState('pending-worker-health'), true);
 });
 
 test('standby health cannot present local memory counters as active master history', async t => {

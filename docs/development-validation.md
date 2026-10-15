@@ -1223,3 +1223,12 @@ separately delays native COMMIT and probes HTTP from another process. Neither
 fixture qualifies installed hardware or physical actuation. Runtime integration
 needs the full relevant acquisition, charging, recovery, pairing and shutdown
 suites on the developer runtime and pinned add-on Node before release.
+
+`test/writer-independent-audit.test.js` adds worker-loss, stale atomic-notification,
+response ownership, current maintenance and startup/shutdown races.
+`test/writer-publication-integration.test.js` exercises real backup, peer,
+correction, source-identity and recovery workers beside runtime recording.
+The Executor process-death matrix repeats each retained restoration and authority
+case with direct storage and the dedicated writer. The routine and extended
+recovery responsiveness workloads also use the dedicated runtime writer; their
+original latency, replay and historical-evidence assertions remain unchanged.

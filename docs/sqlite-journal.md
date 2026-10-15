@@ -108,6 +108,22 @@ before releasing its reader. Specialized correction, recovery and peer workers
 retain their existing publication fences; a local exclusive publication reserves
 the same admission queue through durable publication and adoption.
 
+Synchronous replies publish bounded response bytes and readiness through one
+shared-memory atomic boundary. A notification alone never completes a request;
+late wakes do not restart its deadline or replay SQL. Result collection is
+bounded before materialization, and returned byte values own their storage.
+Closing during writer startup joins that worker before releasing the database
+path. Current explicit journal compaction runs on the owning worker; peer
+maintenance and full archive verification retain their independent native
+worker connections. Calling those native-only operations with the runtime
+facade rejects before mutation with guidance to use the existing service.
+
+While a save is pending, status preserves the complete committed view and its
+original timestamps. Recording health reports the pending save through the
+existing storage warning without inventing writer-lock contention. Transport
+withdrawal still takes effect immediately for command permission and survives
+an older save's rollback.
+
 This isolates ordinary native COMMIT waits from the event loop; SQLite still has
 one committing writer. FULL synchronous WAL, automatic checkpoints and retained
 evidence remain unchanged. Synchronous callback work, bounded statement RPC and

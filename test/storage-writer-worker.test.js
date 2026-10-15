@@ -230,3 +230,44 @@ test('OCPP diagnostics recognize the real worker Store durability boundary', asy
   assert.equal(rows.some(row => row.phase === 'upgrade-write-committed'), true);
   assert.equal(rows.some(row => row.phase === 'durability-unknown'), false);
 });
+
+test('writer materialization refuses an oversized result atomically and remains usable', async t => {
+  const store = await fixture(t), before = store.checkpoint();
+  await assert.rejects(store.runWrite(() => {
+    store.setState('discarded-large-read', true);
+    store.db.prepare(`WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM rows WHERE n<1200)
+      SELECT n,printf('%8192s','synthetic') AS payload FROM rows`).all();
+  }), { code: 'STORAGE_WRITER_FRAME_TOO_LARGE' });
+  assert.deepEqual(store.checkpoint(), before);
+  assert.equal(store.getState('discarded-large-read'), null);
+  await store.runWrite(() => store.setState('after-large-read', true));
+  assert.equal(store.getState('after-large-read'), true);
+});
+
+test('asynchronous admission preserves control FIFO and eventual normal progress under contention', async t => {
+  const store = await fixture(t), blocker = new DatabaseSync(store.path), order = [];
+  blocker.exec('BEGIN IMMEDIATE');
+  const jobs = [1, 2].map(id => store.runWrite(() => order.push(`normal-${id}`)));
+  jobs.push(...Array.from({ length: 12 }, (_, id) => store.runWrite(() => order.push(`control-${id}`), { priority: 'control' })));
+  try {
+    await delay(40);
+    assert.deepEqual(order, []);
+    blocker.exec('ROLLBACK'); await Promise.all(jobs);
+    assert.ok(order.indexOf('normal-1') <= 8);
+    assert.deepEqual(order.filter(value => value.startsWith('control')), Array.from({ length: 12 }, (_, id) => `control-${id}`));
+    assert.deepEqual(order.filter(value => value.startsWith('normal')), ['normal-1', 'normal-2']);
+  } finally { if (blocker.isTransaction) blocker.exec('ROLLBACK'); blocker.close(); await Promise.allSettled(jobs); }
+});
+
+test('writer activation is shared and shutdown joins an activation already admitted', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-writer-start-close-'));
+  const store = new Store(join(directory, 'history.sqlite'));
+  t.after(async () => { await store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const first = store.startWriter(), second = store.startWriter();
+  assert.equal(first, second);
+  const outcome = first.then(() => null, error => error);
+  await store.close();
+  assert.equal((await outcome).code, 'STORAGE_CLOSED');
+  assert.equal(store.writer, undefined);
+  assert.equal(store.db.isOpen, false);
+});
