@@ -3237,6 +3237,9 @@ export class ChargingRuntime {
     const attempt = { token, mode: 'charge-now', controller: item.controller, association: item.association,
       sessionId: item.request.sessionId, revision: item.request.revision, controlRevision: item.controls.revision };
     item.takeoverAttempt = attempt;
+    this.store.afterRollback(() => {
+      if (item.takeoverAttempt === attempt) delete item.takeoverAttempt;
+    });
     return attempt;
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
@@ -3380,6 +3383,9 @@ export class ChargingRuntime {
     const attempt = { token: input.takeoverToken ?? null, mode: 'automatic', controller: item.controller, association: item.association,
       sessionId: item.request.sessionId, revision: item.request.revision, controlRevision: item.controls.revision };
     item.takeoverAttempt = attempt;
+    this.store.afterRollback(() => {
+      if (item.takeoverAttempt === attempt) delete item.takeoverAttempt;
+    });
     return { item, attempt };
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();

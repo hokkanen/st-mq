@@ -131,3 +131,73 @@ test(`Shelly ${action} cannot dispatch before its ${failed ? 'failed' : 'held'} 
   }
   } finally { release(); await outcome; }
 });
+
+for (const action of ['automatic', 'charge-now'])
+test(`Shelly ${action} releases its rolled-back takeover and admits a fresh action`, async t => {
+  const f = await readyFixture(t, action), item = f.runtime.chargers.charger2;
+  const request = f.store.writer.request.bind(f.store.writer);
+  const savedBefore = readChargingRuntime(f.store, f.runtime.key).chargers.charger2;
+  const before = f.commands.length;
+  let failedAttempt;
+  f.store.writer.request = async (command, args) => {
+    if (command === 'commit' && !failedAttempt && item.takeoverAttempt?.revision === f.before.request.revision + 1) {
+      failedAttempt = item.takeoverAttempt;
+      assert.equal(failedAttempt.mode, action);
+      assert.equal(failedAttempt.controller, item.controller);
+      assert.equal(failedAttempt.token, f.input.takeoverToken);
+      assert.equal(item.request.revision, f.before.request.revision + 1);
+      throw Object.assign(new Error('Synthetic takeover intent COMMIT rollback'), { code: 'ERR_SQLITE_ERROR', errcode: 10 });
+    }
+    return request(command, args);
+  };
+  await assert.rejects(f.invoke(), /Synthetic takeover intent COMMIT rollback/);
+  assert.ok(failedAttempt, 'The rejected COMMIT belongs to this exact takeover intent');
+  assert.deepEqual(readChargingRuntime(f.store, f.runtime.key).chargers.charger2, savedBefore);
+  assert.deepEqual(item.controls, f.before.controls);
+  assert.equal(item.request.revision, f.before.request.revision);
+  assert.equal(item.takeoverAttempt, undefined, 'A known rollback releases only its provisional RAM reservation');
+  assert.equal(f.commands.length, before, 'The rolled-back intent sent no native mutation');
+  assert.equal(Boolean(f.store.writer.failed), false);
+  assert.equal(Boolean(f.store.writerFailed), false);
+
+  // A fresh displayed scope is still required. This is a new request after a
+  // proven rollback, not replay of a possibly dispatched native operation.
+  const view = f.view('charger2'), input = { ...f.scope('charger2'), controlRevision: view.controls.revision,
+    takeoverToken: view.control.takeover.token };
+  if (action === 'automatic') await f.runtime.useAutomatic('charger2', input);
+  else await f.runtime.chargeNow('charger2', input);
+  assert.equal(f.view('charger2').control.takeover.state, 'confirmed');
+  assert.equal(item.takeoverAttempt, undefined);
+  assert.equal(readChargingRuntime(f.store, f.runtime.key).chargers.charger2.request.revision, f.before.request.revision + 1);
+  if (action === 'automatic') assert.equal(f.view('charger2').control.scheduleConfirmed, true);
+  else assert.ok(f.commands.slice(before).some(row => row.chargerId === 'charger2'
+    && row.method === 'Boolean.Set' && row.value === true));
+});
+
+for (const action of ['automatic', 'charge-now'])
+test(`Shelly ${action} rollback preserves a replacement takeover reservation`, async t => {
+  const f = await readyFixture(t, action), item = f.runtime.chargers.charger2;
+  const request = f.store.writer.request.bind(f.store.writer);
+  const savedBefore = readChargingRuntime(f.store, f.runtime.key).chargers.charger2;
+  const before = f.commands.length;
+  let original, replacement;
+  f.store.writer.request = async (command, args) => {
+    if (command === 'commit' && !original && item.takeoverAttempt?.revision === f.before.request.revision + 1) {
+      original = item.takeoverAttempt;
+      assert.equal(original.mode, action);
+      assert.equal(original.controller, item.controller);
+      // Exercise the exact RAM ownership seam while the writer is settling.
+      // Cleanup of the failed turn must not delete this different owner.
+      replacement = { ...original, revision: original.revision + 1 };
+      item.takeoverAttempt = replacement;
+      throw Object.assign(new Error('Synthetic superseded takeover COMMIT rollback'), { code: 'ERR_SQLITE_ERROR', errcode: 10 });
+    }
+    return request(command, args);
+  };
+  await assert.rejects(f.invoke(), /Synthetic superseded takeover COMMIT rollback/);
+  assert.ok(original);
+  assert.notEqual(original, replacement);
+  assert.equal(item.takeoverAttempt, replacement);
+  assert.deepEqual(readChargingRuntime(f.store, f.runtime.key).chargers.charger2, savedBefore);
+  assert.equal(f.commands.length, before);
+});

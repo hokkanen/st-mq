@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Release a charging takeover reservation when its intent save rolls back,
+  allowing a fresh action without clearing a newer takeover.
+
 - Restore Shelly **Use automatic** and **Charge now** with the dedicated writer,
   preserving saved intent and native-input checks before any charger command.
 
