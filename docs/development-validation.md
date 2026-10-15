@@ -57,6 +57,12 @@ must observe the adopted complete model; rollback must leave the previous model,
 selection and plan intact. Cache-status tests distinguish confirmed persistence
 from stale, failed and rolled-back attempts. These offline checks do not qualify
 household equipment or Raspberry Pi storage latency.
+The late cache-error and older-result fixtures use the actual Store, cache and
+Worker listeners. They hold only the second save message while publishing and
+confirming the newer inline checkpoint, then dispatch that original message once
+before injecting the older event. This fixes the intended listener ordering
+without introducing unrelated competition for SQLite's writer during fixture
+setup; production admission, locks, retries and checkpoint fences are unchanged.
 
 `test/acquisition-contention.test.js` injects rejected saves, full queues and
 out-of-order completions. Recovery must use a later committed delivery from the

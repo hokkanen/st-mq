@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 import { Store } from '../src/storage/store.js';
 import { LearningCheckpointCache } from '../src/app/learning-checkpoint-cache.js';
 import { replayLearningJournal, learningCheckpointDigest } from '../src/app/committed-learning.js';
@@ -23,6 +24,39 @@ function setup(t, options = {}) {
     return replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false });
   };
   return { store, cache, checkpoint };
+}
+
+// These listener fixtures publish a newer cache before delivering the old event.
+// Hold only their current Worker's second save during that publication so its
+// native write cannot compete with the fixture's synchronous SQLite transaction.
+function holdWorkerSave(t, cache, checkpoint) {
+  const worker = cache.worker, postMessage = worker?.postMessage;
+  assert.ok(worker instanceof Worker);
+  assert.equal(cache.ready, true);
+  assert.equal(cache.status().error, null);
+  let held = null, released = false;
+  worker.postMessage = function(message, ...args) {
+    if (message.type === 'save' && message.journalCursor === checkpoint.journalCursor) {
+      assert.equal(cache.worker, worker);
+      assert.equal(message.id, cache.active.id);
+      assert.equal(held, null);
+      assert.equal(released, false);
+      held = { message, args };
+      return;
+    }
+    return postMessage.call(worker, message, ...args);
+  };
+  t.after(() => { worker.postMessage = postMessage; });
+  return latest => {
+    assert.ok(held);
+    assert.equal(released, false);
+    assert.equal(cache.worker, worker);
+    assert.equal(cache.active.id, held.message.id);
+    assert.equal(cache.confirmation.journalCursor, latest.journalCursor);
+    assert.deepEqual(cache.store.getState(`adaptive:${cache.input}`), latest);
+    const pending = held; held = null; released = true;
+    postMessage.call(worker, pending.message, ...pending.args);
+  };
 }
 
 test('cache snapshots a committed boundary, permits later inputs and atomically captures sparse replay state', async t => {
@@ -266,6 +300,7 @@ test(`late worker failure cannot resurrect a warning after ${corrected ? 'correc
   const first = checkpoint(1); cache.save(first); await cache.flush();
   const second = checkpoint(2);
   let latest = checkpoint(3);
+  const release = holdWorkerSave(t, cache, second);
   store.transaction(() => {
     cache.save(second);
     store.afterCommit(() => {
@@ -277,6 +312,7 @@ test(`late worker failure cannot resurrect a warning after ${corrected ? 'correc
         }
         store.setState('adaptive:mqtt', latest); cache.confirmCommitted(latest);
       });
+      release(latest);
       cache.worker.emit('error', new Error('delayed failure of superseded request'));
     });
   });
@@ -290,6 +326,7 @@ test('delayed older worker success cannot rewind a newer confirmed publication',
   const { store, cache, checkpoint } = setup(t);
   const first = checkpoint(1); cache.save(first); await cache.flush();
   const second = checkpoint(2), latest = checkpoint(3);
+  const release = holdWorkerSave(t, cache, second);
   store.transaction(() => {
     cache.save(second);
     store.afterCommit(() => {
@@ -297,8 +334,9 @@ test('delayed older worker success cannot rewind a newer confirmed publication',
       store.transaction(() => {
         store.setState('adaptive:mqtt', latest); cache.confirmCommitted(latest);
       });
-      // Delivery may lag the worker commit while the main thread publishes a
-      // newer cache. Exercise the actual result listener in that ordering.
+      release(latest);
+      // Deliver the older result through the actual listener after the newer
+      // inline cache has committed and its confirmation is current.
       cache.worker.emit('message', { type: 'result', id, status: 'saved', journalCursor: second.journalCursor });
     });
   });
