@@ -977,8 +977,17 @@ test('estimated current charge progresses beyond the requested target and identi
   assert.equal(result.sources, 'Estimated from configured starting charge and measured energy');
   assert.equal(result.minimumSource, 'Requested target');
   assert.equal(result.readiness, 'Target reached'); assert.match(result.event, /target reached$/);
-  assert.match(result.notes.join(' '), /Some charging energy was not measured/);
+  assert.match(result.notes.join(' '), /Energy measurements have gaps/);
   assert(!result.sources.includes('fallback'));
+});
+
+test('idle zero-energy coverage gaps do not claim that charging occurred', () => {
+  const item = connected('charger2');
+  const result = view({ ...item, progress: { estimatedSoc: 20, hasEnergyEstimate: false,
+    estimatedSocSource: 'starting-charge', deliveredGridKwh: 0, remainingGridKwh: 30,
+    basis: { energyCoverageIncomplete: true } }, values: { ...item.values, charging: reading(false), powerKw: reading(0) } });
+  assert.match(result.notes.join(' '), /Energy measurements have gaps\. The charge estimate may be low/);
+  assert.doesNotMatch(result.notes.join(' '), /charging energy was not measured|charging (?:continued|occurred)/i);
 });
 
 test('the history explanation shows a modest early estimate and preserves the value of older seasonal references', () => {
@@ -1429,7 +1438,7 @@ test('both charger popups explain manual priority and unconfirmed instructions w
       ['manual-stop', { kind: 'stop' }, /stop instruction is preventing automatic scheduling/i],
       ['device-permission-held', null, /charger withdrew charging permission.*no replacement Start is sent/i],
       ['native-schedule', { kind: 'schedule' }, /charger’s own schedule has priority/i],
-      ['evse-command-unconfirmed', null, /outcome is still unknown.*fresh reading/i],
+      ['evse-command-unconfirmed', null, /outcome is still unknown.*fresh reading alone may not establish.*accepted/i],
       ['telemetry-fallback', null, /configured fallback.*usable load measurements/i],
       ['future-control-condition', null, /Check the charger controls for details/],
       ['unsupported', null, /Check the charger controls for details/],
@@ -1526,7 +1535,7 @@ test('recorded charger popups keep status codes readable and live availability e
     assert.match(refreshedPopup.textContent, /Recorded master status.*live charger health is unavailable/s);
     panel.update({ ...status({ ...complete, progress: { ...complete.progress, basis: { energyCoverageIncomplete: true } } }), role: 'slave', readOnly: true });
     assert.equal($(`${id}-notice`).textContent, 'Estimate has limitations');
-    assert.match(refreshedPopup.textContent, /Some charging energy was not measured/);
+    assert.match(refreshedPopup.textContent, /Energy measurements have gaps/);
     assert.match(refreshedPopup.textContent, /Recorded master status.*live charger health is unavailable/s);
   }
   panel.close();
@@ -2070,7 +2079,7 @@ test('schedule groups separate forecast assumptions from native evidence and con
   assert.doesNotMatch(section.textContent, /Connection delivered|Charge measured/);
   assert.equal(section.textContent.split('Measured 15 Sept, 20:00').length - 1, 1, 'Original source time appears once beside the vehicle reference');
   assert.equal($('charger2-vehicle-notes').children.length, 2, 'One outage note and one distinct energy-coverage warning remain');
-  assert.match($('charger2-vehicle-notes').textContent, /Vehicle readings are unavailable \(the MQTT subscription failed for vehicle reports; check MQTT topic access\).*Edit Current charge.*Some charging energy was not measured/);
+  assert.match($('charger2-vehicle-notes').textContent, /Vehicle readings are unavailable \(the MQTT subscription failed for vehicle reports; check MQTT topic access\).*Edit Current charge.*Energy measurements have gaps/);
   assert.doesNotMatch($('charger2-notes').textContent, /Vehicle feed|Vehicle readings|charging energy was not measured/);
   for (const [reason, cause] of [
     ['vehicle-observation-storage-pending', /waiting to save a vehicle report/],
@@ -2089,7 +2098,7 @@ test('schedule groups separate forecast assumptions from native evidence and con
   assert.equal(document.activeElement, trigger, 'Refresh preserves focus on the original vehicle evidence');
   assert.match($('charger2-readings').textContent, /Awaiting charger confirmation · last confirmed setting 12 A/);
   assert.doesNotMatch($('charger2-readings').textContent, /Selected charging current/);
-  assert.match($('charger2-vehicle-notes').textContent, /Recorded vehicle snapshot.*Some charging energy was not measured/);
+  assert.match($('charger2-vehicle-notes').textContent, /Recorded vehicle snapshot.*Energy measurements have gaps/);
   assert.doesNotMatch($('charger2-vehicle-notes').textContent, /Vehicle readings are unavailable|Edit Current charge|read only snapshot/);
   assert.equal($('charger2-vehicle-notes').dataset.state, 'attention', 'A recorded snapshot does not hide missing-energy uncertainty');
   panel.close();

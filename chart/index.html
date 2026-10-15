@@ -1063,10 +1063,13 @@ G_warming = G / 2</code>
               <summary><span class="recording-health-label">Storage health</span><strong id="recording-performance-state" class="recording-health-state">Storage status unknown</strong><span class="recording-health-evidence"><span id="recording-performance-evidence"></span><span id="recording-performance-history-state" class="recording-history-state"></span></span></summary>
               <div class="recording-health-body">
                 <p id="recording-performance-notice" class="recording-performance-notice">Waiting for storage health information.</p>
-                <section class="recording-health-section recording-performance-live" aria-labelledby="recording-performance-live-title">
+                <section id="recording-performance-live" class="recording-health-section recording-performance-live" aria-labelledby="recording-performance-live-title">
                   <h4 id="recording-performance-live-title">Current activity</h4>
-                  <div class="recording-performance-current"><span id="recording-performance-current"></span><span id="recording-performance-waiting" hidden></span></div>
-                  <p id="recording-performance-lastWrite" class="recording-health-evidence"></p>
+                  <p id="recording-performance-detail" class="recording-health-detail"></p>
+                  <dl id="recording-performance-activity" class="recording-activity-facts recording-writer-activity">
+                    <div><dt>Work queue</dt><dd id="recording-performance-current"></dd><dd id="recording-performance-waiting" class="recording-health-evidence" hidden></dd></div>
+                    <div><dt>Last successful save</dt><dd id="recording-performance-lastWrite"></dd><dd class="recording-health-evidence">Includes settings and event writes.</dd></div>
+                  </dl>
                 </section>
                 <section id="recording-performance-data" aria-labelledby="recording-performance-history-title" hidden>
                   <div class="recording-performance-toolbar">
@@ -1086,17 +1089,22 @@ G_warming = G / 2</code>
                       <p class="recording-health-evidence">Before successful queued work starts. Pending and failed operations are excluded.</p>
                     </div>
                     <div class="recording-performance-measure">
-                      <h5>Observed outcomes</h5>
-                      <p id="recording-performance-outcome" class="recording-performance-outcome"></p>
-                      <dl class="recording-performance-outcomes">
-                        <div><dt>Failed save attempts</dt><dd id="recording-performance-failed"></dd></div>
-                        <div><dt>Queue-full refusals</dt><dd id="recording-performance-rejected"></dd></div>
-                        <div><dt>MQTT commands not sent</dt><dd id="recording-performance-commandsNotSent"></dd></div>
-                        <div><dt>Saved; follow-up failed</dt><dd id="recording-performance-postCommit"></dd></div>
-                      </dl>
-                      <p class="recording-health-evidence">Saves count operations, not readings. Commands count confirmed recording blocks on monitored MQTT requests; charging is excluded.</p>
+                      <h5>Save duration</h5>
+                      <dl class="recording-performance-waits"><div><dt>Average</dt><dd id="recording-performance-write-mean"></dd></div><div><dt>Worst</dt><dd id="recording-performance-write-worst"></dd></div></dl>
+                      <p id="recording-performance-write-samples" class="recording-health-evidence"></p>
+                      <p class="recording-health-evidence">Time to complete a successful save, including commit and confirmation.</p>
                     </div>
                   </div>
+                  <section class="recording-performance-results" aria-labelledby="recording-performance-results-title">
+                    <div class="recording-performance-results-heading"><h5 id="recording-performance-results-title">Observed outcomes</h5><p id="recording-performance-outcome" class="recording-performance-outcome"></p></div>
+                    <dl class="recording-performance-result-counts">
+                      <div><dt>Failed save attempts</dt><dd id="recording-performance-failed"></dd></div>
+                      <div><dt>Queue-full refusals</dt><dd id="recording-performance-rejected"></dd></div>
+                      <div><dt>MQTT commands not sent</dt><dd id="recording-performance-commandsNotSent"></dd></div>
+                      <div><dt>Saved; follow-up failed</dt><dd id="recording-performance-postCommit"></dd></div>
+                    </dl>
+                    <p class="recording-health-evidence">Saves count operations, not readings. Commands cover confirmed recording blocks on monitored MQTT requests; charging is excluded.</p>
+                  </section>
                   <div id="recording-performance-incidents" class="recording-performance-incidents" hidden>
                     <h5>Latest problem of each type</h5><ul id="recording-performance-incident-list"></ul>
                   </div>
@@ -1114,6 +1122,7 @@ G_warming = G / 2</code>
                         </tbody>
                       </table>
                       <p>Indented stages are part of the parent timing; do not add them. Approx. p95 estimates the duration that 95% of measured operations stayed within. Each row has its own sample count; separate worst values and percentiles can come from different transactions.</p>
+                      <p>Write + commit and Commit only include communication with the writer and time awaiting its result. Journal sealing and SQLite COMMIT are measured inside the writer. These durations do not measure how long the application was unresponsive.</p>
                       <p>Journal sealing includes validation, hashing and journal SQL. SQLite COMMIT includes any synchronization and automatic checkpoint work. Neither isolates fsync. Unmeasured stages are excluded.</p>
                     </div>
                   </details>
@@ -1135,17 +1144,28 @@ G_warming = G / 2</code>
                       <p>Writer-lock time includes retries and any active wait. Queued-operation failures can include application errors. Errors after commit do not undo the save. Control priority describes queue scheduling, not device delivery.</p>
                     </div>
                   </details>
-                  <details id="recording-performance-method" class="recording-performance-explanation">
-                    <summary>About these measurements<span class="recording-disclosure-hint">Coverage and limitations</span></summary>
-                    <div class="recording-performance-explanation-body">
-                      <p id="recording-performance-scope" class="recording-health-evidence"></p>
-                      <p>These statistics cover the main recording connection and its queue. Separate recovery, publication and checkpoint worker timings are outside this view; their writes can still compete for the same storage.</p>
-                      <p>Measurements are held in memory for at most seven days and reset on restart or storage reopen. Earlier time is unknown. Five-minute summaries omit the oldest partial interval when it crosses the selected period’s boundary.</p>
-                      <p>The command count covers monitored heat-pump, switch, door/cover and Garage MQTT requests. Charging adapters and work rolled back before publication are outside this count. Unrelated cancellations and unconfirmed device readbacks are also excluded.</p>
-                      <p>These observations cannot count every lost reading or prove that every expected device action happened. Saving resumed does not mean missing history was recovered.</p>
-                    </div>
-                  </details>
+
                 </section>
+                <details id="recording-performance-responsiveness" class="recording-performance-explanation" hidden>
+                  <summary><span id="recording-performance-runtime-title">Application responsiveness</span><span class="recording-disclosure-hint">Since application start</span></summary>
+                  <div class="recording-performance-explanation-body">
+                    <dl class="recording-performance-waits recording-runtime-timings"><div><dt>Event-loop delay · p99</dt><dd id="recording-performance-runtime-p99"></dd></div><div><dt>Worst observed</dt><dd id="recording-performance-runtime-max"></dd></div></dl>
+                    <p id="recording-performance-runtime-samples" class="recording-health-evidence"></p>
+                    <p>Observed application timer delays, including the 20 ms sampling interval. This covers the current application run and is independent of the day or week selection. It does not measure a device’s response or guarantee timely control.</p>
+                    <p>Saving and application responsiveness are separate: the writer can be completing a slow commit while the application continues to respond.</p>
+                  </div>
+                </details>
+                <details id="recording-performance-method" class="recording-performance-explanation">
+                  <summary>About these measurements<span class="recording-disclosure-hint">Coverage and limitations</span></summary>
+                  <div class="recording-performance-explanation-body">
+                    <p id="recording-performance-scope" class="recording-health-evidence"></p>
+                    <p>These statistics cover runtime recording, including its dedicated writer, and the shared admission queue. Separate recovery, publication and checkpoint transaction timings are outside this view; their work can still occupy the queue or compete for storage.</p>
+                    <p>Caught up means no monitored work is waiting or in progress while the writer is available. It does not establish complete source history or successful device actions. A confirmed save and the writer’s ability to accept new work are reported separately.</p>
+                    <p>Measurements are held in memory for at most seven days and reset on restart or storage reopen. Earlier time is unknown. Five-minute summaries omit the oldest partial interval when it crosses the selected period’s boundary.</p>
+                    <p>The command count covers monitored heat-pump, switch, door/cover and Garage MQTT requests. Charging adapters and work rolled back before publication are outside this count. Unrelated cancellations and unconfirmed device readbacks are also excluded.</p>
+                    <p>These observations cannot count every lost reading or prove that every expected device action happened. Saving resumed does not mean missing history was recovered.</p>
+                  </div>
+                </details>
               </div>
             </details>
             <details id="recording-disk-card" class="recording-health-card">

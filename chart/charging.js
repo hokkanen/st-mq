@@ -458,7 +458,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   else if (showMetrics && retainedVehicleReference) vehicleNotes.push(`Vehicle readings are unavailable${feedReason ? ` (${feedReason})` : ''}. The estimate uses the last vehicle charge and measured energy for this connection. Edit Current charge in Session settings to set a new reference.`);
   else if (showMetrics && storage) vehicleNotes.push(storage.detail);
   else if (showMetrics && feedReason) vehicleNotes.push(`Vehicle feed: ${feedReason}. The last valid reading keeps its original timestamp.`);
-  if (showMetrics && progress.basis?.energyCoverageIncomplete) vehicleNotes.push('Some charging energy was not measured. The charge estimate may be low until a new vehicle reading arrives.');
+  if (showMetrics && progress.basis?.energyCoverageIncomplete) vehicleNotes.push('Energy measurements have gaps. The charge estimate may be low.');
   // Recorded scope is informational; missing energy remains a limitation.
   notes.push(...(recordedVehicleFeed ? vehicleNotes.slice(1) : vehicleNotes));
   const controlDetail = !supported ? 'This integration supports monitoring only.'

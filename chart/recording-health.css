@@ -164,7 +164,9 @@
 .recording-performance-period > button[aria-pressed="true"] { background: var(--surface); color: var(--text); border-color: var(--border); }
 .recording-performance-period > button:hover { color: var(--accent); }
 .recording-performance-period > button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
-.recording-performance-current { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12px; line-height: 1.6; }
+.recording-writer-activity { margin-top: 0; }
+.recording-performance-live > .recording-health-detail:not([hidden]) + .recording-writer-activity { margin-top: 14px; }
+.recording-writer-activity dd.recording-health-evidence { margin-top: 4px; font-size: 11px; }
 #recording-performance-waiting { color: var(--stale); }
 .recording-performance-measures { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px 36px; padding: 12px 0 20px; }
 .recording-performance-measure { min-width: 0; }
@@ -179,6 +181,14 @@
 .recording-performance-outcomes dt { color: var(--muted); }
 .recording-performance-outcomes dd { margin: 0; font-weight: 550; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; text-align: right; }
 .recording-performance-outcome { margin: 0 0 8px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.recording-performance-results { padding: 16px 0 20px; border-top: 1px solid var(--border); }
+.recording-performance-results-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 20px; align-items: baseline; margin-bottom: 12px; }
+.recording-performance-results-heading :is(h5, p) { margin: 0; }
+.recording-performance-result-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 24px; margin: 0; padding: 14px 16px; border-radius: 6px; background: var(--surface-soft); font-size: 12px; line-height: 1.5; }
+.recording-performance-result-counts > div { display: grid; grid-template-rows: 1fr auto; gap: 6px; }
+.recording-performance-result-counts dt { color: var(--muted); }
+.recording-performance-result-counts dd { margin: 0; font-size: 18px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.recording-runtime-timings { max-width: 520px; padding-top: 4px; }
 .recording-performance [data-tone="warning"] { color: var(--stale); }
 .recording-performance-incidents { padding: 16px 0; border-top: 1px solid var(--border); }
 .recording-performance-incidents ul { margin: 0; padding: 0; list-style: none; }
@@ -219,6 +229,7 @@
 .recording-performance-diagnostics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 28px; margin-top: 20px; }
 .recording-performance-diagnostics section { min-width: 0; }
 @media (max-width: 800px) {
+  .recording-performance-result-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
   .recording-health-card > summary { grid-template-columns: minmax(90px, .65fr) minmax(0, 2fr); gap: 4px 16px; }
   .recording-health-card > summary > .recording-health-label { grid-row: 1 / 3; padding-top: 1px; }
   .recording-health-card > summary > .recording-health-evidence { grid-column: 2; }

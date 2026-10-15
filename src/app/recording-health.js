@@ -21,6 +21,34 @@ const object = value => value !== null && typeof value === 'object' && !Array.is
 const sourceTime = value => Number.isFinite(value) && Math.abs(value) <= 8640000000000000;
 const receiptTime = value => Number.isSafeInteger(value) && sourceTime(value);
 
+/** Availability is current Store evidence, independent of the saved-write
+ * receipts and rolling diagnostics. A proven COMMIT cannot revive a dead worker. */
+function writerStatus(store, writes) {
+  const failed = store?.writerFailed === true || Boolean(store?.writer?.failed);
+  if (store?.writePending === true && failed) return { state: 'confirming' };
+  if (failed) return { state: 'unavailable' };
+  if (store?.writeQueue?.closed === true) return { state: 'stopped' };
+  const queue = writes?.queue;
+  if (store?.writeQueue?.closed !== false || !object(queue)
+    || !['pending', 'queued', 'activeJobs'].every(key => Number.isSafeInteger(queue[key]) && queue[key] >= 0)
+    || queue.pending !== queue.queued + queue.activeJobs
+    || store.writer && (store.writer.started !== true || store.writer.terminated !== false
+      || store.writerFailed !== false || typeof store.writePending !== 'boolean')) return { state: 'unknown' };
+  return { state: store.writePending === true ? 'saving' : 'ready' };
+}
+
+function runtimeTimingStatus(engine) {
+  let value;
+  try { value = engine?.runtimeTiming?.(); } catch { return null; }
+  if (!object(value) || value.basis !== 'observed-event-loop-delay' || value.hardRealtime !== false
+    || !Number.isSafeInteger(value.samples) || value.samples < 0
+    || !Number.isFinite(value.warningThresholdMs) || value.warningThresholdMs <= 0
+    || ['maxObservedDelayMs', 'p99ObservedDelayMs'].some(key => value.samples === 0 ? value[key] !== null
+      : !Number.isFinite(value[key]) || value[key] < 0)) return null;
+  return { basis: value.basis, hardRealtime: false, warningThresholdMs: value.warningThresholdMs,
+    samples: value.samples, maxObservedDelayMs: value.maxObservedDelayMs, p99ObservedDelayMs: value.p99ObservedDelayMs };
+}
+
 /** Validate only the recorder evidence used by this presentation boundary. An
  * unavailable row may lack measurement clocks; a usable row must have them.
  * Bad source metadata must not prevent independent disk/write health reporting. */
@@ -217,6 +245,7 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
   function recordingStatus({ store, engine, current, readOnly, now }) {
     const writes = store?.writeHealth?.status();
     const base = { pendingWrites: writes?.queue?.pending ?? 0, waitingSince: writes?.queue?.waitingSince ?? null,
+      writer: null, runtimeTiming: null,
       storageTimings: writes?.transactions ?? null,
       history: writes?.history ?? null,
       lastLoopCompletedAt: null, sources: null,
@@ -226,6 +255,8 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
       recordingRun = null; recordingScopeSeen = true;
       return { ...base, history: null, state: 'read-only', detail: 'This computer is showing recorded history. Live recording health must be checked on the active master.' };
     }
+    base.writer = writerStatus(store, writes);
+    base.runtimeTiming = runtimeTimingStatus(engine);
     if (!recordingRun || recordingRun.engine !== engine || recordingRun.store !== store) {
       recordingRun = { engine, store, startedAt: recordingScopeSeen ? now : startedAt, usableSourceSeen: false };
       recordingScopeSeen = true;
@@ -241,11 +272,15 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
       ? Math.max(latest ?? 0, row.lastPollAt) : latest, null) ?? null;
     const healthy = parameters?.some(row => usableSource(row, now));
     if (healthy) recordingRun.usableSourceSeen = true;
+    if (base.writer.state === 'confirming') return { ...base, state: 'writer-confirming',
+      detail: 'The storage writer stopped responding. The last save is being checked before its outcome is reported; control requests remain blocked.' };
+    if (['unavailable', 'stopped'].includes(base.writer.state)) return { ...base, state: 'writer-unavailable',
+      detail: base.writer.state === 'stopped'
+        ? 'The storage writer has stopped accepting saves. New recording and storage-dependent control are unavailable.'
+        : 'Confirmed saves remain recorded. New recording and storage-dependent control are unavailable. Check storage, then restart the application.' };
     if (writes?.failing) return { ...base, state: 'write-failed', detail: 'A database write failed. New history may be missing; check disk space and storage access.' };
     if (writes?.queue?.waitingSince != null) return { ...base, state: 'write-waiting',
       detail: 'Storage is busy. Received readings are waiting to be saved; control requests wait for durable intent before dispatch.' };
-    if (store?.writePending) return { ...base, state: 'write-waiting',
-      detail: 'A save is in progress. The live view shows the last committed readings until the save settles; control requests wait for durable intent.' };
     if (engine && now - (Number.isFinite(tickAt) ? tickAt : recordingRun.startedAt) > 3 * MINUTE)
       return { ...base, state: 'stalled', detail: 'The recording and controller update loop has not completed for more than three minutes. History may have gaps.' };
     if (parameters === null) return { ...base, state: 'unknown', detail: 'Recording source status could not be read. Refresh to check again.' };
@@ -322,7 +357,10 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
         title: disk.state === 'critical' ? 'Disk space is critically low' : 'Disk space is running low', detail: disk.detail });
       else if (disk.state === 'unknown' && disk.checkedAt !== null)
         attention.push({ id: 'disk-check', severity: 'warning', title: 'Disk space could not be checked', detail: disk.detail });
-      if (['write-failed', 'write-waiting', 'stalled', 'source-unavailable'].includes(recording.state)) attention.push({ id: 'recording',
+      if (['writer-unavailable', 'writer-confirming'].includes(recording.state)) attention.push({ id: 'storage-writer',
+        severity: recording.state === 'writer-unavailable' ? 'critical' : 'warning',
+        title: recording.state === 'writer-unavailable' ? 'Storage writer is unavailable' : 'Confirming the last save', detail: recording.detail });
+      else if (['write-failed', 'write-waiting', 'stalled', 'source-unavailable'].includes(recording.state)) attention.push({ id: 'recording',
         severity: recording.state === 'write-failed' ? 'critical' : 'warning', title: recording.state === 'write-failed'
           ? 'Database writes are failing' : recording.state === 'write-waiting' ? 'Waiting for storage' : recording.state === 'stalled' ? 'Recording needs attention' : 'Recording sources are unavailable', detail: recording.detail });
       else if (recording.state !== 'read-only' && recording.lastFailureAt !== null && now - recording.lastFailureAt < DAY)

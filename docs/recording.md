@@ -1446,7 +1446,10 @@ details remains available in the history panel. The summary stays visible while
 recording is starting, evidence is unknown, a health refresh fails or the last
 health check is more than three minutes old. It also appears for low disk space,
 failed database writes, a stalled update loop, unavailable recording sources or a
-failed backup. Recovery hides it again once the startup introduction has elapsed.
+failed backup. A failed or stopped storage writer remains visible even when its
+last save is confirmed and its queue is empty. Ordinary asynchronous saving is
+neutral activity and does not introduce a recording warning. Recovery hides the
+summary again once the startup introduction has elapsed.
 Keyboard focus inside the summary defers hiding until focus leaves it.
 
 The check timestamp comes from the server, while the dashboard uses the browser's
@@ -1576,6 +1579,18 @@ the normal controller status. The dashboard can still display storage health whe
 controller status fails. Filesystem checks time out from the request's perspective
 without claiming zero free bytes or blocking ordinary control. A stopped process,
 unreachable dashboard or complete host failure cannot report its own condition.
+The current version-2 response adds `recording.writer.state`: `ready`, `saving`,
+`confirming`, `unavailable`, `stopped` or `unknown`. This is current Store and queue
+evidence, independent of saved outcomes and historical windows. A failed worker
+with unsettled work reports `confirming`; after settlement it remains
+`unavailable`, including when the journal proves the save committed. Missing or
+invalid availability evidence remains `unknown`. Snapshot and history scopes
+have `recording.writer: null` and do not claim active-master availability.
+`recording.runtimeTiming` exposes only the existing bounded in-memory
+`observed-event-loop-delay` diagnostics: sample count, maximum and p99 observed
+delay, the diagnostic threshold and `hardRealtime: false`. Unavailable or invalid
+timing evidence is null. No new timer, recorded series or diagnostic write is
+created by health polling.
 
 The **Other recorded data** fold appears immediately after **Adaptive measurements**,
 followed by **Recorded energy checks**. **Export database** lives inside **Backups**, alongside the copy list.
@@ -2168,12 +2183,23 @@ and independent worker connections are not attributed to this Store.
 
 The **Storage health** summary belongs to **Recording & storage**. Its current state
 and selected-period evidence occupy separate summary fields; historical problems
-remain visible even when the writer is caught up. Opening it separates **Current
-activity** (backlog, lock wait and last successful write) from **Monitored history**
-(selected period, coverage, average and worst queue wait, failed save attempts,
-queue-full refusals, failed follow-up work after successful saves, and MQTT device
-commands known not to have been sent because recording blocked them). Latest
-problems have separate type, date, context, outcome and recovery fields.
+remain visible even when the writer is caught up. **Caught up** requires usable
+current writer and queue evidence with no monitored work outstanding. Ordinary
+**Writing** activity is neutral, while an actual writer-lock wait has its own
+state. **Confirming last save** reports unresolved durability after worker loss without
+claiming a failed save. **Writer unavailable** takes precedence even if the last
+save committed successfully and the queue drained. **Writer stopped** reports
+closed admission. Missing or malformed evidence cannot establish readiness.
+
+Opening the fold separates **Current activity** (writer availability, backlog,
+lock wait and last successful write) from **Monitored history**. The selected
+period and coverage apply to the paired queue-wait and save-duration summaries,
+with **Observed outcomes** below: failed save attempts, queue-full refusals,
+failed follow-up work after successful saves, and MQTT device commands known not
+to have been sent because recording blocked them. Latest problems have separate
+type, date, context, outcome and recovery fields. A confirmed save retains its
+original success clock when the worker becomes unavailable; checking health
+neither renews that receipt nor resumes recording or command authority.
 It uses the existing authenticated health responses and updates with
 ordinary dashboard refreshes. Its summaries are held solely in memory for at
 most seven days; opening a new Store, including application restart, starts a
@@ -2181,8 +2207,9 @@ new monitoring period. Nothing is saved to SQLite, a file, browser storage,
 backups or replicas. An earlier period is unavailable, not a period with zero
 failures. Snapshot and history viewers cannot report the active master's
 memory-only history.
-These writer summaries describe the main Store; independent worker connections
-have their own operation results and are not silently included in these timings.
+These writer summaries describe the main Store, including its dedicated runtime
+writer. Separate export, reconstruction and publication workers have their own
+operation results and are not silently included in these timings.
 
 The past-day and past-week views distinguish the duration monitored in this run
 from the duration included in the summaries. The oldest partly overlapping
@@ -2192,7 +2219,8 @@ approximate 95th percentiles and worst
 durations. Queue wait measures how long successfully completed queued work
 waited before admission; writing measures successful committed transaction
 duration, including SQLite journal, checkpoint and filesystem work performed by
-that transaction. Commit time is part of writing, not an additional delay to add
+that transaction and communication with the dedicated writer. Commit time is part
+of writing, not an additional delay to add
 to it. Neither measures the complete delay of a physical device
 action or isolates an fsync. Live pending count, oldest queued work, contention
 episodes and time, and peak backlog describe pressure separately from successful
@@ -2244,10 +2272,20 @@ not be added. Stage summaries count only reached, measured stages of successful
 commits; bootstrap can contribute to full transaction/commit summaries without
 contributing a stage sample. Separate stage maxima or percentiles can come from
 different transactions. No new delay threshold changes warnings or
-command deadlines. Current recording and storage warnings retain their existing
-behavior. Reading the summaries never runs a database check or grants control
+command deadlines. Ordinary saving preserves the recording source and loop
+status; a writer fault raises separate storage attention. Reading the summaries
+never runs a database check or grants control
 authority. The current memory-history API has version 2; earlier history shapes
 are unsupported rather than translated.
+
+The separate **Application responsiveness** disclosure shows maximum and p99
+observed event-loop delay and the sample count since the application process
+started. These measurements cover the whole process run, independently of the
+past-day/past-week storage selection or a replacement Store's monitoring period.
+They include all application work and cannot attribute a delay to SQLite or
+prove device response time. No samples remains explicit; missing evidence stays
+unknown. They introduce no automatic warning threshold. Snapshot and history
+views do not present these local timings as the master's current responsiveness.
 
 The web API accepts no destination path: authenticated `POST /api/database-export`
 with an empty JSON object saves in the configured server folder, and authenticated

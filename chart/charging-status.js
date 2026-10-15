@@ -195,7 +195,7 @@ const CONTROL_DETAILS = {
   'identification-charging': 'Charging is being observed to identify the connected vehicle.',
   'economic-wait': 'Waiting for the next planned charging period.',
   'charge-now': 'Immediate charging is requested for this connection. Charger and vehicle restrictions still apply.',
-  'evse-command-unconfirmed': 'The charger has not confirmed the instruction. Its outcome is still unknown; waiting for a fresh reading.',
+  'evse-command-unconfirmed': 'The charger has not confirmed the instruction. Its outcome is still unknown; a fresh reading alone may not establish whether the instruction was accepted.',
   'evse-read-timeout': 'The charger did not answer a reading request in time. Waiting for fresh readings before sending another instruction.',
   'evse-notification-readback-required': 'The charger reported a change. Waiting for a fresh reading before sending another instruction.',
   'evse-permission-event-overflow': 'Too many charger changes arrived to confirm which instruction has priority. Automatic control is unavailable.',

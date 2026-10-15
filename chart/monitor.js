@@ -1,5 +1,7 @@
 import { createAutomationControls } from './automation-controls.js';
 import { createReadOnlyControls, assertDashboardWrite } from './dashboard-access.js';
+import { dashboardConnectionView, observeDashboardHealth, observeDashboardStatus, retainDashboardHealth,
+  retainNewerDashboardObservations } from './dashboard-storage.js';
 import { createSelectPickers } from './select-picker.js';
 import { createDatePicker } from './date-picker.js';
 import { createDashboardReset } from './dashboard-reset.js';
@@ -174,6 +176,7 @@ async function api(path, data, options = {}) {
   if (session.locked) throw Object.assign(new Error(authenticationMessage(ingress)), { status: 401 });
   assertWebRequest(webAccess, path, data, lastStatus);
   assertDashboardWrite(path, data, lastStatus);
+  const observedAtRequest = lastStatus;
   const chartRead = data === undefined && path.startsWith('/api/chart?');
   const { response,result } = await session.run(({ headers, signal }) => (chartRead ? fetchChartResponse : fetchJsonResponse)(applicationUrl(path), {
     signal, method: data === undefined ? 'GET' : 'POST',
@@ -185,7 +188,7 @@ async function api(path, data, options = {}) {
     const error = new Error(authenticationMessage(ingress)); error.status = response.status; throw error;
   }
   if (!response.ok) throw apiResponseError(response, result, { mutation: data !== undefined });
-  return result;
+  return data === undefined ? result : retainNewerDashboardObservations(result, observedAtRequest, lastStatus);
 }
 function showError(error, { connection = true } = {}) {
   $('error').textContent = connection ? error.message : `Some dashboard details could not be refreshed. ${error.message}`;
@@ -193,7 +196,14 @@ function showError(error, { connection = true } = {}) {
   if (connection) $('connection').textContent = 'Connection needs attention';
 }
 const recordingHealth = createRecordingHealth({ document, request: api,
-  reviewBackup: options => historyRecovery.open(options), downloadBackup, onContextChange: resetRecordingContext });
+  reviewBackup: options => historyRecovery.open(options), downloadBackup, onContextChange: resetRecordingContext,
+  onHealthRefresh: health => {
+    if (session.locked || !lastStatus) return;
+    lastStatus = observeDashboardHealth(lastStatus, health);
+    readOnlyControls.update(lastStatus);
+    // A health-only reply does not establish fresh dashboard communication.
+    $('context').textContent = dashboardConnectionView(lastStatus).context;
+  } });
 const secureWebAccess = createSecureWebAccessPanel({ document, request: api, getAccess: () => webAccess, ingress,
   onAccess: access => {
     webAccess = access; accessControls.update(access);
@@ -835,13 +845,13 @@ function render(s) {
   document.body.dataset.authenticated = 'true';
   $('auth').hidden = true;
   $('fireplace-family-help').hidden = webAccess?.role !== 'family';
-  lastStatus = s;
+  lastStatus = retainDashboardHealth(lastStatus, s);
   dashboardStatusReceived = true;
   statusReceivedMonotonicAt = performance.now();
   if (s.recordingHealth?.version === 2) resetRecordingContext(s.recordingHealth);
   recordingHealth.update(s);
   secureWebAccess.update(s);
-  readOnlyControls.update(s);
+  readOnlyControls.update(lastStatus);
   garageControls.update(s);
   automationControls.update(s);
   mitsubishiControls.update(s);
@@ -857,10 +867,7 @@ function render(s) {
   renderHomePlannedChange(document, s);
   heatingExplorer.update({ ...s, webAccess });
   sensorChangePanel.update(isReadOnlyReplica(s) ? { ...s.sensorChanges, available: false, readOnly: true } : s.sensorChanges);
-  $('connection').textContent = replica || s.input === 'offline' ? 'History viewer' : s.input === 'simulated' ? 'Simulation' : 'Live';
-  $('context').textContent = s.input === 'simulated' ? 'Simulated devices and example prices. This workspace sends no commands to your home.'
-    : s.input === 'offline' ? 'Imported household history. No live device connection is open.'
-      : 'Live observations. Each feature shows its automation permission and current activity.';
+  renderConnection(lastStatus);
   for (const key of ['indoor', 'outdoor']) {
     const estimate = key === 'indoor' ? homeIndoorEstimate(s, { formatTime: time }) : null;
     const obs = estimate?.reading ?? s.observations?.[key] ?? {};
@@ -975,15 +982,23 @@ const eventStream = createEventStream({ request: (after,options) => api(`/api/ev
 const events = () => eventStream.poll();
 const communication = createCommunicationWatch();
 const requestStatus = createPollingRequest(options => api('/api/status',undefined,options));
+function renderConnection(status) {
+  const view = dashboardConnectionView(status);
+  $('connection').textContent = view.scope;
+  $('context').textContent = view.context;
+}
 function checkCommunication() {
   if (session.locked) return;
   const state = communication.status();
-  $('connection').title = `Last successful status response: ${state.available ? `${Math.floor(state.ageMs/1000)} seconds ago` : 'not yet received'}.`;
+  const view = dashboardConnectionView(lastStatus);
+  $('connection').title = `Last successful status response: ${state.available ? `${Math.floor(state.ageMs/1000)} seconds ago` : 'not yet received'}.${view.detail ? ` ${view.detail}` : ''}`;
   if (state.stale) $('connection').textContent = 'Monitoring is stale. Waiting for an installation status response.';
 }
 async function refresh({ forceChart = false, background = false } = {}) {
   if (session.locked) return;
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy) return;
+  const controlsBusy = () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy;
+  const observationOnly = controlsBusy();
+  const observedAtRequest = lastStatus;
   const request = requestStatus({ background });
   if (!request) return;
   const sequence = ++refreshSequence;
@@ -1004,8 +1019,22 @@ async function refresh({ forceChart = false, background = false } = {}) {
     return;
   }
   if (sequence !== refreshSequence) return;
+  s = retainNewerDashboardObservations(s, observedAtRequest, lastStatus);
   communication.received();
   try {
+    if (observationOnly || controlsBusy()) {
+      // The server returns committed views during asynchronous saves. Keep
+      // drafts and action receipts mounted while observing health and authority.
+      lastStatus = observeDashboardStatus(lastStatus, s);
+      if (!lastStatus) return;
+      webAccess = s.webAccess ?? webAccess;
+      accessControls.update(webAccess);
+      recordingHealth.update(s);
+      readOnlyControls.update(lastStatus);
+      renderConnection(lastStatus);
+      checkCommunication();
+      return;
+    }
     const replica = render(s);
     const snapshot = replica ? replicaSnapshotKey(s) ?? 'replica-unavailable' : 'master';
     const replaced = snapshot !== lastReplicaSnapshot;
