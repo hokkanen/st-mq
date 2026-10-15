@@ -31,6 +31,8 @@ for (const reason of ['evse-input-persistence-pending', 'evse-source-time-pendin
       assert.equal(control.snapshot.fields.start_charging.measuredAt, permissionAt);
       assert.equal(limiter.applicationStatus, 'idle');
       f.runtime.recordLimiterHistory();
+      // History publication is queued behind any outstanding observation writes.
+      await f.store.runWrite(() => {});
       const row = f.store.observations({ signal: 'charger2_current_allowance' }).at(-1);
       assert.equal(row.value, expected, 'Independent capacity continues to be recorded');
       assert.equal(row.raw.allowance.limiter.applicationStatus, 'idle');

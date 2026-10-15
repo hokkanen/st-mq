@@ -38,7 +38,7 @@ export function chargingSetupMarkup() {
       <summary><span>Charger 1 · Connection &amp; capabilities</span><small id="charging-setup-charger1" class="equipment-device-status">Waiting for charger status</small></summary>
       <p>Choose one control backend in configuration: Easee cloud scheduling or local OCPP. Equalizer keeps control of charging current and native electrical limits.</p>
       ${facts('charger1', [['model', 'Reported model'], ['readiness', 'Scheduling control'], ['current', 'Current control']])}
-      <p>Local OCPP also owns charging authorization. Configure plug-and-charge or permitted RFID tags. Stopping this application keeps OCPP enabled; new charging can wait for authorization while the controller is offline. An installed pause can expire without restoring cloud authorization.</p>
+      <p>Local OCPP also owns charging authorization. Configure plug-and-charge or permitted RFID tags. Stopping this application keeps OCPP enabled; new charging can wait for authorization while the controller is offline. A timed scheduling pause can expire without restoring cloud authorization. Pause charging has no timed expiry and holds its connection until unplugging or a later resume instruction.</p>
       <div id="charging-setup-ocpp"></div>
       <p>${docLink('charging/integrations/easee.md', 'Easee setup &amp; connection guide')}</p>
     </details>

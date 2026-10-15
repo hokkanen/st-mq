@@ -353,9 +353,12 @@ permission to act. See [the configuration guide](docs/configuration.md).
   not grant permission. Later external instructions take priority for that
   connection and survive restart/reconnect. The explicit **Use automatic** action
   also supersedes earlier instructions, enables Automatic and returns to price
-  scheduling; it need not start charging immediately. Ordinary polling within an
-  established connection, the Automatic preference switch and Charge now never
-  independently acquire takeover authority. Bind takeover to current equipment,
+  scheduling; it need not start charging immediately. **Charge now** is also an
+  explicit takeover of the displayed external Stop and supported native charging
+  schedules, requesting immediate charging without changing Automatic or clearing
+  an external adjustable current ceiling. Ordinary polling within an established
+  connection and the Automatic preference switch never acquire takeover authority.
+  Bind takeover to current equipment,
   connection and observed native instructions; newer external changes retain
   priority. Confirm native changes and preserve uncertain outcomes across failure.
   Unsupported native schedule operations remain visibly blocked; this policy does
@@ -363,6 +366,20 @@ permission to act. See [the configuration guide](docs/configuration.md).
   superseded instructions after unplugging or restart, infer who caused an observed
   stop, change unrelated device schedules or bypass electrical protection, charger
   authorization, faults or vehicle restrictions.
+- **Pause charging** is a durable dashboard instruction for the current physical
+  connection. It turns Charge now off, leaves Automatic unchanged and prevents
+  scheduling, identification and permission recovery from starting charging.
+  Ready-by expiry, application restart, transport reconnection and transaction
+  rollover do not end it. Confirmed unplug ends its scope; the next connection
+  follows the saved Automatic preference. **Use automatic** returns to scheduling;
+  **Charge now** requests immediate charging. A positively evidenced later external
+  Start/Resume supersedes the pause and yields to external control. A later external
+  Stop ends an earlier Charge now request. Polling, generic status and Shelly `sys`
+  permission changes cannot manufacture these external instructions. Preserve the
+  dashboard origin separately from observed native Stops, and distinguish saved
+  intent, native confirmation and measured stopping. Existing current limits and
+  restoration duties remain binding. This lasting amendment, including the scoped
+  Charge now takeover above, was explicitly approved by the owner on 2026-10-15.
 - Once Easee Direct OCPP is commissioned, normal local charging permission,
   scheduling, Charge now, new-connection takeover and same-session recovery must
   not require an Easee cloud reply. This owner-approved clarification on

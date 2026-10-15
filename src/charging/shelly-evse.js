@@ -1096,7 +1096,13 @@ export function createShellyController({ adapter, initialState, saveState = () =
   state.limiter = null;
   let closed = false, revision = 0, planningRevision = null, identification = null, enabled = false, queue = Promise.resolve(),
     takeoverResult = null, takeoverAttemptToken = null, takeoverAttemptRevision = null;
-  let planningWait = null;
+  let planningWait = null, requestedSessionPause = null;
+  const sessionPauseScope = snapshot => requestedSessionPause
+    && snapshot.session?.connected === true && requestedSessionPause.connectedAt === snapshot.session.connectedAt;
+  const pauseSupersededAt = snapshot => sessionPauseScope(snapshot) && state.manual?.kind === 'enable'
+    && state.manual.origin === 'external-command' && state.manual.detectedAt > requestedSessionPause.requestedAt
+    ? state.manual.detectedAt : null;
+  const sessionPaused = snapshot => Boolean(sessionPauseScope(snapshot) && pauseSupersededAt(snapshot) === null);
   const cancelPlanning = () => planningWait?.cancel();
   async function readPlan(snapshot, options, intentRevision) {
     if (closed || intentRevision !== revision) throw fail('evse-planning-revoked');
@@ -1294,7 +1300,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
     const instructionEvidenceReady = snapshot.controlReady || instructionObservationReady(snapshot);
     const owned = projected.pauseBroken ? null : state.owned ?? null;
     const permission = snapshot.fields.start_charging;
-    const economicPause = state.execution
+    const userPause = sessionPaused(snapshot);
+    const economicPause = (state.execution || userPause)
       && snapshot.session?.connected === true && state.sessionId === snapshot.session.sessionId
       && !projected.pauseBroken && !projected.held && state.ownedPause && state.lastStart === false && fresh(permission)
       && sameSetting(permission, { value: false, measuredAt: state.lastStartAt });
@@ -1327,9 +1334,24 @@ export function createShellyController({ adapter, initialState, saveState = () =
       reason: state.pending?.role === 'current_limit' ? state.reason ?? state.pending.reason : null,
       stage: state.pending?.role === 'current_limit' ? state.pending.stage : state.currentExecutionStage ?? null };
     const scheduleConfirmed = permissionConfirmed && Boolean(state.execution);
+    const sessionPauseConfirmed = Boolean(userPause && snapshot.online && fresh(permission) && permission.value === false
+      && state.pending?.role !== 'start_charging' && fresh(work) && physicalFresh(physical)
+      && physical.measuredAt >= requestedSessionPause.requestedAt
+      && adapter.config.connectedStates.includes(work.value) && !adapter.config.chargingStates.includes(work.value)
+      && physical.value.total_power === 0 && PHASE_KEYS.every(key => physical.value[key]?.current < .5));
     return { ...copy(state), devicePermissionHeld: projected.held, owned: owned ? copy(owned) : null, planningRevision, enabled, manual,
       scheduleConfirmed, currentAdjustment,
       takeover: takeoverStatus(snapshot),
+      takeoverRequired: Boolean(snapshot.nativeScheduleActive || ['stop', 'schedule', 'window'].includes(manual?.kind)
+        || permission?.value === false && !projected.held && !(state.ownedPause && !projected.pauseBroken
+          && fresh(permission) && sameSetting(permission, { value: false, measuredAt: state.lastStartAt }))),
+      externalStopAt: state.manual?.kind === 'stop' && state.manual.origin === 'external-command' ? state.manual.detectedAt : null,
+      sessionPause: { available: !closed && snapshot.online && snapshot.controlReady && snapshot.session?.connected === true
+          && fresh(permission) && fresh(work), active: userPause,
+        ...(sessionPauseScope(snapshot) ? { requestedAt: requestedSessionPause.requestedAt } : {}),
+        ...(pauseSupersededAt(snapshot) !== null ? { supersededAt: pauseSupersededAt(snapshot) } : {}),
+        confirmed: sessionPauseConfirmed,
+        reason: userPause && !sessionPauseConfirmed ? 'session-pause-unconfirmed' : null },
       identification: identification ? copy(identification) : null, ownsInstruction, pauseConfirmed, nativeExpiry: false,
       snapshot: { ...snapshot, stopped, manualStop: stopped }, session: snapshot.session,
       handoverConfirmed: !state.pending && !owned
@@ -1502,6 +1524,12 @@ export function createShellyController({ adapter, initialState, saveState = () =
     close() { closed = true; stopObserving?.(); revision++; cancelPlanning(); return queue.catch(() => {}); },
     update(input = {}) {
       if (Object.hasOwn(input, 'resume')) throw fail('unsupported-shelly-control-input');
+      if (input.sessionPause != null && (typeof input.sessionPause !== 'object' || Array.isArray(input.sessionPause)
+        || Object.keys(input.sessionPause).sort().join(',') !== 'connectedAt,requestedAt'
+        || !time(input.sessionPause.connectedAt) || !time(input.sessionPause.requestedAt)
+        || input.sessionPause.requestedAt < input.sessionPause.connectedAt || input.sessionPause.requestedAt > clock()))
+        throw fail('invalid-session-pause');
+      requestedSessionPause = input.sessionPause ? copy(input.sessionPause) : null;
       const intentRevision = ++revision;
       cancelPlanning();
       let takeoverRequested = typeof input.takeover === 'string';
@@ -1520,7 +1548,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
           if (!admitted) throw fail('evse-control-unavailable');
         }
       };
-      const takeoverCurrent = takeoverRequested && input.enabled === true
+      const takeoverCurrent = takeoverRequested && (input.enabled === true
+        || input.chargeNow?.connectedAt === requestedSnapshot.session?.connectedAt && time(input.chargeNow?.connectedAt))
         && hasAuthority() && input.takeover === takeoverToken(requestedSnapshot);
       if (takeoverRequested) {
         takeoverAttemptToken = input.takeover; takeoverAttemptRevision = intentRevision;
@@ -1536,7 +1565,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           && !state.scheduleTakeoverPending && takeoverResult?.state !== 'pending';
         await adapter.refresh({ completedRead: reuseRead ? input.completedRead : undefined });
         let snapshot = adapter.snapshot();
-        await manageCurrentTest({ snapshot, intentRevision, early: true });
+        await manageCurrentTest({ snapshot, intentRevision, early: true, economicWait: sessionPaused(snapshot) });
         if (takeoverRequested) await settleTakeoverAdmission();
         snapshot = adapter.snapshot();
         const controlScope = snapshot;
@@ -1548,7 +1577,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         }
         const sessionId = snapshot.session?.sessionId;
         const chargeNow = Number.isSafeInteger(input.chargeNow?.connectedAt)
-          && input.chargeNow.connectedAt === snapshot.session?.connectedAt;
+          && input.chargeNow.connectedAt === snapshot.session?.connectedAt && !sessionPaused(snapshot);
         const immediatePermission = () => ({ periods: [{ startAt: clock(), endAt: null }] });
         const changedSession = snapshot.session?.connected === true && sessionId && state.sessionId !== sessionId
           || snapshot.session?.connected === false && state.sessionId != null;
@@ -1565,6 +1594,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           delete state.lastStart; delete state.lastStartAt; delete state.lastCurrent; delete state.lastCurrentAtSource; delete state.permissionCommand;
           delete state.lastCurrentInstructionAt; delete state.currentExecutionStage; delete state.currentCommandAt; delete state.executionStage;
         }
+        if (sessionPaused(snapshot)) state.automaticTakeover = null;
         if (snapshot.session?.connected === false && snapshot.pluggedIn === false) {
           // Available capacity is an observation even without a vehicle. Do not
           // carry a departed vehicle's restrictions into this calculation or
@@ -1731,7 +1761,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             // when the economic plan will leave an existing Stop in place. Its
             // source clock prevents that old stop reappearing after unplug/restart.
             state.manual = null; state.pending = null; state.owned = null;
-            if (typeof input.takeover === 'string' && adapter.config.limiterEnabled) {
+            if (typeof input.takeover === 'string' && input.takeoverMode !== 'charge-now' && !chargeNow && adapter.config.limiterEnabled) {
               state.manualCurrentA = null;
               rememberCurrent(current);
             }
@@ -1872,9 +1902,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
         rememberCurrent(current);
         await refreshIdentification(snapshot);
         if (closed || intentRevision !== revision) return;
-        if (state.manual || snapshot.nativeScheduleActive) identification = null;
+        const userPause = sessionPaused(snapshot);
+        if (state.manual || snapshot.nativeScheduleActive || userPause) identification = null;
         const restoringUnscheduled = state.owned?.sessionId === sessionId && (!input.enabled || chargeNow);
-        const independentPermission = identification || chargeNow || !input.enabled;
+        const independentPermission = userPause || identification || chargeNow || !input.enabled;
         let plan = !independentPermission && typeof getPlan === 'function'
           ? await readPlan(snapshot, { refresh: input.refreshPlan !== false }, intentRevision) : input.plan;
         if (!identification && chargingPlanInputsUnavailable(plan) && state.execution && !state.provisional)
@@ -1886,12 +1917,12 @@ export function createShellyController({ adapter, initialState, saveState = () =
         // The selected wait already requires Stop in this reconcile, even
         // before its execution is saved after native confirmation. Do not
         // raise the temporary pilot ahead of that Stop and physical zero.
-        const economicWait = !identification && input.enabled && !chargeNow && !state.manual && !snapshot.nativeScheduleActive
+        const economicWait = !userPause && !identification && input.enabled && !chargeNow && !state.manual && !snapshot.nativeScheduleActive
           && plan?.periods?.length > 0 && !plan.periods.some(period => period.startAt <= clock()
             && (period.endAt === null || period.endAt > clock()));
         const currentPreparation = await manageCurrentTest({ snapshot, intentRevision, request: identification, context,
-          economicWait,
-          releaseProbe: !input.enabled || chargeNow || ['enable', 'charge-now'].includes(state.manual?.kind) });
+          economicWait: userPause || economicWait,
+          releaseProbe: !userPause && (!input.enabled || chargeNow || ['enable', 'charge-now'].includes(state.manual?.kind)) });
         if (takeoverRequested && currentPreparation) {
           const { before, after } = currentPreparation;
           // Advance this exact takeover only over our confirmed current write.
@@ -1955,15 +1986,15 @@ export function createShellyController({ adapter, initialState, saveState = () =
             reason: 'native-current-limit', fallback: false, modelAvailable: false, guaranteedProtection: false };
         rememberLimiter(limitation, context, snapshot);
         const windows = chargeNow ? [{ startAt: clock(), endAt: null }] : plan?.periods ?? [];
-        const economic = !identification && (input.enabled || chargeNow) && !state.manual && !snapshot.nativeScheduleActive && windows.length > 0;
+        const economic = !userPause && !identification && (input.enabled || chargeNow) && !state.manual && !snapshot.nativeScheduleActive && windows.length > 0;
         const inWindow = windows.some(period => period.startAt <= clock() && (period.endAt === null || period.endAt > clock()));
         const nativeBlocked = finite(context.notBefore) && context.notBefore > clock();
-        const restrict = adapter.config.limiterEnabled || economic || identification !== null || state.owned?.sessionId === sessionId;
+        const restrict = userPause || adapter.config.limiterEnabled || economic || identification !== null || state.owned?.sessionId === sessionId;
         const probing = identification?.mode === 'probe';
         const cap = restrict ? limitation.currentA : current.value;
         const identificationPause = identification?.phase === 'pausing';
         const probeExpired = () => probing && clock() >= identification.probeUntil;
-        const pause = restrict && cap < adapter.config.minimumCurrentA || economic && !inWindow || identificationPause || probeExpired();
+        const pause = userPause || restrict && cap < adapter.config.minimumCurrentA || economic && !inWindow || identificationPause || probeExpired();
         const recovery = state.owned?.sessionId === sessionId && !identificationPause;
         const nativeRelease = ['enable', 'charge-now'].includes(state.manual?.kind);
         const allowStart = (economic && inWindow || identification && !identificationPause
@@ -1987,7 +2018,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           const permission = adapter.snapshot().fields.start_charging;
           state.limiter.pausedByLimiter = limitation.loadCurrentA === 0 && state.ownedPause && permission.value === false
             && state.manual?.kind !== 'stop' && !identificationPause && !(economic && !inWindow)
-            && !nativeBlocked && !snapshot.nativeScheduleActive;
+            && !userPause && !nativeBlocked && !snapshot.nativeScheduleActive;
           notifyStatus();
         };
         publishLimiterStatus();
@@ -2020,7 +2051,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
               && sameSetting(adapter.snapshot().fields.start_charging, expectedStart)
               && sameSetting(adapter.snapshot().fields.current_limit, expectedCurrent)
               && scheduleToken(adapter.snapshot()) === nativeSchedule
-              && (role !== 'start_charging' || value === false && limitation.pause || !adapter.snapshot().nativeScheduleActive)
+              && (role !== 'start_charging' || value === false && (userPause || limitation.pause) || !adapter.snapshot().nativeScheduleActive)
               && (role !== 'start_charging' || value === false
                 || !probeExpired() && !devicePermission(adapter.snapshot()).held)
               && (!owned || clock() < owned.startAt),
@@ -2090,13 +2121,13 @@ export function createShellyController({ adapter, initialState, saveState = () =
         try {
           // Adopting an already-paused test into a real economic/fuse pause keeps
           // the setting untouched and ends only its temporary restoration duty.
-          if (state.owned && !identificationPause && (economic && !inWindow || restrict && limitation.pause)
+          if (state.owned && !identificationPause && (userPause || economic && !inWindow || restrict && limitation.pause)
             && state.owned.sessionId === sessionId && ownSetting(snapshot)) state.owned = null;
           if (pause && start.value && state.manual?.kind !== 'stop') {
             const owned = identificationPause ? { purpose: 'identification', identificationId: identification.id,
               identificationConnectedAt: identification.connectedAt, sessionId, requestedAt: clock(), confirmedAt: null,
               permissionAt: null, startAt: identification.pauseUntil, witnessedCharging: false } : null;
-            if (await command('start_charging', false, identificationPause ? 'identification-pause'
+            if (await command('start_charging', false, userPause ? 'session-pause' : identificationPause ? 'identification-pause'
               : economic && !inWindow ? 'economic-wait' : limitation.reason, owned)) state.lastPauseAt = clock();
           }
           const { idle, settingCap } = selectCurrentSetting();
@@ -2127,7 +2158,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             && actual.currents.every(value => value <= adapter.snapshot().fields.current_limit.value + 1))
             state.currentExecutionStage = 'physical-effect';
           if (!guard()) return;
-          if (chargeNow || state.manual) { state.execution = null; state.provisional = false; }
+          if (userPause || chargeNow || state.manual) { state.execution = null; state.provisional = false; }
           else if (economic && !nativeBlocked && !state.pending) {
             const readback = adapter.snapshot(), permission = readback.fields.start_charging, currentLimit = readback.fields.current_limit;
             const adopted = shellyExecution(plan);
@@ -2145,9 +2176,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
           const intermediate = state.execution && clock() < state.execution.finalStartAt;
           state.released = open && !identification && !state.manual && !state.provisional && !intermediate && Boolean(input.enabled || chargeNow);
           const deviceHeld = devicePermission(adapter.snapshot()).held;
-          state.phase = state.manual ? 'manual' : currentUnconfirmed ? 'uncertain' : deviceHeld ? 'waiting' : identification ? 'identifying' : pause ? 'waiting'
+          state.phase = userPause ? 'waiting' : state.manual ? 'manual' : currentUnconfirmed ? 'uncertain' : deviceHeld ? 'waiting' : identification ? 'identifying' : pause ? 'waiting'
             : input.enabled || chargeNow ? !open ? 'waiting' : state.provisional ? 'provisional' : intermediate ? 'active' : 'released' : 'off';
-          state.reason = state.manual?.kind === 'stop' ? 'manual-stop'
+          state.reason = userPause ? 'session-pause' : state.manual?.kind === 'stop' ? 'manual-stop'
             : state.manual?.kind === 'takeover-unconfirmed' ? 'evse-native-schedule-unconfirmed'
             : state.manual?.kind === 'instruction-unconfirmed' ? 'evse-command-unconfirmed' : snapshot.nativeScheduleActive ? 'native-schedule'
             : state.manual ? `manual-${state.manual.kind}`

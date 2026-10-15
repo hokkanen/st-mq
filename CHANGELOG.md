@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Add **Pause charging** beside **Use automatic** on both charger cards, with
+  a session hold that survives restart and reconnect and reports whether stopping
+  is confirmed. Charge now can explicitly supersede the displayed external Stop
+  and supported native schedules while retaining current and protection limits.
+
 - Preserve the dehumidifier's full five-minute physical restart wait through
   forward wall-clock corrections, using original MQTT receipt elapsed time while
   retaining saved native clocks, fresh confirmation and restoration checks.

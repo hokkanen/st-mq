@@ -9,6 +9,16 @@ Run checks from the repository root. Ordinary tests, browser fixtures, container
 checks and Garage simulations use synthetic data. The separately invoked live
 suite contacts configured providers; see [live testing](live-testing.md).
 
+`test/charging-session-pause-runtime.test.js` exercises both charger controllers
+through the runtime with synthetic native responses. It covers Pause during
+Charge now, unchanged Automatic preference, ready-by expiry, same-session restart,
+unplug/new connection, persistence rejection, waiting-plan resumption and peer
+service. Provider suites cover native ownership, source-timed external resumption,
+transaction rollover and uncertain writes. Browser charging controls fixtures
+check the shared Pause/Use automatic row at 320, 390 and 1440 pixels in both themes.
+These checks do not qualify physical Pause/Resume or native schedule takeover;
+those require separate live testing with current device evidence.
+
 `test/provider-http-cancellation.test.js` runs the real HTTP transport and
 application reload/shutdown against held loopback responses in bounded child
 processes. Explicit garbage collection covers cancellation before headers,

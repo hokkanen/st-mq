@@ -47,13 +47,16 @@ unresolved restoration remain separate restrictions. See
 
 ## Automatic takeover and native instructions
 
-**Charge now** releases the controller's automatic scheduling delay for the
-current connection without changing the Automatic preference. It works with
+**Charge now** clears a dashboard Pause and releases the controller's scheduling
+delay for the current connection without changing the Automatic preference. An
+observed external Stop or supported native schedule requires the displayed native
+instruction token and confirmed takeover; it is explicitly superseded. Current
+ceilings, faults, authorization and vehicle restrictions remain binding. It works with
 Automatic off. Turning Charge now off returns to Automatic and enables it if
 needed in one committed, connection-and-request-scoped action; a stale browser
 cannot cancel a newer request or a replacement connection. Unplugging ends the
-override. The request remains subject to native
-restrictions and confirmed control readiness.
+override. A newer positively observed external Stop also ends that request.
+Confirmed control readiness remains required.
 
 Charge now and Automatic OFF reach the selected charger without waiting for an
 economic calculation. Returning to Automatic still waits for the current plan
@@ -87,7 +90,7 @@ own writes and failed or obsolete readback retain uncertainty; independently
 observed source-timed Stop and schedule changes keep their normal priority.
 
 **Use automatic** is a separate, explicit new
-instruction: enable Automatic, end Charge now, supersede the observed manual
+instruction: enable Automatic, end Charge now and dashboard Pause, supersede the observed manual
 Start/Stop, supersede Shelly's adjustable session current choice when its limiter
 is enabled, and disable supported native charging schedules. Those earlier
 instructions are not restored after the session, unplugging or restart; a new
@@ -95,6 +98,40 @@ external instruction takes priority again. Returning to the price plan may keep
 charging paused until a cheaper period. The action is available only for the current connection and control authority.
 Pending, blocked and unconfirmed outcomes remain distinct; success requires
 charger readback.
+
+### Dashboard Pause
+
+**Pause charging** records a current-connection instruction before native dispatch.
+It clears Charge now, preserves Automatic and session battery/deadline choices,
+and stops both scheduled charging and immediate charging. Its own source and
+request clock remain distinct from observed external Stop evidence. Admin and
+family users share the same scoped action. A stale browser, changed equipment or
+replacement physical connection cannot receive the request.
+
+The hold survives restart, transport reconnect, transaction rollover and ready-by
+expiry. Changing the Automatic preference does not release it. Confirmed unplug
+ends the scope; reconnection follows that equipment's saved Automatic preference.
+Use automatic returns to price scheduling; Charge now returns to an immediate
+request. A later positively evidenced external Start/Resume supersedes the hold
+and yields to external control. A generic charging status, authorization retry,
+schedule expiry, poll or Shelly system permission transition is insufficient.
+An external tap that supplies no distinguishable evidence cannot release the hold.
+
+Pause bypasses economic calculation waits and blocks identification Starts while
+preserving owed current restoration and uncertain native commands. Joint planning
+withdraws promised service for the paused request; actual load remains accounted
+for until native and physical evidence establish stopping. The UI distinguishes
+Pause requested, Paused until unplugging and Pause unconfirmed. Acknowledgement
+alone proves neither stopping nor release. Returning to a waiting automatic plan
+must establish its restriction before removing the user hold.
+
+The native implementation uses an owned Shelly permission-off command, Easee's
+session Pause command, or a non-expiring OCPP transaction zero profile. Only the
+OCPP session-pause purpose has no timer: economic and identification restrictions
+retain their existing expiries. The runtime hold survives transaction rollover
+and withholds new Start permission until properly superseded. All native cleanup
+remains scoped to the owned instruction. No equipment-wide disable or far-future
+economic deadline stands in for the user instruction.
 
 A received Shelly observation that is awaiting persistence or its source time
 may settle within the existing native command timeout. The action then checks

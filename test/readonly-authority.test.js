@@ -8,7 +8,7 @@ import { Store } from '../src/storage/store.js';
 import { createAppServer } from '../src/app/server.js';
 
 const writes = ['/api/settings/reload', '/api/charging/ocpp-setup', '/api/charging/settings',
-  ...['settings', 'control', 'resume', 'charge-now', 'identify'].map(action => `/api/charging/chargers/charger1/${action}`),
+  ...['settings', 'control', 'pause', 'resume', 'use-automatic', 'charge-now', 'identify'].map(action => `/api/charging/chargers/charger1/${action}`),
   ...['release', 'temporary', 'heating', 'native'].map(action => `/api/garage/${action}`),
   ...['recheck', 'switch', 'cover', 'dehumidifier', 'h66', 'test', 'test/restore'].map(action => `/api/equipment/${action}`),
   '/api/fireplace', '/api/fireplace/remove', '/api/sensor-changes', '/api/sensor-changes/revert',

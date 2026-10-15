@@ -34,6 +34,16 @@ const cases = [
   ['unknown vehicle feed field', 'charging:simulated', { version: 7, vehicleFeeds: { bmw: { lastIdentity: 'tesla' } } }],
   ['session scope', 'charging:simulated', withCharger({ request: { scope: 'old-device:1000', sessionId: 'old-device:1000', revision: 1, deadlineAt: 2000, overrides: {} } })],
   ['session override', 'charging:simulated', withCharger({ request: { scope: `${association}:1000`, sessionId: `${association}:1000`, revision: 1, deadlineAt: 2000, overrides: { enabled: true } } })],
+  ...[
+    ['pause expiry alias', { pause: { requestedAt: 1100, expiresAt: 2000 } }],
+    ['pause before connection', { pause: { requestedAt: 999 } }],
+    ['pause wrong type', { pause: true }],
+    ['pause and immediate intent', { pause: { requestedAt: 1100 }, chargeNow: true, chargeNowAt: 1100 }],
+    ['immediate intent without source boundary', { chargeNow: true }],
+    ['orphan immediate clock', { chargeNowAt: 1100 }],
+  ].map(([name, fields]) => [name, 'charging:simulated', withCharger({ request: {
+    scope: `${association}:1000`, sessionId: `${association}:1000`, revision: 1,
+    deadlineAt: 2000, overrides: {}, ...fields } })]),
   ['consumed evidence', 'charging:simulated', { version: 7, consumedTeslaCurrent: { association, receivedAt: -1 } }],
   ['identification', 'charging:simulated', withCharger({ identification: { version: -1 } })],
   ['identification evidence', 'charging:simulated', withCharger({ vehicleEvidence: { teslaCurrentCandidate: {} } })],

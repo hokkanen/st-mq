@@ -44,12 +44,18 @@ function validateVehicleContext(previous) {
 function validateSavedRequest(request, association) {
   if (request == null) return;
   try {
-    if (!object(request) || Object.keys(request).some(key => !['scope', 'sessionId', 'revision', 'deadlineAt', 'overrides', 'anchorAt', 'readyBy', 'chargeNow', 'flexibility'].includes(key))
+    if (!object(request) || Object.keys(request).some(key => !['scope', 'sessionId', 'revision', 'deadlineAt', 'overrides', 'anchorAt', 'readyBy', 'chargeNow', 'chargeNowAt', 'pause', 'flexibility'].includes(key))
       || typeof request.scope !== 'string' || request.scope !== `${association}:${sessionConnectedAt(request)}`
       || !Number.isSafeInteger(sessionConnectedAt(request)) || sessionConnectedAt(request) < 0 || request.sessionId !== request.scope
       || !Number.isSafeInteger(request.revision) || request.revision < 1
       || !Number.isSafeInteger(request.deadlineAt) || !object(request.overrides)
       || request.chargeNow !== undefined && request.chargeNow !== true
+      || request.chargeNow === true && request.chargeNowAt === undefined
+      || request.chargeNowAt !== undefined && (request.chargeNow !== true || !time(request.chargeNowAt)
+        || request.chargeNowAt < sessionConnectedAt(request))
+      || request.pause !== undefined && (!object(request.pause)
+        || Object.keys(request.pause).join(',') !== 'requestedAt' || !time(request.pause.requestedAt)
+        || request.pause.requestedAt < sessionConnectedAt(request) || request.chargeNow === true)
       || request.anchorAt !== undefined && (!Number.isSafeInteger(request.anchorAt) || request.anchorAt < 0)) throw new Error();
     chargingDefaults(request.overrides, { partial: true });
     if (request.readyBy !== undefined) chargingDefaults({ readyBy: request.readyBy }, { partial: true });

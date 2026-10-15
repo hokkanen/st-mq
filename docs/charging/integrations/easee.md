@@ -457,7 +457,7 @@ absence is not a charging restriction. Ordinary scheduling within an established
 session does not mutate cloud schedules and never installs a cloud economic
 schedule while OCPP owns control.
 
-New-connection automatic takeover and explicit **Use automatic** supersede earlier
+New-connection automatic takeover and explicit **Use automatic** or **Charge now** supersede earlier
 instructions using the supported operation for the observed restriction. Local
 operations use OCPP; exceptional removal of a positively identified native
 dynamic-current zero Pause can still need cloud Resume. Required economic pauses
@@ -580,6 +580,26 @@ can be cleared locally by its exact ID or expire on the device. An unexplained
 zero-power or suspended state never authorizes Resume or raising current.
 
 ### Native charging pauses and identification current
+
+Dashboard **Pause charging** is a distinct physical-session instruction. Direct
+OCPP uses an owned transaction-scoped zero `TxProfile` without `validTo` or schedule
+duration. It replaces the existing owned profile in place; returning to Automatic
+replaces it with any required finite economic pause before permitting charging.
+Only that exact owned profile is cleared for immediate release. Without a confirmed
+transaction, the request blocks new Start permission and remains physically
+unconfirmed. Transaction rollover does not cancel the application request.
+
+Cloud execution uses [Pause Charging](https://developer.easee.com/reference/charger_pausesession),
+which sets the session dynamic current to zero and resets on a new car connection.
+[Resume Charging](https://developer.easee.com/reference/charger_resumesession)
+resets that dynamic limit. The adapter therefore refuses a new dashboard Pause
+when a separate restrictive dynamic ceiling cannot be preserved by the supported
+resume path. Pending commands and source clocks survive restart; a missing reply
+does not authorize blind repetition or prove stopping.
+
+The new session-pause and immediate takeover behavior has offline coverage.
+The physical experiments below do not qualify these new actions; device pause,
+resume, interruption and unplug/replug acceptance require separate live testing.
 
 For an economic pause, the native controller installs an absolute,
 transaction-scoped `TxProfile` with a **0 A restriction**. The profile identifies the current confirmed native

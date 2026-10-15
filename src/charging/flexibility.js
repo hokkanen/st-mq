@@ -94,6 +94,7 @@ export function flexibilityUnavailable(view, now, enabled = true) {
   if (view.values.connected.value !== true || !view.request) return 'not-connected';
   if (view.requiredGridKwh <= 1e-7) return 'charging-complete';
   if (!view.settings.enabled || !view.capabilities.scheduling) return 'automatic-disabled';
+  if (view.request.pause) return 'session-pause';
   if (view.request.chargeNow) return 'charge-now';
   if (view.control?.manual || view.telemetry?.manualStop) return 'manual-instruction';
   if (view.control?.errorCode || view.control?.pending || ['charging', 'pausing'].includes(view.identification?.phase)

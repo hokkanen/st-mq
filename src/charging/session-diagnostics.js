@@ -32,14 +32,14 @@ const CONTROL_ERRORS = new Set(['read-failed', 'command-failed', 'readback-faile
   'evse-input-persistence-pending', 'evse-source-time-pending',
   'identification-resume-required', 'command-unconfirmed']);
 const CONTROL_REASONS = new Set([...CONTROL_ERRORS, 'manual-stop', 'manual-release', 'manual-enable', 'manual-charge-now', 'manual-schedule', 'native-schedule',
-  'device-permission-held',
+  'device-permission-held', 'session-pause',
   'takeover-pause-prepare', 'takeover-pause-install', 'takeover-pause-confirm', 'takeover-native-check',
   'takeover-native-handover', 'takeover-native-confirm', 'takeover-state-save',
   'native-current-limit', 'vehicle-current-limit', 'hardware-restriction', 'fuse-limit', 'priority-allocation', 'telemetry-fallback',
   'vehicle-not-before', 'identification-pause', 'identification-waiting', 'identification-charging',
   'economic-wait', 'charge-now', 'economic-window', 'no-headroom', 'supply-unavailable', 'within-limit']);
 const PLAN_REASONS = new Set(['control-unsupported', 'disabled', 'observing', 'manual', 'released', 'disconnected', 'unavailable',
-  'charge-now', 'cheapest-feasible-periods', 'cheapest-feasible-start', 'minimum-already-satisfied',
+  'charge-now', 'session-pause', 'cheapest-feasible-periods', 'cheapest-feasible-start', 'minimum-already-satisfied',
   'vehicle-start-after-deadline', 'multiple-external-load-balancers', 'connection-unavailable',
   'electrical-telemetry-unavailable', 'equalizer-allowance-unavailable', 'insufficient-time', 'price-coverage-unavailable',
   'household-history-loading', 'household-history-unavailable', 'native-schedule-unavailable']);
@@ -107,7 +107,7 @@ function planFor(view, now) {
     && view.values.connected.value === true && view.telemetry?.providerConnected !== false && view.control?.snapshot?.online !== false;
   const automatic = typeof view.settings?.enabled === 'boolean' ? view.settings.enabled : null;
   const chargeNow = inputAvailable ? view.request.chargeNow === true : null;
-  const state = !inputAvailable ? 'unknown' : automatic === false && chargeNow === false ? 'disabled'
+  const state = !inputAvailable ? 'unknown' : view.request.pause ? 'manual' : automatic === false && chargeNow === false ? 'disabled'
     : ['disabled', 'observing', 'manual', 'released', 'release', 'disconnected', 'unavailable', 'waiting'].includes(plan?.state) ? plan.state : 'unknown';
   const noSchedule = !inputAvailable || ['disabled', 'observing', 'manual', 'disconnected', 'unavailable'].includes(state);
   const rows = noSchedule ? [] : periods(plan?.periods);
@@ -261,7 +261,7 @@ function observation(view, now) {
   const physicalFresh = providerLive && fresh(readAt, now);
   const rawError = control.errorCode || view.error || (CONTROL_ERRORS.has(control.reason) ? control.reason : null);
   const errorCode = rawError ? CONTROL_ERRORS.has(rawError) ? rawError : 'control-error' : null;
-  const reasonCode = CONTROL_REASONS.has(control.reasonCode) ? control.reasonCode
+  const reasonCode = view.request?.pause ? 'session-pause' : CONTROL_REASONS.has(control.reasonCode) ? control.reasonCode
     : CONTROL_REASONS.has(control.reason) ? control.reason : errorCode;
   const controlAvailability = snapshot.online === false || view.telemetry?.providerConnected === false
     || errorCode !== null || snapshot.controlReady === false || snapshot.faulted === true || snapshot.authorizationBlocked === true
@@ -291,7 +291,7 @@ function observation(view, now) {
     && fresh(soc.measuredAt ?? soc.receivedAt, now, 15 * MINUTE)
     && view.vehicleMqtt?.available !== false && view.vehicleMqtt?.reason !== 'vehicle-feed-stale';
   const activeId = view.identification?.active === true;
-  const controlled = view.settings?.enabled === true || view.request?.chargeNow === true;
+  const controlled = view.settings?.enabled === true || view.request?.chargeNow === true || Boolean(view.request?.pause);
   const manual = Boolean(control.manual || control.manualOverride || ['yielded', 'manual'].includes(control.phase));
   const installed = periods(control.execution?.periods);
   const proposed = periods(view.plan?.periods);
@@ -299,7 +299,7 @@ function observation(view, now) {
   const finalStartAt = at(control.execution?.finalStartAt ?? view.plan?.finalStartAt);
   const open = applicable.some(row => row.startAt <= now && (row.endAt === null || row.endAt > now))
     || finalStartAt !== null && now >= finalStartAt;
-  const expectation = manual ? 'manual' : activeId ? 'identification' : !controlled ? 'observe'
+  const expectation = view.request?.pause ? 'hold' : manual ? 'manual' : activeId ? 'identification' : !controlled ? 'observe'
     : control.released === true || view.request?.chargeNow === true || view.plan?.provisional === true ? 'allow'
       : applicable.length ? open ? 'allow' : 'hold' : 'unknown';
   const pending = Boolean(control.pending || control.confirmed === false || ['unconfirmed', 'pause-unconfirmed', 'uncertain', 'ownership-uncertain'].includes(control.phase));

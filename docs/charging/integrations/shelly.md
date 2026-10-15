@@ -315,7 +315,7 @@ The [MQTT channel](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServic
 
 Ordinary mutations use `Number.Set` for `current_limit` and `Boolean.Set` for
 `start_charging`. Automatic takeover on a new confirmed physical connection and
-explicit **Use automatic** additionally permit
+explicit **Use automatic** or scoped **Charge now** takeover additionally permit
 [`Schedule.Update`](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Schedule/)
 with `{id, enable:false}` for verified charging-only jobs. It reads the complete
 job list and revision before and after each change, preserves unrelated jobs,
@@ -355,14 +355,21 @@ not attributed to this application.
 Status-read timestamps describe the completed read, so querying a snapshot
 does not manufacture a future timestamp that rejects fresh evidence.
 Known session ownership survives application or MQTT restart. Later manual
-instructions retain priority until unplugging or Use automatic; a genuinely
+instructions retain priority until unplugging or an applicable explicit takeover; a genuinely
 missing saved session can take automatic control after fresh native evidence.
 An unreadable or invalid state cannot supply that permission. Takeover follows
 the economic plan, which can keep start permission false
-during a planned pause. With the limiter enabled, takeover supersedes the
-adjustable session current choice and leaves the next confirmed current write
+during a planned pause. With the limiter enabled, Use automatic supersedes the
+adjustable session current choice; Charge now retains it. The next confirmed current write belongs
 to ordinary allocation; it does not replace hardware or electrical limits.
 Relay writes, service configuration writes and vehicle writes remain forbidden.
+
+**Pause charging** uses the same owned `start_charging:false` command with a
+durable physical-session request instead of an economic expiry. It also applies
+when Automatic is off or the charger is already waiting. System permission
+refreshes cannot clear it. A later positively evidenced external Enable can
+supersede it; own write echoes and unchanged source values cannot. Stopping needs
+native permission confirmation plus fresh physical noncharging evidence.
 
 A reply to an already dispatched command is retained even if replanning revokes
 that command's intent while the reply is in flight. Revocation stops further

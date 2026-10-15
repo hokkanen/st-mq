@@ -19,7 +19,7 @@ function harness() {
       if (url.endsWith('/schedules')) return structuredClone(h.schedules);
       return [obs(250, h.online, h.now), obs(31, h.enabled, h.sourceTimes[31] ?? h.now), obs(109, h.mode, h.sourceTimes[109] ?? h.now),
         obs(96, h.reason ?? (h.schedules.enabled === 'none' ? 0 : 54), h.sourceTimes[96] ?? h.now), obs(47, 16, h.now),
-        obs(48, h.dynamicA, h.sourceTimes[48] ?? h.now), obs(104, 32, h.now), obs(120, h.mode === 3 ? 8 : 0, h.now),
+        obs(48, h.dynamicA, h.sourceTimes[48] ?? h.now), obs(104, 32, h.now), obs(120, h.mode === 3 ? 8 : 0, h.sourceTimes[120] ?? h.now),
         ...[22, 23, 24].map(id => obs(id, 20, h.now)), ...[230, 231, 232].map(id => obs(id, 12, h.now))];
     }
     if (options.controlGuard && !options.controlGuard()) throw new Error('revoked');
@@ -27,6 +27,8 @@ function harness() {
     if (h.writeHook) await h.writeHook(url);
     if (url.endsWith('/settings')) h.enabled = true;
     else if (url.endsWith('/resume_charging')) { h.reason = null; h.dynamicA = 32; }
+    else if (url.endsWith('/pause_charging')) { h.reason = 52; h.dynamicA = 0; h.mode = 2;
+      h.sourceTimes[48] = h.now; h.sourceTimes[96] = h.now; h.sourceTimes[31] ??= h.now; }
     else if (url.endsWith('/disable')) {
       if (h.schedules.enabled === url.split('/').at(-2)) h.schedules.enabled = 'none';
     }
@@ -1974,4 +1976,157 @@ test('malformed persisted connection state is rejected rather than treated as an
       /Unsupported charging ownership/);
   }
   assert.equal(h.writes.length, 0);
+});
+
+test('cloud session Pause persists independently of the economic plan and resumes through a guarded wait', async () => {
+  const h = harness(); await h.update({ enabled: false }); h.now += 1000;
+  const request = { connectedAt: h.saved.session.connectedAt, requestedAt: h.now };
+  let result = await h.update({ enabled: false, sessionPause: request, plan: null });
+  assert.equal(result.sessionPause.active, true); assert.equal(result.sessionPause.confirmed, true);
+  assert.equal(result.sessionPauseCommand.stage, 'confirmed'); assert.equal(result.externalStopAt, null);
+  assert.deepEqual(h.writes.map(row => row.url.split('/').at(-1)), ['pause_charging']);
+  h.now += 1000; h.restart();
+  result = await h.update({ enabled: true, sessionPause: request, plan: null });
+  assert.equal(result.sessionPause.active, true); assert.equal(h.writes.length, 1);
+  h.now += 1000;
+  h.writeHook = url => { if (url.endsWith('/resume_charging')) { h.sourceTimes[48] = h.now; h.sourceTimes[96] = h.now; } };
+  result = await h.update({ sessionPause: null });
+  assert.deepEqual(h.writes.map(row => row.url.split('/').at(-1)), ['pause_charging', 'delayed', 'resume_charging']);
+  assert.equal(result.sessionPause.active, false); assert.equal(result.sessionPauseCommand, null);
+  assert.equal(h.schedules.enabled, 'delayed', 'Economic wait is confirmed before the native Pause is resumed');
+});
+
+test('cloud session Pause rejects a separate positive current ceiling before any device write', async () => {
+  const h = harness(); h.dynamicA = 8; await h.update({ enabled: false }); h.now += 1000;
+  const request = { connectedAt: h.saved.session.connectedAt, requestedAt: h.now };
+  const result = await h.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.available, false); assert.equal(result.sessionPause.confirmed, false);
+  assert.equal(h.writes.length, 0); assert.equal(h.dynamicA, 8);
+});
+
+test('lost cloud Pause acknowledgement stays uncertain across restart and is never replayed', async () => {
+  const h = harness(); await h.update({ enabled: false }); h.now += 1000;
+  const request = { connectedAt: h.saved.session.connectedAt, requestedAt: h.now };
+  h.writeHook = () => { h.reason = 52; h.dynamicA = 0; h.sourceTimes[48] = h.now; h.sourceTimes[96] = h.now;
+    throw Error('lost reply'); };
+  await h.update({ enabled: false, sessionPause: request }); h.writeHook = null;
+  h.now += 1000; h.restart();
+  const result = await h.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.active, true); assert.equal(result.sessionPause.confirmed, false);
+  assert.equal(result.sessionPauseCommand.stage, 'dispatched'); assert.equal(h.writes.length, 1);
+});
+
+test('a positive newer cloud dynamic Resume supersedes session Pause but generic mode changes do not', async () => {
+  const h = harness(); await h.update({ enabled: false }); h.now += 1000;
+  const request = { connectedAt: h.saved.session.connectedAt, requestedAt: h.now };
+  await h.update({ enabled: false, sessionPause: request });
+  h.now += 1000; h.mode = 3;
+  let result = await h.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.active, true); assert.equal(result.sessionPause.supersededAt, undefined);
+  h.now += 1000; h.dynamicA = 32; h.reason = 0; h.sourceTimes[48] = h.now; h.sourceTimes[96] = h.now;
+  result = await h.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.active, false); assert.equal(result.sessionPause.supersededAt, h.now);
+  assert.equal(h.writes.length, 1);
+});
+
+test('cloud Charge now takes over a native Stop with Automatic OFF without consulting prices', async () => {
+  const h = harness(); h.dynamicA = 0; h.reason = 52;
+  await h.update({ enabled: false }); h.now += 1000;
+  const status = h.controller.status();
+  // Preserve original native instruction clocks while taking the displayed token.
+  h.sourceTimes[31] = NOW; h.sourceTimes[48] = NOW; h.sourceTimes[96] = NOW; h.sourceTimes[109] = NOW;
+  h.writeHook = url => { if (url.endsWith('/resume_charging')) { h.sourceTimes[48] = h.now; h.sourceTimes[96] = h.now; } };
+  const result = await h.update({ enabled: false, plan: null, chargeNow: { connectedAt: status.session.connectedAt },
+    takeover: status.takeover.token, takeoverMode: 'charge-now' });
+  assert.equal(result.takeover.state, 'confirmed', JSON.stringify({ errorCode: result.errorCode, reason: result.reason })); assert.equal(result.enabled, false);
+  assert.equal(result.phase, 'released'); assert.equal(h.dynamicA, 32);
+  assert.deepEqual(h.writes.map(row => row.url.split('/').at(-1)), ['resume_charging']);
+});
+
+test('session Pause over a preexisting cloud Stop yields to a later positive Resume without dispatching another Pause', async () => {
+  const h = harness(); h.dynamicA = 0; h.reason = 52;
+  h.sourceTimes[48] = NOW; h.sourceTimes[96] = NOW; h.sourceTimes[31] = NOW;
+  await h.update({ enabled: false }); h.now += 1000;
+  const request = { connectedAt: h.saved.session.connectedAt, requestedAt: h.now };
+  let result = await h.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.active, true); assert.equal(h.writes.length, 0);
+  h.now += 1000; h.dynamicA = 32; h.reason = 0; h.sourceTimes[48] = h.now; h.sourceTimes[96] = h.now;
+  result = await h.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.active, false); assert.equal(result.sessionPause.supersededAt, h.now);
+  assert.equal(h.writes.length, 0);
+});
+
+test('an external schedule edit during cloud session Pause is preserved as separate native priority', async () => {
+  const h = harness(); await h.update(); h.now += 1000;
+  const request = { connectedAt: h.saved.session.connectedAt, requestedAt: h.now };
+  await h.update({ sessionPause: request });
+  h.now += 1000; h.schedules.delayed.startTime = '05:00:00';
+  const result = await h.update({ sessionPause: request });
+  assert.equal(result.sessionPause.active, true); assert.equal(result.manual.kind, 'schedule');
+  assert.equal(h.schedules.delayed.startTime, '05:00:00'); assert.equal(h.writes.length, 2);
+});
+
+test('session Pause persistence failure does not dispatch a cloud command or fabricate pending ownership', async () => {
+  const h = harness(); await h.update({ enabled: false }); h.now += 1000;
+  const request = { connectedAt: h.saved.session.connectedAt, requestedAt: h.now };
+  h.saveHook = value => { if (value.sessionPauseCommand?.stage === 'dispatched') throw Error('disk'); };
+  await h.update({ enabled: false, sessionPause: request });
+  assert.equal(h.writes.length, 0); assert.equal(h.controller.status().sessionPauseCommand, undefined);
+  h.saveHook = null;
+  const result = await h.update({ enabled: false, sessionPause: request });
+  assert.equal(h.writes.length, 1); assert.equal(result.sessionPause.confirmed, true);
+});
+
+test('cloud session Pause remains unconfirmed while charging and never confirms from zero power alone', async () => {
+  const h = harness(); await h.update({ enabled: false }); h.now += 1000;
+  const request = { connectedAt: h.saved.session.connectedAt, requestedAt: h.now };
+  await h.update({ enabled: false, sessionPause: request });
+  h.now += 1000; h.mode = 3;
+  let result = await h.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.confirmed, false); assert.equal(result.sessionPause.active, true);
+  h.mode = 2; h.sourceTimes[120] = request.requestedAt - 1;
+  result = await h.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.confirmed, false);
+});
+
+test('cloud session Pause confirms an unchanged idle mode using fresh zero power and native Pause readback', async () => {
+  const h = harness(); await h.update({ enabled: false }); h.now += 1000;
+  h.sourceTimes[109] = NOW;
+  const result = await h.update({ enabled: false, sessionPause: { connectedAt: h.saved.session.connectedAt, requestedAt: h.now } });
+  assert.equal(result.sessionPause.confirmed, true);
+  assert.equal(result.snapshot.modeAt, NOW, 'Readback preserves the unchanged mode source clock');
+});
+
+test('a new cloud session Pause after an observed external Resume dispatches a new scoped Stop', async () => {
+  const h = harness(); await h.update({ enabled: false }); h.now += 1000;
+  let request = { connectedAt: h.saved.session.connectedAt, requestedAt: h.now };
+  await h.update({ enabled: false, sessionPause: request });
+  h.now += 1000; h.dynamicA = 32; h.reason = 0; h.sourceTimes[48] = h.now; h.sourceTimes[96] = h.now;
+  let result = await h.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.supersededAt, h.now);
+  await h.update({ enabled: false, sessionPause: null });
+  h.now += 1000; request = { ...request, requestedAt: h.now };
+  result = await h.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.active, true); assert.equal(result.sessionPause.confirmed, true);
+  assert.deepEqual(h.writes.map(row => row.url.split('/').at(-1)), ['pause_charging', 'pause_charging']);
+});
+
+test('cloud takeoverRequired includes a baseline native schedule without a manual event and excludes exact owned holds', async () => {
+  const external = harness();
+  external.schedules = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC',
+    periods: [{ maximumAmps: 16, startTime: '19:00:00', stopTime: '20:00:00' }] } });
+  await external.update({ enabled: false });
+  external.saved.manual = null; external.restart();
+  const baseline = await external.update({ enabled: false });
+  assert.equal(baseline.manual, null); assert.equal(baseline.takeoverRequired, true);
+  assert.equal(baseline.takeover.available, true);
+  const own = harness();
+  let view = await own.update();
+  assert.equal(view.snapshot.schedule.enabled, 'delayed'); assert.equal(view.takeoverRequired, false);
+  own.now += 1000;
+  view = await own.update({ sessionPause: { connectedAt: view.session.connectedAt, requestedAt: own.now } });
+  assert.equal(view.sessionPause.confirmed, true); assert.equal(view.takeoverRequired, false);
+  const current = harness(); current.dynamicA = 8;
+  view = await current.update({ enabled: false });
+  assert.equal(view.takeoverRequired, false, 'A separate positive current restriction is not a Start/Stop or schedule takeover');
 });

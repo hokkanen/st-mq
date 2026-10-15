@@ -193,29 +193,42 @@ test('the existing Shelly poll drives one serialized local reconciliation and st
   await f.connect('charger2'); await f.priority('charger2'); await f.plan();
   const controller = f.runtime.chargers.charger2.controller;
   const originalUpdate = controller.update;
-  let release, entered = 0;
+  let release, enteredUpdate, pollSettled, entered = 0;
   const held = new Promise(resolve => { release = resolve; });
-  controller.update = async input => { entered++; await held; return originalUpdate(input); };
+  const started = new Promise(resolve => { enteredUpdate = resolve; });
+  controller.update = async input => { entered++; enteredUpdate(); await held; return originalUpdate(input); };
+  const originalPoll = f.runtime.reconcileShellyObservation;
+  t.mock.method(f.runtime, 'reconcileShellyObservation', function (...args) {
+    const completion = originalPoll.apply(this, args), waiting = pollSettled;
+    pollSettled = null;
+    if (waiting) completion.then(waiting.resolve, waiting.reject);
+    return completion;
+  });
+  const nextPoll = () => new Promise((resolve, reject) => { pollSettled = { resolve, reject }; });
   const readsBefore = f.reads.charger1;
   const planning = t.mock.method(f.runtime, 'updatePlan');
   f.household.currentA = 17; f.advance(5000); t.mock.timers.tick(5000);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(entered, 1);
-  f.advance(5000); t.mock.timers.tick(5000);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(entered, 1, 'A second poll cannot queue or revoke the in-flight current command');
-  release(); await f.runtime.chargers.charger2.reconcileFlight;
+  // Native replies may need several Store admission turns under concurrency.
+  // Wait for the actual controller entry, never an assumed event-loop count.
+  await started;
+  try {
+    assert.equal(entered, 1);
+    const secondPoll = nextPoll();
+    f.advance(5000); t.mock.timers.tick(5000);
+    await secondPoll;
+    assert.equal(entered, 1, 'A second poll cannot queue or revoke the in-flight current command');
+  } finally { release(); await f.runtime.chargers.charger2.reconcileFlight; }
   assert.equal(f.fields.current_limit.value, 8);
   assert.equal(f.reads.charger1, readsBefore);
   assert.equal(planning.mock.callCount(), 0);
   await f.runtime.close();
+  const closedPoll = nextPoll();
   f.advance(5000); t.mock.timers.tick(5000);
-  await new Promise(resolve => setImmediate(resolve));
+  await closedPoll;
   assert.equal(entered, 1, 'A closed runtime cannot receive more controller updates from the adapter poll');
   f.closeAdapter();
   const finalReads = f.reads.charger2;
   f.advance(5000); t.mock.timers.tick(5000);
-  await new Promise(resolve => setImmediate(resolve));
   assert.equal(f.reads.charger2, finalReads, 'Closing the adapter stops its existing poll timer');
 });
 

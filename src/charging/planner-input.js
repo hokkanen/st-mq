@@ -13,10 +13,11 @@ export function chargingPlannerInput(options) {
       settings: fields(charger.settings, ['enabled']),
       capabilities: fields(charger.capabilities, ['scheduling', 'currentControl', 'externalLoadBalancing', 'maxSchedulePeriods', 'localClockSchedule']),
       configuration: fields(charger.configuration, ['maximumCurrentA', 'limiterEnabled', 'fallbackCurrentA']),
-      request: { ...fields(charger.request, ['chargeNow']),
+      request: { ...fields(charger.request, ['chargeNow']), pause: Boolean(charger.request?.pause),
         ...(charger.request?.flexibility?.activeDefer ? { flexibility: { activeDefer:
           fields(charger.request.flexibility.activeDefer, ['checkpointAt', 'deferredReadyByAt', 'approvedAt']) } } : {}) },
       control: { ...fields(charger.control, ['released', 'provisional']),
+        sessionPause: { confirmed: charger.control?.sessionPause?.confirmed === true },
         phase: ['released', 'charging'].includes(charger.control?.phase) ? charger.control.phase : null,
         errorCode: Boolean(charger.control?.errorCode),
         manual: charger.control?.manual ? fields(charger.control.manual, ['kind', 'resumeAt']) : null },

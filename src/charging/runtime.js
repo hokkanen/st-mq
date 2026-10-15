@@ -206,6 +206,8 @@ function currentSharingActive(control, now) {
   return snapshot.controlKnown === true && snapshot.enabled === true && !snapshot.stopped;
 }
 const copyRequest = value => structuredClone(value);
+const clearChargeNow = request => { delete request.chargeNow; delete request.chargeNowAt; };
+const nativeTakeoverNeeded = control => Boolean(control?.manual || control?.takeoverRequired);
 // Persist deadlines, accepted periods and compact estimated totals, never a
 // forecast-price cache in the ordinary runtime snapshot or replica view.
 const durablePlan = plan => {
@@ -736,6 +738,7 @@ export class ChargingRuntime {
     return this.identificationControlReason(item, now) === null;
   }
   identificationControlReason(item, now = this.clock()) {
+    if (item.request?.pause) return 'manual-stop';
     return identificationControlBlocker({ supported: item.controller?.supportsIdentification,
       transitioning: Boolean(item.backendTransition), closed: this.closed, canControl: this.canControl(),
       input: this.config.input, control: item.controller?.status(), now });
@@ -846,6 +849,7 @@ export class ChargingRuntime {
   }
   identificationChargingChoice(item, now) {
     const control = item.controller?.status();
+    if (item.request?.pause) return { normalCharging: false, reason: 'manual-stop' };
     if (!item.controls.enabled || item.request?.chargeNow === true) return { normalCharging: true };
     // The test's own reduced current or temporary release can change its
     // forecast. Keep the captured return time until the bounded probe ends;
@@ -971,6 +975,7 @@ export class ChargingRuntime {
   }
   identificationReason(item, physicalById, now) {
     const control = item.controller?.status();
+    if (item.request?.pause) return 'manual-stop';
     if (item.identification?.reason) return item.identification.reason;
     if (!item.controller?.supportsIdentification) return 'unsupported';
     if (control.manual || !control.devicePermissionHeld && (control.snapshot?.manualStop || control.snapshot?.stopped)) return 'manual-stop';
@@ -1015,6 +1020,7 @@ export class ChargingRuntime {
     return this.identificationRequest(item, snapshot, now);
   }
   identificationRequest(item, snapshot, now = this.clock()) {
+    if (item.request?.pause) return null;
     const state = item.identification;
     if (!state || !this.identificationAvailable(item, now)) return null;
     if (!this.identificationTurn(item)) return null;
@@ -1441,6 +1447,7 @@ export class ChargingRuntime {
         || item.vehicleMatch.vehicleAssociation !== vehicleAssociations[item.vehicleMatch.id])) item.vehicleMatch = null;
       if (item.request?.scope !== scope) item.request = scope ? { scope, sessionId: scope, revision: 1,
         deadlineAt: resolveChargingDeadline(connectedAt, this.settings.chargers[id].readyBy, TIME_ZONE), overrides: {} } : null;
+      this.admitSessionSupersession(item, control, now);
       if (connected === true && scope) {
         const reidentifying = item.identification?.attempt > 1 && item.identification.phase !== 'completed';
         const retrySince = item.identification?.attempt > 1 ? item.identification.startedAt : null;
@@ -1872,7 +1879,7 @@ export class ChargingRuntime {
           probeDurationMs: Math.min(Math.floor((IDENTIFICATION_ENERGY_LIMIT_KWH / probeCeilingKw * 3600 - 10) * 1000),
             minimumReady ? currentTest.expiresAt - now - 10_000 : Infinity), physicalFresh, physicalStopped,
           connectedAt: control.session.connectedAt, now, connected: true, identified: reidentifying ? freshIdentity : Boolean(vehicleId),
-          available, admissionPending, manualStop: Boolean(control.manual || !control.devicePermissionHeld && (control.snapshot?.manualStop || control.snapshot?.stopped)),
+          available, admissionPending, manualStop: Boolean(item.request?.pause || control.manual || !control.devicePermissionHeld && (control.snapshot?.manualStop || control.snapshot?.stopped)),
           charging: physicalFresh && physical.powerKw.value > .5 && physical.charging?.available === true && physical.charging.value === true,
           energyKwh: item.sessionCost?.deliveredGridKwh ?? null,
           powerKw: physical.powerKw?.available === true ? physical.powerKw.value : null,
@@ -2140,7 +2147,7 @@ export class ChargingRuntime {
           settings: { ...this.settings.chargers[view.id], ...(vehicle ? this.settings.vehicles[vehicle] : {}), ...request?.overrides },
           configuration: view.configuration,
           overrides: request?.overrides, anchorAt: request?.anchorAt,
-          chargeNow: request?.chargeNow,
+          chargeNow: request?.chargeNow, pause: request?.pause,
           normalReadyByAt: flexibility.normalReadyByAt, deferredReadyByAt: flexibility.deferredReadyByAt,
           ...(view.id === id ? {} : { deadlineAt: request?.deadlineAt }) };
       }) });
@@ -2564,6 +2571,12 @@ export class ChargingRuntime {
     for (const view of views) {
       const item = this.charger(view.id), control = view.control;
       item.forecast = result.forecasts?.[view.id] ?? null;
+      if (view.request?.pause) {
+        item.plan = { ...result.plans[view.id], state: 'manual', reason: 'session-pause',
+          startAt: null, finishAt: null, periods: [], finalStartAt: null, feasible: null,
+          provisional: false, priceRevision: undefined };
+        continue;
+      }
       if (view.request?.chargeNow) {
         item.plan = { ...result.plans[view.id], id: `charge-now:${view.request.sessionId}`, state: 'release',
           reason: 'charge-now', startAt: now, periods: [{ startAt: now, endAt: null }], finalStartAt: now,
@@ -3009,11 +3022,14 @@ export class ChargingRuntime {
     // it is never a command to change Equalizer's live allowance.
     const maximumAmps = scheduleCeiling(controller.status()?.snapshot);
     await controller.update({ enabled: settings.enabled, plan: this.pricesInitialized ? item.plan : null,
-      timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, takeover, replan: replan || item.replan, controlsRevision, refreshPlan,
+      timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, takeover,
+      takeoverMode: takeover ? item.takeoverAttempt?.mode ?? 'automatic' : null,
+      replan: replan || item.replan, controlsRevision, refreshPlan,
       ...(periodicRead?.controller === controller && periodicRead.adapter === item.adapter
         && periodicRead.generation === item.adapterGeneration ? { completedRead: periodicRead.proof } : {}),
       deadlineRequest: deadlineRequest(item),
       chargeNow: item.request?.chargeNow === true ? { connectedAt: sessionConnectedAt(item.request) } : null,
+      sessionPause: item.request?.pause ? { connectedAt: sessionConnectedAt(item.request), requestedAt: item.request.pause.requestedAt } : null,
       allocation: id === 'charger2' ? this.allocationContext() : undefined,
       vehicleDisconnect: item.vehicleDisconnect ? { ...item.vehicleDisconnect,
         reconnected: item.vehicleDisconnect.source === 'easee-stream' ? item.vehicleDisconnect.reconnected
@@ -3021,6 +3037,7 @@ export class ChargingRuntime {
     if (this.closed || controller !== item.controller) return;
     await this.write(() => {
     const control = controller.status(), probe = this.probeReturn(item), execution = control.execution;
+    this.admitSessionSupersession(item, control, this.clock());
     if (probe?.endedAt != null && item.plan?.feasible === true && item.plan.provisional !== true
       && !control.pending && execution && execution.planId === item.plan.id
       && JSON.stringify(execution.periods) === JSON.stringify(item.plan.periods)
@@ -3047,6 +3064,23 @@ export class ChargingRuntime {
     if (this.closed || !this.canControl() || !['mqtt', 'providers'].includes(this.config.input))
       throw new Error('Charging controls require live control authority.');
   }
+  admitSessionSupersession(item, control, now) {
+    if (!item.request || sessionConnectedAt(item.request) !== control?.session?.connectedAt) return;
+    let changed = false;
+    const pause = item.request.pause, superseded = control.sessionPause?.supersededAt;
+    if (pause && control.sessionPause?.requestedAt === pause.requestedAt
+      && Number.isSafeInteger(superseded) && superseded > pause.requestedAt && superseded <= now) {
+      delete item.request.pause; changed = true;
+    }
+    const stopped = control.externalStopAt, localStop = control.externalStop;
+    if (item.request.chargeNow && Number.isSafeInteger(item.request.chargeNowAt)
+      && (Number.isSafeInteger(stopped) && stopped > item.request.chargeNowAt && stopped <= now
+        || localStop && localStop.at <= now && localStop.receivedAt <= now
+          && ocppLocalStopAfter(localStop, item.request.chargeNowAt))) {
+      clearChargeNow(item.request); changed = true;
+    }
+    if (changed) { item.request.revision++; item.plan = null; this.revision++; }
+  }
   async setControl(id, input) {
     await this.write(() => {
     const item = this.charger(id);
@@ -3060,7 +3094,7 @@ export class ChargingRuntime {
     this.supersedeProbeReturn(item);
     item.controls = { enabled: input.enabled, revision: item.controls.revision + 1 };
     item.replan = input.enabled && (item.replan || previous.request?.chargeNow === true || !previous.controls.enabled);
-    if (item.request?.chargeNow) { delete item.request.chargeNow; item.request.revision++; }
+    if (item.request?.chargeNow) { clearChargeNow(item.request); item.request.revision++; }
     item.plan = null; this.revision++; this.refreshSettings();
     try { this.persist(); } catch (error) {
       Object.assign(item, { controls: previous.controls, replan: previous.replan, request: previous.request, plan: previous.plan,
@@ -3123,27 +3157,78 @@ export class ChargingRuntime {
       await adapter.waitForInputAdmission({ signal: this.writeAbort.signal });
     }
   }
-  async chargeNow(id, input) {
+  async pause(id, input) {
     await this.write(() => {
-    if (!object(input) || Object.keys(input).sort().join(',') !== 'association,revision,sessionId')
+      this.checkControlAuthority();
+      if (!object(input) || Object.keys(input).sort().join(',') !== 'association,revision,sessionId')
+        throw new Error('Pause requires the displayed charging connection.');
+      const { item, view } = this.checkedSession(id, input);
+      if (!item.controller || item.backendTransition || view.values.connected.value !== true
+        || view.control?.sessionPause?.available !== true)
+        throw new Error('Pausing requires a supported charger and fresh connection evidence.');
+      if (item.request.pause) return;
+      const previous = { request: copyRequest(item.request), plan: item.plan,
+        identification: structuredClone(item.identification), revision: this.revision };
+      this.supersedeProbeReturn(item);
+      clearChargeNow(item.request);
+      item.request.pause = { requestedAt: this.clock() };
+      item.request.revision++; this.revision++; item.plan = null;
+      try { this.persist(); } catch (error) {
+        Object.assign(item, { request: previous.request, plan: previous.plan, identification: previous.identification });
+        this.revision = previous.revision; throw error;
+      }
+    }, { priority: 'control', isCurrent: () => this.canControl() });
+    this.invalidateCommands();
+    await this.reconcile(id);
+    this.reconcilePeers(id);
+  }
+  async chargeNow(id, input) {
+    if (input?.takeoverToken !== undefined) await this.settleActionInputs(id);
+    const attempt = await this.write(() => {
+    if (!object(input) || !['association,revision,sessionId', 'association,controlRevision,revision,sessionId,takeoverToken'].includes(Object.keys(input).sort().join(',')))
       throw new Error('Charge Now requires the displayed charging connection.');
     const { item, view } = this.checkedSession(id, input);
     if (!this.canControl() || this.closed || !['mqtt', 'providers'].includes(this.config.input)
       || !view.capabilities.scheduling || !item.controller || item.backendTransition)
       throw new Error('Charge Now requires a supported charger and control authority.');
     if (view.values.connected.value !== true) throw new Error('Connect a vehicle before choosing Charge Now.');
+    const token = input.takeoverToken;
+    const takeoverNeeded = ['stop', 'schedule', 'window'].includes(view.control?.manual?.kind)
+      || view.control?.takeoverRequired === true;
+    if (item.takeoverAttempt || token !== undefined && (typeof token !== 'string' || !token.length || token.length > 256
+      || input.controlRevision !== item.controls.revision || view.control?.takeover?.available !== true
+      || token !== view.control.takeover.token) || takeoverNeeded && token === undefined)
+      throw new Error('The charger instruction changed. Review it before choosing Charge now.');
     const previous = copyRequest(item.request), previousRevision = this.revision, previousPlan = item.plan,
       previousIdentification = structuredClone(item.identification);
     this.supersedeProbeReturn(item);
-    item.request.chargeNow = true; item.request.revision++; this.revision++; item.plan = null;
+    delete item.request.pause;
+    item.request.chargeNow = true; item.request.chargeNowAt = this.clock();
+    item.request.revision++; this.revision++; item.plan = null;
     try { this.persist(); } catch (error) {
       item.request = previous; item.plan = previousPlan; item.identification = previousIdentification; this.revision = previousRevision; throw error;
     }
+    if (token === undefined) return null;
+    const attempt = { token, mode: 'charge-now', controller: item.controller, association: item.association,
+      sessionId: item.request.sessionId, revision: item.request.revision, controlRevision: item.controls.revision };
+    item.takeoverAttempt = attempt;
+    return attempt;
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
     // Release scheduling immediately even when price/history work is unavailable.
-    await this.reconcile(id);
-    this.reconcilePeers(id);
+    try {
+      await this.reconcile(id, { takeover: attempt?.token ?? null });
+      if (attempt) {
+        const item = this.charger(id), result = item.controller.status()?.takeover;
+        if (!this.takeoverCurrent(item, attempt)) throw new Error('Charging controls or connection changed during takeover. Review the current status.');
+        if (result?.state !== 'confirmed' || result.attemptToken !== attempt.token)
+          throw new Error('Immediate charging takeover is unconfirmed. Review the charger status before retrying.');
+      }
+    } finally {
+      const item = this.charger(id);
+      if (attempt && item.takeoverAttempt === attempt) delete item.takeoverAttempt;
+      this.reconcilePeers(id);
+    }
   }
   async identifyVehicle(id, input) {
     await this.settleActionInputs(id);
@@ -3222,7 +3307,7 @@ export class ChargingRuntime {
       this.revision++; this.refreshSettings();
     }
     if (item.request?.chargeNow) {
-      delete item.request.chargeNow; item.request.revision++; this.revision++; item.plan = null;
+      clearChargeNow(item.request); item.request.revision++; this.revision++; item.plan = null;
     }
     this.persist();
     }, { priority: 'control', isCurrent: () => this.canControl() });
@@ -3235,37 +3320,39 @@ export class ChargingRuntime {
   takeoverCurrent(item, attempt) {
     return !this.closed && !item.backendTransition && this.canControl()
       && item.controller === attempt.controller && item.association === attempt.association
-      && item.controls.enabled && item.controls.revision === attempt.controlRevision
+      && (attempt.mode === 'charge-now' ? item.request?.chargeNow === true : item.controls.enabled)
+      && item.controls.revision === attempt.controlRevision
       && item.request?.sessionId === attempt.sessionId && item.request.revision === attempt.revision;
   }
   async useAutomatic(id, input) {
     await this.settleActionInputs(id);
     const { item, attempt } = await this.write(() => {
     this.checkControlAuthority();
-    if (!object(input) || Object.keys(input).sort().join(',') !== 'association,controlRevision,revision,sessionId,takeoverToken'
-      || typeof input.takeoverToken !== 'string' || !input.takeoverToken.length || input.takeoverToken.length > 256)
+    if (!object(input) || !['association,controlRevision,revision,sessionId', 'association,controlRevision,revision,sessionId,takeoverToken'].includes(Object.keys(input).sort().join(','))
+      || input.takeoverToken !== undefined && (typeof input.takeoverToken !== 'string' || !input.takeoverToken.length || input.takeoverToken.length > 256))
       throw new Error('Use automatic requires the displayed charging controls and connection.');
     const { item, view } = this.checkedSession(id, input);
     if (item.takeoverAttempt || item.controls.revision !== input.controlRevision)
       throw new Error('Charging controls changed; refresh before taking over.');
     const takeover = view.control?.takeover;
+    const appResume = input.takeoverToken === undefined && item.request.pause && !nativeTakeoverNeeded(view.control);
     if (!view.capabilities.scheduling || !item.controller || item.backendTransition
-      || view.values.connected.value !== true || takeover?.available !== true)
+      || view.values.connected.value !== true || !appResume && takeover?.available !== true)
       throw new Error(takeover?.reason || 'Automatic takeover is unavailable until the charger and connection are confirmed.');
-    if (takeover.token !== input.takeoverToken)
+    if (!appResume && takeover.token !== input.takeoverToken)
       throw new Error('The charger instruction changed. Review the current status before taking over.');
     const previous = { controls: item.controls, request: copyRequest(item.request), plan: item.plan,
       identification: structuredClone(item.identification), replan: item.replan, revision: this.revision };
     this.supersedeProbeReturn(item);
     item.controls = { enabled: true, revision: item.controls.revision + 1 };
-    delete item.request.chargeNow;
+    clearChargeNow(item.request); delete item.request.pause;
     item.request.revision++; item.plan = null; item.replan = true; this.revision++; this.refreshSettings();
     try { this.persist(); } catch (error) {
       Object.assign(item, { controls: previous.controls, request: previous.request, plan: previous.plan,
         identification: previous.identification, replan: previous.replan });
       this.revision = previous.revision; this.refreshSettings(); throw error;
     }
-    const attempt = { token: input.takeoverToken, controller: item.controller, association: item.association,
+    const attempt = { token: input.takeoverToken ?? null, mode: 'automatic', controller: item.controller, association: item.association,
       sessionId: item.request.sessionId, revision: item.request.revision, controlRevision: item.controls.revision };
     item.takeoverAttempt = attempt;
     return { item, attempt };
@@ -3277,7 +3364,7 @@ export class ChargingRuntime {
       if (!this.takeoverCurrent(item, attempt))
         throw new Error('Charging controls or connection changed during takeover. Review the current status.');
       const result = item.controller.status()?.takeover;
-      if (result?.state !== 'confirmed' || result.attemptToken !== attempt.token)
+      if (attempt.token && (result?.state !== 'confirmed' || result.attemptToken !== attempt.token))
         throw new Error(result?.reason || 'Automatic takeover has not been confirmed by the charger. Review the current status before trying again.');
     } finally {
       if (item.takeoverAttempt === attempt) delete item.takeoverAttempt;

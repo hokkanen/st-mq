@@ -23,7 +23,7 @@ const manualActive = (charger, now) => Boolean(charger.control?.manual
 const released = charger => charger.control?.provisional !== true
   && (charger.control?.released === true || charger.control?.phase === 'released');
 const shouldPlan = (charger, now) => charger.settings.enabled && charger.capabilities.scheduling
-  && !charger.request?.chargeNow && !manualActive(charger, now) && (!released(charger) || charger.capabilities.currentControl) && charger.requiredGridKwh > EPS && value(charger, 'connected') === true;
+  && !charger.request?.pause && !charger.request?.chargeNow && !manualActive(charger, now) && (!released(charger) || charger.capabilities.currentControl) && charger.requiredGridKwh > EPS && value(charger, 'connected') === true;
 const hasPeriods = rows => Array.isArray(rows) && rows.length > 0;
 const nativeStopped = charger => charger.control?.manual?.kind === 'stop' || charger.telemetry?.manualStop === true;
 const allocationTarget = (charger, now) => finite(charger.allocationTargetAt)
@@ -123,6 +123,8 @@ export function forecastCharger({ now, deadlineAt, charger, supply = {} } = {}) 
     powerKw: 0, gridEnergyKwh: charger.requiredGridKwh, requiredGridKwh: charger.requiredGridKwh,
     controlled: Boolean(charger.settings.enabled && charger.capabilities.scheduling), assumptions: electric.assumptions, warnings };
   if (value(charger, 'connected') === false) return { ...base, reason: 'not-connected' };
+  if (charger.request?.pause && charger.control?.sessionPause?.confirmed === true)
+    return { ...base, reason: 'session-pause', controlled: false };
   if (charger.control?.manual?.kind === 'stop' || charger.telemetry?.manualStop === true)
     return { ...base, reason: 'manual-stop' };
   if (charger.requiredGridKwh <= EPS && targetKnown(charger) && value(charger, 'charging') !== true && !(value(charger, 'actualCurrentA') > 0))
@@ -220,7 +222,7 @@ function deliveredCurrents(active, allocated) {
 export function currentChargingAllocation({ now, chargers, budgetCurrentA, priority, allocationHold = null }) {
   if (!three(budgetCurrentA)) return {};
   const active = chargers.flatMap(charger => {
-    if (value(charger, 'connected') !== true || nativeStopped(charger)
+    if (value(charger, 'connected') !== true || charger.request?.pause || nativeStopped(charger)
       || charger.requiredGridKwh <= EPS && targetKnown(charger)
       || charger.telemetry?.currentSharingActive !== true || value(charger, 'vehicleNotBefore') > now) return [];
     const electric = electrical(charger);
@@ -906,7 +908,7 @@ export function planChargers(options = {}) {
     const normalReadyByAt = Object.hasOwn(explicit, charger.id) ? explicit[charger.id]
       : grant?.deferredReadyByAt === charger.deadlineAt ? grant.checkpointAt : null;
     return finite(normalReadyByAt) && normalReadyByAt > options.now && normalReadyByAt < charger.deadlineAt
-      && charger.settings.enabled && charger.capabilities.scheduling && !charger.request?.chargeNow
+      && charger.settings.enabled && charger.capabilities.scheduling && !charger.request?.pause && !charger.request?.chargeNow
       && !manualActive(charger, options.now) && !nativeStopped(charger) && charger.requiredGridKwh > EPS
       ? [{ chargerId: charger.id, normalReadyByAt, order: Object.hasOwn(explicit, charger.id) ? Infinity : grant.approvedAt }] : [];
   }).sort((a, b) => a.order - b.order || a.chargerId.localeCompare(b.chargerId));
@@ -948,10 +950,10 @@ function planChargersAtDeadlines({ now, chargers = [], prices = [], household = 
   for (const charger of chargers) {
     forecasts[charger.id] = forecastCharger({ now, deadlineAt: horizon, charger, supply });
     const targetAt = allocationTarget(charger, now);
-    const state = !charger.capabilities.scheduling ? 'observing' : !charger.settings.enabled ? 'disabled'
+    const state = charger.request?.pause ? 'manual' : !charger.capabilities.scheduling ? 'observing' : !charger.settings.enabled ? 'disabled'
       : manualActive(charger, now) ? 'manual' : released(charger) || charger.requiredGridKwh <= EPS ? 'released'
         : value(charger, 'connected') === false ? 'disconnected' : 'unavailable';
-    plans[charger.id] = { at: now, state, reason: state === 'observing' ? 'control-unsupported' : state,
+    plans[charger.id] = { at: now, state, reason: charger.request?.pause ? 'session-pause' : state === 'observing' ? 'control-unsupported' : state,
       startAt: state === 'released' ? now : null, finishAt: forecasts[charger.id].finishAt,
       deadlineAt: charger.deadlineAt, targetAt, minimumSoc: value(charger, 'minimumSoc'),
       requiredGridKwh: charger.requiredGridKwh, costCents: null, feasible: null, soc: charger.values.soc,
@@ -964,6 +966,7 @@ function planChargersAtDeadlines({ now, chargers = [], prices = [], household = 
   // A native observed start/window can also participate without granting any
   // new start/stop authority to the economic scheduler.
   let jobs = chargers.flatMap(charger => {
+    if (charger.request?.pause) return [];
     const canSchedule = shouldPlan(charger, now), economic = canSchedule && !forecastOnly, forecast = forecasts[charger.id];
     const electric = electrical(charger, supply);
     const explicit = hasPeriods(fixedPeriods[charger.id]) && !manualActive(charger, now);

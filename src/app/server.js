@@ -518,11 +518,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             const result = await commit(() => current.charging.chargingTestAction(chargingTestAction[1], input));
             return json(200, chargingTestAction[1] === 'preview' ? result : status());
           });
-        const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|control|resume|use-automatic|charge-now|identify|flexibility|flexibility-preview)$/);
+        const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|control|pause|resume|use-automatic|charge-now|identify|flexibility|flexibility-preview)$/);
         if (req.method === 'POST' && chargerAction)
           return await mutate(async (current, input) => {
             const [, id, action] = chargerAction;
-            const method = { settings: 'setChargerSettings', control: 'setControl', resume: 'resume', 'use-automatic': 'useAutomatic', 'charge-now': 'chargeNow', identify: 'identifyVehicle',
+            const method = { settings: 'setChargerSettings', control: 'setControl', pause: 'pause', resume: 'resume', 'use-automatic': 'useAutomatic', 'charge-now': 'chargeNow', identify: 'identifyVehicle',
               flexibility: 'setFlexibility', 'flexibility-preview': 'previewFlexibility' }[action];
             const result = await current.charging[method](id, input);
             return json(200, action === 'flexibility-preview' ? result : status());

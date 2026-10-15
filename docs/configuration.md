@@ -532,7 +532,11 @@ For example, merge only these intentional choices into your configuration:
 **Save for this session** cannot change these defaults. Its scope ends with the
 physical connection; restart preserves only the same ongoing session. **Charge
 now** releases automatic scheduling for the current connection even with
-Automatic charging OFF, subject to native limits and device readiness.
+Automatic charging OFF. It can explicitly supersede the displayed external Stop
+and supported native schedule; current ceilings, protection and device readiness
+remain binding. **Pause charging** is a durable current-connection dashboard
+instruction, not a configuration default. It clears Charge now and preserves
+Automatic until explicitly resumed or confirmed unplug ends its scope.
 Guided charging inputs are assessment-only assumptions. Battery percentage,
 vehicle target, capacity and schedules entered there never change these defaults,
 ordinary session overrides, production planning inputs or vehicle identification.

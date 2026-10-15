@@ -176,7 +176,7 @@ for (const action of ['Charge now', 'Automatic OFF']) test(`${action} completes 
 test('returning to Automatic waits for its accepted plan but not the peer native flight', async t => {
   const f = await fixture(t), item = f.runtime.chargers.charger1;
   await f.runtime.write(() => f.runtime.refreshPlanningState(AT));
-  item.request.chargeNow = true;
+  item.request.chargeNow = true; item.request.chargeNowAt = AT;
   let releasePeer, returned = false, acceptedPlan;
   const peer = new Promise(resolve => { releasePeer = resolve; });
   t.after(releasePeer);
@@ -298,7 +298,7 @@ for (const scenario of [
   if (scenario.noRequest) item.request = null;
   if (scenario.manual) controller.control.manual = { kind: 'stop' };
   if (scenario.off) item.controls.enabled = false;
-  if (scenario.chargeNow) item.request.chargeNow = true;
+  if (scenario.chargeNow) { item.request.chargeNow = true; item.request.chargeNowAt = now; }
   await f.runtime.tick({ force: true });
   assert.equal(interruptions, scenario.interrupt ? 1 : 0);
   assert.ok(item.reconcileFlight, 'Native RPC ownership remains until its owner completes it');
