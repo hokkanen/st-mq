@@ -47,8 +47,13 @@ export function createReplicaReadRefusalReporter({
         return;
       }
       lastAt = now;
+      let reportedAt = null;
+      try {
+        const wall = Date.now();
+        if (Number.isSafeInteger(wall) && wall >= 0 && wall <= 8640000000000000) reportedAt = wall;
+      } catch { /* Unknown local clock evidence cannot alter the refusal or cap. */ }
       const diagnostic = Object.freeze({ event: 'replica-read-refused', route, ...phase,
-        suppressed, suppressedClipped });
+        reportedAt, monotonicMs: now <= Number.MAX_SAFE_INTEGER ? now : null, suppressed, suppressedClipped });
       suppressed = 0; suppressedClipped = false;
       void Promise.resolve(report(diagnostic)).catch(() => {});
     } catch { /* Optional log evidence cannot change a 503 or its cleanup. */ }

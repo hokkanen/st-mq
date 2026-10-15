@@ -51,7 +51,8 @@ test('unknown fields, inaccessible input and malformed scalar states cannot repl
   assert.equal(reads, 0);
 });
 
-test('the monotonic cap bounds attempted logs without waiting or replaying earlier phase details', () => {
+test('the monotonic cap bounds attempted logs without waiting or replaying earlier phase details', t => {
+  t.mock.method(Date, 'now', () => 1792000000000);
   let now = 0; const records = [], error = failure();
   const report = createReplicaReadRefusalReporter({ monotonic: () => now, report: value => records.push(value) });
   assert.equal(report(error, 'status'), undefined);
@@ -63,11 +64,72 @@ test('the monotonic cap bounds attempted logs without waiting or replaying earli
   assert.equal(records.length, 2);
   assert.deepEqual(records[1], { event: 'replica-read-refused', route: 'recording-health',
     attempt: 2, rollbackConfirmed: true, closed: false, latestManifestState: 'not-checked',
-    suppressed: 65535, suppressedClipped: true });
+    reportedAt: 1792000000000, monotonicMs: 30000, suppressed: 65535, suppressedClipped: true });
   assert.equal(Object.isFrozen(records[1]), true);
   assert(Buffer.byteLength(JSON.stringify(records[1])) <= 384);
   now = 60000; report(error, 'status');
   assert.equal(records[2].suppressed, 0); assert.equal(records[2].suppressedClipped, false);
+});
+
+test('refusal clocks belong to the attempted emission and reuse the existing monotonic sample', t => {
+  let now = 0.25, wall = 1792000000000, monotonicReads = 0, wallReads = 0;
+  t.mock.method(Date, 'now', () => { wallReads++; return wall; });
+  const records = [], error = failure(), report = createReplicaReadRefusalReporter({
+    monotonic: () => { monotonicReads++; return now; }, report: value => records.push(value),
+  });
+  report(new Error('synthetic private native error'), 'status');
+  report(error, '/api/status?synthetic-private-value');
+  assert.equal(monotonicReads, 0); assert.equal(wallReads, 0);
+  report(error, 'status');
+  assert.equal(records[0].reportedAt, wall); assert.equal(records[0].monotonicMs, now);
+  now = 29999.25; wall += 29999;
+  report(error, 'recording-health');
+  assert.equal(records.length, 1); assert.equal(monotonicReads, 2); assert.equal(wallReads, 1);
+  now = 30000.25; wall -= 60000;
+  report(error, 'recording-health');
+  assert.equal(records[1].reportedAt, wall, 'An observed wall rollback does not renew the monotonic cap');
+  assert.equal(records[1].monotonicMs, now); assert.equal(records[1].suppressed, 1);
+  assert.equal(monotonicReads, 3); assert.equal(wallReads, 2);
+  assert.equal(Object.isFrozen(records[0]), true);
+  assert.equal(error.code, REPLICA_CHECKPOINT_MISMATCH.code);
+});
+
+test('throwing and unsafe wall clocks retain fixed unknown evidence without forwarding private values', t => {
+  let wall = null, reads = 0, coercions = 0, now = 0;
+  const privateObject = { valueOf() { coercions++; throw Error('synthetic private clock coercion'); } };
+  t.mock.method(Date, 'now', () => { reads++; if (wall === 'throw') throw Error('synthetic private clock failure'); return wall; });
+  const records = [], error = failure(), stack = error.stack;
+  const report = createReplicaReadRefusalReporter({ monotonic: () => now, report: value => records.push(value) });
+  for (const value of ['throw', NaN, Infinity, -1, 0.5, 8640000000000001,
+    Number.MAX_SAFE_INTEGER + 1, 'synthetic private credential', privateObject]) {
+    wall = value; report(error, 'status');
+    assert.equal(records.at(-1).reportedAt, null);
+    assert.equal(records.at(-1).monotonicMs, now);
+    assert.equal(records.at(-1).latestManifestState, 'same');
+    assert.equal(JSON.stringify(records.at(-1)).includes('synthetic private'), false);
+    report(error, 'recording-health');
+    assert.equal(records.length, now / 30000 + 1, 'A failed wall reading still consumes only the existing log attempt');
+    now += 30000;
+  }
+  assert.equal(reads, 9); assert.equal(coercions, 0);
+  assert.equal(error.stack, stack); assert.equal(error.message, REPLICA_CHECKPOINT_MISMATCH.error);
+});
+
+test('fixed scalar clock extremes stay bounded and do not change monotonic admission', t => {
+  t.mock.method(Date, 'now', () => 8640000000000000);
+  let now = Number.MAX_SAFE_INTEGER;
+  const records = [], error = failure(), report = createReplicaReadRefusalReporter({
+    monotonic: () => now, report: value => records.push(value),
+  });
+  report(error, 'recording-health');
+  assert.equal(records[0].reportedAt, 8640000000000000);
+  assert.equal(records[0].monotonicMs, Number.MAX_SAFE_INTEGER);
+  assert(Buffer.byteLength(JSON.stringify(records[0])) <= 384);
+  now += 30000; report(error, 'status');
+  assert.equal(records[1].monotonicMs, null, 'An unsafe finite monotonic magnitude has explicit unknown diagnostic evidence');
+  assert.equal(records[1].reportedAt, 8640000000000000);
+  now += 1; report(error, 'status');
+  assert.equal(records.length, 2, 'Diagnostic normalization preserves the original finite-clock suppression rule');
 });
 
 test('unknown routes and unusable clock evidence emit no private diagnostics', () => {

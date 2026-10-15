@@ -21,7 +21,7 @@ const deferred = () => { let resolve; const promise = new Promise(done => { reso
 async function fixture(t, { makeChartService, readPublication, sinkFailure = null } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'stmq-replica-diagnostic-'));
   const source = new Store(join(root, 'source.sqlite'));
-  const diagnostics = [], publicationReads = [];
+  const diagnostics = [], publicationReads = [], requestClocks = [];
   t.mock.method(console, 'error', text => {
     diagnostics.push(JSON.parse(text));
     if (sinkFailure === 'throw') throw Error('Synthetic private diagnostic sink failure');
@@ -46,16 +46,33 @@ async function fixture(t, { makeChartService, readPublication, sinkFailure = nul
       return (readPublication ?? readReplicaPublication)(...args);
     }, clock: () => now, installSignalHandlers: false });
   const request = async path => {
+    const startedAt = Date.now(), startedMonotonicMs = performance.now();
     const response = await fetch(`http://127.0.0.1:${app.server.address().port}${path}`, { signal: AbortSignal.timeout(5000) });
     const bytes = await response.text(), body = JSON.parse(bytes);
+    requestClocks.push({ route: path.slice('/api/'.length), status: response.status,
+      startedAt, startedMonotonicMs, finishedAt: Date.now(), finishedMonotonicMs: performance.now() });
     if (body.code === mismatch.code) assert.equal(bytes, JSON.stringify(mismatch), 'The exact public refusal body remains unchanged');
     return { status: response.status, body };
   };
-  return { root, source, directory, publication, app, request, now, diagnostics, publicationReads };
+  return { root, source, directory, publication, app, request, now, diagnostics, publicationReads, requestClocks };
 }
 
 const phaseDiagnostic = (latestManifestState, changes = {}) => ({ event: 'replica-read-refused', route: 'recording-health',
   attempt: 1, rollbackConfirmed: true, closed: false, latestManifestState, suppressed: 0, suppressedClipped: false, ...changes });
+
+function phaseDiagnostics(f) {
+  return f.diagnostics.map(record => {
+    const { reportedAt, monotonicMs, ...phase } = record;
+    assert(Number.isSafeInteger(reportedAt) && reportedAt >= 0 && reportedAt <= 8640000000000000);
+    assert(Number.isFinite(monotonicMs) && monotonicMs >= 0 && monotonicMs <= Number.MAX_SAFE_INTEGER);
+    assert(f.requestClocks.some(request => request.status === 503 && request.route === record.route
+      && reportedAt >= request.startedAt && reportedAt <= request.finishedAt
+      && monotonicMs >= request.startedMonotonicMs && monotonicMs <= request.finishedMonotonicMs),
+    'The actual refusal reporter clocks fall inside the original HTTP request receipt brackets');
+    assert(Buffer.byteLength(JSON.stringify(record)) <= 384);
+    return phase;
+  });
+}
 
 function chartBoundaries(t) {
   const pending = [], all = [];
@@ -140,7 +157,7 @@ test('a second completed publication race still refuses after the one verified r
   retry.released.resolve();
   assert.deepEqual(await waiting, { status: 503, body: mismatch });
   assert.equal(f.publicationReads.length, reads, 'A second mismatch adds no manifest check');
-  assert.deepEqual(f.diagnostics, [phaseDiagnostic('not-checked', { attempt: 2 })]);
+  assert.deepEqual(phaseDiagnostics(f), [phaseDiagnostic('not-checked', { attempt: 2 })]);
   assert.equal(charts.created, 3, 'This request cannot chase successive publications');
   assert.equal((await f.request('/api/recording-health')).status, 200);
   assert.ok(sameCheckpoint(f.app.store.checkpoint(), third.checkpoint));
@@ -163,7 +180,7 @@ test('a failed rollback does not admit a newer publication or expose its cleanup
   boundary.released.resolve();
   assert.deepEqual(await waiting, { status: 503, body: mismatch });
   assert.equal(f.publicationReads.length, reads, 'Failed cleanup cannot read or admit another manifest');
-  assert.deepEqual(f.diagnostics, [phaseDiagnostic('not-checked', { rollbackConfirmed: false })]);
+  assert.deepEqual(phaseDiagnostics(f), [phaseDiagnostic('not-checked', { rollbackConfirmed: false })]);
   assert.equal(charts.created, 2, 'Cleanup failure cannot open the next generation');
   mocked.mock.restore();
   exec('ROLLBACK');
@@ -184,7 +201,7 @@ test('an unreadable current manifest retains the original verified checkpoint re
   unreadable = true; const reads = f.publicationReads.length; boundary.released.resolve();
   assert.deepEqual(await waiting, { status: 503, body: mismatch });
   assert.equal(f.publicationReads.length - reads, 1, 'The original manifest check runs once');
-  assert.deepEqual(f.diagnostics, [phaseDiagnostic('unreadable')]);
+  assert.deepEqual(phaseDiagnostics(f), [phaseDiagnostic('unreadable')]);
   assert.equal(charts.created, 2);
   unreadable = false;
   assert.equal((await f.request('/api/recording-health')).status, 200);
@@ -203,7 +220,7 @@ test('a missing current manifest cannot make the advanced database a readable fa
   boundary.released.resolve();
   assert.deepEqual(await waiting, { status: 503, body: mismatch });
   assert.equal(f.publicationReads.length - reads, 1, 'Missing manifest adds no fallback or retry');
-  assert.deepEqual(f.diagnostics, [phaseDiagnostic('missing')]);
+  assert.deepEqual(phaseDiagnostics(f), [phaseDiagnostic('missing')]);
   assert.equal(charts.created, 2);
   assert.ok(sameCheckpoint(await databaseCheckpoint({ dbPath: f.publication.dbPath }), second.checkpoint));
   await rename(held, manifest);
@@ -279,7 +296,7 @@ test('real incremental publication exposes only a typed status/health refusal an
   assert.deepEqual(await f.request('/api/events'), { status: 503, body: generic }, 'Other routes retain their generic refusal');
   assert.deepEqual(boundaries, ['BEGIN', 'ROLLBACK', 'BEGIN', 'ROLLBACK', 'BEGIN', 'ROLLBACK']);
   assert.equal(f.publicationReads.length - reads, 6, 'Each original refusal keeps its existing refresh and one manifest check');
-  assert.deepEqual(f.diagnostics, [phaseDiagnostic('same', { route: 'status' })], 'The health refusal is capped, while both public responses retain their original bodies');
+  assert.deepEqual(phaseDiagnostics(f), [phaseDiagnostic('same', { route: 'status' })], 'The health refusal is capped, while both public responses retain their original bodies');
   assert.ok(sameCheckpoint(await databaseCheckpoint({ dbPath: f.publication.dbPath }), target), 'Refused reads cannot mutate the committed database');
   released.resolve(); await publishing; prototype.sync = sync;
   for (const path of ['/api/status', '/api/recording-health']) assert.equal((await f.request(path)).status, 200);

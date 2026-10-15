@@ -108,7 +108,16 @@ permit another manifest check. These are observed branches, not a publication or
 hardware diagnosis. The public 503 response and single verified recheck stay
 unchanged. Each server attempts at most one log per 30 monotonic seconds; its next
 record reports a capped suppressed count. Failed sinks are capped too, so missing
-logs cannot prove no refusal occurred. No identifiers, source clocks, raw errors,
+logs cannot prove no refusal occurred. `reportedAt` is the reporter's original UTC
+wall-clock reading in Unix milliseconds; `monotonicMs` reuses the reading that
+admitted that log attempt. A failed or unsafe wall reading is `null`; an unsafe
+finite monotonic magnitude is also `null`, without changing suppression. An
+unusable monotonic reading omits the diagnostic as before. These sequential local
+readings belong to the failure log attempt after cleanup, not request arrival,
+publication, COMMIT or device evidence. Monotonic values apply only within the
+same application process lifetime. Wall-clock jumps and unknown clock offsets
+remain possible; timestamps can narrow correlation but do not identify a unique
+request or its cause. No identifiers, device source clocks, raw errors,
 checkpoints or payloads enter the record.
 
 ## Environment and private configuration

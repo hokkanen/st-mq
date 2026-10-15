@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Include original local reporter clocks in bounded private checkpoint refusal
+  diagnostics, preserving unknown timing and the existing read fence and response.
+
 - Distinguish local OCPP listening, socket, durable admission and first-message
   phases in bounded private startup diagnostics. Preserve unknown retry causes,
   existing authority and timeouts without recording private connection data.

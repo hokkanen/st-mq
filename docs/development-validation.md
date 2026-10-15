@@ -150,11 +150,16 @@ phase logs: pending/same manifest, missing/unreadable manifest, second race and
 failed rollback keep their original public bodies and SQL/manifest call counts.
 
 Completed rechecks and close retain their original outcomes. A throwing log sink
-cannot alter the real COMMIT-before-manifest refusal or recovery.
+cannot alter the real COMMIT-before-manifest refusal or recovery. The producer
+checks that original reporter wall and monotonic readings fall inside the
+test-owned receipt brackets of a matching refused HTTP request; this establishes
+local ordering, not a unique request identifier or a publication cause.
 `test/replica-read-refusal-phase.test.js` checks immutable constructor provenance,
 spoofed/accessor input refusal, failed sinks and diagnostic storage, and the
-on-demand 30-second cap with controlled monotonic advances. The cap tests do not
-hold wall time for 30 seconds or change request deadlines.
+on-demand 30-second cap with controlled monotonic advances. Clock tests retain
+observed wall rollback, reject unsafe or throwing wall readings without forwarding
+their values, reuse the existing monotonic sample and bound the full scalar record.
+The cap tests do not hold wall time for 30 seconds or change request deadlines.
 
 `test/ocpp-startup-phase-producer.test.js` uses real Store transactions and
 synthetic loopback WebSockets to separate listener/TCP/Upgrade callbacks, held
