@@ -22,7 +22,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 function fixture(t, options = {}) {
   const store = options.store ?? new Store(':memory:'), observations = [], sent = [], publications = [], allPublications = [];
   const initialClock = options.startAt ?? START;
-  let now = !options.store && options.knownOff !== false ? initialClock - CARAVAN_NATIVE_RESTART_DELAY_MS : initialClock, authority = true, capture;
+  let now = !options.store && options.knownOff !== false ? initialClock - CARAVAN_NATIVE_RESTART_DELAY_MS : initialClock, authority = true, capture, elapsed = 0;
   const recorder = new Recorder(store, { clock: () => now });
   const settings = equipmentConfiguration({ devices: [bluHtEquipment({ prefix: 'fixture/air' }),
     options.nativeMeter ? { id: 'caravan', kind: 'metered_switch', area: 'garage', connection: 'shelly:fixture/native-meter',
@@ -33,7 +33,7 @@ function fixture(t, options = {}) {
       dehumidifier_control: true, temperature_control: { sensor_device_id: 'blu_ht' }, max_age_seconds: 180,
       mqtt: { timestamp_path: 'timestamp', availability_topic: 'fixture/dryer/online', command_topic: 'fixture/dryer/set' } }] });
   const create = extra => {
-    capture = createEquipmentCapture({ store, engine: { clock: () => now, ingest: row => {
+    capture = createEquipmentCapture({ store, monotonicClock: () => options.monotonicClock ? options.monotonicClock(elapsed) : elapsed, engine: { clock: () => now, ingest: row => {
       options.beforeIngest?.(row);
       observations.push(row); return recorder.record(row);
     } }, canControl: () => authority,
@@ -46,6 +46,11 @@ function fixture(t, options = {}) {
       sent.push(command); publications.push({ body, flags });
       await options.publish?.(body);
     }, settings, ...extra });
+    const receive = capture.receive;
+    capture.receive = (...args) => {
+      if (args.length < 7) { while (args.length < 6) args.push(undefined); args.push(elapsed); }
+      return receive(...args);
+    };
     capture.setConnected(true); capture.confirmSubscriptions(capture.topics);
     capture.receive('fixture/dryer/online', 'online');
     if (options.nativeMeter) capture.receive('fixture/native-meter/online', 'true');
@@ -54,7 +59,8 @@ function fixture(t, options = {}) {
   create();
   t.after(() => { capture.close(); store.close(); });
   const f = { get capture() { return capture; }, store, recorder, sent, observations, publications, allPublications,
-    get now() { return now; }, advance: ms => { now += ms; }, authority: value => { authority = value; },
+    get now() { return now; }, advance: ms => { now += ms; elapsed += Math.max(0, ms); },
+    shiftWall: ms => { now += ms; }, get elapsed() { return elapsed; }, authority: value => { authority = value; },
     restart: extra => { capture.close(); create(extra); },
     air: (temperature = 1.5, humidity = 50, retained = false, at = now) => capture.receive('fixture/air/state',
       JSON.stringify({ temperature, humidity, timestamp: at }), { retain: retained }),
@@ -105,7 +111,7 @@ function fixture(t, options = {}) {
   // five-minute hold. Timing tests explicitly omit this warm-up.
   if (!options.store && options.knownOff !== false) {
     f.dryer('off');
-    while (now < initialClock) { now += Math.min(60_000, initialClock - now); f.dryer('off'); }
+    while (now < initialClock) { f.advance(Math.min(60_000, initialClock - now)); f.dryer('off'); }
   }
   return f;
 }
@@ -365,6 +371,98 @@ test('native Off holds location-test On for five minutes without renewing clocks
   await f.sample(1, 'off', 100); assert.deepEqual(f.sent, [{ power: 'on' }]);
   assert.equal(f.publications[0].body.requestedAt, START + 300_000);
   assert.equal(f.guard().locationTest.phase, 'on'); assert.deepEqual(f.timing(), original);
+});
+
+for (const corrections of [[10_000], [10_000, 10_000, 10_000]]) {
+  test(`small forward wall corrections ${corrections.length} preserve five physical minutes before manual On`, async t => {
+    const f = fixture(t, { knownOff: false }); f.dryer('off'); await f.policy({ enabled: false });
+    const original = structuredClone(f.timing());
+    for (let n = 0; n < 9; n++) {
+      f.advance(30_000);
+      if (n % 2 === 1 && n / 2 < corrections.length) f.shiftWall(corrections[Math.floor(n / 2)]);
+      f.dryer('off'); await settle();
+    }
+    assert.equal(f.elapsed, 270_000); assert.deepEqual(f.timing(), original);
+    assert.equal(f.guard().restartWaiting, true);
+    assert.equal(f.guard().powerRestartNotBefore, f.now + 30_000);
+    await assert.rejects(f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' }), /drying/);
+    assert.deepEqual(f.sent, []);
+    f.advance(29_999); f.dryer('off');
+    await assert.rejects(f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' }), /drying/);
+    f.advance(1); f.dryer('off');
+    await f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' });
+    assert.deepEqual(f.sent, [{ power: 'on' }]); assert.deepEqual(f.timing(), original);
+  });
+}
+
+test('small forward corrections cannot advance location-test On or its displayed drying deadline', async t => {
+  const f = fixture(t, { knownOff: false }); await f.start();
+  const original = structuredClone(f.timing());
+  while (f.elapsed < 270_000) {
+    await f.sample(30_000, 'off', 100); f.shiftWall(5000); f.dryer('off');
+  }
+  assert.deepEqual(f.sent, []); assert.equal(f.guard().restartWaiting, true);
+  assert.equal(f.guard().powerRestartNotBefore, f.now + 30_000);
+  await f.sample(30_000, 'off', 100);
+  assert.deepEqual(f.sent, [{ power: 'on' }]); assert.deepEqual(f.timing(), original);
+});
+
+test('missing and invalid monotonic receipt cannot establish elapsed restart permission', async t => {
+  const f = fixture(t, { knownOff: false });
+  const body = () => JSON.stringify({ identity: 'a'.repeat(64), power: 'off', fanSpeed: 'low', timestamp: f.now,
+    fieldTimestamps: { power: f.now, fanSpeed: f.now }, capabilities });
+  for (const point of [null, NaN, Infinity, -1, Number.MAX_SAFE_INTEGER, 1_000_000]) {
+    f.advance(1); f.capture.receive('fixture/dryer/state', body(), {}, f.now, null, null, point);
+    if (point === null) await f.policy({ enabled: false });
+    await assert.rejects(f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' }), /fresh native/);
+    assert.deepEqual(f.sent, []);
+  }
+  f.dryer('off'); assert.equal(f.guard().restartWaiting, true);
+});
+
+test('fractional elapsed clocks project a safe integer drying deadline without rounding admission down', async t => {
+  const f = fixture(t, { knownOff: false, monotonicClock: elapsed => elapsed + 0.75 });
+  f.capture.receive('fixture/dryer/state', JSON.stringify({ identity: 'a'.repeat(64), power: 'off', fanSpeed: 'low',
+    timestamp: f.now, fieldTimestamps: { power: f.now, fanSpeed: f.now }, capabilities }), {}, f.now, null, null, 0.25);
+  const original = structuredClone(f.timing()); await f.start(); f.shiftWall(2); await f.sample(5000, 'off', 100);
+  assert.equal(f.guard().powerRestartNotBefore, START + 300_002);
+  assert.equal(Number.isSafeInteger(f.guard().powerRestartNotBefore), true);
+  assert.equal(f.guard().locationTest.reason, 'waiting-restart');
+  assert.deepEqual(f.sent, []); assert.deepEqual(f.timing(), original);
+});
+
+test('deferred native Off retains its pre-admission elapsed point through later wall corrections', async t => {
+  const f = fixture(t, { knownOff: false });
+  f.dryer('off', { timestamp: START + 500 });
+  f.advance(500); f.capture.tick(); await settle();
+  await f.policy({ enabled: false }); const original = structuredClone(f.timing());
+  for (let n = 0; n < 9; n++) { f.advance(30_000); f.shiftWall(2000); f.dryer('off'); }
+  assert.equal(f.guard().powerRestartNotBefore, f.now + 29_500);
+  await assert.rejects(f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' }), /drying/);
+  f.advance(29_500); f.dryer('off');
+  // The original source clock was 500 ms after receipt and retains its own epoch floor.
+  f.advance(500); f.dryer('off');
+  await f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' });
+  assert.deepEqual(f.timing(), original); assert.deepEqual(f.sent, [{ power: 'on' }]);
+});
+
+test('unsafe or throwing current elapsed clock fences On without changing saved timing', async t => {
+  let failure = false;
+  const f = fixture(t, { knownOff: false, monotonicClock: elapsed => {
+    if (failure === 'throw') throw new Error('Synthetic clock refusal');
+    return failure === false ? elapsed : failure;
+  } });
+  f.dryer('off'); await f.policy({ enabled: false });
+  const original = structuredClone(f.timing());
+  for (let n = 0; n < 10; n++) { f.advance(30_000); f.dryer('off'); }
+  for (const bad of [NaN, Infinity, -1, 'throw']) {
+    failure = bad;
+    await assert.rejects(f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' }), /fresh native/);
+    assert.deepEqual(f.sent, []); assert.deepEqual(f.timing(), original);
+  }
+  failure = false;
+  await f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' });
+  assert.deepEqual(f.sent, [{ power: 'on' }]);
 });
 
 test('retained and quarantined Off cannot establish restart timing until actual source admission', async t => {

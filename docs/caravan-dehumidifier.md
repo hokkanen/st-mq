@@ -26,6 +26,15 @@ application On path waits five minutes after actual admitted native Off: the
 power check, Automatic, manual power and restoration all share the same fence.
 The saved transition keeps its original appliance source, MQTT receipt and
 writer admission clocks. Repeated healthy Off reports do not move that boundary.
+The current process also requires five elapsed monotonic minutes from the native
+MQTT receipt of that Off or first fresh connection confirmation. This receipt is
+captured before queued writes, subscription buffering and deferred timestamp
+admission. Small or repeated forward wall-clock corrections cannot shorten the
+physical wait; time already spent waiting for admission still counts. The card's
+not-before time projects the longer remaining restriction onto the current wall
+clock without changing the saved transition. Missing or invalid local elapsed
+evidence cannot authorize On. This process-local restriction is discarded after
+restart or loss of native continuity, when the fresh confirmation rule below applies.
 The application does not prevent an independent native On or infer who sent it.
 
 Restart, connection loss and actual native-power freshness expiry leave an

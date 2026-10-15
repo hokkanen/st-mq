@@ -20,7 +20,7 @@ async function automaticallyAdmit(predicate) {
 
 function fixture(t, { failOn = false, genericMeter = false } = {}) {
   const store = new Store(':memory:'), publications = [], commands = [];
-  let now = START - CARAVAN_NATIVE_RESTART_DELAY_MS, warming = false;
+  let now = START - CARAVAN_NATIVE_RESTART_DELAY_MS, warming = false, elapsed = 0;
   const recorder = new Recorder(store, { clock: () => now });
   const settings = equipmentConfiguration({ devices: [
     { id: 'air', kind: 'temperature', area: 'garage', signal: 'caravan_temperature', connection: 'mqtt:fixture/air' },
@@ -32,7 +32,7 @@ function fixture(t, { failOn = false, genericMeter = false } = {}) {
       dehumidifier_control: true, temperature_control: { sensor_device_id: 'air' }, max_age_seconds: 180,
       mqtt: { timestamp_path: 'timestamp', availability_topic: 'fixture/dryer/online', command_topic: 'fixture/dryer/set' } },
   ] });
-  const capture = createEquipmentCapture({ store, settings, canControl: () => !warming, engine: { clock: () => now, recorder, ingest: row => recorder.record(row) },
+  const capture = createEquipmentCapture({ store, settings, monotonicClock: () => elapsed, canControl: () => !warming, engine: { clock: () => now, recorder, ingest: row => recorder.record(row) },
     publish: async (topic, payload, options) => {
       publications.push({ topic, payload });
       if (topic !== 'fixture/dryer/set') return;
@@ -40,6 +40,8 @@ function fixture(t, { failOn = false, genericMeter = false } = {}) {
       const command = JSON.parse(payload); commands.push(command);
       if (failOn && command.power === 'on') throw new Error('Synthetic publication failure');
     } });
+  const receive = capture.receive;
+  capture.receive = (...args) => { while (args.length < 6) args.push(undefined); return receive(...args, elapsed); };
   t.after(() => { capture.close(); store.close(); });
   capture.setConnected(true); capture.confirmSubscriptions(capture.topics);
   capture.receive('fixture/dryer/online', 'online');
@@ -58,7 +60,7 @@ function fixture(t, { failOn = false, genericMeter = false } = {}) {
   };
   meterConnect();
   warming = true;
-  const f = { capture, commands, store, recorder, now: () => now, advance: ms => { now += ms; },
+  const f = { capture, commands, store, recorder, now: () => now, advance: ms => { now += ms; elapsed += Math.max(0, ms); },
     recording: () => recorder.status(now).exactParameters.find(row => row.signal === 'caravan_dehumidifier_state'),
     native: () => capture.status().devices.find(row => row.id === 'caravan'),
     counter: (lead = 578) => capture.receive('fixture/caravan/events/rpc', JSON.stringify({

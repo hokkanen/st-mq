@@ -42,7 +42,7 @@ async function fixture(t) {
   };
   client.end = (force, options, done) => { ended = true; done(); };
   const engine = { clock: () => now, ingest() {} };
-  const acquisition = await startMqtt({ engine, store, connect: () => client, canControl: () => authority,
+  const acquisition = await startMqtt({ monotonicClock: () => now - START + CARAVAN_NATIVE_RESTART_DELAY_MS, engine, store, connect: () => client, canControl: () => authority,
     config: { h66: { readbackTimeoutMs: 120 }, connections: { equipment: settings,
       mqtt: { address: 'mqtt://synthetic.invalid' } } } });
   t.after(async () => { await acquisition.close({ restore: false }); store.close(); });

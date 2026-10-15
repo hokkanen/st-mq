@@ -11,7 +11,7 @@ import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 import { CARAVAN_DEHUMIDIFIER_STATES } from '../domain/history-series.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
 import { createCaravanProbe, advanceCaravanProbe, abortCaravanProbe } from './caravan-location.js';
-import { caravanPowerTimingKey, validateCaravanPowerTiming, observeCaravanPower, caravanPowerRestartAt } from '../domain/caravan-power-timing.js';
+import { caravanPowerTimingKey, validateCaravanPowerTiming, observeCaravanPower, caravanPowerRestartAt, CARAVAN_NATIVE_RESTART_DELAY_MS } from '../domain/caravan-power-timing.js';
 import { caravanQualificationKey, validateCaravanQualification, createCaravanQualification,
   advanceCaravanQualification, loseCaravanQualification, caravanAssociationProof,
   caravanQualificationCurrentKey, validateCaravanQualificationCurrent } from '../domain/caravan-qualification.js';
@@ -56,7 +56,7 @@ const validTemperatureControl = value => value && typeof value === 'object' && !
 export function createEquipmentCapture({ engine, store, settings, publish, canControl = () => true, readbackTimeoutMs = 10_000,
   temperatureReportIntervalMs = DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
   temperatureReportGraceMs = DEFAULT_TEMPERATURE_REPORT_GRACE_MS, brokerIdentity = null, brokerForDevice = () => 'primary', brokerIdentityForDevice = () => brokerIdentity,
-  refreshSubscriptions = null, topicGroups = [] }) {
+  refreshSubscriptions = null, topicGroups = [], monotonicClock = () => performance.now() }) {
   const configured = settings.devices ?? [], enabled = configured.filter(row => row.enabled);
   const native = enabled.some(row => row.protocol === 'shelly') ? createShellyCapture({ engine, store,
     settings: { ...settings, devices: enabled.filter(row => row.protocol === 'shelly') }, publish, canControl, readbackTimeoutMs, brokerIdentity,
@@ -77,7 +77,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       qualified: false, boundIdentity: null, recordingGateObserved: false, nativePowerTiming: null,
       qualification: createCaravanQualification(null, engine.clock()), qualificationKey: null,
       qualificationSaved: null,
-      nativePowerContinuity: false, nativePowerContinuityLostAt: engine.clock() }, recordingLocation: false }));
+      nativeRestartMonotonicDeadline: null, nativePowerContinuity: false, nativePowerContinuityLostAt: engine.clock() }, recordingLocation: false }));
   const admission = createMqttAdmission();
   const coverDispatches = new Map();
   const temperatures = devices.filter(canonicalTemperature);
@@ -106,10 +106,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     onReject({ device }, reason) {
       if (reason !== 'cleared' && device.kind !== 'temperature') unavailable(device, 'invalid-source-time');
     },
-    onReady({ device, topic, body, packet }, receivedAt, admittedAt) {
+    onReady({ device, topic, body, packet, receivedMonotonicAt }, receivedAt, admittedAt) {
       if (closed || !device.brokerConnected || ['failed', 'disconnected'].includes(device.subscriptionStatus)) return;
       const previous = admittedReceptionAt; admittedReceptionAt = admittedAt;
-      try { reception.run(() => receiveDevice(device, topic, body, packet, receivedAt)); }
+      try { reception.run(() => receiveDevice(device, topic, body, packet, receivedAt, receivedMonotonicAt)); }
       finally { admittedReceptionAt = previous; }
     } });
   function drainPending(now) {
@@ -214,7 +214,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       persistQualification(device);
       guard.qualified = false; guard.sourceTimeWait = null; guard.sourceTimeWaitExpiry = null;
       guard.recordingGateObserved = false;
-      guard.nativePowerContinuity = false;
+      guard.nativeRestartMonotonicDeadline = null; guard.nativePowerContinuity = false;
       guard.nativePowerContinuityLostAt = Math.max(guard.nativePowerContinuityLostAt, receivedAt);
     }
     energy.get(device.id)?.unavailable?.(receivedAt, reason);
@@ -383,18 +383,36 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     return state.nativePowerContinuity && boundary && boundary.identity === device.dehumidifierReport?.identity
       && boundary.signature === signature(device.id) && boundary.power === device.dehumidifierState.power ? boundary : null;
   }
+  const validMonotonic = value => scalar(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER - CARAVAN_NATIVE_RESTART_DELAY_MS;
+  function monotonicNow() {
+    try { const now = monotonicClock(); return validMonotonic(now) ? now : null; } catch { return null; }
+  }
+  // This restriction belongs to this process and current native connection only.
+  // Persisted source/receipt clocks remain the historical transition evidence.
+  function restartRemaining(device, now) {
+    const boundary = currentNativePowerTiming(device);
+    if (!boundary) return null;
+    const restartAt = caravanPowerRestartAt(boundary);
+    if (restartAt === null) return 0;
+    const deadline = device.temperatureGuard.nativeRestartMonotonicDeadline, mono = monotonicNow();
+    if (!validMonotonic(deadline) || mono === null || mono < deadline - CARAVAN_NATIVE_RESTART_DELAY_MS) return null;
+    return Math.max(0, restartAt - now, deadline - mono);
+  }
+  function restartNotBefore(device, now) {
+    if (currentNativePowerTiming(device)?.power !== 'off') return null;
+    const remaining = restartRemaining(device, now);
+    return remaining === null ? null : Math.ceil(now + remaining);
+  }
   function restartWait(device, now) {
     if (!device.temperatureControl) return false;
-    const boundary = currentNativePowerTiming(device);
-    if (!boundary) return true;
-    const restartAt = caravanPowerRestartAt(boundary);
-    return restartAt !== null && now < restartAt;
+    const remaining = restartRemaining(device, now);
+    return remaining === null || remaining > 0;
   }
   function assertRestartReady(device, setting, value, now) {
     if (setting !== 'power' || value !== 'on' || !restartWait(device, now)) return;
-    const restartAt = caravanPowerRestartAt(currentNativePowerTiming(device));
-    throw fail(restartAt === null ? 'dehumidifier restart needs a fresh native power transition'
-      : `dehumidifier restart is waiting for native drying; wait ${Math.max(1, Math.ceil((restartAt - now) / 1000))} seconds`);
+    const remaining = restartRemaining(device, now);
+    throw fail(remaining === null ? 'dehumidifier restart needs a fresh native power transition'
+      : `dehumidifier restart is waiting for native drying; wait ${Math.max(1, Math.ceil(remaining / 1000))} seconds`);
   }
   function caravanCold(device, now) {
     if (!device.temperatureGuard.settings.enabled) return false;
@@ -419,7 +437,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const evidence = probe?.status === 'testing' ? probe.evidence : passedLocationEvidence(state);
     const testStatus = state.restoration && probe?.status !== 'testing' ? 'restoring'
       : probe?.status ?? (association?.failed ? 'failed' : evidence ? 'passed' : 'waiting');
-    const restartAt = ready ? caravanPowerRestartAt(currentNativePowerTiming(device)) : null;
+    const restartAt = ready ? restartNotBefore(device, now) : null;
     return { configured: true, ...policy, canEdit: !closed && canControl() && !probeBusy(device) && validDehumidifierIdentity(state.boundIdentity),
       sensorDeviceId: device.temperatureControl.sensorDeviceId,
       temperatureC: airFresh ? air.value : null, humidity: sensor && fresh(sensor, humidity, now) ? humidity.value : null,
@@ -444,7 +462,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         && device.readings[device.stateSignal]?.observedAt >= state.recordingSince,
       desiredPower: policy.enabled ? state.demand ? 'on' : 'off' : null,
       powerRestartNotBefore: restartAt,
-      restartWaiting: restartAt !== null && now < restartAt,
+      restartWaiting: restartAt !== null && restartWait(device, now),
       reason: !ready ? 'appliance-unavailable' : testStatus === 'restoring' ? 'restoring-power'
         : !meter ? 'power-unavailable' : !canControl() && !qualified ? 'control-unavailable'
           : !qualified && caravanCold(device, now) ? 'cold'
@@ -572,7 +590,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (operation && now <= operation.requestedAt) return;
     const result = advanceCaravanProbe(state.probe, { now, power: device.dehumidifierState.power,
       powerObservedAt: device.dehumidifierReport.fieldTimestamps.power, meterPowerW: meter.watts, meterObservedAt: meter.observedAt,
-      canStart: !restartWait(device, now), restartNotBefore: caravanPowerRestartAt(currentNativePowerTiming(device)) });
+      canStart: !restartWait(device, now), restartNotBefore: restartNotBefore(device, now) });
     if (state.probe.reason === 'power-changed-externally') {
       saveRestoration(device, null); return;
     }
@@ -709,7 +727,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   function confirmDehumidifier(device, now) {
     const operation = device.dehumidifierOperation, report = device.dehumidifierReport;
     if (device.temperatureControl && device.temperatureGuard.nativePowerContinuity && !powerFeedbackReady(device, now, true)) {
-      device.temperatureGuard.nativePowerContinuity = false;
+      device.temperatureGuard.nativeRestartMonotonicDeadline = null; device.temperatureGuard.nativePowerContinuity = false;
       device.temperatureGuard.nativePowerContinuityLostAt = Math.max(device.temperatureGuard.nativePowerContinuityLostAt, now);
     }
     const dispatch = dehumidifierDispatches.get(device);
@@ -812,7 +830,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (saved?.signature === signature(device.id) && saved.reading) device.readings[device.stateSignal] = {
       ...saved.reading, unavailable: true, quality: [...new Set([...(saved.reading.quality ?? []), 'last-reported', 'awaiting-report'])] };
   }
-  function receiveDevice(device, topic, body, packet, receivedAt) {
+  function receiveDevice(device, topic, body, packet, receivedAt, receivedMonotonicAt) {
     const evaluatedAt = admittedReceptionAt ?? receivedAt;
     const mapping = device.mqtt;
     device.lastReceivedAt = receivedAt;
@@ -879,7 +897,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
             lastAttemptAt: null, lastAttemptPower: null, recordingSince: null, sourceTimeWait: null, sourceTimeWaitExpiry: null,
             probe: null, meterSignature: null, sessionActive: false, restoration: null, qualified: false, recordingGateObserved: false, nativePowerTiming: null,
             qualification: createCaravanQualification(null, engine.clock()), qualificationKey: null, qualificationSaved: null,
-            nativePowerContinuity: false, nativePowerContinuityLostAt: evaluatedAt });
+            nativeRestartMonotonicDeadline: null, nativePowerContinuity: false, nativePowerContinuityLostAt: evaluatedAt });
           device.recordingLocation = false;
         }
         device.temperatureGuard.boundIdentity = physicalIdentity;
@@ -902,7 +920,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       const prior = device.dehumidifierReport;
       if (device.temperatureControl && device.temperatureGuard.nativePowerContinuity && scalar(prior?.fieldTimestamps.power)
         && Math.max(evaluatedAt, engine.clock()) - prior.fieldTimestamps.power >= device.maxAgeMs) {
-        device.temperatureGuard.nativePowerContinuity = false;
+        device.temperatureGuard.nativeRestartMonotonicDeadline = null; device.temperatureGuard.nativePowerContinuity = false;
         device.temperatureGuard.nativePowerContinuityLostAt = Math.max(device.temperatureGuard.nativePowerContinuityLostAt,
           prior.fieldTimestamps.power + device.maxAgeMs);
       }
@@ -930,8 +948,9 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
             power: state.power, sourceAt: powerAt, receivedAt, admittedAt: timingAt, offConfirmation: null });
           const guard = device.temperatureGuard;
           const admittedFresh = timingAt - powerAt < device.maxAgeMs;
+          const confirmingContinuity = !guard.nativePowerContinuity;
           if (!admittedFresh && guard.nativePowerContinuity) {
-            guard.nativePowerContinuity = false; guard.nativePowerContinuityLostAt = timingAt;
+            guard.nativeRestartMonotonicDeadline = null; guard.nativePowerContinuity = false; guard.nativePowerContinuityLostAt = timingAt;
           }
           if (admittedFresh && !guard.nativePowerContinuity && powerAt >= guard.nativePowerContinuityLostAt && boundary.power === state.power) {
             // A new native Off after an unknown connection interval confirms
@@ -944,6 +963,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
               if (caravanPowerRestartAt(candidate) >= previousUntil) boundary = candidate;
             }
             guard.nativePowerContinuity = true;
+          }
+          if (admittedFresh && guard.nativePowerContinuity && boundary.power === state.power
+            && (boundary !== previous || confirmingContinuity || guard.nativeRestartMonotonicDeadline === null)) {
+            const mono = monotonicNow();
+            guard.nativeRestartMonotonicDeadline = state.power === 'off' && validMonotonic(receivedMonotonicAt)
+              && mono !== null && receivedMonotonicAt <= mono ? receivedMonotonicAt + CARAVAN_NATIVE_RESTART_DELAY_MS : null;
           }
           if (boundary !== previous) {
             store.setState(caravanPowerTimingKey(device.id, physicalIdentity, signature(device.id)), boundary);
@@ -1209,7 +1234,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         device.subscriptionStatus = 'failed'; unavailable(device, 'mqtt-subscription-failed');
       }
     },
-    receive(topic, payload, packet = {}, receivedAt = engine.clock(), broker = null, onAccepted = null) {
+    receive(topic, payload, packet = {}, receivedAt = engine.clock(), broker = null, onAccepted = null, receivedMonotonicAt = null) {
       if (admittedReceptionAt === undefined) drainPending(engine.clock());
       if ((broker === null || broker === 'primary') && native?.receive(topic, payload, packet, receivedAt, onAccepted)) {
         confirmCaravanSources(engine.clock());
@@ -1229,14 +1254,14 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
             { timestamped: ['ready', 'pending'].includes(timing.status) })) {
             if (!packet.retain && (timing.status === 'pending' || timing.status === 'ready' && pendingFor(device))) {
               reception.afterCommit(() => {
-                pendingTime.defer(++pendingSequence, { device, topic, body, packet }, { sourceTime: at, receivedAt });
+                pendingTime.defer(++pendingSequence, { device, topic, body, packet, receivedMonotonicAt }, { sourceTime: at, receivedAt });
                 // Persist the dependent recording pause before automatic admission,
                 // even when no controller tick or subsequent packet arrives.
                 void write(() => confirmCaravanSources(engine.clock())).catch(() => {});
               });
               continue;
             }
-            receiveDevice(device, topic, body, packet, receivedAt);
+            receiveDevice(device, topic, body, packet, receivedAt, receivedMonotonicAt);
           }
         }
         return true;

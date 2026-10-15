@@ -18,11 +18,12 @@ async function until(predicate) {
   while (!predicate()) { assert.ok(performance.now() < deadline, 'Condition did not settle'); await delay(5); }
 }
 
-async function fixture(t, { locationCheck = true } = {}) {
+async function fixture(t, { locationCheck = true, holdSubscriptions = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-caravan-contention-'));
   const store = new Store(join(directory, 'recording.sqlite')), writer = new DatabaseSync(store.path);
-  const client = new EventEmitter(), commands = [];
-  let now = locationCheck ? START - CARAVAN_NATIVE_RESTART_DELAY_MS : START, locked = false, authority = true;
+  const client = new EventEmitter(), commands = [], subscriptions = [];
+  let now = locationCheck ? START - CARAVAN_NATIVE_RESTART_DELAY_MS : START, locked = false, authority = true, elapsed = 0;
+  const advance = ms => { now += ms; elapsed += Math.max(0, ms); };
   const settings = equipmentConfiguration({ devices: [
     { id: 'blu_ht', kind: 'temperature', area: 'garage', connection: 'mqtt:fixture/air', signal: 'caravan_temperature',
       mqtt: { state_path: 'temperature', timestamp_path: 'timestamp' } },
@@ -33,13 +34,16 @@ async function fixture(t, { locationCheck = true } = {}) {
       mqtt: { command_topic: 'fixture/appliance/set', timestamp_path: 'timestamp', availability_topic: 'fixture/appliance/online' } },
   ] });
   client.connected = true;
-  client.subscribe = (topic, options, done) => done(null, [{ topic, qos: 1 }]);
+  client.subscribe = (topic, options, done) => {
+    if (holdSubscriptions && topic === 'fixture/appliance') subscriptions.push(() => done(null, [{ topic, qos: 1 }]));
+    else done(null, [{ topic, qos: 1 }]);
+  };
   client.publish = (topic, payload, options, done) => {
     if (topic === 'fixture/appliance/set') commands.push(JSON.parse(payload));
     done();
   };
   client.end = (force, options, done) => done();
-  const acquisition = await startMqtt({ engine: { clock: () => now, ingest() {} }, store,
+  const acquisition = await startMqtt({ monotonicClock: () => elapsed, engine: { clock: () => now, ingest() {} }, store,
     connect: () => client, canControl: () => authority,
     config: { h66: { readbackTimeoutMs: 500 }, connections: { equipment: settings, mqtt: { address: 'mqtt://synthetic.invalid' } } } });
   t.after(async () => {
@@ -53,17 +57,21 @@ async function fixture(t, { locationCheck = true } = {}) {
     capabilities: { power: ['off', 'on'], fanSpeed: ['low', 'medium', 'high'], targetHumidity: [50, 55] }, ...extra });
   const air = temperature => report('fixture/air', { temperature, timestamp: now });
   const meter = watts => report('fixture/power', { power: watts, timestamp: now });
+  if (holdSubscriptions) await until(() => store.writeQueueStatus().pending === 0);
   report('fixture/appliance/online', 'online');
+  if (!holdSubscriptions) {
   if (locationCheck) {
     appliance(); await until(() => store.writeQueueStatus().pending === 0);
-    while (now < START) { now += Math.min(60_000, START - now); appliance(); await until(() => store.writeQueueStatus().pending === 0); }
+    while (now < START) { advance(Math.min(60_000, START - now)); appliance(); await until(() => store.writeQueueStatus().pending === 0); }
   }
   air(1.5); appliance(); meter(100);
   await until(() => store.writeQueueStatus().pending === 0);
-  if (locationCheck) { now += 30_000; air(1.5); appliance(); meter(100);
+  if (locationCheck) { advance(30_000); air(1.5); appliance(); meter(100);
     await until(() => store.writeQueueStatus().pending === 0); }
+  }
   return { store, acquisition, client, commands, report, appliance, air, meter,
-    now: () => now, advance: ms => { now += ms; }, authority: value => { authority = value; },
+    releaseSubscriptions() { assert.equal(subscriptions.length, 1); subscriptions.splice(0).forEach(done => done()); },
+    now: () => now, advance, shiftWall: ms => { now += ms; }, elapsed: () => elapsed, authority: value => { authority = value; },
     lock() { writer.exec('BEGIN IMMEDIATE'); locked = true; },
     unlock() { writer.exec('ROLLBACK'); locked = false; },
     state: () => acquisition.equipment.status().devices.find(row => row.id === 'caravan_dehumidifier').dehumidifier };
@@ -191,4 +199,43 @@ test('a queued automatic Off is cancelled when fresh warm air restores On demand
   f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0); await delay(0);
   assert.equal(f.state().temperatureControl.desiredPower, 'on');
   assert.deepEqual(f.commands.map(row => row.power), ['on', 'off', 'on']);
+});
+
+
+test('queued native Off keeps the raw MQTT elapsed receipt instead of starting five minutes at writer admission', async t => {
+  const f = await fixture(t);
+  f.advance(1); f.appliance('on'); await until(() => f.store.writeQueueStatus().pending === 0);
+  f.advance(1); f.lock(); const receipt = f.now(); f.appliance('off');
+  f.advance(120_000); f.shiftWall(10_000);
+  f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0);
+  const guard = f.state().temperatureControl;
+  assert.equal(guard.restartWaiting, true);
+  assert.equal(guard.powerRestartNotBefore, f.now() + 180_000,
+    'Two physical minutes waiting for the writer count toward the original five-minute hold');
+  const key = `equipment:caravan-power-timing:v1:caravan_dehumidifier:${IDENTITY}:${f.acquisition.equipment.signature('caravan_dehumidifier')}`;
+  const saved = f.store.getState(key);
+  assert.equal(saved.receivedAt, receipt); assert.equal(saved.admittedAt, f.now());
+  assert.equal(saved.sourceAt, receipt);
+});
+
+test('SUBACK buffering carries the receipt point without granting pre-subscription native continuity', async t => {
+  const f = await fixture(t, { holdSubscriptions: true });
+  f.appliance('off'); await until(() => f.store.writeQueueStatus().pending === 0);
+  assert.equal(f.state().temperatureControl.powerRestartNotBefore, null);
+  const receiptPoints = [], receive = f.acquisition.equipment.receive;
+  t.mock.method(f.acquisition.equipment, 'receive', (...args) => { receiptPoints.push(args[6]); return receive(...args); });
+  f.advance(120_000); f.shiftWall(10_000); f.releaseSubscriptions();
+  await until(() => f.store.writeQueueStatus().pending === 0);
+  assert.equal(receiptPoints.length, 2); assert.equal(receiptPoints.every(point => point === 0), true, 'Buffer replay retains both raw receipt points');
+  assert.equal(f.state().state.power, 'off', 'Buffered live Off is actually admitted');
+  assert.equal(f.state().available, true, 'Buffered appliance remains fresh');
+  const timing = f.store.getState(`equipment:caravan-power-timing:v1:caravan_dehumidifier:${IDENTITY}:${f.acquisition.equipment.signature('caravan_dehumidifier')}`);
+  assert.ok(timing, 'Buffered Off establishes native timing');
+  assert.equal(f.state().temperatureControl.powerRestartNotBefore, null,
+    'Pre-subscription feedback cannot confirm current native continuity');
+  f.advance(1); f.appliance('off'); await until(() => f.store.writeQueueStatus().pending === 0);
+  assert.equal(f.state().temperatureControl.powerRestartNotBefore, f.now() + 300_000,
+    'The first current Off retains the existing fresh-connection confirmation rule');
+  assert.equal(f.state().temperatureControl.restartWaiting, true);
+  assert.deepEqual(f.commands, []);
 });

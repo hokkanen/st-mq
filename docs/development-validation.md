@@ -629,6 +629,15 @@ protection overrides. See its [development guide](https://github.com/hokkanen/sh
 Both suites are offline; actual device memory, firmware scheduling, radio
 reception and useful heating require separate installation checks.
 
+
+Caravan native restart tests advance an explicitly injected receipt monotonic
+clock separately from appliance/source/application wall clocks. The production
+MQTT callback captures that elapsed point before writer admission and preserves
+it through subscription and source-time buffers. Direct equipment fixtures pass
+their original point explicitly; a missing point cannot establish On permission.
+Forward-clock cases preserve saved timing bytes and use real Store admission;
+they model elapsed time without changing global clocks or waiting five wall minutes.
+
 ## Shelly load balancing
 
 Focused offline checks cover held Easee stream state, synchronization and

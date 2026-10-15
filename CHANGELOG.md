@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve the dehumidifier's full five-minute physical restart wait through
+  forward wall-clock corrections, using original MQTT receipt elapsed time while
+  retaining saved native clocks, fresh confirmation and restoration checks.
+
 - Prepare the next read-only replica manifest before applying synchronized rows,
   reducing the work between database commit and visible publication. Keep
   checkpoint refusals, original source clocks and interrupted-publication recovery.

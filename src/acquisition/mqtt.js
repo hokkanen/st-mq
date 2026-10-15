@@ -49,7 +49,7 @@ function observationFailure(cause) {
 // Each integration owns one explicit MQTT route for observations and commands.
 // Credentials and raw broker errors never enter event logs.
 export async function startMqtt({ engine, store, config, connect = mqtt.connect, canControl = () => true,
-  reportStorageFailure = diagnostic => process.stderr.write(`${JSON.stringify(diagnostic)}\n`) }) {
+  reportStorageFailure = diagnostic => process.stderr.write(`${JSON.stringify(diagnostic)}\n`), monotonicClock = () => performance.now() }) {
   validateGarageAdapterSnapshot(store.getState?.(`garage:adapter:${config.input}`));
   validateGarageSenderSnapshot(store.getState?.(`garage:sender:${config.input}`));
   const settings = { ...(config.h66 ?? {}) };
@@ -329,7 +329,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const floorOverride = createFloorOverride({ store, settings: config.floorPreheat ?? floorOverrideConfiguration() });
   engine.floorOverride = floorOverride;
   if (engine.executor) engine.executor.floorOverride = floorOverride;
-  equipment = equipmentSettings ? createEquipmentCapture({ engine, store, settings: equipmentSettings, publish, canControl,
+  equipment = equipmentSettings ? createEquipmentCapture({ monotonicClock, engine, store, settings: equipmentSettings, publish, canControl,
     brokerIdentity: primaryIdentity, brokerForDevice: routing.equipmentBroker,
     brokerIdentityForDevice: routing.equipmentIdentity, refreshSubscriptions, topicGroups, readbackTimeoutMs: settings.readbackTimeoutMs ?? 10_000,
     temperatureReportIntervalMs: config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
@@ -612,7 +612,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
             shelly.setConnected(true, channel.id);
             // Retain original receipt clocks across SUBACK buffering.
             for (const message of buffered.messages) {
-              try { shelly.receive(message.topic, message.payload, message.packet, message.receivedAt, channel.id); }
+              try { shelly.receive(message.topic, message.payload, message.packet, message.receivedAt, channel.id, null, message.receivedMonotonicAt); }
               catch (cause) { report('mqtt-observation-rejected', cause); }
             }
             for (const failed of [...failedTopics, ...buffered.overflow]) shelly.subscriptionFailed(failed, channel.id);
@@ -663,7 +663,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     client.on('connect', connectedHandler);
     client.on('error', () => report(isPrimary ? 'mqtt-error' : 'mqtt-ha-error'));
     client.on('offline', disconnected); client.on('close', disconnected);
-    const receive = (topic, payload, packet, receivedAt, snapshotRequestedAt, onVehicleAccepted) => {
+    const receive = (topic, payload, packet, receivedAt, snapshotRequestedAt, onVehicleAccepted, receivedMonotonicAt) => {
       if (!channel.connected || stopped || stopping) return;
       const vehicleSubscription = vehicleSubscriptions.get(topic);
       if (vehicleSubscription) {
@@ -699,7 +699,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
           if (buffered.messages.length >= 256 || bytes > 65_536 || buffered.bytes + bytes > 262_144)
             for (const subscription of matched) buffered.overflow.add(subscription);
           else { buffered.messages.push({ topic, payload: Buffer.from(payload),
-              packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, receivedAt }); buffered.bytes += bytes; }
+              packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, receivedAt, receivedMonotonicAt }); buffered.bytes += bytes; }
           return;
         }
       }
@@ -707,7 +707,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       // this delivery admitted a reading, explicit unavailable evidence or a
       // supported health pulse; cached status and SQLite counters cannot.
       let equipmentAccepted = false;
-      if (shelly?.receive(topic, payload, packet, receivedAt, channel.id, () => { equipmentAccepted = true; })) return equipmentAccepted;
+      if (shelly?.receive(topic, payload, packet, receivedAt, channel.id, () => { equipmentAccepted = true; }, receivedMonotonicAt)) return equipmentAccepted;
       if (!isPrimary) return;
       if (!decoder) return;
       if (topic.startsWith(`${deviceId}/HP/STATUS`) && !packet.retain) lastGatewayStatusAt = receivedAt;
@@ -749,6 +749,9 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     client.on('message', (topic, payload, packet = {}) => {
       if (!channel.connected || stopped || stopping) return;
       const receivedAt = engine.clock(), generation = channel.generation, bytes = Buffer.byteLength(payload);
+      // Capture at transport receipt, before writer admission and SUBACK buffering.
+      let receivedMonotonicAt = null;
+      try { receivedMonotonicAt = monotonicClock(); } catch {}
       const snapshotRequestedAt = lastSnapshotRequestedAt;
       if (bytes > 65_536) { report('mqtt-observation-rejected'); return; }
       const body = Buffer.from(payload), metadata = { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId };
@@ -808,14 +811,14 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       };
       acceptVehicle.deferred = () => { if (vehicleReceipt) vehicleReceipt.deferred = true; };
       write(() => {
-        if (source) return acceptVehicle.within(() => receive(topic, body, metadata, receivedAt, snapshotRequestedAt, acceptVehicle));
+        if (source) return acceptVehicle.within(() => receive(topic, body, metadata, receivedAt, snapshotRequestedAt, acceptVehicle, receivedMonotonicAt));
         let accepted = false;
         const committed = () => {
           release();
           if (accepted && !metadata.retain && !metadata.dup && currentReceipt()) receptionOutcome(key, sequence, true);
         };
         if (store.afterCommit) store.afterCommit(committed);
-        accepted = receive(topic, body, metadata, receivedAt, snapshotRequestedAt) === true;
+        accepted = receive(topic, body, metadata, receivedAt, snapshotRequestedAt, null, receivedMonotonicAt) === true;
         if (!store.afterCommit) committed();
       }, { bytes: bytes + Buffer.byteLength(topic),
         isCurrent: currentReceipt,
