@@ -64,6 +64,22 @@ and the selected charger's native result. These actions queue joint-allocation
 updates for the peer, but their completion does not wait for the peer's native
 work. Each charger retains its own authority, connection and instruction checks.
 
+A confirmed Shelly program's finite period end remains an owned Stop while a
+replacement economic calculation is pending. Only that controller's planning
+wait may be interrupted; an active native operation keeps its owner. Fresh native
+readback, current session and intent, manual instructions, schedules, pending
+uncertainty and command guards still apply. The accepted gap supplies no new
+Start permission. After confirmed Stop and fresh noncharging evidence, the
+existing idle-current rule may apply the configured fallback within tighter
+limits without waiting for the same calculation. If physical idle is confirmed
+on a later read, only the exact acknowledged same-session Stop and its unchanged
+native instruction retain this fallback path; false permission alone does not.
+The shortcut ends once the legal idle setting is confirmed, or no positive
+current return is required, so ordinary replacement planning can resume.
+A later display proposal does
+not replace the accepted execution; a newer instruction or accepted replacement
+retains its normal priority.
+
 The Automatic switch saves the scheduling preference. It stays **ON** while
 manual control has priority. With Automatic enabled, a new confirmed physical
 connection takes automatic control and supersedes earlier charger instructions

@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Complete an accepted Shelly charging-period pause while a replacement plan is
+  still calculating, retaining native instruction checks and confirmed idle
+  current fallback.
+
 - Account for small positive charging-energy slices so rounding near completion
   cannot leave planning repeatedly advancing without reducing the request. Keep
   the first minimum-completion time when native post-target demand continues.

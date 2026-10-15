@@ -38,7 +38,9 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
   const paused = () => [...profiles.values()].some(profile => Date.parse(profile.validFrom) <= now
     && (profile.validTo === undefined || Date.parse(profile.validTo) > now)
     && profile.transactionId === cars.charger1.connectedAt / 1000);
-  const amps2 = () => cars.charger2.connected && cars.charger2.allows && fields.start_charging.value
+  // A test may explicitly model physical current persisting after permission
+  // Stop; default device behavior remains immediate physical return.
+  const amps2 = () => cars.charger2.connected && cars.charger2.allows && (fields.start_charging.value || cars.charger2.stopStillDrawing === true)
     ? Math.min(cars.charger2.demandA, fields.current_limit.value) : 0;
   const amps1 = () => cars.charger1.connected && cars.charger1.allows && !paused()
     ? Math.max(0, Math.min(cars.charger1.demandA, cars.charger1.equalizerResponds === false

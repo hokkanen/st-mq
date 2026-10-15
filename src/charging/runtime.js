@@ -703,7 +703,7 @@ export class ChargingRuntime {
         canControl: () => !this.streamPersistencePending && hasAuthority(),
         getMaximumAmps: scheduleCeiling,
         getIdentification: snapshot => this.identificationControl(item, snapshot),
-        getPlan: async (snapshot, { refresh = true, takeover = false } = {}) => {
+        getPlan: async (snapshot, { refresh = true, takeover = false, signal } = {}) => {
           const selected = this.controlPlan(item, this.pricesInitialized ? item.plan : null);
           // A bounded probe already selected its return program. Even a
           // terminal attempt can still owe that physical return; a new price
@@ -711,10 +711,17 @@ export class ChargingRuntime {
           if (!takeover && selected?.reason === 'identification-return') return selected;
           if (!refresh && !takeover && this.currentPlanReusable(item, snapshot))
             return selected;
-          item.awaitingPlan = true;
-          try { await this.updatePlanForControl(this.clock(), { sourceId: id, background: !refresh && !takeover }); }
-          catch { this.error = 'charging-planning-unavailable'; return this.controlPlan(item, null); }
-          finally { item.awaitingPlan = false; }
+          const waiting = {};
+          // A cancelled controller owns only this publication wait. Its late
+          // completion cannot clear another controller invocation's flag.
+          item.planWait = waiting; item.awaitingPlan = true;
+          try { await this.updatePlanForControl(this.clock(), { sourceId: id, sourceWaiter: waiting, background: !refresh && !takeover, signal }); }
+          catch (cause) {
+            if (signal?.aborted) throw cause;
+            this.error = 'charging-planning-unavailable'; return this.controlPlan(item, null);
+          } finally {
+            if (item.planWait === waiting) { delete item.planWait; item.awaitingPlan = false; }
+          }
           return this.controlPlan(item, this.pricesInitialized ? item.plan : null);
         },
         getAllocation: () => this.allocationContext() });
@@ -2294,7 +2301,7 @@ export class ChargingRuntime {
     await this.reconcile(id);
     this.reconcilePeers(id);
   }
-  updatePlan(now = this.clock(), { sourceId, background = false } = {}) {
+  updatePlan(now = this.clock(), { sourceId, sourceWaiter, background = false } = {}) {
     if (this.closed) return Promise.resolve();
     // Accepted observations/progress must survive a restart even while an old
     // numerical search is still running. They are independent of plan adoption.
@@ -2305,7 +2312,7 @@ export class ChargingRuntime {
     }
     // A later background notification cannot demote an explicit request that
     // has not started yet. No timer or settling permission survives restart.
-    this.planningRequest = { sourceId, background: background && this.planningRequest?.background !== false };
+    this.planningRequest = { sourceId, sourceWaiter, background: background && this.planningRequest?.background !== false };
     if (!this.planningFlight) {
       this.planningFlight = (async () => {
         while (this.planningRequest && !this.closed) {
@@ -2323,17 +2330,28 @@ export class ChargingRuntime {
     return this.planningFlight;
   }
   async updatePlanForControl(now = this.clock(), options = {}) {
+    const { signal, ...planningOptions } = options;
+    if (signal?.aborted) throw signal.reason;
     let published;
     const publication = new Promise(resolve => { published = resolve; });
     this.planPublicationWaiters ??= new Set();
     this.planPublicationWaiters.add(published);
+    let onAbort;
+    const cancelled = signal && new Promise((_resolve, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
     try {
       // Later source traffic may keep the global planning loop busy. A native
       // caller needs its first committed current result, not silence from all
       // inputs. Publication keeps the complete evidence checks below; native
       // preflight still validates the caller's connection and instruction.
-      await Promise.race([this.updatePlan(now, options), publication]);
-    } finally { this.planPublicationWaiters.delete(published); }
+      // Revoke the caller's wait without cancelling shared numerical work.
+      await Promise.race([this.updatePlan(now, planningOptions), publication, ...(cancelled ? [cancelled] : [])]);
+    } finally {
+      this.planPublicationWaiters.delete(published);
+      if (onAbort) signal.removeEventListener('abort', onAbort);
+    }
   }
   planningEvidence() {
     const views = this.views(this.clock());
@@ -2375,7 +2393,7 @@ export class ChargingRuntime {
     }
     this.persistAcceptedState(now);
   }
-  async calculatePlan(now, { sourceId, background = false }) {
+  async calculatePlan(now, { sourceId, sourceWaiter, background = false }) {
     // Receiving another notification is not itself a changed planning input.
     // The evidence check below rejects changed intent, authority and source
     // values without starving useful work during steady healthy reporting.
@@ -2511,7 +2529,7 @@ export class ChargingRuntime {
       const at = this.clock();
       if (selectedHistory.get().generation !== historySelection || evidence !== this.planningEvidence() || at < now
         || at >= chargingPlanValidUntil({ now: result.at, chargers: planningViews }, result)) {
-        this.planningRequest ??= { sourceId, background };
+        this.planningRequest ??= { sourceId, sourceWaiter, background };
         return false;
       }
       return true;
@@ -2749,7 +2767,7 @@ export class ChargingRuntime {
       const item = this.charger(view.id);
       item.sessionCost = updateSessionCost(item.sessionCost, view, observedAt, this.prices, this.readEnergy);
     }
-    this.fenceChangedCommands(this.clock(), sourceId);
+    this.fenceChangedCommands(this.clock(), sourceId, sourceWaiter);
     for (const item of Object.values(this.chargers)) {
       item.newEpisode = false;
       item.limiterPlanBasis = this.currentPlanBasis(item);
@@ -2787,7 +2805,7 @@ export class ChargingRuntime {
       item.lastReconcileAt = null;
     }
   }
-  fenceChangedCommands(now, sourceId) {
+  fenceChangedCommands(now, sourceId, sourceWaiter) {
     for (const [id, item] of Object.entries(this.chargers)) {
       const basis = digest({ association: item.association, session: item.request?.sessionId,
         enabled: item.controls.enabled, chargeNow: item.request?.chargeNow === true,
@@ -2809,7 +2827,11 @@ export class ChargingRuntime {
         && sessionConnectedAt(item.request) === pause.connectedAt && !control.manual;
       // All controllers awaiting this calculation will receive the new result.
       // Revoke only instructions that already left planning for native preflight.
-      if (!changed || id === sourceId || item.awaitingPlan || identifyingPause
+      // A retired controller waiter does not make a later publication its own
+      // native operation. Only the still-current accepted Stop may finish
+      // independently of a changed proposal; explicit/native guards remain.
+      const ownPublication = id === sourceId && (!sourceWaiter || item.planWait === sourceWaiter);
+      if (!changed || ownPublication || item.awaitingPlan || identifyingPause || item.controller?.ownsDueStop?.()
         || !item.controller || item.backendTransition || this.closed) continue;
       item.controller.invalidate?.(); item.lastReconcileAt = null;
       if (item.reconcileFlight) { item.reconcileAgain = true; continue; }
@@ -2885,6 +2907,7 @@ export class ChargingRuntime {
       // and due return duties may revoke that plan wait; ordinary polling must
       // not cancel native RPC/preflight or renew the original allowance.
       if (preparationDue || startDue || identificationDue || restorationDue || returnDue) item.controller?.interruptPlanning?.();
+      else item.controller?.interruptOwnedStop?.();
     }
     // A forecast failure must not stop independent EVSE readback, manual
     // override detection, owned-schedule cleanup or confirmed release times.
