@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Distinguish local OCPP listening, socket, durable admission and first-message
+  phases in bounded private startup diagnostics. Preserve unknown retry causes,
+  existing authority and timeouts without recording private connection data.
+
 - Preserve a later current unsent command queued behind a failed Tuya setting
   write, while discarding that handler's initial failed commands. Keep native
   retries and unavailable feedback unchanged; source loss cannot revive intent.
