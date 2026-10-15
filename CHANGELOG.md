@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Avoid unnecessary writer-lock attempts while scanning recovery history when
+  no temporary entry needs removal. Actual deletions retain normal transaction
+  and journal protection.
+
 - Refresh historical energy cost comparisons when recovery publishes a new
   history selection, discarding cached results and late replies from the previous
   selection while preserving the chosen period and controls.

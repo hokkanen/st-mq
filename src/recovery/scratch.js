@@ -28,7 +28,12 @@ export class ScratchMap {
   }
   has(key) { return this.get(key) !== undefined; }
   delete(key) {
-    return key !== undefined && this.ready && this.db.prepare('DELETE FROM recovery_scratch_map WHERE namespace=? AND key=?').run(this.namespace, JSON.stringify(key)).changes > 0;
+    if (key === undefined || !this.ready) return false;
+    const serializedKey = JSON.stringify(key);
+    // A journal-backed DELETE acquires MAIN's writer even for an absent TEMP
+    // entry. Keep that no-op read-only; present entries retain normal admission.
+    if (!this.db.prepare('SELECT 1 FROM recovery_scratch_map WHERE namespace=? AND key=?').get(this.namespace, serializedKey)) return false;
+    return this.db.prepare('DELETE FROM recovery_scratch_map WHERE namespace=? AND key=?').run(this.namespace, serializedKey).changes > 0;
   }
   get size() { return this.ready ? this.db.prepare('SELECT COUNT(*) n FROM recovery_scratch_map WHERE namespace=?').get(this.namespace).n : 0; }
   *entries() {
