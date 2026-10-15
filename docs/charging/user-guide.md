@@ -17,9 +17,10 @@ the same arrow placement with **One extra day ↗**.
 | Control | Effect and scope |
 | --- | --- |
 | **Automatic charging** | Saves the scheduling preference for this equipment, including across restart and unplugging. A later native instruction can retain priority while this switch remains on. |
-| **Charge now** | Requests charging for this connection, including with Automatic off, while native restrictions and device readiness remain binding. Turning Charge now off returns to Automatic and enables it if needed. ON is a request, not proof of draw. |
+| **Charge now** | Ends Pause and requests immediate charging, including with Automatic off. Explicitly replaces the displayed external Stop and supported native schedules after confirmed takeover. Current limits, protection and device readiness remain binding. Turning it off returns to Automatic and enables it if needed. ON is a request, not proof of draw. |
+| **Pause charging** | Stops charging until unplugging or a later explicit resumption. Turns Charge now off and leaves Automatic unchanged. Survives restart and network reconnect; check the displayed pause confirmation. |
 | **Save for this session** | Applies current charge, target, usable capacity and ready-by edits to this physical connection. It does not rewrite configured defaults. |
-| **Use automatic** | Appears when a supported handover from another charger instruction is available. It enables Automatic, ends Charge now and returns to the price plan after confirmed takeover. |
+| **Use automatic** | Appears for a dashboard Pause or supported handover from another charger instruction. It enables Automatic, ends Pause and Charge now, and returns to the price plan. |
 | **Identify** | Requests another bounded identification attempt for the current connection. An existing confirmed assignment remains visible during the check. |
 | **Shared priority** | Chooses Balanced, Charger 1 or Charger 2 for both chargers. Both cards edit the same saved choice. |
 | **One extra day** | Compares the current deadline with one later calendar day. Allowing the day changes only this connection's deadline; canceling an active allowance restores the earlier deadline. |
@@ -27,8 +28,10 @@ the same arrow placement with **One extra day ↗**.
 Automatic starts on for both chargers and shared priority starts Balanced when
 charging state is first initialized, including a fresh database. Later saved
 choices survive restart; replacement equipment starts with Automatic off.
-Neither switch alone is a physical Stop control. Use the supported native control
-when an explicit physical stop is required and check the observed response.
+Changing the Automatic preference alone does not stop or resume charging. Use
+**Pause charging** for a session stop and check the observed response. A later
+observed external Start/Resume can end the pause; an unobservable native-app tap
+cannot establish that instruction. A later observed external Stop ends Charge now.
 [Ownership and takeover](execution-and-recovery.md) explains which instructions
 can be superseded and which remain binding.
 
@@ -38,8 +41,9 @@ not permanently cap a new connection. A current choice made on the charger
 during the connection remains a ceiling until unplugging or **Use automatic**;
 restart preserves it. Hardware, electrical and vehicle limits still apply.
 
-**Use automatic** appears in Charging controls only when a supported takeover is
-available. It is disabled while its request runs and hides when no longer needed;
+**Pause charging** and contextual **Use automatic** share a wrapping action row
+in Charging controls. Use automatic appears for a dashboard Pause or when a
+supported takeover is available. It is disabled while its request runs and hides when no longer needed;
 its pending or failed outcome remains visible. **Identify** is at the end of
 Charging controls below Session settings, disabled without control authority or
 while an attempt is already pending/in progress. Its explanation identifies the

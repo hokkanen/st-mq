@@ -410,7 +410,7 @@ test('Shelly bounded BMW pause returns to economic waiting without releasing cha
 
 test('Shelly Charge now includes identification and then releases without an economic delay', async t => {
   const f = await fixture(t); f.setNow(START + 1000);
-  admitChargingObservation(f.runtime, f.now); f.item().request.chargeNow = true;
+  admitChargingObservation(f.runtime, f.now); f.item().request.chargeNow = true; f.item().request.chargeNowAt = f.now;
   await f.update(); assert.equal(stops(f).length, 1); await f.confirm();
   assert.equal(f.card().vehicle.id, 'bmw'); assert.equal(starts(f).length, 1);
 });

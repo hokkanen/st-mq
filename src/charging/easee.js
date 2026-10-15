@@ -187,6 +187,15 @@ export function nextScheduleOccurrence(state, now) {
   return { startAt, endAt, endKind: 'scheduled-stop', kind };
 }
 
+/** Pause/Resume resets the dynamic ceiling; never discard a tighter positive choice. */
+export function easeeSessionPauseSupported(snapshot) {
+  const limits = snapshot?.limits;
+  return amps(limits?.chargerA) > 0 && amps(limits?.dynamicChargerA) !== null
+    && (limits.dynamicChargerA >= limits.chargerA || limits.dynamicChargerA === 0 && [52, 53].includes(snapshot.reason))
+    && limits.circuitA?.length === 3 && limits.circuitA.every(limit => amps(limit) > 0)
+    && (snapshot.pluggedIn === false || amps(limits.cableA) > 0);
+}
+
 export function chargingSnapshot(observations, scheduling, now, allocationA = null, { externalLoadBalancing = true, supply = null } = {}) {
   const list = Array.isArray(observations) ? observations : observations?.observations;
   if (!Array.isArray(list) || list.length > 1000) throw new Error('Easee charger state is not understood');
@@ -375,6 +384,34 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       } catch { throw failure('read-failed', 'Easee returned an unsupported charger or schedule state.'); }
     },
     readTelemetry(options = {}) { return adapter.read({ ...options, telemetryOnly: true }); },
+    async pauseSession({ expectedSnapshot, signal, canMutate = () => false,
+      beforeWrite = () => {}, afterWrite = () => {} } = {}) {
+      const allowed = () => canControl() && canMutate();
+      const before = await adapter.read({ signal, forceRest: true });
+      if (!expectedSnapshot || easeeTakeoverFingerprint(before) !== easeeTakeoverFingerprint(expectedSnapshot))
+        throw failure('state-changed', 'The charger instruction changed before pausing.');
+      if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
+      if (!before.controlKnown || before.online !== true || before.pluggedIn !== true
+        || before.faulted || before.authorizationBlocked) throw failure('access-denied', 'The charger is not available to pause.');
+      if (!easeeSessionPauseSupported(before))
+        throw failure('resume-current-limit', 'A separate current limit cannot safely be preserved through Pause and Resume.');
+      await beforeWrite(clone(before));
+      if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
+      try {
+        await request(`${base.slice(0, -'/schedules'.length)}/commands/pause_charging`,
+          { method: 'POST', signal, controlGuard: allowed }, true);
+      } catch (error) {
+        if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
+        if ([401, 403].includes(error?.status ?? error?.response?.status)) throw failure('access-denied', 'Easee rejected charging authorization.');
+        throw failure('command-failed', 'Easee did not confirm the pause command.');
+      }
+      await afterWrite();
+      let after;
+      try { after = await adapter.read({ signal, forceRest: true }); }
+      catch { throw failure('readback-failed', 'The charging pause could not be read back.'); }
+      if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
+      return after;
+    },
     async takeover({ expectedSnapshot, pause = null, signal, canMutate = () => false,
       beforeWrite = () => {}, afterWrite = () => {} } = {}) {
       let current = await adapter.read({ signal, forceRest: true });

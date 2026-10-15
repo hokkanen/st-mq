@@ -35,7 +35,8 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
     work_state: { value: 'charger_free', at: now } };
   const schedules = { jobs: [] };
   const paused = () => [...profiles.values()].some(profile => Date.parse(profile.validFrom) <= now
-    && Date.parse(profile.validTo) > now && profile.transactionId === cars.charger1.connectedAt / 1000);
+    && (profile.validTo === undefined || Date.parse(profile.validTo) > now)
+    && profile.transactionId === cars.charger1.connectedAt / 1000);
   const amps2 = () => cars.charger2.connected && cars.charger2.allows && fields.start_charging.value
     ? Math.min(cars.charger2.demandA, fields.current_limit.value) : 0;
   const amps1 = () => cars.charger1.connected && cars.charger1.allows && !paused()

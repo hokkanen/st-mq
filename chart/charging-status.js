@@ -55,10 +55,33 @@ export const CHARGING_CONTROL_CAUSES = {
   'fuse-limit': 'Installation current limit', 'priority-allocation': 'Shared charging allocation', 'telemetry-fallback': 'Current fallback for missing measurements',
   'vehicle-not-before': 'Vehicle start restriction', 'identification-pause': 'Identification pause',
   'identification-waiting': 'Identification waiting', 'identification-charging': 'Identification observing charge',
+  'session-pause': 'Paused here for this connection',
+  'session-pause-unconfirmed': 'Waiting for the charger to confirm the session pause',
   'economic-wait': 'Waiting for a planned charging period', 'charge-now': 'Charge now requested',
   'economic-window': 'Within a planned charging period', 'no-headroom': 'No electrical headroom available',
   'supply-unavailable': 'Supply information unavailable', 'within-limit': 'Within the available current limit',
 };
+
+/** Session intent stays distinct from physical confirmation and external Stops. */
+export function chargingSessionPause(charger) {
+  const control = charger.control ?? {}, pause = control.sessionPause;
+  const active = charger.values?.connected?.value !== false && Boolean(charger.request?.pause)
+    && !(pause?.active === false && pause.requestedAt === charger.request.pause.requestedAt) && !pause?.supersededAt;
+  if (!active) return null;
+  const confirmed = pause?.confirmed === true && charger.values?.connected?.available !== false
+    && charger.values?.connected?.value === true && charger.values?.charging?.value !== true;
+  const unconfirmed = !confirmed && (pause?.confirmed === true || Boolean(pause?.reason || control.errorCode)
+    || ['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed', 'unconfirmed'].includes(control.phase)
+    || charger.values?.connected?.value !== true || charger.values?.connected?.available === false);
+  const label = confirmed ? 'Paused until unplugging' : unconfirmed ? 'Pause unconfirmed' : 'Pause requested';
+  const detail = [
+    'Paused here for this connection. Automatic charging remains ' + (charger.settings?.enabled === true ? 'on' : 'off') + '.',
+    confirmed ? 'The charger has confirmed the pause.' : 'The pause request is saved; the charger has not confirmed that charging has stopped.',
+    'Unplugging ends the pause. Charge now requests immediate charging; Use automatic returns to price scheduling. A later observed external Resume also ends the pause.',
+    chargingControlReason(pause?.reason || (unconfirmed ? control.reason : null)),
+  ].filter(Boolean).join(' ');
+  return { active, confirmed, unconfirmed, label, detail, requestedAt: charger.request.pause.requestedAt };
+}
 
 /** An unplugged, idle charger has no session permission to confirm. Outstanding
  * instructions and restoration still need confirmation, even after unplugging. */

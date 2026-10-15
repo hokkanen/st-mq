@@ -12,6 +12,7 @@ const DETAILS = {
   'connection-changed': 'The charging connection changed. Refresh to review its current plan.',
   'comparison-changed': 'The charging plan changed during comparison. Refresh to review current prices and deadlines.',
   'automatic-disabled': 'Turn on Automatic charging to use one-day flexibility.',
+  'session-pause': 'Charging is paused for this connection. Use automatic returns to price scheduling before requesting one-day flexibility.',
   'charge-now': 'Charge now takes priority. Return to Automatic charging to use flexibility.',
   'manual-instruction': 'Another charging instruction has priority. Review the charger’s native controls before requesting one-day flexibility.',
   'charging-complete': 'The current charging target has been reached. No extra day is needed for this request.',

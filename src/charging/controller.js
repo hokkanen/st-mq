@@ -1,6 +1,6 @@
 import { resolveChargingDeadline } from './settings.js';
 import { TIME_ZONE } from '../domain/prices.js';
-import { delayedScheduleFor, easeeScheduleTakeoverSupported, easeeTakeoverFingerprint, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, scheduleFingerprint } from './easee.js';
+import { delayedScheduleFor, easeeScheduleTakeoverSupported, easeeSessionPauseSupported, easeeTakeoverFingerprint, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, scheduleFingerprint } from './easee.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
 import { admittedChargingDeadlineRevision } from './flexibility.js';
@@ -64,6 +64,17 @@ const validManual = value => value == null || fields(value, ['kind', 'detectedAt
   && (value.kind === 'window' ? value.repeating === true && isTime(value.startsAt)
     && isTime(value.windowEndAt) && value.resumeAt === value.windowEndAt && value.resumeReason === 'window-end'
     : value.resumeAt === null && value.resumeReason === null);
+const validSessionPauseCommand = value => value == null || fields(value,
+  ['connectedAt', 'requestedAt', 'stage', 'dispatchedAt', 'baselineReasonAt', 'baselineDynamicAt', 'reasonAt', 'dynamicCurrentAt', 'enabledAt', 'supersededAt'])
+  && (value.supersededAt == null || value.stage === 'confirmed' && isTime(value.supersededAt) && value.supersededAt > value.requestedAt)
+  && isTime(value.connectedAt) && isTime(value.requestedAt) && value.requestedAt >= value.connectedAt
+  && ['dispatched', 'accepted', 'confirmed'].includes(value.stage) && isTime(value.dispatchedAt)
+  && value.dispatchedAt >= value.requestedAt && isTime(value.baselineReasonAt) && isTime(value.baselineDynamicAt)
+  && (value.stage === 'confirmed' ? [value.reasonAt, value.dynamicCurrentAt, value.enabledAt].every(isTime)
+    : [value.reasonAt, value.dynamicCurrentAt, value.enabledAt].every(optionalTime));
+const nativeStopAt = snapshot => Math.max(snapshot.enabled === false ? snapshot.observations?.[31]?.at ?? 0 : 0,
+  snapshot.reason === 53 ? snapshot.reasonAt ?? 0 : 0,
+  snapshot.dynamicChargerPaused ? snapshot.observations?.[48]?.at ?? 0 : 0);
 // Inactive cached recurrences are not instructions to this charging session.
 const activeFingerprint = effectiveScheduleFingerprint;
 const STOP_REASON = 'The charger reports paused or disabled. A stop instruction is preventing automatic scheduling.';
@@ -130,7 +141,7 @@ const DIAGNOSTICS = {
 export function validateChargingOwnershipState(initialState) {
   if (initialState != null && (!fields(initialState, ['version', 'phase', 'owned', 'pending', 'manual', 'released', 'disconnected',
     'execution', 'handoverConfirmed', 'reason', 'session', 'errorCode', 'automaticTakeover', 'takeoverPending', 'vehicleDisconnect',
-    'lastManualResume', 'lastMissedTransition', 'lastReadAt', 'provisional']) || initialState.version !== 5
+    'lastManualResume', 'lastMissedTransition', 'lastReadAt', 'provisional', 'sessionPauseCommand']) || initialState.version !== 5
     || ['owned', 'pending', 'manual', 'execution', 'vehicleDisconnect', 'lastManualResume', 'lastMissedTransition']
       .some(key => initialState[key] != null && !object(initialState[key]))
     || ['released', 'disconnected', 'provisional'].some(key => initialState[key] !== undefined && typeof initialState[key] !== 'boolean')
@@ -139,7 +150,7 @@ export function validateChargingOwnershipState(initialState) {
     || !validManual(initialState.manual) || !validExecution(initialState.execution) || !validIdentificationOwnership(initialState.owned)
     || !validIdentificationOwnership(initialState.pending) || !validTakeoverPending(initialState.takeoverPending)
     || !validAutomaticTakeover(initialState.automaticTakeover) || !validSession(initialState.session)
-    || !validVehicleDisconnect(initialState.vehicleDisconnect))) throw new Error('Unsupported charging ownership; start a fresh development database');
+    || !validSessionPauseCommand(initialState.sessionPauseCommand) || !validVehicleDisconnect(initialState.vehicleDisconnect))) throw new Error('Unsupported charging ownership; start a fresh development database');
 }
 
 /** Durable native instruction ownership and observed manual priority. */
@@ -158,7 +169,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
   const chargeNowActive = () => desired.chargeNow?.connectedAt === state.session?.connectedAt
     && Number.isSafeInteger(desired.chargeNow?.connectedAt) && snapshot?.pluggedIn === true
     && !state.vehicleDisconnect?.awaitingConnection;
-  const controlRequested = () => desired.enabled === true || chargeNowActive() || identification !== null;
+  const controlRequested = () => desired.enabled === true || chargeNowActive() || sessionPauseActive() || identification !== null;
   const takeoverToken = () => snapshot ? createHash('sha256').update(JSON.stringify([
     easeeTakeoverFingerprint(snapshot), state.session?.connectedAt ?? null, state.session?.lastDisconnectedAt ?? null])).digest('hex') : null;
   const takeoverStatus = () => {
@@ -171,7 +182,48 @@ export function createChargingController({ adapter, initialState = null, saveSta
         : 'Fresh charger state and control access are required to use automatic.',
       ...(takeoverState ? { state: takeoverState, attemptToken: takeoverAttempt } : {}) };
   };
+  const pauseScope = () => desired.sessionPause && desired.sessionPause.connectedAt === state.session?.connectedAt
+    && state.session?.connected === true && !state.vehicleDisconnect?.awaitingConnection;
+  const pauseSupersededAt = () => {
+    const owned = state.sessionPauseCommand;
+    if (pauseScope() && owned?.requestedAt === desired.sessionPause.requestedAt && isTime(owned.supersededAt)) return owned.supersededAt;
+    if (!pauseScope() || snapshot?.online !== true || !snapshot.controlKnown || snapshot.enabled !== true || snapshot.stopped
+      || !(snapshot.limits?.dynamicChargerA > 0)) return null;
+    if (!owned) {
+      const at = Math.max(snapshot.observations?.[31]?.at ?? 0, snapshot.observations?.[48]?.at ?? 0);
+      return state.manual?.kind === 'enable' && state.manual.detectedAt > desired.sessionPause.requestedAt
+        && at > desired.sessionPause.requestedAt && at <= clock() ? at : null;
+    }
+    if (owned.connectedAt !== state.session?.connectedAt || owned.stage !== 'confirmed') return null;
+    const at = snapshot.observations?.[48]?.at;
+    return isTime(at) && at > Math.max(owned.dynamicCurrentAt ?? 0, desired.sessionPause.requestedAt) && at <= clock() ? at : null;
+  };
+  const sessionPauseActive = () => Boolean(pauseScope() && pauseSupersededAt() === null);
+  const ownsSessionPause = () => state.sessionPauseCommand?.stage === 'confirmed'
+    && state.sessionPauseCommand.connectedAt === state.session?.connectedAt && snapshot?.dynamicChargerPaused === true
+    && snapshot.reasonAt === state.sessionPauseCommand.reasonAt
+    && snapshot.observations?.[48]?.at === state.sessionPauseCommand.dynamicCurrentAt
+    && snapshot.observations?.[31]?.at === state.sessionPauseCommand.enabledAt;
+  const sessionPauseStatus = () => {
+    const active = sessionPauseActive(), available = !closed && snapshot?.online === true && snapshot.controlKnown
+      && snapshot.pluggedIn === true && !snapshot.faulted && !snapshot.authorizationBlocked
+      && isTime(snapshot.readAt) && snapshot.readAt <= clock() && clock() - snapshot.readAt <= 60_000
+      && typeof adapter.pauseSession === 'function' && easeeSessionPauseSupported(snapshot);
+    return { available, active, ...(pauseScope() ? { requestedAt: desired.sessionPause.requestedAt } : {}),
+      ...(pauseSupersededAt() !== null ? { supersededAt: pauseSupersededAt() } : {}),
+      confirmed: Boolean(active && snapshot?.online === true && snapshot.controlKnown && snapshot.stopped
+        && snapshot.mode !== 3 && isTime(snapshot.modeAt) && snapshot.modeAt <= clock() && snapshot.powerKw === 0
+        && snapshot.powerAt >= desired.sessionPause.requestedAt && clock() - snapshot.powerAt <= 60_000
+        && (!state.sessionPauseCommand || state.sessionPauseCommand.stage === 'confirmed')),
+      reason: available ? null : 'A fresh charger connection without a separate current restriction is required to pause.' };
+  };
   const status = () => ({ ...copy(state), enabled: desired.enabled === true, planningRevision, takeover: takeoverStatus(),
+    sessionPause: sessionPauseStatus(),
+    takeoverRequired: Boolean(['stop', 'schedule', 'window'].includes(state.manual?.kind)
+      || snapshot?.schedule && snapshot.schedule.enabled !== 'none' && !ownsCurrent()
+      || snapshot?.stopped && !ownsSessionPause()),
+    externalStopAt: state.manual?.kind === 'stop' && (!state.sessionPauseCommand
+      || state.sessionPauseCommand.stage === 'confirmed' && !ownsSessionPause()) ? state.manual.detectedAt : null,
     identification: identification ? copy(identification) : null, snapshot: snapshot ? copy(snapshot) : null });
   const currentFingerprint = () => activeFingerprint(snapshot.schedule);
   const ownsCurrent = () => state.owned && state.owned.activeFingerprint === currentFingerprint();
@@ -366,7 +418,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
       if (snapshot.controlKnown && !snapshot.faulted && !snapshot.authorizationBlocked
         && ![5, 7, 8].includes(snapshot.mode) && ![55, 56].includes(snapshot.reason)) {
         if ((prior.enabled !== snapshot.enabled || prior.stopped !== stopped(snapshot)) && stopped(snapshot)) {
-          manual('stop', now, STOP_REASON);
+          manual('stop', nativeStopAt(snapshot) || now, STOP_REASON);
         } else if (prior.enabled === false && snapshot.enabled === true || prior.stopped && !stopped(snapshot)) {
           state.released = snapshot.pluggedIn === true;
           if (!scheduleChanged || !['window', 'schedule'].includes(state.manual?.kind))
@@ -379,7 +431,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
     if (snapshot.controlKnown && connection === false) {
       state.disconnected = true; state.released = false; state.provisional = false; state.execution = null;
       delete state.lastMissedTransition;
-      state.manual = null; state.automaticTakeover = null;
+      state.manual = null; state.automaticTakeover = null; state.sessionPauseCommand = null;
       // A passed release time does not remove a native delayed schedule. Keep
       // exact ownership until normal readback or guarded disconnect cleanup
       // confirms it is gone; otherwise commissioning sees an orphaned delay.
@@ -396,7 +448,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
         || snapshot.schedule.enabled !== 'none' && !ownsCurrent())
         ? { connectedAt: state.session.connectedAt, fingerprint: automaticInstructionFingerprint(snapshot) } : null;
       if (!desired.enabled && snapshot.schedule.enabled !== 'none' && !ownsCurrent()) yieldSchedule(now);
-      if (!desired.enabled && stopped(snapshot)) manual('stop', now, STOP_REASON);
+      if (!desired.enabled && stopped(snapshot)) manual('stop', nativeStopAt(snapshot) || now, STOP_REASON);
     }
   }
   function executionFor(plan) {
@@ -479,8 +531,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
   async function takeOver(expectedGeneration, token, automatic = false) {
     takeoverState = 'blocked'; takeoverAttempt = token;
     if (!token || token !== takeoverToken()) throw Object.assign(new Error('Stale automatic handover'), { code: 'takeover-stale' });
-    if (!permitted() || !takeoverStatus().available || !desired.enabled) throw Object.assign(new Error('Control unavailable'), { code: 'control-revoked' });
-    const plan = snapshot.pluggedIn === true
+    if (!permitted() || !takeoverStatus().available || !(desired.enabled || chargeNowActive())) throw Object.assign(new Error('Control unavailable'), { code: 'control-revoked' });
+    const plan = chargeNowActive() ? { startAt: clock(), periods: [{ startAt: clock(), endAt: null }] } : snapshot.pluggedIn === true
       ? typeof getPlan === 'function' ? await getPlan(copy(snapshot), { takeover: true }) : desired.plan : null;
     if (snapshot.pluggedIn === true && (!plan || !isTime(plan.startAt)))
       throw Object.assign(new Error('Automatic handover needs a charging plan'), { code: 'invalid-plan' });
@@ -492,7 +544,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
     const priorManual = state.manual;
     takeoverState = 'pending';
     snapshot = await adapter.takeover({ expectedSnapshot: copy(snapshot), pause,
-      canMutate: () => permitted() && expectedGeneration === generation && desired.enabled === true,
+      canMutate: () => permitted() && expectedGeneration === generation && (desired.enabled === true || chargeNowActive())
+        && !sessionPauseActive(),
       beforeWrite: async ({ stage, before }) => {
         if (stage === 'schedule') {
           const expectedSchedule = pause ? { ...before.schedule, enabled: 'delayed', delayed: delayedScheduleFor(pause, clock()) } : null;
@@ -526,12 +579,16 @@ export function createChargingController({ adapter, initialState = null, saveSta
     const unresolved = state.takeoverPending;
     state.manual = null; state.released = false; state.execution = execution; state.provisional = false;
     if (priorManual) state.lastManualResume = { at: clock(), deadlineAt: priorManual.cycleEndsAt, reason: automatic ? 'connection' : 'explicit' };
-    remember(clock()); state.takeoverPending = null; state.automaticTakeover = null;
+    remember(clock()); state.takeoverPending = null; state.automaticTakeover = null; state.sessionPauseCommand = null;
     try { await persist(); } catch (error) {
       if (error?.committed !== true) state.takeoverPending = unresolved;
       throw error;
     }
     takeoverState = 'confirmed';
+  }
+  function rememberPause() {
+    if (state.session) Object.assign(state.session, { enabled: snapshot.enabled, stopped: stopped(snapshot),
+      mode: snapshot.mode, modeAt: snapshot.modeAt ?? null });
   }
   async function refreshIdentification(now) {
     const next = typeof getIdentification === 'function' ? await getIdentification(copy(snapshot)) : null;
@@ -642,6 +699,67 @@ export function createChargingController({ adapter, initialState = null, saveSta
         }
         state.pending = null;
       }
+      const externalResumeAt = pauseSupersededAt();
+      if (state.sessionPauseCommand && externalResumeAt !== null) state.sessionPauseCommand.supersededAt = externalResumeAt;
+      if (state.sessionPauseCommand?.supersededAt && desired.sessionPause
+        && desired.sessionPause.requestedAt > state.sessionPauseCommand.requestedAt) state.sessionPauseCommand = null;
+      const userPause = state.sessionPauseCommand;
+      if (userPause && userPause.connectedAt === state.session?.connectedAt
+        && userPause.stage === 'accepted' && snapshot.online === true && snapshot.controlKnown
+        && snapshot.dynamicChargerPaused && snapshot.observations?.[48]?.at >= userPause.baselineDynamicAt
+        && (snapshot.observations[48].at > userPause.baselineDynamicAt || snapshot.observations[48].at >= userPause.dispatchedAt)
+        && snapshot.reasonAt >= userPause.baselineReasonAt
+        && (snapshot.reasonAt > userPause.baselineReasonAt || snapshot.reasonAt >= userPause.dispatchedAt)) {
+        Object.assign(userPause, { stage: 'confirmed', reasonAt: snapshot.reasonAt,
+          dynamicCurrentAt: snapshot.observations[48].at, enabledAt: snapshot.observations[31].at });
+        rememberPause();
+      } else if (ownsSessionPause()) rememberPause();
+      if (sessionPauseActive()) {
+        identification = null; state.execution = null; state.released = false; state.provisional = false; state.automaticTakeover = null;
+        observeSession(now);
+        if (!sessionPauseActive()) { await persist(); return status(); }
+        if (observedConnection(now) === false) { state.sessionPauseCommand = null; await persist(); return status(); }
+        if (!permitted()) { await phase('unavailable', 'This instance has no charger control authority.', 'control-revoked'); return status(); }
+        if (!sessionPauseStatus().available) {
+          await phase('pause-unconfirmed', sessionPauseStatus().reason, 'resume-current-limit'); return status();
+        }
+        if (!snapshot.stopped && !state.sessionPauseCommand) {
+          const request = copy(desired.sessionPause);
+          snapshot = await adapter.pauseSession({ expectedSnapshot: copy(snapshot),
+            canMutate: () => permitted() && expectedGeneration === generation && sessionPauseActive()
+              && desired.sessionPause.requestedAt === request.requestedAt,
+            beforeWrite: async before => {
+              const previous = state.sessionPauseCommand;
+              state.sessionPauseCommand = { ...request, stage: 'dispatched', dispatchedAt: clock(),
+                baselineReasonAt: before.reasonAt, baselineDynamicAt: before.observations[48].at };
+              try { await persist(); } catch (error) {
+                if (error?.committed !== true) state.sessionPauseCommand = previous;
+                throw error;
+              }
+            },
+            afterWrite: async () => { state.sessionPauseCommand.stage = 'accepted'; await persist(); } });
+          const command = state.sessionPauseCommand;
+          if (snapshot.dynamicChargerPaused && snapshot.observations[48].at >= command.baselineDynamicAt
+            && (snapshot.observations[48].at > command.baselineDynamicAt || snapshot.observations[48].at >= command.dispatchedAt)
+            && snapshot.reasonAt >= command.baselineReasonAt
+            && (snapshot.reasonAt > command.baselineReasonAt || snapshot.reasonAt >= command.dispatchedAt)) {
+            Object.assign(command, { stage: 'confirmed', reasonAt: snapshot.reasonAt,
+              dynamicCurrentAt: snapshot.observations[48].at, enabledAt: snapshot.observations[31].at });
+            rememberPause();
+          }
+        }
+        await phase(sessionPauseStatus().confirmed ? 'paused' : 'pause-unconfirmed', sessionPauseStatus().confirmed
+          ? 'Charging is paused until unplugging or a new charging instruction.'
+          : 'Pause requested. Waiting for fresh charger confirmation.');
+        return status();
+      }
+      // Only an explicit runtime resume may release this application's exact
+      // hold. Its guarded native takeover installs an economic wait first.
+      if (state.sessionPauseCommand && !desired.sessionPause && ownsSessionPause() && (desired.enabled || chargeNowActive())
+        && !desired.takeover) {
+        await takeOver(expectedGeneration, takeoverToken());
+        now = clock();
+      }
       if (state.takeoverPending && !desired.takeover) {
         const unresolved = state.takeoverPending;
         const newerStop = snapshot.stopped && (snapshot.enabled === false && snapshot.observations?.[31]?.at > Math.max(unresolved.enabledAt ?? 0, unresolved.requestedAt)
@@ -665,7 +783,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
         // Freeze the first instruction. A newer external change wins even if
         // planning or fresh control readiness delayed the initial takeover.
         state.automaticTakeover = null;
-        if (stopped(snapshot)) manual('stop', now, STOP_REASON);
+        if (stopped(snapshot)) manual('stop', nativeStopAt(snapshot) || now, STOP_REASON);
         else if (snapshot.schedule.enabled !== 'none' && !ownsCurrent()) yieldSchedule(now);
         else manual('enable', now, 'Charging was enabled outside automatic control. That instruction has temporary priority.');
       }
@@ -895,7 +1013,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
       snapshot = await adapter.installDelayed({ startAt: plan.startAt, timezone: desired.timezone, maximumAmps,
         allowChargingPause: pauseRequested,
         expectedFingerprint: snapshot.fingerprint, expectedControlFingerprint: snapshot.controlFingerprint,
-        canMutate: () => permitted() && expectedGeneration === generation && desired.enabled === true,
+        canMutate: () => permitted() && expectedGeneration === generation && desired.enabled === true && !sessionPauseActive(),
         beforeWrite: async before => {
           // API preflight may consume the minimum gap after runtime planning.
           // Refresh before writing, including while Equalizer limits output.
@@ -965,6 +1083,10 @@ export function createChargingController({ adapter, initialState = null, saveSta
     },
     update(input = {}) {
       if (Object.hasOwn(input, 'resume')) throw new Error('Unsupported charging control field: resume');
+      if (input.sessionPause != null && (!fields(input.sessionPause, ['connectedAt', 'requestedAt'])
+        || !isTime(input.sessionPause.connectedAt) || !isTime(input.sessionPause.requestedAt)
+        || input.sessionPause.requestedAt < input.sessionPause.connectedAt || input.sessionPause.requestedAt > clock()))
+        throw new Error('Invalid session pause');
       if (typeof input.takeover !== 'string' && takeoverState !== 'pending') { takeoverState = null; takeoverAttempt = null; }
       desired = { ...desired, ...input, enabled: input.enabled ?? desired.enabled,
         takeover: typeof input.takeover === 'string' ? input.takeover : null };

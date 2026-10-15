@@ -525,7 +525,7 @@ export class ChargingPhysicalTests {
         this.finding(run, 'identified-before-vehicle-start', now);
     }
     if (charger.identification?.phase === 'inconclusive') this.finding(run, 'identification-inconclusive', now);
-    if (charger.controls?.enabled !== true || charger.request?.chargeNow || charger.control?.manual)
+    if (charger.controls?.enabled !== true || charger.request?.chargeNow || charger.request?.pause || charger.control?.manual)
       this.finding(run, 'normal-controls-changed', now);
     if (time(run.deadlineAt) && time(charger.request?.deadlineAt) && charger.request.deadlineAt !== run.deadlineAt)
       this.finding(run, 'ready-by-changed', now);

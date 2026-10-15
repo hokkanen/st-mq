@@ -51,6 +51,7 @@ export function chargingNotice(charger, view, summary) {
 
 function chargingNoticeContent(charger, view, summary) {
   const detail = [view.problem, view.priority, view.readiness, ...view.notes].filter(Boolean).join('\n\n');
+  if (view.sessionPause) return { label: view.sessionPause.label, detail: view.sessionPause.detail, state: view.sessionPause.unconfirmed ? 'attention' : 'manual' };
   if (view.identification?.recovery) return { label: view.identification.label, detail: view.identification.detail, state: 'attention' };
   if (view.problem || summary.roleState === 'uncertain') return { label: 'Charger needs attention',
     detail: [...new Set([view.problem, summary.roleDetail, view.priority, ...view.notes].filter(Boolean))].join('\n\n'), state: 'attention' };
@@ -141,7 +142,9 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   let roleLabel = enabled ? 'Controlled' : 'Observed', roleState = enabled ? 'controlled' : 'observed';
   let roleDetail = enabled ? 'Automatic charging chooses charging periods for the ready-by time.'
     : supported ? 'Automatic charging is off. The charger’s own activity is observed.' : 'Charging is observed; this integration cannot set its schedule.';
-  if (['pending', 'blocked'].includes(control.takeover?.state)) {
+  if (view.sessionPause) {
+    roleLabel = 'Paused here'; roleState = view.sessionPause.confirmed ? 'manual' : 'uncertain'; roleDetail = view.sessionPause.detail;
+  } else if (['pending', 'blocked'].includes(control.takeover?.state)) {
     roleLabel = control.takeover.state === 'pending' ? 'Handover pending' : 'Handover blocked'; roleState = 'uncertain';
     roleDetail = chargingControlReason(control.takeover.reason) || (control.takeover.state === 'pending'
       ? 'Automatic scheduling has been requested. Waiting for the charger to confirm the handover.'
@@ -175,6 +178,7 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   let completion;
   if (!connected) completion = { value: 'No estimate', detail: values.connected?.value === false ? 'Not connected' : 'Waiting for readings', at: null };
   else if (reached) completion = { value: 'Reached', detail: view.energyNote || 'Target reached', at: null };
+  else if (view.sessionPause) completion = { value: 'No estimate', detail: 'Paused for this connection', at: null };
   else if (roleState === 'uncertain') completion = { value: 'Checking', detail: roleLabel, at: null };
   else if (identificationInProgress) completion = { value: 'Checking', detail: 'Waiting for identification', at: null };
   else {

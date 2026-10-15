@@ -2,10 +2,12 @@ import { admitChargingObservation } from './helpers/charging-observation.js';
 import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createOcppScheduleAdapter, initialOcppControllerState, normalizeOcppComposite, ocppPauseInstruction } from '../src/charging/ocpp.js';
+import { createOcppScheduleAdapter, initialOcppControllerState, normalizeOcppComposite, ocppPauseInstruction,
+  ocppSessionPauseInstruction, ocppLocalStopAfter, validateOcppChargingOwnershipState } from '../src/charging/ocpp.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { chargerDisplay } from '../chart/charging.js';
 import { createChargingTeslaCapture } from '../src/charging/teslamate.js';
+import { normalizeScheduleState } from '../src/charging/easee.js';
 import { updateTeslaCurrentRequest } from '../src/charging/tesla-current-request.js';
 
 const START = Date.parse('2026-09-24T09:00:00Z'), MINUTE = 60_000, scope = 'a'.repeat(64);
@@ -15,7 +17,7 @@ function fixture({ initialState = null, identification = null, nativeTakeover = 
   let stored = null, saveError = false, witnessSaveError = false, interceptor = null, appControl = null, snapshotChanges = {};
   const profiles = new Map(), calls = [], saves = [], nativeCalls = [];
   const isPausing = () => [...profiles.values()].some(row => row.transactionId === transactionId
-    && Date.parse(row.validFrom) <= now && Date.parse(row.validTo) > now);
+    && Date.parse(row.validFrom) <= now && (row.validTo === undefined || Date.parse(row.validTo) > now));
   const readSnapshot = () => ({ transport: 'ocpp', scope, connectionId, readAt: now, online: connected,
     connectorStatus: isPausing() && physicalPause ? 'SuspendedEVSE' : 'Charging', statusAt: now,
     transactionId, transactionStartedAt: START - MINUTE, transactionConfirmed: confirmed,
@@ -1811,4 +1813,255 @@ test('a pending automatic takeover preserves the pause until transaction recover
   changed.advance(1000); changed.app(stoppedApp(changed.now)); changed.confirmed(true);
   const newer = await changed.controller.update({ enabled: true });
   assert.equal(newer.automaticTakeover, null); assert.equal(changed.nativeCalls.length, 0);
+});
+
+const sessionPause = { connectedAt: START - MINUTE, requestedAt: START };
+
+test('session pause is a strict nonexpiring zero profile in the single owned slot', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  const scheduled = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const view = await f.controller.update({ sessionPause });
+  assert.equal(view.sessionPause.active, true); assert.equal(view.sessionPause.confirmed, true);
+  assert.equal(view.owned.profileId, scheduled.owned.profileId);
+  assert.equal(view.owned.purpose, 'session-pause'); assert.equal(view.owned.startAt, null);
+  const profile = writes(f).at(-1).payload.csChargingProfiles;
+  assert.equal(Object.hasOwn(profile, 'validTo'), false);
+  assert.equal(Object.hasOwn(profile.chargingSchedule, 'duration'), false);
+  assert.deepEqual(profile.chargingSchedule.chargingSchedulePeriod, [{ startPeriod: 0, limit: 0 }]);
+  assert.equal(writes(f).some(row => row.action === 'ClearChargingProfile'), false);
+  assert.doesNotThrow(() => validateOcppChargingOwnershipState(f.stored));
+  for (const changes of [{ startAt: START + MINUTE }, { connectedAt: START + 1 }, { purpose: 'old-pause' }, { identificationId: 'mixed' }]) {
+    const invalid = structuredClone(f.stored); Object.assign(invalid.owned, changes);
+    assert.throws(() => validateOcppChargingOwnershipState(invalid), /Unsupported native charging ownership/);
+  }
+  const standalone = ocppSessionPauseInstruction({ profileId: 1, transactionId: 7, connectedAt: START - MINUTE, now: START });
+  assert.equal(standalone.startAt, null);
+  f.advance(3 * 24 * 60 * MINUTE);
+  const later = await f.controller.update({ enabled: false, chargeNow: { connectedAt: sessionPause.connectedAt }, plan: plan(START) });
+  assert.equal(later.sessionPause.confirmed, true, 'Neither deadlines, Charge now, nor the Automatic preference expires a retained pause');
+  assert.equal(writes(f).length, 2);
+});
+
+test('session pause preempts a pending economic search and does not call identification', async t => {
+  let planning = 0, identifying = 0, reached;
+  const pending = new Promise(resolve => { reached = resolve; });
+  const f = fixture({ getPlan: () => { planning++; reached(); return new Promise(() => {}); },
+    identification: () => { identifying++; return null; } });
+  t.after(() => f.controller.close());
+  let permission = null; f.adapter.setStartPermission = value => { permission = value; };
+  const old = f.controller.update({ enabled: true }); await pending;
+  const before = identifying;
+  const paused = await f.controller.update({ sessionPause }); await old;
+  assert.equal(paused.sessionPause.confirmed, true); assert.equal(planning, 1);
+  assert.equal(identifying, before); assert.equal(permission, null);
+});
+
+test('session pause waits for transaction proof without authorizing a replacement Start', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  f.confirmed(false); let permission = null; f.adapter.setStartPermission = value => { permission = value; };
+  const pending = await f.controller.update({ enabled: false, sessionPause: { connectedAt: START, requestedAt: START }, chargeNow: { connectedAt: START } });
+  assert.equal(pending.sessionPause.active, true); assert.equal(pending.sessionPause.confirmed, false);
+  assert.equal(pending.errorCode, 'transaction-unconfirmed'); assert.equal(permission, null); assert.equal(writes(f).length, 0);
+  f.confirmed(true);
+  assert.equal((await f.controller.update()).sessionPause.confirmed, true);
+});
+
+test('session pause persists through cloud loss, socket reconnect, transaction rollover, and same-version restart', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  let view = await f.controller.update({ enabled: false, sessionPause });
+  const saved = structuredClone(f.stored), payload = structuredClone(view.owned.payload.csChargingProfiles);
+  const restart = fixture({ initialState: saved }); t.after(() => restart.controller.close());
+  restart.profiles.set(payload.chargingProfileId, payload);
+  restart.advance(1000); restart.reconnect();
+  view = await restart.controller.update({ enabled: false, sessionPause });
+  assert.equal(view.sessionPause.active, true); assert.equal(view.sessionPause.confirmed, false);
+  assert.equal(writes(restart).length, 0);
+  restart.confirmed(true);
+  assert.equal((await restart.controller.update()).sessionPause.confirmed, true);
+  assert.equal(writes(restart).length, 0, 'Restored exact ownership is read back, without resending the profile');
+  restart.advance(1000); restart.transaction(8);
+  restart.snapshot({ transactionStartedAt: restart.now });
+  view = await restart.controller.update();
+  assert.equal(view.sessionPause.confirmed, true); assert.equal(view.session.connectedAt, sessionPause.connectedAt);
+  assert.equal(view.owned.transactionId, 8);
+  assert.deepEqual(writes(restart).map(row => row.action), ['ClearChargingProfile', 'SetChargingProfile']);
+  assert.equal(restart.nativeCalls.length, 0, 'Cloud absence never triggers cloud recovery');
+});
+
+test('pause to Automatic replaces the same profile before any release, while Charge now clears only its owned profile', async t => {
+  const f = fixture(); t.after(() => f.controller.close()); let permission = null;
+  f.adapter.setStartPermission = value => { permission = value; };
+  let view = await f.controller.update({ enabled: false, sessionPause });
+  const id = view.owned.profileId;
+  view = await f.controller.update({ enabled: true, sessionPause: null, plan: plan(START + 30 * MINUTE) });
+  assert.equal(view.owned.profileId, id); assert.equal(view.owned.purpose, undefined);
+  assert.equal(permission, null); assert.equal(view.pauseConfirmed, true);
+  assert.deepEqual(writes(f).map(row => row.action), ['SetChargingProfile', 'SetChargingProfile']);
+  await f.controller.update({ enabled: false, sessionPause });
+  view = await f.controller.update({ sessionPause: null, chargeNow: { connectedAt: sessionPause.connectedAt } });
+  assert.equal(view.phase, 'released'); assert.equal(view.enabled, false); assert.equal(view.owned, null);
+  assert.deepEqual(writes(f).at(-1), { action: 'ClearChargingProfile', payload: { id } });
+});
+
+test('an unconfirmed pause persists with withheld Start and cannot be promoted by zero draw alone', async t => {
+  const f = fixture(); t.after(() => f.controller.close()); let permission = null;
+  f.adapter.setStartPermission = value => { permission = value; };
+  f.intercept((action, _payload, _options, result) => {
+    const reply = result();
+    if (action === 'SetChargingProfile') throw Object.assign(Error('lost reply'), { code: 'ocpp-request-timeout' });
+    return reply;
+  });
+  let view = await f.controller.update({ enabled: true, sessionPause });
+  assert.equal(view.sessionPause.confirmed, false); assert.equal(view.pending.accepted, false);
+  assert.equal(view.sessionPause.supersededAt, null); assert.equal(permission, null);
+  f.intercept(null); f.advance(1000);
+  view = await f.controller.update();
+  assert.equal(view.sessionPause.confirmed, false); assert.equal(writes(f).length, 1);
+  f.advance(30_000);
+  assert.equal((await f.controller.update()).sessionPause.confirmed, true);
+  f.advance(1000); f.physicalPause(false); f.snapshot({ powerKw: 0 });
+  view = await f.controller.update();
+  assert.equal(view.sessionPause.confirmed, false); assert.equal(view.sessionPause.supersededAt, null);
+  assert.equal(view.owned.purpose, 'session-pause'); assert.equal(permission, null);
+});
+
+test('only a later positively observed native Resume supersedes a session pause using its original source clock', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  f.app(appState(START - 1000, false));
+  let view = await f.controller.update({ enabled: false, sessionPause });
+  assert.equal(view.sessionPause.confirmed, true);
+  f.advance(5000); f.app({ ...appState(START + 2000, true), readAt: f.now });
+  view = await f.controller.update();
+  assert.equal(view.sessionPause.active, false); assert.equal(view.sessionPause.supersededAt, START + 2000);
+  assert.equal(view.externalResumeAt, START + 2000); assert.equal(view.owned, null);
+  const restart = fixture({ initialState: f.stored }); t.after(() => restart.controller.close()); restart.advance(6000);
+  restart.app(null);
+  view = await restart.controller.update({ enabled: false, sessionPause });
+  assert.equal(view.sessionPause.supersededAt, START + 2000, 'Saved source evidence survives cloud loss and runtime-save retry');
+  assert.equal(writes(restart).length, 0);
+});
+
+test('confirmed unplug cleans up session ownership and old intent cannot pause the next physical connection', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  const first = await f.controller.update({ enabled: false, sessionPause });
+  f.advance(1000); f.transaction(null); f.confirmed(false);
+  f.snapshot({ pluggedIn: false, connectorStatus: 'Available', transactionStartedAt: null });
+  const unplugged = await f.controller.update();
+  assert.equal(unplugged.sessionPause.active, false); assert.equal(unplugged.owned, null);
+  assert.deepEqual(writes(f).at(-1).payload, { id: first.owned.profileId });
+  f.advance(1000); f.transaction(8); f.confirmed(true);
+  f.snapshot({ transactionStartedAt: f.now });
+  const next = await f.controller.update();
+  assert.equal(next.sessionPause.active, false); assert.equal(next.phase, 'off');
+  assert.equal(writes(f).length, 2);
+});
+
+test('explicit Charge now takeover works while Automatic is off and bypasses an unrelated economic wait', async t => {
+  let planning = 0;
+  const f = fixture({ nativeTakeover: true, getPlan: () => { planning++; throw Error('must not plan'); } });
+  t.after(() => f.controller.close());
+  f.app(stoppedApp(START));
+  const stopped = await f.controller.update({ enabled: false });
+  const result = await f.controller.update({ chargeNow: { connectedAt: sessionPause.connectedAt },
+    takeover: stopped.takeover.token, takeoverMode: 'charge-now' });
+  assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.phase, 'released'); assert.equal(result.enabled, false);
+  assert.equal(result.manual, null); assert.equal(planning, 0); assert.equal(f.nativeCalls.length, 1);
+});
+
+test('failed session-pause persistence sends no native mutation and retains withdrawn Start', async t => {
+  const f = fixture(); t.after(() => f.controller.close()); let permission = null;
+  f.adapter.setStartPermission = value => { permission = value; };
+  await f.controller.update({ enabled: true, plan: plan(START) });
+  assert.notEqual(permission, null);
+  f.saveError(true);
+  const view = await f.controller.update({ sessionPause });
+  assert.equal(view.errorCode, 'storage-failed'); assert.equal(view.sessionPause.confirmed, false);
+  assert.equal(permission, null); assert.equal(writes(f).length, 0);
+});
+
+test('a positive Resume clears pause intent even when an external schedule arrives in the same observation', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  const empty = { enabled: 'none', delayed: null, daily: null, weekly: null, offPeak: null, tariff: null };
+  f.app({ ...appState(START - 1000, false), schedule: empty });
+  await f.controller.update({ enabled: false, sessionPause });
+  f.advance(2000);
+  f.app({ ...appState(f.now, true), schedule: normalizeScheduleState({ ...empty, enabled: 'delayed', delayed: {
+    startTime: '18:00', timezone: 'Europe/Helsinki', maximumAmps: 16 } }) });
+  const view = await f.controller.update();
+  assert.equal(view.sessionPause.supersededAt, f.now); assert.equal(view.sessionPause.active, false);
+  assert.equal(view.owned, null); assert.ok(['window', 'schedule'].includes(view.manual.kind));
+});
+
+test('unresolved own native Resume cannot be mistaken for an external action cancelling a newer pause', async t => {
+  const initialState = initialOcppControllerState(scope);
+  initialState.session = { transactionId: 7, connected: true, connectedAt: START - MINUTE, lastDisconnectedAt: null };
+  initialState.appControl = appState(START - 2000, false);
+  initialState.takeoverPending = { connectedAt: START - MINUTE, requestedAt: START - 1000,
+    beforeSchedule: 'b'.repeat(64), afterSchedule: 'c'.repeat(64), enabledAt: START - 2000, stopAt: START - 2000, local: false };
+  const f = fixture({ initialState }); t.after(() => f.controller.close());
+  f.advance(1000); f.app(appState(f.now, true));
+  const view = await f.controller.update({ enabled: false, sessionPause });
+  assert.equal(view.sessionPause.active, true); assert.equal(view.sessionPause.confirmed, true);
+  assert.equal(view.sessionPause.supersededAt, null); assert.equal(view.externalResumeAt, null);
+  assert.ok(view.takeoverPending);
+});
+
+test('same-second source precision preserves original local Stop receipt for ending an earlier Charge now', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  f.advance(200);
+  await f.controller.update({ enabled: false, chargeNow: { connectedAt: sessionPause.connectedAt } });
+  f.advance(300);
+  const stop = { transactionId: 7, at: START, receivedAt: START + 500, reason: 'Remote' };
+  f.snapshot({ nativeStop: stop });
+  let view = await f.controller.update();
+  assert.equal(view.externalStopAt, START); assert.equal(view.manual.at, START);
+  assert.deepEqual(view.externalStop, stop);
+  assert.equal(ocppLocalStopAfter(view.externalStop, START + 200), true,
+    'Only the existing same-source-second rule can order this original receipt after Charge now');
+  f.advance(10_000);
+  view = await f.controller.update();
+  assert.equal(view.externalStopAt, START, 'Polling never renews the source clock');
+  assert.deepEqual(view.externalStop, stop, 'Polling never renews the original receipt clock');
+  const restart = fixture({ initialState: f.stored }); t.after(() => restart.controller.close());
+  restart.advance(11_000);
+  const restored = await restart.controller.update({ enabled: false, chargeNow: { connectedAt: sessionPause.connectedAt } });
+  assert.deepEqual(restored.externalStop, stop, 'Persisted original local evidence remains available without a new source reading');
+  assert.equal(ocppLocalStopAfter(restored.externalStop, START + 200), true);
+});
+
+test('buffered local Stop retains its older source time and cannot cancel a newer Charge now merely on late receipt', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  f.advance(5000);
+  const chargeNowAt = f.now;
+  await f.controller.update({ enabled: false, chargeNow: { connectedAt: sessionPause.connectedAt } });
+  f.advance(5000);
+  const stop = { transactionId: 7, at: START + 1000, receivedAt: f.now, reason: 'Local' };
+  f.snapshot({ nativeStop: stop });
+  const view = await f.controller.update();
+  assert.equal(view.manual.at, stop.at); assert.equal(view.externalStopAt, stop.at);
+  assert.deepEqual(view.externalStop, stop);
+  assert.equal(ocppLocalStopAfter(view.externalStop, chargeNowAt), false,
+    'Later receipt outside the source second cannot relabel an old Stop as a new instruction');
+  assert.doesNotThrow(() => validateOcppChargingOwnershipState(f.stored));
+  const malformed = structuredClone(f.stored); malformed.manual.localStop.at += 1000;
+  assert.throws(() => validateOcppChargingOwnershipState(malformed), /Unsupported native charging ownership/);
+});
+
+test('OCPP takeoverRequired includes a baseline native schedule with no manual event and excludes owned profiles', async t => {
+  const f = fixture({ nativeTakeover: true }); t.after(() => f.controller.close());
+  f.app({ ...appState(START, true), schedule: { ...noNativeSchedule(), enabled: 'daily', daily: { timezone: 'UTC',
+    periods: [{ maximumAmps: 16, startTime: '10:00:00', stopTime: '12:00:00' }] } } });
+  let view = await f.controller.update({ enabled: false, plan: plan(START) });
+  assert.equal(view.manual, null); assert.equal(view.takeoverRequired, true);
+  assert.equal(view.takeover.available, true);
+  view = await f.controller.update({ enabled: false, chargeNow: { connectedAt: view.session.connectedAt },
+    takeover: view.takeover.token, takeoverMode: 'charge-now' });
+  assert.equal(view.takeover.state, 'confirmed'); assert.equal(view.takeoverRequired, false);
+  assert.equal(f.nativeCalls.length, 1);
+  const own = fixture(); t.after(() => own.controller.close());
+  view = await own.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(view.pauseConfirmed, true); assert.equal(view.takeoverRequired, false);
+  own.advance(1000);
+  view = await own.controller.update({ sessionPause: { connectedAt: view.session.connectedAt, requestedAt: own.now } });
+  assert.equal(view.sessionPause.confirmed, true); assert.equal(view.takeoverRequired, false);
 });

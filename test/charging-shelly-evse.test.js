@@ -3023,3 +3023,107 @@ test('an unresolved current-only write preserves the confirmed schedule and paus
   assert.equal(view.currentAdjustment.reason, 'evse-publish-unconfirmed');
   assert.equal(f.fields.start_charging, false);
 });
+
+test('session Pause stops immediately without a plan and survives OFF, restart and device SYS Enable', async t => {
+  const f = fixture(t); await f.ready(); advanceCommandClock(f);
+  let saved;
+  const options = { adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: value => { saved = structuredClone(value); }, getPlan: () => { throw Error('Pause must not request prices'); },
+    getIdentification: () => ({ id: 'blocked-probe', connectedAt: f.adapter.snapshot().session.connectedAt, phase: 'charging' }) };
+  let controller = createShellyController(options); t.after(() => controller.close());
+  const request = { connectedAt: f.adapter.snapshot().session.connectedAt, requestedAt: f.now() };
+  let result = await controller.update({ enabled: true, sessionPause: request });
+  assert.equal(f.fields.start_charging, false); assert.equal(result.sessionPause.active, true);
+  assert.equal(result.sessionPause.confirmed, false, 'An accepted permission is not a physically confirmed Stop');
+  assert.equal(result.externalStopAt, null, 'An owned Pause is not an external Stop');
+  f.fields.work_state = 'charger_pause'; f.fields.phase_info.total_power = 0;
+  for (const key of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[key], { current: 0, power: 0 });
+  f.setNow(f.now() + 1000);
+  result = await controller.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.confirmed, true); assert.equal(result.identification, null);
+  await controller.close(); controller = createShellyController({ ...options, initialState: saved });
+  f.setNow(f.now() + 1000); f.sources.set('start_charging', 'sys'); f.fields.start_charging = true;
+  result = await controller.update({ enabled: false, sessionPause: request });
+  assert.equal(f.fields.start_charging, false, 'A device SYS transition cannot release the user Pause');
+  assert.equal(result.sessionPause.active, true); assert.equal(result.sessionPause.supersededAt, undefined);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === true).length, 0);
+});
+
+test('a later external Shelly Resume ends session Pause without losing its original source clock', async t => {
+  const f = fixture(t); await f.ready(); advanceCommandClock(f);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  const request = { connectedAt: f.adapter.snapshot().session.connectedAt, requestedAt: f.now() };
+  await controller.update({ enabled: false, sessionPause: request });
+  f.setNow(f.now() + 2000); f.sources.set('start_charging', 'rpc'); f.fields.start_charging = true;
+  const result = await controller.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.active, false); assert.equal(result.sessionPause.supersededAt, f.now());
+  assert.equal(f.fields.start_charging, true);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1, 'The user Resume is not opposed or replayed');
+});
+
+test('Shelly Charge now takes over external Stop with Automatic OFF and preserves the session current ceiling', async t => {
+  const f = fixture(t, { limiterEnabled: true }); await f.ready(); advanceCommandClock(f);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  await controller.update({ enabled: false });
+  f.setNow(f.now() + 1000); f.fields.start_charging = false; f.sources.set('start_charging', 'rpc');
+  f.fields.current_limit = 8; f.sources.set('current_limit', 'rpc');
+  let result = await controller.update({ enabled: false });
+  assert.equal(result.manualCurrentA, 8); assert.equal(result.externalStopAt, f.now());
+  const token = result.takeover.token;
+  result = await controller.update({ enabled: false, chargeNow: { connectedAt: result.session.connectedAt },
+    takeover: token, takeoverMode: 'charge-now' });
+  assert.equal(result.takeover.state, 'confirmed'); assert.equal(f.fields.start_charging, true);
+  assert.equal(result.manualCurrentA, 8); assert.equal(f.fields.current_limit, 8);
+  assert.equal(result.enabled, false);
+});
+
+test('confirmed Shelly unplug ends session Pause and the new connection receives no old pause', async t => {
+  const f = fixture(t); await f.ready(); advanceCommandClock(f);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  const request = { connectedAt: f.adapter.snapshot().session.connectedAt, requestedAt: f.now() };
+  await controller.update({ enabled: false, sessionPause: request });
+  f.setNow(f.now() + 1000); f.fields.work_state = 'charger_free';
+  let result = await controller.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.active, false);
+  f.setNow(f.now() + 1000); f.fields.work_state = 'charger_wait';
+  result = await controller.update({ enabled: false, sessionPause: request });
+  assert.equal(result.sessionPause.active, false); assert.equal(result.sessionPause.requestedAt, undefined);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === true).length, 0);
+});
+
+test('Shelly takeoverRequired covers native baseline instructions and excludes owned Pause and current-only ceilings', async t => {
+  const native = fixture(t); native.schedules.jobs = [nativeChargingJob()]; await native.ready();
+  const observed = createShellyController({ adapter: native.adapter, clock: native.now }); t.after(() => observed.close());
+  assert.equal(observed.status().takeoverRequired, true, 'A native schedule is visible before manual-change classification');
+  const f = fixture(t); await f.ready(); advanceCommandClock(f);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
+  let view = await controller.update({ enabled: false });
+  assert.equal(view.takeoverRequired, false);
+  f.setNow(f.now() + 1000); f.fields.current_limit = 8; f.sources.set('current_limit', 'rpc');
+  view = await controller.update({ enabled: false });
+  assert.equal(view.takeoverRequired, false);
+  const request = { connectedAt: view.session.connectedAt, requestedAt: f.now() };
+  view = await controller.update({ enabled: false, sessionPause: request });
+  assert.equal(view.ownedPause, true); assert.equal(view.takeoverRequired, false);
+  f.setNow(f.now() + 1000); f.delta('start_charging', { value: false, source: 'rpc' });
+  view = await controller.update({ enabled: false, sessionPause: request });
+  assert.equal(view.takeoverRequired, true, 'A later distinct native Stop is not the controller-owned Pause');
+});
+
+test('session Pause on an externally stopped Shelly reports coherent physical confirmation without claiming its native Stop', async t => {
+  const f = fixture(t); f.fields.start_charging = false; f.sources.set('start_charging', 'rpc');
+  f.fields.work_state = 'charger_pause'; f.fields.phase_info.total_power = 0;
+  for (const key of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[key], { current: 0, power: 0 });
+  await f.ready(); advanceCommandClock(f);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
+  await controller.update({ enabled: false });
+  f.setNow(f.now() + 1000);
+  const view = await controller.update({ enabled: false, sessionPause: {
+    connectedAt: f.adapter.snapshot().session.connectedAt, requestedAt: f.now() } });
+  assert.equal(view.sessionPause.confirmed, true); assert.equal(view.sessionPause.reason, null);
+  assert.equal(view.manual.kind, 'stop'); assert.equal(view.ownsInstruction, false);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 0);
+});

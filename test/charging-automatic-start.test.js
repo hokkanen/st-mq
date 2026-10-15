@@ -283,7 +283,7 @@ test('manual observation receipt time cannot hide a later physical disconnect so
     await first.controller.update({ enabled: true, plan: plan(AT) });
     first.advance(3000); first.app(appState(AT + 1000, true));
     const paused = await first.controller.update({ enabled: true, plan: plan(AT) });
-    assert.equal(paused.manual.at, AT + 3000);
+    assert.equal(paused.manual.at, AT + 1000, 'The original native source clock is preserved independently of receipt');
     const restarted = fixture(t, { saved: first.saved, app: appState(AT + 1000, true) });
     restarted.advance(4000); restarted.reconnect(); restarted.connected(false);
     restarted.statusAt(explicit ? AT - MINUTE : AT + 2000);

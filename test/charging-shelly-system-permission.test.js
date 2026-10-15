@@ -587,7 +587,8 @@ test('ordinary automatic charging honors a late SYS hold at native current witho
 for (const chargeNow of [false, true])
 test(`SYS does not acquire Start authority with Automatic OFF and Charge now ${chargeNow}`, async t => {
   const f = await ordinaryFixture(t, { initiallyPermitted: true, automatic: false });
-  if (chargeNow) f.item().request.chargeNow = true; else delete f.item().request.chargeNow;
+  if (chargeNow) Object.assign(f.item().request, { chargeNow: true, chargeNowAt: f.now });
+  else { delete f.item().request.chargeNow; delete f.item().request.chargeNowAt; }
   f.advance(70_000); f.permission(false); await f.update();
   f.advance(20_000); await f.update();
   assert.equal(f.item().controller.status().manual, null);

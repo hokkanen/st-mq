@@ -42,13 +42,17 @@ const panel = createChargingPanel({ document, request: async (path, payload) => 
   if (fixture.error) throw new Error(fixture.error);
   const id = path.split('/')[4], item = fixture.status.charging.chargers.find(charger => charger.id === id);
   if (path.endsWith('/control')) { item.settings.enabled = payload.enabled; item.controls.enabled = payload.enabled; item.controls.revision++; }
-  if (path.endsWith('/use-automatic')) { item.settings.enabled = true; item.controls.enabled = true; item.request.chargeNow = false;
+  if (path.endsWith('/pause')) {
+    item.request.pause = { requestedAt: now }; item.request.chargeNow = false; item.request.revision++;
+    item.control = { phase: 'pausing', sessionPause: { available: true, active: true, confirmed: false } };
+  }
+  if (path.endsWith('/use-automatic')) { delete item.request.pause; item.control.sessionPause = { available: true, active: false }; item.settings.enabled = true; item.controls.enabled = true; item.request.chargeNow = false;
     item.control.takeover = { available: false, token: null, state: 'pending' }; }
   if (path.endsWith('/charge-now') || path.endsWith('/resume')) {
-    if (Object.keys(payload).sort().join(',') !== 'association,revision,sessionId'
+    if (!['association,revision,sessionId', 'association,controlRevision,revision,sessionId,takeoverToken'].includes(Object.keys(payload).sort().join(','))
       || payload.association !== item.association || payload.sessionId !== item.request.sessionId
       || payload.revision !== item.request.revision) throw new Error('Charging connection changed; refresh before editing');
-    if (path.endsWith('/charge-now')) { item.request.chargeNow = true; item.request.revision++; }
+    if (path.endsWith('/charge-now')) { delete item.request.pause; item.control.sessionPause = { available: true, active: false }; item.request.chargeNow = true; item.request.revision++; }
     else {
       if (!item.controls.enabled) { item.settings.enabled = true; item.controls.enabled = true; item.controls.revision++; }
       if (item.request.chargeNow) { delete item.request.chargeNow; item.request.revision++; }
@@ -185,6 +189,15 @@ fixture.setCase = name => {
       takeover: name === 'startup-stop' ? { available: true, token: 'native:' + item.id }
         : { available: false, token: null, reason: 'Fresh charger readings are unavailable. Check the connection and try again.' },
     };
+    item.control.takeoverRequired = ['stop', 'schedule', 'window'].includes(item.control.manual?.kind)
+      || item.control.errorCode === 'charger-stopped';
+    item.control.sessionPause ??= { available: true, active: false, confirmed: false };
+    if (name.startsWith('session-pause')) {
+      const confirmed = name === 'session-pause-confirmed', unavailable = name === 'session-pause-unconfirmed';
+      item.request.pause = { requestedAt: now - 60000 };
+      item.control = { phase: unavailable ? 'unavailable' : confirmed ? 'paused' : 'pausing',
+        sessionPause: { available: !unavailable, active: true, confirmed, ...(unavailable ? { reason: 'offline' } : {}) } };
+    }
   }
   panel.update(fixture.status); diagnostics.update(fixture.status);
 };
@@ -267,6 +280,31 @@ try {
   for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
+    for (const state of ['session-pause-pending', 'session-pause-confirmed', 'session-pause-unconfirmed']) {
+      await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
+      for (const id of ['charger1', 'charger2']) {
+        const layout = await evaluate(`(() => {
+          const controls = document.getElementById('${id}-charging-controls'), row = document.getElementById('${id}-session-actions');
+          const pause = document.getElementById('${id}-pause'), resume = document.getElementById('${id}-use-automatic');
+          const p = pause.getBoundingClientRect(), r = resume.getBoundingClientRect(), area = row.getBoundingClientRect();
+          return { pauseDisabled: pause.disabled, resumeVisible: resume.checkVisibility(), resumeDisabled: resume.disabled,
+            sameHeight: Math.abs(p.height - r.height) < 1,
+            aligned: Math.abs(p.top - r.top) < 1 || Math.abs(p.left - r.left) < 1 && p.bottom <= r.top,
+            contained: p.left >= area.left && p.right <= area.right && (!resume.checkVisibility() || r.left >= area.left && r.right <= area.right),
+            label: document.getElementById('${id}-notice').textContent, noOverflow: document.documentElement.scrollWidth <= innerWidth,
+            summaryUnchanged: !document.getElementById('${id}-device-summary').contains(pause) };
+        })()`);
+        const expected = { 'session-pause-pending': 'Pause requested', 'session-pause-confirmed': 'Paused until unplugging', 'session-pause-unconfirmed': 'Pause unconfirmed' }[state];
+        assert.equal(layout.label, expected); assert(layout.pauseDisabled && layout.contained && layout.noOverflow && layout.summaryUnchanged);
+        assert.equal(layout.resumeVisible, state !== 'session-pause-unconfirmed');
+        if (layout.resumeVisible) assert(layout.sameHeight && layout.aligned && !layout.resumeDisabled,
+          `${width}px ${theme}: Pause and Use automatic remain evenly sized and aligned, wrapping without overflow`);
+      }
+      const clip = await evaluate(`(() => { const box = document.getElementById('charger1-charging-controls').getBoundingClientRect();
+        return { x: 0, y: box.top + scrollY - 8, width: innerWidth, height: box.height + 16, scale: 1 }; })()`);
+      const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip });
+      writeFileSync(join(artifacts, `charging-${state}-controls-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
+    }
     await evaluate("chargingFixture.setCase('healthy-unplugged')");
     for (const id of ['charger1', 'charger2']) {
       assert.equal(await evaluate(`document.getElementById('${id}-notice').textContent`), 'Ready for the next connection');
@@ -631,6 +669,23 @@ try {
     }
   }
   for (const id of ['charger1', 'charger2']) {
+    await evaluate(`chargingFixture.setCase('ordinary'); chargingFixture.writes = []; chargingFixture.hold = true;
+      document.getElementById('${id}-device').open = true; document.getElementById('${id}-pause').focus()`);
+    await keyPress('Enter', 'Enter', 13); await until('Boolean(chargingFixture.finish)');
+    assert.equal(await evaluate(`document.getElementById('${id}-pause').disabled && document.getElementById('${id}-charge-now').disabled`), true);
+    assert.deepEqual(await evaluate('chargingFixture.writes[0]'), [`/api/charging/chargers/${id}/pause`, {
+      association: `fixture:${id}`, sessionId: `session:${id}`, revision: 7 }]);
+    await evaluate('chargingFixture.hold = false; chargingFixture.finish(); chargingFixture.finish = null');
+    await until(`document.getElementById('${id}-notice').textContent === 'Pause requested'`);
+    await evaluate(`(() => { const paused = chargingFixture.status.charging.chargers.find(item => item.id === '${id}');
+      paused.control.phase = 'paused'; paused.control.sessionPause.confirmed = true; chargingFixture.refresh(); })()`);
+    assert.equal(await evaluate(`document.getElementById('${id}-notice').textContent`), 'Paused until unplugging');
+    assert.equal(await evaluate(`document.getElementById('${id}-pause-message').textContent`), 'Pause confirmed for this connection.');
+    await evaluate(`document.getElementById('${id}-use-automatic').click()`);
+    await until('chargingFixture.writes.length === 2');
+    assert.deepEqual(await evaluate('chargingFixture.writes[1]'), [`/api/charging/chargers/${id}/use-automatic`, {
+      association: `fixture:${id}`, sessionId: `session:${id}`, revision: 8, controlRevision: 4 }]);
+    await until(`document.getElementById('${id}-takeover-message').textContent.includes('Automatic scheduling selected')`);
     await evaluate(`chargingFixture.setCase('charge-now-only'); chargingFixture.writes = []; chargingFixture.hold = true;
       document.getElementById('${id}-device').open = true;
       document.getElementById('${id}-charge-now').scrollIntoView({block:'center'})`);
@@ -685,7 +740,7 @@ try {
     assert.match(await evaluate(`document.getElementById('${id}-takeover-message').textContent`), /charger changed.*latest state/);
   }
   assert.deepEqual(errors, []);
-  console.log(`Charging controls browser checks passed: atomic scoped Charge now OFF enables Automatic with one request, title disclosures, independent report dialogs, conditional shared controls, explicit takeover fencing, visible allowances beside pending/errors and retained 24-hour receipts, shared allowance colors and details, two-line approval status, expanded session settings, shared readings with capability differences, setup links without installation rows, read-only inspection, consistent compact statuses, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
+  console.log(`Charging controls browser checks passed: balanced Pause and Use automatic at all widths, keyboard pause and scoped resume, pending/confirmed/unconfirmed session pause, atomic scoped Charge now OFF enables Automatic with one request, title disclosures, independent report dialogs, conditional shared controls, explicit takeover fencing, visible allowances beside pending/errors and retained 24-hour receipts, shared allowance colors and details, two-line approval status, expanded session settings, shared readings with capability differences, setup links without installation rows, read-only inspection, consistent compact statuses, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   if (browser && browser.exitCode === null) { browser.kill(); await new Promise(resolve => browser.once('exit', resolve)); }

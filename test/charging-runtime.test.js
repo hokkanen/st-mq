@@ -1910,6 +1910,54 @@ async function takeoverFixture(t) {
     setDuring: value => { during = value; }, setResult: (state, token = null) => { confirmation = state; confirmedToken = token; } };
 }
 
+test('Charge now requires the displayed native instruction and leaves Automatic unchanged', async t => {
+  const f = await takeoverFixture(t), status = f.controller.status;
+  f.controller.status = () => ({ ...status(), manual: null, takeoverRequired: true });
+  const before = structuredClone(chargerView(f.runtime)), scope = takeoverScope(before);
+  for (const input of [requestScope(before), { ...scope, takeoverToken: 'synthetic-newer-native-instruction' },
+    { ...scope, controlRevision: scope.controlRevision + 1 }]) {
+    await assert.rejects(f.runtime.chargeNow('charger1', input), /instruction changed/);
+    assert.deepEqual(chargerView(f.runtime).request, before.request);
+    assert.equal(f.calls.length, 0);
+  }
+  let persisted;
+  f.setDuring(() => { persisted = readChargingRuntime(f.store, 'charging:mqtt').chargers.charger1; });
+  await f.runtime.chargeNow('charger1', scope);
+  assert.equal(persisted.request.chargeNow, true);
+  assert.equal(persisted.request.chargeNowAt, f.clock());
+  assert.deepEqual(persisted.controls, before.controls);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].takeoverMode, 'charge-now');
+  assert.equal(f.calls[0].enabled, false);
+  assert.equal(f.calls[0].takeover, scope.takeoverToken);
+  assert.equal(f.runtime.chargers.charger1.takeoverAttempt, undefined);
+});
+
+test('Charge now cannot report unconfirmed or replaced native takeover as success', async t => {
+  for (const [state, token] of [['pending', null], ['blocked', null], ['confirmed', 'earlier-attempt']]) {
+    const f = await takeoverFixture(t); f.setResult(state, token);
+    await assert.rejects(f.runtime.chargeNow('charger1', takeoverScope(chargerView(f.runtime))), /unconfirmed/);
+    assert.equal(f.runtime.chargers.charger1.takeoverAttempt, undefined);
+    assert.equal(f.calls.length, 1);
+    assert.equal(chargerView(f.runtime).controls.enabled, false);
+  }
+});
+
+test('app Pause cannot bypass native takeover when a baseline instruction has no manual record', async t => {
+  const f = await takeoverFixture(t), item = f.runtime.chargers.charger1, status = f.controller.status;
+  item.request.pause = { requestedAt: f.clock() };
+  f.controller.status = () => ({ ...status(), manual: null, takeoverRequired: true });
+  const view = chargerView(f.runtime), { takeoverToken, ...scope } = takeoverScope(view);
+  await assert.rejects(f.runtime.useAutomatic('charger1', scope), /instruction changed/);
+  assert.deepEqual(item.request.pause, view.request.pause);
+  assert.equal(item.controls.enabled, false);
+  assert.equal(f.calls.length, 0);
+  await f.runtime.useAutomatic('charger1', { ...scope, takeoverToken });
+  assert.equal(item.request.pause, undefined);
+  assert.equal(item.controls.enabled, true);
+  assert.equal(f.calls[0].takeover, takeoverToken);
+});
+
 test('Use automatic rejects stale displayed scope or native instruction before persistence and dispatch', async t => {
   const f = await takeoverFixture(t), scope = takeoverScope(chargerView(f.runtime));
   const before = structuredClone(readChargingRuntime(f.store, 'charging:mqtt')), writes = f.writes.length;

@@ -1012,6 +1012,7 @@ test('the explanation fold discloses operational assumptions without exposing ir
   assert.match(explanations['Current allocation'], /Equalizer controls/);
   assert.match(explanations['Period transitions'], /application and the Easee cloud/);
   assert.match(explanations['Pause recovery'], /one-off start.*scheduled time.*loses contact/);
+  assert.match(explanations['Pause recovery'], /Pause charging.*until unplugging.*no timed expiry/);
   assert.match(explanations['Price planning'], /New prices can pause automatic charging.*costs less/);
   assert.match(explanations['Price planning'], /reaching the target or ready-by time does not stop charging/i);
   assert.match(explanations['Manual priority'], /confirmed end.*automatic scheduling when it ends/);
@@ -1023,6 +1024,7 @@ test('the explanation fold discloses operational assumptions without exposing ir
     assert.match(local['Period transitions'], /local charger connection.*expiring zero-current restriction/);
     assert.doesNotMatch(local['Period transitions'], /Easee cloud|one-off start/);
     assert.match(local['Pause recovery'], /expires automatically.*loses contact.*authorization.*does not return.*cloud control/);
+    assert.match(local['Pause recovery'], /Pause charging has no timed expiry/);
     assert.match(local['Use automatic'], /button in Charging controls replaces.*enables Automatic charging and ends Charge now/);
     assert.match(local['Charger confirmation'], /pending until the charger confirms.*measurements.*started or paused/);
   }
@@ -1578,7 +1580,7 @@ test('both shared Use automatic actions submit the displayed connection and nati
   for (const id of ['charger1', 'charger2']) for (const enabled of [false, true]) {
     const document = documentFixture(), $ = name => document.getElementById(name), calls = []; let finish;
     const item = { ...connected(id), controls: { enabled, revision: 4 },
-      control: { phase: 'manual', reason: 'native-schedule', manual: { kind: 'schedule' }, takeover: { available: true, token: 'fixture-current-native-state' } } };
+      control: { phase: 'manual', takeoverRequired: true, reason: 'native-schedule', manual: { kind: 'schedule' }, takeover: { available: true, token: 'fixture-current-native-state' } } };
     item.settings.enabled = enabled; item.request.chargeNow = true;
     const panel = createChargingPanel({ document, request: (...args) => { calls.push(args); return new Promise(resolve => { finish = resolve; }); } });
     panel.update(status(item)); const button = $(`${id}-use-automatic`);
@@ -1626,7 +1628,7 @@ test('both shared Use automatic actions submit the displayed connection and nati
 test('Use automatic availability follows capabilities, authority, session and native evidence for both providers', async () => {
   for (const id of ['charger1', 'charger2']) {
     const document = documentFixture(), $ = name => document.getElementById(name), calls = [];
-    const item = { ...connected(id), control: { phase: 'manual', reason: 'manual-stop', manual: { kind: 'stop' },
+    const item = { ...connected(id), control: { phase: 'manual', takeoverRequired: true, reason: 'manual-stop', manual: { kind: 'stop' },
       takeover: { available: true, token: 'fixture-native-state' } } };
     const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(item); } });
     const ordinary = { ...item, control: { phase: 'waiting', takeover: item.control.takeover } };
@@ -1641,7 +1643,7 @@ test('Use automatic availability follows capabilities, authority, session and na
       panel.update(status({ ...item, settings: { ...item.settings, enabled } }));
       assert(!$(`${id}-use-automatic`).hidden && !$(`${id}-use-automatic`).disabled,
         'A replaceable external instruction permits explicit takeover with either Automatic preference');
-      panel.update(status({ ...item, settings: { ...item.settings, enabled }, control: { phase: 'unavailable',
+      panel.update(status({ ...item, settings: { ...item.settings, enabled }, control: { phase: 'unavailable', takeoverRequired: true,
         errorCode: 'charger-stopped', manual: null, takeover: item.control.takeover } }));
       assert(!$(`${id}-use-automatic`).hidden && !$(`${id}-use-automatic`).disabled,
         'A confirmed pre-existing stop permits takeover without attributing it to an observed manual change');
@@ -1703,7 +1705,7 @@ test('a Shelly current choice alone offers Use automatic only with current adjus
 
 test('Use automatic errors remain readable and keep the current preference and native state', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
-  const item = { ...connected('charger2'), control: { phase: 'manual', reason: 'manual-stop',
+  const item = { ...connected('charger2'), control: { phase: 'manual', takeoverRequired: true, reason: 'manual-stop',
     takeover: { available: true, token: 'fixture-older-native-state' } } };
   const panel = createChargingPanel({ document, request: async () => { throw new Error('The charger changed after this view was loaded. Review its latest state before trying again.'); } });
   panel.update(status(item)); await clickAction($('charger2-use-automatic'));
@@ -1716,7 +1718,7 @@ test('Use automatic errors remain readable and keep the current preference and n
 
 test('a failed Use automatic request refreshes an acknowledged preference without claiming a completed handover', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id); let refreshes = 0;
-  const item = { ...connected('charger2'), control: { phase: 'manual', reason: 'native-schedule', manual: { kind: 'schedule' },
+  const item = { ...connected('charger2'), control: { phase: 'manual', takeoverRequired: true, reason: 'native-schedule', manual: { kind: 'schedule' },
     takeover: { available: true, token: 'fixture-native-state' } } };
   const acknowledged = { ...item, settings: { ...item.settings, enabled: true },
     control: { ...item.control, takeover: { available: false, token: null, state: 'blocked', reason: 'evse-native-schedule-unconfirmed' } } };
@@ -2988,4 +2990,186 @@ test('idle fallback setting and retained vehicle target remain separate from liv
   assert.equal($('charger2-setting-minimumSoc').value, 100);
   assert.match($('charger2-setting-minimumSoc').parentElement.textContent, /Last vehicle value retained.*current vehicle data is unavailable/);
   panel.close();
+});
+
+test('session Pause shares balanced expanded controls and serializes a scoped request for both chargers', async () => {
+  for (const id of ['charger1', 'charger2']) for (const enabled of [false, true]) {
+    const document = documentFixture(), $ = name => document.getElementById(name), calls = []; let finish;
+    const item = connected(id);
+    item.settings.enabled = enabled; item.controls.enabled = enabled; item.request.chargeNow = true;
+    item.control = { phase: 'charging', sessionPause: { available: true, active: false, confirmed: false } };
+    item.values.charging = reading(true);
+    const panel = createChargingPanel({ document, request: (...args) => { calls.push(args); return new Promise(resolve => { finish = resolve; }); } });
+    panel.update(status(item));
+    const button = $(`${id}-pause`), row = $(`${id}-session-actions`);
+    assert.equal(button.textContent, 'Pause charging'); assert(!button.hidden && !button.disabled);
+    assert.equal(button.parentElement, row); assert.equal($(`${id}-use-automatic`).parentElement, row);
+    assert($(`${id}-charging-controls`).contains(button)); assert(!$(`${id}-device-summary`).contains(button));
+    assert.match($(`${id}-pause-help`).textContent, /Until unplugging.*Charge now or Use automatic/);
+    const pending = clickAction(button);
+    assert(button.disabled && $(`${id}-charge-now`).disabled && $(`${id}-enabled`).disabled);
+    await clickAction(button); assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], [`/api/charging/chargers/${id}/pause`, { association: item.association,
+      sessionId: item.request.sessionId, revision: item.request.revision }]);
+    const requested = { ...item, request: { ...item.request, chargeNow: false, revision: 2, pause: { requestedAt: now } },
+      control: { phase: 'pausing', sessionPause: { available: true, active: true, confirmed: false } } };
+    finish(status(requested)); await pending;
+    assert(button.disabled); assert.equal($(`${id}-charge-now`).getAttribute('aria-pressed'), 'false');
+    assert.equal($(`${id}-enabled`).getAttribute('aria-checked'), String(enabled));
+    assert.equal($(`${id}-notice`).textContent, 'Pause requested');
+    assert.match($(`${id}-pause-message`).textContent, /Waiting for the charger/);
+    assert.doesNotMatch($(`${id}-pause-message`).textContent, /Pause confirmed/);
+    const confirmed = { ...requested, values: { ...requested.values, charging: reading(false) },
+      control: { phase: 'paused', sessionPause: { available: true, active: true, confirmed: true } } };
+    panel.update(status(confirmed));
+    assert.equal($(`${id}-notice`).textContent, 'Paused until unplugging');
+    assert.equal($(`${id}-state`).textContent, 'Paused here');
+    assert.match($(`${id}-readings`).textContent, /Pause originPaused here/);
+    const receipt = $(`${id}-pause-message`).textContent;
+    assert.equal(receipt, 'Pause confirmed for this connection.');
+    panel.update(status({ ...confirmed, control: { phase: 'unavailable', sessionPause: {
+      available: false, active: true, confirmed: false, reason: 'offline' } } }));
+    assert.equal($(`${id}-notice`).textContent, 'Pause unconfirmed');
+    assert.equal($(`${id}-pause-message`).textContent, receipt, 'A historical confirmation receipt survives later feed loss');
+    assert($(`${id}-charge-now`).disabled && $(`${id}-use-automatic`).disabled);
+    panel.update({ ...status(confirmed), now: now + 24 * 3600_000 });
+    assert.equal($(`${id}-pause-message`).textContent, '');
+    assert.equal($(`${id}-notice`).textContent, 'Paused until unplugging', 'Active pause outlives its action receipt');
+    panel.close();
+  }
+});
+
+test('session Pause retains honest activity, source and no promised completion through pending and stale status', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => {} });
+  const item = active(); item.request.pause = { requestedAt: now - 60_000 };
+  assert.equal(view({ ...item, control: { sessionPause: { active: false, requestedAt: null } } }).state, 'Pause requested',
+    'A committed request is visible before the native controller consumes the new intent');
+  for (const [phase, confirmed, charging, expected] of [
+    ['pausing', false, true, 'Pause requested'], ['paused', true, false, 'Paused until unplugging'],
+    ['unconfirmed', false, false, 'Pause unconfirmed'], ['paused', true, true, 'Pause unconfirmed'],
+  ]) {
+    const current = { ...item, values: { ...item.values, charging: reading(charging) }, control: {
+      phase, sessionPause: { available: true, active: true, confirmed } } };
+    panel.update(status(current));
+    assert.equal($('charger1-notice').textContent, expected);
+    assert.equal($('charger1-completion').textContent, 'No estimate');
+    assert.deepEqual(view(current).periodRows, []);
+    assert(!view(current).risk && !view(current).readiness);
+    assert.equal(view(current).event, expected);
+    if (charging) assert.equal($('charger1-event-value').textContent, `Charging · ${expected}`);
+  }
+  const resumed = { ...item, control: { phase: 'manual', manual: { kind: 'release' },
+    sessionPause: { available: true, active: false, supersededAt: now } } };
+  panel.update(status(resumed));
+  assert.doesNotMatch($('charger1-notice').textContent, /Paused until|Pause requested/);
+  assert(!$('charger1-pause').disabled);
+  const unplugged = { ...item, values: { ...item.values, connected: reading(false) }, control: { sessionPause: { active: false } } };
+  panel.update(status(unplugged));
+  assert.doesNotMatch($('charger1-notice').textContent, /Paused until|Pause requested/);
+  assert($('charger1-pause').disabled); panel.close();
+});
+
+test('Pause is fenced by authority, current connection and backend readiness and leaves failure readable', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+  const item = { ...connected(), control: { sessionPause: { available: true, active: false } } };
+  const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); throw new Error('The connection changed. Refresh before pausing.'); } });
+  for (const blocked of [
+    { ...status(item), role: 'slave' }, { ...status(item), readOnly: true }, status({ ...item, readOnly: true }),
+    status({ ...item, request: null }), status({ ...item, values: { ...item.values, connected: reading(false) } }),
+    status({ ...item, values: { ...item.values, connected: reading(null) } }),
+    status({ ...item, capabilities: { scheduling: false } }),
+    status({ ...item, control: {} }), status({ ...item, control: { sessionPause: { available: false, reason: 'offline' } } }),
+  ]) {
+    panel.update(blocked); assert($('charger1-pause').disabled);
+    await clickAction($('charger1-pause')); assert.deepEqual(calls, []);
+  }
+  panel.update(status(item)); await clickAction($('charger1-pause'));
+  assert.equal(calls.length, 1); assert(!$('charger1-pause').disabled);
+  assert($('charger1-pause-message').matches('.form-error'));
+  assert.match($('charger1-pause-message').textContent, /connection changed/);
+  assert.doesNotMatch($('charger1-notice').textContent, /Pause requested|Paused until/); panel.close();
+});
+
+test('app-only Pause resumes with token-free Use automatic and Charge now keeps the saved Automatic preference', async () => {
+  for (const action of ['use-automatic', 'charge-now']) for (const id of ['charger1', 'charger2']) {
+    const document = documentFixture(), $ = name => document.getElementById(name), calls = [];
+    const item = connected(id); item.request.pause = { requestedAt: now };
+    item.control = { phase: 'paused', sessionPause: { available: true, active: true, confirmed: true } };
+    const resumed = { ...item, request: { ...item.request, revision: 2, pause: undefined, chargeNow: action === 'charge-now' },
+      settings: { ...item.settings, enabled: action === 'use-automatic' },
+      control: { phase: 'waiting', sessionPause: { available: true, active: false } } };
+    const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(resumed); } });
+    panel.update(status(item)); assert(!$(`${id}-use-automatic`).hidden);
+    await clickAction($(`${id}-${action}`));
+    assert.deepEqual(calls, [[`/api/charging/chargers/${id}/${action}`, { association: item.association,
+      sessionId: item.request.sessionId, revision: 1, ...(action === 'use-automatic' ? { controlRevision: 0 } : {}) }]]);
+    assert.equal($(`${id}-enabled`).getAttribute('aria-checked'), String(action === 'use-automatic'));
+    if (action === 'use-automatic') {
+      assert.match($(`${id}-takeover-message`).textContent, /Automatic scheduling selected/);
+      assert.doesNotMatch($(`${id}-takeover-message`).textContent, /confirmed/);
+    }
+    assert(!$(`${id}-pause`).disabled); panel.close();
+  }
+});
+
+test('Charge now supersedes only displayed native Stop and schedules with a guarded token, preserving current-only choices', async () => {
+  for (const id of ['charger1', 'charger2']) for (const kind of ['stop', 'schedule', 'window']) {
+    const document = documentFixture(), $ = name => document.getElementById(name), calls = [];
+    const item = { ...connected(id), control: { phase: 'manual', takeoverRequired: true, manual: { kind },
+      takeover: { available: true, token: 'synthetic-current-native-instruction' } } };
+    const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(item); } });
+    panel.update(status(item)); await clickAction($(`${id}-charge-now`));
+    assert.deepEqual(calls[0], [`/api/charging/chargers/${id}/charge-now`, { association: item.association,
+      sessionId: item.request.sessionId, revision: 1, controlRevision: 0, takeoverToken: 'synthetic-current-native-instruction' }]);
+    panel.update(status({ ...item, control: { ...item.control, takeover: { available: false, token: null, reason: 'offline' } } }));
+    assert($(`${id}-charge-now`).disabled); await clickAction($(`${id}-charge-now`)); assert.equal(calls.length, 1);
+    panel.close();
+  }
+  const document = documentFixture(), calls = [], item = { ...connected('charger2'), configuration: { limiterEnabled: true },
+    control: { manualCurrentA: 9, takeover: { available: true, token: 'synthetic-current-choice-only' } } };
+  const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(item); } });
+  panel.update(status(item)); await clickAction(document.getElementById('charger2-charge-now'));
+  assert.deepEqual(calls[0][1], { association: item.association, sessionId: item.request.sessionId, revision: 1 });
+  panel.close();
+});
+
+test('baseline native schedules and Stops use backend takeover evidence even without a manual change', async () => {
+  for (const snapshot of [
+    { transport: 'ocpp', appControl: { schedule: { enabled: 'delayed', delayed: { startTime: '05:00' } } } },
+    { schedule: { enabled: 'weekly', weekly: { monday: { startTime: '05:00' } } } },
+    { transport: 'ocpp', appControl: { stopped: true, stopAt: now - 60000 } },
+    { stopped: true, enabled: false },
+  ]) for (const action of ['use-automatic', 'charge-now']) {
+    const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+    const item = { ...connected(), control: { phase: 'paused', manual: null, snapshot,
+      takeoverRequired: true, takeover: { available: true, token: 'synthetic-baseline-native-instruction' },
+      sessionPause: { available: true, active: true, confirmed: true } } };
+    item.request.pause = { requestedAt: now };
+    const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(item); } });
+    panel.update(status(item));
+    assert(!$(`charger1-${action}`).hidden && !$(`charger1-${action}`).disabled);
+    await clickAction($(`charger1-${action}`));
+    assert.deepEqual(calls, [[`/api/charging/chargers/charger1/${action}`, { association: item.association,
+      sessionId: item.request.sessionId, revision: 1, controlRevision: 0, takeoverToken: 'synthetic-baseline-native-instruction' }]]);
+    panel.close();
+  }
+});
+
+test('exact owned cloud holds do not become native takeover merely because raw state still looks stopped or scheduled', async () => {
+  for (const snapshot of [
+    { schedule: { enabled: 'delayed', delayed: { startTime: '05:00' } } },
+    { stopped: true, dynamicChargerPaused: true },
+  ]) {
+    const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+    const item = { ...connected(), control: { phase: 'paused', snapshot,
+      takeoverRequired: false, takeover: { available: true, token: 'synthetic-owned-hold-not-an-external-instruction' },
+      sessionPause: { available: true, active: true, confirmed: true } } };
+    item.request.pause = { requestedAt: now };
+    const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(item); } });
+    panel.update(status(item)); await clickAction($('charger1-use-automatic'));
+    assert.deepEqual(calls[0][1], { association: item.association, sessionId: item.request.sessionId, revision: 1, controlRevision: 0 });
+    await clickAction($('charger1-charge-now'));
+    assert.deepEqual(calls[1][1], { association: item.association, sessionId: item.request.sessionId, revision: 1 });
+    panel.close();
+  }
 });
