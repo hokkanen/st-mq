@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile, copyFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, copyFile, readdir, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -120,10 +120,10 @@ test('interrupted initial catchup resumes verified chunks and does not publish p
   assert.ok(f.chunks() - previousChunks < Math.ceil(metadata.bytes / (1024 * 1024)));
 });
 
-test('universal gate preserves old publication and refuses legacy SSH receiver', async t => {
+test('universal gate preserves old publication and refuses standalone SSH receipt after a current handshake', async t => {
   const f = await fixture(t), directory = join(f.root, 'slave');
   const metadata = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 1 });
-  await receiveSnapshot({ directory, metadata, peer: f.peer });
+  const publication = await receiveSnapshot({ directory, metadata, peer: f.peer });
   const previous = await readFile(join(directory, 'publication.json'), 'utf8');
   f.db.exec('DELETE FROM events');
   const second = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 2, force: true });
@@ -133,7 +133,41 @@ test('universal gate preserves old publication and refuses legacy SSH receiver',
     if (protectedState) throw Object.assign(Error('protected'), { code: 'protected_history' });
   } }), { code: 'protected_history' });
   assert.equal(await readFile(join(directory, 'publication.json'), 'utf8'), previous);
-  await assert.rejects(runReceiver({ directory, input: Readable.from([]), output: new Writable({ write(c, e, cb) { cb(); } }) }), { code: 'protected_history' });
+  const previousDatabase = await readFile(publication.dbPath);
+  const inventory = async () => {
+    const root = await lstat(directory);
+    assert.equal(root.isDirectory(), true);
+    assert.equal(root.isSymbolicLink(), false);
+    const rows = [{ name: '', mode: root.mode, directory: true }];
+    const walk = async (path, prefix = '') => {
+      for (const entry of (await readdir(path, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+        const name = join(prefix, entry.name), file = join(path, entry.name), metadata = await lstat(file);
+        assert.equal(metadata.isSymbolicLink(), false, 'The retained synthetic fixture has no symbolic links');
+        if (entry.isDirectory()) { rows.push({ name, mode: metadata.mode, directory: true }); await walk(file, name); }
+        else { assert.equal(entry.isFile(), true); rows.push({ name, mode: metadata.mode, bytes: await readFile(file) }); }
+      }
+    };
+    await walk(directory); return rows;
+  };
+  const retained = await inventory();
+  const preserved = async () => {
+    assert.equal(await readFile(join(directory, 'publication.json'), 'utf8'), previous);
+    assert.deepEqual(await readFile(publication.dbPath), previousDatabase);
+    assert.deepEqual(await inventory(), retained, 'No ownership, lock, recovery, staging or publication files changed');
+  };
+  await t.test('current prepare reaches paired-history protection without changing stored files', async () => {
+    const prepare = { type: 'prepare', version: 3, schema: SCHEMA_VERSION, generation: randomUUID() };
+    let reply = '';
+    await assert.rejects(runReceiver({ directory, input: Readable.from([JSON.stringify(prepare) + '\n']),
+      output: new Writable({ write(chunk, encoding, callback) { reply += chunk; callback(); } }) }), { code: 'protected_history' });
+    assert.equal(reply, ''); await preserved();
+  });
+  await t.test('an empty stream reports interruption before directory work', async () => {
+    let reply = '';
+    await assert.rejects(runReceiver({ directory, input: Readable.from([]),
+      output: new Writable({ write(chunk, encoding, callback) { reply += chunk; callback(); } }) }), { code: 'transfer_interrupted' });
+    assert.equal(reply, ''); await preserved();
+  });
 });
 
 test('a changed local publication is preserved before another master snapshot can replace it', async t => {
