@@ -1,5 +1,6 @@
 import { learningCheckpointSampleReferences, validateLearningCheckpointSample } from './learning-checkpoint-storage.js';
 import { journalConnection } from './journal.js';
+import { isWriterDatabase } from './writer-database.js';
 
 const invalid = () => Object.assign(new Error('Archived learning checkpoint evidence is incomplete or invalid.'),
   { code: 'database_integrity_failed' });
@@ -11,6 +12,8 @@ const SCRATCH = 'verification_learning_checkpoint_samples';
  * through disk-backed scratch, without rebuilding a database or retaining all
  * archived payloads in JavaScript memory. The caller pins one read boundary. */
 export function validateArchivedLearningCheckpointStorage(db) {
+  if (isWriterDatabase(db)) throw Object.assign(new Error('Full verification requires its dedicated storage worker. Use the database verification service.'),
+    { code: 'journal_worker_required' });
   const connection = journalConnection(db);
   if (!connection.prepare(`SELECT 1 FROM journal_peer_branch_rows
     WHERE table_name IN ('learning_checkpoint_samples','learning_checkpoints','state') LIMIT 1`).get()) return;

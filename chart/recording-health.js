@@ -1,5 +1,6 @@
 import { createStoragePerformance } from './storage-health.js';
 import { recoveryErrorMessage } from '../src/recovery/errors.js';
+import { dashboardWriterState } from './dashboard-storage.js';
 
 const finite = value => Number.isFinite(value) && value >= 0;
 const validTime = value => finite(value) && value <= 8_640_000_000_000_000;
@@ -26,6 +27,7 @@ export function recordingEvidenceTime(value, now = Date.now()) {
 }
 
 const recordingLabels = { ok: 'Monitoring active', starting: 'Starting recording', stalled: 'Recording needs attention',
+  'writer-unavailable': 'Recording unavailable', 'writer-confirming': 'Confirming last save',
   'write-waiting': 'Waiting for storage', 'write-failed': 'Recording write failed', 'source-unavailable': 'Sources unavailable', 'read-only': 'Read-only history', unknown: 'Recording unknown' };
 const backupLabels = { available: 'Copy available', 'none-known': 'No known copy', running: 'Copy in progress',
   failed: 'Last backup failed', interrupted: 'Backup interrupted', unknown: 'Backup status unknown' };
@@ -33,14 +35,14 @@ const diskLabels = { ok: 'Space available', low: 'Low disk space', critical: 'Cr
 const sourceLabels = { stale: 'Out of date', unavailable: 'Unavailable', 'held-attention': 'Held reading needs attention',
   failed: 'Source check failed', invalid: 'Reading rejected', waiting: 'Waiting for a reading', unknown: 'Unknown' };
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
-const tone = state => ['write-failed', 'critical', 'failed', 'stalled'].includes(state) ? 'critical'
-  : ['low', 'interrupted', 'source-unavailable', 'write-waiting'].includes(state) ? 'warning' : 'neutral';
+const tone = state => ['write-failed', 'writer-unavailable', 'critical', 'failed', 'stalled'].includes(state) ? 'critical'
+  : ['low', 'interrupted', 'source-unavailable', 'write-waiting', 'writer-confirming'].includes(state) ? 'warning' : 'neutral';
 const issueTarget = (id, recordingState) => {
   if (['disk-space', 'disk-check'].includes(id)) return 'recording-disk-card';
   if (['backup', 'backup-check'].includes(id)) return 'recording-backup-card';
   if (id === 'database-verification') return 'database-verification-details';
   if (id === 'recording-sources') return 'recording-recording-card';
-  return id === 'recording-resumed' || ['write-failed', 'write-waiting'].includes(recordingState)
+  return ['recording-resumed', 'storage-writer'].includes(id) || ['write-failed', 'write-waiting', 'writer-unavailable', 'writer-confirming'].includes(recordingState)
     ? 'recording-performance-details' : 'recording-recording-card';
 };
 
@@ -75,6 +77,7 @@ export function recordingHealthView(health, recording, now = Date.now()) {
   const totalMeasured = finite(budget.totalDatabaseMeasurementHours) && budget.totalDatabaseMeasurementHours > 0
     && finite(budget.totalDatabaseProjectedAnnualBytes);
   const readOnly = ['snapshot', 'history'].includes(current.scope);
+  const writer = dashboardWriterState({ recordingHealth: current });
   const sources = recorder.sources;
   const observed = count(sources?.observedStreams), usable = count(sources?.usableStreams);
   const attention = count(sources?.attentionStreams), unknown = count(sources?.unknownStreams);
@@ -84,7 +87,8 @@ export function recordingHealthView(health, recording, now = Date.now()) {
     // The server dates the check; the browser renders it with a separate clock.
     // Tolerate skew within the freshness window without changing source times.
     clockMismatch: validTime(current.checkedAt) && current.checkedAt - now > healthFreshnessMs,
-    settled: ['ok', 'read-only'].includes(recorder.state) && hasSpace && disk.state === 'ok',
+    settled: ['ok', 'read-only'].includes(recorder.state) && hasSpace && disk.state === 'ok'
+      && (readOnly || ['ready', 'saving'].includes(writer)),
     recordingScope: current.scope === 'snapshot' ? 'Recorded snapshot' : current.scope === 'history' ? 'History viewer'
       : current.scope === 'simulated' ? 'Simulated recording' : 'Recording',
     scope: `On this server · ${{ live: 'Live recording', simulated: 'Simulated recording', snapshot: 'Read-only replica', history: 'History viewer' }[current.scope] ?? 'scope unknown'}`,
@@ -98,6 +102,10 @@ export function recordingHealthView(health, recording, now = Date.now()) {
       detail: disk.detail || 'Free space on the filesystem that holds this server’s database.',
       evidence: validTime(disk.checkedAt) ? `Disk space checked ${recordingEvidenceTime(disk.checkedAt, now)}` : 'Disk space check time is not known.' },
     recording: { label: recordingLabels[recorder.state] ?? recordingLabels.unknown,
+      summaryLabel: !readOnly && writer === 'unknown' && ['ok', 'starting'].includes(recorder.state)
+        ? 'Storage status unknown' : recordingLabels[recorder.state] ?? recordingLabels.unknown,
+      target: !readOnly && writer === 'unknown' && ['ok', 'starting'].includes(recorder.state)
+        ? 'recording-performance-details' : issueTarget('recording', recorder.state),
       tone: recorder.sources?.attentionStreams > 0 && tone(recorder.state) === 'neutral' ? 'warning' : tone(recorder.state),
       cardLabel: recorder.state === 'write-waiting' ? 'Recording delayed'
         : recorder.state === 'write-failed' ? 'Recording interrupted' : recordingLabels[recorder.state] ?? recordingLabels.unknown,
@@ -142,7 +150,7 @@ export function recordingHealthView(health, recording, now = Date.now()) {
   };
 }
 
-export function createRecordingHealth({ document, request, reviewBackup, downloadBackup, onContextChange,
+export function createRecordingHealth({ document, request, reviewBackup, downloadBackup, onContextChange, onHealthRefresh,
   now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout }) {
   const $ = id => document.getElementById(id);
   const performance = createStoragePerformance({ document, now });
@@ -407,10 +415,10 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     strip.hidden = !view.known || !(introVisible || needsAttention || !view.settled || strip.contains(document.activeElement));
     strip.dataset.tone = attention.some(item => item.severity === 'critical') ? 'critical' : needsAttention ? 'warning' : 'neutral';
     set('recording-status-label', view.recordingScope);
-    set('recording-status-state', `${dated ? 'Last known: ' : ''}${view.recording.label}`);
+    set('recording-status-state', `${dated ? 'Last known: ' : ''}${view.recording.summaryLabel}`);
     $('recording-status-recording').dataset.tone = view.recording.tone;
     const recordingLink = $('recording-status-recording');
-    recordingLink.dataset.recordingOpen = issueTarget('recording', health?.recording?.state);
+    recordingLink.dataset.recordingOpen = view.recording.target;
     recordingLink.href = `#${recordingLink.dataset.recordingOpen}`;
     set('recording-status-free', `${dated ? 'Last known: ' : ''}${view.disk.fraction === null ? 'Space unknown' : `${view.disk.free} free`}`);
     set('recording-status-capacity', view.disk.fraction === null ? 'Open details to check storage' : `of ${view.disk.total}${view.disk.tone === 'neutral' ? '' : ` · ${view.disk.label}`}`);
@@ -502,8 +510,8 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     });
     sourceList.hidden = view.recording.issues.length === 0;
     const writeAt = health?.recording?.lastWriteAt;
-    set('recording-performance-lastWrite', validTime(writeAt) ? `Last successful storage write · ${recordingEvidenceTime(writeAt, now())}. Includes settings and event writes.`
-      : ['snapshot', 'history'].includes(health?.scope) ? 'Successful storage writes are not monitored here.' : 'No successful storage write is known in this run.');
+    set('recording-performance-lastWrite', validTime(writeAt) ? recordingEvidenceTime(writeAt, now())
+      : ['snapshot', 'history'].includes(health?.scope) ? 'Not monitored here' : 'No confirmed save in this run');
     set('recording-backup-evidence', view.backup.evidence);
     set('recording-backup-activity', view.backup.activity);
     $('recording-backup-activity').hidden = !view.backup.activity;
@@ -573,6 +581,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
       if (version !== revision) return;
       if (result?.version !== 2) throw new Error('Recording health is unavailable.');
       acceptHealth(result);
+      onHealthRefresh?.(result);
     } catch {
       if (version !== revision) return;
       unavailable = true;

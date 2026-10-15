@@ -52,7 +52,7 @@ const incidentReasons = {
   'follow-up-failed': 'The save completed, but subsequent work failed.',
 };
 const incidentOutcomes = {
-  'save-failed': 'The save did not commit.',
+  'save-failed': 'The save was not confirmed.',
   'not-retained-for-retry': 'The update was not retained for retry.',
   'retained-for-retry': 'The update was retained for retry.',
   'original-update-saved': 'The original update was saved on retry.',
@@ -76,7 +76,8 @@ function incidentView(value, lastWriteAt) {
 }
 
 export function storagePerformanceView(health, period = 'day', { unavailable = false, now = Date.now() } = {}) {
-  const history = health?.version === 2 && ['live', 'simulated'].includes(health.scope) && health.recording?.history?.version === 2
+  const live = health?.version === 2 && ['live', 'simulated'].includes(health.scope);
+  const history = live && health.recording?.history?.version === 2
     ? health.recording.history : null;
   const window = history?.windows?.[period];
   const monitored = finite(window?.coveredMs) && window.coveredMs > 0;
@@ -86,15 +87,17 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
   const valid = Boolean(history && window);
   const observed = value => monitored ? observedCount(value) : 'Not monitored';
   const pending = history?.current ?? {};
+  const writer = live ? health.recording?.writer?.state : null;
+  const queueKnown = count(pending.pending) && count(pending.activeJobs);
   const queued = pending.pending === 0 ? 'No queued operations'
-    : `${observedCount(pending.pending)} queued · oldest ${storageDuration(pending.oldestPendingMs)}`;
+    : `${observedCount(pending.pending)} queued · ${finite(pending.oldestPendingMs) ? `oldest ${storageDuration(pending.oldestPendingMs)}` : 'age unknown'}`;
   const running = count(pending.activeJobs) && pending.activeJobs > 0 ? ` · ${integer.format(pending.activeJobs)} running` : '';
-  const current = valid ? `${stale ? 'Last known: ' : ''}${queued}${running}` : '';
+  const current = history && queueKnown ? `${stale ? 'Last known: ' : ''}${queued}${running}` : live ? 'Queue activity is not available' : '';
   let notice = !health ? 'Waiting for storage health information.'
     : health.scope === 'snapshot' ? 'These measurements are held only in the live controller’s memory. They are not included in a recorded snapshot.'
       : health.scope === 'history' ? 'Storage health is not monitored by the history viewer.'
-        : !valid ? 'Storage health is unavailable for this recording scope.' : '';
-  if (valid && stale) notice = unavailable ? 'Refresh failed. These are the last known measurements.'
+        : !live ? 'Storage health is unavailable for this recording scope.' : '';
+  if (live && stale) notice = unavailable ? 'Refresh failed. These are the last known measurements.'
     : health.checkedAt > now ? 'The server and browser clocks differ. These are the last known measurements.'
       : 'These are the last known measurements; the health check is out of date.';
   const contention = window?.contention;
@@ -102,22 +105,45 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
   const knownOutcomes = monitored && historicProblems.every(count);
   const problemsObserved = monitored && historicProblems.some(value => count(value) && value > 0);
   let state = 'Storage status unknown', stateTone = 'neutral';
-  if (valid) {
-    if (health.recording.state === 'write-failed') { state = 'Save failed'; stateTone = 'critical'; }
+  let detail = 'Writer availability is not known.';
+  if (live) {
+    if (writer === 'unavailable' || writer === 'stopped') {
+      state = writer === 'stopped' ? 'Writer stopped' : 'Writer unavailable'; stateTone = 'critical';
+      detail = 'New changes cannot be saved. Check storage and restart the application.';
+    } else if (writer === 'confirming') {
+      state = 'Confirming last save'; stateTone = 'warning';
+      detail = 'The save result is being checked. Changes and commands that depend on it are waiting for confirmation.';
+    } else if (health.recording.state === 'write-failed') {
+      state = 'Save failed'; stateTone = 'critical';
+      detail = 'A save was not confirmed. Review the observed outcomes below; earlier confirmed saves remain recorded.';
+    }
     else if (finite(pending.waitingMs)) { state = 'Waiting for storage'; stateTone = 'warning'; }
-    else if (count(pending.pending) && pending.pending > 0) state = `${integer.format(pending.pending)} operation${pending.pending === 1 ? '' : 's'} queued`;
-    else if (count(pending.activeJobs) && pending.activeJobs > 0) state = 'Writing';
-    else if (pending.pending === 0 && pending.activeJobs === 0) state = 'Caught up';
+    else if (['ready', 'saving'].includes(writer)) {
+      if (count(pending.pending) && pending.pending > 0) state = `${integer.format(pending.pending)} operation${pending.pending === 1 ? '' : 's'} queued`;
+      else if (writer === 'saving' || count(pending.activeJobs) && pending.activeJobs > 0) state = 'Writing';
+      else if (pending.pending === 0 && pending.activeJobs === 0) state = 'Caught up';
+      else state = 'Writer ready';
+    }
+    if (state === 'Waiting for storage') detail = 'Queued work is waiting for the database writer lock. A lock wait does not establish a failed save.';
+    else if (state === 'Writing' || / operations? queued$/.test(state)) detail = 'Saving is in progress. The dashboard keeps the last confirmed values until the save completes.';
+    else if (state === 'Caught up') detail = '';
+    else if (state === 'Writer ready') detail = 'The writer is available. Queue activity is not known.';
     if (stale) state = `Last known: ${state}`;
-  } else if (['snapshot', 'history'].includes(health?.scope)) state = 'Not monitored here';
+    if (stale && detail) detail = `Last known status. ${detail}`;
+  } else if (['snapshot', 'history'].includes(health?.scope)) { state = 'Not monitored here'; detail = ''; }
   const historyState = valid ? problemsObserved ? 'Problems observed' : knownOutcomes ? 'No failures observed' : 'Outcomes not monitored yet' : '';
   const evidence = valid ? `${label} · ${coverageDuration(window.monitoredMs)} monitored`
     : ['snapshot', 'history'].includes(health?.scope) ? 'Check the active live controller for its memory-only history.' : 'Waiting for monitored storage evidence.';
+  const runtime = live ? health.recording?.runtimeTiming : null;
+  const runtimeValid = runtime?.basis === 'observed-event-loop-delay' && runtime.hardRealtime === false
+    && count(runtime.samples) && (runtime.samples === 0 || finite(runtime.maxObservedDelayMs) && finite(runtime.p99ObservedDelayMs));
   return {
     available: valid,
     notice,
     stale,
-    activityTitle: valid ? stale ? 'Last known activity' : 'Current activity' : 'Storage write evidence',
+    activityTitle: live ? stale ? 'Last known activity' : 'Current activity' : 'Storage write evidence',
+    detail,
+    currentVisible: live,
     state, stateTone, evidence, historyState, historyTone: problemsObserved ? 'warning' : 'neutral',
     outcome: valid ? problemsObserved ? 'Problems observed during this period.'
       : knownOutcomes ? 'No failures observed during this period.' : 'Outcomes are not monitored yet.' : '',
@@ -127,6 +153,11 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
       ? `${coverageDuration(window.coveredMs)} summarized. The oldest partial five-minute interval is excluded.` : '',
     clock: valid && history.clockChanged ? 'The server clock changed during this run. Durations use elapsed time; dates may differ.' : '',
     current,
+    runtimeVisible: live,
+    runtimeTitle: stale ? 'Last known application responsiveness' : 'Application responsiveness',
+    runtimeMax: runtimeValid && runtime.samples > 0 ? storageDuration(runtime.maxObservedDelayMs) : runtimeValid ? 'No samples' : 'Unknown',
+    runtimeP99: runtimeValid && runtime.samples > 0 ? storageDuration(runtime.p99ObservedDelayMs) : runtimeValid ? 'No samples' : 'Unknown',
+    runtimeSamples: runtimeValid ? `${integer.format(runtime.samples)} timer samples since application start` : 'Application timing is not available.',
     waiting: valid && finite(pending.waitingMs) ? `Waiting for the writer lock · ${storageDuration(pending.waitingMs)} so far` : '',
     queue: timing(window?.queueDelay, 'completed queued operations'),
     transaction: timing(window?.transactionDuration, 'committed transactions'),
@@ -167,6 +198,10 @@ export function createStoragePerformance({ document, now = () => Date.now() }) {
     set('clock', view.clock);
     set('precision', view.precision);
     set('current', view.current);
+    set('detail', view.detail);
+    $('recording-performance-detail').hidden = !view.detail;
+    $('recording-performance-live').hidden = !view.currentVisible;
+    $('recording-performance-activity').hidden = !view.currentVisible;
     set('live-title', view.activityTitle);
     set('waiting', view.waiting);
     set('state', view.state);
@@ -182,6 +217,16 @@ export function createStoragePerformance({ document, now = () => Date.now() }) {
     const data = $('recording-performance-data');
     if (!view.available && data.contains(document.activeElement)) root.querySelector(':scope > summary')?.focus({ preventScroll: true });
     data.hidden = !view.available;
+    for (const id of ['recording-performance-responsiveness', 'recording-performance-method']) {
+      const section = $(id);
+      if (!view.runtimeVisible && section.contains(document.activeElement)) root.querySelector(':scope > summary')?.focus({ preventScroll: true });
+      section.hidden = !view.runtimeVisible;
+    }
+    set('runtime-title', view.runtimeTitle);
+    set('runtime-max', view.runtimeMax);
+    set('runtime-p99', view.runtimeP99);
+    set('runtime-samples', view.runtimeSamples);
+    for (const key of ['mean', 'worst', 'samples']) set(`write-${key}`, view.transaction[key]);
     for (const name of ['queue', 'transaction', 'commit', 'journalSeal', 'nativeCommit', 'controlQueue', 'normalQueue']) {
       for (const [key, value] of Object.entries(view[name])) set(`${name}-${key}`, value);
     }

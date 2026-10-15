@@ -38,7 +38,7 @@ async function fixture(t) {
   t.after(async () => {
     try { competitor.exec('ROLLBACK'); } catch { /* No active fixture lock. */ }
     for (const client of clients) client.terminate();
-    await local.close(); competitor.close(); store.close(); rmSync(directory, { recursive: true, force: true });
+    await local.close(); competitor.close(); await store.close(); rmSync(directory, { recursive: true, force: true });
   });
   await local.start();
   return { local, store, competitor, port, openTransport, get ledgerWrites() { return ledgerWrites; },
@@ -69,6 +69,38 @@ async function fixture(t) {
     },
   };
 }
+
+for (const interruption of ['cancelled', 'new-native-frame']) test(`worker commit wait revalidates OCPP dispatch after ${interruption}`, async t => {
+  const f = await fixture(t), client = await f.connect();
+  await waitFor(() => f.store.writeQueueStatus().pending === 0);
+  await f.store.startWriter();
+  let entered, release, intercepted = false;
+  const held = new Promise(resolve => { entered = resolve; });
+  const resumed = new Promise(resolve => { release = resolve; });
+  const request = f.store.writer.request.bind(f.store.writer);
+  f.store.writer.request = async (operation, args) => {
+    if (operation === 'commit' && !intercepted) { intercepted = true; entered(); await resumed; }
+    return request(operation, args);
+  };
+  t.after(() => release());
+  const cancellation = new AbortController();
+  let dispatches = 0;
+  const command = f.local.request('ChangeAvailability', { connectorId: 0, type: 'Operative' },
+    { signal: cancellation.signal, beforeSend: () => { dispatches++; return true; } });
+  const rejected = assert.rejects(command, { code: interruption === 'cancelled' ? 'ocpp-request-aborted' : 'ocpp-request-revoked' });
+  await held;
+  assert.equal(dispatches, 0, 'The dispatch hook must wait for durability');
+  let native;
+  if (interruption === 'cancelled') cancellation.abort();
+  else {
+    native = client.call('StatusNotification', { connectorId: 1, status: 'SuspendedEVSE', errorCode: 'NoError',
+      timestamp: new Date(f.now).toISOString() });
+    await waitFor(() => f.store.writeQueueStatus().pending >= 2);
+  }
+  release(); await rejected; await native;
+  assert.equal(dispatches, 0);
+  assert.equal(client.calls.filter(frame => frame[2] === 'ChangeAvailability').length, 0);
+});
 
 test('a disconnected pending OCPP upgrade releases writer admission before the lock clears', async t => {
   const f = await fixture(t), ledger = f.store.getState('fixture:ocpp'), checkpoint = f.store.checkpoint(), writes = f.ledgerWrites;

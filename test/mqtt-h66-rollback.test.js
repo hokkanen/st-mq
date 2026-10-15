@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
@@ -8,8 +11,8 @@ import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 
 const START = Date.parse('2026-09-07T12:00:00Z'), DEVICE = 'synthetic-h66';
 const flush = () => new Promise(resolve => setImmediate(resolve));
-async function fixture(t) {
-  const store = new Store(':memory:'), client = new EventEmitter(); let now = START;
+async function fixture(t, store = new Store(':memory:')) {
+  const client = new EventEmitter(); let now = START;
   client.subscribe = (_topic, _options, done) => done();
   client.publish = (_topic, _payload, _options, done) => done();
   client.end = (_force, _options, done) => done();
@@ -20,10 +23,44 @@ async function fixture(t) {
   const reader = await startMqtt({ engine, store, config, connect: () => client });
   client.emit('connect');
   t.after(async () => { await reader.close({ restore: false }); await engine.garage.close({ restore: false });
-    await engine.charging.close(); await engine.closeFireplace(); await engine.executor.close({ restore: false }); store.close(); });
-  return { engine, store, reader, at: at => { now = at; },
+    await engine.charging.close(); await engine.closeFireplace(); await engine.executor.close({ restore: false }); await store.close(); });
+  return { engine, store, reader, client, at: at => { now = at; },
     send: (register, value, packet = {}) => client.emit('message', `${DEVICE}/HP/${register}`, Buffer.from(String(value)), packet) };
 }
+
+for (const outcome of ['commit', 'rollback']) test(`H66 disconnect withdraws held readings through worker ${outcome}`, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-h66-worker-withdrawal-'));
+  const f = await fixture(t, new Store(join(directory, 'recording.sqlite')));
+  let release;
+  // Release before closing reader/Store, including after a failing assertion.
+  t.signal.addEventListener('abort', () => release?.(), { once: true });
+  t.after(() => { release?.(); rmSync(directory, { recursive: true, force: true }); });
+  await f.store.runWrite(() => {}); await f.store.startWriter();
+  f.send('1A01', 0); await f.store.runWrite(() => {});
+  let entered;
+  const held = new Promise(resolve => { entered = resolve; });
+  const resumed = new Promise(resolve => { release = resolve; });
+  const request = f.store.writer.request.bind(f.store.writer);
+  let intercepted = false;
+  f.store.writer.request = async (operation, args) => {
+    if (operation === 'commit' && !intercepted) {
+      intercepted = true; entered(); await resumed;
+      if (outcome === 'rollback') throw Object.assign(new Error('Synthetic H66 COMMIT failure'), { code: 'ERR_SQLITE_ERROR', errcode: 10 });
+    }
+    return request(operation, args);
+  };
+  f.at(START + 1000); f.send('1A01', 1); await held;
+  f.at(START + 2000); f.client.emit('offline');
+  const unavailable = () => {
+    assert.equal(f.engine.latest.compressor_active.value, null);
+    assert.equal(f.engine.latest.compressor_active.receivedAt, START + 2000);
+    assert(f.engine.latest.compressor_active.quality.includes('mqtt-disconnected'));
+    assert.equal(f.reader.h66.status().connected, false);
+  };
+  try { unavailable(); } finally { release(); }
+  await f.store.whenWritesSettled(); unavailable();
+  await f.store.runWrite(() => {}); unavailable();
+});
 function failCommit(store) {
   const transaction = store.transaction.bind(store); let armed = true;
   store.transaction = action => armed ? transaction(() => { armed = false; action(); throw new Error('synthetic commit failure'); }) : transaction(action);

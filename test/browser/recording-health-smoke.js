@@ -59,7 +59,7 @@ const measurement = (signal, streamId, extra = {}) => ({ signal, streamId, sourc
 const status = { webAccess: { role: 'admin' }, recordingHealth: { version: 2, checkedAt: now, scope: 'live', contextId: 'synthetic-live',
   disk: { state: 'critical', totalBytes: 128e9, freeBytes: 2.1e9, checkedAt: now,
     detail: 'Free space is critically low. Recordings and backup copies share this filesystem.' },
-  recording: { state: 'write-failed', lastLoopCompletedAt: now - 1000, lastSourceCheckAt: now - 180000, lastFailureAt: now - 60000,
+  recording: { writer: { state: 'ready' }, state: 'write-failed', lastLoopCompletedAt: now - 1000, lastSourceCheckAt: now - 180000, lastFailureAt: now - 60000,
     detail: 'The last write failed. New observations may not have been recorded.', history: performanceHistory },
   backup: { state: 'available', count: 3, totalBytes: 12288000, complete: true, latestAt: now - 2 * 86400_000, latestKind: 'saved-copy', latestVerifiedAt: null,
     detail: 'A saved copy is listed on this computer. Keep an independent copy on separate storage.' },
@@ -131,7 +131,7 @@ window.productionInventory = ${JSON.stringify(productionInventory)};
 window.setScenario = state => {
   const health = structuredClone(initialHealth);
   if(state !== 'critical') {
-    health.recording = {state:state === 'sources' ? 'source-unavailable' : 'ok', lastSourceCheckAt:${now}, lastLoopCompletedAt:${now - 1000}, lastWriteAt:${now - 1000},
+    health.recording = {writer:{state:'ready'},runtimeTiming:{basis:'observed-event-loop-delay',hardRealtime:false,samples:12680,maxObservedDelayMs:72,p99ObservedDelayMs:24,warningThresholdMs:1000},state:state === 'sources' ? 'source-unavailable' : 'ok', lastSourceCheckAt:${now}, lastLoopCompletedAt:${now - 1000}, lastWriteAt:${now - 1000},
       sources:{observedStreams:3,usableStreams:state==='sources'?2:3,attentionStreams:state==='sources'?1:0,unknownStreams:0,complete:false,issues:state==='sources'?[{id:'synthetic-temperature',label:'Outdoor temperature',unit:'°C',status:'stale',sourceObservedAt:${now-900000},lastCheckedAt:${now}}]:[]},
       detail:state === 'sources' ? 'Check source connections.' : 'Source monitoring is active.', history: structuredClone(initialHealth.recording.history)};
     health.disk = {state:'ok', totalBytes:128e9, freeBytes:80e9, checkedAt:${now}, detail:'Local disk space is available.'};
@@ -158,6 +158,15 @@ window.setDetailedSources = () => {
 window.setPerformance = state => {
   setScenario('healthy');
   const health = payload.recordingHealth, history = health.recording.history;
+  if(['saving','confirming','unavailable'].includes(state)) {
+    health.recording.writer={state};
+    history.current={pending:0,oldestPendingMs:null,waitingMs:null,activeJobs:state==='unavailable'?0:1};
+    if(state!=='saving') {
+      health.recording.state=state==='confirming'?'writer-confirming':'writer-unavailable';
+      health.attention=[{id:'storage-writer',severity:state==='confirming'?'warning':'critical',
+        title:state==='confirming'?'Confirming last save':'Recording storage is unavailable',detail:'Check Storage health.'}];
+    }
+  }
   if(state === 'busy') {
     history.current = {pending:6, oldestPendingMs:850, waitingMs:600, activeJobs:1};
     for(const window of Object.values(history.windows)) window.contention.active=true;
@@ -179,6 +188,7 @@ window.setPerformance = state => {
   if(state === 'unknown') {
     health.disk={state:'unknown',detail:'Local disk space could not be checked.'};
     health.backup={state:'unknown',detail:'Available backups could not be checked.'};
+    health.recording.writer={state:'unknown'};
     history.current={pending:null,oldestPendingMs:null,waitingMs:null,activeJobs:null};
     for(const window of Object.values(history.windows)) window.commandsNotSent=null;
   }
@@ -477,7 +487,7 @@ try {
       await captureFold('recording-recording-card', `recording-sources-${width}-${theme}`);
       await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=false); document.getElementById('recording-performance-details').open=true; setPerformance('healthy')");
       await settle(); await checkLayout(`${width}/${theme}/performance`); await capture(`performance-${width}-${theme}`); await captureGlance(`glance-storage-${width}-${theme}`);
-      for(const state of ['busy','failed','recovered','unknown','empty','reset','snapshot']) {
+      for(const state of ['saving','confirming','unavailable','busy','failed','recovered','unknown','empty','reset','snapshot']) {
         await evaluate(`setPerformance('${state}')`); await settle();
         await checkLayout(`${width}/${theme}/performance-${state}`); await capture(`performance-${state}-${width}-${theme}`);
         if(state==='failed') {
@@ -572,6 +582,28 @@ try {
   assert.match(await evaluate("document.getElementById('recording-performance-current').textContent"), /6 queued.*oldest 850 ms.*1 running/);
   assert.match(await evaluate("document.getElementById('recording-performance-waiting').textContent"), /writer lock.*600 ms so far/);
   assert.match(await evaluate("document.getElementById('recording-performance-contentionDetail').textContent"), /active wait/);
+  await evaluate("setPerformance('saving')");
+  assert.equal(await evaluate("document.getElementById('recording-performance-state').textContent"), 'Writing');
+  assert.equal(await evaluate("document.getElementById('recording-performance-details').dataset.tone"), 'neutral');
+  assert.equal(await evaluate("document.getElementById('recording-performance-waiting').hidden"), true);
+  await evaluate("setPerformance('unavailable')");
+  assert.equal(await evaluate("document.getElementById('recording-performance-state').textContent"), 'Writer unavailable');
+  assert.equal(await evaluate("document.getElementById('recording-performance-failed').textContent"), '0');
+  assert.equal(await evaluate("document.querySelector('#recording-status-issues [data-recording-open]').dataset.recordingOpen"), 'recording-performance-details');
+  await evaluate("payload.recordingHealth.recording.history=null; panel.update(payload)");
+  assert.equal(await evaluate("document.getElementById('recording-performance-state').textContent"), 'Writer unavailable', 'History absence cannot hide writer failure');
+  assert.equal(await evaluate("document.getElementById('recording-performance-data').hidden"), true);
+  await evaluate("setPerformance('confirming')");
+  assert.equal(await evaluate("document.getElementById('recording-performance-state').textContent"), 'Confirming last save');
+  await evaluate("document.getElementById('recording-performance-responsiveness').open=true; document.querySelector('#recording-performance-responsiveness > summary').focus(); panel.update(payload)");
+  assert.equal(await evaluate("document.activeElement===document.querySelector('#recording-performance-responsiveness > summary')"), true);
+  assert.equal(await evaluate("document.getElementById('recording-performance-runtime-p99').textContent"), '24 ms');
+  assert.match(await evaluate("document.getElementById('recording-performance-runtime-samples').textContent"), /since application start/);
+  await captureFold('recording-performance-responsiveness', 'application-responsiveness-1440-dark');
+  await evaluate("setPerformance('snapshot')");
+  assert.equal(await evaluate("document.getElementById('recording-performance-responsiveness').hidden"), true);
+  assert.equal(await evaluate("document.getElementById('recording-performance-live').hidden"), true);
+  assert.equal(await evaluate("document.activeElement===document.querySelector('#recording-performance-details > summary')"), true);
   await evaluate("setPerformance('failed')");
   assert.equal(await evaluate("document.getElementById('recording-performance-failed').textContent"), '2');
   assert.equal(await evaluate("document.getElementById('recording-performance-rejected').textContent"), '1');
@@ -734,7 +766,7 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-status').checkVisibility()"), false);
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.history-panel')).display"), 'none');
   assert.deepEqual(errors, []);
-  console.log(`Recording details browser smoke passed: 320/390/768/1440, light/dark, dashboard spacing, startup/source/critical states, startup expiry and recovery, four balanced health rows, merged storage, backup inventory/actions/failed-list/focus, source exceptions, collapsed/storage/all-open layouts, storage populated/busy/failed/recovered/unknown/empty/reset/snapshot, local period choice, safe incidents, production tables, disclosure and focus preservation, source/storage navigation transitions, stale labels in all rows, inventory and health failures, snapshot, context reset and reload, Home Assistant host/app paths, production inventory density, voltage focus, auth fallback and logout fencing. Screenshots: ${artifacts}`);
+  console.log(`Recording details browser smoke passed: 320/390/768/1440, light/dark, dashboard spacing, startup/source/critical states, startup expiry and recovery, four balanced health rows, merged storage, backup inventory/actions/failed-list/focus, source exceptions, collapsed/storage/all-open layouts, storage saving/confirming/unavailable/busy/failed/recovered/unknown/empty/reset/snapshot, independent writer availability and runtime responsiveness, local period choice, safe incidents, production tables, disclosure and focus preservation, source/storage navigation transitions, stale labels in all rows, inventory and health failures, snapshot, context reset and reload, Home Assistant host/app paths, production inventory density, voltage focus, auth fallback and logout fencing. Screenshots: ${artifacts}`);
 } finally {
   socket?.close(); browser?.kill('SIGTERM');
   await new Promise(resolve => server.close(resolve));

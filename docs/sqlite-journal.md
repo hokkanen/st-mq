@@ -65,6 +65,72 @@ checkpoint is explicitly enrolled during the initial seed. Retained peer evidenc
 is part of the database, so restart and role changes do not lose the common base.
 It does not imply that an arbitrary older backup or unrelated database was a peer.
 
+## Dedicated runtime writer
+
+The live file-backed Store starts one persistent SQLite writer worker before
+constructing the runtime. The controller retains a separate read-only connection
+for committed WAL reads. Existing storage workers and offline callers use the
+same current Store and journal format; this adds no schema migration or alternate
+persisted representation.
+
+`runWrite` reserves the writer through asynchronous `BEGIN IMMEDIATE`, one
+synchronous callback, asynchronous journal sealing and native `COMMIT`, then
+committed follow-up work. Dependent statements inside that callback run on the
+reserved worker connection through bounded synchronous messages, so reads observe
+the transaction's earlier writes and nested savepoints retain their rollback
+semantics. The callback is never replayed. Callbacks remain synchronous and must
+not perform network waits. Ordinary reads outside the callback see committed
+state through the read-only connection while the worker seals or commits.
+
+Admission retains the 2,048-entry/8 MiB queue, bounded control priority, original
+source clocks, cancellation checks and failure reporting. Controller capture
+keeps its 2 MiB per-row and 4 MiB per-transaction limits even though SQLite now
+executes in a worker; offloading does not silently admit oversized controller
+work. Statement messages have an 8 MiB envelope and a bounded statement cache.
+Synchronous statement requests have a deadline and fail closed; they are not
+automatically retried after an uncertain outcome.
+
+The Store fences command dispatch while a runtime write is settling. Registered
+commit effects run only after durability is established, while rollback effects
+restore provisional application state on failure. Receipt, equipment identity,
+authority and expiry checks still govern commands after storage waiting. Network
+processing and timers can continue during a slow native commit; durability-bound
+commands still wait for it. A disconnected source must remain unavailable when
+an earlier pending transaction completes or rolls back.
+
+The prepared journal checkpoint is the durable receipt for a transaction with
+logical changes. If the worker loses its reply, the owner joins its termination
+and checks the committed checkpoint before settling application effects. It never
+repeats the callback or treats a lost reply as proof of rollback. A failed writer
+remains fenced until restart even when its durable result can be established.
+Shutdown rejects pending jobs, joins the active transaction and closes the worker
+before releasing its reader. Specialized correction, recovery and peer workers
+retain their existing publication fences; a local exclusive publication reserves
+the same admission queue through durable publication and adoption.
+
+Synchronous replies publish bounded response bytes and readiness through one
+shared-memory atomic boundary. A notification alone never completes a request;
+late wakes do not restart its deadline or replay SQL. Result collection is
+bounded before materialization, and returned byte values own their storage.
+Closing during writer startup joins that worker before releasing the database
+path. Current explicit journal compaction runs on the owning worker; peer
+maintenance and full archive verification retain their independent native
+worker connections. Calling those native-only operations with the runtime
+facade rejects before mutation with guidance to use the existing service.
+
+While a save is pending, status preserves the complete committed view and its
+original timestamps. Recording health reports an ordinary pending save as neutral
+activity; actual writer-lock contention retains its storage warning. Transport
+withdrawal still takes effect immediately for command permission and survives
+an older save's rollback.
+
+This isolates ordinary native COMMIT waits from the event loop; SQLite still has
+one committing writer. FULL synchronous WAL, automatic checkpoints and retained
+evidence remain unchanged. Synchronous callback work, bounded statement RPC and
+main-thread read queries can still delay the event loop. See the
+[responsiveness benchmark](sqlite-storage-benchmarks.md#dedicated-writer-responsiveness)
+for measured benefits, overhead and installed-validation limits.
+
 ## Local writes and compaction
 
 Schema triggers capture every actual application row effect. Equal SQL updates
@@ -91,15 +157,19 @@ Savepoint rollback discards captured effects. Explicit receiver apply/undo alrea
 validates and publishes these effects atomically, and disables redundant trigger
 staging only within that boundary.
 
-The main Store's memory-only diagnostics split the existing complete COMMIT
-duration into journal sealing and the raw SQLite COMMIT call. Sealing includes
+The main Store's memory-only diagnostics split its complete commit boundary
+duration into journal sealing and the raw SQLite COMMIT call. With the dedicated
+writer, BEGIN, callback, complete commit and total durations describe elapsed
+operation time including worker messaging; journal sealing and native COMMIT
+are measured on the owning worker. Sealing includes
 capture coalescing, validation, hashing, peer-index updates, retention and journal
 SQL; capture performed by row triggers remains within transaction-body timing.
 Raw SQLite COMMIT can include WAL synchronization and an automatic checkpoint;
 it is not an fsync-only measure. Unreached and uninstrumented bootstrap stages are
 null. The split changes no journal bytes, transaction boundaries, FULL/WAL
-settings, checkpoint policy, rollback or publication authority. Independent raw
-worker transactions remain outside the main Store health summary.
+settings, checkpoint policy, rollback or publication authority. Dedicated runtime
+writer measurements belong to its owning Store summary; independent recovery,
+replication and cache-worker transactions remain outside that summary.
 
 The superseded transaction-by-transaction receiver/rewind path and its separate
 branch archive are removed. The recent suffix remains readable for verification
@@ -121,12 +191,13 @@ there is no automatic VACUUM, historical rewrite or recurring full-database copy
 Allocated pages, unused/reusable space, indexes and WAL can exceed serialized
 payload limits. Long pinned readers can hold a larger WAL until they release.
 
-The controller thread admits rows up to 2 MiB of capture input and up to 4 MiB of
+Controller transactions admit rows up to 2 MiB of capture input and up to 4 MiB of
 cumulative before/after input or compact capture payload per transaction.
 Counting input bytes also bounds repeated tiny edits to a large document.
 Oversized work fails with an
-actionable worker/batching error and rolls back. Worker transactions retain the
-64 MiB bound. This is an execution admission limit, not a reduction in observation
+actionable worker/batching error and rolls back. Dedicated runtime writes retain
+these controller bounds. Specialized background transactions retain the 64 MiB
+bound. This is an execution admission limit, not a reduction in observation
 precision. Supported CSV CLI imports run in a worker. Consolidated peer application
 streams individually bounded records in a receiver worker and publishes the whole
 accepted source checkpoint atomically; it does not accumulate the transfer in JS.
@@ -255,7 +326,7 @@ superseded; they are derived caches, not replacement source history. Future grow
 includes unique prepared bodies (including distinct corrected interpretations)
 and small sparse manifests, rather than another complete fitting archive per
 checkpoint. This does not bound total database size or automatically reclaim the
-physical size of an existing file. Development schema 30 supports only this
+physical size of an existing file. Development schema 31 supports only this
 current representation; there is no older cache decoder or database migration.
 Read-only history viewers may still expose independently valid recorded evidence
 when a derived model cache is unavailable. Model access rejects malformed or

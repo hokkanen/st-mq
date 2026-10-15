@@ -8,14 +8,15 @@ export const sqliteContention = error => Number.isInteger(error?.errcode) && [5,
  * is held. Retrying an operation after it starts could repeat commands or RAM
  * mutations, even if SQLite rolled its writes back. */
 export class WriteQueue {
-  constructor({ transaction, onFailure = () => {}, onHealth = () => {}, clock = Date.now,
+  constructor({ transaction, asyncTransaction = null, onFailure = () => {}, onHealth = () => {}, clock = Date.now,
     monotonic = () => performance.now() }) {
-    Object.assign(this, { transaction, onFailure, onHealth, clock, monotonic });
+    Object.assign(this, { transaction, asyncTransaction, onFailure, onHealth, clock, monotonic });
     this.queues = { control: [], normal: [] };
     this.bytes = 0; this.running = false; this.closed = false; this.timer = null;
     this.waitingSince = null; this.overflows = 0; this.controlStreak = 0;
     this.pendingLength = 0;
     this.shutdown = new AbortController();
+    this.idleListeners = new Set();
   }
   status() {
     const jobs = [...this.queues.control, ...this.queues.normal];
@@ -69,7 +70,7 @@ export class WriteQueue {
       const job = { fn, signal, isCurrent, priority, bytes, external, at: this.clock(),
         monotonicAt: this.monotonic(), resolve, reject };
       job.abort = () => {
-        if (job.started) return;
+        if (job.started || job.admitting) return;
         if (!this.remove(job)) return;
         this.health({ type: 'cancelled' });
         reject(failure('STORAGE_WRITE_CANCELLED', 'The pending save was cancelled.'));
@@ -101,6 +102,7 @@ export class WriteQueue {
   }
   pump() {
     if (this.running || this.closed) return;
+    if (this.asyncTransaction) { this.pumpAsync(); return; }
     this.running = true;
     const started = performance.now();
     let completed = 0, contended = false, external = false;
@@ -151,12 +153,56 @@ export class WriteQueue {
     } finally { if (!external) this.running = false; }
     this.schedule(contended ? RETRY_MS : 0);
   }
+  // The writer connection is reserved from asynchronous BEGIN through durable
+  // settlement. The callback still runs once, synchronously, after admission.
+  pumpAsync() {
+    const priority = this.queues.control.length && (this.controlStreak < 8 || !this.queues.normal.length) ? 'control' : 'normal';
+    const job = this.queues[priority][0];
+    if (!job) { this.notifyIdle(); return; }
+    this.running = true; job.admitting = true;
+    let invoked = false, contended = false;
+    const current = () => {
+      if (this.closed) throw failure('STORAGE_CLOSED', 'Recording storage is closed.');
+      if (job.signal?.aborted) throw failure('STORAGE_WRITE_CANCELLED', 'The pending save was cancelled.');
+      if (!job.isCurrent()) throw failure('STORAGE_WRITE_STALE', 'The pending save no longer belongs to the current operation.');
+    };
+    Promise.resolve().then(() => {
+      current();
+      const invoke = () => {
+        current(); invoked = true; this.start(job); this.waiting(false);
+        job.delayMs = Math.max(0, this.monotonic() - job.monotonicAt);
+        return job.fn();
+      };
+      return job.external ? invoke() : this.asyncTransaction(invoke);
+    }).then(result => {
+      this.completed(job); this.remove(job); job.resolve(result); this.waiting(false);
+    }, error => {
+      if (!invoked && !this.closed && !job.signal?.aborted && sqliteContention(error)) {
+        contended = true; this.waiting(true); return;
+      }
+      if (error?.committed === true) this.completed(job); else this.rejected(error);
+      this.remove(job); this.onFailure(error); job.reject(error);
+    }).finally(() => {
+      job.admitting = false; this.running = false;
+      if (!contended) this.controlStreak = priority === 'control' ? this.controlStreak + 1 : 0;
+      this.notifyIdle(); this.schedule(contended ? RETRY_MS : 0);
+    });
+  }
+  idle() {
+    if (!this.running) return Promise.resolve();
+    return new Promise(resolve => this.idleListeners.add(resolve));
+  }
+  notifyIdle() {
+    if (this.running) return;
+    for (const resolve of this.idleListeners) resolve();
+    this.idleListeners.clear();
+  }
   close() {
     if (this.closed) return;
     this.closed = true; clearTimeout(this.timer); this.timer = null;
     this.shutdown.abort();
     for (const job of [...this.queues.control, ...this.queues.normal]) {
-      if (job.started) continue;
+      if (job.started || job.admitting) continue;
       this.remove(job); this.health({ type: 'cancelled' });
       job.reject(failure('STORAGE_CLOSED', 'Recording storage closed before the pending save could commit.'));
     }

@@ -4,6 +4,7 @@ import { sensorRevision } from '../app/sensor-inputs.js';
 import { projectedSensorContext } from './state.js';
 import { selectedHistory, recoveryEvidenceVersion } from './ledger.js';
 import { saveLearningCheckpoint } from '../storage/learning-checkpoints.js';
+import { compatibleRestorationTail } from './restoration-evidence.js';
 
 const unavailable = message => Object.assign(new Error(message), { statusCode: 409, code: 'recovery_invalid', public: true });
 const journalHead = (store, input) => store.learningJournalHead(input);
@@ -65,7 +66,13 @@ export function publishRevision(store, input, message, { operationToken, preview
     || sensorRevision(store, input) !== message.sourceSensor)
     throw unavailable('Source history changed during reconstruction; review again');
   if (journalHead(store, input) !== message.sourceHead) return null;
-  if (message.evidenceVersion !== null && message.evidenceVersion !== recoveryEvidenceVersion(store)) return null;
+  if (message.evidenceVersion !== null) {
+    const now = Date.now(), version = recoveryEvidenceVersion(store, { now });
+    if (message.evidenceVersion !== version
+      && (message.evidenceProof?.version !== message.evidenceVersion
+        || message.evidenceProof?.token !== message.report?.conflictVersion
+        || !compatibleRestorationTail(store, message.evidenceProof, { now }))) return null;
+  }
   const row = store.db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND id=?')
     .get(message.epoch, input,store.learningJournalHead(input,message.epoch));
   const last = row && { id: row.id, key: row.key, kind: row.kind, at: row.at, algorithmVersion: row.algorithm_version,

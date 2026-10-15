@@ -7,8 +7,8 @@ import { storagePerformanceView, storageDuration } from '../chart/storage-health
 const now = Date.parse('2026-10-07T12:00:00Z');
 const health = (overrides = {}) => ({ version: 2, checkedAt: now, scope: 'live',
   disk: { state: 'ok', totalBytes: 100e9, freeBytes: 60e9 },
-  recording: { state: 'ok', lastSourceCheckAt: now - 60000, lastLoopCompletedAt: now - 1000 },
-  backup: { state: 'available', count: 1, totalBytes: 1000, complete: true, latestKind: 'saved-copy', latestAt: now - 100 * 86400_000 }, attention: [], ...overrides });
+  backup: { state: 'available', count: 1, totalBytes: 1000, complete: true, latestKind: 'saved-copy', latestAt: now - 100 * 86400_000 }, attention: [], ...overrides,
+  recording: { state: 'ok', writer: { state: 'ready' }, lastSourceCheckAt: now - 60000, lastLoopCompletedAt: now - 1000, ...overrides.recording } });
 
 test('backup age is factual, not an invented schedule or present verification', () => {
   const view = recordingHealthView(health(), undefined, now);
@@ -51,7 +51,7 @@ test('recording separates completed updates, attempted source checks, observed c
   assert.equal(view.element('recording-recording-attention').textContent, '2');
   assert.match(view.element('recording-recording-unknown').textContent, /1 stream has unknown status.*included in Needs attention/);
   assert.match(view.element('recording-recording-coverage').textContent, /never reported are outside.*held reading can be usable and still need attention/);
-  assert.match(view.element('recording-performance-lastWrite').textContent, /successful storage write.*2 min ago.*settings and event writes/);
+  assert.match(view.element('recording-performance-lastWrite').textContent, /2 min ago/);
   assert.equal(view.element('recording-recording-sources').children.length, 1);
   assert.match(view.element('recording-recording-sources').children[0].children[2].children[1].textContent, /15 min ago/);
   assert.equal(view.element('recording-performance-state').textContent, 'Caught up', 'Simulation monitors its own writer');
@@ -649,6 +649,78 @@ test('storage summary distinguishes current queue work from historical save and 
   history.windows.day.commandsNotSent = null;
   history.windows.day.failedWrites = 0; history.windows.day.queueRejected = 0;
   assert.doesNotMatch(storagePerformanceView(value, 'day', { now }).historyState, /no failures observed/i);
+});
+
+test('writer availability is independent of queue emptiness and historical coverage', () => {
+  for (const history of [performanceHistory(), null, { version: 1 }]) {
+    const value = health({ recording: { state: 'writer-unavailable', writer: { state: 'unavailable' },
+      lastWriteAt: now - 1000, history } });
+    const view = storagePerformanceView(value, 'day', { now });
+    assert.equal(view.state, 'Writer unavailable');
+    assert.equal(view.stateTone, 'critical');
+    assert.match(view.detail, /New changes cannot be saved/);
+    assert.equal(view.currentVisible, true);
+    assert.match(storagePerformanceView(value, 'day', { now, unavailable: true }).state, /^Last known: Writer unavailable$/);
+    assert.equal(recordingHealthView(value, undefined, now).settled, false);
+  }
+  for (const writer of [undefined, null, {}, { state: 'retired-ready' }]) {
+    const value = health({ recording: { writer, history: performanceHistory() } });
+    const view = storagePerformanceView(value, 'day', { now });
+    assert.equal(view.state, 'Storage status unknown', 'An empty queue cannot establish writer availability');
+    const summary = recordingHealthView(value, undefined, now);
+    assert.equal(summary.recording.summaryLabel, 'Storage status unknown');
+    assert.equal(summary.recording.target, 'recording-performance-details');
+  }
+});
+
+test('ordinary saving is quiet while confirming and unavailable writers keep actionable attention', () => {
+  const view = panelFixture();
+  view.panel.update({ recordingHealth: health() }); view.expireIntro();
+  const saving = health({ recording: { writer: { state: 'saving' }, history: performanceHistory({
+    current: { pending: 0, activeJobs: 1, oldestPendingMs: null, waitingMs: null } }) } });
+  view.panel.update({ recordingHealth: saving });
+  assert.equal(view.element('recording-status').hidden, true, 'Normal asynchronous work does not revive the warning strip');
+  assert.equal(view.element('recording-performance-state').textContent, 'Writing');
+  assert.equal(view.element('recording-performance-details').dataset.tone, 'neutral');
+  assert.equal(view.element('recording-performance-waiting').hidden, true, 'Saving does not invent writer-lock contention');
+  for (const [writer, state, label] of [['confirming', 'writer-confirming', 'Confirming last save'],
+    ['unavailable', 'writer-unavailable', 'Writer unavailable']]) {
+    const value = health({ recording: { writer: { state: writer }, state, lastWriteAt: now - 1000, history: performanceHistory() },
+      attention: [{ id: 'storage-writer', severity: writer === 'confirming' ? 'warning' : 'critical', title: label, detail: 'Check storage.' }] });
+    view.panel.update({ recordingHealth: value });
+    assert.equal(view.element('recording-status').hidden, false);
+    assert.equal(view.element('recording-performance-state').textContent, label);
+    assert.equal(view.element('recording-status-recording').dataset.recordingOpen, 'recording-performance-details');
+    assert.match(view.element('recording-performance-lastWrite').textContent, /just now/);
+    assert.equal(view.element('recording-performance-failed').textContent, '0', 'Writer availability cannot manufacture failed saves');
+  }
+});
+
+test('application responsiveness has independent run coverage and preserves unknown samples', () => {
+  const runtimeTiming = { basis: 'observed-event-loop-delay', hardRealtime: false, samples: 120,
+    maxObservedDelayMs: 70, p99ObservedDelayMs: 24, warningThresholdMs: 1000 };
+  const value = health({ recording: { runtimeTiming, history: performanceHistory() } });
+  for (const period of ['day', 'week']) {
+    const view = storagePerformanceView(value, period, { now });
+    assert.equal(view.runtimeP99, '24 ms'); assert.equal(view.runtimeMax, '70 ms');
+    assert.equal(view.runtimeSamples, '120 timer samples since application start');
+  }
+  assert.equal(storagePerformanceView(value, 'day', { now, unavailable: true }).runtimeTitle, 'Last known application responsiveness');
+  for (const runtime of [undefined, { ...runtimeTiming, basis: 'old' }, { ...runtimeTiming, samples: null }]) {
+    assert.equal(storagePerformanceView(health({ recording: { runtimeTiming: runtime } }), 'day', { now }).runtimeMax, 'Unknown');
+  }
+  value.recording.runtimeTiming = { ...runtimeTiming, samples: 0, maxObservedDelayMs: null, p99ObservedDelayMs: null };
+  assert.equal(storagePerformanceView(value, 'day', { now }).runtimeMax, 'No samples');
+  for (const scope of ['snapshot', 'history']) assert.equal(storagePerformanceView({ ...value, scope }, 'day', { now }).runtimeVisible, false);
+});
+
+test('an unconfirmed save outcome never claims rollback', () => {
+  const history = performanceHistory();
+  history.windows.day.incidents = [{ category: 'save-failed', at: now - 1000, context: 'storage',
+    reason: 'database-unavailable', outcome: 'save-failed' }];
+  const view = storagePerformanceView(health({ recording: { history } }), 'day', { now });
+  assert.equal(view.incidents[0].outcome, 'The save was not confirmed.');
+  assert.doesNotMatch(view.incidents[0].outcome, /did not commit|rolled back/);
 });
 
 test('storage problems use safe labels, preserve blocked commands and distinguish original recovery from resumed saving', () => {

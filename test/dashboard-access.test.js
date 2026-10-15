@@ -53,3 +53,36 @@ test('saved-copy verification is an explicit read-only inspection with a bounded
     assert.throws(() => assertDashboardWrite('/api/recording-backups/verify', input, status), { status: 403 });
   assert.throws(() => assertDashboardWrite('/api/recording-backups/verify', { sourceId: 'a'.repeat(64) }, null), { status: 403 });
 });
+
+const writerStatus = state => ({ role: 'master', input: 'simulated', recordingHealth: { version: 2, scope: 'simulated', checkedAt: 100,
+  recording: { writer: { state } } } });
+
+test('writer confirmation and loss restrict mutations while saving and read-only inspections remain usable', () => {
+  const view = fixture(), access = createReadOnlyControls(view);
+  for (const state of ['ready', 'saving', 'unknown']) {
+    access.update(writerStatus(state));
+    assert.equal(view.apply.disabled, false, state);
+    assert.doesNotThrow(() => assertDashboardWrite('/api/automation', { enabled: true }, writerStatus(state)));
+  }
+  for (const state of ['confirming', 'unavailable', 'stopped']) {
+    access.update(writerStatus(state));
+    assert.equal(view.apply.disabled, true, state);
+    assert.equal(view.navigate.disabled, false);
+    assert.equal(view.download.disabled, false);
+    assert.deepEqual(view.event('click', view.apply), { stopped: true, prevented: true });
+    assert.throws(() => assertDashboardWrite('/api/automation', { enabled: true }, writerStatus(state)), { status: 503 });
+    assert.doesNotThrow(() => assertDashboardWrite('/api/status', undefined, writerStatus(state)));
+    assert.doesNotThrow(() => assertDashboardWrite('/api/database-verification', {}, writerStatus(state)));
+    assert.doesNotThrow(() => assertDashboardWrite('/api/recording-backups/verify', { sourceId: 'a'.repeat(64) }, writerStatus(state)));
+    view.apply.disabled = false; view.rerender();
+    assert.equal(view.apply.disabled, true, 'a later panel render cannot unlock an unavailable writer');
+  }
+  access.update({ role: 'master', input: 'simulated' });
+  assert.equal(view.apply.disabled, true, 'action replies without health cannot dismiss writer loss');
+  access.update(writerStatus('ready'));
+  assert.equal(view.apply.disabled, false);
+  assert.equal(view.unsupported.disabled, true);
+  access.update({ ...writerStatus('ready'), role: 'slave' });
+  assert.equal(view.apply.disabled, true, 'writer readiness cannot grant replica authority');
+  access.close();
+});

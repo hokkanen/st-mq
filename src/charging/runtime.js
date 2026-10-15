@@ -272,6 +272,18 @@ const planBasis = (view, prices, environment) => digest({ environment, deadlineA
 const initialMqtt = () => ({ connected: false, brokerConnected: false, subscribed: false,
   subscriptionStatus: 'pending', reason: 'awaiting-mqtt', invalidReason: null,
   lastMessageAt: null, lastLiveAt: null, lastRetainedAt: null, lastValidAt: null, lastValidLiveAt: null });
+const mqttTransportFields = ['connected', 'brokerConnected', 'subscribed', 'subscriptionStatus', 'reason', 'broker'];
+function applyEaseeStreamEvidence(item, evidence) {
+  item.streamEvidence = evidence;
+  const boundary = evidence.boundary;
+  if (boundary && (!item.vehicleDisconnect || boundary.measuredAt >= item.vehicleDisconnect.measuredAt)) {
+    if (item.vehicleDisconnect?.readingId !== boundary.readingId) {
+      item.vehicleMatch = null; item.vehicleEvidence = null; item.targetState = null;
+      item.plan = null; item.progress = null; item.sessionCost = null; item.wasPluggedIn = false;
+    }
+    item.vehicleDisconnect = structuredClone(boundary);
+  }
+}
 const activePeriod = (control, now) => control?.execution?.periods?.some(period => period.startAt <= now
   && (period.endAt === null || period.endAt > now));
 const remainingPeriods = (periods, now) => (periods ?? []).filter(row => row.endAt === null || row.endAt > now)
@@ -412,6 +424,7 @@ export class ChargingRuntime {
       isCurrent: () => !this.closed && isCurrent() });
   }
   preserveWriteState() {
+    const streamRevision = this.streamEvidenceRevision;
     const fields = ['controls', 'replan', 'request', 'plan', 'progress', 'supplyEstimate', 'sessionCost', 'vehicleMatch',
       'vehicleEvidence', 'vehicleConflict', 'identification', 'targetState', 'vehicleDisconnect', 'streamEvidence',
       'forecast', 'newEpisode', 'wasPluggedIn', 'limiterPlanBasis', 'commandBasis', 'priceRecheckAt'];
@@ -419,12 +432,27 @@ export class ChargingRuntime {
       structuredClone(Object.fromEntries(fields.map(field => [field, item[field]])))]));
     const feeds = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id,
       structuredClone({ reading: item.reading, mqtt: item.mqtt, consumedPlugId: item.consumedPlugId, consumedChargingId: item.consumedChargingId })]));
+    const feedRevisions = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id, item.mqttStatusRevision ?? 0]));
     const saved = structuredClone({ controls: this.controls, revision: this.revision, coordination: this.coordination,
       allocationScope: this.allocationScope, consumedTeslaPower: this.consumedTeslaPower, consumedTeslaCurrent: this.consumedTeslaCurrent });
     this.store.afterRollback(() => {
+      // These native events were already consumed outside writer admission.
+      // Retain only their facts, then reapply them to the rolled-back baseline;
+      // retaining the whole live charger would also preserve provisional work.
+      const streamEvidence = streamRevision !== this.streamEvidenceRevision ? this.chargers.charger1?.streamEvidence : null;
       Object.assign(this, saved);
       for (const [id, state] of Object.entries(chargers)) Object.assign(this.chargers[id], state);
-      for (const [id, state] of Object.entries(feeds)) Object.assign(this.vehicleFeeds[id], state);
+      if (streamEvidence) applyEaseeStreamEvidence(this.chargers.charger1, streamEvidence);
+      for (const [id, state] of Object.entries(feeds)) {
+        const feed = this.vehicleFeeds[id], revision = feedRevisions[id];
+        const transport = revision !== (feed.mqttStatusRevision ?? 0)
+          ? Object.fromEntries(mqttTransportFields.filter(field => Object.hasOwn(feed.mqtt, field)).map(field => [field, feed.mqtt[field]])) : null;
+        Object.assign(feed, state);
+        if (transport) Object.assign(feed.mqtt, transport);
+        // Reconnection supplies no live vehicle report. A loss during the wait
+        // cannot revive the pre-loss heartbeat or a provisional input's clock.
+        if ((feed.mqttUnavailableRevision ?? 0) > revision) feed.mqtt.lastValidLiveAt = null;
+      }
       this.refreshSettings();
     });
   }
@@ -1131,15 +1159,7 @@ export class ChargingRuntime {
     // until the boundary and evidence are durable.
     this.streamPersistencePending = true;
     this.streamEvidenceRevision++; this.streamFailureIncident = null;
-    item.streamEvidence = accepted.evidence;
-    const boundary = accepted.evidence.boundary;
-    if (boundary && (!item.vehicleDisconnect || boundary.measuredAt >= item.vehicleDisconnect.measuredAt)) {
-      if (item.vehicleDisconnect?.readingId !== boundary.readingId) {
-        item.vehicleMatch = null; item.vehicleEvidence = null; item.targetState = null;
-        item.plan = null; item.progress = null; item.sessionCost = null; item.wasPluggedIn = false;
-      }
-      item.vehicleDisconnect = structuredClone(boundary);
-    }
+    applyEaseeStreamEvidence(item, accepted.evidence);
     this.streamPending.add('charger1');
     // The native event immediately fences commands. Its original source clock
     // remains in the retained evidence while writer admission waits.
@@ -1153,6 +1173,7 @@ export class ChargingRuntime {
     const revision = this.streamEvidenceRevision;
     try {
       this.persist(); this.store.afterCommit(() => {
+        if (revision !== this.streamEvidenceRevision) return;
         this.streamPersistencePending = false;
         if (this.streamFailureIncident?.revision === revision) {
           try { this.store.writeHealth?.recovered?.(this.streamFailureIncident.token); }
@@ -1203,6 +1224,10 @@ export class ChargingRuntime {
     for (const item of id ? [this.vehicleFeeds[id]].filter(Boolean) : Object.values(this.vehicleFeeds)) {
       const brokerConnected = status.brokerConnected ?? status.connected ?? item.mqtt.brokerConnected;
       const subscribed = brokerConnected && (status.subscribed ?? item.mqtt.subscribed);
+      if (!this.store.transactionDepth) {
+        item.mqttStatusRevision = (item.mqttStatusRevision ?? 0) + 1;
+        if (!subscribed) item.mqttUnavailableRevision = item.mqttStatusRevision;
+      }
       if (!subscribed) item.sourcePending.clear();
       item.mqtt = { ...item.mqtt, ...status, connected: brokerConnected, brokerConnected, subscribed,
         lastValidLiveAt: subscribed ? item.mqtt.lastValidLiveAt : null,

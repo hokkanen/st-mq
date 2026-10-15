@@ -17,6 +17,21 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Include the observed dehumidifier identity in equipment status so **Recheck
   appliance location** can submit the current physical-check scope.
 
+- Adapt the dashboard to asynchronous recording: show when readings come from
+  the last saved view, keep storage checks active during pending actions, and
+  make unavailable writers visible without misreporting confirmed saves.
+  Balance queue and save timings, separate observed outcomes, and show application
+  responsiveness with its own monitoring scope. Preserve drafts, focus and
+  read-only tools while storage-dependent edits are unavailable.
+  Clarify recorded snapshot scope, unconfirmed charger instructions and gaps in
+  charging measurements without implying new observations or lost energy.
+
+- Move ordinary runtime SQLite admission, journal sealing and durable commits
+  to a dedicated writer thread so slow storage can leave networking and timers
+  responsive. Preserve committed reads, ordered callbacks, rollback, shutdown
+  and command fencing. Storage throughput and device latency still depend on
+  the underlying filesystem and hardware.
+
 - Cancel an unsent dehumidifier protection Off when fresh warm recovery evidence
   supersedes it, preserving the native baseline, later cold protection and any
   earlier command whose delivery is still uncertain.

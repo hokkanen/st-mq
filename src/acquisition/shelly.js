@@ -1,5 +1,6 @@
 import { createMqttAdmission } from './mqtt-admission.js';
 import { createMqttReception } from './mqtt-reception.js';
+import { retainStorageWithdrawal } from './storage-withdrawal.js';
 import { createSourceTimePending } from './source-time-pending.js';
 import { classifySourceTime, sourceTimeAdmission, validateAdmittedSourceTime } from '../domain/time-evidence.js';
 import { randomUUID, createHash } from 'node:crypto';
@@ -168,14 +169,17 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
   const unavailable = (device, reason, receivedAt = receivedNow()) => {
     pendingTime.removeWhere(row => row.device === device);
     if (store.runWrite && !store.transactionDepth) {
-      device.available = false; device.state = null;
-      for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal]) {
-        const signature = temperatureSignature(device, definition.signal);
-        engine.rememberObservation?.({ source: 'shelly-mqtt', device: device.role, signal: definition.signal,
-          value: null, unit: definition.unit, sourceTime: null, receivedAt, quality: [reason],
-          raw: { usableForControl: false, timeBasis: 'availability-transition',
-            ...(signature ? { temperatureRouteSignature: signature } : {}) } }, receivedAt);
-      }
+      reception.invalidate(device);
+      retainStorageWithdrawal(store, device, () => {
+        device.available = false; device.state = null;
+        for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal]) {
+          const signature = temperatureSignature(device, definition.signal);
+          engine.rememberObservation?.({ source: 'shelly-mqtt', device: device.role, signal: definition.signal,
+            value: null, unit: definition.unit, sourceTime: null, receivedAt, quality: [reason],
+            raw: { usableForControl: false, timeBasis: 'availability-transition',
+              ...(signature ? { temperatureRouteSignature: signature } : {}) } }, receivedAt);
+        }
+      });
       for (const waiter of [...device.waiters]) waiter.reject(error('relay readback unavailable'));
       for (const check of [...device.checks]) check.finish('unavailable');
       void store.runWrite(() => reception.run(() => unavailable(device, reason, receivedAt))).catch(() => {});
@@ -199,12 +203,14 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     if (!connected || closed || !canControl()) throw error('MQTT unavailable');
     const id = ++sequence;
     if (purpose === 'write') device.writeOrder = id;
-    requests.set(id, { device, method, at: engine.clock(), purpose, commandId, complete });
+    const request = { device, method, at: engine.clock(), purpose, commandId, retired: false,
+      complete: (...args) => { if (!request.retired) { request.retired = true; complete?.(...args); } } };
+    requests.set(id, request);
     try { await publish(`${device.prefix}/rpc`, JSON.stringify({ id, src: source, method, params }), { qos: 1, retain: false,
       ...(purpose === 'write' ? { noReplay: true, signal, recordingContext: 'switch-command', recordingDeadlineExpired, beforePublish: () => {
         beforePublish?.(); requests.get(id).at = engine.clock();
       } } : {}) }); }
-    catch (cause) { requests.delete(id); throw heatingErrorCode(cause?.code) ? cause : error('publication failed'); }
+    catch (cause) { request.retired = true; requests.delete(id); throw heatingErrorCode(cause?.code) ? cause : error('publication failed'); }
     return id;
   };
   const requestStatus = device => device.generation === 1
@@ -417,7 +423,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     setConnected(value) {
       pendingTime.clear();
       connected = value;
-      for (const device of devices) device.connected = false;
+      for (const device of devices) { reception.invalidate(device); device.connected = false; }
       for (const device of devices) { if (!value) unavailable(device, 'mqtt-disconnected'); clearIdentity(device); }
       if (value) { for (const device of devices) { identify(device); device.lastPollAt = -Infinity; } api.tick(engine.clock()); }
       else { for (const request of requests.values()) request.complete?.('unavailable'); requests.clear(); }

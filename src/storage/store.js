@@ -1,4 +1,7 @@
+import { isDeepStrictEqual } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
+import { WriterClient } from './writer-client.js';
+import { writerDatabase } from './writer-database.js';
 import { validateArchivedLearningCheckpointStorage } from './learning-checkpoint-archive.js';
 import { mkdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -27,6 +30,10 @@ import { initializeJournal, installJournal, validateCheckpoint, readCheckpoint, 
   commonCheckpoint, exportChanges, changedRecordKeys, journalBase, compactJournal, journalCommitTiming } from './journal.js';
 export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
+const storeConnections = new WeakMap();
+// Private construction provenance for diagnostics; structural lookalikes and
+// replaced connection properties cannot claim a real durable Store boundary.
+export const isStoreConnection = (store, db) => Boolean(db && storeConnections.get(store) === db);
 
 /** Seek direct entries and compact prefix boundaries instead of aggregating a
  * union of every historical learning row after a correction. */
@@ -278,7 +285,7 @@ export class Store {
         try { validateCurrentDatabase(this.db, { readOnly: true }); }
         finally { this.db.exec('ROLLBACK'); }
       }
-      if (readOnly) { registerJournalFunctions(this.db); this.db.exec(`PRAGMA query_only = ON; PRAGMA busy_timeout = ${isMainThread ? 0 : 5000};`); return; }
+      if (readOnly) { storeConnections.set(this, this.db); registerJournalFunctions(this.db); this.db.exec(`PRAGMA query_only = ON; PRAGMA busy_timeout = ${isMainThread ? 0 : 5000};`); return; }
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
       installJournal(this.db);
       this.insertObservation = this.db.prepare(`INSERT INTO observations
@@ -286,14 +293,176 @@ export class Store {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       this.insertEvent = this.db.prepare('INSERT INTO events (type, payload, at) VALUES (?, ?, ?)');
       if (isMainThread) this.db.exec('PRAGMA busy_timeout = 0;');
+      storeConnections.set(this, this.db);
     } catch (error) { this.db.close(); throw error; }
   }
 
-  close() { this.writeQueue.close(); this.db.close(); }
+  close() {
+    if (this.closePending) return this.closePending;
+    this.writeQueue.close();
+    if (!this.writer && !this.writerStartPending) { if (this.db.isOpen) this.db.close(); return; }
+    this.closePending = (async () => {
+      // Startup may own a worker before publishing its connection. Join that
+      // lifetime too: callers can release the database path after close.
+      await this.writerStartPending?.catch(() => {});
+      await this.writeQueue.idle();
+      if (this.writer) {
+        try { await this.writer.close(); }
+        finally { this.writerReader.close(); }
+      } else if (this.db.isOpen) this.db.close();
+    })();
+    return this.closePending;
+  }
+
+  startWriter() {
+    if (this.writerStartPending) return this.writerStartPending;
+    if (this.writer) return Promise.resolve();
+    if (this.readOnly || this.path === ':memory:' || !isMainThread)
+      return Promise.reject(new TypeError('The dedicated writer requires a writable file-backed runtime Store.'));
+    this.writerStartPending = this.runPublication(async () => {
+      const writer = new WriterClient({ path: this.path });
+      let reader;
+      try {
+        await writer.ready;
+        if (this.writeQueue.closed) throw Object.assign(new Error('Recording storage is closed.'), { code: 'STORAGE_CLOSED' });
+        reader = new Store(this.path, { readOnly: true });
+        this.db.close();
+      } catch (error) {
+        await writer.close().catch(() => {}); reader?.close(); throw error;
+      }
+      this.writer = writer; this.writerReader = reader;
+      this.writePending = false; this.writerFailed = false; this.writeSettledListeners = new Set();
+      this.db = writerDatabase(this, reader.db, writer);
+      storeConnections.set(this, this.db);
+      this.changeCount = this.db.prepare('SELECT total_changes() AS n');
+      this.insertObservation = this.db.prepare(`INSERT INTO observations
+        (source, device, signal, value, unit, source_time, received_at, quality, raw, import_id, row_number)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      this.insertEvent = this.db.prepare('INSERT INTO events (type, payload, at) VALUES (?, ?, ?)');
+      this.writeQueue.asyncTransaction = fn => this._workerTransaction(fn);
+    });
+    return this.writerStartPending;
+  }
+
+  canDispatch() { return !this.writePending && !this.writerFailed && !this.writer?.failed && !this.writeQueue.closed; }
+  onWriteSettled(listener) {
+    if (typeof listener !== 'function') throw new TypeError('A storage settlement listener must be a function');
+    this.writeSettledListeners ??= new Set();
+    this.writeSettledListeners.add(listener);
+    return () => this.writeSettledListeners.delete(listener);
+  }
+  whenWritesSettled() {
+    if (!this.writePending) return Promise.resolve();
+    return new Promise(resolve => { const remove = this.onWriteSettled(() => { remove(); resolve(); }); });
+  }
+  _writeSettled() {
+    this.writePending = false;
+    for (const listener of [...(this.writeSettledListeners ?? [])]) {
+      try { listener(); } catch { /* A diagnostic/transport listener cannot change durability. */ }
+    }
+  }
+
+  async _workerTransaction(fn) {
+    if (this.writerFailed || this.writer.failed)
+      throw Object.assign(new Error('The storage writer is unavailable; restart after checking storage.'), { code: 'STORAGE_WRITER_FAILED' });
+    this.writePending = true;
+    const started = performance.now();
+    const timing = { beginMs: 0, bodyMs: 0, commitMs: 0, totalMs: 0,
+      journalSealMs: null, nativeCommitMs: null, journal: null, startedAt: Date.now(), committed: false };
+    let admitted = false, boundary, result, prepared, commitRequested = false, committed = false, error, changed = false;
+    try {
+      boundary = await this.writer.request('begin');
+      admitted = true; timing.beginMs = performance.now() - started;
+      this.transactionDepth = 1; this.writerBodyActive = true; this.savepointSequence ??= 0;
+      this.commitEffects = []; this.rollbackEffects = []; this.discardedChanges = 0;
+      this.writeEvidenceUnknown = false;
+      const bodyStarted = performance.now();
+      try {
+        result = fn();
+        if (result && typeof result.then === 'function') {
+          Promise.resolve(result).catch(() => {});
+          throw new TypeError('SQLite transaction callback must be synchronous');
+        }
+        const changes = this.databaseChanges();
+        changed = !this.writeEvidenceUnknown && changes !== null && changes - boundary.changes > this.discardedChanges;
+      } finally {
+        timing.bodyMs = performance.now() - bodyStarted;
+        this.transactionDepth = 0; this.writerBodyActive = false;
+      }
+      const commitStarted = performance.now();
+      try {
+        prepared = await this.writer.request('seal');
+        if (prepared.timing) Object.assign(timing, prepared.timing);
+        commitRequested = true;
+        const receipt = await this.writer.request('commit');
+        if (receipt.timing) Object.assign(timing, receipt.timing);
+        committed = true;
+      } finally { timing.commitMs = performance.now() - commitStarted; }
+    } catch (caught) {
+      error = caught;
+      if (this.writer.failed) {
+        // No further writer may run until this connection has exited. BEGIN
+        // may have succeeded before its acknowledgement was lost; likewise a
+        // lost COMMIT reply is not proof of rollback. Never replay the callback.
+        await this.writer.terminate(); this.writerFailed = true;
+        if (admitted && commitRequested && prepared?.checkpoint && prepared.checkpoint.sequence > boundary.checkpoint.sequence) {
+          try {
+            const actual = this.checkpointAt(prepared.checkpoint.sequence);
+            committed = Boolean(actual && isDeepStrictEqual(actual, prepared.checkpoint));
+          } catch { /* Unknown durability keeps command authority fenced. */ }
+        }
+      } else {
+        // A negative BEGIN response can follow successful lock acquisition if
+        // reading its checkpoint failed. This admission turn still owns the
+        // connection; release any partial transaction before retry or dispatch.
+        // ROLLBACK also resets an idle writer after ordinary lock contention.
+        try { await this.writer.request('rollback'); }
+        catch { await this.writer.terminate(); this.writerFailed = true; }
+      }
+    }
+    try {
+      if (committed) {
+        timing.committed = true;
+        // Durability is proven. Follow-ups run synchronously before the next job.
+        this.writePending = false;
+        if (changed) this.writeHealth.success();
+        const failures = [];
+        for (const effect of this.commitEffects ?? []) {
+          try { effect(); } catch (cause) { failures.push(cause); }
+        }
+        if (failures.length) {
+          error = Object.assign(new AggregateError(failures, 'A saved operation could not finish its follow-up.'),
+            { code: 'STORAGE_COMMIT_EFFECT_FAILED', committed: true });
+          this.writeHealth.postCommitFailure(error);
+          throw error;
+        }
+        // A verified durable result remains successful after a lost reply. The
+        // failed writer stays fenced until restart; no transaction is retried.
+        return result;
+      }
+      for (const effect of [...(admitted ? this.rollbackEffects : []) ?? []].reverse()) {
+        try { effect(); } catch (cause) { if (error && typeof error === 'object') error.cleanupError ??= cause; }
+      }
+      if (admitted || !sqliteContention(error)) this.writeHealth.failure(error);
+      throw error;
+    } finally {
+      this.transactionDepth = 0; this.writerBodyActive = false;
+      this.commitEffects = []; this.rollbackEffects = [];
+      timing.totalMs = performance.now() - started;
+      if (!admitted) timing.beginMs = timing.totalMs;
+      try { this.writeHealth.transaction(timing); } catch {}
+      this._writeSettled();
+    }
+  }
 
   checkpoint() { return readCheckpoint(this.db); }
   journalBase() { return journalBase(this.db); }
-  compactJournal(options) { return compactJournal(this.db,options); }
+  compactJournal(options) {
+    if (!this.writer) return compactJournal(this.db, options);
+    if (this.writePending || this.transactionDepth)
+      throw Object.assign(new Error('Journal maintenance requires an idle writer.'), { code: 'journal_transaction_active' });
+    return this.writer.call('compact', { options });
+  }
   checkpointAt(sequence) { return checkpointAt(this.db, sequence); }
   commonCheckpoint(other) { return commonCheckpoint(this.db, other.db ?? other); }
   exportChanges(options) { return exportChanges(this.db, options); }
@@ -336,7 +505,11 @@ export class Store {
   }
 
   databaseChanges() {
-    try { return this.changeCount.get().n; } catch { return null; }
+    try {
+      if (this.writer && (!this.writePending || this.writerBodyActive))
+        return this.writer.call('statement', { sql: 'SELECT total_changes() AS n', method: 'get', params: [] }).n;
+      return this.changeCount.get().n;
+    } catch { return null; }
   }
 
   transaction(fn) {

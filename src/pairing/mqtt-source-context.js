@@ -160,7 +160,7 @@ export function createMqttSourceContext({ configuration, directory }) {
           await savePins(pins);
           // This writes only genuinely absent current context. It does not scan,
           // rewrite or translate any existing equipment or evidence state.
-          store.setState(MQTT_SOURCE_CONTEXT_KEY, seed);
+          await store.runWrite(() => store.setState(MQTT_SOURCE_CONTEXT_KEY, seed));
         } else validateSeed(seed, config);
         const fingerprint = seedDigest(seed);
         if (allowSeed && pins.pending?.kind === 'initialize' && pins.pending.seedDigest === fingerprint
@@ -174,7 +174,7 @@ export function createMqttSourceContext({ configuration, directory }) {
         const contract = sourceContract(config);
         if (seed.configurationContract !== contract) {
           seed = { ...seed, configurationContract: contract };
-          store.setState(MQTT_SOURCE_CONTEXT_KEY, seed);
+          await store.runWrite(() => store.setState(MQTT_SOURCE_CONTEXT_KEY, seed));
         }
         identities.set(config, structuredClone(seed.identities));
         active = { seedDigest: fingerprint, routeDigest: route };

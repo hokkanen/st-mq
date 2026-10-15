@@ -17,7 +17,8 @@ function fixture(options = {}) {
   const state = new Map();
   const store = { path: '/invented/storage/history.sqlite', readOnly: false, runWrite: async operation => operation(),
     getState: key => state.get(key) ?? null, setState: (key, value) => state.set(key, structuredClone(value)),
-    writeHealth: createWriteHealth(() => now) };
+    writeQueue: { closed: false },
+    writeHealth: createWriteHealth(() => now, () => ({ pending: 0, queued: 0, activeJobs: 0, waitingSince: null })) };
   const engine = { config: { input: 'mqtt' }, latestStatus: { now } };
   const parameter = { observedThisRun: true, signal: 'indoor_temperature', lastPollAt: now,
     freshness: { status: 'held', sourceObservedAt: now, maxAgeMs: null } };
@@ -42,6 +43,85 @@ test('disk pressure uses application-available blocks, with absolute and bounded
   assert.equal(diskSpaceStatus(capacity(6 * GIB, 10_000 * GIB), start).state, 'ok', 'large volumes do not demand hundreds of GB');
   assert.equal(diskSpaceStatus({ ...capacity(), bavail: 0, bfree: 100_000 }, start).freeBytes, 0, 'reserved blocks are not available');
   assert.throws(() => diskSpaceStatus(capacity(-1), start));
+});
+
+test('writer availability is independent of successful saves, diagnostic history and source state', async () => {
+  const f = fixture();
+  assert.deepEqual((await f.status()).recording.writer, { state: 'ready' });
+  f.store.writePending = true;
+  const saving = await f.status();
+  assert.deepEqual(saving.recording.writer, { state: 'saving' });
+  assert.equal(saving.recording.state, 'ok');
+  assert.deepEqual(saving.attention, [], 'an ordinary asynchronous save is neutral activity');
+  f.parameter.freshness = { status: 'unavailable' };
+  assert.equal((await f.status()).recording.state, 'source-unavailable', 'saving does not hide a source loss');
+  f.store.writerFailed = true;
+  const confirming = await f.status();
+  assert.deepEqual(confirming.recording.writer, { state: 'confirming' });
+  assert.equal(confirming.recording.state, 'writer-confirming');
+  assert.equal(confirming.attention.find(row => row.id === 'storage-writer').severity, 'warning');
+  assert.equal(confirming.recording.lastFailureAt, null, 'uncertain durability is not a failed save');
+  f.store.writePending = false;
+  f.store.writeHealth.success();
+  const failed = await f.status();
+  assert.deepEqual(failed.recording.writer, { state: 'unavailable' });
+  assert.equal(failed.recording.state, 'writer-unavailable');
+  assert.equal(failed.recording.lastWriteAt, start);
+  assert.equal(failed.recording.lastFailureAt, null);
+  assert.equal(failed.attention.find(row => row.id === 'storage-writer').severity, 'critical');
+  f.advance(86_400_000 * 2);
+  const later = await f.status();
+  assert.equal(later.recording.writer.state, 'unavailable', 'a historical window cannot clear a dead writer');
+  assert.equal(later.recording.lastWriteAt, start, 'availability checks never refresh saved evidence');
+  f.store.writerFailed = false;
+  f.store.writeQueue.closed = true;
+  assert.equal((await f.status()).recording.writer.state, 'stopped');
+  assert.equal((await f.status()).recording.state, 'writer-unavailable');
+});
+
+test('missing or invalid current writer evidence remains unknown and read-only scopes have no writer', async () => {
+  for (const change of [store => { delete store.writeQueue; }, store => { delete store.writeHealth; },
+    store => { store.writeQueue.closed = 'false'; },
+    store => { store.writeHealth = { status: () => ({ queue: { pending: 1, queued: 0, activeJobs: 0 } }) }; },
+    store => { store.writer = { started: false, terminated: false }; }]) {
+    const f = fixture(); change(f.store);
+    assert.equal((await f.status()).recording.writer.state, 'unknown');
+  }
+  const f = fixture();
+  assert.equal((await f.status({ store: null })).recording.writer.state, 'unknown');
+  f.store.writerFailed = true;
+  for (const mode of ['argument', 'store', 'current', 'engine']) {
+    const f = fixture(); f.store.writerFailed = true;
+    if (mode === 'store') f.store.readOnly = true;
+    if (mode === 'current') f.current.input = 'offline';
+    if (mode === 'engine') f.engine.config.input = 'offline';
+    const result = await f.status({ readOnly: mode === 'argument' });
+    assert.equal(result.recording.writer, null, mode);
+    assert.equal(result.recording.state, 'read-only', mode);
+    assert.deepEqual(result.attention, [], mode);
+  }
+});
+
+test('runtime scheduling diagnostics are current bounded memory evidence with a safe public shape', async () => {
+  const f = fixture();
+  assert.equal((await f.status()).recording.runtimeTiming, null);
+  const timing = { basis: 'observed-event-loop-delay', hardRealtime: false, warningThresholdMs: 1000,
+    samples: 4, maxObservedDelayMs: 1500, p99ObservedDelayMs: 1000 };
+  f.engine.runtimeTiming = () => ({ ...timing, privateValue: 'private-runtime-path' });
+  assert.deepEqual((await f.status()).recording.runtimeTiming, timing);
+  assert.equal((await f.status({ readOnly: true })).recording.runtimeTiming, null);
+  f.engine.runtimeTiming = () => { throw new Error('private-runtime-path'); };
+  assert.equal((await f.status()).recording.runtimeTiming, null);
+  for (const value of [{ ...timing, samples: -1 }, { ...timing, samples: 0 },
+    { ...timing, maxObservedDelayMs: Infinity }, { ...timing, p99ObservedDelayMs: null },
+    { ...timing, hardRealtime: true }, { ...timing, basis: 'private-runtime-path' }]) {
+    f.engine.runtimeTiming = () => value;
+    assert.equal((await f.status()).recording.runtimeTiming, null);
+  }
+  const empty = { ...timing, samples: 0, maxObservedDelayMs: null, p99ObservedDelayMs: null };
+  f.engine.runtimeTiming = () => empty;
+  assert.deepEqual((await f.status()).recording.runtimeTiming, empty, 'unsampled delays are unknown rather than zero');
+  assert.equal(f.state.size, 0, 'health polling adds no diagnostic writes');
 });
 
 test('held readings do not need new observation rows and a stale tick is not refreshed by the status clock', async () => {

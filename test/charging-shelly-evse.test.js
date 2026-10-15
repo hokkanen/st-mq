@@ -55,7 +55,7 @@ test('positive vehicle demand below the pilot minimum preserves electrical and z
   assert.equal(shellyCurrentLimit({ ...args, vehicleCurrentA: 8 }).currentA, 8);
 });
 function fixture(t, extra={}, backingStore=null) {
-  let now=NOW, authority=true, failSave=false;
+  let now=NOW, authority=true, failSave=false, holdReply=null;
   const deviceInfo = { id: 'synthetic-evse', model: 'synthetic-model', fw_id: 'synthetic-firmware' };
   const service={id:0,auto_balance:{enable:false},auto_charge:true,global_charge_limit:0,global_time_limit:0},serviceStatus={state:'running'},schedules={rev:1,jobs:[]};
   const client=new EventEmitter(), values=new Map(), writes=[], energy=[], gaps=[], voltages=[], events=[];
@@ -84,7 +84,8 @@ function fixture(t, extra={}, backingStore=null) {
         result={value,last_update_ts:settingClock.get(role).at/1000,...(sources.has(role)?{source:sources.get(role)}:{})};
       } else result={value:structuredClone(value),last_update_ts:(settingClock.get(role)?.at??now)/1000};
     }
-    cb?.();queueMicrotask(()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{}));
+    const reply=()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{});
+    cb?.();if(!holdReply?.(frame,reply))queueMicrotask(reply);
   };
   const store=backingStore??{getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
     event:(type,payload,at)=>events.push({type,payload,at})};
@@ -93,6 +94,7 @@ function fixture(t, extra={}, backingStore=null) {
   let adapter=createAdapter();
   t.after(()=>adapter.close());
   return {get adapter(){return adapter;},client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,sources,currentComponent,deviceInfo,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
+    holdReplies:value=>holdReply=value,
     restartAdapter() { adapter.close(); adapter=createAdapter(); },
     setSourceTime(role, at) { settingClock.set(role, { value: fields[role], at }); },
     delta(role, delta, { eventAt = now, retained = false, apply = true, method = 'NotifyStatus' } = {}) {
@@ -109,6 +111,124 @@ function fixture(t, extra={}, backingStore=null) {
     async ready(){client.emit('connect');client.emit('message','test/evse/online',Buffer.from('true'),{retain:true});await adapter.refresh();},
     notify(role,value,packet={}){if (['start_charging','current_limit'].includes(role) && !packet.retain) settingClock.set(role,{value,at:now});client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
 }
+
+test('a failed worker source-time save preserves an independently started native read', { timeout: 10_000 }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-worker-requests-'));
+  const store = new Store(join(directory, 'recording.sqlite')), f = fixture(t, {}, store);
+  let release, reply;
+  t.after(async () => {
+    release?.(); f.adapter.close(); await store.close(); rmSync(directory, { recursive: true, force: true });
+  });
+  await f.ready(); await store.runWrite(() => {}); await store.startWriter();
+  let entered;
+  const held = new Promise(resolve => { entered = resolve; });
+  const resumed = new Promise(resolve => { release = resolve; });
+  const request = store.writer.request.bind(store.writer);
+  let intercepted = false;
+  store.writer.request = async (operation, args) => {
+    if (operation === 'commit' && !intercepted) {
+      intercepted = true; entered(); await resumed;
+      throw Object.assign(new Error('Synthetic source-time commit failure'), { code: 'ERR_SQLITE_ERROR', errcode: 10 });
+    }
+    return request(operation, args);
+  };
+  f.setNow(NOW + 1000); f.setSourceTime('phase_info', f.now() + 25);
+  const original = f.adapter.rpc('Object.GetStatus', { owner: 'service:0', role: 'phase_info' }, { statusReadback: true });
+  void original.catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-source-time-pending');
+  f.setNow(f.now() + 25); await held;
+  f.holdReplies((frame, respond) => { if (frame.method === 'Schedule.List') { reply = respond; return true; } return false; });
+  let completed = false;
+  const newer = f.adapter.rpc('Schedule.List').then(value => { completed = true; return value; });
+  void newer.catch(() => {});
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(typeof reply, 'function');
+  release(); await store.whenWritesSettled();
+  reply(); await store.runWrite(() => {});
+  for (let attempt = 0; !completed && attempt < 40; attempt++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(completed, true, 'An older rollback must retain the newer RPC owner so its correlated reply can complete');
+  assert.deepEqual(await newer, f.schedules);
+  await original;
+});
+
+test('worker source-time rollback cannot revive a timed-out native read', { timeout: 10_000 }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-worker-expiry-'));
+  const store = new Store(join(directory, 'recording.sqlite')), f = fixture(t, {}, store);
+  let release, reply, expire;
+  t.after(async () => {
+    release?.(); f.adapter.close(); await store.close(); rmSync(directory, { recursive: true, force: true });
+  });
+  await f.ready(); await store.runWrite(() => {}); await store.startWriter();
+  const timeout = globalThis.setTimeout;
+  const timerMock = t.mock.method(globalThis, 'setTimeout', (callback, ms, ...args) => {
+    const handle = timeout(callback, ms, ...args);
+    if (ms === 5000) { expire = callback; t.after(() => clearTimeout(handle)); }
+    return handle;
+  });
+  f.fields.current_limit = 7;
+  f.holdReplies((frame, respond) => { if (frame.method === 'Number.GetStatus') { reply = respond; return true; } return false; });
+  const timedOut = assert.rejects(f.adapter.rpc('Number.GetStatus', { owner: 'service:0', role: 'current_limit' },
+    { statusReadback: true }), { code: 'evse-read-timeout' });
+  await new Promise(resolve => setImmediate(resolve)); timerMock.mock.restore();
+  assert.equal(typeof expire, 'function'); assert.equal(typeof reply, 'function');
+  let entered;
+  const held = new Promise(resolve => { entered = resolve; });
+  const resumed = new Promise(resolve => { release = resolve; });
+  const request = store.writer.request.bind(store.writer);
+  let intercepted = false;
+  store.writer.request = async (operation, args) => {
+    if (operation === 'commit' && !intercepted) {
+      intercepted = true; entered(); await resumed;
+      throw Object.assign(new Error('Synthetic source-time commit failure'), { code: 'ERR_SQLITE_ERROR', errcode: 10 });
+    }
+    return request(operation, args);
+  };
+  f.setNow(NOW + 1000); f.setSourceTime('phase_info', f.now() + 25);
+  const original = f.adapter.rpc('Object.GetStatus', { owner: 'service:0', role: 'phase_info' }, { statusReadback: true });
+  void original.catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-source-time-pending');
+  f.setNow(f.now() + 25); await held;
+  expire(); await timedOut;
+  release(); await store.whenWritesSettled();
+  reply(); await original; await store.runWrite(() => {});
+  assert.equal(f.adapter.snapshot().fields.current_limit.value, 16,
+    'An expired correlated reply cannot become a newly admitted native observation after rollback');
+});
+
+test('worker input admission and native reply share the original command timeout budget', { timeout: 10_000 }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-worker-budget-'));
+  const store = new Store(join(directory, 'recording.sqlite')), f = fixture(t, {}, store);
+  let release;
+  t.after(async () => { release?.(); f.adapter.close(); await store.close(); rmSync(directory, { recursive: true, force: true }); });
+  await f.ready(); await store.runWrite(() => {}); await store.startWriter();
+  let entered;
+  const held = new Promise(resolve => { entered = resolve; });
+  const resumed = new Promise(resolve => { release = resolve; });
+  const request = store.writer.request.bind(store.writer);
+  let intercepted = false;
+  store.writer.request = async (operation, args) => {
+    if (operation === 'commit' && !intercepted) { intercepted = true; entered(); await resumed; }
+    return request(operation, args);
+  };
+  f.setNow(NOW + 1000); f.notify('phase_info', structuredClone(f.fields.phase_info)); await held;
+  let dispatched = false;
+  f.holdReplies(frame => { if (frame.method === 'Boolean.Set') { dispatched = true; return true; } return false; });
+  const native = f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: false },
+    { mutation: true, guard: () => true });
+  const rejected = assert.rejects(native, { code: 'evse-command-unconfirmed' });
+  assert.equal(dispatched, false, 'The command cannot pass the unsettled input');
+  // Advance only this adapter's wall clock while its actual worker boundary is
+  // held. The remaining response deadline runs on an ordinary native timer.
+  f.setNow(NOW + 5000); const releasedAt = performance.now(); release();
+  await rejected;
+  assert.equal(dispatched, true);
+  assert(performance.now() - releasedAt < 3000, 'The admitted command has about one second left, not another five');
+  const diagnostic = f.adapter.snapshot().lastRpcTimeout;
+  assert.equal(diagnostic.method, 'Boolean.Set');
+  assert(diagnostic.elapsedMs < 3000);
+  assert(diagnostic.timerOverrunMs < 1000, 'Overrun uses the actual remaining reply deadline');
+});
 test('contended Shelly notification closes command readiness until its original receipt is committed', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-contention-'));
   const store = new Store(join(directory, 'recording.sqlite')), writer = new DatabaseSync(store.path);

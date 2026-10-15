@@ -22,6 +22,7 @@ function journalEvidence(value) {
 }
 
 export function storageFailureCode(error) {
+  if (['STORAGE_WRITER_FAILED', 'STORAGE_WRITER_UNAVAILABLE', 'STORAGE_WRITER_TIMEOUT'].includes(error?.code)) return 'database-unavailable';
   if (error?.code === 'STORAGE_QUEUE_FULL') return 'write-queue-full';
   if (error?.code === 'ENOSPC' || error?.code === 'EDQUOT') return 'disk-full';
   const code = Number.isInteger(error?.errcode) ? error.errcode & 0xff : null;

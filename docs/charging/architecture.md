@@ -236,8 +236,10 @@ last-change clocks and physical confirmation boundaries still force publication.
 Startup validates the current manifest, every required field, content hashes and
 references for all input environments, including inactive ones. Missing records,
 unreferenced fragments, invalid nested state and older aggregate formats fail
-before writable setup. Schema 30 requires an intentional fresh development start;
-opening an incompatible installation never resets or converts it.
+before writable setup. Physical schema 31 retains this charging representation.
+Ordinary startup rejects incompatible installations with fresh-start guidance;
+it never resets or converts them. The separately authorized chart-index operation
+is outside startup and preserves the current journaled data layout.
 
 Rollback restores both persisted state and observer bookkeeping, including report
 save cadence, guided assessments and allowance-history row references. A failed

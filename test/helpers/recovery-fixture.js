@@ -13,7 +13,7 @@ export function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-recovery-'));
   const master = new Store(join(directory, 'master.sqlite'));
   const stores = [master];
-  t.after(() => { for (const store of stores) try { store.close(); } catch {} rmSync(directory, { recursive: true, force: true }); });
+  t.after(async () => { for (const store of stores) try { await store.close(); } catch {} rmSync(directory, { recursive: true, force: true }); });
   // Use the same isolated snapshot worker as pairing. Node 26.8.2's native
   // async backup can wait for unrelated timers when the test runner's message
   // port keeps the calling event loop alive. The production snapshot worker

@@ -156,7 +156,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     && discovered && profileSupported && service?.id === config.serviceId && nativeServiceAvailable()
     && !eventOverflow && !state.permissionOverflow
     && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
-  const ready = () => controlReady && observationServiceReady() && storagePending === 0 && sourcePending.size === 0;
+  const ready = () => controlReady && observationServiceReady() && storagePending === 0 && sourcePending.size === 0
+    && (store.canDispatch?.() ?? true);
   const currentReady = () => ready() && currentControlReady;
   function waitForInputAdmission({ deadlineAt = clock() + RPC_TIMEOUT_MS, signal } = {}) {
     if (!Number.isSafeInteger(deadlineAt)) return Promise.reject(fail('invalid-evse-command'));
@@ -175,7 +176,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       const check = () => {
         if (closed || !connected || epoch !== generation || signal?.aborted || clock() >= deadlineAt
           || !observationServiceReady() || error) { finish(false); return; }
-        if (storagePending === 0 && sourcePending.size === 0) finish(true);
+        if (store.writerFailed) { finish(false); return; }
+        if (storagePending === 0 && sourcePending.size === 0 && (store.canDispatch?.() ?? true)) finish(true);
       };
       admissionWaiters.add(check);
       signal?.addEventListener('abort', cancelled, { once: true });
@@ -247,16 +249,16 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     const permitted = () => ready() && !notificationPending.size && knownWorkState() && settingFresh('start_charging') && settingFresh('current_limit')
       && (method !== 'Number.Set' || config.limiterEnabled && currentReady() || identificationCurrentAllowed());
     const settleInput = async () => {
-      // Only received-input waiting consumes this shared admission allowance.
-      // Intent persistence keeps its existing lifetime; the native response
-      // timeout starts at dispatch. Every wait still revalidates scope below.
+      // Received-input waits and the native reply share the command budget.
+      // Intent persistence keeps its existing separate lifetime. Every wait
+      // still revalidates the original scope before dispatch below.
       const startedAt = clock(), started = performance.now();
       const admitted = await waitForInputAdmission({ deadlineAt: startedAt + Math.max(0, Math.floor(remainingAdmissionMs)),
         signal: cancellation.signal });
       remainingAdmissionMs -= Math.max(performance.now() - started, clock() - startedAt);
       if (!admitted || remainingAdmissionMs <= 0) throw fail('evse-control-unavailable');
     };
-    if (mayWait && (storagePending || sourcePending.size)) await settleInput();
+    if (mayWait && (storagePending || sourcePending.size || store.writePending)) await settleInput();
     if (!connected || !admitted || closed || epoch !== generation
       || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-control-unavailable');
     if (pending.size >= 16) throw fail('evse-request-limit');
@@ -269,28 +271,33 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       || params.role === 'start_charging' && typeof params.value !== 'boolean')) throw fail('invalid-evse-command');
     const id = randomUUID();
     await beforePublish();
-    if (mayWait && (storagePending || sourcePending.size)) await settleInput();
+    if (mayWait && (storagePending || sourcePending.size || store.writePending)) await settleInput();
     if (!connected || !admitted || closed || epoch !== generation
       || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-command-revoked');
+    if (remainingAdmissionMs <= 0) throw fail('evse-control-unavailable');
     return new Promise((resolve, reject) => {
       const requestedAt = clock(), started = performance.now();
+      const replyTimeoutMs = Math.max(1, Math.floor(remainingAdmissionMs));
+      const item = { generation: epoch, retired: false,
+        resolve(value) { item.retired = true; resolve(value); },
+        reject(cause) { item.retired = true; reject(cause); },
+        readback: statusReadback ? { role: params.role, generation: epoch,
+          revision: fieldRevisions.get(params.role) ?? 0, sessionSequence: state.sessionSequence, requestedAt: clock() } : null };
       const timer = setTimeout(() => {
         pending.delete(id);
         const timedOutAt = clock(), elapsedMs = performance.now() - started;
         // Bounded transport evidence, without request IDs or private payloads.
         // A missed read is not evidence of an uncertain actuator instruction.
         lastRpcTimeout = { method, role: typeof params.role === 'string' && Object.hasOwn(TYPES, params.role) ? params.role : null,
-          requestedAt, timedOutAt, elapsedMs, timerOverrunMs: Math.max(0, elapsedMs - RPC_TIMEOUT_MS) };
-        reject(fail(mutation ? 'evse-command-unconfirmed' : 'evse-read-timeout'));
-      }, RPC_TIMEOUT_MS);
+          requestedAt, timedOutAt, elapsedMs, timerOverrunMs: Math.max(0, elapsedMs - replyTimeoutMs) };
+        item.reject(fail(mutation ? 'evse-command-unconfirmed' : 'evse-read-timeout'));
+      }, replyTimeoutMs);
       if (mutation && params.role) fieldRevisions.set(params.role, (fieldRevisions.get(params.role) ?? 0) + 1);
-      timer.unref?.(); pending.set(id, { resolve, reject, timer, generation: epoch,
-        readback: statusReadback ? { role: params.role, generation: epoch,
-          revision: fieldRevisions.get(params.role) ?? 0, sessionSequence: state.sessionSequence, requestedAt: clock() } : null });
+      item.timer = timer; timer.unref?.(); pending.set(id, item);
       // No offline queue, retention or automatic application-level retry.
       try { client.publish(`${config.topicPrefix}/rpc`, JSON.stringify({ id, src: source, method, params }), { qos: 0, retain: false }, error => {
-        if (error && pending.has(id)) { clearTimeout(timer); pending.delete(id); reject(fail(mutation ? 'evse-publish-unconfirmed' : 'evse-read-unavailable')); }
-      }); } catch { clearTimeout(timer); pending.delete(id); reject(fail(mutation ? 'evse-publish-unconfirmed' : 'evse-read-unavailable')); }
+        if (error && pending.has(id)) { clearTimeout(timer); pending.delete(id); item.reject(fail(mutation ? 'evse-publish-unconfirmed' : 'evse-read-unavailable')); }
+      }); } catch { clearTimeout(timer); pending.delete(id); item.reject(fail(mutation ? 'evse-publish-unconfirmed' : 'evse-read-unavailable')); }
     });
   }
   function reconcileConnection(value, measuredAt, receivedAt, eventClock = false, valueUpdatedAt = null) {
@@ -532,11 +539,23 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   }
   function preserveAdmissionState(requests = false) {
     const before = copy(state), savedAdmission = admission.checkpoint(), savedReadAt = readAt, savedLiveAt = lastLiveAt;
-    const maps = [fieldRevisions, fieldGenerations, notificationBaselines, notificationPending, ...(requests ? [pending] : [])]
+    const epoch = generation;
+    const maps = [fieldRevisions, fieldGenerations, notificationBaselines, notificationPending]
       .map(map => [map, new Map(map)]);
+    const savedRequests = requests ? new Map(pending) : null;
     store.afterRollback?.(() => {
-      state = before; readAt = savedReadAt; lastLiveAt = savedLiveAt; admission.restore(savedAdmission);
-      for (const [map, saved] of maps) { map.clear(); for (const [key, value] of saved) map.set(key, value); }
+      state = before;
+      // Disconnect/reset is immediate transport evidence. A failed older save
+      // restores durable fields without reviving that connection's admission.
+      if (epoch === generation) {
+        readAt = savedReadAt; lastLiveAt = savedLiveAt; admission.restore(savedAdmission);
+        for (const [map, saved] of maps) { map.clear(); for (const [key, value] of saved) map.set(key, value); }
+        // Native reads may start or expire while worker durability is pending.
+        // Restore only receipt-owned removals whose original request is still
+        // live; never replace newer owners or resurrect a settled request.
+        for (const [id, item] of savedRequests ?? [])
+          if (!item.retired && !pending.has(id)) pending.set(id, item);
+      }
       engine.recorder?.reload?.();
     });
   }
@@ -820,6 +839,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     publishStatus();
   }
   client.on('connect', connect); client.on('message', receive); client.on('offline', disconnect); client.on('close', disconnect);
+  const unsubscribeStorage = store.onWriteSettled?.(() => { for (const settled of [...admissionWaiters]) settled(); });
   const timer = setInterval(() => {
     void refresh().then(completedRead => engine.charging?.reconcileShellyObservation?.(completedRead)).catch(() => {});
   }, 5000); timer.unref?.();
@@ -972,7 +992,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       return { healthy: online && Boolean(live('phase_info')), currents: field ? config.phaseMap.map(i => field.value[['phase_a', 'phase_b', 'phase_c'][i]].current) : null,
         times: [field?.measuredAt, field?.measuredAt, field?.measuredAt], confirmedAt: field?.receivedAt ?? null }; },
     createController: options => createShellyController({ ...options, adapter }),
-    close() { closed = true; cancellation.abort(); clearInterval(timer); disconnect(); client.removeListener('connect', connect); client.removeListener('message', receive); client.removeListener('offline', disconnect); client.removeListener('close', disconnect); },
+    close() { closed = true; cancellation.abort(); unsubscribeStorage?.(); clearInterval(timer); disconnect(); client.removeListener('connect', connect); client.removeListener('message', receive); client.removeListener('offline', disconnect); client.removeListener('close', disconnect); },
   };
   return adapter;
 }

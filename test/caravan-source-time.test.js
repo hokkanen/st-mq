@@ -36,6 +36,7 @@ function fixture(t, { failOn = false, genericMeter = false } = {}) {
     publish: async (topic, payload, options) => {
       publications.push({ topic, payload });
       if (topic !== 'fixture/dryer/set') return;
+      await options.preparePublish?.();
       options.beforePublish?.();
       const command = JSON.parse(payload); commands.push(command);
       if (failOn && command.power === 'on') throw new Error('Synthetic publication failure');

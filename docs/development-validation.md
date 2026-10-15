@@ -495,15 +495,23 @@ node scripts/benchmarks/sensor-queries.js
 ```
 
 Storage health and durability changes have focused offline checks in
-`test/recording-health.test.js`, `test/storage-publication.test.js`,
+`test/recording-health.test.js`, `test/storage-health-api.test.js`, `test/storage-publication.test.js`,
 `test/database-export.test.js`, `test/backup-catalog.test.js`,
 `test/backup-inspection.test.js` and `test/recorder.test.js`. They cover actual
 SQLite full/busy failures, unchanged readings, read-only replicas, authenticated
 health fallback, flush failures and adaptive-budget isolation from unrelated
-writes. `node test/browser/recording-health-smoke.js` checks the real dashboard
+writes. Health producer tests also distinguish current writer availability from
+successful save receipts and source status, reject missing/malformed availability
+evidence, and sanitize the existing in-memory application timing diagnostics.
+Read-only snapshots and history have no current writer or application timing.
+`node test/browser/recording-health-smoke.js` checks the real dashboard
 health elements at narrow and wide widths in both themes, including focus,
-stale status, sign-out fencing and the health-only failure view. Consolidated
-storage and backup inventory checks also cover separate source/loop/write clocks,
+stale status, sign-out fencing and the health-only failure view. Full dashboard
+checks in `node test/browser/dashboard-storage-smoke.js` exercise
+pending actions, continuing status polling, independent health refresh, preserved
+drafts and receipts, and late replies that must not replace newer authority or
+storage evidence. Both browser fixtures use synthetic data and disposable state.
+Storage and backup inventory checks also cover separate source/loop/write clocks,
 partial discovery, file replacement, selected-copy verification, admin-only
 inventory/downloads and inspection from a read-only server. Reset and pairing
 tests retain current archive retry paths, immutable export generations and pins
@@ -1209,3 +1217,38 @@ deterministic replay and original-history preservation with smaller data.
 Browser assertions should identify current semantic keys and user interactions;
 when an intended UI change invalidates a historical expectation, update the
 fixture without weakening the behavioral check.
+
+## Dedicated runtime writer
+
+`test/storage-writer-worker.test.js` uses real file-backed writer threads to check
+dependent reads, savepoints, committed external reads, callback-once semantics,
+lock admission, cancellation, failed commits, lost replies and joined shutdown.
+Its held-boundary cases delay dispatch rather than simulate physical storage.
+`test/storage-health-api.test.js` holds a real writer COMMIT while authenticated
+health remains responsive, showing neutral saving without hiding source startup
+or inventing lock contention. It intercepts the actual successful COMMIT reply
+before the writer client receives it, holds reconciliation, and checks
+**Confirming last save** followed by **Writer unavailable** after proven durability.
+The callback and committed effect run once; the saved date and transaction remain
+successful, with no false failed-save count. Idle worker termination is visible
+before another write is attempted, even with an empty queue and no failed save.
+The UI checks distinguish current writer status from historical failures and
+preserve separate scope for whole-process event-loop timings and the selected
+past-day/past-week Store history. These diagnostics neither grant command
+authority nor renew original source or save clocks.
+`test/acquisition-worker-settlement.test.js` covers transport withdrawal and
+rollback across asynchronous durability. The synthetic
+[writer benchmark](sqlite-storage-benchmarks.md#dedicated-writer-responsiveness)
+separately delays native COMMIT and probes HTTP from another process. Neither
+fixture qualifies installed hardware or physical actuation. Runtime integration
+needs the full relevant acquisition, charging, recovery, pairing and shutdown
+suites on the developer runtime and pinned add-on Node before release.
+
+`test/writer-independent-audit.test.js` adds worker-loss, stale atomic-notification,
+response ownership, current maintenance and startup/shutdown races.
+`test/writer-publication-integration.test.js` exercises real backup, peer,
+correction, source-identity and recovery workers beside runtime recording.
+The Executor process-death matrix repeats each retained restoration and authority
+case with direct storage and the dedicated writer. The routine and extended
+recovery responsiveness workloads also use the dedicated runtime writer; their
+original latency, replay and historical-evidence assertions remain unchanged.

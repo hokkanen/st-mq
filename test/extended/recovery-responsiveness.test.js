@@ -20,9 +20,11 @@ test('larger recoveries keep serving status through backup, recovery, reversal a
   }
 });
 
-for (const pendingStart of [900_000, 200_000])
-test(`restoration catches up continuous recording with a ${pendingStart === 900_000 ? 'later' : 'history-overlapping'} pending-energy start`, async t => {
-  const f = fixture(t), donor = await f.donor();
+for (const storage of ['direct', 'worker']) for (const pendingStart of [900_000, 200_000])
+test(`restoration catches up continuous recording with a ${pendingStart === 900_000 ? 'later' : 'history-overlapping'} pending-energy start (${storage})`, async t => {
+  const f = fixture(t);
+  if (storage === 'worker') await f.master.startWriter();
+  const donor = await f.donor();
   donor.transaction(() => {
     for (let index = 0; index < 512; index++) observation(donor, start + index * 1000, 20);
   });
