@@ -7,7 +7,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 ## Unreleased
 
 - Account for small positive charging-energy slices so rounding near completion
-  cannot leave planning repeatedly advancing without reducing the request.
+  cannot leave planning repeatedly advancing without reducing the request. Keep
+  the first minimum-completion time when native post-target demand continues.
 
 - Release a charging takeover reservation when its intent save rolls back,
   allowing a fresh action without clearing a newer takeover.

@@ -494,7 +494,7 @@ function simulate({ starts, periods, jobs, intervals, details = true }) {
             item.deliveredGridKwh += energyKwh;
             if (end <= item.targetAt + .1) item.deliveredByTargetKwh += energyKwh;
             item.remaining = Math.max(0, item.remaining - energyKwh);
-            if (item.remaining <= EPS) item.finishAt = end;
+            if (item.remaining <= EPS && item.finishAt === null) item.finishAt = end;
           }
           if (details && distribution.suggestions[id] !== undefined) currentLimits.push({ chargerId: id, start: at, end, currentA: distribution.suggestions[id] });
         }
