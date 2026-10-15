@@ -46,10 +46,14 @@ test('recording separates completed updates, attempted source checks, observed c
   assert.match(view.element('recording-recording-evidence').textContent, /2 observed measurement streams need attention/);
   assert.match(view.element('recording-recording-loop').textContent, /just now/);
   assert.match(view.element('recording-recording-sourceCheck').textContent, /1 min ago/);
-  assert.match(view.element('recording-recording-coverage').textContent, /5 measurement streams observed.*4 with usable.*1 unknown.*never reported are outside/);
+  assert.equal(view.element('recording-recording-observed').textContent, '5');
+  assert.equal(view.element('recording-recording-usable').textContent, '4');
+  assert.equal(view.element('recording-recording-attention').textContent, '2');
+  assert.match(view.element('recording-recording-unknown').textContent, /1 stream has unknown status.*included in Needs attention/);
+  assert.match(view.element('recording-recording-coverage').textContent, /never reported are outside.*held reading can be usable and still need attention/);
   assert.match(view.element('recording-performance-lastWrite').textContent, /successful storage write.*2 min ago.*settings and event writes/);
   assert.equal(view.element('recording-recording-sources').children.length, 1);
-  assert.match(view.element('recording-recording-sources').children[0].children[1].textContent, /Source observation.*15 min ago/);
+  assert.match(view.element('recording-recording-sources').children[0].children[2].children[1].textContent, /15 min ago/);
   assert.equal(view.element('recording-performance-state').textContent, 'Caught up', 'Simulation monitors its own writer');
 });
 
@@ -516,8 +520,14 @@ test('storage performance names run coverage and separates queue, transaction, c
   assert.equal(storageDuration(0), '0 ms');
   assert.equal(storageDuration(null), 'Unknown');
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
-  assert.match(html, /Journal sealing.*SQLite COMMIT are stages within Commit only/);
-  assert.match(html, /SQLite COMMIT includes any synchronization and automatic checkpoint work/);
+  const rows = [...html.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)].map(([row]) => row);
+  const timingRow = name => rows.find(row => row.includes(`id="recording-performance-${name}-samples"`));
+  assert.match(timingRow('transaction'), /Write \+ commit[\s\S]*Whole transaction/);
+  assert.match(timingRow('commit'), /Commit only[\s\S]*Within write \+ commit/);
+  assert.match(timingRow('journalSeal'), /Journal sealing[\s\S]*Within commit only/);
+  assert.match(timingRow('nativeCommit'), /SQLite COMMIT[\s\S]*Within commit only/);
+  assert.match(html, /do not add them/);
+  assert.match(html, /SQLite COMMIT includes (?:any )?synchronization and automatic checkpoint work/);
   assert.match(html, /Neither isolates fsync/);
 });
 
@@ -546,6 +556,8 @@ test('storage performance absence, zero samples, zero coverage and unsupported s
   for (const scope of ['snapshot', 'history']) {
     view = storagePerformanceView(health({ scope, recording: { history } }), 'day', { now });
     assert.equal(view.available, false);
+    assert.equal(view.activityTitle, 'Storage write evidence');
+    assert.equal(view.current, '');
     assert.match(view.notice, scope === 'snapshot' ? /live controller.*memory.*not included.*snapshot/ : /not monitored.*history viewer/);
   }
   assert.doesNotThrow(() => storagePerformanceView(health({ recording: { history: performanceHistory({ startedAt: Number.MAX_VALUE }) } }), 'day', { now }));
@@ -570,6 +582,12 @@ test('storage performance period stays local across polling and failed refresh w
   const view = panelFixture(async () => { throw Error('Private fixture failure'); });
   const value = health({ recording: { history: performanceHistory() } });
   view.panel.update({ recordingHealth: value });
+  assert.equal(view.element('recording-performance-live-title').textContent, 'Current activity');
+  assert.equal(view.element('recording-performance-evidence').textContent, 'Past day · 6 h monitored');
+  assert.equal(view.element('recording-performance-history-state').textContent, 'Problems observed');
+  assert.equal(view.element('recording-performance-history-state').dataset.tone, 'warning');
+  assert.equal(view.element('recording-performance-details').dataset.tone, 'neutral', 'Historical problems do not label a caught-up writer as failed');
+  assert.equal(view.element('recording-performance-outcome').textContent, 'Problems observed during this period.');
   assert.equal(view.element('recording-performance-journalSeal-worst').textContent, '120 ms');
   assert.equal(view.element('recording-performance-nativeCommit-worst').textContent, '400 ms');
   view.element('recording-performance-week').click();
@@ -580,6 +598,7 @@ test('storage performance period stays local across polling and failed refresh w
   assert.equal(view.element('recording-performance-week').getAttribute('aria-pressed'), 'true');
   await view.panel.refresh();
   assert.match(view.element('recording-performance-notice').textContent, /Refresh failed.*last known/);
+  assert.equal(view.element('recording-performance-live-title').textContent, 'Last known activity');
   assert.match(view.element('recording-performance-current').textContent, /^Last known: No queued operations/);
   assert.equal(view.element('recording-performance-failed').textContent, '2');
   const reset = performanceHistory({ startedAt: now, elapsedMs: 0 });
@@ -589,8 +608,11 @@ test('storage performance period stays local across polling and failed refresh w
   assert.equal(view.element('recording-performance-queue-mean').textContent, 'No samples');
   assert.equal(view.element('recording-performance-week').getAttribute('aria-pressed'), 'true');
   view.panel.clear();
+  assert.equal(view.element('recording-performance-live-title').textContent, 'Storage write evidence');
   assert.equal(view.element('recording-performance-data').hidden, true);
   assert.equal(view.element('recording-performance-day').getAttribute('aria-pressed'), 'true');
+  assert.equal(view.element('recording-performance-history-state').textContent, '');
+  assert.equal(view.element('recording-performance-history-state').hidden, true);
 });
 
 test('storage summary distinguishes current queue work from historical save and MQTT-command outcomes', () => {
@@ -599,16 +621,20 @@ test('storage summary distinguishes current queue work from historical save and 
   history.windows.day.postCommitFailures = 0;
   let view = storagePerformanceView(value, 'day', { now });
   assert.equal(view.state, 'Caught up');
-  assert.match(view.evidence, /no failures observed.*6 h monitored/);
+  assert.equal(view.evidence, 'Past day · 6 h monitored');
+  assert.equal(view.historyState, 'No failures observed');
+  assert.equal(view.outcome, 'No failures observed during this period.');
   assert.equal(view.stateTone, 'neutral');
   history.windows.day.failedWrites = 2;
   history.windows.day.queueRejected = 1;
   history.windows.day.commandsNotSent = 3;
   view = storagePerformanceView(value, 'day', { now });
   assert.equal(view.state, 'Caught up', 'A past failure does not imply current backlog');
-  assert.match(view.evidence, /Past day.*problems observed.*6 h monitored/);
+  assert.equal(view.evidence, 'Past day · 6 h monitored');
+  assert.equal(view.historyState, 'Problems observed');
+  assert.equal(view.outcome, 'Problems observed during this period.');
   assert.equal(view.failed, '2'); assert.equal(view.rejected, '1'); assert.equal(view.commandsNotSent, '3');
-  assert.equal(view.evidenceTone, 'warning');
+  assert.equal(view.historyTone, 'warning');
   history.current = { pending: 6, oldestPendingMs: 850, waitingMs: 600, activeJobs: 1 };
   view = storagePerformanceView(value, 'day', { now });
   assert.equal(view.state, 'Waiting for storage');
@@ -622,7 +648,7 @@ test('storage summary distinguishes current queue work from historical save and 
   assert.equal(storagePerformanceView(value, 'day', { now, unavailable: true }).state, 'Last known: Save failed');
   history.windows.day.commandsNotSent = null;
   history.windows.day.failedWrites = 0; history.windows.day.queueRejected = 0;
-  assert.doesNotMatch(storagePerformanceView(value, 'day', { now }).evidence, /no failures observed/);
+  assert.doesNotMatch(storagePerformanceView(value, 'day', { now }).historyState, /no failures observed/i);
 });
 
 test('storage problems use safe labels, preserve blocked commands and distinguish original recovery from resumed saving', () => {
@@ -632,22 +658,39 @@ test('storage problems use safe labels, preserve blocked commands and distinguis
     reason: 'database-io', outcome: 'not-retained-for-retry', recoveredAt: null };
   history.windows.day.incidents = [incident];
   let view = storagePerformanceView(value, 'day', { now });
-  assert.match(view.incidents[0].detail, /not retained for retry.*Saving resumed.*does not establish recovery/);
+  assert.equal(view.incidents[0].title, 'Save failed');
+  assert.equal(view.incidents[0].context, 'Received MQTT update');
+  assert.equal(view.incidents[0].dateTime, new Date(incident.at).toISOString());
+  assert.equal(view.incidents[0].reason, 'Storage reported an input/output error.');
+  assert.match(view.incidents[0].outcome, /not retained for retry/);
+  assert.match(view.incidents[0].recovery, /Saving resumed.*does not establish recovery/);
   incident.context = 'charging-input'; incident.outcome = 'original-update-saved'; incident.recoveredAt = now - 10000;
   view = storagePerformanceView(value, 'day', { now });
-  assert.match(view.incidents[0].detail, /original update was saved on retry 7 Oct/);
-  assert.doesNotMatch(view.incidents[0].detail, /Saving resumed/);
+  assert.match(view.incidents[0].outcome, /original update was saved on retry 7 Oct/);
+  assert.equal(view.incidents[0].recovery, '');
   history.windows.day.incidents = [{ ...incident, category: 'command-not-sent', context: 'heat-pump-command',
     outcome: 'command-not-sent', reason: 'recording-wait-expired', recoveredAt: null }];
   view = storagePerformanceView(value, 'day', { now });
-  assert.match(view.incidents[0].detail, /deadline expired while waiting for recording.*command was not sent/);
-  assert.doesNotMatch(view.incidents[0].detail, /resumed|recovered/);
+  assert.match(view.incidents[0].reason, /deadline expired while waiting for recording/);
+  assert.equal(view.incidents[0].outcome, 'This command was not sent.');
+  assert.equal(view.incidents[0].recovery, '');
   history.windows.day.incidents.push({ ...incident, context: 'private secret content' }, { ...incident, reason: '__proto__' });
   assert.equal(storagePerformanceView(value, 'day', { now }).incidents.length, 1);
   assert.equal(storagePerformanceView(value, 'week', { now }).incidents.length, 0, 'Use the selected monotonic window, not wall-clock filtering');
   const dashboard = panelFixture();
   dashboard.panel.update({ recordingHealth: value });
   assert.equal(dashboard.element('recording-performance-incident-list').children.length, 1);
+  const row = dashboard.element('recording-performance-incident-list').children[0];
+  assert.equal(row.children[0].children[0].textContent, 'MQTT command not sent');
+  assert.equal(row.children[0].children[1].dateTime, new Date(incident.at).toISOString());
+  assert.equal(row.children[1].textContent, 'Heat-pump command');
+  assert.match(row.children[2].textContent, /deadline expired while waiting for recording.*command was not sent/);
+  assert.equal(row.children[3].hidden, true);
+  history.windows.day.incidents = [{ ...incident, context: 'mqtt-input', outcome: 'not-retained-for-retry' }];
+  dashboard.panel.update({ recordingHealth: value });
+  assert.equal(dashboard.element('recording-performance-incident-list').children[0], row, 'Polling retains the existing incident row');
+  assert.equal(row.children[3].hidden, false);
+  assert.match(row.children[3].textContent, /Saving resumed.*does not establish recovery/);
   history.windows.day.incidents = [];
   dashboard.panel.update({ recordingHealth: value });
   assert.equal(dashboard.element('recording-performance-incidents').hidden, true);
@@ -820,10 +863,84 @@ test('source exceptions retain distinct evidence clocks and reach the matching r
   assert.equal(view.element('recording-health-badge').hidden, false);
   assert.equal(view.element('recording-recording-card').dataset.tone, 'warning');
   const [adaptive, exact] = view.element('recording-recording-sources').children;
-  assert.equal(adaptive.children[2].dataset.recordingOpen, 'recording-adaptive-details');
-  assert.equal(exact.children[2].dataset.recordingOpen, 'recording-overview-details');
-  assert.match(adaptive.children[1].textContent, /out of date.*Source observation.*15 min ago.*Last polling attempt.*just now/);
-  assert.match(exact.children[0].textContent, /Source check failed/);
+  assert.equal(adaptive.children[3].dataset.recordingOpen, 'recording-adaptive-details');
+  assert.equal(exact.children[3].dataset.recordingOpen, 'recording-overview-details');
+  assert.equal(adaptive.children[0].children[0].textContent, 'Outdoor temperature');
+  assert.equal(adaptive.children[0].children[1].textContent, 'Out of date');
+  assert.match(adaptive.children[1].textContent, /out of date/);
+  assert.equal(adaptive.children[2].children[0].textContent, 'Source observation');
+  assert.match(adaptive.children[2].children[1].textContent, /15 min ago/);
+  assert.equal(adaptive.children[2].children[2].textContent, 'Last polling attempt');
+  assert.match(adaptive.children[2].children[3].textContent, /just now/);
+  assert.equal(exact.children[0].children[1].textContent, 'Source check failed');
+  assert.equal(exact.children[2].children[1].textContent, 'Not known', 'Missing source evidence stays explicit beside its own clock label');
+});
+
+test('source counts distinguish unknown, no observed streams, overlapping attention and recorded history', () => {
+  const view = panelFixture();
+  for (const invalid of [undefined, null, -1, NaN, 1.5, '2']) {
+    view.panel.update({ recordingHealth: health({ recording: { state: 'unknown', sources: {
+      observedStreams: invalid, usableStreams: invalid, attentionStreams: invalid, unknownStreams: invalid, issues: [],
+    } } }) });
+    for (const field of ['observed', 'usable', 'attention']) assert.equal(view.element(`recording-recording-${field}`).textContent, 'Unknown');
+    assert.equal(view.element('recording-recording-sources-empty').textContent, 'Source attention status is not known.');
+    assert.equal(view.element('recording-recording-unknown').hidden, false);
+  }
+  view.panel.update({ recordingHealth: health({ recording: { state: 'starting', sources: {
+    observedStreams: 0, usableStreams: 0, attentionStreams: 0, unknownStreams: 0, issues: [],
+  } } }) });
+  assert.equal(view.element('recording-recording-observed').textContent, '0');
+  assert.match(view.element('recording-recording-sources-empty').textContent, /No measurement streams have been observed/);
+  assert.equal(view.element('recording-recording-unknown').hidden, true);
+  view.panel.update({ recordingHealth: health({ recording: { state: 'ok', sources: {
+    observedStreams: 2, usableStreams: 2, attentionStreams: 1, unknownStreams: 0, truncated: true,
+    issues: [{ id: 'held-reading', label: 'Indoor temperature', status: 'held-attention', sourceObservedAt: now - 60000 }],
+  } } }) });
+  assert.equal(view.element('recording-recording-usable').textContent, '2');
+  assert.equal(view.element('recording-recording-attention').textContent, '1', 'Held attention is not subtracted from usable evidence');
+  assert.equal(view.element('recording-recording-sources-title').hidden, false);
+  assert.equal(view.element('recording-recording-sources-empty').hidden, true);
+  assert.equal(view.element('recording-recording-sources-note').hidden, false);
+  assert.match(view.element('recording-recording-sources-note').textContent, /Additional observed stream exceptions are omitted/);
+  view.panel.update({ recordingHealth: health({ scope: 'snapshot', recording: { state: 'read-only' } }) });
+  assert.equal(view.element('recording-recording-counts').hidden, true);
+  assert.equal(view.element('recording-recording-unknown').hidden, true);
+  assert.equal(view.element('recording-recording-sources-title').textContent, 'Recorded source exceptions');
+  assert.match(view.element('recording-recording-sources-empty').textContent, /recorded history/);
+  assert.equal(view.element('recording-recording-sources-note').hidden, true);
+});
+
+test('structured source rows preserve focus and dated evidence through reorder, failed refresh and recovery', async () => {
+  const view = panelFixture(async () => { throw Error('Synthetic refresh failure'); });
+  const sources = { observedStreams: 3, usableStreams: 1, attentionStreams: 2, unknownStreams: 0, issues: [
+    { id: 'outdoor', label: 'Outdoor temperature', unit: 'degC', status: 'stale', destination: 'adaptive',
+      sourceObservedAt: now - 900000, lastCheckedAt: now - 60000, reason: 'The source is out of date.' },
+    { id: 'bedroom', label: 'Bedroom temperature', status: 'unavailable', lastCheckedAt: now },
+  ] };
+  const detail = 'Writes have resumed after 2 failed writes in this run. Earlier gaps may remain.';
+  const update = () => view.panel.update({ recordingHealth: health({ recording: { state: 'ok', detail, sources } }) });
+  const summary = view.document.createElement('summary');
+  view.element('recording-recording-card').append(summary);
+  update();
+  const [outdoor, bedroom] = view.element('recording-recording-sources').children;
+  const focusedLink = outdoor.children[3]; focusedLink.focus();
+  assert.equal(outdoor.children[0].children[0].textContent, 'Outdoor temperature (°C)');
+  sources.issues.reverse(); update();
+  assert.deepEqual(view.element('recording-recording-sources').children, [bedroom, outdoor]);
+  assert.equal(view.document.activeElement, focusedLink);
+  assert.equal(outdoor.children[3], focusedLink);
+  const observed = outdoor.children[2].children[1].textContent;
+  await view.panel.refresh();
+  assert.equal(view.document.activeElement, focusedLink);
+  assert.equal(outdoor.children[2].children[1].textContent, observed, 'A failed health request cannot renew source dates');
+  assert.match(view.element('recording-recording-detail').textContent, /^Last known status\. Writes have resumed.*Earlier gaps may remain/);
+  sources.issues = []; sources.attentionStreams = 0; sources.usableStreams = 3; update();
+  assert.equal(view.document.activeElement, summary, 'A disappearing focused source returns to its recording fold');
+  assert.equal(view.element('recording-recording-sources').hidden, true);
+  assert.equal(view.element('recording-recording-sources-title').hidden, true);
+  assert.equal(view.element('recording-recording-sources-empty').hidden, false);
+  assert.equal(view.element('recording-recording-sources-empty').textContent, 'No attention flags among the observed streams.');
+  assert.equal(view.element('recording-recording-detail').textContent, detail);
 });
 
 test('a failed saved-copy recheck supersedes creation evidence and reaches collapsed warnings', async () => {

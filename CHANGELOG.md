@@ -10,6 +10,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   forward wall-clock corrections, using original MQTT receipt elapsed time while
   retaining saved native clocks, fresh confirmation and restoration checks.
 
+- Organize Recording and Storage health into activity, source evidence and
+  monitored history. Give unavailable sources individual status and timestamp
+  rows, separate current backlog from past problems, and show transaction timings
+  with nested commit stages on desktop and phones.
+
 - Prepare the next read-only replica manifest before applying synchronized rows,
   reducing the work between database commit and visible publication. Keep
   checkpoint refusals, original source clocks and interrupted-publication recovery.
