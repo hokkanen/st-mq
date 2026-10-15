@@ -16,6 +16,11 @@ const executorState = extra => ({ version: 2, targetBindings: {
 const nativeState = extra => ({ version: 1, phase: 'normal', baseline: {}, obligations: {}, requested: {}, expiresAt: null, ...extra });
 const equipmentState = () => ({ version: 1, active: { deviceId: 'synthetic-switch', signature: 'a'.repeat(64),
   on: true, previousOn: false, requestedAt: 1000, until: 2000, status: 'restoration-pending' } });
+const floorState = (outstanding = null) => ({ version: 2, sequence: outstanding?.treatment ?? 0,
+  outstanding, retired: [], lastRequest: null, receipts: [null, null, null, null] });
+const floorLease = () => floorState({ device: '02:00:00:00:00:01', brokerDigest: 'a'.repeat(64),
+  generation: 'b'.repeat(32), owner: 'fixture-lease', treatment: 1, seq: 1, token: 'c'.repeat(32),
+  mask: 15, until: 2000, deviceEnd: 2000, kind: 'automatic', key: 'fixture-treatment', phase: 'active' });
 const nativeOverride = () => nativeState({ phase: 'preheat', baseline: { '0203': 20 }, requested: { '0203': 25 },
   obligations: { '0203': { baseline: 20, expected: 25, previousValue: 20,
     originalAt: 1000, requestedAt: 1000, requestedRevision: 1, confirmed: false, restoring: false } }, expiresAt: 2000 });
@@ -60,11 +65,13 @@ test('native pump overrides, manual equipment tests, and floor leases remain phy
     ['native setting', 'h66:control:fixture-pump', nativeOverride()],
     ['native manual mode', 'h66:control:fixture-pump', nativeState({ manualMode: 'reduction' })],
     ['equipment test', 'equipment-tests:v1', equipmentState()],
-    ['floor lease', 'floor-override:v1', { version: 1, outstanding: { owner: 'fixture-lease' } }],
+    ['floor lease', 'floor-override:v1', floorLease()],
   ];
   for (const [name, key, value] of cases) await t.test(name, async t => {
     const path = await fixture(t, [[key, value]]);
+    const before = await readFile(path);
     assert.equal(resetRestorationStatus(path), 'pending');
+    assert.deepEqual(await readFile(path), before);
   });
 });
 
@@ -74,13 +81,24 @@ test('resolved current control records and ordinary charging ownership do not co
       manualPause: null, manualTemporary: null, manualBaseline: null, manualRequested: null })],
     ['h66:control:fixture-pump', nativeState({ baseline: { '0203': 20 } })],
     ['equipment-tests:v1', { version: 1, active: null }],
-    ['floor-override:v1', { version: 1, outstanding: null }],
+    ['floor-override:v1', floorState()],
     [ownership(1), { version: 5, owned: { planId: 'fixture-plan' }, pending: { stage: 'scheduling' },
       takeoverPending: { stage: 'schedule-disable' } }],
     [ownership(2), { version: 1, ownedPause: true, owned: null, pending: { role: 'current_limit', value: 6 } }],
     [ownership(2, true), { version: 2, kind: 'ocpp-tx-pause', owned: { profileId: 17 }, pending: { profileId: 18 } }],
   ]);
+  const before = await readFile(path);
   assert.equal(resetRestorationStatus(path), 'clear');
+  assert.deepEqual(await readFile(path), before);
+});
+
+test('retired floor payloads remain unknown and unchanged rather than granting a reset', async t => {
+  for (const outstanding of [null, { owner: 'fixture-lease' }]) {
+    const path = await fixture(t, [['floor-override:v1', { version: 1, outstanding }]]);
+    const before = await readFile(path);
+    assert.equal(resetRestorationStatus(path), 'unknown');
+    assert.deepEqual(await readFile(path), before);
+  }
 });
 
 test('charger identification ownership and uncertain identification writes cannot be discarded', async t => {
@@ -109,9 +127,9 @@ test('malformed earlier records cannot hide independent known restoration duties
     ['malformed native obligation before equipment', ['h66:control:fixture-pump', JSON.stringify(nativeState({ obligations: { '0203': {} } }))],
       ['equipment-tests:v1', equipmentState()]],
     ['equipment JSON before floor', ['equipment-tests:v1', '{invalid'],
-      ['floor-override:v1', { version: 1, outstanding: {} }]],
+      ['floor-override:v1', floorLease()]],
     ['ownership JSON before floor', [ownership(1), '{invalid'],
-      ['floor-override:v1', { version: 1, outstanding: {} }]],
+      ['floor-override:v1', floorLease()]],
   ];
   for (const [name, malformed, pending] of cases) await t.test(name, async t => {
     const path = await fixture(t, [pending], [malformed]);
@@ -143,13 +161,16 @@ test('unreadable and unsupported current-state records remain unknown when no in
     ...[false, 0, '', [], {}, { status: 'active' }].map(active => ['equipment-tests:v1', { version: 1, active }]),
     ['equipment-tests:v1', { version: 1 }],
     ['floor-override:v1', { version: 0, outstanding: {} }],
+    ['floor-override:v1', floorState({})],
     [ownership(1), { version: 4, owned: { purpose: 'identification' } }],
     [ownership(2), { version: 0, owned: { purpose: 'identification' } }],
     [ownership(2, true), { version: 1, owned: { purpose: 'identification' } }],
   ];
   for (const [index, state] of cases.entries()) await t.test(`unsupported current record ${index + 1}`, async t => {
     const path = await fixture(t, [state]);
+    const before = await readFile(path);
     assert.equal(resetRestorationStatus(path), 'unknown');
+    assert.deepEqual(await readFile(path), before);
   });
   for (const key of ['executor:home', 'h66:control:fixture-pump', 'equipment-tests:v1', ownership(1), 'floor-override:v1']) {
     const path = await fixture(t, [], [[key, '{invalid']]);

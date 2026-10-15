@@ -1,10 +1,40 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { equipmentDevices, equipmentInventory, equipmentReadingRows } from '../chart/equipment.js';
+import { floorManualAllowed } from '../chart/floor-preheat.js';
+import { floorOverrideConfiguration, floorOverrideStatus } from '../src/control/floor-override.js';
 
 const now = Date.parse('2026-09-14T12:00:00Z');
 const temperature = (value, extra = {}) => ({ value, observedAt: now - 1000, stale: false, source: 'mqtt-temperature', ...extra });
 const signals = devices => devices.flatMap(device => Object.keys(device.readings ?? {}));
+function withoutUnknownFloor(status, inventory = equipmentInventory(status)) {
+  const floor = inventory.filter(device => device.kind === 'floor_override');
+  assert.equal(floor.length, 1, 'One floor setup card remains discoverable without usable GPIO feedback');
+  assert.equal(floor[0].id, 'floor-override:groundfloor');
+  assert.equal(floor[0].area, 'home');
+  assert.equal(floor[0].source, 'SONOFF');
+  assert.equal(floor[0].available, false);
+  assert.deepEqual(floor[0].controls, { switch: false, tariff: false });
+  assert.deepEqual(Object.values(floor[0].readings).map(reading => reading.value), [null, null, null, null]);
+  assert.deepEqual(equipmentReadingRows(floor[0]).map(reading => reading.value), ['Unknown', 'Unknown', 'Unknown', 'Unknown']);
+  for (const channel of [1, 2, 3, 4]) for (const enabled of [true, false])
+    assert.equal(floorManualAllowed(status, channel, enabled), false);
+  return inventory.filter(device => device !== floor[0]);
+}
+
+test('floor setup stays visible with unknown outputs before current feedback and commissioning', () => {
+  const statuses = [
+    [undefined, 'Status unavailable'],
+    [{ now, preheatValves: floorOverrideStatus() }, 'Not configured'],
+    [{ now, preheatValves: floorOverrideStatus(floorOverrideConfiguration({ device_mac: '02:00:00:00:00:01' })) }, 'Not commissioned'],
+    [{ now, preheatValves: floorOverrideStatus(floorOverrideConfiguration({ device_mac: '02:00:00:00:00:01', commissioned: true, enabled: false })) }, 'Needs attention'],
+  ];
+  for (const [status, label] of statuses) {
+    const inventory = equipmentInventory(status);
+    assert.deepEqual(withoutUnknownFloor(status, inventory), []);
+    assert.equal(inventory[0].connectionState.label, label);
+  }
+});
 
 test('inventory uses the current equipment contract and retains tariff relays, meters and doors', () => {
   const relay = { id: 'heat_savings', area: 'home', source: 'Shelly', available: true,
@@ -58,27 +88,29 @@ test('a missed periodic report is unavailable even when an equipment packet and 
 
 test('H66 temperatures stay in the dedicated pump readings instead of duplicate inventory sections', () => {
   const h66Reading = value => ({ value, observedAt: now - 1000, available: true, usableForControl: true, stale: false });
-  const inventory = equipmentInventory({ now, h66: { connected: true, readings: {
+  const status = { now, h66: { connected: true, readings: {
     '0007': h66Reading(-2), '0001': h66Reading(28), '0002': h66Reading(33), '0009': h66Reading(50),
     '0005': h66Reading(4), '0006': h66Reading(1), '0203': h66Reading(21), '0008': h66Reading(22),
   } }, observations: { outdoor: temperature(-2, { source: 'husdata-h66' }), indoor: temperature(21) },
-  sensorChanges: { sensors: [{ signal: 'outdoor_temperature', configured: true }] } });
-  assert.deepEqual(inventory, []);
-  assert.equal(equipmentInventory({ now, observations: { outdoor: temperature(-1, { source: 'fmi' }) },
-    sensorChanges: { sensors: [{ signal: 'outdoor_temperature', configured: true }] } }).length, 0);
+  sensorChanges: { sensors: [{ signal: 'outdoor_temperature', configured: true }] } };
+  assert.deepEqual(withoutUnknownFloor(status), []);
+  const weather = { now, observations: { outdoor: temperature(-1, { source: 'fmi' }) },
+    sensorChanges: { sensors: [{ signal: 'outdoor_temperature', configured: true }] } };
+  assert.deepEqual(withoutUnknownFloor(weather), []);
 });
 
 test('garage probes remain distinct and native Mitsubishi temperatures do not create an extra inventory card', () => {
   const rear = temperature(10), front = temperature(8);
-  const inventory = equipmentInventory({ now, equipment: { devices: [{ id: 'garage_sensor', kind: 'temperature', area: 'garage',
+  const status = { now, equipment: { devices: [{ id: 'garage_sensor', kind: 'temperature', area: 'garage',
     available: true, readings: { garage_temperature: { ...rear, unit: 'degC' } } }] },
   garage: { observations: { rear, front }, adapter: { telemetry: {
     garage_native_indoor_temperature: { value: 15, sourceTime: now, supported: true, usable: true },
     garage_native_outdoor_temperature: { value: null, sourceTime: null, supported: false, usable: false },
-  } } } });
+  } } } };
+  const inventory = equipmentInventory(status);
   assert.equal(signals(inventory).filter(signal => signal === 'garage_temperature').length, 1);
   assert.equal(signals(inventory).filter(signal => signal === 'garage_temperature_2').length, 1);
   assert.equal(signals(inventory).includes('garage_native_indoor_temperature'), false);
   assert.equal(signals(inventory).includes('garage_native_outdoor_temperature'), false);
-  assert(inventory.every(device => device.area === 'garage'));
+  assert(withoutUnknownFloor(status, inventory).every(device => device.area === 'garage'));
 });
