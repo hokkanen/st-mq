@@ -119,8 +119,8 @@ worker connections. Calling those native-only operations with the runtime
 facade rejects before mutation with guidance to use the existing service.
 
 While a save is pending, status preserves the complete committed view and its
-original timestamps. Recording health reports the pending save through the
-existing storage warning without inventing writer-lock contention. Transport
+original timestamps. Recording health reports an ordinary pending save as neutral
+activity; actual writer-lock contention retains its storage warning. Transport
 withdrawal still takes effect immediately for command permission and survives
 an older save's rollback.
 

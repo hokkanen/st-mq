@@ -272,6 +272,16 @@ async function runtimeFixture(t, devices = [native()]) {
   const launch = () => start({ config: load(), clock: () => now, installSignalHandlers: false,
     providerOptions: { automatic: false }, mqttOptions: { connect: mqtt.connect } });
   let app = await launch();
+  const settleAcquisition = async () => {
+    // Native replies are received in microtasks, then admitted by the real
+    // writer. Commit effects may request another reply (identity -> status),
+    // so one event-loop turn cannot establish completed acquisition.
+    for (let attempt = 0; attempt < 100; attempt++) {
+      await flush(); await app.store.runWrite(() => {}); await flush();
+      if (app.store.writeQueueStatus().pending === 0) return;
+    }
+    assert.fail('Synthetic equipment acquisition did not settle');
+  };
   let expectedCleanupFailure = false;
   t.after(async () => {
     try {
@@ -281,7 +291,7 @@ async function runtimeFixture(t, devices = [native()]) {
     }
     finally { rmSync(directory, { recursive: true, force: true }); }
   });
-  await flush();
+  await settleAcquisition();
   const post = async (route, input = {}) => {
     if (route === '/api/settings/reload' && !Object.keys(input).length) {
       const preview = await post('/api/settings/preview');
@@ -292,9 +302,9 @@ async function runtimeFixture(t, devices = [native()]) {
       headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
     return { status: response.status, body: await response.json() };
   };
-  return { get app() { return app; }, mqtt, write, post,
+  return { get app() { return app; }, mqtt, write, post, settleAcquisition,
     expectCleanupFailure() { expectedCleanupFailure = true; },
-    async restart() { await app.close({ restore: false }); now++; app = await launch(); await flush(); },
+    async restart() { await app.close({ restore: false }); now++; app = await launch(); await settleAcquisition(); },
     advance(ms) { now += ms; } };
 }
 
@@ -348,6 +358,7 @@ test('explicit paused-mode door HTTP controls publish configured commands withou
   assert.deepEqual(f.mqtt.events.filter(row => row.type === 'publish').map(row => ({ topic: row.topic, payload: row.payload, options: row.publication })),
     [{ topic: 'invented-door/cover', payload: 'open', options: { qos: 1, retain: false } }]);
   client.emit('message', 'invented-door/online', Buffer.from('offline'), { retain: false });
+  await f.settleAcquisition();
   assert.equal((await f.post('/api/equipment/cover', { deviceId: 'garage_door1', action: 'close' })).status, 400);
 });
 
@@ -374,8 +385,10 @@ test('dehumidifier HTTP controls wait for live MQTT feedback and expose confirme
   assert.deepEqual(f.mqtt.events.filter(row => row.type === 'publish').map(row => ({ topic: row.topic, payload: row.payload, options: row.publication })),
     [{ topic: 'invented-dehumidifier/set', payload: JSON.stringify({ targetHumidity: 60, identity: 'a'.repeat(64), requestedAt: INITIAL, expiresAt: INITIAL + 10_000 }), options: { qos: 1, retain: false } }]);
   f.advance(1000); report(60, INITIAL + 1000);
+  await f.settleAcquisition();
   assert.equal(f.app.engine.status().equipment.devices[0].dehumidifier.operation.status, 'observed');
   client.emit('message', 'invented-dehumidifier/online', Buffer.from('offline'), { retain: false });
+  await f.settleAcquisition();
   assert.equal((await f.post('/api/equipment/dehumidifier', { ...command, setting: 'power', value: 'on' })).status, 400);
 });
 
@@ -464,6 +477,9 @@ test('runtime restart restores a saved manual test without dispatching a new ON'
   assert.equal((await f.post('/api/equipment/test', TEST)).status, 200);
   const before = f.mqtt.commands().length;
   await f.restart();
+  // Discovery can legitimately leave the startup attempt pending. Exercise its
+  // existing retry after fresh native identity and state have committed.
+  f.advance(5000); await f.app.engine.equipmentTests.tick(); await f.settleAcquisition();
   assert.equal(f.app.engine.status().equipmentTests.active, null);
   assert.equal(f.app.store.getState(KEY).active, null);
   assert.deepEqual(f.mqtt.commands().slice(before).map(row => row.frame.params.on), [false]);
@@ -506,7 +522,7 @@ test('native hardware replacement on the existing broker connection invalidates 
   client.emit('message', 'invented-caravan/online', Buffer.from('false'), { retain: false });
   f.mqtt.hardwareIds.set('invented-caravan', 'invented-replacement-hardware');
   client.emit('message', 'invented-caravan/online', Buffer.from('true'), { retain: false });
-  await flush();
+  await f.settleAcquisition();
   const restored = await f.post('/api/equipment/test/restore');
   assert.equal(restored.status, 400);
   assert.equal(f.app.store.getState(KEY).active.status, 'restoration-pending');
