@@ -70,8 +70,9 @@ function incidentView(value, lastWriteAt) {
   const outcome = originalRecovered ? `The original update was saved on retry ${dates.format(new Date(value.recoveredAt))}.`
     : incidentOutcomes[value.outcome];
   const recovery = !originalRecovered && resumed ? `Saving resumed ${dates.format(new Date(lastWriteAt))}; this does not establish recovery of missing history.` : '';
-  return { title: `${incidentCategories[value.category]} · ${incidentContexts[value.context]}`,
-    detail: `${dates.format(new Date(value.at))} · ${incidentReasons[value.reason]} ${outcome}${recovery ? ` ${recovery}` : ''}` };
+  return { title: incidentCategories[value.category], context: incidentContexts[value.context],
+    date: dates.format(new Date(value.at)), dateTime: new Date(value.at).toISOString(),
+    reason: incidentReasons[value.reason], outcome, recovery };
 }
 
 export function storagePerformanceView(health, period = 'day', { unavailable = false, now = Date.now() } = {}) {
@@ -109,13 +110,17 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
     else if (pending.pending === 0 && pending.activeJobs === 0) state = 'Caught up';
     if (stale) state = `Last known: ${state}`;
   } else if (['snapshot', 'history'].includes(health?.scope)) state = 'Not monitored here';
-  const evidence = valid ? `${label} · ${problemsObserved ? 'problems observed' : knownOutcomes ? 'no failures observed' : 'outcomes not monitored yet'} · ${coverageDuration(window.monitoredMs)} monitored`
+  const historyState = valid ? problemsObserved ? 'Problems observed' : knownOutcomes ? 'No failures observed' : 'Outcomes not monitored yet' : '';
+  const evidence = valid ? `${label} · ${coverageDuration(window.monitoredMs)} monitored`
     : ['snapshot', 'history'].includes(health?.scope) ? 'Check the active live controller for its memory-only history.' : 'Waiting for monitored storage evidence.';
   return {
     available: valid,
     notice,
     stale,
-    state, stateTone, evidence, evidenceTone: problemsObserved ? 'warning' : 'neutral',
+    activityTitle: valid ? stale ? 'Last known activity' : 'Current activity' : 'Storage write evidence',
+    state, stateTone, evidence, historyState, historyTone: problemsObserved ? 'warning' : 'neutral',
+    outcome: valid ? problemsObserved ? 'Problems observed during this period.'
+      : knownOutcomes ? 'No failures observed during this period.' : 'Outcomes are not monitored yet.' : '',
     coverage: valid ? `${label} · ${coverageDuration(window.monitoredMs)} monitored${partialRun ? ' · partial run' : ''}` : label,
     scope: valid && validDate(history.startedAt) ? `This storage run started ${dates.format(new Date(history.startedAt))}.${partialRun ? ' Earlier time is not monitored.' : ''}` : 'The start of this storage run is unknown.',
     precision: valid && finite(window?.coveredMs) && finite(window?.monitoredMs) && window.coveredMs < window.monitoredMs
@@ -162,11 +167,16 @@ export function createStoragePerformance({ document, now = () => Date.now() }) {
     set('clock', view.clock);
     set('precision', view.precision);
     set('current', view.current);
+    set('live-title', view.activityTitle);
     set('waiting', view.waiting);
     set('state', view.state);
     set('evidence', view.evidence);
+    set('history-state', view.historyState);
+    set('outcome', view.outcome);
     root.dataset.tone = view.stateTone;
-    $('recording-performance-evidence').dataset.tone = view.evidenceTone;
+    $('recording-performance-history-state').dataset.tone = view.historyTone;
+    $('recording-performance-history-state').hidden = !view.historyState;
+    $('recording-performance-outcome').dataset.tone = view.historyTone;
     for (const name of ['notice', 'clock', 'precision', 'waiting']) $(`recording-performance-${name}`).hidden = !view[name];
     $('recording-performance-notice').dataset.tone = view.available && view.stale ? 'warning' : 'neutral';
     const data = $('recording-performance-data');
@@ -184,11 +194,27 @@ export function createStoragePerformance({ document, now = () => Date.now() }) {
       let node = incidents.children[index];
       if (!node) {
         node = document.createElement('li');
-        node.append(document.createElement('strong'), document.createElement('p')); incidents.append(node);
+        const heading = document.createElement('div');
+        heading.className = 'recording-performance-incident-heading';
+        heading.append(document.createElement('strong'), document.createElement('time'));
+        node.append(heading);
+        for (const name of ['context', 'detail', 'recovery']) {
+          const paragraph = document.createElement('p');
+          paragraph.className = `recording-performance-incident-${name}`;
+          node.append(paragraph);
+        }
+        incidents.append(node);
       }
-      const [title, detail] = node.children;
+      const [heading, context, detail, recovery] = node.children;
+      const [title, date] = heading.children;
       if (title.textContent !== item.title) title.textContent = item.title;
-      if (detail.textContent !== item.detail) detail.textContent = item.detail;
+      if (date.textContent !== item.date) date.textContent = item.date;
+      if (date.dateTime !== item.dateTime) date.dateTime = item.dateTime;
+      if (context.textContent !== item.context) context.textContent = item.context;
+      const explanation = `${item.reason} ${item.outcome}`;
+      if (detail.textContent !== explanation) detail.textContent = explanation;
+      if (recovery.textContent !== item.recovery) recovery.textContent = item.recovery;
+      recovery.hidden = !item.recovery;
     });
     $('recording-performance-incidents').hidden = view.incidents.length === 0;
   }

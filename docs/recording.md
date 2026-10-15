@@ -1486,8 +1486,13 @@ attention and links to its explanation, even when other sources remain healthy.
 Stream labels preserve their measurement and unit, with links to the applicable
 recording details, without exposing private source identifiers. **Last source check** dates a source polling attempt, including
 an unavailable result, and does not claim a saved measurement or successful write.
-The expanded Recording fold shows the last completed loop update and any
-unavailable, stale, failed, unknown or held-attention streams observed in this run.
+The expanded Recording fold separates **Activity** from **Observed sources**.
+Activity dates the last completed loop update and source polling attempt. Source
+counts distinguish observed streams, usable evidence and streams needing attention;
+unknown statuses are identified separately within the attention count. These are
+not additive categories: held evidence can remain usable while needing attention.
+Each unavailable, stale, failed, unknown or held-attention stream has its own name,
+unit, status, reason, source-observation time, polling-attempt time and details link.
 Counts describe observed streams, not all configured sources: a never-seen source
 can be absent. Source checks retain their own timestamps; unchanged readings and
 open energy intervals need no new observation rows. Storage health separately dates
@@ -2158,10 +2163,15 @@ and independent worker connections are not attributed to this Store.
 
 ### Storage health
 
-The **Storage health** summary belongs to **Recording & storage**. Opening it shows the
-current backlog, average and worst queue wait, failed save attempts, queue-full
-refusals and MQTT device commands known not to have been sent because recording
-blocked them. It uses the existing authenticated health responses and updates with
+The **Storage health** summary belongs to **Recording & storage**. Its current state
+and selected-period evidence occupy separate summary fields; historical problems
+remain visible even when the writer is caught up. Opening it separates **Current
+activity** (backlog, lock wait and last successful write) from **Monitored history**
+(selected period, coverage, average and worst queue wait, failed save attempts,
+queue-full refusals, failed follow-up work after successful saves, and MQTT device
+commands known not to have been sent because recording blocked them). Latest
+problems have separate type, date, context, outcome and recovery lines.
+It uses the existing authenticated health responses and updates with
 ordinary dashboard refreshes. Its summaries are held solely in memory for at
 most seven days; opening a new Store, including application restart, starts a
 new monitoring period. Nothing is saved to SQLite, a file, browser storage,
@@ -2218,9 +2228,14 @@ means saving resumed; a newer reading cannot prove recovery of missing history.
 Historical failure counts remain after recovery and are separate from current
 writer status.
 
-**Technical details** holds full transaction and commit timings, approximate
-95th percentiles, journal-sealing and SQLite-COMMIT stages, priority-specific waits, writer-lock statistics, peak backlog
-and other operation counters. Commit is part of the full transaction duration;
+**Transaction timings** shows successful transaction and commit timings with
+averages, approximate 95th percentiles and worst durations. Indentation, connecting
+rules and explicit relationship labels place **Commit only** within **Write +
+commit**, and **Journal sealing** and **SQLite COMMIT** within **Commit only**.
+The hierarchy remains visible when the table becomes stacked rows on phones.
+**Queue & operation details** holds priority-specific waits, writer-lock statistics,
+peak backlog and other operation counters; **About these measurements** explains
+coverage, in-memory retention and exclusions. Commit is part of the full transaction duration;
 the two measured stages are within Commit and these overlapping durations must
 not be added. Stage summaries count only reached, measured stages of successful
 commits; bootstrap can contribute to full transaction/commit summaries without

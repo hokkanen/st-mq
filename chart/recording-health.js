@@ -30,6 +30,9 @@ const recordingLabels = { ok: 'Monitoring active', starting: 'Starting recording
 const backupLabels = { available: 'Copy available', 'none-known': 'No known copy', running: 'Copy in progress',
   failed: 'Last backup failed', interrupted: 'Backup interrupted', unknown: 'Backup status unknown' };
 const diskLabels = { ok: 'Space available', low: 'Low disk space', critical: 'Critically low space', unknown: 'Disk space unknown' };
+const sourceLabels = { stale: 'Out of date', unavailable: 'Unavailable', 'held-attention': 'Held reading needs attention',
+  failed: 'Source check failed', invalid: 'Reading rejected', waiting: 'Waiting for a reading', unknown: 'Unknown' };
+const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const tone = state => ['write-failed', 'critical', 'failed', 'stalled'].includes(state) ? 'critical'
   : ['low', 'interrupted', 'source-unavailable', 'write-waiting'].includes(state) ? 'warning' : 'neutral';
 const issueTarget = (id, recordingState) => {
@@ -71,6 +74,10 @@ export function recordingHealthView(health, recording, now = Date.now()) {
   const adaptiveMeasured = budget.adaptiveMeasurementHours > 0 && finite(budget.adaptiveProjectedAnnualBytes);
   const totalMeasured = finite(budget.totalDatabaseMeasurementHours) && budget.totalDatabaseMeasurementHours > 0
     && finite(budget.totalDatabaseProjectedAnnualBytes);
+  const readOnly = ['snapshot', 'history'].includes(current.scope);
+  const sources = recorder.sources;
+  const observed = count(sources?.observedStreams), usable = count(sources?.usableStreams);
+  const attention = count(sources?.attentionStreams), unknown = count(sources?.unknownStreams);
   return {
     known: health?.version === 2,
     outdated: !validTime(current.checkedAt) || now - current.checkedAt > healthFreshnessMs,
@@ -100,9 +107,20 @@ export function recordingHealthView(health, recording, now = Date.now()) {
           : 'Completed update is not known.',
       loop: validTime(recorder.lastLoopCompletedAt) ? recordingEvidenceTime(recorder.lastLoopCompletedAt, now) : 'Not known',
       sourceCheck: validTime(recorder.lastSourceCheckAt) ? recordingEvidenceTime(recorder.lastSourceCheckAt, now) : 'Not known',
-      coverage: ['snapshot', 'history'].includes(current.scope) ? 'Source evidence describes the recorded history; this server is not acquiring these measurements.'
-        : Number.isSafeInteger(recorder.sources?.observedStreams) ? `${decimal(recorder.sources.observedStreams)} measurement streams observed in this run · ${decimal(recorder.sources.usableStreams)} with usable evidence${recorder.sources.unknownStreams > 0 ? ` · ${decimal(recorder.sources.unknownStreams)} unknown` : ''}. Configured sources that have never reported are outside these counts.`
-          : 'Observed source coverage has not been checked. Configured sources that have never reported may be missing.',
+      coverage: readOnly ? 'Source evidence describes the recorded history; this server is not acquiring these measurements.'
+        : 'Counts cover measurement streams observed in this run. Configured sources that have never reported are outside these counts. A held reading can be usable and still need attention.',
+      countsVisible: !readOnly,
+      observed: observed === null ? 'Unknown' : decimal(observed),
+      usable: usable === null ? 'Unknown' : decimal(usable),
+      attention: attention === null ? 'Unknown' : decimal(attention),
+      unknown: readOnly || unknown === 0 ? '' : unknown === null ? 'Unknown status: count not available.'
+        : `${decimal(unknown)} ${unknown === 1 ? 'stream has' : 'streams have'} unknown status, included in Needs attention.`,
+      sourceTitle: readOnly ? 'Recorded source exceptions' : 'Sources needing attention',
+      sourcesEmpty: readOnly ? 'No source exception details are available in this recorded history.'
+        : observed === 0 ? 'No measurement streams have been observed in this run.'
+          : attention === 0 ? 'No attention flags among the observed streams.'
+            : attention === null ? 'Source attention status is not known.'
+              : `${decimal(attention)} observed ${attention === 1 ? 'stream needs' : 'streams need'} attention; individual details are not available.`,
       issues: Array.isArray(recorder.sources?.issues) ? recorder.sources.issues : [],
       truncated: recorder.sources?.truncated === true,
     },
@@ -420,7 +438,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     for (const section of ['disk', 'recording', 'backup']) {
       set(`recording-${section}-state`, `${dated ? 'Last known: ' : ''}${view[section].cardLabel ?? view[section].label}`);
       $(`recording-${section}-card`).dataset.tone = view[section].tone;
-      set(`recording-${section}-detail`, view[section].detail);
+      set(`recording-${section}-detail`, `${section === 'recording' && dated ? 'Last known status. ' : ''}${view[section].detail}`);
     }
     set('recording-disk-free', view.disk.free);
     const allocation = inventory ? storageBytes(inventory.database?.allocatedBytes)
@@ -431,7 +449,16 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     set('recording-recording-evidence', view.recording.evidence);
     set('recording-recording-loop', view.recording.loop);
     set('recording-recording-sourceCheck', view.recording.sourceCheck);
-    set('recording-recording-coverage', `${view.recording.coverage}${view.recording.truncated ? ' Additional observed stream exceptions are omitted from this list.' : ''}`);
+    set('recording-recording-coverage', view.recording.coverage);
+    for (const field of ['observed', 'usable', 'attention', 'unknown']) set(`recording-recording-${field}`, view.recording[field]);
+    $('recording-recording-counts').hidden = !view.recording.countsVisible;
+    $('recording-recording-unknown').hidden = !view.recording.unknown;
+    set('recording-recording-sources-title', view.recording.sourceTitle);
+    set('recording-recording-sources-empty', view.recording.sourcesEmpty);
+    $('recording-recording-sources-title').hidden = view.recording.issues.length === 0;
+    $('recording-recording-sources-empty').hidden = view.recording.issues.length > 0;
+    set('recording-recording-sources-note', view.recording.truncated ? 'Additional observed stream exceptions are omitted from this list.' : '');
+    $('recording-recording-sources-note').hidden = !view.recording.truncated;
     const sourceList = $('recording-recording-sources');
     const sourceIds = new Set(view.recording.issues.map((item, index) => item.id ?? `source-${index}`));
     for (const [id, node] of sourceNodes) if (!sourceIds.has(id)) {
@@ -442,24 +469,36 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
       const id = item.id ?? `source-${index}`;
       let node = sourceNodes.get(id);
       if (!node) {
-        node = document.createElement('li');
-        const link = document.createElement('a'); bindLink(link);
-        node.append(document.createElement('strong'), document.createElement('span'), link); sourceNodes.set(id, node);
+        node = document.createElement('li'); node.className = 'recording-source-exception';
+        const heading = document.createElement('div'); heading.className = 'recording-source-heading';
+        const status = document.createElement('span'); status.className = 'recording-source-status';
+        heading.append(document.createElement('strong'), status);
+        const reason = document.createElement('p'); reason.className = 'recording-source-reason';
+        const clocks = document.createElement('dl'); clocks.className = 'recording-source-clocks';
+        for (const label of ['Source observation', 'Last polling attempt']) {
+          const term = document.createElement('dt'); term.textContent = label;
+          clocks.append(term, document.createElement('dd'));
+        }
+        const link = document.createElement('a'); link.className = 'recording-source-link'; bindLink(link);
+        node.append(heading, reason, clocks, link); sourceNodes.set(id, node);
       }
       if (sourceList.children[index] !== node) {
         const focused = node.contains(document.activeElement) ? document.activeElement : null;
         sourceList.insertBefore(node, sourceList.children[index] ?? null); focused?.focus({ preventScroll: true });
       }
-      const [title, evidence, link] = node.children;
+      const [heading, reason, clocks, link] = node.children;
+      const [title, status] = heading.children;
       const unit = ({ degC: '°C', 'degree-minutes': '°min' })[item.unit] ?? item.unit;
-      title.textContent = `${item.label}${unit ? ` (${unit})` : ''} · ${{ stale: 'Out of date', unavailable: 'Unavailable', 'held-attention': 'Held reading needs attention', failed: 'Source check failed', invalid: 'Reading rejected', unknown: 'Unknown' }[item.status] ?? 'Needs attention'}`;
+      title.textContent = `${item.label}${unit ? ` (${unit})` : ''}`;
+      status.textContent = sourceLabels[item.status] ?? 'Needs attention';
+      status.dataset.tone = item.status === 'unknown' ? 'neutral' : 'warning';
+      reason.textContent = item.reason || ''; reason.hidden = !item.reason;
       const adaptive = item.destination === 'adaptive';
       link.dataset.recordingOpen = adaptive ? 'recording-adaptive-details' : 'recording-overview-details';
       link.href = `#${link.dataset.recordingOpen}`;
       link.textContent = adaptive ? 'Adaptive measurement details' : 'Exact measurement and recorded-data details';
-      const clocks = validTime(item.sourceObservedAt) ? `Source observation ${recordingEvidenceTime(item.sourceObservedAt, now())}.`
-        : 'No usable source observation is known.';
-      evidence.textContent = [item.reason, clocks, validTime(item.lastCheckedAt) ? `Last polling attempt ${recordingEvidenceTime(item.lastCheckedAt, now())}.` : ''].filter(Boolean).join(' ');
+      clocks.children[1].textContent = validTime(item.sourceObservedAt) ? recordingEvidenceTime(item.sourceObservedAt, now()) : 'Not known';
+      clocks.children[3].textContent = validTime(item.lastCheckedAt) ? recordingEvidenceTime(item.lastCheckedAt, now()) : 'Not known';
     });
     sourceList.hidden = view.recording.issues.length === 0;
     const writeAt = health?.recording?.lastWriteAt;

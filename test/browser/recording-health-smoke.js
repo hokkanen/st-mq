@@ -140,6 +140,21 @@ window.setScenario = state => {
   payload.recordingHealth = health;
   renderStatus(payload);
 };
+window.setDetailedSources = () => {
+  setScenario('sources');
+  payload.recordingHealth.recording.state = 'ok';
+  payload.recordingHealth.recording.detail = 'Source monitoring is active.';
+  payload.recordingHealth.attention = [{id:'recording-sources',severity:'warning',title:'Some recording sources need attention',detail:'Check the affected measurements.'}];
+  payload.recordingHealth.recording.sources = {observedStreams:5,usableStreams:2,attentionStreams:3,unknownStreams:1,complete:false,issues:[
+    {id:'synthetic-temperature',label:'Outdoor temperature',unit:'°C',status:'stale',destination:'adaptive',
+      reason:'The last received observation is older than the supported freshness limit.',sourceObservedAt:${now-900000},lastCheckedAt:${now}},
+    {id:'synthetic-garage',label:'Garage heat-pump indoor temperature',unit:'°C',status:'unavailable',destination:'adaptive',
+      reason:'The source is not currently reporting this measurement.',sourceObservedAt:${now-600000},lastCheckedAt:${now-5000}},
+    {id:'synthetic-circulation',label:'Hot-water circulation feedback',status:'unknown',destination:'overview',
+      reason:'The current source observation is not known.',sourceObservedAt:null,lastCheckedAt:null}
+  ]};
+  renderStatus(payload);
+};
 window.setPerformance = state => {
   setScenario('healthy');
   const health = payload.recordingHealth, history = health.recording.history;
@@ -295,22 +310,31 @@ try {
     return result.result.value;
   };
   const settle = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-  const capture = async name => {
-    const dimensions = await evaluate('({width:innerWidth, height:document.documentElement.scrollHeight})');
-    const result = await send('Page.captureScreenshot', { format:'png', captureBeyondViewport: true,
-      clip:{x:0, y:0, width:dimensions.width, height:dimensions.height, scale:1} });
-    writeFileSync(join(artifacts, `${name}.png`), Buffer.from(result.data, 'base64'));
+  const captureArea = async (name, geometry) => {
+    // Full-document capture hides Chrome's scrollbar. Preserve the layout width
+    // so a focused clip cannot reflow wider and crop its right edge mid-capture.
+    const originalWidth = await evaluate("(() => { const root=document.documentElement, previous=root.style.width; root.style.width=root.clientWidth+'px'; return previous; })()");
+    try {
+      await settle();
+      const clip = await evaluate(geometry);
+      const result = await send('Page.captureScreenshot', {format:'png',captureBeyondViewport:true,clip});
+      writeFileSync(join(artifacts, `${name}.png`), Buffer.from(result.data,'base64'));
+    } finally {
+      await evaluate(`document.documentElement.style.width=${JSON.stringify(originalWidth)}`);
+      await settle();
+    }
   };
-  const captureGlance = async name => {
-    const clip = await evaluate("(() => { const box=document.getElementById('recording-health').getBoundingClientRect(); return {x:box.left,y:box.top+scrollY,width:box.width,height:box.height,scale:1}; })()");
-    const result = await send('Page.captureScreenshot', {format:'png',captureBeyondViewport:true,clip});
-    writeFileSync(join(artifacts, `${name}.png`), Buffer.from(result.data,'base64'));
-  };
+  const capture = name => captureArea(name, '({x:0,y:0,width:innerWidth,height:document.documentElement.scrollHeight,scale:1})');
+  const captureFold = (id, name) => captureArea(name,
+    `(() => { const box=document.getElementById('${id}').getBoundingClientRect(); return {x:box.left,y:box.top+scrollY,width:box.width,height:box.height,scale:1}; })()`);
+  const captureGlance = name => captureFold('recording-health', name);
   const checkLayout = async label => {
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${label}: page fits`);
-    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-backup-list, .recording-backup-toolbar, .recording-backup-actions, .recording-source-exceptions, .recording-storage-inventory, .recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-dataset, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents')).filter(node => {
+    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-backup-list, .recording-backup-toolbar, .recording-backup-actions, .recording-source-exceptions, .recording-source-heading, .recording-source-reason, .recording-source-clocks, .recording-source-clocks dd, #recording-recording-unknown, #recording-recording-coverage, .recording-storage-inventory, .recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-dataset, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents')).filter(node => {
       if(!node.checkVisibility()) return false;
-      const b = node.getBoundingClientRect(); return b.width <= 0 || b.left < 0 || b.right > innerWidth + 1 || node.scrollWidth > node.clientWidth + 1;
+      const b = node.getBoundingClientRect(), owner=node.closest('.recording-health-card')?.getBoundingClientRect();
+      return b.width <= 0 || b.left < 0 || b.right > innerWidth + 1 || node.scrollWidth > node.clientWidth + 1
+        || (owner && (b.left < owner.left - 1 || b.right > owner.right + 1));
     }).map(node => ({id: node.id || node.className, left:node.getBoundingClientRect().left, right:node.getBoundingClientRect().right,
       width:node.clientWidth, content:node.scrollWidth}))`);
     if(clipped.length) await capture(`clipping-${label.replaceAll('/', '-')}`);
@@ -333,6 +357,25 @@ try {
     assert.ok(Math.abs(layout.above-layout.expectedAbove) <= 1, `${label}: context-to-status gap matches the dashboard context spacing: ${JSON.stringify(layout)}`);
     assert.ok(Math.abs(layout.below-layout.otherGap) <= 1, `${label}: status and dashboard panels share vertical spacing: ${JSON.stringify(layout)}`);
     assert.ok(Math.abs(layout.left) <= 1 && Math.abs(layout.right) <= 1, `${label}: status aligns with dashboard panels`);
+  };
+  const checkTransactionHierarchy = async label => {
+    const rows = await evaluate(`Array.from(document.querySelectorAll('#recording-performance-technical .recording-performance-timings tbody tr'), row => {
+      const label=row.querySelector('.recording-timing-label'), text=label?.firstChild;
+      const range=document.createRange(); if(text) range.selectNodeContents(text);
+      return {
+      label:text?.textContent.trim(),
+      relation:row.querySelector('.recording-timing-relation')?.textContent,
+      rowHeader:row.querySelector('th')?.getAttribute('scope'),
+      inset:text ? range.getBoundingClientRect().left : null,
+      values:Array.from(row.querySelectorAll('td'), cell=>({heading:cell.dataset.label,value:cell.textContent.trim()}))
+    }})`);
+    assert.deepEqual(rows.map(row=>row.label), ['Write + commit','Commit only','Journal sealing','SQLite COMMIT'], `${label}: complete transaction timings retain their measurement names`);
+    assert.deepEqual(rows.map(row=>row.relation), ['Whole transaction','Within write + commit','Within commit only','Within commit only'], `${label}: parent/component relationships are explicit text`);
+    assert.ok(rows.every(row=>row.rowHeader==='row'), `${label}: timing names remain accessible table row headers`);
+    assert.ok(rows[0].inset < rows[1].inset && rows[1].inset < rows[2].inset && Math.abs(rows[2].inset-rows[3].inset) <= 1,
+      `${label}: transaction, commit and its stages form three visible levels: ${JSON.stringify(rows.map(row=>row.inset))}`);
+    assert.ok(rows.every(row=>row.values.length===3 && row.values.every(cell=>cell.heading && cell.value)),
+      `${label}: average, percentile and worst values keep their headings in the mobile layout`);
   };
   await send('Runtime.enable'); await send('Page.enable');
   // Background CDP targets otherwise update activeElement without firing focusout.
@@ -411,10 +454,27 @@ try {
       await settle(); await checkLayout(`${width}/${theme}/expanded`); await capture(`expanded-${width}-${theme}`);
       assert.equal(await evaluate("document.querySelectorAll('#recording-backup-list > li').length"),3,'Backups lists individual saved copies');
       assert.match(await evaluate("document.getElementById('recording-backup-folder').textContent"),/synthetic\/recording\/backups/);
-      await evaluate("setScenario('sources'); document.getElementById('recording-recording-card').open=true");
+      await evaluate("setDetailedSources(); document.getElementById('recording-recording-card').open=true");
       await settle(); await checkLayout(`${width}/${theme}/source-details`);
       assert.match(await evaluate("document.getElementById('recording-recording-sources').textContent"),/Outdoor temperature.*Out of date.*Source observation/);
       assert.match(await evaluate("document.getElementById('recording-recording-coverage').textContent"),/never reported are outside/);
+      assert.deepEqual(await evaluate("['observed','usable','attention'].map(name=>document.getElementById('recording-recording-'+name).textContent)"), ['5','2','3'],
+        'Observed, usable and attention counts remain distinct');
+      assert.match(await evaluate("document.getElementById('recording-recording-unknown').textContent"), /1.*unknown/i, 'Unknown sources are labelled within the attention count');
+      const sourceRows = await evaluate(`Array.from(document.querySelectorAll('#recording-recording-sources > li'), row=>({
+        title:row.querySelector('.recording-source-heading strong')?.textContent,
+        status:row.querySelector('.recording-source-status')?.textContent,
+        reason:row.querySelector('.recording-source-reason')?.textContent,
+        clocks:Array.from(row.querySelectorAll('.recording-source-clocks dt'),node=>node.textContent),
+        values:Array.from(row.querySelectorAll('.recording-source-clocks dd'),node=>node.textContent),
+        destination:row.querySelector('.recording-source-link')?.dataset.recordingOpen
+      }))`);
+      assert.deepEqual(sourceRows.map(row=>row.status), ['Out of date','Unavailable','Unknown'], 'Each source owns a separate explicit status');
+      assert.ok(sourceRows.every(row=>row.title && row.reason && row.clocks.join('|')==='Source observation|Last polling attempt' && row.values.length===2),
+        'Each source has a name, reason and individually labelled observation and polling clocks');
+      assert.deepEqual(sourceRows.map(row=>row.destination), ['recording-adaptive-details','recording-adaptive-details','recording-overview-details']);
+      assert.doesNotMatch(sourceRows[2].values.join(' '), /just now|7 Oct/, 'An unknown source does not receive a manufactured clock');
+      await captureFold('recording-recording-card', `recording-sources-${width}-${theme}`);
       await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=false); document.getElementById('recording-performance-details').open=true; setPerformance('healthy')");
       await settle(); await checkLayout(`${width}/${theme}/performance`); await capture(`performance-${width}-${theme}`); await captureGlance(`glance-storage-${width}-${theme}`);
       for(const state of ['busy','failed','recovered','unknown','empty','reset','snapshot']) {
@@ -424,12 +484,39 @@ try {
           await captureGlance(`glance-problems-${width}-${theme}`);
           await evaluate("document.querySelectorAll('.recording-health-card').forEach(node=>node.open=true); document.getElementById('recording-performance-technical').open=true");
           await settle(); await checkLayout(`${width}/${theme}/glance-all-open`); await captureGlance(`glance-all-open-${width}-${theme}`);
+          await checkTransactionHierarchy(`${width}/${theme}`);
+          if(width===390 && theme==='dark') {
+            const accessibility = await send('Accessibility.getFullAXTree');
+            assert.ok(accessibility.nodes.some(node=>node.role?.value==='table' && /Successful transactions/.test(node.name?.value)),
+              'The mobile timing layout retains its accessible table');
+            for(const title of ['Write + commit','Commit only','Journal sealing','SQLite COMMIT'])
+              assert.ok(accessibility.nodes.some(node=>node.role?.value==='rowheader' && node.name?.value?.startsWith(title)),
+                `${title}: mobile timing remains an accessible row header`);
+          }
+          assert.match(await evaluate("document.getElementById('recording-performance-history-state').textContent"), /problems observed/i, 'Past problems have their own historical summary cue');
+          assert.doesNotMatch(await evaluate("document.getElementById('recording-performance-evidence').textContent"), /problems observed/i, 'Monitored coverage remains separate from historical outcomes');
+          await captureFold('recording-performance-details', `storage-timings-${width}-${theme}`);
           await evaluate("document.querySelectorAll('.recording-health-card').forEach(node=>node.open=false); document.getElementById('recording-performance-details').open=true; document.getElementById('recording-performance-technical').open=false");
         }
       }
       await evaluate("setScenario('critical')");
     }
   }
+  await evaluate("setDetailedSources(); document.getElementById('recording-details').open=true; document.getElementById('recording-recording-card').open=true; window.sourceRow=document.querySelector('#recording-recording-sources > li'); window.sourceLink=sourceRow.querySelector('.recording-source-link'); sourceLink.focus(); panel.update(payload)");
+  assert.equal(await evaluate("document.activeElement===sourceLink && sourceLink.closest('li')===sourceRow && document.getElementById('recording-recording-card').open"), true,
+    'Routine source polling preserves its row, disclosure and focused link');
+  await evaluate("payload.recordingHealth.recording.sources.issues.reverse(); panel.update(payload)");
+  assert.equal(await evaluate("document.activeElement===sourceLink && document.querySelector('#recording-recording-sources > li:last-child')===sourceRow"), true,
+    'Reordering source exceptions preserves identity and focused navigation');
+  await evaluate("payload.recordingHealth.recording.sources.issues=payload.recordingHealth.recording.sources.issues.filter(item=>item.id!=='synthetic-temperature'); panel.update(payload)");
+  assert.equal(await evaluate("document.activeElement===document.querySelector('#recording-recording-card > summary')"), true,
+    'A source recovering during inspection moves focus to its persistent fold summary');
+  await send('Input.dispatchKeyEvent', {type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r',unmodifiedText:'\r'});
+  await send('Input.dispatchKeyEvent', {type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+  assert.equal(await evaluate("document.getElementById('recording-recording-card').open"), false, 'The recording fold closes with its native keyboard action');
+  await send('Input.dispatchKeyEvent', {type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r',unmodifiedText:'\r'});
+  await send('Input.dispatchKeyEvent', {type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+  assert.equal(await evaluate("document.getElementById('recording-recording-card').open"), true, 'The recording fold reopens with its native keyboard action');
   // Same-scope Store replacement clears the loader and the displayed snapshot together.
   await evaluate("setScenario('healthy'); document.getElementById('recording-details').open=true; document.getElementById('recording-disk-card').open=true"); await settle();
   const beforeContextRequests = await evaluate('inventoryRequests');
@@ -494,6 +581,11 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-performance-state').textContent"),'Caught up','Historical problems remain distinct from the live queue');
   await evaluate("document.getElementById('recording-performance-technical').open=true; document.querySelector('#recording-performance-technical > summary').focus(); panel.update(payload)");
   assert.equal(await evaluate("document.activeElement===document.querySelector('#recording-performance-technical > summary') && document.getElementById('recording-performance-technical').open"),true,'Polling preserves technical disclosure and focus');
+  for(const id of ['recording-performance-diagnostics','recording-performance-method']) {
+    await evaluate(`document.getElementById('${id}').open=true; document.querySelector('#${id} > summary').focus(); panel.update(payload)`);
+    assert.equal(await evaluate(`document.activeElement===document.querySelector('#${id} > summary') && document.getElementById('${id}').open`), true,
+      `${id}: polling preserves its disclosure and focus`);
+  }
   await evaluate("document.getElementById('recording-performance-week').focus()");
   await evaluate("failRefresh=true; panel.refresh()");
   assert.match(await evaluate("document.getElementById('recording-performance-notice').textContent"), /Refresh failed.*last known/);
