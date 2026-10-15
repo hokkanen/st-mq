@@ -293,6 +293,12 @@ recordability, native power, command permission or completed restoration. While
 warm fresh evidence is present but recovery/retesting is pending or a check has
 failed, keep the current native baseline; this sends no On command. Cold or
 missing-air protection still uses current native evidence to request Off.
+That same rule is checked after observation commit and immediately before
+publication: newly admitted warm recovery evidence cancels a queued protective
+Off without requesting On. A known-unsent cancellation does not delay a later
+genuine cold or missing-air Off. An earlier dispatched command whose outcome is
+still uncertain keeps its original receipt; cancelling unsent bytes cannot
+establish what the appliance did.
 
 The owner approved these exact boundaries on 2026-10-14:
 

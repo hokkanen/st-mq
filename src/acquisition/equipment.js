@@ -660,20 +660,25 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       }
     });
   }
+  function keepTemperatureBaseline(device, guard, now) {
+    const state = device.temperatureGuard;
+    return Boolean(!guard.qualified && (state.qualification.record?.proof || state.qualified)
+      && scalar(guard.temperatureC) && guard.temperatureC > guard.offAtC
+      && healthy(device, now, true) && caravanPower(device, now, true));
+  }
+  function clearTemperatureAttempt(device, state, at, power) {
+    if (device.temperatureGuard !== state || state.lastAttemptAt !== at || state.lastAttemptPower !== power) return;
+    state.lastAttemptAt = null; state.lastAttemptPower = null;
+  }
   function controlTemperature(device, now) {
     const guard = temperatureGuardStatus(device, now);
     if (!guard?.enabled || probeBusy(device) || caravanStopping) return;
     const state = device.temperatureGuard;
     // Historical proof grants no On permission. Keep the existing native baseline
     // while recovery/retesting is pending or failed; cold/missing air protects Off.
-    if (!guard.qualified && state.qualification.record?.proof && scalar(guard.temperatureC)
-      && guard.temperatureC > guard.offAtC && healthy(device, now, true) && caravanPower(device, now, true)) return;
+    if (keepTemperatureBaseline(device, guard, now)) return;
     if (state.qualification.record?.proof && state.qualification.record.invalidatedAt === null
       && (!scalar(guard.temperatureC) || guard.temperatureC <= guard.offAtC) && healthy(device, now)) state.managed = true;
-    // A bounded source-clock wait suspends evaluation; it does not create a
-    // new temperature demand. Cold or missing air evidence still protects Off.
-    if (state.qualified && !guard.qualified && scalar(guard.temperatureC) && guard.temperatureC > guard.offAtC
-      && healthy(device, now, true) && caravanPower(device, now, true)) return;
     if (guard.qualified && scalar(guard.temperatureC)) {
       if (!closed && canControl()) state.managed = true;
       if (guard.temperatureC <= guard.offAtC) state.demand = false;
@@ -693,8 +698,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       && state.lastAttemptAt !== null && now - state.lastAttemptAt < 30_000) return;
     state.lastAttemptAt = now; state.lastAttemptPower = value;
     reception.afterCommit(() => {
-      const current = temperatureGuardStatus(device, engine.clock());
+      const currentAt = engine.clock(), current = temperatureGuardStatus(device, currentAt);
       if (!current?.enabled || value === 'on' && (!current.qualified || !device.temperatureGuard.demand)) return;
+      if (value === 'off' && keepTemperatureBaseline(device, current, currentAt)) {
+        if (device.dehumidifierOperation === operation) clearTemperatureAttempt(device, state, now, value);
+        return;
+      }
       void commandDehumidifier(device, 'power', value, 'temperature').catch(() => {});
     });
   }
@@ -1085,6 +1094,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (!device.dehumidifierReport?.capabilities[setting]?.includes(value))
       throw fail('the dehumidifier has not advertised support for this setting');
     assertRestartReady(device, setting, value, engine.clock());
+    const previousOperation = device.dehumidifierOperation;
     if (device.dehumidifierOperation && ['publishing', 'published'].includes(device.dehumidifierOperation.status)) {
       if (!['temperature', 'location-test', 'location-restoration'].includes(origin) || setting !== 'power' || value !== 'off')
         throw fail('dehumidifier operation already in progress; wait for its live report');
@@ -1101,6 +1111,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const previousValue = device.dehumidifierState[setting], previousAt = device.dehumidifierReport.fieldTimestamps[setting];
     const timer = setTimeout(() => cancellation.abort(), Math.min(readbackTimeoutMs, 10_000));
     const dispatch = { cancellation, operation, power: device.dehumidifierState.power, powerAt: device.dehumidifierReport.fieldTimestamps.power };
+    const attemptState = device.temperatureGuard, attemptAt = attemptState.lastAttemptAt;
+    let supersededBeforeDispatch = false;
     dehumidifierDispatches.set(device, dispatch);
     device.dehumidifierOperation = operation;
     const beforePublish = () => {
@@ -1127,6 +1139,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         throw fail('dehumidifier restoration changed before dispatch');
       if (origin === 'temperature') {
         const guard = temperatureGuardStatus(device, now);
+        if (value === 'off' && keepTemperatureBaseline(device, guard, now)) {
+          supersededBeforeDispatch = true;
+          throw unsentEquipmentCommand();
+        }
         if (!guard?.enabled || probeBusy(device) || caravanStopping || value !== (state.demand ? 'on' : 'off')
           || value === 'on' && (!guard.qualified || !state.demand || !scalar(guard.temperatureC) || caravanCold(device, now)))
           throw fail('dehumidifier temperature demand changed before dispatch');
@@ -1153,7 +1169,22 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (closed || !canControl() || !device.brokerConnected) {
         operation.status = 'unconfirmed'; operation.error = 'Control connection changed. Check the dehumidifier live state.';
       }
-    } catch {
+    } catch (error) {
+      if (supersededBeforeDispatch && !scalar(operation.dispatchedAt)) {
+        const failure = unsentEquipmentCommand(error);
+        operation.status = 'failed'; operation.error = failure.message; operation.code = failure.code;
+        if (device.dehumidifierOperation === operation && dehumidifierDispatches.get(device) === dispatch) {
+          clearTemperatureAttempt(device, attemptState, attemptAt, value);
+          // Cancelling these unsent bytes cannot erase an earlier command's
+          // unresolved delivery. Its original callback still owns this receipt.
+          if (scalar(previousOperation?.dispatchedAt) && !['observed', 'failed'].includes(previousOperation.status)) {
+            previousOperation.status = 'unconfirmed';
+            previousOperation.error = 'Dehumidifier command delivery is unconfirmed. Check its live state before trying again.';
+            device.dehumidifierOperation = previousOperation;
+          }
+        }
+        throw failure;
+      }
       operation.status = 'unconfirmed'; operation.error = 'Dehumidifier command delivery is unconfirmed. Check its live state before trying again.';
       throw fail('dehumidifier command delivery is unconfirmed; check its live state');
     } finally {

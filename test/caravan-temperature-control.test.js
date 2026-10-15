@@ -1020,3 +1020,203 @@ test('event-only meter configuration still expires held power used for electrica
   assert.equal(f.guard().reason, 'power-unavailable');
   assert.equal(f.history().at(-1).value, null);
 });
+
+for (const mode of ['warm-unqualified', 'hysteresis-unqualified', 'threshold-control', 'missing-air-control', 'stale-air-control', 'future-air-control', 'warm-qualified-control']) {
+  test(`actual current protective Off publication: ${mode}`, async t => {
+    let armed = false, held = false, released = false, entered = 0, gateCalls = 0, release;
+    const waiting = new Promise(resolve => { release = () => { if (!released) { released = true; resolve(); } }; });
+    const f = fixture(t, { beforePublish: async (topic, payload, flags) => {
+      if (!armed || topic !== 'fixture/dryer/set' || JSON.parse(payload).power !== 'off') return;
+      entered++; held = true;
+      assert.equal(typeof flags.beforePublish, 'function');
+      const original = flags.beforePublish;
+      flags.beforePublish = (...args) => { gateCalls++; return original(...args); };
+      await waiting;
+    } });
+    try {
+      await f.qualify({ temperature: 3 });
+      await f.sample(1, 'on', 105);
+      assert.equal(f.state().available, true);
+      assert.equal(f.state().state.power, 'on');
+      assert.equal(f.guard().qualified, true);
+      assert.equal(f.guard().qualification.retained, true);
+      assert.equal(f.store.getState('equipment:caravan-probe-restoration:v1:caravan_dehumidifier:' + 'a'.repeat(64)), null);
+      const passedAt = f.guard().qualification.passedAt, revision = f.guard().qualification.revision;
+      const before = f.sent.length;
+      armed = true;
+      if (mode === 'warm-qualified-control') {
+        // Keep native and meter reports continuous while only room air expires.
+        for (let n = 0; n < 4; n++) await f.sample(45_000, 'on', 105);
+        assert.equal(f.guard().qualified, true);
+      } else {
+        f.restart(); f.advance(1); f.dryer('on'); f.meter(105); await settle();
+        assert.equal(f.guard().qualified, false);
+      }
+      assert.equal(held, true, 'the actual producer reached the final publisher hold');
+      assert.equal(entered, 1, 'one original current Off request is held');
+      assert.equal(f.guard().temperatureC, null, 'missing room evidence actually armed protective Off');
+      assert.equal(f.state().state.power, 'on', 'native On remains observed before any Off bytes');
+      assert.equal(f.state().available, true, 'fresh native appliance feedback is usable');
+      assert.equal(f.sent.length, before, 'the held publisher has sent no bytes');
+      assert.equal(f.guard().qualification.retained, true);
+      assert.equal(f.guard().qualification.passedAt, passedAt);
+      assert.equal(f.guard().qualification.revision, revision);
+      f.advance(1);
+      if (mode === 'warm-unqualified' || mode === 'warm-qualified-control') f.air(3);
+      if (mode === 'hysteresis-unqualified') f.air(1.5, 50, false, f.now - 179_999);
+      if (mode === 'threshold-control') f.air(1);
+      if (mode === 'stale-air-control') f.air(3, 50, false, f.now - 180_001);
+      if (mode === 'future-air-control') f.air(3, 50, false, f.now + 500);
+      await settle();
+      if (['warm-unqualified', 'hysteresis-unqualified'].includes(mode)) {
+        assert.equal(f.guard().qualified, false, 'the original 30-second recovery boundary has not elapsed');
+        assert.equal(f.guard().qualification.retained, true);
+        assert.equal(f.guard().locationTest.status, 'passed');
+        assert.equal(f.guard().temperatureC, mode === 'hysteresis-unqualified' ? 1.5 : 3);
+        assert.equal(f.guard().reason, 'recovering-feedback', 'native and selected meter are healthy while association recovery is pending');
+        assert.equal(f.state().available, true);
+        assert.equal(f.state().state.power, 'on');
+      } else if (mode === 'warm-qualified-control') {
+        assert.equal(f.guard().qualified, true);
+        assert.equal(f.guard().temperatureC, 3);
+        assert.equal(f.guard().desiredPower, 'on', 'the existing demand fence is re-evaluated for fully qualified warm evidence');
+      } else if (mode === 'threshold-control') assert.equal(f.guard().temperatureC, 1);
+      else assert.equal(f.guard().temperatureC, null, 'stale/future-unadmitted/missing air cannot supersede protection');
+      const beforeRelease = { qualified: f.guard().qualified, warm: f.guard().temperatureC === 3,
+        retained: f.guard().qualification.retained, nativeOn: f.state().state.power === 'on',
+        locationPassed: f.guard().locationTest.status === 'passed' };
+      release(); await settle(); await settle();
+      assert.equal(gateCalls, 1, 'the ORIGINAL beforePublish admission gate actually executed once');
+      const commands = f.sent.slice(before);
+      t.diagnostic(JSON.stringify({ mode, beforeRelease, entered, gateCalls,
+        offCommands: commands.filter(command => command.power === 'off').length,
+        onCommands: commands.filter(command => command.power === 'on').length }));
+      assert.equal(commands.some(command => command.power === 'on'), false, 'historical proof never grants a replacement On');
+      const expected = ['warm-unqualified', 'hysteresis-unqualified', 'warm-qualified-control'].includes(mode) ? [] : [{ power: 'off' }];
+      assert.deepEqual(commands, expected, 'fresh warm recovery preserves the actual native baseline; current missing evidence still protects Off');
+      if (['warm-unqualified', 'hysteresis-unqualified'].includes(mode)) {
+        assert.equal(f.state().operation.status, 'failed');
+        assert.equal(f.state().operation.code, 'EQUIPMENT_COMMAND_CANCELLED');
+        assert.match(f.state().operation.error, /request was not sent/);
+        assert.equal(f.state().operation.dispatchedAt, undefined);
+        assert.equal(f.state().operation.acknowledgedAt, undefined);
+        // A known-unsent cancellation must not throttle a later actual cold boundary.
+        const cancelledAt = f.now;
+        if (mode === 'hysteresis-unqualified') {
+          await f.sample(2, 'on', 105);
+          assert.equal(f.guard().temperatureC, null, 'the original room clock expires without a replacement observation');
+        } else { f.advance(1); f.air(0); await settle(); }
+        await settle();
+        assert(f.now - cancelledAt < 30_000);
+        assert.deepEqual(f.sent.slice(before), [{ power: 'off' }]);
+        assert.equal(f.state().operation.status, 'published');
+        assert.equal(f.state().operation.code, undefined);
+        assert.equal(f.state().operation.dispatchedAt, f.now);
+      }
+    } finally { release(); await settle(); }
+  });
+}
+
+for (const temperature of [1.5, 3]) test(`warm recovery at ${temperature} cancels protective Off before its committed effect starts`, async t => {
+  const f = fixture(t); await f.qualify({ temperature: 3 }); await f.sample(1, 'on', 105);
+  const proof = f.guard().qualification.passedAt, before = f.sent.length;
+  f.restart();
+  // The actual Store defers both receipt effects until this outer commit. The
+  // missing-air decision precedes the newly admitted warm room observation.
+  f.store.transaction(() => {
+    f.advance(1); f.dryer('on'); f.meter(105);
+    assert.equal(f.guard().temperatureC, null);
+    assert.equal(f.state().operation, null);
+    f.advance(1); f.air(temperature);
+    assert.equal(f.guard().qualified, false);
+    assert.equal(f.guard().reason, 'recovering-feedback');
+    assert.equal(f.state().available, true); assert.equal(f.state().state.power, 'on');
+    assert.equal(f.guard().qualification.passedAt, proof);
+    assert.equal(f.sent.length, before);
+  });
+  await settle(); assert.equal(f.sent.length, before);
+  assert.equal(f.state().operation, null, 'a cancelled post-commit effect creates no native command receipt');
+  f.advance(1); f.air(0); await settle(); await settle();
+  assert.deepEqual(f.sent.slice(before), [{ power: 'off' }], 'the unsent old attempt cannot throttle a new cold boundary');
+});
+
+test('warm recovery cannot erase an already dispatched uncertain Off or a newer native request', async t => {
+  let hold = false, entered = false, reject;
+  const waiting = new Promise((resolve, fail) => { reject = fail; });
+  const f = fixture(t, { publish: async body => {
+    if (hold && body.power === 'off') { entered = true; await waiting; }
+  } });
+  try {
+    await f.qualify({ temperature: 3 }); await f.sample(1, 'on', 105);
+    const before = f.sent.length; hold = true;
+    f.restart(); f.advance(1); f.dryer('on'); f.meter(105); await settle();
+    assert.equal(entered, true); assert.deepEqual(f.sent.slice(before), [{ power: 'off' }]);
+    const dispatchedAt = f.state().operation.dispatchedAt;
+    assert.equal(dispatchedAt, f.now, 'the real publisher gate ran before the synthetic transport failure');
+    f.advance(1); f.air(3); await settle();
+    assert.equal(f.guard().reason, 'recovering-feedback');
+    assert.equal(f.state().operation.dispatchedAt, dispatchedAt);
+    f.advance(10_001); f.capture.tick();
+    assert.equal(f.state().operation.status, 'unconfirmed');
+    assert.equal(f.state().operation.code, undefined);
+    await f.policy({ enabled: false });
+    await f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'fanSpeed', value: 'high' });
+    const newer = f.state().operation;
+    assert.equal(newer.setting, 'fanSpeed'); assert.equal(newer.status, 'published');
+    reject(new Error('synthetic lost publication acknowledgement')); await settle(); await settle();
+    assert.deepEqual(f.state().operation, newer, 'an older dispatched completion cannot clear or relabel the newer request');
+    assert.deepEqual(f.sent.slice(before), [{ power: 'off' }, { fanSpeed: 'high' }]);
+  } finally { reject(new Error('synthetic fixture cleanup')); await settle(); }
+});
+
+for (const dispatched of [false, true]) test(`cancelled protective Off preserves only an actually dispatched unresolved On (${dispatched})`, async t => {
+  let armed = false, offHeld = false, releaseOff, releaseOn;
+  const offWaiting = new Promise(resolve => { releaseOff = resolve; });
+  const onWaiting = new Promise(resolve => { releaseOn = resolve; });
+  const f = fixture(t, { beforePublish: async (topic, payload) => {
+    if (!armed || topic !== 'fixture/dryer/set') return;
+    if (JSON.parse(payload).power === 'off') { offHeld = true; await offWaiting; }
+    if (!dispatched && JSON.parse(payload).power === 'on') await onWaiting;
+  }, publish: async body => { if (armed && dispatched && body.power === 'on') await onWaiting; } });
+  let request;
+  try {
+    await f.qualify({ enabled: false, temperature: 3 }); armed = true;
+    const before = f.sent.length;
+    request = f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' });
+    request.catch(() => {}); await settle();
+    const original = f.state().operation;
+    assert.equal(Number.isFinite(original.dispatchedAt), dispatched);
+    assert.equal(f.sent.length - before, dispatched ? 1 : 0);
+    // Enabling Automatic cannot create takeover or bypass the original On.
+    await f.policy({ enabled: true });
+    f.advance(1); f.capture.setConnected(false); f.capture.setConnected(true);
+    f.capture.confirmSubscriptions(f.capture.topics);
+    f.capture.receive('fixture/dryer/online', 'online');
+    f.capture.receive('fixture/meter/online', 'online');
+    f.dryer('off'); f.meter(100); await settle();
+    assert.equal(offHeld, true);
+    assert.equal(f.guard().temperatureC, null);
+    f.advance(1); f.air(3); await settle();
+    assert.equal(f.guard().reason, 'recovering-feedback');
+    assert.equal(f.guard().qualification.retained, true);
+    releaseOff(); await settle(); await settle();
+    assert.equal(f.sent.slice(before).some(command => command.power === 'off'), false);
+    const retained = f.state().operation;
+    if (dispatched) {
+      assert.equal(retained.value, 'on'); assert.equal(retained.status, 'unconfirmed');
+      assert.equal(retained.requestedAt, original.requestedAt);
+      assert.equal(retained.dispatchedAt, original.dispatchedAt);
+      assert.equal(retained.code, undefined);
+      assert.equal(retained.error, 'Dehumidifier command delivery is unconfirmed. Check its live state before trying again.');
+    } else {
+      assert.equal(retained.value, 'off'); assert.equal(retained.status, 'failed');
+      assert.equal(retained.code, 'EQUIPMENT_COMMAND_CANCELLED');
+      assert.equal(retained.dispatchedAt, undefined);
+    }
+    releaseOn(); await request.catch(() => {}); await settle();
+    assert.equal(f.sent.length - before, dispatched ? 1 : 0);
+    assert.equal(f.state().operation.requestedAt, retained.requestedAt);
+    assert.equal(f.state().operation.value, retained.value);
+    assert.equal(f.state().operation.status, retained.status);
+  } finally { releaseOff(); releaseOn(); await request?.catch(() => {}); await settle(); }
+});

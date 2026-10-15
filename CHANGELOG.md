@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Cancel an unsent dehumidifier protection Off when fresh warm recovery evidence
+  supersedes it, preserving the native baseline, later cold protection and any
+  earlier command whose delivery is still uncertain.
+
 - Add **Pause charging** beside **Use automatic** on both charger cards, with
   a session hold that survives restart and reconnect and reports whether stopping
   is confirmed. Charge now can explicitly supersede the displayed external Stop

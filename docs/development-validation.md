@@ -53,6 +53,14 @@ It also injects a synchronous delay at the real Store COMMIT entry, without
 claiming a measured disk or fsync delay. Both paths preserve original clocks,
 qualified demand and the historical gap; expired required evidence and a real
 disconnect remain unavailable.
+The temperature-control fixtures hold the actual publisher before its final
+admission gate, and separately combine missing-air then warm reports in one real
+Store transaction. Warm unqualified recovery preserves the native baseline,
+including the hysteresis band, while cold, expired and unadmitted future room
+evidence still protect Off. Known-unsent cancellation permits a later genuine
+protective Off without the old attempt's retry hold, and cannot erase an earlier
+dispatched uncertain command or a newer request. These synthetic orderings do
+not identify the cause of an observed household power transition.
 The Shelly EVSE suite holds the same writer boundary across a native permission
 Stop. Its original event/source/receipt clocks remain distinct from a later
 correlated setting readback; neither pending nor admitted Stop sends a Start.
