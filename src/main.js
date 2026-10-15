@@ -76,8 +76,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     store.writeHealth.failure(error);
     const databaseBusy = error?.code === 'ERR_SQLITE_ERROR' && [5, 6].includes(error.errcode & 0xff);
     if (!databaseBusy) {
-      try { store.event('controller-error', { message: error.message }, clock()); return; }
-      catch { /* Reporting must survive an unavailable database too. */ }
+      void store.runWrite(() => store.event('controller-error', { message: error.message }, clock()))
+        .catch(() => {});
     }
     // A failed write cannot reliably report itself with another database write.
     // Keep stderr useful without exposing arbitrary errors or private payloads.
@@ -177,7 +177,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         if (!engine) return;
         // Ingress and feature flights have stopped. Save only confirmed history
         // endpoints, using the final recorder transaction and current authority.
-        return store.transaction(() => {
+        return store.runWrite(() => {
           if (canControl()) engine.charging?.flushLimiterHistory();
           return engine.recorder.flush(clock(), { force: true });
         });
@@ -208,7 +208,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     if (['mqtt', 'providers'].includes(config.input) && config.connections.mqtt?.address) {
       commandTransport = createHeatingTransport({ canControl });
     }
-    engine = new Engine({ store, config, clock, commandTransport, canControl });
+    await store.runWrite(() => { engine = new Engine({ store, config, clock, commandTransport, canControl }); });
     engine.historyRecovery = historyRecovery;
     engine.runtimeTiming = runtimeTiming.status;
     // Load durable native-setting obligations before the first active dispatch.
@@ -487,7 +487,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       if (!authority.canControl()) {
         finishStartup();
         for (const [signal, handler] of signalHandlers) process.removeListener(signal,handler);
-        store.close();
+        await store.close();
         runtimeTiming.close();
         return await stoppedControllerViewer({ config, authority, clock, installSignalHandlers });
       }
@@ -511,6 +511,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../dist') });
     await webAccess.start();
     requireRunning();
+    if (store.path !== ':memory:') await store.startWriter();
     await createRuntime();
     await historyRecovery.initialize();
     engine.historyRecovery = historyRecovery;
@@ -533,6 +534,9 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     }
     requireRunning();
     starting = false;
+    // Seed the complete committed status before public requests can race the
+    // next background save. Later pending reads retain this evidence date.
+    engine.status();
     authority?.start();
     engine.onTemporaryChange = schedule;
     schedule();

@@ -20,6 +20,40 @@ export function journalConnection(db) { return raw(db); }
 // Only the latest instrumented COMMIT attempt. Bootstrap/unreached stages are
 // unknown; this is memory-only evidence, never part of the transaction format.
 export function journalCommitTiming(db) { return connections.get(db)?.commitTiming ?? null; }
+/** The runtime writer keeps the controller's existing input bounds even though
+ * SQLite itself now runs off-thread. Change only at a transaction boundary. */
+export function setJournalControllerBounds(db, enabled = true) {
+  const state = connections.get(db);
+  if (!state || state.transaction || db.isTransaction) fail('journal_transaction_active');
+  state.setControllerBounds(enabled);
+}
+/** Seal while the writer lock remains held. The returned checkpoint is only an
+ * attempted boundary until COMMIT succeeds or a joined writer's durable head
+ * proves it. Keeping these steps separate lets the owner reconcile a lost reply. */
+export function prepareJournalCommit(db) {
+  const state = connections.get(db);
+  if (!state?.transaction || !db.isTransaction || state.commitPrepared) fail('journal_transaction_boundary_invalid');
+  const timing = { journalSealMs: null, nativeCommitMs: null, journal: null };
+  state.preparedTiming = timing;
+  try { state.commitTiming = timing; } catch { /* Diagnostics never own durability. */ }
+  const started = performance.now();
+  try { timing.journal = seal(db); state.commitPrepared = true; }
+  finally { timing.journalSealMs = performance.now() - started; }
+  return { checkpoint: readCheckpoint(db), timing };
+}
+export function commitPreparedJournal(db, sql = 'COMMIT') {
+  const state = connections.get(db);
+  if (!state?.transaction || !state.commitPrepared || !db.isTransaction
+    || !/^(?:COMMIT|END)(?:\s+TRANSACTION)?\s*;?\s*$/i.test(sql)) fail('journal_transaction_boundary_invalid');
+  const started = performance.now();
+  try {
+    const result = state.exec(sql);
+    state.transaction = false; state.commitPrepared = false;
+    return result;
+  } finally {
+    try { state.preparedTiming.nativeCommitMs = performance.now() - started; } catch { /* Diagnostics never own durability. */ }
+  }
+}
 export function journalExclusive(db,operation) { return exclusive(db,operation); }
 export function journalReadRow(db,change) { return readRow(db,change); }
 export function journalApplyRow(db,change,reverse=false) { return applyRow(db,change,reverse); }
@@ -212,22 +246,18 @@ function mutable(sql) {
 /** All Store connection writes, including direct prepared writes in workers,
  * share this boundary. SQLite triggers capture actual row effects and savepoint
  * rollback; the seal and head are committed with those same effects. */
-export function installJournal(db) {
+export function installJournal(db, options = {}) {
   if (connections.has(db)) return;
   const state = { exec: db.exec.bind(db),prepare: db.prepare.bind(db),transaction: false,commitTiming: null };
   connections.set(db,state);
-  const capture=registerJournalFunctions(db);
+  const capture=registerJournalFunctions(db, options);
   state.resetCaptureBudget=capture.reset;
   state.setCaptureEnabled=capture.setEnabled;
+  state.setControllerBounds=capture.setControllerBounds;
   state.exec('PRAGMA recursive_triggers=ON');
   const commit = sql => {
-    const timing = state.commitTiming = { journalSealMs: null, nativeCommitMs: null, journal: null };
-    const sealStarted = performance.now();
-    try { timing.journal = seal(db); }
-    finally { timing.journalSealMs = performance.now() - sealStarted; }
-    const nativeStarted = performance.now();
-    try { return state.exec(sql); }
-    finally { timing.nativeCommitMs = performance.now() - nativeStarted; }
+    prepareJournalCommit(db);
+    return commitPreparedJournal(db, sql);
   };
   const atomic = operation => {
     if (state.transaction) return operation();
@@ -236,7 +266,7 @@ export function installJournal(db) {
     state.exec('BEGIN IMMEDIATE'); state.transaction=true;
     try { const result = operation(); commit('COMMIT'); return result; }
     catch (error) { try { state.exec('ROLLBACK'); } catch {} throw error; }
-    finally { state.transaction=false; }
+    finally { state.transaction=false; state.commitPrepared=false; }
   };
   db.exec = sql => {
     const start = sqlStart(sql);
@@ -259,7 +289,7 @@ export function installJournal(db) {
       const result=commit(sql); state.transaction=false; return result;
     }
     if (/^ROLLBACK\b/i.test(start) && !/^ROLLBACK\s+TO\b/i.test(start)) {
-      const result=state.exec(sql); state.transaction=false; state.commitTiming=null; return result;
+      const result=state.exec(sql); state.transaction=false; state.commitPrepared=false; state.commitTiming=null; return result;
     }
     if (/^(?:RELEASE|ROLLBACK\s+TO)\b/i.test(start) || parts.every(part=>/^PRAGMA\b/i.test(part))) return state.exec(sql);
     return atomic(() => state.exec(sql));

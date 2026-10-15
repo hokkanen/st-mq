@@ -2123,7 +2123,10 @@ check does not by itself establish acceptable control latency.
 
 `/api/status` exposes `recordingHealth.recording.storageTimings` for the open
 Store: transaction attempt/commit counts and the last, maximum and p99 BEGIN,
-body, COMMIT and total synchronous durations over the last 128 attempts. The
+body, COMMIT and total elapsed durations over the last 128 attempts. Dedicated
+runtime writer BEGIN and COMMIT durations include message dispatch and awaiting
+completion; body includes bounded synchronous dependent statement calls. Journal
+sealing and native COMMIT are measured on the worker that owns SQLite. The
 current `journalSealMs` and `nativeCommitMs` fields separate journal sealing from
 the raw SQLite COMMIT call, with measured sample counts for each stage. The
 existing `commitMs` still measures the complete COMMIT wrapper, including both

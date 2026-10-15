@@ -328,6 +328,12 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         };
         const mutate = async action => {
           const input = await body(req, transportLimits?.bodyTimeoutMs);
+          // Action prechecks can read live controller RAM before their own
+          // transaction. Do not let them acknowledge another provisional edit.
+          while (store.writePending && !res.destroyed) await store.whenWritesSettled();
+          if (res.destroyed) return;
+          if (store.writerFailed || store.writer?.failed)
+            return json(503, { error: 'Recording storage is unavailable. Check storage and restart the application.' });
           // A credential can be rotated while a client slowly uploads a body.
           // Recheck before any control or configuration mutation is dispatched.
           if (!stillAuthorized()) return;
@@ -350,7 +356,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         };
         if (req.method === 'GET' && url.pathname === '/api/recording-health')
           return json(200, await recordingHealth.status({ store: readerStore, engine,
-            current: engine?.latestStatus, readOnly: writesBlocked(), verification: databaseVerification?.health(readerStore) }));
+            current: engine?.store?.writePending ? engine.committedStatus : engine?.latestStatus, readOnly: writesBlocked(), verification: databaseVerification?.health(readerStore) }));
         if (req.method === 'GET' && url.pathname === '/api/status') {
           const current = status();
           return json(200, { ...current, recordingHealth: await recordingHealth.status({ store: readerStore, engine,

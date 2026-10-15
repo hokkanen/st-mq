@@ -115,6 +115,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   let recoveryCandidate = null, recoveryConflict = false, evidenceBoundaryAt = null;
   let currentSupplyBoundaryAt = null;
   const instanceId = randomUUID(); let connectionSequence = 0;
+  let receivedFrameSequence = 0;
   let statusTransition = 0;
   const values = new Map(), replies = new Map(), pendingCalls = new Map();
   const deferredTransactions = new Map();
@@ -137,8 +138,9 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     const execute = () => {
       if (!current()) throw requestError('ocpp-request-revoked');
       const prior = admitted;
+      const admittedConnection = connection ?? socket;
       admitted = true;
-      state?.afterRollback?.(() => storageFailed(connection ?? socket));
+      state?.afterRollback?.(() => storageFailed(admittedConnection));
       try { return operation(); } finally { admitted = prior; }
     };
     try { return state?.runWrite ? state.runWrite(execute, { signal, isCurrent: current, priority: 'control', bytes })
@@ -299,9 +301,12 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
     onDisconnect();
   }
-  function send(value) {
+  function send(value, beforeSend = () => true) {
     const connection = socket;
-    const effect = () => { if (!closed && canControl() && socket === connection && connection?.readyState === 1) connection.send(JSON.stringify(value)); };
+    const effect = () => {
+      if (!closed && canControl() && socket === connection && connection?.readyState === 1 && beforeSend())
+        connection.send(JSON.stringify(value));
+    };
     if (state?.afterCommit) state.afterCommit(effect); else effect();
   }
   const activeTransaction = () => ledger?.transactions.find(row => row.id === ledger.activeId)
@@ -333,8 +338,9 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     if (state?.runWrite && !admitted) { scheduleState('send', sendNextCall); return; }
     if (pendingCalls.size || !callQueue.length || socket?.readyState !== 1 || !canControl()) return;
     const call = callQueue.shift(), { action, payload, transition } = call, id = `stmq-${++callId}`;
+    const dispatchReceiptSequence = receivedFrameSequence;
     if (call.resolve && (call.settled || call.connection !== socket || !transportFresh()
-      || !permittedBy(call.guard) || !permittedBy(call.beforeSend))) {
+      || !permittedBy(call.guard))) {
       finishRequest(call, 'ocpp-request-revoked'); sendNextCall(); return;
     }
     if (action === 'RemoteStartTransaction') {
@@ -348,8 +354,27 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       catch { remoteStartStatus = 'unavailable'; sendNextCall(); return; }
       remoteStartStatus = 'pending';
     }
-    Object.assign(call, { key: payload.key, sentAt: clock() });
-    pendingCalls.set(id, call); send([2, id, action, payload]);
+    Object.assign(call, { key: payload.key });
+    pendingCalls.set(id, call);
+    send([2, id, action, payload], () => {
+      // Worker durability can take longer than a native command's original
+      // deadline. Revalidate at actual dispatch, after the intent committed.
+      const revoked = pendingCalls.get(id) !== call
+        || (call.resolve && !['TriggerMessage', 'GetConfiguration'].includes(action) || action === 'RemoteStartTransaction')
+          && dispatchReceiptSequence !== receivedFrameSequence
+        || call.resolve && (call.settled
+        || call.connection !== socket || !transportFresh() || !permittedBy(call.guard)
+        || !permittedBy(call.beforeSend))
+        || action === 'RemoteStartTransaction' && (!stateReady || !authorizationReady || !permittedBy(canStart)
+          || connectorStatus !== 'Preparing' || transition !== statusTransition || !transportFresh());
+      if (revoked) {
+        if (pendingCalls.get(id) === call) pendingCalls.delete(id);
+        if (action === 'RemoteStartTransaction') { preparingAttempted = false; remoteStartStatus = 'cancelled'; }
+        finishRequest(call, 'ocpp-request-revoked'); sendNextCall(); return false;
+      }
+      call.sentAt = clock();
+      return true;
+    });
   }
   function requestRemoteStart() {
     reconcileTransactionStatus();
@@ -797,6 +822,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
             currentSupplyBoundaryAt = connectedAt;
             socket.on('message', (data, binary) => {
               if (socket !== connection) return;
+              receivedFrameSequence++;
               const receivedAt = clock();
               const frame = diagnostics.received(connection, receivedAt);
               void runState(() => {

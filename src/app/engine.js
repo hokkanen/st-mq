@@ -1621,6 +1621,17 @@ export class Engine {
     return this.recorder.sourceStatus(now);
   }
   status() {
+    // Callback RAM is provisional until the reserved writer commits. Keep the
+    // last complete public view and its original evidence dates during that gap.
+    // Refresh only when a viewer requested it, not after every telemetry write.
+    if (this.store.writePending && !this.store.transactionDepth) {
+      if (!this.statusSettlement) this.statusSettlement = this.store.onWriteSettled(() => {
+        this.statusSettlement(); this.statusSettlement = null;
+        if (!this.suspended) { try { this.status(); } catch { /* First complete tick is still pending. */ } }
+      });
+      if (!this.committedStatus) throw Object.assign(new Error('Waiting for the first controller update to commit.'), { statusCode: 503 });
+      return { ...structuredClone(this.committedStatus), storagePending: true, runtimeTiming: this.runtimeTiming?.() ?? null };
+    }
     const checkTime = this.clock();
     if (!this.latestStatus || Number.isFinite(this.latestStatus.override?.expiresAt) && this.latestStatus.override.expiresAt <= checkTime
       || this.settings.occupancy.mode === 'away' && Date.parse(this.settings.occupancy.returnAt) <= checkTime) {
@@ -1675,6 +1686,7 @@ export class Engine {
       const outlook = assembleOutlook(this.store.getState('provider:market'), this.store.getState('provider:weather'), this.contract(), now);
       Object.assign(result, outlook);
     }
+    if (!this.store.transactionDepth && !this.store.writePending) this.committedStatus = structuredClone(result);
     return result;
   }
 }

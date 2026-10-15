@@ -1,5 +1,6 @@
 import { createMqttAdmission } from './mqtt-admission.js';
 import { createMqttReception } from './mqtt-reception.js';
+import { retainStorageWithdrawal } from './storage-withdrawal.js';
 import { createSourceTimePending } from './source-time-pending.js';
 import { classifySourceTime, sourceTimeAdmission, validateAdmittedSourceTime, observationTimeAdmitted } from '../domain/time-evidence.js';
 import { createHash } from 'node:crypto';
@@ -189,18 +190,21 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     dehumidifierDispatches.get(device)?.cancellation.abort();
     pendingTime.removeWhere(row => row.device === device);
     if (store.runWrite && !store.transactionDepth) {
+      reception.invalidate(device);
       // Withdraw authority immediately. The original outage boundary then joins
       // the same ordered writer queue as later reports from this connection.
-      device.liveSinceConnect = false; device.invalid = true;
-      if (device.temperatureControl) {
-        loseCaravanQualification(device.temperatureGuard.qualification, receivedAt);
-        device.temperatureGuard.qualified = false;
-      }
-      for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal])
-        engine.rememberObservation?.({ ...identity(device), signal: definition.signal, value: null,
-          unit: definition.unit, sourceTime: null, receivedAt, quality: [reason],
-          raw: { usableForControl: false, timeBasis: 'availability-transition',
-            ...(device.roomRouteSignature ? { temperatureRouteSignature: device.roomRouteSignature } : {}) } }, receivedAt);
+      retainStorageWithdrawal(store, device, () => {
+        device.liveSinceConnect = false; device.invalid = true;
+        if (device.temperatureControl) {
+          loseCaravanQualification(device.temperatureGuard.qualification, receivedAt);
+          device.temperatureGuard.qualified = false;
+        }
+        for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal])
+          engine.rememberObservation?.({ ...identity(device), signal: definition.signal, value: null,
+            unit: definition.unit, sourceTime: null, receivedAt, quality: [reason],
+            raw: { usableForControl: false, timeBasis: 'availability-transition',
+              ...(device.roomRouteSignature ? { temperatureRouteSignature: device.roomRouteSignature } : {}) } }, receivedAt);
+      });
       for (const waiter of [...device.waiters]) waiter.finish(fail('state confirmation unavailable'));
       for (const check of [...device.checks]) check.finish('unavailable');
       void write(() => reception.run(() => unavailable(device, reason, receivedAt))).catch(() => {});
@@ -1110,7 +1114,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const operation = { setting, value, origin, identity: device.dehumidifierReport.identity, status: 'publishing', requestedAt: engine.clock() };
     const expiresAt = operation.requestedAt + Math.min(readbackTimeoutMs, 10_000);
     const cancellation = new AbortController(), probe = device.temperatureGuard.probe;
-    const restoration = device.temperatureGuard.restoration;
+    let restoration = device.temperatureGuard.restoration;
     const previousValue = device.dehumidifierState[setting], previousAt = device.dehumidifierReport.fieldTimestamps[setting];
     const timer = setTimeout(() => cancellation.abort(), Math.min(readbackTimeoutMs, 10_000));
     const dispatch = { cancellation, operation, power: device.dehumidifierState.power, powerAt: device.dehumidifierReport.fieldTimestamps.power };
@@ -1118,7 +1122,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     let supersededBeforeDispatch = false;
     dehumidifierDispatches.set(device, dispatch);
     device.dehumidifierOperation = operation;
-    const beforePublish = () => {
+    const validateDispatch = () => {
       const now = engine.clock(), state = device.temperatureGuard;
       if (cancellation.signal.aborted || now >= expiresAt || closed || !canControl()
         || device.dehumidifierOperation !== operation || operation.status !== 'publishing'
@@ -1134,6 +1138,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         || setting === 'power' && device.temperatureControl && state.settings.enabled))
         throw fail('dehumidifier control choice changed before dispatch');
       if (origin === 'location-test' && (caravanStopping || state.probe !== probe || probe?.status !== 'testing'
+        || state.restoration !== restoration
         || !caravanPower(device, now) || qualificationSignature(device, caravanPower(device, now).signature) !== probe.qualificationSignature
         || value === 'on' && caravanCold(device, now)))
         throw fail('dehumidifier power check changed before dispatch');
@@ -1150,23 +1155,37 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           || value === 'on' && (!guard.qualified || !state.demand || !scalar(guard.temperatureC) || caravanCold(device, now)))
           throw fail('dehumidifier temperature demand changed before dispatch');
       }
-      if (['location-test', 'location-restoration'].includes(origin) && state.restoration && now > state.restoration.lastCommandAt) {
-        const obligation = { ...state.restoration, lastCommandAt: now };
-        // Preserve the actual dispatch boundary durably before sending, so
-        // an older report received during the wait cannot discharge recovery.
-        store.transaction(() => store.setState(restorationKey(device), obligation));
-        state.restoration = obligation;
-      }
+      return now;
+    };
+    const beforePublish = () => {
+      const now = validateDispatch();
       if (origin === 'location-test') {
         probe.commandAt = now; probe.lastCommandAt = now;
         probe.phaseEvidence[probe.phase].commandAt = now;
       }
       operation.dispatchedAt = now;
     };
+    const preparePublish = async () => {
+      if (!['location-test', 'location-restoration'].includes(origin) || !restoration) return;
+      await write(() => {
+        const now = validateDispatch();
+        if (now <= restoration.lastCommandAt) return;
+        const previous = restoration, obligation = { ...restoration, lastCommandAt: now };
+        // Commit the command's recovery obligation before publication. A report
+        // that replaces or clears it during this wait revokes dispatch below.
+        store.setState(restorationKey(device), obligation);
+        store.afterCommit(() => {
+          if (device.temperatureGuard.restoration === previous) {
+            device.temperatureGuard.restoration = obligation; restoration = obligation;
+          }
+        });
+      }, { priority: 'control', signal: cancellation.signal,
+        isCurrent: () => !closed && canControl() && !cancellation.signal.aborted });
+    };
     try {
       await publish(device.mqtt.commandTopic, JSON.stringify({ [setting]: value,
         identity: operation.identity, requestedAt: operation.requestedAt, expiresAt }),
-      { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal }, device.broker);
+      { qos: 1, retain: false, noReplay: true, beforePublish, preparePublish, signal: cancellation.signal }, device.broker);
       operation.acknowledgedAt = engine.clock();
       if (operation.status === 'publishing') operation.status = operation.observedAt !== undefined ? 'observed' : 'published';
       if (closed || !canControl() || !device.brokerConnected) {
@@ -1217,7 +1236,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       pendingTime.clear();
       const affected = devices.filter(device => broker === null || device.broker === broker);
       // Every device loses transport authority even if saving one outage fails.
-      for (const device of affected) device.brokerConnected = value;
+      for (const device of affected) { reception.invalidate(device); device.brokerConnected = value; }
       if (broker === null || broker === 'primary') { connected = value; native?.setConnected(value); }
       for (const device of affected) {
         device.subscriptionRefresh = null;

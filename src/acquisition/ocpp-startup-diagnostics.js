@@ -1,5 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
-import { Store } from '../storage/store.js';
+import { Store, isStoreConnection } from '../storage/store.js';
 
 const commitOwners = new WeakMap();
 const phases = new Set(['start-requested', 'listening-observed', 'tcp-observed', 'upgrade-observed',
@@ -16,7 +15,7 @@ export function ocppCommitEffect(store) {
   const effect = callback => store.afterCommit ? store.afterCommit(callback) : callback();
   try {
     const db = Object.getOwnPropertyDescriptor(store, 'db');
-    if (Object.getPrototypeOf(store) === Store.prototype && db?.value instanceof DatabaseSync
+    if (Object.getPrototypeOf(store) === Store.prototype && isStoreConnection(store, db?.value)
       && !Object.getOwnPropertyDescriptor(store, 'afterCommit')) commitOwners.set(effect, store);
   } catch { /* Unknown adapters retain their original effect behavior. */ }
   return effect;

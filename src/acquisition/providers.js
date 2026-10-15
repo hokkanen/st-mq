@@ -14,6 +14,7 @@ import { ElectricityAccumulator } from '../domain/electricity.js';
 import { recordEaseeSessionChecks } from './easee-session-checks.js';
 import { storageFailureCode } from '../storage/write-health.js';
 import { ocppCommitEffect } from './ocpp-startup-diagnostics.js';
+import { retainStorageWithdrawal } from './storage-withdrawal.js';
 
 const MINUTE = 60_000;
 const present = value => typeof value === 'string' && value.trim().length > 0;
@@ -305,8 +306,10 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     const affected = row => interruptions.some(item => matches(item, row));
     // This RAM projection must become unavailable even if the durable gap write
     // fails. The pending boundary is retried before any subsequent integration.
-    if (engine.electricitySnapshot) for (const group of ['charger', 'property'])
-      if (affected(engine.electricitySnapshot[group])) engine.electricitySnapshot[group] = null;
+    retainStorageWithdrawal(store, interruptedDevices, () => {
+      if (engine.electricitySnapshot) for (const group of ['charger', 'property'])
+        if (affected(engine.electricitySnapshot[group])) engine.electricitySnapshot[group] = null;
+    });
     try { await write(() => {
       const before = electricity.checkpoint(), checkpoint = structuredClone(before);
       try { store.transaction(() => {

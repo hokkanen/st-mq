@@ -3,12 +3,20 @@
  * physical command and a broker retransmission can retry the same delivery. */
 export function createMqttReception({ store, engine, admission, devices, meters, requests = null }) {
   let effects = null, accepted = null;
+  const revisions = new WeakMap();
+  let transportRevision = 0;
   const copiedFields = ['readings', 'dehumidifierState', 'dehumidifierReport', 'temperatureGuard'];
   const operationFields = ['coverOperation', 'dehumidifierOperation'];
   const scalarFields = ['connected', 'available', 'lastAt', 'lastPollAt', 'state', 'identity', 'identityPending',
     'observationOrder', 'writeOrder', 'online', 'bridgeOnline', 'liveSinceConnect', 'heartbeatAt', 'invalid',
     'subscriptionStatus', 'subscriptionRefresh', 'lastReceivedAt', 'lastLiveAt', 'lastRetainedAt', 'recordingLocation', 'dehumidifierHistoryAfter'];
   return {
+    // Connection/subscription withdrawal happens outside SQLite admission. It
+    // remains authoritative if an older asynchronous COMMIT later fails.
+    invalidate(device) {
+      revisions.set(device, (revisions.get(device) ?? 0) + 1);
+      transportRevision++;
+    },
     // Admission evidence belongs to the currently executing delivery only. The
     // caller publishes success after its enclosing transaction commits.
     accept() { accepted?.(); },
@@ -20,7 +28,9 @@ export function createMqttReception({ store, engine, admission, devices, meters,
     run(receive, { onAccepted = null } = {}) {
       if (effects) return receive();
       const delivery = admission.checkpoint(), held = engine.ingestionCheckpoint?.();
+      const deliveryRevision = transportRevision;
       const snapshots = devices.map(device => ({ device,
+        revision: revisions.get(device) ?? 0,
         fields: Object.fromEntries(scalarFields.filter(key => Object.hasOwn(device, key)).map(key => [key, device[key]])),
         copied: Object.fromEntries(copiedFields.filter(key => Object.hasOwn(device, key)).map(key => [key, structuredClone(device[key])])),
         operations: operationFields.filter(key => Object.hasOwn(device, key))
@@ -29,13 +39,15 @@ export function createMqttReception({ store, engine, admission, devices, meters,
       }));
       const savedMeters = new Map([...meters].map(([id, meter]) => [id, { meter, state: meter.checkpoint() }]));
       const savedRequests = requests && new Map(requests);
+      let receivedRequests;
       const pending = effects = [];
       const previousAccepted = accepted;
       accepted = onAccepted;
       const rewind = () => {
-        admission.restore(delivery);
+        if (deliveryRevision === transportRevision) admission.restore(delivery);
         if (held) engine.restoreIngestionCheckpoint(held);
         for (const snapshot of snapshots) {
+          if (snapshot.revision !== (revisions.get(snapshot.device) ?? 0)) continue;
           Object.assign(snapshot.device, snapshot.fields, snapshot.copied);
           // Pending transport callbacks own these receipt objects. Replacing
           // one with a clone strands its eventual outcome after any failed
@@ -54,12 +66,25 @@ export function createMqttReception({ store, engine, admission, devices, meters,
         }
         meters.clear();
         for (const [id, { meter, state }] of savedMeters) { meter.restore(state); meters.set(id, meter); }
-        if (requests) { requests.clear(); for (const [id, request] of savedRequests) requests.set(id, request); }
+        if (requests) {
+          for (const [id, request] of receivedRequests ?? requests) {
+            if (!savedRequests.has(id) && requests.get(id) === request) requests.delete(id);
+          }
+          for (const [id, request] of savedRequests) {
+            const snapshot = snapshots.find(row => row.device === request.device);
+            if (!request.retired && snapshot?.revision === (revisions.get(request.device) ?? 0)
+              && !requests.has(id)) requests.set(id, request);
+          }
+        }
       };
       store.afterRollback?.(rewind);
       let result;
-      try { result = store.transaction ? store.transaction(receive) : receive(); }
+      try {
+        result = store.transaction ? store.transaction(receive) : receive();
+        receivedRequests = requests && new Map(requests);
+      }
       catch (error) {
+        receivedRequests = requests && new Map(requests);
         rewind();
         throw error;
       } finally { effects = null; accepted = previousAccepted; }

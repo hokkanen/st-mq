@@ -99,9 +99,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const channels = new Map();
   let equipment = null;
   const cancellation = new AbortController();
-  const controlAllowed = () => canControl() && [...channels.values()].every(channel => !channel.pendingReceipts && !channel.receptionFailed);
+  const controlAllowed = () => canControl() && (store.canDispatch?.() ?? true)
+    && [...channels.values()].every(channel => !channel.pendingReceipts && !channel.receptionFailed);
   const waitingPublications = new Set();
   const resumePublications = () => { for (const resume of [...waitingPublications]) resume(); };
+  const unsubscribeStorage = store.onWriteSettled?.(resumePublications);
   const publicationFailure = (code, message) => Object.assign(new Error(message), { code });
   let stopping = false, stopped = false, disconnectedRecorded = false, lastSnapshotRequestedAt = null, lastGatewayStatusAt = null;
   for (const [id, connection] of [['primary', config.connections.mqtt], ...(routing.ha ? [['ha', routing.ha]] : [])]) {
@@ -211,13 +213,14 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     if (!channel?.connected || stopped) { reject(new Error('MQTT unavailable')); return; }
     if (!canControl()) { reject(new Error('This instance no longer owns device control')); return; }
     const { client, pendingPublications } = channel;
-    const { noReplay = false, beforePublish, signal, recordingContext, recordingDeadlineExpired,
+    const { noReplay = false, beforePublish, preparePublish, signal, recordingContext, recordingDeadlineExpired,
       ...publicationOptions } = options ?? {};
     const generation = channel.generation;
     const readRequest = decoder && topic === `${deviceId}/HP/CMD` && payload === 'GETALL'
       || equipment?.isReadRequest(topic, payload, broker);
     let finished = false, failed = false, outgoingId = null, outgoingRemoved = false, dispatched = false;
-    const recordingPending = () => [...channels.values()].some(row => row.recordingPending > 0);
+    let preparing = false, prepared = false;
+    const recordingPending = () => store.writePending === true || [...channels.values()].some(row => row.recordingPending > 0);
     const recordingFailed = () => [...channels.values()].some(row =>
       [...row.receptionOutcomes.values()].some(outcome => !outcome.successful && outcome.recordingFailed));
     const removeOutgoing = () => {
@@ -261,13 +264,14 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       : new Error('MQTT timeout'), true), settings.readbackTimeoutMs ?? 10_000);
     pendingPublications.add(finish);
     function attempt() {
-      if (finished) return;
+      if (finished || preparing) return;
       if (signal?.aborted) { cancelled(); return; }
       if (!channel.connected || generation !== channel.generation || stopped || !canControl()) {
         finish(new Error('MQTT publication unavailable')); return;
       }
       if (!readRequest && !controlAllowed()) {
-        if ([...channels.values()].some(row => row.receptionFailed)) {
+        prepared = false;
+        if (store.writerFailed || [...channels.values()].some(row => row.receptionFailed)) {
           finish(publicationFailure('MQTT_STORAGE_FAILED', 'Device control is blocked by an unsaved observation')); return;
         }
         // Only callers that can cancel and revalidate their native command may
@@ -278,6 +282,13 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         waitingPublications.add(attempt); return;
       }
       waitingPublications.delete(attempt);
+      if (preparePublish && !prepared) {
+        preparing = true;
+        Promise.resolve().then(preparePublish).then(() => {
+          preparing = false; prepared = true; attempt();
+        }, error => { preparing = false; finish(error); });
+        return;
+      }
       try { beforePublish?.(); } catch (error) { finish(error); return; }
       // MQTT.js defers ID allocation while replaying its outgoing store. Never
       // enqueue a new command during that phase, including after storage waits.
@@ -712,6 +723,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       if (!decoder) return;
       if (topic.startsWith(`${deviceId}/HP/STATUS`) && !packet.retain) lastGatewayStatusAt = receivedAt;
       const decoderCheckpoint = decoder.checkpoint(), held = engine.ingestionCheckpoint?.();
+      const decoderGeneration = channel.generation;
       const controllerCheckpoint = h66.ingestionCheckpoint(), effects = [];
       let accepted = false;
       const accept = () => {
@@ -733,9 +745,9 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         h66.ingest(decoded, { afterCommit: effect => effects.push(effect) });
       };
       const rewind = () => {
-        decoder.restore(decoderCheckpoint);
+        if (decoderGeneration === channel.generation) decoder.restore(decoderCheckpoint);
         if (held) engine.restoreIngestionCheckpoint(held);
-        h66.restoreIngestionCheckpoint(controllerCheckpoint);
+        if (decoderGeneration === channel.generation) h66.restoreIngestionCheckpoint(controllerCheckpoint);
       };
       store.afterRollback?.(rewind);
       try { if (store.transaction) store.transaction(accept); else accept(); }
@@ -922,6 +934,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         catch { report('h66-shutdown-restoration-pending'); }
       }
       stopped = true;
+      unsubscribeStorage?.();
       for (const channel of channels.values()) {
         channel.gate.revoke(); channel.connected = false; channel.ready = false;
         for (const finish of [...channel.pendingPublications]) finish(new Error('MQTT closed'));

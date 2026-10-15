@@ -285,3 +285,71 @@ concurrent synthetic load likewise reported a 1,448 ms main write / 1,449 ms
 heartbeat, while preserving exact replay and original records. Keep these results
 visible instead of relaxing the latency assertions or claiming every stall is
 fixed.
+
+## Dedicated writer responsiveness
+
+Run the same small sequential writes with direct Store transactions and the
+dedicated runtime writer:
+
+```sh
+node scripts/benchmarks/writer-responsiveness.js
+node scripts/benchmarks/writer-responsiveness.js --writes=128 --commit-delay-ms=0
+node scripts/benchmarks/writer-responsiveness.js --modes=worker --writes=12 --commit-delay-ms=250
+```
+
+Each mode creates a fresh synthetic database in its own process. A separate
+parent process probes a loopback HTTP server on the writing process throughout
+the workload. Its responses use only in-memory progress, so the probe measures
+main-loop/network progress independently of a database read. Every write reads
+the preceding counter and atomically saves its successor with an ordered event.
+Both modes yield between completed operations to avoid creating an unrelated
+microtask-starvation comparison. The fixture drains HTTP probes before its final
+integrity and complete journal verification scans.
+
+The default fixture injects a 250 ms delay immediately before native COMMIT in
+the isolated child connection. A test-only preload inherited by its worker
+installs the delay; no production delay hook or environment setting exists.
+The actual FULL synchronous commit still executes. This models a blocked native
+COMMIT, **not measured fsync latency**. Zero delay removes that injection.
+`--source-root=` can select another source checkout with its own dependencies;
+only fresh synthetic files are opened. `--modes=direct` supports a source tree
+without the dedicated writer entry point.
+
+Measured on 2026-10-15, Linux x64, AMD Ryzen 5 1600 and Node 26.8.2:
+
+| Synthetic workload | Direct Store | Dedicated writer |
+| --- | ---: | ---: |
+| 12 writes, injected 250 ms COMMIT: elapsed | 3.085 s | 3.100 s |
+| Same workload: maximum independent HTTP latency | 768.3 ms | 4.6 ms |
+| Same workload: maximum heartbeat interval, 10 ms requested | 510.0 ms | 11.6 ms |
+| Same workload: HTTP responses while a write was pending | 0 | 269 |
+| Same workload: maximum measured native COMMIT, including injection | 258.8 ms | 254.7 ms |
+| 128 writes, no injected delay: elapsed | 406.2 ms | 520.8 ms |
+| Same uninjected workload: maximum independent HTTP latency | 14.0 ms | 2.9 ms |
+
+Both comparisons passed exact counter/event ordering, one journal commit per
+logical write, complete journal verification and `PRAGMA integrity_check`. The
+maximum native-COMMIT summaries include synthetic initialization and warmup;
+HTTP/heartbeat/elapsed workload measurements exclude initialization and final
+verification. Queue peak is sampled by the heartbeat, so direct synchronous work
+can finish before a sample; a zero sampled peak does not prove no writer activity.
+HTTP request/response delay can span more than one direct commit as network
+callbacks wait for an event-loop opportunity.
+
+The injected comparison demonstrates responsiveness during a committed write,
+with essentially unchanged durable throughput. The uninjected comparison shows
+the messaging cost: these tiny writes took about 115 ms longer in aggregate.
+These are bounded development-host samples, not throughput or latency guarantees.
+Callback CPU, synchronous statement requests, main-thread reads, competing
+workers and installed storage still need their own measurements.
+
+Saved installed monitoring before this change showed small native commits taking
+roughly 2.7–6 seconds, including an episode with about 5 ms of journal sealing.
+A contemporaneous main-thread sample was waiting in `fsync`. Those observations
+identify the native durability boundary as the dominant delay in those episodes;
+they do not isolate the responsible file, checkpoint, filesystem or storage
+device. The controlled pressure trace above separately established WAL `fsync`
+stalls on the development host, including with automatic checkpoints disabled.
+Moving ordinary runtime commits to the worker addresses the demonstrated
+event-loop blocking mechanism. It does not prove that the installed physical
+I/O latency, queue throughput or durability-dependent command delay is resolved.

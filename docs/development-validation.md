@@ -1209,3 +1209,17 @@ deterministic replay and original-history preservation with smaller data.
 Browser assertions should identify current semantic keys and user interactions;
 when an intended UI change invalidates a historical expectation, update the
 fixture without weakening the behavioral check.
+
+## Dedicated runtime writer
+
+`test/storage-writer-worker.test.js` uses real file-backed writer threads to check
+dependent reads, savepoints, committed external reads, callback-once semantics,
+lock admission, cancellation, failed commits, lost replies and joined shutdown.
+Its held-boundary cases delay dispatch rather than simulate physical storage.
+`test/acquisition-worker-settlement.test.js` covers transport withdrawal and
+rollback across asynchronous durability. The synthetic
+[writer benchmark](sqlite-storage-benchmarks.md#dedicated-writer-responsiveness)
+separately delays native COMMIT and probes HTTP from another process. Neither
+fixture qualifies installed hardware or physical actuation. Runtime integration
+needs the full relevant acquisition, charging, recovery, pairing and shutdown
+suites on the developer runtime and pinned add-on Node before release.

@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Move ordinary runtime SQLite admission, journal sealing and durable commits
+  to a dedicated writer thread so slow storage can leave networking and timers
+  responsive. Preserve committed reads, ordered callbacks, rollback, shutdown
+  and command fencing. Storage throughput and device latency still depend on
+  the underlying filesystem and hardware.
+
 - Cancel an unsent dehumidifier protection Off when fresh warm recovery evidence
   supersedes it, preserving the native baseline, later cold protection and any
   earlier command whose delivery is still uncertain.

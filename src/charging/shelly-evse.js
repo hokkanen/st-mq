@@ -156,7 +156,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     && discovered && profileSupported && service?.id === config.serviceId && nativeServiceAvailable()
     && !eventOverflow && !state.permissionOverflow
     && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
-  const ready = () => controlReady && observationServiceReady() && storagePending === 0 && sourcePending.size === 0;
+  const ready = () => controlReady && observationServiceReady() && storagePending === 0 && sourcePending.size === 0
+    && (store.canDispatch?.() ?? true);
   const currentReady = () => ready() && currentControlReady;
   function waitForInputAdmission({ deadlineAt = clock() + RPC_TIMEOUT_MS, signal } = {}) {
     if (!Number.isSafeInteger(deadlineAt)) return Promise.reject(fail('invalid-evse-command'));
@@ -175,7 +176,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       const check = () => {
         if (closed || !connected || epoch !== generation || signal?.aborted || clock() >= deadlineAt
           || !observationServiceReady() || error) { finish(false); return; }
-        if (storagePending === 0 && sourcePending.size === 0) finish(true);
+        if (store.writerFailed) { finish(false); return; }
+        if (storagePending === 0 && sourcePending.size === 0 && (store.canDispatch?.() ?? true)) finish(true);
       };
       admissionWaiters.add(check);
       signal?.addEventListener('abort', cancelled, { once: true });
@@ -256,7 +258,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       remainingAdmissionMs -= Math.max(performance.now() - started, clock() - startedAt);
       if (!admitted || remainingAdmissionMs <= 0) throw fail('evse-control-unavailable');
     };
-    if (mayWait && (storagePending || sourcePending.size)) await settleInput();
+    if (mayWait && (storagePending || sourcePending.size || store.writePending)) await settleInput();
     if (!connected || !admitted || closed || epoch !== generation
       || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-control-unavailable');
     if (pending.size >= 16) throw fail('evse-request-limit');
@@ -269,7 +271,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       || params.role === 'start_charging' && typeof params.value !== 'boolean')) throw fail('invalid-evse-command');
     const id = randomUUID();
     await beforePublish();
-    if (mayWait && (storagePending || sourcePending.size)) await settleInput();
+    if (mayWait && (storagePending || sourcePending.size || store.writePending)) await settleInput();
     if (!connected || !admitted || closed || epoch !== generation
       || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-command-revoked');
     return new Promise((resolve, reject) => {
@@ -532,11 +534,17 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   }
   function preserveAdmissionState(requests = false) {
     const before = copy(state), savedAdmission = admission.checkpoint(), savedReadAt = readAt, savedLiveAt = lastLiveAt;
+    const epoch = generation;
     const maps = [fieldRevisions, fieldGenerations, notificationBaselines, notificationPending, ...(requests ? [pending] : [])]
       .map(map => [map, new Map(map)]);
     store.afterRollback?.(() => {
-      state = before; readAt = savedReadAt; lastLiveAt = savedLiveAt; admission.restore(savedAdmission);
-      for (const [map, saved] of maps) { map.clear(); for (const [key, value] of saved) map.set(key, value); }
+      state = before;
+      // Disconnect/reset is immediate transport evidence. A failed older save
+      // restores durable fields without reviving that connection's admission.
+      if (epoch === generation) {
+        readAt = savedReadAt; lastLiveAt = savedLiveAt; admission.restore(savedAdmission);
+        for (const [map, saved] of maps) { map.clear(); for (const [key, value] of saved) map.set(key, value); }
+      }
       engine.recorder?.reload?.();
     });
   }
@@ -820,6 +828,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     publishStatus();
   }
   client.on('connect', connect); client.on('message', receive); client.on('offline', disconnect); client.on('close', disconnect);
+  const unsubscribeStorage = store.onWriteSettled?.(() => { for (const settled of [...admissionWaiters]) settled(); });
   const timer = setInterval(() => {
     void refresh().then(completedRead => engine.charging?.reconcileShellyObservation?.(completedRead)).catch(() => {});
   }, 5000); timer.unref?.();
@@ -972,7 +981,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       return { healthy: online && Boolean(live('phase_info')), currents: field ? config.phaseMap.map(i => field.value[['phase_a', 'phase_b', 'phase_c'][i]].current) : null,
         times: [field?.measuredAt, field?.measuredAt, field?.measuredAt], confirmedAt: field?.receivedAt ?? null }; },
     createController: options => createShellyController({ ...options, adapter }),
-    close() { closed = true; cancellation.abort(); clearInterval(timer); disconnect(); client.removeListener('connect', connect); client.removeListener('message', receive); client.removeListener('offline', disconnect); client.removeListener('close', disconnect); },
+    close() { closed = true; cancellation.abort(); unsubscribeStorage?.(); clearInterval(timer); disconnect(); client.removeListener('connect', connect); client.removeListener('message', receive); client.removeListener('offline', disconnect); client.removeListener('close', disconnect); },
   };
   return adapter;
 }
