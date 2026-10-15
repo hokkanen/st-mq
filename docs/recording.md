@@ -1670,6 +1670,10 @@ after a failed request, the status identifies the dates of any retained results;
 failed requests offer Retry. The section uses its own cancellable request cache
 and the current chart API's unreduced comparison calculations, with ordinary
 short/live and long/historical refresh intervals.
+When recovery publishes a new history selection, comparisons invalidate cached
+and pending results for every period, including historical dates. The selected
+period and controls remain in place; late replies from the previous selection
+cannot replace the refreshed results.
 **Heating**, **Charging** and **Fireplace** summary boxes
 align in three columns when space allows and stack on narrow screens.
 Heating starts on **Home** and **Model estimate**, restoring a saved **Timing cost**

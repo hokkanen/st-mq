@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Refresh historical energy cost comparisons when recovery publishes a new
+  history selection, discarding cached results and late replies from the previous
+  selection while preserving the chosen period and controls.
+
 - Seek chronological recording-coverage boundaries through an immutable index,
   preserving recovery and historical timestamps without loading all retained
   coverage into each chart request. Physical schema 31 retains the current

@@ -63,7 +63,7 @@ export function createComparisonRange({ api, document = globalThis.document, now
       }
       initialized = true; updateControls();
     }
-    const nextRevision = JSON.stringify([status.input, status.contract, replicaSnapshotKey(status),
+    const nextRevision = JSON.stringify([status.input, status.contract, replicaSnapshotKey(status), status.recording?.historySelection,
       status.fireplace?.revision, status.fireplace?.rebuild?.status, status.learning?.adaptive?.model?.trainedAt]);
     if (force || revision !== undefined && revision !== nextRevision) { loader.invalidate(); force = true; }
     revision = nextRevision;

@@ -39,6 +39,8 @@ function fixture() {
     focus() { document.activeElement = this; }
   }
   const document = Object.assign(new Element(), { defaultView: new Element() });
+  document.defaultView.requestAnimationFrame = callback => setImmediate(callback);
+  document.defaultView.cancelAnimationFrame = frame => clearImmediate(frame);
   document.createElement = tag => Object.assign(new Element(tag), { ownerDocument: document });
   document.createDocumentFragment = () => document.createElement('fragment');
   document.body = document.createElement('body');
@@ -67,6 +69,18 @@ function reply(request, valueEuro = 1) {
   request.resolve({ now: NOW, range: { startDate, endDate,
     from: Date.parse(`${startDate}T00:00:00+03:00`), to: Date.parse(`${endDate}T00:00:00+03:00`) + 86400000 },
   heatingBenefit: { status: 'estimated', valueEuro, counts: { assessed: 1, completed: 1 } } });
+}
+
+function historySelectionStatus(historySelection, historyRevision = 4) {
+  return { now: NOW, input: 'providers', fireplace: { revision: 2 },
+    recording: { historySelection, historyRevision, sourceReportRevision: 7 } };
+}
+
+function comparisonControlState(f) {
+  return { start: f.start.value, end: f.end.value, endMin: f.end.min, singleDay: f.end.dataset.singleDay,
+    presets: ['week', 'month', 'year', 'previous-year'].map(period => f.get(`comparison-period-${period}`).getAttribute('aria-pressed')),
+    expanded: f.get('comparison-toggle').getAttribute('aria-expanded'), contentHidden: f.get('comparison-content').hidden,
+    focused: f.document.activeElement?.id };
 }
 
 test('comparison shortcuts use Finnish calendar dates, inclusive weeks and complete previous periods', () => {
@@ -175,6 +189,59 @@ test('source corrections and explicit refresh invalidate an identical pending pe
   reply(f.requests[1], 7); reply(f.requests[0], 9); await Promise.all([first, correction]);
   assert.match(f.root.textContent, /€5.00/); assert.doesNotMatch(f.root.textContent, /€7.00|€9.00/);
 });
+
+for (const [period, nextHistoryRevision] of [['year', 4], ['previous-year', 5]]) {
+  test(`history selection replacement refetches a cached ${period} comparison without changing its controls`, async t => {
+    const f = fixture(); t.after(() => f.controller.close());
+    const first = f.controller.refresh(historySelectionStatus(0)); await tick(); reply(f.requests[0]); await first;
+    f.preset(period); await tick(); reply(f.requests[1], 2); await tick();
+    const originalPath = f.requests[1].path;
+    const dates = comparisonPeriod(period, NOW);
+    assert.equal(f.form.dataset.startDate, dates.startDate); assert.equal(f.form.dataset.endDate, dates.endDate);
+    await f.controller.refresh(historySelectionStatus(0));
+    assert.equal(f.requests.length, 2, 'An unchanged historical selection reuses its settled cache');
+    f.get('comparison-toggle').emit('click'); f.end.focus();
+    const controls = comparisonControlState(f);
+
+    const replacement = f.controller.refresh(historySelectionStatus(1, nextHistoryRevision)); await tick();
+    assert.equal(f.requests.length, 3, 'A new history selection must bypass the historical-period cache');
+    assert.equal(f.requests[2].path, originalPath, 'The selected dates and resolution remain unchanged');
+    assert.deepEqual(comparisonControlState(f), controls);
+    assert.match(f.root.textContent, /€2.00/, 'Existing cards remain mounted while the new selection loads');
+    reply(f.requests[2], 5); await replacement;
+    assert.match(f.root.textContent, /€5.00/); assert.doesNotMatch(f.root.textContent, /€2.00/);
+    assert.deepEqual(comparisonControlState(f), controls);
+    assert.equal(f.form.dataset.startDate, dates.startDate); assert.equal(f.form.dataset.endDate, dates.endDate);
+    await f.controller.refresh(historySelectionStatus(1, nextHistoryRevision));
+    assert.equal(f.requests.length, 3, 'The replacement result becomes the new reusable cache');
+  });
+
+  test(`history selection replacement cancels a held ${period} query and rejects its late reply`, async t => {
+    const f = fixture(); t.after(() => f.controller.close());
+    const first = f.controller.refresh(historySelectionStatus(0)); await tick(); reply(f.requests[0]); await first;
+    f.preset(period); await tick();
+    const oldRequest = f.requests[1];
+    const oldPoll = f.controller.refresh(historySelectionStatus(0)); await tick();
+    assert.equal(f.requests.length, 2, 'An ordinary status poll shares the held historical query');
+    f.get('comparison-toggle').emit('click'); f.start.focus();
+    const controls = comparisonControlState(f);
+
+    const replacement = f.controller.refresh(historySelectionStatus(1, nextHistoryRevision)); await tick();
+    assert.equal(oldRequest.signal.aborted, true, 'The query from the retired history selection is cancelled');
+    assert.equal(f.requests.length, 3, 'The new history selection starts a fresh query immediately');
+    assert.equal(f.requests[2].path, oldRequest.path);
+    assert.deepEqual(comparisonControlState(f), controls);
+    reply(f.requests[2], 5); await replacement;
+    reply(oldRequest, 99); await oldPoll; await tick();
+    assert.match(f.root.textContent, /€5.00/); assert.doesNotMatch(f.root.textContent, /€99.00/);
+    assert.equal(f.form.dataset.state, 'ready'); assert.equal(f.root.getAttribute('aria-busy'), 'false');
+    assert.deepEqual(comparisonControlState(f), controls);
+    const dates = comparisonPeriod(period, NOW);
+    assert.equal(f.form.dataset.startDate, dates.startDate); assert.equal(f.form.dataset.endDate, dates.endDate);
+    await f.controller.refresh(historySelectionStatus(1, nextHistoryRevision));
+    assert.equal(f.requests.length, 3, 'A late retired reply cannot replace or invalidate the new cached result');
+  });
+}
 
 test('failed period requests identify retained results and retry replaces them only after success', async t => {
   const f = fixture(); t.after(() => f.controller.close());
