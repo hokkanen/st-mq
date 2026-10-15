@@ -89,8 +89,10 @@ are different evidence. Software fixtures do not commission an installation or
 prove energy savings. Home learning retains explicit model uncertainty; see
 [model design and limits](docs/learning-model-design.md).
 
-The planned SONOFF floor controller has no supported firmware/control interface
-yet, so floor activation and commissioning remain unavailable. H66 restoration
+The [floor controller](docs/floor-preheat.md) uses the separate
+[Sonoff firmware](https://github.com/hokkanen/sonoff-4chpro-mqtt) and its bounded
+MQTT lease protocol. Control requires physical commissioning and fresh GPIO
+feedback; that feedback does not measure contacts, valves or water flow. H66 restoration
 requires a reachable application and gateway; no device-local expiry is assumed.
 Garage pipe estimates require installation-specific validation.
 

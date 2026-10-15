@@ -496,6 +496,14 @@ permission to act. See [the configuration guide](docs/configuration.md).
   successful result. Preserve valid zero/false values. Reconnection, held values
   and cached republishes do not manufacture fresh observations or independent
   learning evidence. Corrections cannot invent data for actual acquisition gaps.
+- For the commissioned Home floor controller, fresh correlated GPIO output
+  readback may confirm the commanded override and its release. The owner
+  explicitly approved this evidence boundary on 2026-10-15. Label it as GPIO
+  feedback throughout controls and history; it does not measure relay-contact
+  continuity, valve movement, water flow or delivered heat. Physical wiring and
+  safe thermostat restoration must still be commissioned before heating control
+  is enabled. Individual timed valve overrides remain separate from the pooled
+  automatic treatment. See [Home floor preheating](docs/floor-preheat.md).
 - On 2026-10-14 the owner approved retaining a successful Caravan electrical
   association across restart and paired handover, bound to actual appliance,
   meter and configured wiring. Historical proof is separate from live qualified,

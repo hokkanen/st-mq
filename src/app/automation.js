@@ -15,7 +15,8 @@ export function heatingAutomationIdentity(config, feature) {
   return digest({ input: config.input, broker, native: config.deviceId ?? config.h66?.deviceId ?? null,
     tariff: (config.connections?.equipment?.devices ?? []).filter(device => device.enabled !== false && device.controlsHeat)
       .map(device => ({ id: device.id, signature: equipmentSignature(device) })).sort((a, b) => a.id.localeCompare(b.id)),
-    floor: config.floorPreheat?.enabled ? config.floorPreheat.devices : null });
+    floor: config.floorPreheat?.enabled
+      ? { device: config.floorPreheat.deviceMac, circuits: config.floorPreheat.devices } : null });
 }
 
 export function validateHeatingAutomationState(saved) {

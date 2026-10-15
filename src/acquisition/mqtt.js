@@ -7,7 +7,7 @@ import { heatingErrorCode, heatingErrorMessage } from '../control/mqtt.js';
 import { createH66Decoder, H66_REGISTERS } from '../domain/telemetry.js';
 import { createH66Controller, H66_WRITABLE_REGISTERS } from '../control/h66.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
-import { createFloorOverride, floorOverrideConfiguration } from '../control/floor-override.js';
+import { createFloorOverride, floorOverrideConfiguration, FLOOR_MQTT_TOPICS } from '../control/floor-override.js';
 import { createGarageAdapter } from '../garage/adapter.js';
 import { createGarageSender, validateGarageSenderSnapshot } from '../garage/sender.js';
 import { validateGarageAdapterSnapshot } from '../garage/contract.js';
@@ -214,7 +214,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     if (!channel?.connected || stopped) { reject(new Error('MQTT unavailable')); return; }
     if (!canControl()) { reject(new Error('This instance no longer owns device control')); return; }
     const { client, pendingPublications } = channel;
-    const { noReplay = false, beforePublish, preparePublish, signal, recordingContext, recordingDeadlineExpired,
+    const { noReplay = false, beforePublish, beforeWrite, preparePublish, signal, recordingContext, recordingDeadlineExpired,
       ...publicationOptions } = options ?? {};
     const generation = channel.generation;
     const readRequest = decoder && topic === `${deviceId}/HP/CMD` && payload === 'GETALL'
@@ -299,7 +299,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       if (noReplay) client.on?.('packetsend', capturePacket);
       const previousId = noReplay ? client.getLastMessageId?.() : null;
       dispatched = true;
-      try { client.publish(topic, payload, { ...publicationOptions, signal }, finish); } catch { finish(new Error('MQTT publication failed')); }
+      try { client.publish(topic, payload, { ...publicationOptions, signal, beforeWrite }, finish); } catch { finish(new Error('MQTT publication failed')); }
       if (noReplay) {
         const allocatedId = client.getLastMessageId?.();
         if (Number.isInteger(allocatedId) && allocatedId !== previousId) {
@@ -338,7 +338,18 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         || !channel.connected || stopping || stopped || generation !== channel.generation ? new Error('MQTT subscription unavailable') : null));
     } catch { finish(new Error('MQTT subscription failed')); }
   })));
-  const floorOverride = createFloorOverride({ store, settings: config.floorPreheat ?? floorOverrideConfiguration() });
+  const floorOverride = createFloorOverride({ store, settings: config.floorPreheat ?? floorOverrideConfiguration(),
+    // Input admission can change while MQTT's outgoing store holds the packet.
+    publish: (topic, payload, options) => publish(topic, payload, { ...options,
+      beforeWrite: () => controlAllowed() && options.beforeWrite?.() !== false }),
+    canControl, clock: () => engine.clock(), monotonicClock, brokerIdentity: primaryIdentity,
+    onObservation: observation => engine.ingest(observation),
+    onLearningMode: change => engine.recordFloorLearningMode?.(change) });
+  if (floorOverride.topics.length) topicGroups.push({ id: 'sonoff-floor', label: 'Home floor valves · SONOFF', source: 'SONOFF', broker: 'primary', topics: [
+    { role: 'Lease commands and fresh status requests', topic: FLOOR_MQTT_TOPICS.command, direction: 'publish' },
+    { role: 'GPIO output feedback and lease replies', topic: FLOOR_MQTT_TOPICS.state, direction: 'subscribe' },
+    { role: 'Native availability', topic: FLOOR_MQTT_TOPICS.availability, direction: 'subscribe' },
+  ] });
   engine.floorOverride = floorOverride;
   if (engine.executor) engine.executor.floorOverride = floorOverride;
   equipment = equipmentSettings ? createEquipmentCapture({ monotonicClock, engine, store, settings: equipmentSettings, publish, canControl,
@@ -700,7 +711,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         if (chargingTesla.receive(topic, payload, packet, receivedAt, onVehicleAccepted)) return true;
       }
       if (isPrimary) {
-        if (floorOverride.ingest(topic, payload, packet, receivedAt)) return true;
+        if (floorOverride.ingest(topic, payload, packet, receivedAt, receivedMonotonicAt)) return true;
         if (garage?.receive(topic, payload, packet, receivedAt)) return true;
         if (garageSender?.receive(topic, payload, packet, receivedAt)) return true;
       }

@@ -16,7 +16,7 @@ import { recordHeatPumpConfiguration } from './chart-heat-pump.js';
 import { Recorder } from '../storage/recorder.js';
 import { createWriteScope } from '../storage/write-scope.js';
 import { VoltageEstimator, voltageTelemetryAt, validateVoltageState } from '../storage/voltage.js';
-import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal as replayCommittedLearning, recordLearningContext, learningCheckpointDigest } from './committed-learning.js';
+import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal as replayCommittedLearning, recordLearningContext, latestLearningControlContext, learningCheckpointDigest } from './committed-learning.js';
 import { observationTimeAdmitted } from '../domain/time-evidence.js';
 import { addFireplace, removeFireplace, fireplaceView, fireplaceRevision, FireplaceRebuildManager } from './fireplace.js';
 import { fireplaceLearningContext, withFireplaceInputs } from './fireplace-inputs.js';
@@ -791,11 +791,33 @@ export class Engine {
   preheatValveStatus(now = this.clock()) {
     return this.floorOverride?.status(now) ?? floorOverrideStatus(this.config.floorPreheat, floorOverrideObligation(this.store));
   }
+  recordFloorLearningMode({ mode, at }) {
+    if (!['on', 'off', 'partial', 'unknown'].includes(mode) || !Number.isSafeInteger(at))
+      throw new TypeError('Floor learning evidence requires a dated output mode.');
+    const previous = latestLearningControlContext(this.store, this.config.input);
+    const now = Math.floor(this.clock());
+    // A delayed receipt cannot rewrite a later committed control context. Keep
+    // its original GPIO observation and establish unknown at current admission.
+    const late = at > now || previous && at < previous.at;
+    const context = previous?.context ?? {
+      phase: this.applied.phase ?? 'normal', roomBoostC: this.applied.roomBoostC ?? 0,
+      targetC: this.settings.comfort.targetC ?? this.checkpoint?.baselineC ?? null,
+      regime: this.settings.occupancy.mode === 'occupied' ? 'occupied' : 'away',
+      episodeId: this.cycles.active()?.id ?? null, treatmentKey: 'native',
+      dhwrActive: this.executor.status().pulseUntil > now,
+    };
+    return recordLearningContext(this.store, this.config.input,
+      { ...context, floorOverrideMode: late ? 'unknown' : mode },
+      late ? Math.max(now, previous?.at ?? now) : at, { config: this.control, seed: this.checkpoint });
+  }
   floorOverrideMode(now = this.clock()) {
     const status = this.preheatValveStatus(now);
-    if (status.active) return 'on';
+    if (status.active && status.mode !== 'manual') return 'on';
     if (!status.enabled && !status.restorationPending && (!status.devices.length || status.configured === false)) return 'off';
     if (!status.devices.every(device => device.available) || status.restorationPending) return 'unknown';
+    // Individual valve edits are not the pooled, heat-pump-coupled treatment,
+    // even when all four outputs happen to be selected.
+    if (status.mode === 'manual') return 'partial';
     const values = status.devices.flatMap(device => device.channels ?? []).map(channel => channel.output);
     return values.length === 4 && values.every(value => value === false) ? 'off' : 'partial';
   }
@@ -813,6 +835,24 @@ export class Engine {
   async switchEquipment(input) {
     if (!this.equipmentTests) throw new Error('MQTT equipment controls are unavailable.');
     await this.equipmentTests.setSwitch(input);
+    return this.status();
+  }
+  async controlFloor(input) {
+    const fields = ['channel', 'enabled', 'durationSeconds', 'requestId', 'scope'];
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || Object.keys(input).some(key => !fields.includes(key))
+      || !fields.every(key => Object.hasOwn(input, key))
+      || !Number.isInteger(input.channel) || input.channel < 1 || input.channel > 4
+      || typeof input.enabled !== 'boolean'
+      || !Number.isInteger(input.durationSeconds) || input.durationSeconds < 60 || input.durationSeconds > 900
+      || typeof input.requestId !== 'string' || !/^[A-Za-z0-9_-]{1,40}$/.test(input.requestId)
+      || typeof input.scope !== 'string' || input.scope.length < 1 || input.scope.length > 128)
+      throw new TypeError('Choose a floor circuit, a bounded override time and its current control scope.');
+    if (!this.canControl() || !['mqtt', 'providers'].includes(this.config.input))
+      throw Object.assign(new Error('Floor controls require the active master and a live device connection.'), { statusCode: 409 });
+    if (!this.floorOverride?.manual)
+      throw Object.assign(new Error('Floor controls are unavailable. Check the floor controller connection.'), { statusCode: 409 });
+    await this.floorOverride.manual({ ...input, now: this.clock() });
     return this.status();
   }
   async coverEquipment(input) {
@@ -1549,7 +1589,8 @@ export class Engine {
         ? this.executor.restoreManual({ now, reason: 'manual-settings-ended-or-reset', decision, automationEnabled: this.automationEnabled('home') })
         : holdManualSettings ? this.executor.maintainPause(now, override)
           : override && (priorExecutor.legacyOutstanding || ['preheat', 'reduction', 'recovery'].includes(priorExecutor.phase)
-            || Object.keys(h66.obligations ?? {}).length || this.floorOverride?.status(now).outstanding)
+            || Object.keys(h66.obligations ?? {}).length || this.floorOverride?.status(now).outstanding
+              && this.floorOverride?.status(now).mode !== 'manual')
             ? this.executor.restore({ now, reason: 'heating-paused', preserveManualDhwr: true })
             : this.executor.execute(decision,{automationEnabled:this.automationEnabled('home'),now});
     let execution;

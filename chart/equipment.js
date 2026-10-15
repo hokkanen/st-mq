@@ -4,9 +4,10 @@ import { setStatusDetail } from './status-details.js';
 import { temperatureReadingStatus } from './temperature-status.js';
 import { vehicleObservationAdmissionStatus } from './vehicle-feed-status.js';
 import { TEMPERATURE_SENSORS } from '../src/domain/indoor-sensors.js';
-import { FLOOR_PREHEAT_DEVICE, FLOOR_PREHEAT_CIRCUITS } from '../src/domain/floor-circuits.js';
+import { FLOOR_PREHEAT_DEVICE } from '../src/domain/floor-circuits.js';
 import { createCaravanContents, dehumidifierCommandAllowed, temperatureControlAllowed, temperatureControlValueAllowed } from './caravan.js';
 import { EQUIPMENT_COMMAND_ERRORS } from '../src/domain/equipment-command-errors.js';
+import { createFloorControls, floorChannels, floorPreheatView, floorManualAllowed, floorCommandError, floorRequestId } from './floor-preheat.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
@@ -33,15 +34,22 @@ export function equipmentDevices(status = {}) {
     devices.set(device.id, { ...device, area: device.area });
   }
   const floor = status.preheatValves ?? {};
+  const display = floorPreheatView(status), channels = floorChannels(status);
+  const floorDevice = floor.devices?.find(device => device.group === FLOOR_PREHEAT_DEVICE.group);
   const floorId = `floor-override:${FLOOR_PREHEAT_DEVICE.group}`;
   devices.set(floorId, { ...FLOOR_PREHEAT_DEVICE, id: floorId, area: 'home', kind: 'floor_override',
-    enabled: false, commissioned: false, available: false, topics: [], readings: {},
+    enabled: true, commissioned: floor.commissioned === true, available: channels.every(channel => channel.usable),
+    topics: floor.topics ?? [], mqttStatus: floor.mqttStatus, lastReportAt: floorDevice?.at,
+    recorded: isReadOnlyReplica(status), readOnly: isReadOnlyReplica(status),
+    readings: Object.fromEntries(channels.map(channel => [`floor_groundfloor_${channel.id}_active`, {
+      label: `${channel.id} · ${channel.label} · ${channel.lengthM} m`, value: channel.output === null ? null : Number(channel.output),
+      unit: 'state', observedAt: channel.at, stale: !channel.usable, quality: channel.usable ? [] : ['floor-feedback-unavailable'],
+    }])),
     controls: { switch: false, tariff: false },
-    connectionState: floor.restorationPending ? { label: 'Release pending', state: 'attention' }
-      : { label: floor.integrationSupported === false ? 'Integration unavailable' : 'Status unavailable', state: 'pending' },
+    connectionState: { label: display.label, state: display.state },
     recent: floor.restorationPending ? 'Previous override release is unconfirmed' : '1 device · 4 floor circuits',
-    connectionDetail: FLOOR_PREHEAT_CIRCUITS.map(circuit =>
-      `${circuit.id}: ${circuit.label} · ${circuit.lengthM} m`).join('; ') + '. Lengths describe pipe inside the floor.',
+    connectionDetail: display.detail,
+    packetDetail: 'Custom lease requests and live GPIO feedback use the primary broker. Retained availability does not confirm output state.',
   });
   return [...devices.values()];
 }
@@ -165,8 +173,9 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
     actionKind = path.endsWith('/recheck') ? 'recheck' : path.endsWith('/switch') ? 'control'
       : path.endsWith('/dehumidifier') ? 'dehumidifier' : path.endsWith('/dehumidifier/temperature-control') ? 'dehumidifier-temperature-control'
         : path.endsWith('/dehumidifier/location-check') ? 'dehumidifier-location-check'
-        : path.endsWith('/cover') ? 'cover' : 'test';
-    actionDeviceId = body.deviceId ?? status.equipmentTests?.active?.deviceId ?? null;
+        : path.endsWith('/cover') ? 'cover' : path.endsWith('/floor') ? 'floor' : 'test';
+    actionDeviceId = path.endsWith('/floor') ? `floor-override:${FLOOR_PREHEAT_DEVICE.group}`
+      : body.deviceId ?? status.equipmentTests?.active?.deviceId ?? null;
     messageAt = status.now ?? Date.now();
     busy = true; error = false; message = path.endsWith('/recheck') ? 'Checking configured connections…' : 'Applying request…';
     beforeRequest(); emit();
@@ -176,6 +185,7 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
     } catch (failure) {
       error = true;
       message = path.endsWith('/recheck') ? 'Could not recheck devices. Existing readings are retained.'
+        : path.endsWith('/floor') ? floorCommandError(failure?.code)
         : Object.hasOwn(EQUIPMENT_COMMAND_ERRORS, failure?.code) ? EQUIPMENT_COMMAND_ERRORS[failure.code]
           : 'Could not confirm the control request. Check the reported device state before trying again.';
       return false;
@@ -210,6 +220,12 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
       const device = status?.equipment?.devices?.find(device => device.id === deviceId);
       if (!equipmentControlAllowed(status, device, busy) || typeof on !== 'boolean') return Promise.resolve(false);
       return send('/api/equipment/switch', { deviceId, on }, 'Request completed. The reported state is shown above.');
+    },
+    floor(channel, enabled) {
+      if (!floorManualAllowed(status, channel, enabled, busy)) return Promise.resolve(false);
+      const requestId = floorRequestId();
+      return send('/api/equipment/floor', { channel, enabled, durationSeconds: 900, requestId,
+        scope: status.preheatValves.commandScope }, `Channel ${channel}: ${enabled ? 'override requested' : 'release requested'}. Check its reported output.`);
     },
     cover(deviceId, action) {
       const device = status?.equipment?.devices?.find(device => device.id === deviceId);
@@ -408,7 +424,7 @@ function vehicleConnection({ reception = {}, enabled = true, label, source, deta
 
 /** Device purpose stays separate from changing connection-check results. */
 export function equipmentConnectionIntroduction(device) {
-  if (device.kind === 'floor_override') return 'One controller is planned for the four ground-floor heating circuits. A supported integration must be implemented and verified before configuration can enable preheating, including contact readback and automatic release.';
+  if (device.kind === 'floor_override') return 'One Sonoff controls four ground-floor thermostat overrides through timed MQTT leases. Fresh GPIO readback confirms the reported output; valve position, water flow and contact continuity are not measured.';
   if (device.connectionDetail) return device.connectionDetail;
   if (device.controls?.tariff || device.controlsHeat || device.role === 'heat_savings')
     return 'Heating requests and relay readback use MQTT. Reported relay state confirms whether the requested mode was applied.';
@@ -576,7 +592,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
     : row.id === status.dhwr?.feedback?.deviceId || row.id === 'connection:dhwr:home' ? 2
       : row.controls?.tariff || row.controlsHeat || row.role === 'heat_savings' || row.id === 'connection:heating:home' ? 3 : 4;
   return rows.sort((a, b) => order(a) - order(b)).map(row => {
-    if (!(status.readOnly === true || status.readView?.source === 'verified-snapshot') || row.kind === 'floor_override') return row;
+    if (!(status.readOnly === true || status.readView?.source === 'verified-snapshot')) return row;
     return { ...row, recorded: true, readOnly: true, available: false,
       ...(row.id === status.dhwr?.feedback?.deviceId ? { lastReportAt: status.dhwr.feedback.state?.observedAt } : {}),
       connectionDetail: 'Recorded device reports from the master. Live monitoring and device commands remain on the master.',
@@ -726,6 +742,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         coverControls.append(coverButtons, coverAccess, coverHelp, coverResult);
         const caravan = device.id === 'caravan' ? createCaravanContents({ document, actions, blocked,
           readingsFor: equipmentReadingRows, summaryFor: equipmentConnectionSummary }) : null;
+        const floor = device.kind === 'floor_override' ? createFloorControls({ document,
+          onAction: (channel, enabled) => actions.floor(channel, enabled), blocked }) : null;
         const energyTitle = make('h5', 'Energy', 'caravan-energy-title');
         heading.append(title, metadata); health.append(source, recent);
         if (staticReadings) {
@@ -734,12 +752,12 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
           summary.append(heading, preview, health);
           if (caravan) body.append(caravan.air, energyTitle);
           body.append(list, empty, controls, coverControls);
-          if (device.kind === 'floor_override') body.append(floorSetupLink());
+          if (floor) body.append(floor.root, floorSetupLink());
           if (caravan) body.append(caravan.dehumidifier);
           section.append(summary, body);
         }
         node = { section, staticReadings, title, metadata, preview, source, recent, list, empty, controls, buttons, on, off, help, result,
-          coverControls, coverButtons, coverActions, coverHelp, coverResult, coverAccess, caravan, energyTitle, rows: new Map() }; readingNodes.set(device.id, node);
+          coverControls, coverButtons, coverActions, coverHelp, coverResult, coverAccess, caravan, floor, energyTitle, rows: new Map() }; readingNodes.set(device.id, node);
       }
       if (root.children[index] !== node.section) {
         // Moving a details element preserves its open state. Keep keyboard focus
@@ -759,6 +777,12 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       node.preview.textContent = rows.slice(0, 2).map(row => `${rows.length > 1 || device.kind === 'heat_pump' ? `${row.label}: ` : ''}${row.value}${row.qualifier ? ` (${row.qualifier})` : ''}`).join(' · ');
       node.preview.hidden = !rows.length;
       node.empty.hidden = rows.length > 0; node.list.hidden = !rows.length;
+      if (node.floor) {
+        node.floor.update(snapshot); node.list.hidden = true; node.empty.hidden = true;
+        const channels = floorChannels(status), known = channels.every(channel => channel.usable), count = channels.filter(channel => channel.output === true).length;
+        node.preview.textContent = known ? count ? `${count} of 4 overrides on` : '4 overrides off' : 'Output feedback unavailable';
+        node.preview.hidden = false;
+      }
       if (node.caravan) {
         const garageDevices = status.equipment?.devices?.filter(device => device.area === 'garage' && device.enabled !== false) ?? [];
         const air = garageDevices.find(device => device.id === 'blu_ht'), dehumidifier = garageDevices.find(device => device.id === 'caravan_dehumidifier');
@@ -782,7 +806,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         }
         cells.term.textContent = row.label; cells.value.className = row.stale ? 'stale' : '';
         const relayNote = device.kind === 'floor_override'
-          ? ' Contact readback only; valve movement, water flow and thermostat restoration require physical verification.'
+          ? ' GPIO output readback only; contact continuity, valve movement, water flow and thermostat restoration require physical verification.'
           : device.kind === 'heat_pump' && /_active$/.test(row.signal)
           ? ' Power enabled describes the relay, not compressor activity.' : '';
         setStatusDetail(cells.value, { label: row.value, title: `${device.label ?? 'Device'} · ${row.label}`,
@@ -998,6 +1022,18 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     if (document.defaultView?.location?.hash !== `#${id}`)
       document.defaultView?.history?.pushState(null, '', `#${id}`);
     openSetup(id);
+  });
+  for (const link of document.querySelectorAll('[data-open-floor-controls], [data-open-floor-model]')) link.addEventListener('click', event => {
+    if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    const id = link.getAttribute('href').slice(1);
+    if (document.defaultView?.location?.hash !== `#${id}`)
+      document.defaultView?.history?.pushState(null, '', `#${id}`);
+    openSetup(id);
+    if (link.hasAttribute('data-open-floor-controls')) {
+      const floor = readingNodes.get(`floor-override:${FLOOR_PREHEAT_DEVICE.group}`)?.section;
+      if (floor) { floor.open = true; floor.querySelector('summary')?.focus({ preventScroll: true }); floor.scrollIntoView({ block: 'start' }); }
+    }
   });
   return { update: status => actions.update(status), refreshControls: () => current && render(current), actions };
 }

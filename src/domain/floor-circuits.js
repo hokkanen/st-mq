@@ -1,5 +1,5 @@
-// Installation plan only. This descriptor does not establish connectivity,
-// electrical state, firmware compatibility or permission to operate relays.
+// Circuit labels do not establish connectivity, GPIO state, physical relay
+// operation, firmware compatibility or permission to operate outputs.
 export const FLOOR_PREHEAT_DEVICE = Object.freeze({
   group: 'groundfloor', label: 'Ground-floor circuits', model: 'SONOFF 4CH PRO R3', source: 'SONOFF',
 });

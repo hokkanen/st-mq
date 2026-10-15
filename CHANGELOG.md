@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Recheck received-input storage before floor-valve MQTT dispatch so a newly
+  pending observation cancels an unsent lease command.
+
 - Complete an accepted Shelly charging-period pause while a replacement plan is
   still calculating, retaining native instruction checks and confirmed idle
   current fallback.
@@ -19,6 +22,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 - Restore Shelly **Use automatic** and **Charge now** with the dedicated writer,
   preserving saved intent and native-input checks before any charger command.
+
+- Integrate the four-output floor controller with bounded local leases, confirmed
+  GPIO feedback and durable release recovery. Add individual timed circuit
+  controls to Home and rebuild floor setup around connection, commissioning,
+  circuit status and thermal assumptions. Physical commissioning remains required;
+  output readback does not measure valve movement or water flow.
 
 - Avoid unnecessary writer-lock attempts while scanning recovery history when
   no temporary entry needs removal. Actual deletions retain normal transaction

@@ -193,6 +193,11 @@ export function recordLearningContext(store, input, context, at, { config = {}, 
 
 /** Seek time within each retained range instead of sorting the inherited
  * journal. A known newer context also bounds searches in older source epochs. */
+export function latestLearningControlContext(store, input) {
+  const row = learningControlContexts(store, input, { latest: true })[0];
+  return row ? { at: row.at, context: JSON.parse(row.payload).value.controlContext } : null;
+}
+
 function learningControlContexts(store, input, { from = Number.MIN_SAFE_INTEGER, to = Number.MAX_SAFE_INTEGER, latest = false } = {}) {
   const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
   const ranges = [{ source_epoch: epoch, after_id: 0, through_id: Number.MAX_SAFE_INTEGER },

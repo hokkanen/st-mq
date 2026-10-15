@@ -390,9 +390,10 @@ between humidity sensors does not block recording. Unknown, stale or unsupported
 state remains a gap. These Caravan measurements are excluded from Home learning.
 See the [power-check and recording contract](caravan-dehumidifier.md#automatic-power-and-caravan-location-check).
 Actual tariff relay feedback is recorded on changes, separately from requested
-heating control. All four floor override outputs likewise retain exact changes
-when supported contact feedback is available. The planned single ground-floor
-device is awaiting integration; its four connections remain unknown. See
+heating control. All four floor override outputs retain exact GPIO state and
+quality changes from the separately configured floor adapter. Its fixed MQTT
+lease protocol does not emulate a Shelly device; unknown feedback stays unknown.
+GPIO readback does not measure relay-contact continuity, valve position or flow. See
 [Home floor preheating](floor-preheat.md). The
 [garage adapter](garage-adapter.md) records interpreted indoor temperature and
 compressor frequency adaptively, compressor/defrost states on exact changes and

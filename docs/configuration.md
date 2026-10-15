@@ -450,6 +450,24 @@ readback. Network loss does not expire the sender's protection or the
 heat-pump controller's selected target. The BLU H&T test source has no
 two-probe protection. See [Garage heating](garage.md).
 
+## Home floor controller
+
+`controller.floor_preheat` configures the device identity, commissioning,
+pooled enablement and bounded lease timings. Keep `device_mac` in private
+configuration; the current board profile uses fixed MQTT lease topics on the
+shared broker. The public flags remain disabled and uncommissioned. An identity
+permits observation; commissioned wiring and fresh GPIO feedback are required
+for individual timed controls, with `enabled` additionally permitting pooled
+Home preheat. Neither a configuration flag nor GPIO readback proves valve movement
+or water flow.
+
+**Home → Sensors & Equipment** provides administrator controls for each circuit.
+A manual treatment lasts at most 15 minutes; adding a circuit preserves the
+existing board deadline. Those commands never rewrite configuration or raise
+ROOM. **Home floor preheating** in Connections & configuration describes setup,
+current readiness and the separate firmware repository. See the
+[floor contract](floor-preheat.md) for ownership, restoration and commissioning.
+
 ## Charging defaults and dashboard overrides
 
 `easee.local_ocpp.server_url` is an optional connection override. When omitted or

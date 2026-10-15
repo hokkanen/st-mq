@@ -236,7 +236,7 @@
                         <div><dt>Recovery</dt><dd>Release tariff reduction and restore normal ROOM demand. A timed hold can retain reduced hot-water settings and restrict auxiliary heat; indoor-average protection can release the auxiliary restriction early. Saved settings and normal circulation eligibility return at the hold deadline.</dd></div>
                       </dl>
                       <p id="home-policy-durations" class="heating-policy-note">Configured duration limits are unavailable.</p>
-                      <p class="heating-policy-note">Manual heating override requests the same equipment actions as the corresponding automatic phase, bypassing savings and forecast selection. Reduced heating also applies the available hot-water and auxiliary restrictions and holds back automatic circulation. In Automatic, Normal and Reduced are reassessed on the next controller update. Pause holds them until you select Automatic or the scheduled resume time. Preheat ends at the floor-circulation lease deadline, or sooner if you select Normal or Reduced; the controller also restores ROOM at that deadline. Equipment availability, native limits and restoration checks still apply.</p>
+                      <p class="heating-policy-note">Manual heating override requests the same equipment actions as the corresponding automatic phase, bypassing savings and forecast selection. Reduced heating also applies the available hot-water and auxiliary restrictions and holds back automatic circulation. In Automatic, Normal and Reduced are reassessed on the next controller update. Pause holds them until you select Automatic or the scheduled resume time. Preheat ends at its fixed deadline, or sooner if you select Normal or Reduced; the controller also restores ROOM at that deadline. Equipment availability, native limits and restoration checks still apply.</p>
                       <div class="heating-policy-decision" role="status"><strong id="home-policy-current-title">Waiting for a decision</strong><p id="home-policy-current-detail"></p><p id="home-policy-economics" class="heating-policy-note"></p></div>
                       <details id="home-policy-details" class="equipment-fold heating-policy-details">
                         <summary>Decision thresholds &amp; safeguards</summary>
@@ -450,41 +450,57 @@
                   <details id="floor-preheat-details" class="section-fold controller-fold floor-preheat-panel">
                     <summary><span>Home floor preheating</span><small id="floor-preheat-state" class="equipment-device-status" data-state="pending">Status unavailable</small></summary>
                     <div class="section-fold-body">
-                      <dl class="equipment-setup-hardware floor-preheat-hardware">
-                        <div><dt>Ground-floor controller</dt><dd><strong>SONOFF 4CH PRO R3</strong><span>1 device · 4 floor circuits</span></dd></div>
+                      <div class="floor-preheat-intro">
+                        <div><h4>Ground-floor thermostat overrides</h4><p>SONOFF 4CH PRO R3 · four independent outputs</p></div>
+                        <a href="#home-equipment-details" data-open-floor-controls>Open valve controls →</a>
+                      </div>
+                      <p id="floor-preheat-status" class="floor-preheat-status" role="status">Waiting for floor control status.</p>
+                      <dl class="floor-preheat-facts">
+                        <div><dt>Device feedback</dt><dd id="floor-preheat-connection">Awaiting live feedback</dd></div>
+                        <div><dt>Commissioning</dt><dd id="floor-preheat-commissioning-status">Unknown</dd></div>
+                        <div><dt>Automatic preheating</dt><dd id="floor-preheat-automatic">Unknown</dd></div>
+                        <div><dt>Override deadline</dt><dd id="floor-preheat-deadline">No confirmed active lease</dd></div>
                       </dl>
                       <table class="floor-preheat-circuits">
-                        <caption>Ground-floor circuits <span>Pipe length within each floor circuit</span></caption>
-                        <thead><tr><th scope="col">Channel</th><th scope="col">Area</th><th scope="col">Pipe length</th></tr></thead>
+                        <caption>Circuits &amp; reported outputs <span>Pipe lengths identify each circuit. Output feedback does not measure valve position or flow.</span></caption>
+                        <thead><tr><th scope="col">Channel</th><th scope="col">Circuit</th><th scope="col">GPIO readback</th></tr></thead>
                         <tbody>
-                          <tr><th scope="row"><span class="floor-channel">1</span></th><td>Living</td><td>106 m</td></tr>
-                          <tr><th scope="row"><span class="floor-channel">2</span></th><td>Living</td><td>62 m</td></tr>
-                          <tr><th scope="row"><span class="floor-channel">3</span></th><td>Storage</td><td>38 m</td></tr>
-                          <tr><th scope="row"><span class="floor-channel">4</span></th><td>Storage</td><td>80 m</td></tr>
+                          <tr><th scope="row"><span class="floor-channel">1</span></th><td>Living <small>106 m</small></td><td id="floor-preheat-output-1">Unknown</td></tr>
+                          <tr><th scope="row"><span class="floor-channel">2</span></th><td>Living <small>62 m</small></td><td id="floor-preheat-output-2">Unknown</td></tr>
+                          <tr><th scope="row"><span class="floor-channel">3</span></th><td>Storage <small>38 m</small></td><td id="floor-preheat-output-3">Unknown</td></tr>
+                          <tr><th scope="row"><span class="floor-channel">4</span></th><td>Storage <small>80 m</small></td><td id="floor-preheat-output-4">Unknown</td></tr>
                         </tbody>
                       </table>
-                      <p id="floor-preheat-status" class="muted" role="status">Waiting for floor control status.</p>
-                      <dl class="floor-preheat-facts">
-                        <div><dt>Commissioning</dt><dd id="floor-preheat-commissioning-status">Status unavailable</dd></div>
-                      </dl>
                       <details id="floor-operation-details" class="equipment-fold">
-                        <summary>How preheating works</summary>
-                        <p class="muted">The four circuits are planned to preheat together. Each contact overrides its circuit’s thermostat; releasing it must return heating to that thermostat. Contact feedback alone cannot confirm valve movement or water flow.</p>
+                        <summary><span>Overrides &amp; release</span><small>Manual and automatic</small></summary>
+                        <p class="muted">Automatic preheating requests all four circuits together. Individual manual controls in Home request a timed thermostat override without changing the heat-pump ROOM setting. Manual control and pooled preheating cannot own the same outputs at once.</p>
+                        <p class="muted"><strong>Override off</strong> means the device reports its output released. The installed wiring must allow ordinary thermostat heating in that state. GPIO readback cannot verify contact continuity, valve movement or water flow.</p>
                         <p id="floor-preheat-renewal" class="muted">Release timing must be verified during setup.</p>
-                        <p class="floor-preheat-limit">The device must release overrides when their time expires, even without a connection. Restoring the heat-pump ROOM setting also requires the controller and its heat-pump connection.</p>
+                        <p class="floor-preheat-limit">Device-local expiry bounds the override if the host is lost. ST-MQ still needs fresh OFF feedback to confirm release. Restoring a preheat ROOM increase also requires the controller and its heat-pump connection.</p>
                       </details>
                       <details id="floor-commissioning-details" class="equipment-fold">
                         <summary><span>Installation &amp; setup</span><small>Before enabling control</small></summary>
                         <ol class="floor-commissioning-steps">
-                          <li><h4>Connect and identify the circuits</h4><p>Match channels 1–4 to the circuits above. Verify that every released contact restores ordinary thermostat control, including after loss of device power.</p></li>
-                          <li><h4>Verify device communication</h4><p>Set up a supported device connection with feedback for all four channels and automatic release on expiry. Preheating remains unavailable until these functions are verified.</p></li>
-                          <li><h4>Check release and recovery</h4><p>Once the integration is available, test the planned deadline, connection loss and restart. Verify actual thermostat operation after release, then supervise a short preheat and recovery.</p></li>
+                          <li><h4>Prepare the Sonoff</h4><p>Use the <a href="https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/compatibility.md" target="_blank" rel="noopener noreferrer">supported board guide</a> and <a href="https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/operations.md" target="_blank" rel="noopener noreferrer">firmware installation instructions</a>. This integration requires the custom lease firmware. Connect it to the primary MQTT broker and record its exact device identity in <code>controller.floor_preheat</code>.</p></li>
+                          <li><h4>Verify each circuit and its release path</h4><p>Match channels 1–4 to the circuits above. Check that OFF and loss of device power leave ordinary thermostat heating possible. Test local expiry, connection loss, restart and output feedback. Unwired bench tests verify the controller only; they do not commission the heating installation.</p></li>
+                          <li><h4>Commission, then enable</h4><p>Record the installation checks privately before setting <code>commissioned</code> to true and applying the reviewed configuration. Individual manual controls then become available with fresh device feedback. Set <code>enabled</code> to true separately to allow pooled floor preheating, and supervise the complete preheat and recovery.</p></li>
                         </ol>
+                        <p class="floor-preheat-limit">Use the custom lease connection for monitoring. Native Sonoff commands, including ordinary status queries, release an active lease as maintenance.</p>
+                        <dl class="floor-preheat-facts floor-preheat-device-facts">
+                          <div><dt>Reported firmware</dt><dd id="floor-preheat-firmware">Not reported</dd></div>
+                          <div><dt>Latest output report</dt><dd id="floor-preheat-reported">No report received</dd></div>
+                        </dl>
+                        <p>Firmware and full instructions: <a href="https://github.com/hokkanen/sonoff-4chpro-mqtt" target="_blank" rel="noopener noreferrer">sonoff-4chpro-mqtt</a> · <a href="https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/protocol.md" target="_blank" rel="noopener noreferrer">MQTT protocol</a></p>
                         <p class="family-access-note">Admin access is required to download the guide.</p>
                         <div class="floor-preheat-downloads">
                           <button id="floor-preheat-guide" data-admin-only class="secondary-button" type="button">Download setup guide (.md)</button>
                         </div>
                         <p id="floor-download-message" class="muted" role="status"></p>
+                      </details>
+                      <details id="floor-thermal-details" class="equipment-fold">
+                        <summary><span>Heat storage &amp; planning</span><small>Configured assumptions</small></summary>
+                        <p class="muted">Pipe lengths identify the installed circuits; they do not establish stored heat or savings. Selected floor capacity, heat allocation, ground loss and release rate belong to <code>controller.floor_thermal_priors</code>. These remain explicit assumptions until supported by complete heating and recovery evidence.</p>
+                        <p class="muted">The floor model and permission to operate the Sonoff are separate. Review the current assumptions and their evidence in <a href="#model-coefficients-details" data-open-floor-model>Home → Learning → Model coefficients</a>. Configuration changes use <a href="#controls-details" data-open-configuration>Apply reviewed configuration</a>.</p>
                       </details>
                     </div>
                   </details>

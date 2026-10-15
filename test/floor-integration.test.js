@@ -41,7 +41,7 @@ test('Paused decisions never invoke floor leases or device transports', async t 
   assert.deepEqual(f.calls, []);
 });
 
-test('active pooled preheat leases before ROOM and preserves one owner through changed planning deadlines', async t => {
+test('executor forwards pooled preheat before ROOM and retains its owner', async t => {
   const f = executorFixture(t);
   await f.executor.execute(f.decision, { automationEnabled: true, now: NOW });
   assert.equal(f.calls[0].kind, 'lease');
@@ -101,7 +101,7 @@ test('learning context distinguishes inactive, confirmed, partial and missing fl
   assert.equal(mode({ ...observed, devices: channels([null, null, null, null]).map(device => ({ ...device, available: false })) }), 'unknown');
 });
 
-async function mqttFixture(t, { authority = true, saved = null } = {}) {
+async function mqttFixture(t, { authority = true, saved = null, floorSettings = {} } = {}) {
   const client = new EventEmitter(), publications = [], subscriptions = [], store = memoryStore();
   if (saved) store.setState('floor-override:v1', saved);
   client.connected = true; client._storeProcessing = false;
@@ -109,7 +109,7 @@ async function mqttFixture(t, { authority = true, saved = null } = {}) {
   client.subscribe = (topic, options, done) => { subscriptions.push(topic); done(null, [{ topic, qos: 1 }]); };
   client.publish = (topic, payload, options, done) => { publications.push({ topic, payload, options }); done(); };
   client.end = (force, options, done) => done();
-  const config = { input: 'mqtt', deviceId: null, h66: {}, floorPreheat: floorOverrideConfiguration(),
+  const config = { input: 'mqtt', deviceId: null, h66: {}, floorPreheat: floorOverrideConfiguration(floorSettings),
     connections: { mqtt: { address: 'mqtt://fixture.invalid', user: 'fixture-user' } } };
   const engine = { clock: () => NOW, ingest() {}, rememberObservation() {}, executor: {} };
   const capture = await startMqtt({ engine, store, config, connect: () => client, canControl: () => authority });
@@ -117,14 +117,14 @@ async function mqttFixture(t, { authority = true, saved = null } = {}) {
   return { client, capture, engine, config, publications, subscriptions, store };
 }
 
-test('MQTT connection cannot subscribe to or activate the unimplemented SONOFF integration', async t => {
+test('MQTT connection cannot activate unconfigured SONOFF equipment', async t => {
   for (const authority of [true, false]) {
     const f = await mqttFixture(t, { authority });
     assert.equal(f.capture.floorOverride, f.engine.floorOverride);
     assert.equal(f.subscriptions.some(topic => topic.includes('/floor/')), false);
     assert.equal(f.capture.floorOverride.status().devices.length, 1);
-    assert.equal(f.capture.floorOverride.status().integrationSupported, false);
-    await assert.rejects(f.capture.floorOverride.lease({ owner: 'fixture-owner', until: NOW + 60_000 }), { code: 'FLOOR_UNSUPPORTED' });
+    assert.equal(f.capture.floorOverride.status().integrationSupported, true);
+    await assert.rejects(f.capture.floorOverride.lease({ owner: 'fixture-owner', until: NOW + 60_000 }), { code: 'FLOOR_UNAVAILABLE' });
     assert.equal(f.publications.length, 0);
   }
 });
@@ -169,4 +169,25 @@ test('Engine guards heating against an unresolved floor release before MQTT acqu
     { automationEnabled: true, now: NOW });
   assert.equal(result.restorationPending, true);
   assert.deepEqual(publications, []);
+});
+
+test('configured MQTT floor route subscribes to native protocol and admits fresh GPIO without commissioning', async t => {
+  const device = '02:00:00:00:00:01';
+  const f = await mqttFixture(t, { floorSettings: { device_mac: device } });
+  assert(f.subscriptions.includes('stat/sonoff4chpro/LEASE'));
+  assert(f.subscriptions.includes('tele/sonoff4chpro/LWT'));
+  const request = JSON.parse(f.publications.find(row => row.topic === 'cmnd/sonoff4chpro/LEASE').payload);
+  assert.equal(request.op, 'get');
+  f.client.emit('message', 'stat/sonoff4chpro/LEASE', Buffer.from(JSON.stringify({
+    v: 1, build: 'sonoff4chpro-lease-v1', sketch_md5: 'd'.repeat(32), kind: 'reply', id: request.id, op: 'get',
+    accepted: true, duplicate: false, code: 'ok', device, generation: 'a'.repeat(32), connected: true,
+    active: false, mask: 0, gpio_mask: 0, gpio_match: true, state_evidence: 'gpio_output_readback', board_ok: true,
+    now_ms: 1000, lease_until_ms: 0, end_ms: 0, owner: '', treatment: 0, seq: 0, highwater: 0,
+    reason: 'connected', max_lease_ms: 900000,
+  })), { retain: false });
+  await flush(); await flush();
+  const status = f.capture.floorOverride.status();
+  assert.equal(status.devices[0].available, true); assert.equal(status.manualAvailable, false);
+  assert.equal(status.reason, 'uncommissioned'); assert(status.devices[0].channels.every(row => row.output === false));
+  assert.equal(status.topics.length, 3); assert.equal(status.mqttStatus.subscriptionStatus, 'subscribed');
 });

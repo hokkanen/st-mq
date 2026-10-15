@@ -808,10 +808,9 @@ unobserved chart options or mix exact contacts into the adaptive table.
   plus availability/quality transitions; unchanged reports extend coverage.
 - Equipment states, alarms, settings and runtime/meter counters: every change,
   without a numeric tolerance. This includes the four individual floor override
-  outputs and actual tariff relay feedback. Contact readback proves an electrical
-  output, not valve position, water flow or successful heat reduction.
-  The planned ground-floor device has connections 1–4; its floor series remain
-  unknown until a supported integration provides contact feedback. See
+  outputs and actual tariff relay feedback. Floor series 1–4 describe reported
+  GPIO output logic, not relay-contact continuity, valve position, water flow or
+  successful heat reduction. They remain unknown without fresh device feedback. See
   [Home floor preheating](floor-preheat.md).
 - Hot-water circulation feedback: initial state and exact state, quality or
   availability changes. Unchanged ON/OFF reports extend compact coverage;
@@ -1873,8 +1872,8 @@ The pump's interpreted indoor reading is available beside the front/rear probes
 and independently in the explorer's **All series** mode. It may incorporate its external feed
 and is not relabeled as a physical room sensor. Hot-water circulation requests
 and recorded electrical or switch feedback have separate rows; neither proves
-water flow. Floor override contacts describe electrical readback, not valve
-position or heating delivery. External feed failures and recoveries remain
+water flow. Floor override series describe GPIO output readback, not physical
+contact continuity, valve position or heating delivery. External feed failures and recoveries remain
 diagnostics outside adaptive measurements. These views add no heat estimates
 or learning inputs.
 Chart projections do not replace retained evidence or backfill history from

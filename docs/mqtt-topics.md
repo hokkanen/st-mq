@@ -99,3 +99,14 @@ last confirmed state has no age expiry. Outages make current state unknown;
 a live source-online report and snapshot can recover it without changing the
 original source clock or erasing the gap. Door observations do not drive an
 automatic Garage heat model.
+
+## Home floor controller
+
+The commissioned floor adapter uses the fixed Sonoff board profile on the shared
+MQTT broker: `cmnd/sonoff4chpro/LEASE` for non-retained requests,
+`stat/sonoff4chpro/LEASE` for replies and state, and `tele/sonoff4chpro/LWT` for
+availability context. Exact private device identity and correlated current
+feedback are required; Online alone grants no authority. Use custom lease `get`
+for monitoring because native maintenance commands terminate the active lease.
+See [floor setup and evidence](floor-preheat.md) and the separate
+[firmware protocol](https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/protocol.md).

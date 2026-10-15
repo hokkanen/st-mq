@@ -17,6 +17,7 @@ import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
 import { electricityForecastView } from './electricity-forecast-view.js';
 import { recoveryFailure } from '../recovery/errors.js';
 import { EQUIPMENT_COMMAND_ERRORS } from '../domain/equipment-command-errors.js';
+import { FLOOR_COMMAND_ERRORS } from '../domain/floor-command-errors.js';
 import { ReplicaCheckpointMismatchError, REPLICA_CHECKPOINT_MISMATCH, createReplicaReadRefusalReporter } from './replica-errors.js';
 
 function authorized(req, token) {
@@ -541,6 +542,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return await mutate(async (current, input) => { await current.recheckEquipment(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/switch')
           return await mutate(async (current, input) => { await current.switchEquipment(input); return json(200, status()); });
+        if (req.method === 'POST' && url.pathname === '/api/equipment/floor')
+          return await mutate(async (current, input) => { await current.controlFloor(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/cover')
           return await mutate(async (current, input) => { await current.coverEquipment(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/dehumidifier')
@@ -732,6 +735,14 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
               : 'Web access could not be updated. Refresh its status before retrying.' });
         if (Object.hasOwn(EQUIPMENT_COMMAND_ERRORS, error?.code))
           return json(409, { code: error.code, error: EQUIPMENT_COMMAND_ERRORS[error.code] });
+        if (req.method === 'POST' && /^\/api\/equipment\/floor(?:\?|$)/.test(req.url)) {
+          if (Object.hasOwn(FLOOR_COMMAND_ERRORS, error?.code))
+            return json(error.code === 'FLOOR_COMMAND' ? 400 : 409, { code: error.code, error: FLOOR_COMMAND_ERRORS[error.code] });
+          return json(error instanceof TypeError || error instanceof SyntaxError ? 400 : error.statusCode ?? 503,
+            { error: error instanceof TypeError || error instanceof SyntaxError
+              ? 'Choose a floor circuit, a bounded override time and its current control scope.'
+              : 'The floor request could not be confirmed. Check the reported outputs before trying again.' });
+        }
         if (req.method === 'GET' && /^\/api\/(?:status|recording-health)(?:\?|$)/.test(req.url)
           && error instanceof ReplicaCheckpointMismatchError) {
           reportReplicaReadRefusal(error, /^\/api\/status(?:\?|$)/.test(req.url) ? 'status' : 'recording-health');

@@ -1,9 +1,16 @@
 # Home floor preheating
 
-The planned ground-floor circuit controller is **one SONOFF 4CH PRO R3** with
-four connections. The dashboard presents this device in **Data & settings →
-Connections & configuration → Home floor preheating**, directly above
-**Garage freeze protection**.
+The floor controller uses one **SONOFF 4CH PRO R3** running the fixed board
+profile from the separate [firmware repository](https://github.com/hokkanen/sonoff-4chpro-mqtt).
+That repository owns firmware, installation, the versioned MQTT protocol and
+hardware qualification. This application owns circuit assignment, manual controls,
+pooled preheating, recording and durable restoration.
+
+**Home → Sensors & Equipment** shows each circuit's reported output and individual
+timed controls. **Data & settings → Connections & configuration → Home floor
+preheating**, above Garage freeze protection, shows connection readiness,
+commissioning, circuit feedback and the setup guides. MQTT diagnostics describe
+the same connection; they do not provide a second control path.
 
 | Connection | Floor circuit | Pipe length |
 | --- | --- | --- |
@@ -12,25 +19,48 @@ Connections & configuration → Home floor preheating**, directly above
 | 3 | Storage | 38 m |
 | 4 | Storage | 80 m |
 
-Lengths identify the pipe laid inside each floor circuit. They are installation
-labels, not measured flow, heated floor area or validated thermal capacity.
-The four circuits are intended to form one pooled preheating treatment; all four
-must have fresh ON confirmation before an override can be considered active.
-Other ground-floor loops retain their existing fixed valve settings.
+Lengths label the pipe in each circuit; they do not measure flow, floor area or
+thermal capacity. Other loops retain their existing fixed valve settings.
+Automatic floor preheat is one pooled treatment requiring fresh ON readback for
+all four selected outputs.
 
-The dashboard reports **Integration unavailable**. The hardware selection and circuit mapping do
-not establish a supported firmware, control interface or local expiry mechanism.
-Floor control remains unavailable until those capabilities are implemented and
-verified. Configuration currently rejects enabling floor control or marking it
-commissioned. There is no device script to download or install from this
-application for this setup.
+## Evidence and ownership
 
-The contacts must override the original thermostats only while preheating is
-active. **OFF must release the override and leave ordinary thermostat-controlled
-heating electrically possible.** Reported relay states establish electrical
-contact feedback, not valve travel, water flow or delivered heat. The dashboard
-therefore describes a confirmed OFF contact as **Override off**; unavailable
-feedback remains unknown.
+The firmware reports **GPIO output readback**, not relay-contact continuity,
+valve position, water flow or delivered heat. The owner explicitly approved using
+this feedback to confirm the commanded override after physical commissioning on
+2026-10-15. ON and OFF labels always describe reported output logic; missing,
+retained, stale or invalid feedback remains unknown. A broker acknowledgement or
+an accepted request alone is insufficient. GPIO agreement is not proof that a
+relay contact moved or that ordinary thermostat operation was physically restored.
+
+The wiring must make **OFF release the override while leaving ordinary thermostat
+heating electrically possible**, including loss of device power. Verify that
+independently during commissioning. The controller cannot detect a mechanically
+stuck contact from GPIO readback.
+
+Only the active master may send control requests. Observing outputs, configuring
+thermal priors, retained Online, copying a database or elapsed time grants no
+permission. Configuration owns device identity and commissioning; dashboard
+commands never rewrite them.
+
+## Individual timed controls
+
+An administrator can select **Override on** or **Release** for each circuit in
+Home. Each new manual treatment lasts at most 15 minutes. Selecting another
+circuit changes the mask within that same treatment and retains its original
+end; retries and repeated clicks never extend it. Releasing one circuit preserves
+other selected circuits. Releasing the final circuit ends the entire lease.
+The device protocol has one board lease, so independent deadlines are not offered.
+
+Individual overrides do not raise the heat-pump ROOM setting or enable Home
+Automatic. They are unavailable during a pooled preheat lease and prevent a new
+pooled treatment until released. Ordinary Normal/Pause maintenance preserves the
+manual deadline; an explicit Home Normal/Reduced selection, shutdown or handover
+releases the applicable override. A native ROOM edit supersedes the coupled
+manual Preheat treatment; it does not edit an independent circuit override. Partial
+selection, including all four selected manually, is excluded from pooled thermal
+learning and evidence. Local expiry still applies if the host disappears.
 
 ## Thermal model and control settings
 
@@ -64,8 +94,9 @@ assumption.
 
 Thermal configuration and relay permission are independent. Keep
 `controller.floor_preheat.enabled` and `controller.floor_preheat.commissioned`
-false until a supported integration is available and the physical checks below
-pass. Configuring the slab does not activate any output or establish usable
+false until the installed firmware and physical checks below pass.
+Commissioning permits supervised individual controls; enabling adds pooled
+preheating to the Home heat-control path. Configuring the slab does not activate any output or establish usable
 storage from room temperature alone.
 
 Normal DHWR scheduling continues during preheat. During tariff reduction it is
@@ -80,81 +111,99 @@ pause price control; this selects Normal heating and restores the captured nativ
 settings. A timed circulation run can then be started if needed. The deadline is not extended by ongoing estimated
 thermal recovery.
 
-## Required control and restoration behavior
+## Protocol and restoration
 
-The integration must provide a bounded device-local lease for all four contacts.
-The planned automatic renewal interval is **5 minutes**, with each lease expiring
-after at most **15 minutes** or at the planned preheat end, whichever comes first.
-Renewal must maintain the existing ON state without cycling contacts. Loss of the
-host, connection or control process must not leave an indefinite override.
-A supported implementation must demonstrate this behavior on the installed
-firmware; these timing settings alone do not provide it.
+Use [MQTT lease protocol v1](https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/protocol.md):
 
-Manual **Preheat** uses one fixed lease, including while Home is paused. Repeated
-requests must not extend its original deadline or stack the ROOM increase. Normal
-or Reduced can end it sooner. ROOM restoration starts at the same deadline even
-if floor release cannot be confirmed. Local contact expiry cannot restore the
-heat pump's ROOM setting through a failed host or H66 connection.
+| Purpose | Fixed topic |
+| --- | --- |
+| Requests | `cmnd/sonoff4chpro/LEASE` |
+| Replies and state | `stat/sonoff4chpro/LEASE` |
+| Availability context | `tele/sonoff4chpro/LWT` |
 
-Before any activation, the integration must persist the release obligation and
-bind command ownership to the current device, connection and treatment. It must
-reject stale or repeated activation commands, confirm each contact from fresh
-device feedback, and release all owned contacts after cancellation, partial
-activation, lost feedback, restart or expired permission. Missing release
-confirmation keeps the obligation pending and blocks a replacement treatment.
-Changing device identity or connection must never transfer old authority to the
-replacement device or erase a pending physical obligation.
+Commands are non-retained. Exact device identity, a fresh MQTT generation,
+short-lived challenge, treatment counter, sequence and lease capability fence
+activation and renewal. Current feedback must match the device and connection;
+request confirmation additionally matches the outstanding request. Capabilities
+are private control data and must not appear in API responses or logs.
 
-Contact history must record all four connections separately, preserving exact
-state and quality changes. ON and OFF require actual feedback; commands,
-configuration, cached status and elapsed time cannot establish a physical state.
-Missing, stale and unsupported evidence remains unknown. An interrupted or partial
-activation is not evidence of successful pooled floor heating.
+The host uses custom `get` for polling. Native Tasmota status/maintenance commands
+terminate a lease and must never be used as ordinary monitoring. Retained Online
+is only context. Periodic correlated readback establishes current GPIO evidence;
+stale observations cannot be renewed by reading an application cache.
 
-The four current series are `floor_groundfloor_1_active` through
-`floor_groundfloor_4_active`, in connection order. They remain unknown until a
-supported integration supplies actual contact feedback. Any existing pending
-physical release obligation remains visible; changing the planned hardware does
-not confirm release or authorize commands to an unverified interface.
+Automatic renewal defaults to 300 seconds; each device-local lease grants at most
+900 seconds, capped at the immutable planned end. Renewal preserves unchanged
+outputs. Host monotonic remaining time is mapped conservatively from the received
+challenge to the device's monotonic clock; transport delay cannot add time. The
+firmware rejects replay, an expired challenge, wrong ownership and deadline
+extension, and releases on expiry, known disconnection, reboot or maintenance.
+These are software safeguards, not proof against every hardware failure.
+
+Before activation, durably record a release obligation bound to the exact device,
+broker, connection and treatment. Cancellation, partial activation, lost feedback,
+restart and expired permission require release. Restart never recreates a manual
+ON request. Missing OFF confirmation keeps restoration pending and blocks a new
+treatment. Replacing the device or broker never transfers authority or erases the
+old obligation. Malformed and retired saved formats cannot supply permission.
+Standby and authority loss cancel pending activation; graceful shutdown/handover
+releases owned outputs while the original master still has authority.
+
+Manual Home **Preheat** remains a single fixed lease for both the floor treatment
+and ROOM increase. It does not accumulate ROOM boosts or gain time through
+renewal. ROOM restoration begins at the original end even when floor release is
+unconfirmed. A local relay timer cannot restore ROOM through a broken host or
+heat-pump connection.
+
+The four exact-change history series are `floor_groundfloor_1_active` through
+`floor_groundfloor_4_active`. They record GPIO logic and its quality with original
+observation clocks, never commands, inferred expiry or physical valve position.
+No historical gap is filled from present feedback.
 
 ## Configuration
 
-The current `controller.floor_preheat` settings are `enabled`, `commissioned`,
-`renew_seconds` and `lease_seconds`. Both flags must remain false; the timing
-defaults are 300 and 900 seconds respectively. There are no device address,
-firmware or MQTT topic settings for the pending integration. Keep shared defaults
-in the application configuration rather than copying them into the private file.
-Retired device mappings are rejected instead of being reused for the new device.
+`controller.floor_preheat` owns:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `device_mac` | empty | Exact physical identity, uppercase colon form; store privately. |
+| `commissioned` | `false` | Physical installation and installed firmware have been checked. |
+| `enabled` | `false` | Permit pooled floor preheating when the Home controller requests it. |
+| `renew_seconds` | `300` | Automatic lease renewal interval. |
+| `lease_seconds` | `900` | Maximum local lease and manual Home Preheat duration. |
+
+A configured identity allows observation; commissioning permits manual controls.
+Pooled enablement additionally requires commissioning. Both permission flags
+remain false in public defaults. Use the existing private configuration and
+**Apply reviewed configuration**; do not copy public defaults or place actual
+hardware identifiers in Git. Retired device mappings and unknown fields are
+rejected, without aliases or automatic migration.
 
 ## Setup and commissioning
 
-The **Home floor preheating** section shows the single device, its four circuit
-connections and current control availability. Configuration records installation
-intent; it does not verify wiring, firmware capabilities or local failback.
-Keep control disabled while integration is pending.
+1. Follow the firmware repository's [compatibility guide](https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/compatibility.md)
+   and [operations guide](https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/operations.md).
+   Verify the fixed firmware profile and artifact identity. Configure its MQTT
+   connection and the application's private physical identity. Review reported
+   identity, firmware readiness and all four outputs while control is disabled.
+2. Verify each numbered circuit and the safe unpowered/OFF thermostat path.
+   Independently check actual contact continuity, actuator power and travel delays;
+   GPIO readback cannot perform this check. Other fixed loops retain their settings.
+3. With unloaded hardware, exercise acquire, each individual mask, unchanged
+   renewal, partial release and whole-board release. Check local expiry at a short
+   planned end and at the maximum lease. Record observed outputs and physical
+   contacts separately. An unwired board can qualify protocol/relay behavior but
+   cannot qualify installed valves, thermostat failback, flow or delivered heat.
+4. Test host loss, broker loss, device restart, failed renewal, delayed/duplicate
+   activation and lost feedback. Verify physical release without a host command.
+   Firmware test results are listed in its [qualification status](https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/status.md);
+   they do not replace installation-specific checks.
+5. Record the reviewed result privately before setting `commissioned:true`.
+   Supervise individual controls first. Enable pooled preheat only after wiring,
+   safe limits and heat-pump behavior are checked. Thermal priors and treatment
+   evidence separately govern automatic economic selection.
 
-1. Confirm the installed device and the four numbered circuit connections against
-   the table above. Have the wiring checked so each OFF state restores the
-   thermostat path independently of the host, connection and device power. Check
-   actuator power and travel delays, leaving other fixed valve settings unchanged.
-2. Establish a supported firmware and control interface, including independent
-   contact feedback, safe startup, bounded local expiry and rejection of stale
-   activation. Verify compatible relay modes and remove competing schedules or
-   command writers. Do not assume a general-purpose timer provides the required
-   ownership, renewal and failure behavior.
-3. With a supported integration available, verify all four ON/OFF readings and
-   renewal without relay cycling. Confirm expiry both at a short planned end and
-   at the maximum lease deadline, independently of host release commands.
-4. Test host termination, connection loss, device restart, failed renewal,
-   duplicate or delayed activation, one failed contact and lost release feedback.
-   Observe actual override release and native thermostat operation. Electrical
-   readback alone cannot prove that valves moved or water flowed.
-5. Record the reviewed installation and commissioning outcome privately. Only
-   then enable a supervised treatment, checking supply and floor limits, occupied
-   room temperatures, hydraulic redistribution, valve delays and the complete
-   recovery. Evidence must cover the selected circuit configuration throughout
-   charging, reduction and recovery.
-
-The initial treatment remains pooled. Independent Living/Storage control,
-valve-position or flow sensing and automatic tuning of slab parameters need
-separate implementation and evidence.
+The initial automatic treatment remains pooled. Individual manual controls do
+not implement independent room scheduling or automatic thermal tuning. Observe
+supply and floor limits, room temperatures, hydraulic redistribution and complete
+recovery before drawing conclusions about heating performance or savings.

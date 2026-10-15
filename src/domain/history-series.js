@@ -80,7 +80,7 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ['heat_savings_active', { label: 'Tariff-control relay feedback', unit: 'state', group: 'Control', role: 'Equipment context', kind: 'Recorded', detail: 'Reported tariff-control contact; not a measurement of compressor activity or heat delivery' }],
   ...FLOOR_PREHEAT_CIRCUITS.map(({ id, label, lengthM }) => [`floor_groundfloor_${id}_active`, {
     label: `${label} ${lengthM} m · floor circuit ${id}`, unit: 'state', group: 'Control', role: 'Equipment context', kind: 'Recorded',
-    detail: 'Reported electrical override contact: 1 on, 0 off; missing readback remains unknown. This does not prove valve position or water flow',
+    detail: 'Reported GPIO override output: 1 on, 0 off; missing readback remains unknown. This does not prove valve position or water flow, relay contact continuity or delivered heat',
   }]),
   ['auxiliary_power', { label: 'Auxiliary power estimate', unit: 'kW', group: 'Electricity', role: 'Equipment context', kind: 'Calculated', detail: 'Saved estimate from verified auxiliary output and rated capacity' }],
   ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : signal.startsWith('ev2') ? 'Charger 2' : 'Charger 1'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: signal.startsWith('ev2') ? 'Native total meter energy allocated using measured phase-power shares; estimated phase distribution whose three-phase sum preserves measured total consumption' : 'Estimated energy over the recorded interval' }]),

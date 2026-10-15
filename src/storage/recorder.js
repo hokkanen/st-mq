@@ -93,11 +93,11 @@ function caravanRecordingBoundary(o, newReport) {
 }
 export const isCaravanRecordingRecovery = o => caravanRecordingBoundary(o, false);
 export const isCaravanRecordingAdmission = o => caravanRecordingBoundary(o, true);
-// Correlated contact replies and live timestamp-free MQTT contact reports use
+// Correlated output replies and live timestamp-free MQTT state reports use
 // the host receipt clock. Ordered replies can share a millisecond; observation
 // IDs preserve their order. A device's repeated measurement clock cannot do so.
 const hostContactReport = o => o.unit === 'state' && o.sourceTime === o.receivedAt
-  && (o.source === 'floor-override' && o.raw?.timeBasis === 'request-readback'
+  && (o.source === 'sonoff-floor' && o.raw?.timeBasis === 'mqtt-received' && o.raw?.evidence === 'gpio_output_readback'
     || o.source === 'mqtt-equipment' && o.signal === 'dhwr_active' && o.raw?.timeBasis === 'mqtt-received');
 const numericalFloor = (a,b) => Math.max(1,Math.abs(a??0),Math.abs(b??0))*Number.EPSILON*32;
 const voltageEstimate = o => o.source === 'voltage-estimate' && VOLTAGE_SIGNALS.includes(o.signal) && o.unit === 'V';
@@ -1080,6 +1080,13 @@ function compactRaw(raw, observation) {
     'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime','originalReportTimeBasis','originalReportTimeAdmission','transportRecoveredAt','temperatureRouteSignature',
     'transport','voltageSource','voltageAvailability','voltageEstimate'];
   const result = Object.fromEntries(allowed.filter(key=>raw[key] !== undefined).map(key=>[key,raw[key]]));
+  if (observation?.source === 'sonoff-floor' && observation.unit === 'state'
+    && raw.evidence === 'gpio_output_readback') {
+    result.evidence = raw.evidence;
+    if (typeof raw.generation === 'string' && /^[a-f0-9]{32}$/.test(raw.generation)) result.generation = raw.generation;
+    if (Number.isSafeInteger(raw.deviceMonotonicMs) && raw.deviceMonotonicMs >= 0)
+      result.deviceMonotonicMs = raw.deviceMonotonicMs;
+  }
   // Caravan appliance history stores one power/fan state. Keep its physical
   // identity and evidence clocks without retaining sensor or setting values.
   if (observation?.source === 'mqtt-equipment' && observation.signal === 'caravan_dehumidifier_state' && observation.unit === 'state') {

@@ -281,9 +281,11 @@ defaults leave the explicit slab disabled until its physical priors are configur
 Automatic floor-preheat candidates require a configured slab within the reserve
 capacity budget; a deliberate manual override uses commissioned device authority
 without pretending its thermal behavior is already validated.
-The planned single SONOFF 4CH PRO R3 covers the four ground-floor circuits.
-Its control integration is pending, so floor activation remains unavailable;
-configuration or commissioning intent cannot establish support. See
+The single SONOFF 4CH PRO R3 covers the four ground-floor circuits through its
+versioned MQTT lease adapter. Activation requires configured identity, physical
+commissioning, fresh correlated GPIO feedback and current control authority.
+Individual manual masks remain separate from pooled treatment evidence; GPIO
+readback does not prove relay-contact operation, valve movement or water flow. See
 [Home floor preheating](floor-preheat.md) for the circuit mapping and required
 control behavior.
 
@@ -441,9 +443,9 @@ reassessed on the next update. Preheat always has a fixed original deadline from
 `controller.floor_preheat.lease_seconds` (900 seconds by default), and restores
 ROOM at that deadline even if floor release needs retries. Preheat requests the
 configured increase
-above the current native ROOM baseline, with normal tariff operation. The current
-floor adapter is unavailable, so no floor-valve override can be activated. A future
-supported, commissioned adapter must follow the [floor lease contract](floor-preheat.md).
+above the current native ROOM baseline, with normal tariff operation. When
+configured, enabled and commissioned, the floor adapter adds its pooled treatment
+under the [floor lease contract](floor-preheat.md). Otherwise the action is ROOM-only.
 Preheat does not stack temperature boosts or start continuous
 DHWR. A deliberate native ROOM edit supersedes an active manual preheat boost;
 changing a different native parameter leaves the boost's restoration duty intact.

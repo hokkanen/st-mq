@@ -12,7 +12,7 @@ they do not prove optimal settings or savings for the actual house.
 | --- | --- |
 | Separate compressor/AUX responses could be indistinguishable during correlated operation. | Convert source input to estimated thermal kWh and fit one downstream hydronic response; preserve source uncertainty and independent electricity accounting. |
 | Restricted valves make ROOM-only evidence a poor guide to slab charging. | Record actual override mode and treatment identity; fixed slab states preserve stored heat through relay changes. |
-| A controller crash could leave a remote floor override active. | Require a verified device-local lease before enabling floor control. The planned SONOFF interface is not implemented; activation remains blocked. |
+| A controller crash could leave a remote floor override active. | Require a verified device-local lease before enabling floor control. The Sonoff adapter uses a bounded device-local lease; activation requires physical commissioning and fresh correlated GPIO readback. |
 | A 15-minute window could inherit the controller's current phase even when a transition happened near its end. | Persist causal control-context events and split input windows at their actual boundaries. Never backfill unknown history from current settings. |
 | Separately averaging compressor and reversing-valve state discarded mixed heating/DHW windows. | Intersect timelines first, then integrate total and destination-specific compressor/AUX activity. |
 | Extending a coverage span could change the earlier sample reconstructed from it; delayed receipt could retrospectively fill an outage. | Read stable span prefixes and require continuity of source validity and receipt availability. Keep real communication gaps. |

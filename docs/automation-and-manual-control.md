@@ -40,15 +40,16 @@ parameter edits remain separate persistent device commands.
 
 Manual Preheat raises ROOM for one fixed deadline, using
 `controller.floor_preheat.lease_seconds` (900 seconds by default), including when
-floor control is disabled. The current floor adapter is unavailable, so this is
-ROOM-only preheating; enabling or commissioning floor control is rejected.
+floor control is disabled. A configured, enabled and commissioned floor adapter
+adds the pooled four-output treatment; otherwise Preheat is ROOM-only.
 Polling does not renew the deadline. Normal or Reduced ends it sooner. At the
 deadline the controller restores ROOM independently of floor feedback. See
 [floor capability and commissioning requirements](floor-preheat.md).
 
-With a supported commissioned floor adapter, the same action must also open the
-floor circuits for that one original lease and check whether its device-local
-expiry restored ordinary thermostat control. Missing or failed
+With the commissioned floor adapter enabled, the same action requests all four
+outputs for that original lease and checks whether device-local expiry reported
+GPIO OFF. Commissioning must separately verify the native thermostat path;
+GPIO feedback cannot measure contact continuity or valve movement. Missing or failed
 restoration triggers the controller fallback and remains unresolved until fresh
 readback confirms it. A report distinguishes device-local expiry, controller fallback
 and missing evidence; software cannot prove restoration through a broken link.

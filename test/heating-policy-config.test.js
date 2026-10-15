@@ -94,14 +94,14 @@ test('one bounded recovery hold configures hot-water restrictions and optional A
     assert.throws(() => controlConfiguration({ recovery_hold_minutes: value }));
 });
 
-test('floor plan rejects unsupported activation, retired mappings and invalid renewal periods', () => {
+test('floor integration rejects uncommissioned activation, retired mappings and invalid renewal periods', () => {
   for (const key of ['enabled', 'commissioned']) for (const value of ['true', 'false', 0, 1, null, []])
     assert.throws(() => floorOverrideConfiguration({ [key]: value }));
   for (const value of [null, [], 'configuration']) assert.throws(() => floorOverrideConfiguration(value));
   for (const key of ['storage', 'living', 'device', 'unknown'])
     assert.throws(() => floorOverrideConfiguration({ [key]: {} }), /Unsupported floor override/);
   for (const key of ['enabled', 'commissioned'])
-    assert.throws(() => floorOverrideConfiguration({ [key]: true }), /supported floor-control integration is not available/);
+    assert.throws(() => floorOverrideConfiguration({ [key]: true }), /requires the exact device_mac/);
   for (const values of [{ renew_seconds: 29 }, { renew_seconds: 451 }, { renew_seconds: '300' }, { renew_seconds: null },
     { lease_seconds: 901 }, { lease_seconds: null }, { renew_seconds: 300, lease_seconds: 599 }])
     assert.throws(() => floorOverrideConfiguration(values));
@@ -122,8 +122,8 @@ test('public defaults expose floor thermal priors while physical overrides stay 
   assert.equal(model.floor.nativeCapacityKwhPerC, 8.832);
   assert.equal(publicConfig.options.controller.floor_preheat.enabled, false);
   assert.equal(publicConfig.options.controller.floor_preheat.commissioned, false);
-  assert.deepEqual(Object.keys(publicConfig.options.controller.floor_preheat), ['enabled', 'commissioned', 'renew_seconds', 'lease_seconds']);
-  assert.deepEqual(Object.keys(publicConfig.schema.controller.floor_preheat), ['enabled', 'commissioned', 'renew_seconds', 'lease_seconds']);
+  assert.deepEqual(Object.keys(publicConfig.options.controller.floor_preheat), ['device_mac', 'enabled', 'commissioned', 'renew_seconds', 'lease_seconds']);
+  assert.deepEqual(Object.keys(publicConfig.schema.controller.floor_preheat), ['device_mac', 'enabled', 'commissioned', 'renew_seconds', 'lease_seconds']);
   assert.equal(floorOverrideConfiguration(publicConfig.options.controller.floor_preheat).devices.length, 1);
   assert.equal(publicConfig.schema.controller.floor_preheat.lease_seconds, 'int(60,900)');
   assert.equal(controlConfiguration().floorThermalPriors, undefined);
@@ -193,9 +193,9 @@ test('configuration loads the one-device floor plan without invented transport a
   assert.equal(plan.devices.length, 1);
   assert.equal(plan.devices[0].model, 'SONOFF 4CH PRO R3');
   assert.deepEqual(plan.devices[0].channels, [1, 2, 3, 4]);
-  assert.equal(plan.integrationSupported, false);
+  assert.equal(plan.integrationSupported, true);
   for (const key of ['storage', 'living', 'device'])
     assert.throws(() => read({ [key]: { topic_prefix: 'fixture-retired-prefix' } }), /Unknown configuration field/);
   for (const key of ['enabled', 'commissioned'])
-    assert.throws(() => read({ [key]: true }), /supported floor-control integration is not available/);
+    assert.throws(() => read({ [key]: true }), /requires the exact device_mac/);
 });

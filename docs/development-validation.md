@@ -9,6 +9,21 @@ Run checks from the repository root. Ordinary tests, browser fixtures, container
 checks and Garage simulations use synthetic data. The separately invoked live
 suite contacts configured providers; see [live testing](live-testing.md).
 
+Floor control checks cover the current Sonoff lease protocol, independent manual
+masks, immutable deadlines, stale request rejection, restart restoration, changed
+device/broker identity, partial feedback and publication after storage waits.
+`test/floor-learning-boundary.test.js` checks that manual activity between controller
+ticks remains in the immutable learning inputs and that late feedback cannot
+rewrite earlier contexts. `test/floor-controls-api.test.js` covers command shape,
+admin access, master authority and private error suppression. Existing floor
+planner, cycle and recording checks retain the distinction between pooled
+treatment, GPIO output history and unknown physical heat delivery.
+`test/browser/floor-smoke.js` uses an isolated synthetic application to exercise
+individual controls, pending actions, keyboard/focus preservation, setup navigation,
+read-only states and phone/desktop layouts in both themes. No floor fixture
+commissions installed wiring or measures relay contacts, valves or water flow.
+The separate firmware repository owns its own host tests and firmware builds.
+
 `test/charging-session-pause-runtime.test.js` exercises both charger controllers
 through the runtime with synthetic native responses. It covers Pause during
 Charge now, unchanged Automatic preference, ready-by expiry, same-session restart,
@@ -1193,7 +1208,9 @@ Current limits to retain when reviewing results:
   pass. Later landscape legend-focus and Save-view follow-ups remain open until
   the complete sweep passes; a targeted UI check is insufficient evidence to
   close them.
-- The floor controller integration is pending. H66, CN105/protection and charging
+- The floor controller uses the Sonoff lease protocol; GPIO confirmation and
+  software checks do not qualify physical contacts, wiring, valves or flow.
+  Installed local-expiry and thermostat-path checks remain required. H66, CN105/protection and charging
   have distinct physical qualification requirements; see their maintained
   guides. OCPP recovered-transaction profile acceptance and Equalizer behavior
   under competing loads remain unverified. Synthetic Shelly recovery does not

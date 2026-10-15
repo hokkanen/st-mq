@@ -58,6 +58,19 @@ test('device destination changes invalidate only the affected heating permission
   assert.equal(JSON.stringify(engine.automationStatus()).includes('invented'), false);
 });
 
+test('a replacement floor controller cannot inherit Home Automatic permission', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const config = { input: 'mqtt', connections: { mqtt: { address: 'mqtt://invented.invalid' } },
+    floorPreheat: { enabled: true, deviceMac: '02:00:00:00:00:01', devices: [{ group: 'groundfloor', channels: [1, 2, 3, 4] }] } };
+  const automation = new HeatingAutomation({ store, config, targetIdentity: () => 'a'.repeat(64) });
+  automation.set('home', true);
+  assert.equal(new HeatingAutomation({ store, config }).features.home.enabled, true);
+  const replacement = new HeatingAutomation({ store, config: { ...config,
+    floorPreheat: { ...config.floorPreheat, deviceMac: '02:00:00:00:00:02' } } });
+  assert.equal(replacement.features.home.enabled, false);
+  assert.equal(replacement.features.home.pause.expiresAt, null);
+});
+
 test('read-only authority and history cannot grant automation or manual heating authority', async t => {
   let authority = true;
   const { engine } = setup(t, { canControl: () => authority });

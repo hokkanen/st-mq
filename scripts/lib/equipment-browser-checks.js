@@ -62,22 +62,24 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
     assert.equal(await evaluate("document.querySelector('#home-manual-controls #floor-commissioning-details')"), null, 'Hardware setup is outside everyday heating controls');
     assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /unavailable|waiting|unknown/i, 'Missing status cannot report disabled or commissioned hardware');
     await evaluate(`(() => {const f=window.equipmentUiFixture;f.status.preheatValves={enabled:false,commissioned:false,
-      integrationSupported:false,connected:false,available:false,active:false,restorationPending:false,
+      integrationSupported:true,configured:true,connected:false,available:false,active:false,restorationPending:false,
       devices:[{group:'groundfloor',model:'SONOFF 4CH PRO R3',available:false,
         channels:[1,2,3,4].map(id=>({id,output:null}))}]};return true;})()`);
     await refresh();
-    assert.equal(await evaluate("document.getElementById('floor-preheat-state').textContent"), 'Setup pending');
+    assert.equal(await evaluate("document.getElementById('floor-preheat-state').textContent"), 'Not commissioned');
     assert.equal(await evaluate("document.querySelector('#floor-preheat-details > summary > span').textContent"), 'Home floor preheating');
-    assert.match(await evaluate("document.getElementById('floor-preheat-commissioning-status').textContent"), /not recorded/i);
-    assert.equal(await evaluate("document.querySelectorAll('#floor-preheat-details .equipment-setup-hardware > div').length"), 1);
+    assert.match(await evaluate("document.getElementById('floor-preheat-commissioning-status').textContent"), /not commissioned/i);
+    assert.equal(await evaluate("document.querySelectorAll('#floor-preheat-details .floor-preheat-intro').length"), 1);
     assert.deepEqual(await evaluate("[...document.querySelectorAll('.floor-preheat-circuits tbody tr')].map(row=>[...row.cells].map(cell=>cell.textContent))"),
-      [['1','Living','106 m'],['2','Living','62 m'],['3','Storage','38 m'],['4','Storage','80 m']]);
+      [['1','Living 106 m','Unknown'],['2','Living 62 m','Unknown'],['3','Storage 38 m','Unknown'],['4','Storage 80 m','Unknown']]);
     assert.doesNotMatch(await evaluate("document.getElementById('floor-preheat-details').textContent"), /Shelly|both devices|two outputs/i);
     const floorCards = '#equipment-connections [data-device-id^="floor-override:"]';
     assert.equal(await evaluate(`document.querySelectorAll('${floorCards}').length`), 1);
     assert.equal(await evaluate(`document.querySelectorAll('${floorCards} [data-open-floor-setup]').length`), 1);
-    assert.equal(await evaluate("document.querySelectorAll('#home-equipment-readings [data-device-id^=\"floor-override:\"]').length"), 0,
-      'The planned device is not presented as observed equipment');
+    assert.equal(await evaluate("document.querySelectorAll('#home-equipment-readings [data-device-id^=\"floor-override:\"]').length"), 1,
+      'Floor controls remain discoverable while commissioning is incomplete');
+    assert.equal(await evaluate("document.querySelectorAll('#home-equipment-readings [data-floor-action]:not(:disabled)').length"), 0,
+      'Uncommissioned equipment never gains command authority');
     await evaluate("window.equipmentUiFixture.status.preheatValves.restorationPending=true;true");
     await refresh();
     assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /release pending/i);

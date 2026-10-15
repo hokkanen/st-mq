@@ -7,8 +7,10 @@ export function gateMqttPublications(client, { canControl = () => true, timeoutM
   const tokens = new Set(), ids = new Map(), packets = new WeakMap();
   let active = null, generation = 0, revoked = false;
   const authority = () => { try { return !revoked && canControl() === true; } catch { return false; } };
-  const allowed = token => token && !token.done && !token.signal?.aborted
-    && token.generation === generation && authority() && client.connected !== false;
+  const allowed = token => {
+    if (!token || token.done || token.signal?.aborted || token.generation !== generation || !authority() || client.connected === false) return false;
+    try { return token.beforeWrite?.() !== false; } catch { return false; }
+  };
   const failure = () => new Error('MQTT publication unavailable; delivery unconfirmed');
   function remove(token) {
     if (!Number.isInteger(token.id)) return;
@@ -34,11 +36,11 @@ export function gateMqttPublications(client, { canControl = () => true, timeoutM
   }
   client.publish = function(topic, payload, options, callback) {
     if (typeof options === 'function') { callback = options; options = {}; }
-    const { signal, ...publicationOptions } = options ?? {};
+    const { signal, beforeWrite, ...publicationOptions } = options ?? {};
     if (signal?.aborted || !authority() || this.connected === false || this._storeProcessing || this._storeProcessingQueue?.length) {
       callback?.(failure()); return this;
     }
-    const token = { generation, callback, signal, done: false, sent: false };
+    const token = { generation, callback, signal, beforeWrite, done: false, sent: false };
     token.cancel = () => finish(token, failure());
     signal?.addEventListener('abort', token.cancel, { once: true });
     token.timer = setTimeout(() => finish(token, failure()), timeoutMs); token.timer.unref?.();

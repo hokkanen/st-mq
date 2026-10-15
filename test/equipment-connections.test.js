@@ -230,47 +230,47 @@ test('BMW vehicle MQTT displays source, real reception and feed problems indepen
   assert.equal(equipmentConnectionSummary(separate).label, 'Disconnected', 'a separate Tesla subscription cannot confirm the BMW feed');
 });
 
-test('one planned SONOFF device identifies all four floor circuits without bypass controls or invented readings', () => {
-  const floor = equipmentConnections({ preheatValves: { integrationSupported: false } }).filter(device => device.kind === 'floor_override');
+test('one SONOFF device identifies all four floor circuits without bypass controls or invented readings', () => {
+  const floor = equipmentConnections({ preheatValves: { integrationSupported: true, configured: false } }).filter(device => device.kind === 'floor_override');
   assert.deepEqual(floor.map(device => device.id), ['floor-override:groundfloor']);
   const device = floor[0];
   assert.equal(device.label, 'Ground-floor circuits');
   assert.equal(device.area, 'home');
   assert.equal(equipmentSource(device), 'SONOFF');
   assert.equal(device.model, 'SONOFF 4CH PRO R3');
-  assert.equal(device.enabled, false);
+  assert.equal(device.enabled, true, 'Floor controls remain discoverable before setup');
   assert.equal(device.available, false);
   assert.deepEqual(device.controls, { switch: false, tariff: false });
   assert.deepEqual(device.topics, []);
-  assert.deepEqual(device.readings, {});
+  assert.deepEqual(Object.values(device.readings).map(row => row.value), [null, null, null, null]);
   assert.deepEqual(equipmentConnectionSummary(device), {
-    label: 'Integration unavailable', state: 'pending', recent: '1 device · 4 floor circuits',
+    label: 'Not configured', state: 'pending', recent: '1 device · 4 floor circuits',
   });
-  assert.equal(device.connectionDetail, '1: Living · 106 m; 2: Living · 62 m; 3: Storage · 38 m; 4: Storage · 80 m. Lengths describe pipe inside the floor.');
+  assert.deepEqual(Object.values(device.readings).map(row => row.label), ['1 · Living · 106 m', '2 · Living · 62 m', '3 · Storage · 38 m', '4 · Storage · 80 m']);
   assert.doesNotMatch(JSON.stringify(device), /Shelly|Output 0|local.script/);
-  assert.match(equipmentConnectionIntroduction(device), /supported integration must be implemented and verified before configuration can enable/);
+  assert.match(equipmentConnectionIntroduction(device), /timed MQTT leases.*GPIO readback/);
   const unavailable = equipmentConnections({}).find(device => device.kind === 'floor_override');
   assert.equal(equipmentConnectionSummary(unavailable).label, 'Status unavailable');
 });
 
-test('planned floor device never inherits old device readiness and preserves pending release', () => {
-  const view = extra => equipmentConnections({ now: NOW, preheatValves: { integrationSupported: false, enabled: true, commissioned: true,
+test('floor device requires current channel evidence and preserves pending release', () => {
+  const view = extra => equipmentConnections({ now: NOW, preheatValves: { integrationSupported: true, configured: true, enabled: true, commissioned: true,
     devices: [{ group: 'living', available: true, at: NOW, channels: [{ id: 0, output: true }, { id: 1, output: true }] }], ...extra } })
     .filter(device => device.kind === 'floor_override');
   const active = view({ active: true });
   assert.equal(active.length, 1);
-  assert.equal(equipmentConnectionSummary(active[0]).label, 'Integration unavailable');
+  assert.equal(equipmentConnectionSummary(active[0]).label, 'Needs attention');
   assert.equal(active[0].available, false);
-  assert.equal(active[0].enabled, false);
-  assert.deepEqual(active[0].readings, {});
+  assert.equal(active[0].enabled, true);
+  assert.deepEqual(Object.values(active[0].readings).map(row => row.value), [null, null, null, null]);
   assert.equal(active[0].lastReportAt, undefined);
   assert.equal(equipmentConnectionSummary(view({ restorationPending: true })[0]).label, 'Release pending');
   assert.equal(equipmentConnectionSummary(view({ enabled: false, restorationPending: true })[0]).label, 'Release pending', 'Disabling new overrides does not hide the release obligation');
   assert.equal(equipmentConnectionSummary(view({ restorationPending: true })[0]).recent, 'Previous override release is unconfirmed');
   const claimed = view({ integrationSupported: true, devices: [{ group: 'groundfloor', available: true, at: NOW,
     channels: [1, 2, 3, 4].map(id => ({ id, output: false })) }] })[0];
-  assert.equal(equipmentConnectionSummary(claimed).label, 'Status unavailable');
-  assert.deepEqual(claimed.readings, {}, 'Transport support must exist before reports become floor observations');
+  assert.equal(equipmentConnectionSummary(claimed).label, 'Needs attention');
+  assert.deepEqual(Object.values(claimed.readings).map(row => row.value), [null, null, null, null], 'Missing GPIO evidence cannot become floor observations');
 });
 
 test('configured vehicle feeds retain independent names before reports and follow a vehicle between chargers', () => {
@@ -333,7 +333,7 @@ test('MQTT device introductions describe purpose independently of connection che
     assert.doesNotMatch(introduction, /timeout|Last check|No live/);
     assert.equal(equipmentConnectionIntroduction({ ...device, available: true, check: { status: 'available' } }), introduction);
   }
-  assert.match(equipmentConnectionIntroduction({ kind: 'floor_override' }), /One controller.*four ground-floor heating circuits/);
+  assert.match(equipmentConnectionIntroduction({ kind: 'floor_override' }), /One Sonoff controls four ground-floor thermostat overrides/);
 });
 
 test('Garage MQTT order puts local frost protection directly below heat pump before temperatures and other equipment', () => {

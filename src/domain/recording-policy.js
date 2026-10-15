@@ -81,8 +81,8 @@ const names = {
 export function recordedSignalInfo(signal, unit) {
   const info = SIGNAL_INFO[signal];
   return { label: info?.label ?? names[signal] ?? String(signal).replaceAll('_', ' '),
-    unit: unit ?? info?.unit ?? '', group: info?.group ?? (signal?.startsWith('floor_') ? 'Floor override contacts' : 'Equipment'),
+    unit: unit ?? info?.unit ?? '', group: info?.group ?? (signal?.startsWith('floor_') ? 'Floor override outputs' : 'Equipment'),
     basis: ['charger1_current_allowance', 'charger2_current_allowance'].includes(signal) ? 'Nonnegative load-balancing allowance with separate mode, source evidence and restrictions. Unchanged observations extend compact coverage; restart and unobserved periods stay unknown. Retained independently of charging reports; this does not prove physical charging.'
-      : signal?.startsWith('floor_') ? 'Reported electrical override contact: 1 on, 0 off, unknown without confirmed readback. This does not prove valve position or water flow.'
+      : signal?.startsWith('floor_') ? 'Reported GPIO override output: 1 on, 0 off, unknown without fresh readback. This does not prove valve position or water flow, relay contact continuity or delivered heat.'
       : info?.detail ?? null };
 }
