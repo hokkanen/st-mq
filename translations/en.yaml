@@ -67,6 +67,56 @@ configuration:
           Enable only after commissioning the floor-valve integration.
           Commissioning is installation approval; fresh device evidence and
           active leases are still required for control.
+  web:
+    name: Web access
+    description: >-
+      HTTPS listener wiring, private HTTPS storage and an optional unencrypted
+      HTTP backup. Set up HTTPS identity and certificates in Data & settings
+      → Connections & configuration → Web access. Save and apply reviewed
+      configuration; listener and private-directory changes require restart.
+    fields:
+      https_host:
+        name: HTTPS listening address
+        description: >-
+          IPv4 address for the HTTPS listener after secure access is set up.
+          0.0.0.0 listens on all IPv4 interfaces; a specific local address
+          restricts the listener.
+      https_port:
+        name: HTTPS port
+        description: >-
+          TCP port for direct HTTPS access, normally 8443. It must differ
+          from the LAN HTTP port.
+      https_directory:
+        name: Private HTTPS directory
+        description: >-
+          Absolute private directory for HTTPS identity, certificates and
+          helper state. Leave empty for the persistent application default.
+          This does not move controller data or the database.
+      lan_http_enabled:
+        name: Allow unencrypted LAN HTTP
+        description: >-
+          Explicitly enable the separate LAN HTTP backup listener. HTTP
+          exposes passwords and household data without encryption. HTTPS
+          setup never enables this listener automatically; maintain trusted
+          network and firewall boundaries.
+      lan_http_host:
+        name: LAN HTTP listening address
+        description: >-
+          IPv4 address used when the unencrypted HTTP backup is enabled.
+          0.0.0.0 listens on all IPv4 interfaces; it does not guarantee
+          LAN-only reachability.
+      lan_http_port:
+        name: LAN HTTP port
+        description: >-
+          TCP port for the optional unencrypted HTTP backup, normally 1236.
+          It must differ from the HTTPS port.
+      lan_resolver:
+        name: LAN DNS resolver
+        description: >-
+          Optional IPv4 DNS server for an explicit check of the chosen HTTPS
+          hostname's LAN A and AAAA answers. Leave empty when LAN DNS is not
+          checked. Apply changes through the controlled-restart workflow,
+          then choose Recheck in Web access.
   garage:
     name: Garage heating and doors
     description: >-
