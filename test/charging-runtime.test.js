@@ -129,6 +129,45 @@ function syntheticElectricityForecast(f) {
   return value => { available = value; };
 }
 
+for (const retainedPower of [false, true])
+test(`missing Tesla feed preserves unknown identity across runtime persistence, polling and restart (${retainedPower ? 'retained power proof' : 'no consumed proofs'})`, async t => {
+  const f = fixture(preferences), seed = f.create(); t.after(() => seed.close());
+  delete seed.teslaCapture;
+  seed.persist();
+  const saved = readChargingRuntime(f.store, seed.key);
+  const powerProof = retainedPower ? { association: 'synthetic-previous-tesla-source', receivedAt: initialNow - 1000 } : null;
+  saved.consumedTeslaPower = powerProof;
+  saved.consumedTeslaCurrent = null;
+  writeChargingRuntime(f.store, seed.key, saved);
+  await seed.close();
+  for (const restarted of [false, true]) {
+    const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+    delete runtime.teslaCapture;
+    assert.equal(runtime.teslaCapture, undefined, 'The source is genuinely absent');
+    assert.deepEqual(runtime.consumedTeslaPower, powerProof);
+    assert.equal(runtime.consumedTeslaCurrent, null);
+    await runtime.setAdapter('charger1', adapter);
+    await runtime.tick({ prices }); await runtime.reconcile(); await runtime.planningFlight;
+    runtime.persist();
+    const stored = readChargingRuntime(f.store, runtime.key), writes = f.writes.length;
+    assert.deepEqual(stored.consumedTeslaPower, powerProof);
+    assert.equal(stored.consumedTeslaCurrent, null);
+    assert.equal(stored.chargers.charger1.vehicleMatch, null);
+    for (let poll = 0; poll < 3; poll++) {
+      const view = chargerView(runtime);
+      assert.notEqual(view.vehicle.state, 'identified');
+      assert.equal(view.vehicle.id, null);
+      assert.equal(view.vehicle.source, null);
+      assert.equal(runtime.telemetry().charger1.vehicle.id, null);
+    }
+    assert.equal(f.writes.length, writes, 'Polling cannot persist or manufacture identity evidence');
+    assert.ok(adapter.calls.every(call => call.kind === 'read'), 'Missing vehicle evidence grants no charging instruction');
+    assert.equal(runtime.error, null);
+    await runtime.close();
+    if (!restarted) f.setNow(f.clock() + 1000);
+  }
+});
+
 test('forecast-only current prices allow a worker plan to publish as the clock advances', async t => {
   const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
