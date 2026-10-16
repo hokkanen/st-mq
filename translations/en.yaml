@@ -346,14 +346,14 @@ configuration:
       remain missing. This target is not a calendar-year quota or history
       retention policy.
     fields:
-      export_directory:
-        name: Server export directory
+      backup_directory:
+        name: Database backup folder
         description: >-
-          Destination for Save local copy in Export database. In Home Assistant,
-          use a persistent path such as /share/st-mq/exports or
-          /config/st-mq/exports. The shared default ~ is the server account's
-          home inside the container and does not survive image replacement.
-          Download database instead saves through the browser.
+          Root folder for local database copies, reset archives and paired exports.
+          Leave empty to use the configured database directory's backups folder
+          (/config/st-mq/backups in Home Assistant). Choose persistent storage.
+          Restart after applying a change; existing files are not moved.
+          Browser downloads save separately.
       full_verification_interval_hours:
         name: Full verification interval in hours
         description: >-
