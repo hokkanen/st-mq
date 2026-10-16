@@ -1116,7 +1116,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const cancellation = new AbortController(), probe = device.temperatureGuard.probe;
     let restoration = device.temperatureGuard.restoration;
     const previousValue = device.dehumidifierState[setting], previousAt = device.dehumidifierReport.fieldTimestamps[setting];
-    const timer = setTimeout(() => cancellation.abort(), Math.min(readbackTimeoutMs, 10_000));
+    let recordingDeadlineExpired = false;
+    const timer = setTimeout(() => { recordingDeadlineExpired = true; cancellation.abort(); }, Math.min(readbackTimeoutMs, 10_000));
     const dispatch = { cancellation, operation, power: device.dehumidifierState.power, powerAt: device.dehumidifierReport.fieldTimestamps.power };
     const attemptAt = device.temperatureGuard.lastAttemptAt;
     let supersededBeforeDispatch = false;
@@ -1187,6 +1188,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         identity: operation.identity, requestedAt: operation.requestedAt, expiresAt }),
       { qos: 1, retain: false, noReplay: true, beforePublish,
         ...(['location-test', 'location-restoration'].includes(origin) && restoration ? { preparePublish } : {}),
+        recordingContext: 'caravan-command', recordingKind: 'mutation', recordingDeadlineExpired: () => recordingDeadlineExpired,
         signal: cancellation.signal }, device.broker);
       operation.acknowledgedAt = engine.clock();
       if (operation.status === 'publishing') operation.status = operation.observedAt !== undefined ? 'observed' : 'published';

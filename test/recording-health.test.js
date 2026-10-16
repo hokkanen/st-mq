@@ -587,7 +587,7 @@ test('health API remains authenticated and available when controller status and 
   const base = `http://127.0.0.1:${server.address().port}`;
   assert.equal((await fetch(`${base}/api/recording-health`)).status, 401);
   const result = await fetch(`${base}/api/recording-health`, { headers: { Authorization: 'Bearer synthetic-family-token' } });
-  assert.equal(result.status, 200); assert.equal((await result.json()).version, 2);
+  assert.equal(result.status, 200); assert.equal((await result.json()).version, 3);
   assert.equal((await fetch(`${base}/api/status`, { headers: { Authorization: 'Bearer synthetic-admin-token' } })).status, 503);
 });
 

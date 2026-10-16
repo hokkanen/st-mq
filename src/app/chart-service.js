@@ -1,3 +1,4 @@
+import { storageOperationHealth } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { getChartData, chartRequestRange } from './chart-data.js';
 import { getDatabaseOverview } from './database-overview.js';
@@ -11,22 +12,35 @@ const aborted = () => Object.assign(new Error('Chart request aborted'), { name: 
  * foreground cache or occupy its queue. Idle workers release SQLite and RAM. */
 export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}) {
   if (!store?.db || !store.path) throw new TypeError('A history store is required');
+  storageOperationHealth.register('history-query'); storageOperationHealth.register('storage-inventory');
   let nextId = 1, closed = false;
   const lanes = Object.fromEntries(['foreground', 'prefetch'].map(name => [name,
-    { name, worker: null, active: null, queue: [], retiring: null, timer: null }]));
+    { name, worker: null, active: null, queue: [], retiring: null, timer: null, observations: new Map() }]));
   const overviewRequests = new Map();
   const cleanup = entry => entry.signal?.removeEventListener('abort', entry.abort);
-  const settle = (entry, error, result) => { cleanup(entry); error ? entry.reject(error) : entry.resolve(result); };
+  const settle = (entry, error, result) => {
+    cleanup(entry);
+    if (!entry.started) entry.observation?.finish(error ? error.name === 'AbortError' || closed ? 'cancelled' : 'failed' : 'completed',
+      { reason: error ? error.name === 'AbortError' || closed ? 'cancelled' : 'operation-failed' : null });
+    error ? entry.reject(error) : entry.resolve(result);
+  };
   function progress(entry, value) {
     // A presentation callback must never disrupt worker lifecycle cleanup.
     try { entry.onProgress?.(value); } catch { /* Caller owns presentation failures. */ }
   }
-  function reset(lane) {
+  function reset(lane, outcome = 'failed', reason = 'worker-lost') {
     clearTimeout(lane.timer); lane.timer = null;
     const previous = lane.worker; lane.worker = null;
     if (previous) {
       previous.removeAllListeners();
-      lane.retiring = previous.terminate().finally(() => { lane.retiring = null; pump(); });
+      const observations = [...lane.observations.values()]; lane.observations.clear();
+      lane.retiring = previous.terminate().finally(() => {
+        for (const entry of observations) entry.observation?.finish(outcome, { reason });
+        lane.retiring = null; pump();
+      });
+    } else {
+      for (const entry of lane.observations.values()) entry.observation?.finish(outcome, { reason });
+      lane.observations.clear();
     }
   }
   function run(lane) {
@@ -40,6 +54,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
     if (lane.name === 'prefetch' && (lanes.foreground.active || lanes.foreground.queue.length)) return;
     clearTimeout(lane.timer); lane.timer = null;
     lane.active = lane.queue.shift();
+    lane.active.started = true; lane.active.observation?.start(); lane.observations.set(lane.active.id, lane.active);
     try {
       if (!lane.worker) {
         lane.worker = new Worker(new URL('./chart-worker.js', import.meta.url), {
@@ -47,7 +62,14 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
         });
         const generation = lane.worker;
         lane.worker.on('message', message => {
-          if (lane.worker !== generation || message.id !== lane.active?.id) return;
+          if (lane.worker !== generation) return;
+          if (message.storageOperationComplete) {
+            const observed = lane.observations.get(message.id); lane.observations.delete(message.id);
+            if (message.cacheHit) observed?.observation?.discard();
+            else observed?.observation?.finish(message.failed ? 'failed' : 'completed', { reason: message.failed ? 'operation-failed' : null });
+            return;
+          }
+          if (message.id !== lane.active?.id) return;
           if (message.progress) { progress(lane.active, message.progress); return; }
           const entry = lane.active; lane.active = null;
           const error = message.error ? Object.assign(new Error(message.error.message), { name: message.error.name }) : null;
@@ -88,22 +110,27 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
       if (wire !== undefined && !['json', 'ndjson'].includes(wire)) throw new TypeError('Invalid chart response format');
     } catch (error) { return Promise.reject(error); }
     if (store.path === ':memory:') {
+      const observation = operation === 'pin' ? null : storageOperationHealth.begin(operation === 'overview' ? 'storage-inventory' : 'history-query', { scope: 'history' });
       try {
         if (operation === 'pin') return Promise.resolve({ ready: true });
         const result = operation === 'overview' ? getDatabaseOverview({ ...args, store })
           : operation === 'energy-checks' ? energyCheckSummaries(store, args) : getChartData({ ...args, store, onProgress });
         const prepared = operation === 'chart' ? prepareChartResponse(result) : null;
-        return Promise.resolve(wire ? encodeChartResponse(result, prepared, wire) : result);
-      } catch (error) { return Promise.reject(error); }
+        const response = wire ? encodeChartResponse(result, prepared, wire) : result;
+        observation?.finish('completed'); return Promise.resolve(response);
+      } catch (error) { observation?.finish('failed', { reason: 'operation-failed' }); return Promise.reject(error); }
     }
     const lane = lanes[priority];
     const count = item => item.queue.length + Number(Boolean(item.active));
-    if (count(lane) >= (priority === 'prefetch' ? 1 : maxQueue))
+    if (count(lane) >= (priority === 'prefetch' ? 1 : maxQueue)) {
+      storageOperationHealth.refuse(operation === 'overview' ? 'storage-inventory' : 'history-query');
       return Promise.reject(new RangeError('Too many pending chart requests'));
+    }
     return new Promise((resolve, reject) => {
-      const entry = { id: nextId++, args, operation, wire, signal, onProgress, resolve, reject, abort: null };
+      const entry = { id: nextId++, args, operation, wire, signal, onProgress, resolve, reject, abort: null,
+        observation: operation === 'pin' ? null : storageOperationHealth.begin(operation === 'overview' ? 'storage-inventory' : 'history-query', { queued: true, scope: 'history' }) };
       entry.abort = () => {
-        if (lane.active === entry) { lane.active = null; reset(lane); }
+        if (lane.active === entry) { lane.active = null; reset(lane, 'cancelled', 'cancelled'); }
         else { const index = lane.queue.indexOf(entry); if (index < 0) return; lane.queue.splice(index, 1); }
         settle(entry, aborted()); pump();
       };
@@ -155,7 +182,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
       for (const lane of Object.values(lanes)) {
         for (const entry of lane.queue.splice(0)) settle(entry, new Error('Chart service is closed'));
         if (lane.active) { settle(lane.active, new Error('Chart service is closed')); lane.active = null; }
-        reset(lane);
+        reset(lane, 'cancelled', 'cancelled');
       }
       await Promise.allSettled(Object.values(lanes).map(lane => lane.retiring).filter(Boolean));
     },

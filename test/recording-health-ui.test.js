@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRecordingHealth, recordingHealthView, recordingEvidenceTime, backupCheckFailure, storageBytes } from '../chart/recording-health.js';
-import { storagePerformanceView, storageDuration } from '../chart/storage-health.js';
+import { createStorageOperationHealth } from '../src/storage/operation-health.js';
+import { storagePerformanceView, storageDuration, storageOperationsView } from '../chart/storage-health.js';
 
 const now = Date.parse('2026-10-07T12:00:00Z');
-const health = (overrides = {}) => ({ version: 2, checkedAt: now, scope: 'live',
+const health = (overrides = {}) => ({ version: 3, checkedAt: now, scope: 'live',
   disk: { state: 'ok', totalBytes: 100e9, freeBytes: 60e9 },
   backup: { state: 'available', count: 1, totalBytes: 1000, complete: true, latestKind: 'saved-copy', latestAt: now - 100 * 86400_000 }, attention: [], ...overrides,
   recording: { state: 'ok', writer: { state: 'ready' }, lastSourceCheckAt: now - 60000, lastLoopCompletedAt: now - 1000, ...overrides.recording } });
@@ -381,7 +382,7 @@ test('unsupported health updates preserve the last known warning instead of clea
     { id: 'recording', severity: 'critical', title: 'Database writes are failing', detail: 'Check storage access.' },
   ] }) });
   view.expireIntro();
-  for (const recordingHealth of [null, { version: 0 }, { version: 1 }, { version: 3 }]) {
+  for (const recordingHealth of [null, { version: 0 }, { version: 1 }, { version: 2 }]) {
     view.panel.update({ recordingHealth });
     assert.equal(view.element('recording-status').hidden, false);
     assert.equal(view.element('recording-status-issues').children.length, 1);
@@ -485,9 +486,9 @@ function performanceHistory(overrides = {}) {
     nativeCommitDuration: { ...timing, count: 639, meanMs: 9, p95Ms: 12, maxMs: 400 },
     controlQueueDelay: { ...timing, count: 60 }, normalQueueDelay: { ...timing, count: 760 },
     contention: { episodes: 3, totalMs: 925, maxMs: 600, active: false },
-    peakPending: 8, failedWrites: 0, queueRejected: 0, commandsNotSent: 0, incidents: [], committedTransactions: 640,
+    peakPending: 8, failedWrites: 0, queueRejected: 0, commandsNotSent: 0, controlRequestsBlocked: 0, incidents: [], committedTransactions: 640,
     transactionAttempts: 645, failedJobs: 1, cancelledJobs: 2, postCommitFailures: 1 };
-  return { version: 2, retentionMs: 7 * 86400_000, resolutionMs: 300_000,
+  return { version: 3, retentionMs: 7 * 86400_000, resolutionMs: 300_000,
     startedAt: now - 6 * 3600_000, checkedAt: now, elapsedMs: 6 * 3600_000,
     current: { pending: 0, oldestPendingMs: null, waitingMs: null, activeJobs: 0 },
     windows: { day, week: { ...day, requestedMs: 7 * 86400_000, failedWrites: 2, peakPending: 18 } }, ...overrides };
@@ -550,7 +551,7 @@ test('storage performance absence, zero samples, zero coverage and unsupported s
   view = storagePerformanceView(value, 'day', { now });
   assert.equal(view.journalSeal.mean, 'No samples');
   assert.equal(view.nativeCommit.mean, 'Unknown');
-  for (const invalid of [undefined, null, { version: 0 }, { version: 1 }]) {
+  for (const invalid of [undefined, null, { version: 0 }, { version: 1 }, { version: 2 }]) {
     assert.equal(storagePerformanceView(health({ recording: { history: invalid } }), 'day', { now }).available, false);
   }
   for (const scope of ['snapshot', 'history']) {
@@ -618,13 +619,16 @@ test('storage performance period stays local across polling and failed refresh w
 test('storage summary distinguishes current queue work from historical save and MQTT-command outcomes', () => {
   const history = performanceHistory();
   const value = health({ recording: { state: 'ok', history } });
-  history.windows.day.postCommitFailures = 0;
+  history.windows.day.postCommitFailures = 0; history.windows.day.failedJobs = 0;
   let view = storagePerformanceView(value, 'day', { now });
   assert.equal(view.state, 'Caught up');
   assert.equal(view.evidence, 'Past day · 6 h monitored');
-  assert.equal(view.historyState, 'No failures observed');
-  assert.equal(view.outcome, 'No failures observed during this period.');
+  assert.equal(view.historyState, 'No monitored failures observed');
+  assert.equal(view.outcome, 'No monitored failures observed during this period.');
   assert.equal(view.stateTone, 'neutral');
+  history.windows.day.failedJobs = 1;
+  assert.equal(storagePerformanceView(value, 'day', { now }).historyState, 'Problems observed', 'A failed queued operation cannot coexist with a no-failures headline');
+  history.windows.day.failedJobs = 0;
   history.windows.day.failedWrites = 2;
   history.windows.day.queueRejected = 1;
   history.windows.day.commandsNotSent = 3;
@@ -649,6 +653,37 @@ test('storage summary distinguishes current queue work from historical save and 
   history.windows.day.commandsNotSent = null;
   history.windows.day.failedWrites = 0; history.windows.day.queueRejected = 0;
   assert.doesNotMatch(storagePerformanceView(value, 'day', { now }).historyState, /no failures observed/i);
+});
+
+test('local operations render actual collector outcomes in standby and preserve disclosure and focus across polls', () => {
+  let tick = 0;
+  const observer = createStorageOperationHealth({ clock: () => now - 1000 + tick, monotonic: () => tick });
+  const operation = observer.begin('learning-publication', { queued: true, scope: 'standby' });
+  tick = 20; operation.start(); tick = 80;
+  operation.finish('failed', { reason: 'committed-followup-failed', committed: true });
+  tick = 1000;
+  const value = health({ scope: 'snapshot', operations: observer.status(), recording: { history: null } });
+  const rendered = storageOperationsView(value, 'day', { now });
+  assert.equal(rendered.available, true);
+  assert.equal(rendered.rows.length, observer.status().coverage.length, 'Every backend operation family has a current UI label');
+  const publication = rendered.rows.find(row => row.kind === 'learning-publication');
+  assert.equal(publication.summary, 'Problems observed');
+  assert.match(publication.latest, /Local standby.*save committed; follow-up work failed.*commit was confirmed/i);
+  assert.match(publication.duration, /average 80 ms.*worst 80 ms.*1 finished job/);
+  assert.equal(rendered.rows.find(row => row.kind === 'csv-import').summary, 'Not observed');
+  assert.match(rendered.evidence, /On this computer.*past day/);
+  assert.match(storageOperationsView(value, 'week', { now, unavailable: true }).evidence, /^Last known.*past week/);
+  const dashboard = panelFixture(); dashboard.panel.update({ recordingHealth: value });
+  assert.equal(dashboard.element('recording-performance-data').hidden, true);
+  assert.equal(dashboard.element('recording-performance-history-state').textContent, 'Problems observed', 'Local failures remain visible in the collapsed Storage health summary');
+  const rows = dashboard.element('recording-performance-operation-list').children;
+  const node = rows.find(row => row.dataset.kind === 'learning-publication');
+  node.open = true; node.children[0].focus();
+  dashboard.panel.update({ recordingHealth: value });
+  assert.equal(rows.find(row => row.dataset.kind === 'learning-publication'), node);
+  assert.equal(node.open, true); assert.equal(dashboard.document.activeElement, node.children[0]);
+  dashboard.panel.clear(); assert.equal(dashboard.element('recording-performance-operation-list').children.length, 0);
+  assert.equal(storageOperationsView({ ...value, version: 2 }, 'day', { now }).available, false);
 });
 
 test('writer availability is independent of queue emptiness and historical coverage', () => {
@@ -753,7 +788,7 @@ test('storage problems use safe labels, preserve blocked commands and distinguis
   dashboard.panel.update({ recordingHealth: value });
   assert.equal(dashboard.element('recording-performance-incident-list').children.length, 1);
   const row = dashboard.element('recording-performance-incident-list').children[0];
-  assert.equal(row.children[0].children[0].textContent, 'MQTT command not sent');
+  assert.equal(row.children[0].children[0].textContent, 'Device command not sent');
   assert.equal(row.children[0].children[1].dateTime, new Date(incident.at).toISOString());
   assert.equal(row.children[1].textContent, 'Heat-pump command');
   assert.match(row.children[2].textContent, /deadline expired while waiting for recording.*command was not sent/);

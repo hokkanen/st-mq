@@ -17,6 +17,7 @@ import { createShellyEvseAdapter } from '../charging/shelly-evse.js';
 import { createChargingTeslaCapture, decodeChargingTeslaField } from '../charging/teslamate.js';
 import { mqttRouting } from './mqtt-routing.js';
 import { storageFailureCode } from '../storage/write-health.js';
+import { createControlAttempt } from '../storage/control-attempt.js';
 import { attachMqttStartupDiagnostic } from './startup-diagnostic.js';
 import { retainStorageWithdrawal } from './storage-withdrawal.js';
 
@@ -107,6 +108,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const unsubscribeStorage = store.onWriteSettled?.(resumePublications);
   const publicationFailure = (code, message) => Object.assign(new Error(message), { code });
   let stopping = false, stopped = false, disconnectedRecorded = false, lastSnapshotRequestedAt = null, lastGatewayStatusAt = null;
+  let commandEvidenceRevoked = false;
   for (const [id, connection] of [['primary', config.connections.mqtt], ...(routing.ha ? [['ha', routing.ha]] : [])]) {
     const client = connect(connection.address, { username: connection.user, password: connection.pw,
       reconnectPeriod: 5000, clean: true, connectTimeout: 10_000, queueQoSZero: false, resubscribe: false });
@@ -157,6 +159,12 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const evse = evseConfig?.enabled ? createShellyEvseAdapter({ config: evseConfig,
     broker: { address: primaryIdentity.address, user: primaryIdentity.username }, client, store, engine, clock: () => engine.clock(), canControl }) : null;
   if (evse) void engine.charging.setAdapter('charger2', evse);
+  for (const [context, enabled] of [
+    ['heat-pump-command', Boolean(decoder)], ['switch-command', Boolean(equipmentSettings?.devices?.some(row => row.enabled && ['switch', 'metered_switch'].includes(row.kind)))],
+    ['cover-command', Boolean(equipmentSettings?.devices?.some(row => row.enabled && ['door', 'cover'].includes(row.kind)))], ['caravan-command', Boolean(equipmentSettings?.devices?.some(row => row.enabled && row.kind === 'dehumidifier'))],
+    ['floor-control', Boolean(config.floorPreheat?.deviceMac)],
+    ['garage-command', Boolean(config.garage?.enabled)], ['garage-protection', Boolean(config.garage?.enabled)],
+  ]) try { store.writeHealth?.monitorCommands?.(context, { enabled }); } catch {}
   const source = decoder ? 'husdata-h66' : teslamate ? 'teslamate' : 'mqtt-temperature';
   const h66Signals = decoder ? Object.values(H66_REGISTERS).map(({ signal, unit }) => ({
     source: 'husdata-h66', device: deviceId, signal: signal === 'integral' ? 'heating_integral' : signal, unit,
@@ -214,12 +222,15 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     if (!channel?.connected || stopped) { reject(new Error('MQTT unavailable')); return; }
     if (!canControl()) { reject(new Error('This instance no longer owns device control')); return; }
     const { client, pendingPublications } = channel;
-    const { noReplay = false, beforePublish, beforeWrite, preparePublish, signal, recordingContext, recordingDeadlineExpired, onRecordingBlocked,
+    const { noReplay = false, beforePublish, beforeWrite, preparePublish, signal, recordingContext, recordingDeadlineExpired,
+      recordingKind, recordingAttempt, onFirstWrite, onRecordingBlocked,
       ...publicationOptions } = options ?? {};
     const generation = channel.generation;
     const readRequest = decoder && topic === `${deviceId}/HP/CMD` && payload === 'GETALL'
       || equipment?.isReadRequest(topic, payload, broker);
-    let finished = false, failed = false, outgoingId = null, outgoingRemoved = false, dispatched = false;
+    const evidence = recordingAttempt ?? createControlAttempt({ store, context: recordingContext, kind: recordingKind === 'query' || readRequest ? 'query' : 'mutation' });
+    let lateStorageBlock = null, dispatched = false;
+    let finished = false, failed = false, outgoingId = null, outgoingRemoved = false;
     let preparing = false, prepared = false;
     const recordingPending = () => store.writePending === true || [...channels.values()].some(row => row.recordingPending > 0);
     const recordingFailed = () => [...channels.values()].some(row =>
@@ -236,18 +247,25 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     const finish = (error, recordingExpired = false) => {
       if (finished) return;
       let blockedCode = null;
-      // This is a count of witnessed unsent attempts, never a command-success
-      // tracker. Source-clock/subscription waits and ordinary cancellation do
-      // not establish that storage prevented dispatch.
+      // Keep the caller's witnessed pre-dispatch storage receipt separate from
+      // the passive attempt counter, which owns exact-once accounting below.
       if (error && !readRequest && !dispatched) {
         const reason = error.code === 'MQTT_STORAGE_FAILED' && recordingFailed() ? 'recording-failed'
           : recordingExpired && waitingPublications.has(attempt) && recordingPending() ? 'recording-wait-expired' : null;
-        if (reason) {
-          blockedCode = reason === 'recording-failed' ? 'MQTT_STORAGE_FAILED' : 'MQTT_STORAGE_PENDING';
-          try { store.writeHealth?.commandNotSent?.(recordingContext, reason); }
-          catch { /* Diagnostic failure cannot change the command outcome. */ }
+        if (reason) blockedCode = reason === 'recording-failed' ? 'MQTT_STORAGE_FAILED' : 'MQTT_STORAGE_PENDING';
+      }
+      // Observe only established storage causes before the actual transport
+      // write. Calling MQTT publish() alone does not establish dispatch.
+      if (error) {
+        evidence.fail(error);
+        if (error.code === 'MQTT_STORAGE_FAILED' && (recordingFailed() || store.writerFailed)) evidence.notSent('recording-failed');
+        if (lateStorageBlock) evidence.notSent(lateStorageBlock);
+        if (recordingExpired) {
+          evidence.storageWaiting(waitingPublications.has(attempt) && recordingPending() || preparing && recordingPending());
+          evidence.expire();
         }
       }
+      evidence.finish();
       finished = true; failed = Boolean(error); clearTimeout(timer); pendingPublications.delete(finish);
       waitingPublications.delete(attempt); signal?.removeEventListener('abort', cancelled);
       client.off?.('packetsend', capturePacket);
@@ -288,9 +306,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         if (!beforePublish || !signal) {
           finish(publicationFailure('MQTT_STORAGE_PENDING', 'Device control is waiting for received observations to reach storage')); return;
         }
+        evidence.storageWaiting(recordingPending());
         waitingPublications.add(attempt); return;
       }
-      waitingPublications.delete(attempt);
+      waitingPublications.delete(attempt); evidence.storageWaiting(false);
       if (preparePublish && !prepared) {
         preparing = true;
         Promise.resolve().then(preparePublish).then(() => {
@@ -306,8 +325,20 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       }
       if (noReplay) client.on?.('packetsend', capturePacket);
       const previousId = noReplay ? client.getLastMessageId?.() : null;
-      dispatched = true;
-      try { client.publish(topic, payload, { ...publicationOptions, signal, beforeWrite }, finish); } catch { finish(new Error('MQTT publication failed')); }
+      const observedBeforeWrite = beforeWrite ? () => {
+        const result = beforeWrite();
+        // The floor route checks recording admission before its native guard.
+        // A native/identity veto by itself supplies no storage-cause evidence.
+        if (result === false && recordingContext === 'floor-control' && canControl()
+          && !signal?.aborted && channel.connected && generation === channel.generation && !stopped) {
+          if (recordingFailed() || store.writerFailed) lateStorageBlock = 'recording-failed';
+          else if (recordingPending()) lateStorageBlock = 'recording-pending';
+        }
+        return result;
+      } : undefined;
+      try { client.publish(topic, payload, { ...publicationOptions, signal, beforeWrite: observedBeforeWrite,
+        onFirstWrite: () => { dispatched = true; evidence.dispatched(); onFirstWrite?.(); } }, finish); }
+      catch { finish(new Error('MQTT publication failed')); }
       if (noReplay) {
         const allocatedId = client.getLastMessageId?.();
         if (Number.isInteger(allocatedId) && allocatedId !== previousId) {
@@ -320,11 +351,19 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     signal?.addEventListener('abort', cancelled, { once: true });
     attempt();
   });
-  const publish = (...args) => {
-    if (!store.transactionDepth || !store.afterCommit) return publishNow(...args);
+  const publish = (topic, payload, options = {}, broker) => {
+    const query = options.recordingKind === 'query' || decoder && topic === `${deviceId}/HP/CMD` && payload === 'GETALL'
+      || equipment?.isReadRequest(topic, payload, broker);
+    const evidence = options.recordingAttempt ?? createControlAttempt({ store, context: options.recordingContext,
+      kind: query ? 'query' : 'mutation' });
+    const currentOptions = { ...options, recordingAttempt: evidence };
+    if (!store.transactionDepth || !store.afterCommit) return publishNow(topic, payload, currentOptions, broker);
     return new Promise((resolve, reject) => {
-      store.afterCommit(() => { publishNow(...args).then(resolve, reject); });
-      store.afterRollback?.(() => reject(new Error('Observation storage failed before device publication')));
+      store.afterCommit(() => { publishNow(topic, payload, currentOptions, broker).then(resolve, reject); });
+      store.afterRollback?.(reason => {
+        evidence.fail(reason); evidence.finish();
+        reject(new Error('Observation storage failed before device publication'));
+      });
     });
   };
   const refreshSubscriptions = (topics, broker = 'primary') => Promise.all([...new Set(topics)].map(topic => new Promise((resolve, reject) => {
@@ -409,7 +448,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     lastSnapshotRequestedAt = engine.clock();
     await publish(`${deviceId}/HP/CMD`, 'GETALL', { qos: 0, retain: false });
   };
-  const h66 = decoder ? createH66Controller({ deviceId, publish, requestSnapshot, store, clock: () => engine.clock(), config: settings }) : null;
+  const h66 = decoder ? createH66Controller({ deviceId, publish, requestSnapshot, store, clock: () => engine.clock(), config: settings,
+    canAttributeStorageBlock: () => !commandEvidenceRevoked && !stopped && !stopping && canControl() }) : null;
   const matchesTopic = (topic, subscription) => subscription.endsWith('/#')
     ? topic.startsWith(subscription.slice(0, -1)) : subscription === topic;
   const finishReadiness = (channel, failed = false) => {
@@ -899,6 +939,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     ready: channel.ready && (id !== 'primary' || !evse || evse.snapshot().mqtt.subscriptionStatus === 'subscribed') }]));
   if (equipment) equipment.brokerStatus = brokerStatus;
   return { h66, garage, floorOverride, equipment, ready, revoke: () => {
+    commandEvidenceRevoked = true;
     for (const channel of channels.values()) {
       channel.gate.revoke();
       // Storage-waiting commands have not reached the MQTT.js gate yet.

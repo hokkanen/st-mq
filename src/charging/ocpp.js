@@ -6,6 +6,7 @@ import { resolveChargingDeadline } from './settings.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { easeeScheduleTakeoverSupported, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, normalizeScheduleState } from './easee.js';
 import { validateAdmittedSourceTime } from '../domain/time-evidence.js';
+import { createControlAttempt } from '../storage/control-attempt.js';
 
 const KIND = 'ocpp-tx-pause', MAX_PAUSE_MS = 48 * 3600_000, MIN_PAUSE_MS = 15 * 60_000;
 const MAX_ATTEMPTS = 3, MAX_AGE_MS = 60_000;
@@ -162,10 +163,11 @@ async function handoverOperation(step, operation) {
 
 export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = () => false,
   scope, clock = Date.now, canControl = () => false, takeoverNative, setStartPermission = () => {}, readCurrentSupply,
-  readDeviceInfo = () => null, readAllowanceTelemetry = null, requestMeterReadback } = {}) {
+  readDeviceInfo = () => null, readAllowanceTelemetry = null, requestMeterReadback,
+  controlAttempt = () => createControlAttempt() } = {}) {
   if (!scopeValid(scope) || typeof request !== 'function' || typeof readSnapshot !== 'function') throw fail('invalid-ocpp-adapter');
   const adapter = {
-    scope, ownershipNamespace: 'ocpp', supportsTakeover: typeof takeoverNative === 'function',
+    scope, ownershipNamespace: 'ocpp', supportsTakeover: typeof takeoverNative === 'function', controlAttempt,
     capabilities: { scheduling: true, currentControl: false, externalLoadBalancing: true },
     ...(typeof readCurrentSupply === 'function' ? { readCurrentSupply } : {}),
     ...(typeof requestMeterReadback === 'function' ? { requestMeterReadback(snapshot, { signal, guard = () => false } = {}) {
@@ -182,7 +184,7 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
       if (!isCurrent(snapshot) || !guard()) throw fail('control-revoked');
       return normalizeOcppComposite(reply, { now, duration });
     },
-    async install(instruction, snapshot, { signal, guard = () => true, beforeWrite = () => {}, takeover = false } = {}) {
+    async install(instruction, snapshot, { signal, guard = () => true, beforeWrite = () => {}, takeover = false, attempt } = {}) {
       if (!validInstruction(instruction)) throw fail('invalid-plan');
       const allowed = () => canControl() && guard() && isCurrent(snapshot) && snapshot.transactionConfirmed
         && snapshot.transactionId === instruction.transactionId
@@ -202,7 +204,7 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
       // A natural stop while queued cannot become our identity response. This
       // extra guard runs only before send: a successful command is expected to
       // change Charging to SuspendedEVSE before its acknowledgement can arrive.
-      const reply = await request('SetChargingProfile', clone(instruction.payload), { signal, guard: allowed, beforeSend });
+      const reply = await request('SetChargingProfile', clone(instruction.payload), { signal, guard: allowed, beforeSend, attempt });
       if (reply?.status !== 'Accepted') throw fail('profile-rejected');
     },
     async takeover(snapshot, { signal, guard = () => false, beforeWrite = () => {} } = {}) {
@@ -228,11 +230,11 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
         return after;
       });
     },
-    async clear(instruction, snapshot, { signal, guard = () => true } = {}) {
+    async clear(instruction, snapshot, { signal, guard = () => true, attempt } = {}) {
       if (!id(instruction?.profileId)) throw fail('invalid-plan');
       const allowed = () => canControl() && guard() && isCurrent(snapshot, { requireTransaction: false });
       if (!allowed()) throw fail('control-revoked');
-      const reply = await request('ClearChargingProfile', { id: instruction.profileId }, { signal, guard: allowed });
+      const reply = await request('ClearChargingProfile', { id: instruction.profileId }, { signal, guard: allowed, attempt });
       if (!['Accepted', 'Unknown'].includes(reply?.status)) throw fail('profile-rejected');
     },
     normalize(snapshot = {}, { now = clock() } = {}) {
@@ -274,6 +276,15 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
     },
     createController: options => createOcppChargingController({ ...options, adapter }),
   };
+  for (const name of ['install', 'clear']) {
+    const operation = adapter[name];
+    adapter[name] = async (instruction, snapshot, options = {}) => {
+      const attempt = options.attempt ?? controlAttempt();
+      try { return await operation(instruction, snapshot, { ...options, attempt }); }
+      catch (cause) { attempt.fail(cause); throw cause; }
+      finally { attempt.finish(); }
+    };
+  }
   return adapter;
 }
 
@@ -528,11 +539,16 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       snapshot: snapshot ? { ...clone(snapshot), nativeInstruction: currentOwnership ? clone(state.owned) : null } : null };
   };
   const display = (next, message, code = null, step = null) => { phase = next; reason = message; errorCode = code; reasonCode = step; return status(); };
-  async function commit(changes) {
+  async function commit(changes, attempt) {
     if (closed) throw fail('control-revoked');
     const next = { ...state, ...changes };
-    try { await saveState(clone(next)); } catch { throw fail('storage-failed'); }
+    try { await saveState(clone(next)); } catch (cause) { attempt?.fail(cause); throw fail('storage-failed'); }
     state = next;
+  }
+  async function prepareCommand(changes) {
+    const attempt = adapter.controlAttempt?.() ?? createControlAttempt();
+    try { await commit(changes, attempt); return attempt; }
+    catch (cause) { attempt.finish(); throw cause; }
   }
   const canWrite = current => !closed && current === generation && canControl();
   function retainExecution(plan) {
@@ -721,20 +737,24 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       ? clone(next) : null;
   }
   async function clearInstruction(instruction, current, signal) {
+    const attempt = adapter.controlAttempt?.() ?? createControlAttempt();
+    try {
     if (!state.pending || state.pending.action !== 'clear' || state.pending.instruction.fingerprint !== instruction.fingerprint)
-      await commit({ pending: { action: 'clear', instruction, execution: null, attempts: 0, nextAttemptAt: 0, accepted: false } });
-    return dispatch(current, signal);
+      await commit({ pending: { action: 'clear', instruction, execution: null, attempts: 0, nextAttemptAt: 0, accepted: false } }, attempt);
+    return await dispatch(current, signal, attempt);
+    } finally { attempt.finish(); }
   }
-  async function dispatch(current, signal) {
+  async function dispatch(current, signal, attempt = adapter.controlAttempt?.() ?? createControlAttempt()) {
+    try {
     let pending = state.pending;
     if (!pending || !canWrite(current)) throw fail('control-revoked');
     if (pending.nextAttemptAt > clock()) return false;
     if (!pending.accepted) {
       if (pending.attempts >= MAX_ATTEMPTS) throw fail('retry-limit');
       const attempts = pending.attempts + 1;
-      await commit({ pending: { ...pending, attempts, nextAttemptAt: clock() + (attempts === 1 ? 30_000 : 120_000) } });
+      await commit({ pending: { ...pending, attempts, nextAttemptAt: clock() + (attempts === 1 ? 30_000 : 120_000) } }, attempt);
       if (!canWrite(current)) throw fail('control-revoked');
-      const options = { signal, guard: () => canWrite(current)
+      const options = { signal, attempt, guard: () => canWrite(current)
         && (pending.action !== 'clear' || identification?.mode !== 'probe' || state.manual || snapshot.pluggedIn !== true
           || identification.phase === 'pausing' || clock() < identification.probeUntil) };
       const install = () => adapter.install(pending.instruction, snapshot, { ...options,
@@ -746,7 +766,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
           // guarded Charging observation may witness a causal identity pause.
           // Retry from a stopped state drops the earlier uncertain witness.
           await commit({ pending: { ...state.pending, instruction: { ...instruction,
-            ...(before.connectorStatus === 'Charging' ? { pauseRequestedAt: clock() } : {}) } } });
+            ...(before.connectorStatus === 'Charging' ? { pauseRequestedAt: clock() } : {}) } } }, attempt);
         } });
       if (pending.action === 'install') await (takeoverState === 'pending'
         ? handoverOperation('takeover-pause-install', install) : install());
@@ -770,6 +790,8 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     }
     await commit({ owned: { ...pending.instruction, confirmedAt: clock() }, execution: pending.execution, released: false, provisional: false, pending: null, pauseWitness: null }); ownsInstruction = true;
     return true;
+    } catch (cause) { attempt.fail(cause); throw cause; }
+    finally { attempt.finish(); }
   }
   async function takeOver(current, token, signal) {
     takeoverState = 'blocked'; takeoverAttempt = token;
@@ -826,16 +848,17 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     }
     const samePause = instruction?.purpose === 'session-pause' && instruction.connectedAt === desired.sessionPause.connectedAt
       && instruction.requestedAt >= desired.sessionPause.requestedAt;
+    let attempt;
     if (!samePause) {
       const profileId = instruction?.profileId ?? state.nextProfileId;
       if (profileId >= 2147483646) throw fail('invalid-plan');
       const next = { ...ocppSessionPauseInstruction({ profileId, transactionId: snapshot.transactionId,
         connectedAt: desired.sessionPause.connectedAt, now: Math.floor(clock() / 1000) * 1000 }), requestedAt: clock() };
-      await commit({ nextProfileId: instruction ? state.nextProfileId : profileId + 1,
+      attempt = await prepareCommand({ nextProfileId: instruction ? state.nextProfileId : profileId + 1,
         pending: { action: 'install', instruction: next, execution: null, attempts: 0, nextAttemptAt: 0, accepted: false } });
     }
     if (state.pending) {
-      if (!await dispatch(current, signal)) return display('pause-unconfirmed', 'Pause requested; the native command is waiting for its bounded retry.');
+      if (!await dispatch(current, signal, attempt)) return display('pause-unconfirmed', 'Pause requested; the native command is waiting for its bounded retry.');
     } else {
       const until = verificationUntil(state.owned, clock());
       const composite = await adapter.composite(snapshot, until + 60_000, { signal, guard: () => canWrite(current) });
@@ -1085,9 +1108,9 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         const next = { ...ocppPauseInstruction({ profileId, transactionId: snapshot.transactionId, startAt, now }),
           requestedAt: clock(), ...(identification ? { purpose: 'identification', identificationId: identification.id,
             identificationConnectedAt: identification.connectedAt, ...(identification.mode === 'probe' ? { mode: 'probe' } : {}) } : {}) };
-        await commit({ nextProfileId: state.owned || state.pending ? state.nextProfileId : profileId + 1,
+        const attempt = await prepareCommand({ nextProfileId: state.owned || state.pending ? state.nextProfileId : profileId + 1,
           pending: { action: 'install', instruction: next, execution, attempts: 0, nextAttemptAt: 0, accepted: false } });
-        if (!await dispatch(current, signal)) return display('unconfirmed', 'Native pause installation is pending.');
+        if (!await dispatch(current, signal, attempt)) return display('unconfirmed', 'Native pause installation is pending.');
       } else {
         const composite = await adapter.composite(snapshot, startAt + 60_000, { signal, guard: () => canWrite(current) });
         if (!coversZero(composite, Math.max(clock(), composite.startAt), startAt)) {

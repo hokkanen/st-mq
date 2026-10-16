@@ -1,3 +1,4 @@
+import { observeStorageOperation } from './operation-health.js';
 import { chmod, mkdir, mkdtemp, open, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { backup as sqliteBackup } from 'node:sqlite';
@@ -39,7 +40,7 @@ function finishSnapshot(path, sourcePath, { exportedAt, onProgress, signal, chec
  * A caller supplying sourcePath must hold that file's lifetime for this call.
  * A worker pins a WAL read snapshot, allowing live recording to continue.
  * Only the private completed copy is opened writable or changes journal mode. */
-export async function createDatabaseBackup({ database, sourcePath, destination, exportedAt = Date.now(),
+async function performDatabaseBackup({ database, sourcePath, destination, exportedAt = Date.now(),
   onProgress = () => {}, signal }) {
   if (Boolean(database) === Boolean(sourcePath)) throw new TypeError('Specify one database backup source');
   signal?.throwIfAborted();
@@ -89,4 +90,8 @@ export async function createDatabaseBackup({ database, sourcePath, destination, 
     await publishDatabaseFile(staging, path);
   } finally { await rm(directory, { recursive: true, force: true }); }
   return path;
+}
+
+export function createDatabaseBackup(options) {
+  return observeStorageOperation('backup', () => performDatabaseBackup(options), { signal: options?.signal, scope: 'shared' });
 }

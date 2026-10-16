@@ -1,3 +1,4 @@
+import { storageOperationHealth } from '../storage/operation-health.js';
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, opendir, rename, rm } from 'node:fs/promises';
@@ -106,6 +107,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
   getBackupCatalog, pairContext, clock = Date.now,
   recoveryModule = () => import('../recovery/service.js'), directory = join(dirname(store.path), 'history-recovery'),
   maxUploadBytes = 8 * 1024 ** 3, timeoutMs, uploadTimeoutMs = 3_600_000, fullVerifier = verifyDatabase } = {}) {
+  storageOperationHealth.register('recovery');
   const key = 'history-recovery:coordinator';
   let state = store.getState(key) ?? { version: 1, sources: [], receipts: [], job: null, review: null };
   if (!validState(state))

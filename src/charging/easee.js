@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import moment from 'moment-timezone';
 import { setTimeout as delay } from 'node:timers/promises';
+import { createControlAttempt } from '../storage/control-attempt.js';
 
 // Public Easee /schedules OpenAPI checked 2026-09-15. Delayed startTime is
 // a LOCAL TIME, not a date-time. The controller retains the absolute occurrence.
@@ -308,13 +309,19 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now(), allowan
 
 /** Inject existing authenticated/rate-limited transport; raw account data stays local. */
 export function createEaseeScheduleAdapter({ request, readObservations, chargerId, equalizerId, clock = Date.now, canControl = () => false,
-  waitForReadback = (ms, signal) => delay(ms, undefined, { signal }), settleReadback = null, readAllowanceEvidence = null }) {
+  waitForReadback = (ms, signal) => delay(ms, undefined, { signal }), settleReadback = null, readAllowanceEvidence = null,
+  controlAttempt = () => createControlAttempt(), dispatchObserved = false }) {
   const base = `https://api.easee.com/api/chargers/${encodeURIComponent(chargerId)}/schedules`;
   readObservations ??= (deviceId, ids, { signal } = {}) => request(
     `https://api.easee.com/state/${encodeURIComponent(deviceId)}/observations?ids=${ids.join(',')}`, { method: 'GET', signal });
   let allocationA = null, allocationReadAt = -Infinity, allocationConfirmedAt = -Infinity;
   let allocationEpoch = null, allocationReadEpoch = null, allocationConfirmedEpoch = null;
+  const writeRequest = (attempt, url, options) => {
+    if (!dispatchObserved) attempt.dispatched();
+    return request(url, { ...options, controlAttempt: attempt }, true);
+  };
   const adapter = {
+    controlAttempt,
     normalize(snapshot, options = {}) { return easeeChargerTelemetry(snapshot, { now: clock(), ...options,
       ...(snapshot?.allowanceEvidence?.source === 'easee-stream' && readAllowanceEvidence
         ? { allowanceEvidence: readAllowanceEvidence() ?? { connected: false, synchronized: false } } : {}) }); },
@@ -385,7 +392,7 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
     },
     readTelemetry(options = {}) { return adapter.read({ ...options, telemetryOnly: true }); },
     async pauseSession({ expectedSnapshot, signal, canMutate = () => false,
-      beforeWrite = () => {}, afterWrite = () => {} } = {}) {
+      beforeWrite = () => {}, afterWrite = () => {}, attempt } = {}) {
       const allowed = () => canControl() && canMutate();
       const before = await adapter.read({ signal, forceRest: true });
       if (!expectedSnapshot || easeeTakeoverFingerprint(before) !== easeeTakeoverFingerprint(expectedSnapshot))
@@ -398,8 +405,8 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       await beforeWrite(clone(before));
       if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
       try {
-        await request(`${base.slice(0, -'/schedules'.length)}/commands/pause_charging`,
-          { method: 'POST', signal, controlGuard: allowed }, true);
+        await writeRequest(attempt, `${base.slice(0, -'/schedules'.length)}/commands/pause_charging`,
+          { method: 'POST', signal, controlGuard: allowed });
       } catch (error) {
         if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
         if ([401, 403].includes(error?.status ?? error?.response?.status)) throw failure('access-denied', 'Easee rejected charging authorization.');
@@ -447,6 +454,8 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       if (resumeRequired(current) && !canResume(current))
         throw failure('resume-current-limit', 'The charger pause cannot be cleared while preserving its current limit.');
       const write = async (stage, url, body, verify) => {
+        const attempt = controlAttempt();
+        try {
         const dispatchAllowed = () => allowed() && (stage !== 'schedule' || !pause || pause.startAt - clock() >= 15 * 60_000);
         const before = await adapter.read({ signal, forceRest: true });
         if (!same(before)) throw failure('state-changed', 'The charger instruction changed during automatic handover.');
@@ -455,8 +464,8 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
         if (!dispatchAllowed()) throw failure('control-revoked', 'Charging control authority or the planned pause changed.');
         const requestedAt = clock();
         try {
-          await request(url, { method: 'POST', ...(body ? { headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(body) } : {}), signal, controlGuard: dispatchAllowed }, true);
+          await writeRequest(attempt, url, { method: 'POST', ...(body ? { headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body) } : {}), signal, controlGuard: dispatchAllowed });
         } catch (error) {
           if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
           if ([401, 403].includes(error?.status ?? error?.response?.status)) throw failure('access-denied', 'Easee rejected charging authorization.');
@@ -491,6 +500,8 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
         }
         current = after;
         await afterWrite({ stage, snapshot: clone(current), requestedAt });
+        } catch (cause) { attempt.fail(cause); throw cause; }
+        finally { attempt.finish(); }
         if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
       };
       if (pause) {
@@ -537,7 +548,7 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       return current;
     },
     async installDelayed({ startAt, timezone, maximumAmps, expectedFingerprint, expectedControlFingerprint, signal,
-      canMutate = () => true, allowChargingPause = false, beforeWrite = () => {}, identification = null } = {}) {
+      canMutate = () => true, allowChargingPause = false, beforeWrite = () => {}, identification = null, attempt } = {}) {
       if (identification !== null && (typeof identification !== 'object' || Array.isArray(identification)
         || Object.keys(identification).some(key => !['id', 'connectedAt'].includes(key))
         || typeof identification.id !== 'string' || !identification.id.length || identification.id.length > 128
@@ -562,12 +573,15 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       if (!temporalGuard()) throw unsentStart();
       // Let the controller durably record this guarded observation before the
       // request. A failed save must leave the native charger untouched.
+      attempt.storageWaiting(true);
       await beforeWrite(before);
+      if (canMutate() && canControl() && startAt - clock() < (identification ? 1000 : 15 * 60000)) attempt.expire();
+      attempt.storageWaiting(false);
       if (!temporalGuard()) throw unsentStart();
       if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
       try {
-        await request(`${base}/delayed`, { method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ enabled: true, ...delayed }), signal, controlGuard: temporalGuard }, true);
+        await writeRequest(attempt, `${base}/delayed`, { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ enabled: true, ...delayed }), signal, controlGuard: temporalGuard });
       } catch (error) {
         if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
         if ([401, 403].includes(error?.status ?? error?.response?.status)) throw failure('access-denied', 'Easee rejected charging authorization.');
@@ -576,7 +590,7 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       try { return await adapter.read({ signal, forceRest: true }); }
       catch { throw failure('readback-failed', 'The new Easee schedule could not be read back.'); }
     },
-    async clear({ kind = 'delayed', expectedFingerprint, expectedControlFingerprint, expectedNativeFingerprint, signal, canMutate = () => true } = {}) {
+    async clear({ kind = 'delayed', expectedFingerprint, expectedControlFingerprint, expectedNativeFingerprint, signal, canMutate = () => true, attempt } = {}) {
       if (!['delayed', 'daily', 'weekly'].includes(kind)) throw new Error('This Easee schedule requires manual release in the Easee app');
       const before = await adapter.read({ signal, forceRest: true });
       if (before.fingerprint !== expectedFingerprint || before.schedule.enabled !== kind
@@ -584,7 +598,7 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
         || expectedNativeFingerprint && easeeTakeoverFingerprint(before) !== expectedNativeFingerprint)
         throw failure('state-changed', 'Easee changed before schedule handover.');
       if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
-      try { await request(`${base}/${kind}/disable`, { method: 'POST', signal, controlGuard: canMutate }, true); }
+      try { await writeRequest(attempt, `${base}/${kind}/disable`, { method: 'POST', signal, controlGuard: canMutate }); }
       catch (error) {
         if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');
         if ([401, 403].includes(error?.status ?? error?.response?.status)) throw failure('access-denied', 'Easee rejected charging authorization.');
@@ -594,5 +608,14 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       catch { throw failure('readback-failed', 'Easee schedule handover could not be read back.'); }
     },
   };
+  for (const name of ['pauseSession', 'installDelayed', 'clear']) {
+    const operation = adapter[name];
+    adapter[name] = async (options = {}) => {
+      const attempt = options.attempt ?? controlAttempt();
+      try { return await operation({ ...options, attempt }); }
+      catch (cause) { attempt.fail(cause); throw cause; }
+      finally { attempt.finish(); }
+    };
+  }
   return adapter;
 }

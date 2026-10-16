@@ -1074,7 +1074,7 @@ G_warming = G / 2</code>
                 </section>
                 <section id="recording-performance-data" aria-labelledby="recording-performance-history-title" hidden>
                   <div class="recording-performance-toolbar">
-                    <div><h4 id="recording-performance-history-title">Monitored history</h4><p id="recording-performance-coverage" class="recording-performance-coverage"></p></div>
+                    <div><h4 id="recording-performance-history-title">Runtime writer history</h4><p id="recording-performance-coverage" class="recording-performance-coverage"></p></div>
                     <div class="recording-performance-period" role="group" aria-label="Storage health period">
                       <button id="recording-performance-day" type="button" aria-pressed="true">Past day</button>
                       <button id="recording-performance-week" type="button" aria-pressed="false">Past week</button>
@@ -1101,10 +1101,12 @@ G_warming = G / 2</code>
                     <dl class="recording-performance-result-counts">
                       <div><dt>Failed save attempts</dt><dd id="recording-performance-failed"></dd></div>
                       <div><dt>Queue-full refusals</dt><dd id="recording-performance-rejected"></dd></div>
-                      <div><dt>MQTT commands not sent</dt><dd id="recording-performance-commandsNotSent"></dd></div>
+                      <div><dt>Device commands not sent</dt><dd id="recording-performance-commandsNotSent"></dd></div>
+                      <div><dt>Control requests blocked by storage</dt><dd id="recording-performance-controlRequestsBlocked"></dd></div>
+                      <div><dt>Failed queued operations</dt><dd id="recording-performance-failedJobs"></dd></div>
                       <div><dt>Saved; follow-up failed</dt><dd id="recording-performance-postCommit"></dd></div>
                     </dl>
-                    <p class="recording-health-evidence">Saves count operations, not readings. Commands cover confirmed recording blocks on monitored MQTT requests; charging is excluded.</p>
+                    <p class="recording-health-evidence">Saves count operations, not readings. Device commands count known unsent attempts blocked by storage, including charging. A blocked control request may fail before any device command exists. Requests, commands and save attempts can overlap; do not add these counts. Queued-operation failures can have application causes.</p>
                   </section>
                   <div id="recording-performance-incidents" class="recording-performance-incidents" hidden>
                     <h5>Latest problem of each type</h5><ul id="recording-performance-incident-list"></ul>
@@ -1140,7 +1142,7 @@ G_warming = G / 2</code>
                       </table>
                       <div class="recording-performance-diagnostics">
                         <section aria-labelledby="recording-performance-queue-title"><h5 id="recording-performance-queue-title">Queue &amp; writer lock</h5><dl class="recording-performance-outcomes"><div><dt>Queue wait · approx. p95</dt><dd id="recording-performance-queue-p95"></dd></div><div><dt>Writer-lock wait episodes</dt><dd id="recording-performance-contention"></dd></div><div><dt>Writer-lock wait time</dt><dd id="recording-performance-contentionDetail"></dd></div><div><dt>Peak queued operations</dt><dd id="recording-performance-peak"></dd></div></dl></section>
-                        <section aria-labelledby="recording-performance-operations-title"><h5 id="recording-performance-operations-title">Operation outcomes</h5><dl class="recording-performance-outcomes"><div><dt>Committed transactions</dt><dd id="recording-performance-committed"></dd></div><div><dt>Transaction attempts, including retries</dt><dd id="recording-performance-attempts"></dd></div><div><dt>Failed queued operations</dt><dd id="recording-performance-failedJobs"></dd></div><div><dt>Cancelled queued operations</dt><dd id="recording-performance-cancelled"></dd></div></dl></section>
+                        <section aria-labelledby="recording-performance-operations-title"><h5 id="recording-performance-operations-title">Operation outcomes</h5><dl class="recording-performance-outcomes"><div><dt>Committed transactions</dt><dd id="recording-performance-committed"></dd></div><div><dt>Transaction attempts, including retries</dt><dd id="recording-performance-attempts"></dd></div><div><dt>Cancelled queued operations</dt><dd id="recording-performance-cancelled"></dd></div></dl></section>
                       </div>
                       <p>Writer-lock time includes retries and any active wait. Queued-operation failures can include application errors. Errors after commit do not undo the save. Control priority describes queue scheduling, not device delivery.</p>
                     </div>
@@ -1160,11 +1162,29 @@ G_warming = G / 2</code>
                   <summary>About these measurements<span class="recording-disclosure-hint">Coverage and limitations</span></summary>
                   <div class="recording-performance-explanation-body">
                     <p id="recording-performance-scope" class="recording-health-evidence"></p>
-                    <p>These statistics cover runtime recording, including its dedicated writer, and the shared admission queue. Separate recovery, publication and checkpoint transaction timings are outside this view; their work can still occupy the queue or compete for storage.</p>
-                    <p>Caught up means no monitored work is waiting or in progress while the writer is available. It does not establish complete source history or successful device actions. A confirmed save and the writer’s ability to accept new work are reported separately.</p>
-                    <p>Measurements are held in memory for at most seven days and reset on restart or storage reopen. Earlier time is unknown. Five-minute summaries omit the oldest partial interval when it crosses the selected period’s boundary.</p>
-                    <p>The command count covers monitored heat-pump, switch, door/cover and Garage MQTT requests. Charging adapters and work rolled back before publication are outside this count. Unrelated cancellations and unconfirmed device readbacks are also excluded.</p>
+                    <p>Runtime timings cover the recording writer and its admission queue, including charger measurements. Local storage operations below report separate jobs; their elapsed time includes preparation, computation, transfer and cleanup where applicable. It is not SQLite transaction time or isolated disk latency.</p>
+                    <p>Caught up means the runtime writer is available and its monitored queue has no waiting or running work. Other local storage jobs can still be active. It does not establish complete source history or successful device actions. A confirmed save and the writer’s ability to accept new work are reported separately.</p>
+                    <p>Runtime writer measurements are held in memory for at most seven days and reset on restart or storage reopen. Earlier time is unknown. Five-minute summaries omit the oldest partial interval when it crosses the selected period’s boundary.</p>
+                    <p>Command monitoring covers heat-pump, switch, door/cover, Garage, floor, Caravan and both charging adapters across MQTT, OCPP and cloud commands. Only established storage causes before transmission count, including storage-caused rollback. Queries, unrelated cancellations, changed authority and unconfirmed device readbacks do not establish an unsent command.</p>
+                    <ul id="recording-performance-command-coverage" class="recording-command-coverage"></ul>
+                    <p id="recording-performance-command-coverage-empty" class="recording-health-evidence"></p>
                     <p>These observations cannot count every lost reading or prove that every expected device action happened. Saving resumed does not mean missing history was recovered.</p>
+                  </div>
+                </details>
+                <details id="recording-performance-operations" class="recording-performance-explanation">
+                  <summary>Local storage operations<span id="recording-performance-operations-summary" class="recording-disclosure-hint">Waiting for evidence</span></summary>
+                  <div class="recording-performance-explanation-body">
+                    <div class="recording-performance-toolbar">
+                      <p id="recording-performance-operations-evidence" class="recording-health-evidence"></p>
+                      <div class="recording-performance-period" role="group" aria-label="Local storage operations period">
+                        <button id="recording-performance-operations-day" type="button" aria-pressed="true">Past day</button>
+                        <button id="recording-performance-operations-week" type="button" aria-pressed="false">Past week</button>
+                      </div>
+                    </div>
+                    <div id="recording-performance-operation-list" class="recording-operation-list"></div>
+                    <p>Each family counts its underlying observed jobs once. Shared callers and cached results add no jobs. A backup may include a separately observed check or publication; family counts and elapsed times must not be added together.</p>
+                    <p>Whole-job duration includes queued time and owned cleanup. Refused work has no execution-duration sample. Cancellation, superseded work, failed operations and unconfirmed outcomes remain separate. Existing feature views retain the detailed results.</p>
+                    <p>These observations belong to this application run on this computer, including local standby and saved-copy work. Separate command-line processes and unobserved peer work are outside this view. Missing monitoring is unknown. Five-minute summaries omit the oldest partial interval; evidence expires after seven days and resets when this application exits.</p>
                   </div>
                 </details>
               </div>

@@ -57,7 +57,8 @@ function memoryStore(seed = {}) {
     },
     event(type, detail, now) { this.events.push({ type, detail, now }); } };
 }
-function rig({ store = memoryStore(), values = baselines, settings = {}, behavior = null, startAt = initialTime, closeWriteTimeoutMs = 5000, beforePublication = null } = {}) {
+function rig({ store = memoryStore(), values = baselines, settings = {}, behavior = null, startAt = initialTime, closeWriteTimeoutMs = 5000, beforePublication = null,
+  canAttributeStorageBlock } = {}) {
   let now = startAt, elapsed = 0;
   const decoder = createH66Decoder({ deviceId, mqttScaleByRegister: settings.mqttScaleByRegister, verifiedRegisters: settings.verification });
   const sent = [], native = { ...values };
@@ -66,10 +67,12 @@ function rig({ store = memoryStore(), values = baselines, settings = {}, behavio
     topic: `${deviceId}/HP/${index}`, payload: String(value), receivedAt: now, ...extra,
   }));
   controller = createH66Controller({ deviceId, store, clock: () => now, monotonicClock: () => elapsed, closeWriteTimeoutMs,
+    canAttributeStorageBlock,
     config: { writeEnabled: true, readbackTimeoutMs: 30, ...settings },
     publish: async (topic, payload, options) => {
       await beforePublication?.({ options, feed });
       options.beforePublish();
+      options.recordingAttempt?.dispatched();
       const index = topic.split('/').at(-1);
       sent.push({ index, payload, options });
       const saved = store.getState(`h66:control:${deviceId}`);
@@ -87,6 +90,86 @@ function rig({ store = memoryStore(), values = baselines, settings = {}, behavio
   for (const [index, value] of Object.entries(native)) feed(index, value);
   return { controller, sent, native, feed, store, setNow: value => { now = value; }, get now() { return now; }, elapse(ms) { elapsed += ms; } };
 }
+
+for (const action of ['temporary', 'native']) {
+  for (const scenario of ['commit-failure', 'unchanged', 'non-storage', 'pre-admission', 'after-dispatch'])
+    test(`H66 ${action} command storage evidence distinguishes ${scenario}`, async t => {
+      const store = new Store(':memory:');
+      const error = Object.assign(new Error('Synthetic private preparation failure'),
+        scenario === 'non-storage' ? {} : { errcode: 10 });
+      let armed = scenario !== 'after-dispatch', failed = false;
+      const execute = store.db.exec.bind(store.db), save = store.setState.bind(store), run = store.runWrite.bind(store);
+      store.db.exec = sql => {
+        if (sql === 'COMMIT' && armed && !['non-storage', 'pre-admission'].includes(scenario)) {
+          armed = false; failed = true; throw error;
+        }
+        return execute(sql);
+      };
+      if (scenario === 'non-storage') store.setState = (...args) => {
+        if (armed) { armed = false; failed = true; throw error; }
+        return save(...args);
+      };
+      if (scenario === 'pre-admission') store.runWrite = (...args) => {
+        if (armed) { armed = false; failed = true; return Promise.reject(error); }
+        return run(...args);
+      };
+      const r = rig({ store, behavior: () => { if (scenario === 'after-dispatch') armed = true; } });
+      t.after(async () => { await r.controller.close(); await store.close(); });
+      const value = scenario === 'unchanged' ? 20 : 21;
+      const operation = action === 'temporary'
+        ? r.controller.writeSettings({ '0203': value }, { expiresAt: r.now + 60_000 })
+        : r.controller.setSetting({ register: '0203', value });
+      if (scenario === 'after-dispatch' && action === 'native') await assert.rejects(operation, { code: 'H66_WRITE_FAILED' });
+      else await assert.rejects(operation, cause => cause === error);
+      assert.equal(failed, true, 'The selected failure boundary was reached');
+      assert.equal(r.sent.length, scenario === 'after-dispatch' ? 1 : 0);
+      assert.equal(store.writeHealth.status().history.windows.day.commandsNotSent, scenario === 'commit-failure' ? 1 : 0);
+    });
+}
+
+test('unsupported H66 requests never create unsent command evidence', async t => {
+  const store = new Store(':memory:'), r = rig({ store });
+  t.after(async () => { await r.controller.close(); await store.close(); });
+  await assert.rejects(r.controller.writeSettings({ unsupported: 21 }), { code: 'H66_SETTINGS_INVALID' });
+  await assert.rejects(r.controller.setSetting({ register: '0203', value: 100 }), { code: 'H66_SETTINGS_INVALID' });
+  assert.equal(r.sent.length, 0);
+  assert.equal(store.writeHealth.status().history.windows.day.commandsNotSent, 0);
+});
+
+for (const boundary of ['commit-wall', 'commit-monotonic', 'commit-native-change', 'commit-owner-revoked', 'commit-owner-unknown', 'pre-admission'])
+  test(`H66 existing activation expiry at ${boundary} preserves storage attribution`, async t => {
+    const store = new Store(':memory:'); let authority = true;
+    const r = rig({ store, canAttributeStorageBlock: () => {
+      if (!authority && boundary === 'commit-owner-unknown') throw new Error('Synthetic authority unavailable');
+      return authority;
+    } });
+    t.after(async () => { await r.controller.close(); await store.close(); });
+    let armed = true;
+    if (boundary === 'pre-admission') {
+      const run = store.runWrite.bind(store);
+      store.runWrite = (...args) => {
+        if (armed) { armed = false; r.setNow(initialTime + 1000); }
+        return run(...args);
+      };
+    } else {
+      const execute = store.db.exec.bind(store.db);
+      store.db.exec = sql => {
+        if (sql === 'COMMIT' && armed) {
+          armed = false;
+          if (boundary === 'commit-monotonic') r.elapse(1000); else r.setNow(initialTime + 1000);
+          if (boundary === 'commit-native-change') r.feed('0203', 22);
+          if (['commit-owner-revoked', 'commit-owner-unknown'].includes(boundary)) authority = false;
+        }
+        return execute(sql);
+      };
+    }
+    await assert.rejects(r.controller.writeSettings({ '0203': 21 }, { expiresAt: initialTime + 1000 }), { code: 'H66_EXPIRED' });
+    assert.equal(armed, false, 'The original deadline elapsed at the selected admission or COMMIT boundary');
+    assert.equal(r.sent.length, 0);
+    assert.equal(store.writeHealth.status().history.windows.day.commandsNotSent,
+      ['commit-wall', 'commit-monotonic'].includes(boundary) ? 1 : 0,
+      'Only an existing selected command with otherwise current context can be attributed to its required save');
+  });
 
 test('H66 queues intent and restoration behind a real SQLite writer without blocking timers or publishing early', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-h66-contention-'));
@@ -651,6 +734,41 @@ test('plain MQTT acquisition publishes GETALL, exposes receipt-time evidence, an
   assert.equal(acquisition.status().available, false);
   assert.ok(publications.some(item => item.payload === 'GETALL'));
 });
+
+for (const authority of ['current', 'owner-revoked', 'gate-revoked'])
+  test(`acquired H66 activation expiry after COMMIT attributes only ${authority} command scope`, async t => {
+    const fake = new EventEmitter(), store = new Store(':memory:'), publications = [];
+    let now = initialTime, ownsControl = true;
+    fake.subscribe = (topic, _options, done) => done(null, [{ topic, qos: 0 }]);
+    fake.publish = (topic, payload, _options, done) => {
+      publications.push({ topic, payload }); done();
+      if (payload === 'GETALL') queueMicrotask(() => {
+        for (const [index, value] of Object.entries(baselines))
+          fake.emit('message', `${deviceId}/HP/${index}`, Buffer.from(String(value)), { retain: false });
+      });
+    };
+    fake.end = (_force, _options, done) => done();
+    const acquisition = await startMqtt({ store, engine: { clock: () => now, ingest() {} },
+      config: { deviceId, connections: { mqtt: { address: 'mqtt://fixture.invalid' } },
+        h66: { enabled: true, writeEnabled: true, readbackTimeoutMs: 50 } },
+      canControl: () => ownsControl, connect: () => fake });
+    t.after(async () => { await acquisition.close({ restore: false }); await store.close(); });
+    fake.emit('connect'); await nextTurn(); await store.runWrite(() => {});
+    assert.equal(acquisition.h66.status().available, true);
+    const execute = store.db.exec.bind(store.db); let armed = true;
+    store.db.exec = sql => {
+      if (sql === 'COMMIT' && armed && store.getState(`h66:control:${deviceId}`)?.obligations['0203']?.expected === 21) {
+        armed = false; now = initialTime + 1000;
+        if (authority === 'owner-revoked') ownsControl = false;
+        if (authority === 'gate-revoked') acquisition.revoke();
+      }
+      return execute(sql);
+    };
+    await assert.rejects(acquisition.h66.writeSettings({ '0203': 21 }, { expiresAt: initialTime + 1000 }), { code: 'H66_EXPIRED' });
+    assert.equal(armed, false, 'The selected H66 intent reached a successful COMMIT');
+    assert.equal(publications.filter(row => row.topic.includes('/SET/')).length, 0);
+    assert.equal(store.writeHealth.status().history.windows.day.commandsNotSent, authority === 'current' ? 1 : 0);
+  });
 
 
 for (const baseline of [25, 27, 33, 35]) test(`five-degree preheat respects a ${baseline} °C baseline and the device maximum`, async t => {

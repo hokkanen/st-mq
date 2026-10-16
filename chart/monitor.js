@@ -848,7 +848,7 @@ function render(s) {
   lastStatus = retainDashboardHealth(lastStatus, s);
   dashboardStatusReceived = true;
   statusReceivedMonotonicAt = performance.now();
-  if (s.recordingHealth?.version === 2) resetRecordingContext(s.recordingHealth);
+  if (s.recordingHealth?.version === 3) resetRecordingContext(s.recordingHealth);
   recordingHealth.update(s);
   secureWebAccess.update(s);
   readOnlyControls.update(lastStatus);

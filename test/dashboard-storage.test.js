@@ -4,7 +4,7 @@ import { dashboardConnectionView, dashboardWriterState, observeDashboardHealth, 
   retainNewerDashboardObservations } from '../chart/dashboard-storage.js';
 
 const status = (state, extra = {}) => ({ now: 1000, input: 'providers', role: 'master',
-  recordingHealth: { version: 2, scope: 'live', checkedAt: 2000, recording: { writer: { state } } }, ...extra });
+  recordingHealth: { version: 3, scope: 'live', checkedAt: 2000, recording: { writer: { state } } }, ...extra });
 
 test('responsive committed views preserve their scope and disclose pending state without renewing source time', () => {
   for (const input of ['providers', 'simulated']) {
@@ -19,7 +19,7 @@ test('responsive committed views preserve their scope and disclose pending state
   assert.doesNotMatch(dashboardConnectionView(status('ready')).context, /last saved|Saving/);
   assert.equal(dashboardWriterState({}), 'unknown');
   assert.equal(dashboardWriterState(status('invented')), 'unknown');
-  assert.equal(dashboardWriterState(status('ready', { recordingHealth: { version: 2, scope: 'snapshot' } })), 'unknown');
+  assert.equal(dashboardWriterState(status('ready', { recordingHealth: { version: 3, scope: 'snapshot' } })), 'unknown');
 });
 
 test('replica dashboard context describes recorded evidence regardless of its original input', () => {

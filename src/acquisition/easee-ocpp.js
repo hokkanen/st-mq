@@ -5,6 +5,7 @@ import { WebSocketServer } from 'ws';
 import { chargingDeviceInfo } from '../charging/device-info.js';
 import { MAX_SOURCE_AHEAD_MS } from '../domain/time-evidence.js';
 import { createOcppStartupDiagnostics } from './ocpp-startup-diagnostics.js';
+import { createControlAttempt } from '../storage/control-attempt.js';
 
 const MAX_AGE_MS = 60_000;
 const MAX_FUTURE_MS = MAX_SOURCE_AHEAD_MS;
@@ -98,7 +99,8 @@ export function ocppMeterReadings(payload, now) {
  * remote authorization with a known private tag. This endpoint does not infer
  * charging-profile support or silently convert an existing cloud schedule. */
 export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, canControl = () => false,
-  canStart = () => false, onDisconnect = () => {}, state, virtualTag = '' } = {}) {
+  canStart = () => false, onDisconnect = () => {}, state, virtualTag = '',
+  controlAttempt = () => createControlAttempt() } = {}) {
   const config = localOcppConfiguration(input);
   if (typeof virtualTag !== 'string' || virtualTag.length > 20) throw new TypeError('Invalid private OCPP virtual tag');
   const plugAndCharge = config.authorization_mode === 'plug-and-charge';
@@ -140,7 +142,10 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       const prior = admitted;
       const admittedConnection = connection ?? socket;
       admitted = true;
-      state?.afterRollback?.(() => storageFailed(admittedConnection));
+      state?.afterRollback?.(cause => {
+        for (const call of [...pendingCalls.values(), ...callQueue]) call.attempt?.fail(cause);
+        storageFailed(admittedConnection);
+      });
       try { return operation(); } finally { admitted = prior; }
     };
     try { return state?.runWrite ? state.runWrite(execute, { signal, isCurrent: current, priority: 'control', bytes })
@@ -151,9 +156,12 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     if (maintenance.has(name)) return;
     maintenance.add(name);
     const connection = socket;
+    const waitingCall = name === 'send' && !pendingCalls.size ? callQueue[0] : null;
+    waitingCall?.attempt?.storageWaiting(true);
     void runState(operation, { connection }).catch(error => {
+      waitingCall?.attempt?.fail(error);
       if (!['STORAGE_WRITE_STALE', 'STORAGE_WRITE_CANCELLED', 'ocpp-request-revoked'].includes(error?.code)) storageFailed(connection);
-    }).finally(() => maintenance.delete(name));
+    }).finally(() => { waitingCall?.attempt?.storageWaiting(false); maintenance.delete(name); });
   }
   const configurationFailures = new Set();
   const validLedger = value => value && value.version === 4 && value.scope === scope
@@ -258,15 +266,23 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       && (recovered.activeId === null || recovered.transactions.some(row => row.id === recovered.activeId
         && !row.endedByStatus && !row.endedByNewStart && row.stoppedAt === undefined));
   };
-  const persist = next => {
+  const persist = (next, attempt) => {
     if (!stateReady || !state?.set) throw new Error('OCPP state unavailable');
     try { state.set(structuredClone(next)); ledger = next; }
-    catch { stateReady = false; error = 'transaction-state-unavailable'; rejectRequests('ocpp-unavailable'); throw new Error('OCPP state unavailable'); }
+    catch (cause) {
+      attempt?.fail(cause);
+      for (const call of [...pendingCalls.values(), ...callQueue]) call.attempt?.fail(cause);
+      stateReady = false; error = 'transaction-state-unavailable'; rejectRequests('ocpp-unavailable'); throw new Error('OCPP state unavailable');
+    }
   };
   let callId = 0;
   const currentTime = () => new Date(clock()).toISOString();
   function finishRequest(call, code, result) {
-    if (!call?.resolve || call.settled) return;
+    if (!call || call.settled) return;
+    if (code === 'ocpp-request-timeout' && call.connection === socket && canControl() && permittedBy(call.guard ?? (() => true)))
+      call.attempt?.expire();
+    call.attempt?.finish();
+    if (!call.resolve) return;
     call.settled = true; clearTimeout(call.timeout); clearTimeout(call.replyTimer); call.signal?.removeEventListener('abort', call.abort);
     // A received reply no longer occupies the wire after abort/timeout, even
     // when its authority check was waiting for an admitted status clock.
@@ -301,11 +317,12 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
     onDisconnect();
   }
-  function send(value, beforeSend = () => true) {
+  function send(value, beforeSend = () => true, onDispatch = () => {}) {
     const connection = socket;
     const effect = () => {
-      if (!closed && canControl() && socket === connection && connection?.readyState === 1 && beforeSend())
-        connection.send(JSON.stringify(value));
+      if (!closed && canControl() && socket === connection && connection?.readyState === 1 && beforeSend()) {
+        connection.send(JSON.stringify(value)); onDispatch();
+      }
     };
     if (state?.afterCommit) state.afterCommit(effect); else effect();
   }
@@ -350,7 +367,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       }
       // A start permission must not outlive durable transaction storage.
       const active = activeTransaction();
-      try { persist(active ? updateTransaction({ ...active, modeDisableIntent: { ...active.modeDisableIntent, attemptedAt: clock() } }) : ledger); }
+      try { persist(active ? updateTransaction({ ...active, modeDisableIntent: { ...active.modeDisableIntent, attemptedAt: clock() } }) : ledger, call.attempt); }
       catch { remoteStartStatus = 'unavailable'; sendNextCall(); return; }
       remoteStartStatus = 'pending';
     }
@@ -374,14 +391,15 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       }
       call.sentAt = clock();
       return true;
-    });
+    }, () => call.attempt?.dispatched());
   }
   function requestRemoteStart() {
     reconcileTransactionStatus();
     if (!plugAndCharge || !authorizationReady || !stateReady || !permittedBy(canStart) || preparingAttempted
       || connectorStatus !== 'Preparing' || !canRequestRemoteStart() || clock() < connectorStatusAt || !transportFresh()) return;
     preparingAttempted = true; remoteStartStatus = 'queued';
-    callQueue.unshift({ action: 'RemoteStartTransaction', payload: { connectorId: 1, idTag: virtualTag }, transition: statusTransition });
+    callQueue.unshift({ action: 'RemoteStartTransaction', payload: { connectorId: 1, idTag: virtualTag }, transition: statusTransition,
+      connection: socket, attempt: controlAttempt() });
     sendNextCall();
   }
   function configureTelemetry() {
@@ -390,7 +408,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     configurationFailures.clear(); rejectRequests('ocpp-reconfigured');
     for (const [key, value] of [['MeterValuesSampledData', 'Power.Active.Import,Current.Import,Voltage'],
       ['MeterValuesAlignedData', 'Power.Active.Import,Current.Import,Voltage'], ['MeterValueSampleInterval', '30'],
-      ['ClockAlignedDataInterval', '30']]) callQueue.push({ action: 'ChangeConfiguration', payload: { key, value } });
+      ['ClockAlignedDataInterval', '30']]) callQueue.push({ action: 'ChangeConfiguration', payload: { key, value }, attempt: controlAttempt() });
     callQueue.push({ action: 'TriggerMessage', payload: { requestedMessage: 'MeterValues', connectorId: 1 } });
     callQueue.push({ action: 'TriggerMessage', payload: { requestedMessage: 'StatusNotification', connectorId: 1 } });
     sendNextCall();
@@ -885,7 +903,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       const modeDisableIntent = { requestedAt: now, connectionId: authenticatedConnectionId };
       persist(active && !active.modeDisableIntent ? updateTransaction({ ...active, modeDisableIntent }) : ledger);
     },
-    request(action, payload, { signal, guard = () => true, beforeSend = () => true } = {}) {
+    request(action, payload, { signal, guard = () => true, beforeSend = () => true, attempt } = {}) {
       if (!REQUEST_ACTIONS.has(action)) return Promise.reject(requestError('ocpp-action-not-allowed'));
       if (action === 'TriggerMessage' && (!payload || payload.connectorId !== 1 || payload.requestedMessage !== 'MeterValues'
         || Object.keys(payload).some(key => !['connectorId', 'requestedMessage'].includes(key))))
@@ -906,7 +924,9 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       if (!permittedBy(guard)) return Promise.reject(requestError('ocpp-request-revoked'));
       if (callQueue.filter(call => call.resolve).length >= 8) return Promise.reject(requestError('ocpp-queue-full'));
       return new Promise((resolve, reject) => {
-        const call = { action, payload: JSON.parse(encoded), connection: socket, queuedAt: clock(), signal, guard, beforeSend, resolve, reject };
+        const call = { action, payload: JSON.parse(encoded), connection: socket, queuedAt: clock(), signal, guard, beforeSend, resolve, reject,
+          attempt: attempt ?? (['SetChargingProfile', 'ClearChargingProfile', 'ChangeAvailability'].includes(action)
+            ? controlAttempt() : createControlAttempt({ kind: 'query' })) };
         call.abort = () => {
           const index = callQueue.indexOf(call);
           if (index >= 0) callQueue.splice(index, 1);

@@ -1,3 +1,4 @@
+import { storageOperationHealth } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { learningJournalHead } from '../storage/store.js';
 import { LEARNING_ALGORITHM, validLearningCheckpoint } from './committed-learning.js';
@@ -121,8 +122,14 @@ export function fireplaceView(store, input, { asOf = Date.now(), revision } = {}
  * replacement before the engine adopts it. Durable intent survives restart. */
 export class FireplaceRebuildManager {
   constructor({ store, input, onReady, workerFactory = options => new Worker(new URL('./fireplace-worker.js', import.meta.url), options) }) {
+    storageOperationHealth.register('learning-rebuild');
+    this.observations = new WeakMap();
     this.store = store; this.input = validInput(input); this.workerFactory = workerFactory; this.onReady = onReady;
     this.worker = null; this.ready = null; this.generation = 0; this.closed = false;
+  }
+  retireWorker(worker, outcome, reason = null) {
+    const operation = this.observations.get(worker);
+    return Promise.resolve(worker.terminate()).finally(() => operation?.finish(outcome, { reason }));
   }
   status() { return this.store.getState(jobKey(this.input)) ?? { status: 'idle',
     revision: fireplaceRevision(this.store, this.input), sensorRevision: sensorRevision(this.store, this.input),
@@ -143,17 +150,19 @@ export class FireplaceRebuildManager {
     if (!force && this.worker && this.current(this.workerSelection)) return true;
     const previousWorker = this.worker;
     this.worker = null; this.ready = null;
-    if (previousWorker) void previousWorker.terminate();
+    if (previousWorker) void this.retireWorker(previousWorker, 'superseded', 'superseded');
     const generation = ++this.generation;
     const old = this.status();
     this.setStatus({ ...old, ...selection, status: 'running', requiresRebuild: true, processed: 0, error: null });
+    const operation = storageOperationHealth.begin('learning-rebuild');
     try {
       const worker = this.workerFactory({ workerData: { dbPath: this.store.path, input: this.input } });
+      this.observations.set(worker, operation);
       this.worker = worker; this.workerSelection = selection;
       const fail = () => {
         if (this.closed || generation !== this.generation) return;
         this.worker = null; this.ready = null; this.generation++;
-        void worker.terminate();
+        void this.retireWorker(worker, 'failed', 'operation-failed');
         this.setStatus({ ...this.status(), status: 'failed', requiresRebuild: true,
           error: 'Model rebuild failed; the previous model remains active.' });
       };
@@ -199,7 +208,8 @@ export class FireplaceRebuildManager {
       return true;
     } catch {
       const worker = this.worker; this.worker = null; this.generation++;
-      if (worker) void worker.terminate();
+      if (worker) void this.retireWorker(worker, 'failed', 'operation-failed');
+      else operation.finish('failed', { reason: 'operation-failed' });
       this.setStatus({ ...this.status(), status: 'failed', error: 'Model rebuild could not start.', requiresRebuild: true });
       return false;
     }
@@ -239,7 +249,7 @@ export class FireplaceRebuildManager {
       sensorRevision: candidate.sensorRevision, epoch: candidate.epoch, requiresRebuild: false });
     this.ready = null;
     const worker = this.worker; this.worker = null; this.generation++;
-    if (worker) void worker.terminate();
+    if (worker) void this.retireWorker(worker, 'completed');
     return true;
   }
   publish(onPublish, isCurrent = () => true) {
@@ -258,14 +268,14 @@ export class FireplaceRebuildManager {
         onPublish(result.checkpoint);
         this.ready = null;
         const worker = this.worker; this.worker = null; this.generation++;
-        if (worker) void worker.terminate();
+        if (worker) void this.retireWorker(worker, 'completed');
       } }).then(result => { retry = !result; }).catch(async error => {
       if (!current() || error.code === 'STORAGE_WRITE_ROLLED_BACK') return;
       await this.store.runWrite(() => {
         if (!current() || generation !== this.generation || !this.current(candidate)) return;
         this.ready = null;
         const worker = this.worker; this.worker = null; this.generation++;
-        if (worker) void worker.terminate();
+        if (worker) void this.retireWorker(worker, 'failed', 'operation-failed');
         this.setStatus({ ...this.status(), status: 'failed', requiresRebuild: true,
           error: 'Model publication failed; the previous model remains active.' });
       }, { signal: cancellation.signal, isCurrent: current });
@@ -293,7 +303,7 @@ export class FireplaceRebuildManager {
         closing.abort();
         await save;
       } catch (error) { if (error.code !== 'STORAGE_WRITE_CANCELLED') throw error; }
-      finally { await worker.terminate(); }
+      finally { await this.retireWorker(worker, 'cancelled', 'cancelled'); }
     }
   }
 }

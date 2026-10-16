@@ -59,7 +59,7 @@ export function backupCheckFailure(check) {
 }
 
 export function recordingHealthView(health, recording, now = Date.now()) {
-  const current = health?.version === 2 ? health : {};
+  const current = health?.version === 3 ? health : {};
   const disk = current.disk ?? {}, recorder = current.recording ?? {}, backup = current.backup ?? {};
   const hasSpace = ['ok', 'low', 'critical'].includes(disk.state)
     && finite(disk.freeBytes) && finite(disk.totalBytes) && disk.totalBytes > 0 && disk.freeBytes <= disk.totalBytes;
@@ -82,7 +82,7 @@ export function recordingHealthView(health, recording, now = Date.now()) {
   const observed = count(sources?.observedStreams), usable = count(sources?.usableStreams);
   const attention = count(sources?.attentionStreams), unknown = count(sources?.unknownStreams);
   return {
-    known: health?.version === 2,
+    known: health?.version === 3,
     outdated: !validTime(current.checkedAt) || now - current.checkedAt > healthFreshnessMs,
     // The server dates the check; the browser renders it with a separate clock.
     // Tolerate skew within the freshness window without changing source times.
@@ -565,9 +565,9 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     const changed = health?.scope !== result?.scope || health?.contextId !== result?.contextId;
     if (changed) { inventory = undefined; inventoryPhase = 'idle'; clearCatalog(); }
     health = result; unavailable = false;
-    document.body.dataset.recordingHealth = health?.version === 2 ? 'true' : 'false';
+    document.body.dataset.recordingHealth = health?.version === 3 ? 'true' : 'false';
     if (changed) onContextChange?.({ contextId: health?.contextId ?? null, scope: health?.scope ?? null });
-    if (health?.version === 2 && !introStarted) {
+    if (health?.version === 3 && !introStarted) {
       introStarted = introVisible = true;
       introTimer = setTimer(() => { introVisible = false; introTimer = undefined; draw(); }, 15_000);
       introTimer?.unref?.();
@@ -579,7 +579,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     try {
       const result = await request('/api/recording-health');
       if (version !== revision) return;
-      if (result?.version !== 2) throw new Error('Recording health is unavailable.');
+      if (result?.version !== 3) throw new Error('Recording health is unavailable.');
       acceptHealth(result);
       onHealthRefresh?.(result);
     } catch {
@@ -610,7 +610,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
       // dismiss a refresh failure, or supersede an in-flight health request.
       if (Object.hasOwn(status ?? {}, 'recordingHealth')) {
         ++revision; pending = false;
-        if (status.recordingHealth?.version === 2) acceptHealth(status.recordingHealth);
+        if (status.recordingHealth?.version === 3) acceptHealth(status.recordingHealth);
         else unavailable = true;
       }
       if (Object.hasOwn(status ?? {}, 'recording')) recording = status.recording;

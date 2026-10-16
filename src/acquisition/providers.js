@@ -15,6 +15,7 @@ import { recordEaseeSessionChecks } from './easee-session-checks.js';
 import { storageFailureCode } from '../storage/write-health.js';
 import { ocppCommitEffect } from './ocpp-startup-diagnostics.js';
 import { retainStorageWithdrawal } from './storage-withdrawal.js';
+import { createControlAttempt } from '../storage/control-attempt.js';
 
 const MINUTE = 60_000;
 const present = value => typeof value === 'string' && value.trim().length > 0;
@@ -176,6 +177,9 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   engine.electricityForecast = priceForecast;
   const location = configuredLocation(connections);
   const ownsDevices = !devices;
+  if (ownsDevices && connections.easee?.charger_id) {
+    try { store.writeHealth?.monitorCommands?.('charger1-command'); } catch { /* Passive monitoring. */ }
+  }
   let localInstallation;
   if (ownsDevices) {
     try { localInstallation = ocppInstallation(config, { createCredential: canControl() }); }
@@ -184,6 +188,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   // This poll supplies the FMI → Open-Meteo weather fallbacks. The engine
   // uses only these weather sources for outdoor temperature.
   devices ??= createDeviceProviders({ connections, http, clock, canControl, streamFactory, ocppFactory,
+    controlAttempt: () => createControlAttempt({ store, context: 'charger1-command' }),
     retryState: store.getState('providers:health')?.easee,
     ocppState: { get: () => store.getState('easee:ocpp'), set: value => store.setState('easee:ocpp', value),
       runWrite: (action, options) => write(action, options), afterCommit: ocppCommitEffect(store),

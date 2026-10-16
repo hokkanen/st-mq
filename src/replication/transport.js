@@ -1,3 +1,4 @@
+import { storageOperationHealth, observeStorageOperation } from '../storage/operation-health.js';
 import { spawn } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import { createHash, randomUUID } from 'node:crypto';
@@ -122,8 +123,16 @@ export async function createSourceSnapshot({ dbPath, destination, signal }) {
   // Let Node inherit only worker-supported options. Explicitly replaying all
   // process flags also forwards V8/process-only defaults in Node 24 test runs.
   // An inline module launcher needs a clean file-worker argument list instead.
-  const worker = new Worker(new URL('./snapshot-worker.js', import.meta.url), { workerData: { dbPath, destination },
-    ...(process.execArgv.some(argument => argument.startsWith('--input-type')) ? { execArgv: [] } : {}) });
+  const observation = storageOperationHealth.begin('replication-worker', { scope: 'shared' });
+  let observedResult, observedFailure = false, worker;
+  try { worker = new Worker(new URL('./snapshot-worker.js', import.meta.url), { workerData: { dbPath, destination },
+    ...(process.execArgv.some(argument => argument.startsWith('--input-type')) ? { execArgv: [] } : {}) }); }
+  catch (error) { observation.finish('failed', { reason: 'operation-failed' }); throw error; }
+  worker.once('message', value => { observedResult = value; });
+  worker.once('error', () => { observedFailure = true; });
+  worker.once('exit', code => observation.finish(signal?.aborted ? 'cancelled'
+    : !observedFailure && code === 0 && observedResult?.ok ? 'completed' : 'failed',
+    { reason: signal?.aborted ? 'cancelled' : !observedFailure && code === 0 && observedResult?.ok ? null : 'worker-lost' }));
   return new Promise((accept, reject) => {
     let settled = false;
     const finish = (error, value) => {
@@ -145,7 +154,7 @@ export async function createSourceSnapshot({ dbPath, destination, signal }) {
 
 /** One attempt: peer preflight, bounded journal catch-up, and durable publication.
  * A receiver without a baseline first needs one complete seed. */
-export async function synchronizeReplica({ dbPath, config, signal, onPhase = () => {}, onYield,
+async function performSynchronizeReplica({ dbPath, config, signal, onPhase = () => {}, onYield,
   spawnProcess = spawn, snapshot = createSourceSnapshot }) {
   validateTransportConfig(config);
   const sourceDirectory = resolve(config.sourceDirectory ?? join(resolve(dbPath), '..', 'replication'));
@@ -266,4 +275,8 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
       for (const suffix of ['', '-wal', '-shm', '-journal']) await rm(`${destination}${suffix}`, { force: true }).catch(() => {});
     }
   }
+}
+
+export function synchronizeReplica(options) {
+  return observeStorageOperation('replication', () => performSynchronizeReplica(options), { signal: options?.signal, scope: 'shared' });
 }

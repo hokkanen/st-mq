@@ -33,7 +33,9 @@ test('loaded configuration reconciles on fresh status and only matching readback
   assert.equal(f.sender.status().result.status, 'published');
   assert.equal(f.sender.status().configuration.status, 'pending');
   assert.deepEqual(f.publications[0].config, desired);
-  const { beforePublish, signal, ...wireSettings } = f.publications[0].settings;
+  const { beforePublish, signal, recordingContext, recordingKind, recordingDeadlineExpired, ...wireSettings } = f.publications[0].settings;
+  assert.equal(recordingContext, 'garage-protection'); assert.equal(recordingKind, 'mutation');
+  assert.equal(typeof recordingDeadlineExpired, 'function');
   assert.equal(typeof beforePublish, 'function'); assert(signal instanceof AbortSignal);
   assert.deepEqual(wireSettings, { qos: 0, retain: false, noReplay: true });
   await f.sender.reconcile();

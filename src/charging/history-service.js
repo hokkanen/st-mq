@@ -1,3 +1,4 @@
+import { storageOperationHealth, observeStorageOperation } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { forecastHousehold } from './history.js';
 
@@ -9,10 +10,11 @@ const unavailable = () => Object.assign(new Error('Household history is temporar
  * before publishing an older in-flight result. Refresh cadence belongs to the
  * runtime, while the worker reuses its source-watermarked reference index. */
 export function createHouseholdForecastService({ store } = {}) {
+  storageOperationHealth.register('history-query');
   if (!store?.path || store.path === ':memory:') {
     let closed = false;
     return {
-      request(options) { return Promise.resolve().then(() => closed ? null : forecastHousehold(store, options)); },
+      request(options) { return closed ? Promise.resolve(null) : observeStorageOperation('history-query', () => forecastHousehold(store, options)); },
       close() { closed = true; },
     };
   }
@@ -20,13 +22,15 @@ export function createHouseholdForecastService({ store } = {}) {
   const fail = () => {
     const failed = worker;
     worker = null;
+    const operation = active?.operation;
     active?.reject(unavailable()); active = null;
     queued?.reject(unavailable()); queued = null;
-    failed?.terminate().catch(() => {});
+    void Promise.resolve(failed?.terminate()).catch(() => {}).then(() => operation?.finish('failed', { reason: 'worker-lost' }));
   };
   const start = request => {
     if (closed) { request.resolve(null); return; }
     active = request;
+    request.operation = storageOperationHealth.begin('history-query');
     if (!worker) {
       try {
         worker = new Worker(new URL('./history-worker.js', import.meta.url), { workerData: { path: store.path } });
@@ -38,6 +42,8 @@ export function createHouseholdForecastService({ store } = {}) {
         if (!active || message?.id !== active.id) return;
         const completed = active;
         active = null;
+        completed.operation.finish(message.type === 'forecast' && Array.isArray(message.rows) ? 'completed' : 'failed',
+          { reason: message.type === 'forecast' && Array.isArray(message.rows) ? null : 'operation-failed' });
         if (message.type === 'forecast' && Array.isArray(message.rows)) completed.resolve(message.rows);
         else completed.reject(unavailable());
         if (queued) { const next = queued; queued = null; start(next); }
@@ -61,10 +67,11 @@ export function createHouseholdForecastService({ store } = {}) {
     },
     close() {
       closed = true;
+      const operation = active?.operation;
       active?.resolve(null); active = null;
       queued?.resolve(null); queued = null;
       const previous = worker; worker = null;
-      return previous?.terminate().catch(() => {});
+      return Promise.resolve(previous?.terminate()).catch(() => {}).then(() => operation?.finish('cancelled', { reason: 'cancelled' }));
     },
   };
 }

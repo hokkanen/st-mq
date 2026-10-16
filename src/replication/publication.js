@@ -1,3 +1,4 @@
+import { observeStorageOperation } from '../storage/operation-health.js';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, link } from 'node:fs/promises';
@@ -62,9 +63,9 @@ export async function privateFile(path) {
   await chmod(path, 0o600);
 }
 
-export async function durableJson(path, value) {
+export async function durableJson(path, value, observation) {
   await prepareJson(path, value);
-  await publishPreparedJson(path);
+  await publishPreparedJson(path, observation);
 }
 
 /** The caller owns this path until publication; the temporary is never a reader's
@@ -77,9 +78,10 @@ export async function prepareJson(path, value) {
   finally { await file.close(); }
 }
 
-export async function publishPreparedJson(path) {
+export async function publishPreparedJson(path, observation) {
   await rename(`${path}.tmp`, path);
-  await syncDirectory(dirname(path));
+  try { await syncDirectory(dirname(path)); }
+  catch (error) { observation?.finish('unconfirmed', { reason: 'durability-unconfirmed' }); throw error; }
 }
 
 export async function syncDirectory(directory) {
@@ -187,7 +189,7 @@ export async function pruneReplicaSnapshots(directory, publication) {
   }
 }
 
-export async function publishSnapshot(directory, incoming, metadata) {
+async function performPublishSnapshot(directory, incoming, metadata, observation) {
   const previous = await readReplicaPublication(directory);
   const target = join(directory, `snapshot-${metadata.generation}.sqlite`);
   if (!isAbsolute(directory) || !GENERATION_PATTERN.test(metadata.generation) ||
@@ -222,9 +224,15 @@ export async function publishSnapshot(directory, incoming, metadata) {
   if (metadata.checkpoint && !sameCheckpoint(checkpoint, metadata.checkpoint)) throw replicationError('verification_failed');
   const publication = { format: PUBLICATION_FORMAT, ...metadata, checkpoint, fileGeneration: metadata.generation,
     digestAlgorithm: DIGEST_ALGORITHM, previousGeneration: previous?.fileGeneration ?? null };
-  await durableJson(join(directory, MANIFEST), publication);
+  await durableJson(join(directory, MANIFEST), publication, observation);
   // Linux keeps existing read-only SQLite connections valid after unlink. New
   // readers resolve the manifest again if a generation disappears before open.
-  await pruneReplicaSnapshots(directory, publication);
+  try { await pruneReplicaSnapshots(directory, publication); }
+  catch (error) { observation?.finish('failed', { reason: 'committed-followup-failed', committed: true }); throw error; }
+  observation?.finish('completed', { committed: true });
   return { ...publication, dbPath: target };
+}
+
+export function publishSnapshot(...args) {
+  return observeStorageOperation('local-publication', observation => performPublishSnapshot(...args, observation), { scope: 'shared' });
 }

@@ -149,7 +149,9 @@ test('setting requests enforce supported values, authority and explicit field se
   for (const [setting, value] of [['power', 'on'], ['mode', 'heater'], ['targetHumidity', 80], ['fanSpeed', 'auto'], ['swing', 'fixed_45']]) {
     const previous = f.status().dehumidifier.state;
     await f.command(setting, value);
-    const { beforePublish, signal, ...flags } = f.publications.at(-1).options;
+    const { beforePublish, signal, recordingContext, recordingKind, recordingDeadlineExpired, ...flags } = f.publications.at(-1).options;
+    assert.equal(recordingContext, 'caravan-command'); assert.equal(recordingKind, 'mutation');
+    assert.equal(typeof recordingDeadlineExpired, 'function');
     assert.equal(typeof beforePublish, 'function'); assert(signal instanceof AbortSignal);
     assert.deepEqual({ ...f.publications.at(-1), options: flags }, { topic: device.mqtt.command_topic, payload: JSON.stringify({ [setting]: value, identity: 'a'.repeat(64), requestedAt: f.status().dehumidifier.operation.requestedAt,
       expiresAt: f.status().dehumidifier.operation.requestedAt + 10_000 }),

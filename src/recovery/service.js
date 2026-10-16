@@ -1,3 +1,4 @@
+import { storageOperationHealth, observeStorageOperation } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
 import { learningVersion } from '../app/committed-learning.js';
@@ -28,7 +29,8 @@ async function finishInterruptedRecovery(store, input, operationToken) {
 /** Read-only source validation and inventory. No master backup or trial merge
  * is created; recovery makes acceptance decisions against current master data. */
 export function recoveryPreview({ masterPath, donorPath, donorJournalPath, input = 'mqtt', onProgress = () => {}, signal }) {
-  return workerJob({ mode: 'preview', masterPath, donorPath, donorJournalPath, input: validInput(input) }, { onProgress, signal });
+  const options = { mode: 'preview', masterPath, donorPath, donorJournalPath, input: validInput(input) };
+  return observeStorageOperation('recovery', () => workerJob(options, { onProgress, signal }), { signal, scope: 'shared' });
 }
 
 /** Accepted source rows commit in bounded worker batches. Until publication,
@@ -39,7 +41,7 @@ export async function recoverHistory({ store, donorPath, donorJournalPath, input
   onPublish = () => {}, onProgress = () => {}, signal, source, operationId }) {
   validInput(input);
   if (store.path === ':memory:' || store.readOnly) throw new TypeError('Recovery requires the writable master database on disk');
-  if (running.has(store)) throw unavailable('A recovery is already running');
+  if (running.has(store)) { storageOperationHealth.refuse('recovery'); throw unavailable('A recovery is already running'); }
   const { previewId, ...signed } = preview ?? {};
   if (preview?.status !== 'checked' || preview?.model?.status !== 'not-assessed'
     || preview.counts !== undefined
@@ -47,6 +49,8 @@ export async function recoverHistory({ store, donorPath, donorJournalPath, input
   if (!isCurrent()) throw unavailable('Recovery requires the current master');
   const operationToken = randomUUID();
   running.add(store);
+  const observation = storageOperationHealth.begin('recovery');
+  let outcome = 'completed';
   try {
     return await workerJob({ mode: 'recover', masterPath: store.path, donorPath, donorJournalPath, input, preview, source, operationId, operationToken }, {
       signal, onProgress,
@@ -62,9 +66,13 @@ export async function recoverHistory({ store, donorPath, donorJournalPath, input
       },
     });
   } catch (error) {
+    outcome = signal?.aborted ? 'cancelled' : 'failed';
     await finishInterruptedRecovery(store, input, operationToken);
     throw error;
-  } finally { running.delete(store); }
+  } finally {
+    running.delete(store);
+    observation.finish(outcome, { reason: outcome === 'completed' ? null : outcome === 'cancelled' ? 'cancelled' : 'operation-failed' });
+  }
 }
 
 async function workerJob(workerData, { onProgress, onReady, onYield, signal }) {
@@ -145,7 +153,7 @@ export function previewRecoveryRevision({ store, input = 'mqtt', recoveryId, act
   validInput(input);
   if (store.readOnly || store.path === ':memory:' || typeof active !== 'boolean' || typeof recoveryId !== 'string')
     throw new TypeError('Choose a recovery in the current writable database');
-  return workerJob({ mode: 'revision-preview', masterPath: store.path, input, recoveryId, active }, { onProgress, signal });
+  return observeStorageOperation('recovery', () => workerJob({ mode: 'revision-preview', masterPath: store.path, input, recoveryId, active }, { onProgress, signal }), { signal, scope: 'shared' });
 }
 
 /** Publish the selected source revision and a complete caught-up model together.
@@ -155,13 +163,15 @@ export async function reviseRecovery({ store, input = 'mqtt', recoveryId, active
   validInput(input);
   if (store.readOnly || store.path === ':memory:' || typeof active !== 'boolean' || typeof recoveryId !== 'string')
     throw new TypeError('Choose a recovery in the current writable database');
-  if (running.has(store)) throw unavailable('A recovery is already running');
+  if (running.has(store)) { storageOperationHealth.refuse('recovery'); throw unavailable('A recovery is already running'); }
   if (!isCurrent()) throw unavailable('Recovery requires current write authority');
   const { previewId, ...checked } = preview ?? {};
   if (previewId !== learningVersion(checked) || checked.recoveryId !== recoveryId || checked.active !== active)
     throw unavailable('Review this recovery before changing it');
   const operationToken = randomUUID();
   running.add(store);
+  const observation = storageOperationHealth.begin('recovery');
+  let outcome = 'completed';
   try {
     await store.runWrite(() => store.setState(`recovery:active:${input}`, { status: 'rebuilding', recoveryId, revision: true, operationToken, startedAt: Date.now() }), { signal, isCurrent });
     return await workerJob({ mode: 'revision', masterPath: store.path, input, recoveryId, active, preview }, {
@@ -178,7 +188,11 @@ export async function reviseRecovery({ store, input = 'mqtt', recoveryId, active
       },
     });
   } catch (error) {
+    outcome = signal?.aborted ? 'cancelled' : 'failed';
     await finishInterruptedRecovery(store, input, operationToken);
     throw error;
-  } finally { running.delete(store); }
+  } finally {
+    running.delete(store);
+    observation.finish(outcome, { reason: outcome === 'completed' ? null : outcome === 'cancelled' ? 'cancelled' : 'operation-failed' });
+  }
 }

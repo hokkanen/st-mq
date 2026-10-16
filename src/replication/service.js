@@ -1,9 +1,11 @@
+import { storageOperationHealth } from '../storage/operation-health.js';
 import { synchronizeReplica, publicReplicationError } from './transport.js';
 import { replicationError } from './publication.js';
 
 /** Completion-based scheduling never overlaps attempts or queues missed intervals. */
 export class ReplicationService {
   constructor({ dbPath, config, onYield, clock = Date.now, synchronize = synchronizeReplica }) {
+    storageOperationHealth.register('replication');
     this.dbPath = dbPath;
     this.config = config;
     this.onYield = onYield;

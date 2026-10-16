@@ -1,10 +1,11 @@
+import { observeStorageOperation } from './operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { resolve } from 'node:path';
 
 /** The offline CLI uses the existing importer on a storage worker. Its source
  * validation, staging, atomic publication and interruption recovery stay shared.
  * Join the worker before returning on abort or progress-callback failure. */
-export function importCsvInWorker({ databasePath, file, kind, onProgress = () => {}, signal }) {
+function performCsvImport({ databasePath, file, kind, onProgress = () => {}, signal }) {
   return new Promise((resolveResult, reject) => {
     if (signal?.aborted) { reject(signal.reason); return; }
     const worker = new Worker(new URL('./import-worker.js', import.meta.url), {
@@ -31,4 +32,8 @@ export function importCsvInWorker({ databasePath, file, kind, onProgress = () =>
       else reject(Object.assign(new Error('CSV import was interrupted; retry from the unchanged source file.'), { code: 'csv_import_interrupted' }));
     });
   });
+}
+
+export function importCsvInWorker(options) {
+  return observeStorageOperation('csv-import', () => performCsvImport(options), { signal: options?.signal, scope: 'history' });
 }

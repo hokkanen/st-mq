@@ -1,3 +1,4 @@
+import { storageOperationHealth } from '../src/storage/operation-health.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -21,6 +22,7 @@ function fixture(t, options) {
 
 test('prepared JSON and streamed result carry identical evidence and stable semantic revision', async t => {
   const { service } = fixture(t), progress = [];
+  const observationBefore = storageOperationHealth.status().coverage.find(row => row.kind === 'history-query').week.completed;
   const plain = JSON.parse(Buffer.from(await service.queryWire(args, { onProgress: value => progress.push(value) })));
   const streamed = JSON.parse(Buffer.from(await service.queryWire(args, { format: 'ndjson' })));
   assert.equal(streamed.type, 'result');
@@ -31,6 +33,11 @@ test('prepared JSON and streamed result carry identical evidence and stable sema
   assert(progress.some(value => value.stage === 'queued'));
   assert(progress.some(value => value.stage === 'preparing-response'));
   assert(progress.every(value => value.total === undefined || value.completed >= 0 && value.completed <= value.total));
+  // Completion is a separate worker receipt sent after releasing its snapshot.
+  await service.pin(); // FIFO worker messages join both earlier completion receipts.
+  const observed = storageOperationHealth.status().coverage.find(row => row.kind === 'history-query');
+  assert.equal(observed.running, 0);
+  assert.equal(observed.week.completed, observationBefore + 1, 'the cached request is not another completed storage job');
 });
 
 test('canceling speculative work retains the independent foreground cache and queue capacity', async t => {

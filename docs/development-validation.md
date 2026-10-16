@@ -5,6 +5,21 @@ validate those contracts; existing assertions do not authorize conflicting chang
 Follow the [conflict procedure](../AGENTS.md#conflicting-requests) before changing
 a foundation, even when the requested implementation would require it.
 
+Storage health coverage uses the current transient version-3 health/history
+contract. `test/storage-control-coverage.test.js` and
+`test/control-attempt.test.js` check exact-once known-unsent outcomes, safe parent
+rollback causes, query/post-dispatch exclusions and monitoring enable/disable
+history. Adapter suites exercise the same accounting at native boundaries.
+`test/storage-operation-health.test.js` and
+`test/storage-operation-owners.test.js` cover bounded monotonic retention,
+owner deduplication, refusal, cancellation/worker joins, passive diagnostics and
+publication uncertainty. `test/browser/recording-health-smoke.js` renders real
+collector evidence against production markup at 320/390/768/1440 pixels in both
+themes, including local operations in snapshot scope, focus/disclosure retention,
+per-family labels and historical problems independent of writer readiness.
+These offline checks establish instrumentation behavior, not live equipment
+receipt, physical outcomes or Raspberry Pi storage performance.
+
 Run checks from the repository root. Ordinary tests, browser fixtures, container
 checks and Garage simulations use synthetic data. The separately invoked live
 suite contacts configured providers; see [live testing](live-testing.md).

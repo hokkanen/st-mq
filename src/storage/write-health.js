@@ -22,6 +22,9 @@ function journalEvidence(value) {
 }
 
 export function storageFailureCode(error) {
+  if (error?.code === 'STORAGE_WRITE_ROLLED_BACK' && ['write-queue-full', 'disk-full', 'database-busy',
+    'database-read-only', 'database-io', 'database-corrupt', 'database-unavailable'].includes(error.recordingFailureCode))
+    return error.recordingFailureCode;
   if (['STORAGE_WRITER_FAILED', 'STORAGE_WRITER_UNAVAILABLE', 'STORAGE_WRITER_TIMEOUT'].includes(error?.code)) return 'database-unavailable';
   if (error?.code === 'STORAGE_QUEUE_FULL') return 'write-queue-full';
   if (error?.code === 'ENOSPC' || error?.code === 'EDQUOT') return 'disk-full';
@@ -67,6 +70,7 @@ export function createWriteHealth(clock = Date.now, queueStatus = null, { monoto
     success() { state.lastWriteAt = clock(); state.failing = false; },
     failure(error, details) {
       if (error?.committed === true) return postCommitFailure(error);
+      if (error?.code === 'STORAGE_WRITE_ROLLED_BACK') return;
       const code = storageFailureCode(error);
       if (!code) return;
       if (error && typeof error === 'object') {
@@ -105,6 +109,8 @@ export function createWriteHealth(clock = Date.now, queueStatus = null, { monoto
     postCommitFailure,
     recovered(token) { history.recovered(token); },
     commandNotSent(context, reason) { history.commandNotSent(context, reason); },
+    monitorCommands(context, options) { history.monitorCommands(context, options); },
+    controlRequestBlocked(reason) { history.controlRequestBlocked(reason); },
     status() {
       const queue = queueStatus?.();
       return { ...state, transactions: timings(), ...(queue ? { queue } : {}), history: history.status(queue) };

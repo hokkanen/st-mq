@@ -65,6 +65,7 @@ const readOverviewRevision = db.prepare(`SELECT generation,
   FROM history_selection WHERE id=1`);
 parentPort.on('message', ({ id, args, operation, wire, checkpoint }) => {
   const onProgress = progress => parentPort.postMessage({ id, progress });
+  let observationFailed = false, observationCacheHit = false;
   try {
     db.exec('BEGIN');
     if (checkpoint && !matchingCheckpoint(readCheckpoint(db), checkpoint))
@@ -83,6 +84,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint }) => {
       const currentOverviewRevision = JSON.stringify(readOverviewRevision.get());
       const hit = !args.force && overview && overviewRevision === currentOverviewRevision
         && at - overview.generatedAt >= 0 && at - overview.generatedAt < OVERVIEW_REFRESH_MS;
+      observationCacheHit = Boolean(hit);
       if (!hit) {
         overview = getDatabaseOverview({ store, now: at });
         overviewRevision = JSON.stringify(readOverviewRevision.get());
@@ -135,6 +137,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint }) => {
       cache.delete(key); cacheBytes -= entry.bytes; entry = null;
     }
     if (entry) {
+      observationCacheHit = true;
       cache.delete(key); cache.set(key, entry);
       result = { ...entry.result, now: args.now, meta: { ...entry.result.meta, cacheHit: true } };
       prepared = entry.prepared;
@@ -157,6 +160,9 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint }) => {
       const bytes = encodeChartResponse(result, prepared, wire);
       parentPort.postMessage({ id, result: bytes }, [bytes.buffer]);
     } else parentPort.postMessage({ id, result });
-  } catch (error) { parentPort.postMessage({ id, error: { name: error.name, message: error.message } }); }
-  finally { try { db.exec('ROLLBACK'); } catch {} }
+  } catch (error) { observationFailed = true; parentPort.postMessage({ id, error: { name: error.name, message: error.message } }); }
+  finally {
+    try { db.exec('ROLLBACK'); } catch { observationFailed = true; }
+    parentPort.postMessage({ id, storageOperationComplete: true, failed: observationFailed, cacheHit: observationCacheHit && !observationFailed });
+  }
 });

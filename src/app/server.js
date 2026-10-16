@@ -9,6 +9,7 @@ import { simulatedOutlook } from './simulator.js';
 import { createChartService } from './chart-service.js';
 import { createDatabaseExport, databaseExportErrorMessage } from './database-export.js';
 import { createRecordingHealth } from './recording-health.js';
+import { storageFailureCode } from '../storage/write-health.js';
 import { createBackupCatalog } from '../storage/backup-catalog.js';
 import { backupDirectory } from '../storage/backup-directory.js';
 import { createBackupInspection } from './backup-inspection.js';
@@ -34,6 +35,13 @@ function webIdentity(req, access, ingress) {
   return null;
 }
 const ingressProxy = address => address === '172.30.32.2' || address === '::ffff:172.30.32.2';
+const controlRequestPath = path => ['/api/automation', '/api/charging/settings', '/api/garage/heating', '/api/garage/native',
+  '/api/equipment/switch', '/api/equipment/floor', '/api/equipment/cover', '/api/equipment/dehumidifier',
+  '/api/equipment/dehumidifier/temperature-control', '/api/equipment/dehumidifier/location-check', '/api/equipment/h66',
+  '/api/equipment/test', '/api/equipment/test/restore', '/api/dhwr/stop', '/api/temporary', '/api/test/h66',
+  '/api/heating-test', '/api/heating/explorer/apply', '/api/heating/explorer/cancel'].includes(path)
+  || /^\/api\/charging\/tests\/(start|schedule|target|cancel)$/.test(path)
+  || /^\/api\/charging\/chargers\/(charger1|charger2)\/(settings|control|pause|resume|use-automatic|charge-now|identify|flexibility)$/.test(path);
 
 function requestHost(req, ingress) {
   // Forwarded identity is meaningful only on the dedicated, peer-restricted
@@ -333,8 +341,6 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           // transaction. Do not let them acknowledge another provisional edit.
           while (store.writePending && !res.destroyed) await store.whenWritesSettled();
           if (res.destroyed) return;
-          if (store.writerFailed || store.writer?.failed)
-            return json(503, { error: 'Recording storage is unavailable. Check storage and restart the application.' });
           // A credential can be rotated while a client slowly uploads a body.
           // Recheck before any control or configuration mutation is dispatched.
           if (!stillAuthorized()) return;
@@ -348,12 +354,27 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           const current = getEngine();
           if (webAccess.role === 'family' && !familyActionAllowed(url.pathname, input, current))
             return json(403, { error: 'Admin access is required for this action.' });
+          const storageRefusal = reason => {
+            if (!controlRequestPath(url.pathname)) return;
+            try { store.writeHealth?.controlRequestBlocked?.(reason); } catch {}
+          };
+          if (store.writerFailed || store.writer?.failed) {
+            storageRefusal('database-unavailable');
+            return json(503, { error: 'Recording storage is unavailable. Check storage and restart the application.' });
+          }
           const commit = operation => store.runWrite(operation, {
             bytes: Buffer.byteLength(JSON.stringify(input)),
             isCurrent: () => !res.destroyed && !unavailable() && !writesBlocked()
               && current === getEngine() && stillAuthorized(),
           });
-          return action(current, input, commit);
+          try { return await action(current, input, commit); }
+          catch (error) {
+            if (error?.committed !== true) {
+              const reason = storageFailureCode(error);
+              if (reason) storageRefusal(reason);
+            }
+            throw error;
+          }
         };
         if (req.method === 'GET' && url.pathname === '/api/recording-health')
           return json(200, await recordingHealth.status({ store: readerStore, engine,
