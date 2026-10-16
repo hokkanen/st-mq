@@ -213,22 +213,35 @@ test('worker input admission and native reply share the original command timeout
     return request(operation, args);
   };
   f.setNow(NOW + 1000); f.notify('phase_info', structuredClone(f.fields.phase_info)); await held;
-  let dispatched = false;
-  f.holdReplies(frame => { if (frame.method === 'Boolean.Set') { dispatched = true; return true; } return false; });
+  let dispatched = false, commandTimer, published;
+  const publication = new Promise(resolve => { published = resolve; });
+  const timeout = globalThis.setTimeout, timers = [];
+  t.mock.method(globalThis, 'setTimeout', (callback, ms, ...args) => {
+    const handle = timeout(callback, ms, ...args);
+    timers.push({ callback, ms, handle });
+    return handle;
+  });
+  f.holdReplies(frame => {
+    if (frame.method !== 'Boolean.Set') return false;
+    dispatched = true; commandTimer = timers.at(-1); published(); return true;
+  });
   const native = f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: false },
     { mutation: true, guard: () => true });
   const rejected = assert.rejects(native, { code: 'evse-command-unconfirmed' });
   assert.equal(dispatched, false, 'The command cannot pass the unsettled input');
-  // Advance only this adapter's wall clock while its actual worker boundary is
-  // held. The remaining response deadline runs on an ordinary native timer.
-  f.setNow(NOW + 5000); const releasedAt = performance.now(); release();
+  // Keep the real worker admission boundary, but inspect the scheduled reply
+  // budget directly: a busy test host may delay either timer or worker receipt.
+  f.setNow(NOW + 5000); release();
+  await publication;
+  assert(commandTimer.ms > 0 && commandTimer.ms <= 1000,
+    'The admitted command has at most one second left, not another five');
+  clearTimeout(commandTimer.handle); commandTimer.callback();
   await rejected;
   assert.equal(dispatched, true);
-  assert(performance.now() - releasedAt < 3000, 'The admitted command has about one second left, not another five');
   const diagnostic = f.adapter.snapshot().lastRpcTimeout;
   assert.equal(diagnostic.method, 'Boolean.Set');
-  assert(diagnostic.elapsedMs < 3000);
-  assert(diagnostic.timerOverrunMs < 1000, 'Overrun uses the actual remaining reply deadline');
+  assert.equal(diagnostic.timerOverrunMs, Math.max(0, diagnostic.elapsedMs - commandTimer.ms),
+    'Overrun uses the actual remaining reply deadline');
 });
 test('contended Shelly notification closes command readiness until its original receipt is committed', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-contention-'));

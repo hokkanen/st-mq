@@ -857,7 +857,10 @@ async function freePort() {
   const port = server.address().port; await new Promise(resolve => server.close(resolve)); return port;
 }
 async function waitFor(condition) {
-  for (let attempt = 0; attempt < 100; attempt++) {
+  // This waits for an asynchronous lifecycle boundary, not a response-time
+  // guarantee. Leave room for real SQLite worker admission under suite load.
+  const deadline = performance.now() + 5000;
+  while (performance.now() < deadline) {
     if (condition()) return;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
