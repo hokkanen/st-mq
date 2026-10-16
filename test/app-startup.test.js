@@ -38,7 +38,7 @@ test('standalone entry starts offline promptly, serves built UI, survives restar
     assert.equal(recoveryState.readOnly, false);
     assert.deepEqual(recoveryState.operations, []);
     assert.equal(app.engine.historyRecovery, app.historyRecovery);
-    app.engine.setTemporary({ pauseUntil: new Date(app.engine.clock() + 60 * 60_000).toISOString() });
+    await app.store.runWrite(() => app.engine.setTemporary({ pauseUntil: new Date(app.engine.clock() + 60 * 60_000).toISOString() }));
     // A conflicting listener must close its worker instead of hanging startup.
     await assert.rejects(start({ config: { ...config, dataDir: join(directory, 'conflict'), dbPath: join(directory, 'conflict/test.sqlite'), port: app.server.address().port } }), /EADDRINUSE/);
   } finally { await app.close(); }
