@@ -1661,6 +1661,15 @@ export class Engine {
   recordingSourceStatus(now = this.clock()) {
     return this.recorder.sourceStatus(now);
   }
+  initializeCommittedStatus({ signal, isCurrent = () => true } = {}) {
+    const current = () => !this.suspended && this.canControl() && isCurrent();
+    return this.store.runWrite(() => {
+      const view = structuredClone(this.status());
+      // A complete initial view belongs to the committed boundary, even when
+      // another source invalidates the live view before startup returns.
+      this.store.afterCommit(() => { if (current()) this.committedStatus = view; });
+    }, { signal, isCurrent: current });
+  }
   status() {
     // Callback RAM is provisional until the reserved writer commits. Keep the
     // last complete public view and its original evidence dates during that gap.
@@ -1676,14 +1685,16 @@ export class Engine {
     const checkTime = this.clock();
     if (!this.latestStatus || Number.isFinite(this.latestStatus.override?.expiresAt) && this.latestStatus.override.expiresAt <= checkTime
       || this.settings.occupancy.mode === 'away' && Date.parse(this.settings.occupancy.returnAt) <= checkTime) {
-      if (this.store.transactionDepth) return this.tick();
-      if (!this.statusRefreshPending) {
-        this.statusRefreshPending = true;
-        this.statusRefresh = this.runWrite(() => {
-          try { return this.tick(); } finally { this.statusRefreshPending = false; }
-        }).catch(error => { this.statusRefreshPending = false; this.store.writeHealth.failure(error); });
+      if (this.store.transactionDepth) this.tick();
+      else {
+        if (!this.statusRefreshPending) {
+          this.statusRefreshPending = true;
+          this.statusRefresh = this.runWrite(() => {
+            try { return this.tick(); } finally { this.statusRefreshPending = false; }
+          }).catch(error => { this.statusRefreshPending = false; this.store.writeHealth.failure(error); });
+        }
+        if (!this.latestStatus) throw Object.assign(new Error('Waiting for the first controller update to commit.'), { statusCode: 503 });
       }
-      if (!this.latestStatus) throw Object.assign(new Error('Waiting for the first controller update to commit.'), { statusCode: 503 });
     }
     const result = structuredClone(this.latestStatus);
     if (this.learningCheckpointCache) result.learning.checkpointCache = this.learningCheckpointCache.status();

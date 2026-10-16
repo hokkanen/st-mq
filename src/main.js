@@ -533,10 +533,11 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       catch { configurationResult = { cleanupPending: true }; }
     }
     requireRunning();
-    starting = false;
     // Seed the complete committed status before public requests can race the
-    // next background save. Later pending reads retain this evidence date.
-    engine.status();
+    // next background save, including source recovery during provider startup.
+    await engine.initializeCommittedStatus({ signal: shutdownSignal, isCurrent: () => !closed && canControl() });
+    requireRunning();
+    starting = false;
     authority?.start();
     engine.onTemporaryChange = schedule;
     schedule();

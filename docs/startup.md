@@ -214,6 +214,12 @@ A failed bind exits with status 1 and identifies the address and configuration
 setting. The existing process is left running. HTTP API requests return status 503 until
 the new instance has completed startup. This port check does not replace the
 controller authority protection used by instances on different hosts or ports.
+Startup commits a complete first controller view after providers initialize.
+MQTT subscription recovery may invalidate the earlier view; the ordered writer
+rebuilds and commits its replacement before the app reports ready. A pending
+save does not publish provisional status, and a failed commit or shutdown still
+fails startup. This waits for the specific initial view, without requiring the
+whole incoming-data queue to become idle.
 Optional HTTPS and LAN HTTP backup failures are reported separately and do not
 stop the controller or its mandatory recovery paths.
 
