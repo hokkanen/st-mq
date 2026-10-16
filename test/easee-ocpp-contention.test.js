@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import WebSocket, { WebSocketServer } from 'ws';
 import { Store } from '../src/storage/store.js';
 import { createEaseeOcpp } from '../src/acquisition/easee-ocpp.js';
+import { createControlAttempt } from '../src/storage/control-attempt.js';
 
 const initialTime = Date.parse('2026-10-07T12:00:00Z');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -31,6 +32,7 @@ async function fixture(t) {
     clients.push(ws); ws.on('error', () => {}); return ws;
   };
   const local = createEaseeOcpp({ config: { host: '127.0.0.1', port, password: 'fixture-ocpp-pass', authorization_tags: ['fixture-tag'] },
+    controlAttempt: () => createControlAttempt({ store, context: 'charger1-command' }),
     chargerId: 'fixture-charger', clock: () => now, canControl: () => authority,
     state: { get: () => store.getState('fixture:ocpp'), set: value => { ledgerWrites++; store.setState('fixture:ocpp', value); },
       runWrite: (action, options) => store.runWrite(action, options),
@@ -100,6 +102,52 @@ for (const interruption of ['cancelled', 'new-native-frame']) test(`worker commi
   release(); await rejected; await native;
   assert.equal(dispatches, 0);
   assert.equal(client.calls.filter(frame => frame[2] === 'ChangeAvailability').length, 0);
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, 0,
+    'Cancellation and a newer native frame are not storage failures');
+});
+
+test('OCPP command rollback retains its storage cause before transport reset finalizes the attempt', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await waitFor(() => f.store.writeQueueStatus().pending === 0);
+  const execute = f.store.db.exec.bind(f.store.db);
+  let armed = true;
+  f.store.db.exec = sql => {
+    if (sql === 'COMMIT' && armed) {
+      armed = false;
+      throw Object.assign(new Error('Synthetic private command commit failure'), { errcode: 10 });
+    }
+    return execute(sql);
+  };
+  await assert.rejects(f.local.request('ChangeAvailability', { connectorId: 0, type: 'Operative' }));
+  f.store.db.exec = execute;
+  await waitFor(() => f.store.writeQueueStatus().pending === 0);
+  assert.equal(armed, false);
+  assert.equal(client.calls.filter(frame => frame[2] === 'ChangeAvailability').length, 0);
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, 1);
+});
+
+for (const action of ['ChangeAvailability', 'GetConfiguration']) test(`OCPP ${action} expiry during required storage waits distinguishes mutation from query`, async t => {
+  const f = await fixture(t), client = await f.connect();
+  await waitFor(() => f.store.writeQueueStatus().pending === 0);
+  await f.store.startWriter();
+  let entered, release, intercepted = false;
+  const held = new Promise(resolve => { entered = resolve; }), resumed = new Promise(resolve => { release = resolve; });
+  const request = f.store.writer.request.bind(f.store.writer);
+  f.store.writer.request = async (operation, args) => {
+    if (operation === 'commit' && !intercepted) { intercepted = true; entered(); await resumed; }
+    return request(operation, args);
+  };
+  t.after(() => release());
+  const setTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, 'setTimeout', (callback, ms, ...args) => setTimeout(callback, ms === 15000 ? 100 : ms, ...args));
+  const command = f.local.request(action, action === 'ChangeAvailability' ? { connectorId: 0, type: 'Operative' } : {});
+  const rejected = assert.rejects(command, { code: 'ocpp-request-timeout' });
+  await held;
+  await rejected;
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, action === 'ChangeAvailability' ? 1 : 0);
+  release();
+  await waitFor(() => f.store.writeQueueStatus().pending === 0);
+  assert.equal(client.calls.filter(frame => frame[2] === action).length, 0);
 });
 
 test('a disconnected pending OCPP upgrade releases writer admission before the lock clears', async t => {

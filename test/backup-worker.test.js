@@ -1,3 +1,4 @@
+import { storageOperationHealth } from '../src/storage/operation-health.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -238,6 +239,10 @@ for (const point of ['file', 'directory']) test(`backup ${point} flush failure p
   await assert.rejects(f.master.backup(path), { code: point === 'file' ? 'ENOSPC' : 'database_publication_unconfirmed',
     ...(point === 'directory' ? { published: true } : {}) });
   assert(injected);
+  const observed = storageOperationHealth.status().coverage.find(row => row.kind === 'backup');
+  assert.equal(observed.running, 0, 'the observation includes owned staging cleanup');
+  assert.equal(observed.lastResult.outcome, point === 'directory' ? 'unconfirmed' : 'failed');
+  assert.equal(observed.lastResult.reason, point === 'directory' ? 'durability-unconfirmed' : 'operation-failed');
   assert.equal(existsSync(path), point === 'directory');
   assert.deepEqual(readFileSync(f.master.path), before);
   assert.deepEqual(readFileSync(`${f.master.path}-wal`), wal);

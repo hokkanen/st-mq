@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { createBackupCatalog } from '../storage/backup-catalog.js';
 import { storageFailureCode } from '../storage/write-health.js';
+import { storageOperationHealth } from '../storage/operation-health.js';
 import { recordedSignalInfo, RECORDING_POLICIES } from '../domain/recording-policy.js';
 import { SIGNAL_INFO } from '../domain/history-series.js';
 import { verificationFailureEvidence } from './database-verification.js';
@@ -374,7 +375,7 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
       const verificationFailure = verification?.lastFailure;
       if (instant(verificationFailure?.finishedAt) && verificationFailure.finishedAt <= now) attention.push({ id: 'database-verification',
         ...verificationFailureEvidence(verificationFailure.error) });
-      return { version: 2, checkedAt: now, contextId: store ? contexts.get(store) : null,
+      return { version: 3, checkedAt: now, operations: storageOperationHealth.status(), contextId: store ? contexts.get(store) : null,
         scope: readOnly || store?.readOnly ? 'snapshot'
         : (current?.input ?? engine?.config?.input) === 'offline' ? 'history'
           : (current?.input ?? engine?.config?.input) === 'simulated' ? 'simulated' : 'live',

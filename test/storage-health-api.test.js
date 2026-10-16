@@ -45,8 +45,11 @@ test('memory storage summaries use existing authenticated health access without 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
     const result = await response.json();
+    assert.equal(result.version, 3);
+    assert.equal(result.operations.version, 1);
+    assert.equal(result.operations.scope, 'local-node');
     assert.deepEqual(result.recording.writer, { state: 'ready' });
-    assert.equal(result.recording.history.version, 2);
+    assert.equal(result.recording.history.version, 3);
     assert(result.recording.history.windows.day.committedTransactions > 0);
     assert.equal(result.recording.history.windows.day.failedWrites, 0);
     assert.equal(result.recording.history.windows.day.commandsNotSent, 0);
@@ -61,6 +64,25 @@ test('memory storage summaries use existing authenticated health access without 
     assert.equal(result.recording.history.windows.day.complete, false, 'a new run is partial coverage');
   }
   assert.deepEqual(f.store.checkpoint(), checkpoint, 'health reads add no recorded state or diagnostics');
+});
+
+test('authenticated control requests blocked by storage count independently of nonexistent native commands', async t => {
+  const f = await fixture(t);
+  f.engine.setAutomation = async () => f.store.runWrite(() => {
+    throw Object.assign(new Error('synthetic failed control save'), { errcode: 13 });
+  });
+  const request = headers => fetch(`${f.base}/api/automation`, { method: 'POST',
+    headers: { ...headers, 'content-type': 'application/json' }, body: '{}' });
+  assert.equal((await request({})).status, 401);
+  assert.equal(f.store.writeHealth.status().history.windows.day.controlRequestsBlocked, 0);
+  assert.notEqual((await request(f.headers)).status, 200);
+  let day = f.store.writeHealth.status().history.windows.day;
+  assert.equal(day.controlRequestsBlocked, 1); assert.equal(day.commandsNotSent, 0);
+  assert.equal(day.failedWrites, 1);
+  f.store.writerFailed = true;
+  assert.equal((await request(f.headers)).status, 503);
+  day = f.store.writeHealth.status().history.windows.day;
+  assert.equal(day.controlRequestsBlocked, 2); assert.equal(day.commandsNotSent, 0);
 });
 
 test('health history remains available during a held writer lock and unavailable ordinary status', async t => {

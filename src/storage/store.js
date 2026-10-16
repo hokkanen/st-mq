@@ -19,7 +19,8 @@ import { cycleAssessmentExcluded } from './cycle-assessment.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 import { validateExecutorState, validateH66ControlState } from '../domain/heating-control-state.js';
 import { validateEquipmentTestState } from '../domain/equipment-test-state.js';
-import { createWriteHealth } from './write-health.js';
+import { createWriteHealth, storageFailureCode } from './write-health.js';
+import { storageOperationHealth } from './operation-health.js';
 import { WriteQueue, sqliteContention } from './write-queue.js';
 import { readAdaptiveBudget } from './adaptive-recording-budget.js';
 import { readStorageMetrics } from './recording-metrics.js';
@@ -31,6 +32,10 @@ import { initializeJournal, installJournal, validateCheckpoint, readCheckpoint, 
 export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
 const storeConnections = new WeakMap();
+// Carry only an allowlisted cause to work discarded by its parent's rollback.
+// A dependent publication was not itself another attempted SQLite save.
+const rollbackEvidence = error => Object.assign(new Error('The preceding save was rolled back.'),
+  { code: 'STORAGE_WRITE_ROLLED_BACK', recordingFailureCode: storageFailureCode(error) });
 // Private construction provenance for diagnostics; structural lookalikes and
 // replaced connection properties cannot claim a real durable Store boundary.
 export const isStoreConnection = (store, db) => Boolean(db && storeConnections.get(store) === db);
@@ -441,7 +446,7 @@ export class Store {
         return result;
       }
       for (const effect of [...(admitted ? this.rollbackEffects : []) ?? []].reverse()) {
-        try { effect(); } catch (cause) { if (error && typeof error === 'object') error.cleanupError ??= cause; }
+        try { effect(rollbackEvidence(error)); } catch (cause) { if (error && typeof error === 'object') error.cleanupError ??= cause; }
       }
       if (admitted || !sqliteContention(error)) this.writeHealth.failure(error);
       throw error;
@@ -458,10 +463,17 @@ export class Store {
   checkpoint() { return readCheckpoint(this.db); }
   journalBase() { return journalBase(this.db); }
   compactJournal(options) {
-    if (!this.writer) return compactJournal(this.db, options);
-    if (this.writePending || this.transactionDepth)
-      throw Object.assign(new Error('Journal maintenance requires an idle writer.'), { code: 'journal_transaction_active' });
-    return this.writer.call('compact', { options });
+    const operation = storageOperationHealth.begin('journal-maintenance', { scope: 'runtime' });
+    try {
+      let result;
+      if (!this.writer) result = compactJournal(this.db, options);
+      else {
+        if (this.writePending || this.transactionDepth)
+          throw Object.assign(new Error('Journal maintenance requires an idle writer.'), { code: 'journal_transaction_active' });
+        result = this.writer.call('compact', { options });
+      }
+      operation.finish('completed'); return result;
+    } catch (error) { operation.finish('failed', { reason: storageFailureCode(error) }); throw error; }
   }
   checkpointAt(sequence) { return checkpointAt(this.db, sequence); }
   commonCheckpoint(other) { return commonCheckpoint(this.db, other.db ?? other); }
@@ -476,7 +488,7 @@ export class Store {
     // child escape the parent's rollback or a discarded nested savepoint.
     if (this.transactionDepth) return new Promise((resolve, reject) => {
       this.afterCommit(() => { this.writeQueue.run(fn, options).then(resolve, reject); });
-      this.afterRollback(() => reject(Object.assign(new Error('The preceding save was rolled back.'), { code: 'STORAGE_WRITE_ROLLED_BACK' })));
+      this.afterRollback(reason => reject(reason ?? rollbackEvidence()));
     });
     return this.writeQueue.run(fn, options);
   }
@@ -487,8 +499,7 @@ export class Store {
     if (this.readOnly) return Promise.reject(new Error('Publication requires writable storage.'));
     if (this.transactionDepth) return new Promise((resolve, reject) => {
       this.afterCommit(() => { this.writeQueue.exclusive(fn, options).then(resolve, reject); });
-      this.afterRollback(() => reject(Object.assign(new Error('The preceding save was rolled back.'),
-        { code: 'STORAGE_WRITE_ROLLED_BACK' })));
+      this.afterRollback(reason => reject(reason ?? rollbackEvidence()));
     });
     return this.writeQueue.exclusive(fn, options);
   }
@@ -535,7 +546,7 @@ export class Store {
         try { this.db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError = cleanupError; }
         this.commitEffects.length = committedBefore;
         for (const effect of this.rollbackEffects.splice(rollbackBefore).reverse()) {
-          try { effect(); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError ??= cleanupError; }
+          try { effect(rollbackEvidence(error)); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError ??= cleanupError; }
         }
         const after = this.databaseChanges();
         // total_changes also includes rolled-back savepoint writes. They cannot
@@ -595,7 +606,7 @@ export class Store {
     } catch (error) {
       try { this.db.exec('ROLLBACK'); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError = cleanupError; }
       for (const effect of this.rollbackEffects.splice(0).reverse()) {
-        try { effect(); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError ??= cleanupError; }
+        try { effect(rollbackEvidence(error)); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError ??= cleanupError; }
       }
       this.writeHealth.failure(error);
       throw error;

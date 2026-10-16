@@ -1,3 +1,4 @@
+import { storageOperationHealth } from './operation-health.js';
 import { Worker } from 'node:worker_threads';
 
 export const FULL_VERIFICATION_ALGORITHM = 'sqlite-canonical-content-v1';
@@ -34,7 +35,7 @@ function progress(job, value) {
 function drain() {
   if (active || !pending.length) return;
   const job = pending.shift();
-  active = job; job.startedAt = Date.now();
+  active = job; job.startedAt = Date.now(); job.operation.start();
   job.options.signal?.removeEventListener('abort', job.abort);
   void (async () => {
     try {
@@ -43,10 +44,12 @@ function drain() {
       const { origin, ...options } = job.options;
       const result = await run({ ...options, onProgress: value => progress(job, value) });
       lastRun = { ...jobStatus(job), state: 'complete', finishedAt: Date.now(), result };
+      job.operation.finish('completed');
       job.resolve(result);
     } catch (error) {
       lastRun = { ...jobStatus(job), state: job.options.signal?.aborted ? 'interrupted' : 'error',
         finishedAt: Date.now(), error: Object.hasOwn(messages, error?.code) ? error.code : 'full_verification_failed' };
+      job.operation.finish(job.options.signal?.aborted ? 'cancelled' : 'failed', { reason: job.options.signal?.aborted ? 'cancelled' : 'operation-failed' });
       job.reject(error);
     } finally {
       active = null;
@@ -59,15 +62,18 @@ function enqueue(options) {
   return new Promise((resolve, reject) => {
     if (options.signal?.aborted) { reject(options.signal.reason); return; }
     if (pending.length >= MAX_PENDING) {
+      storageOperationHealth.refuse('verification');
       reject(Object.assign(new Error(messages.full_verification_busy), { code: 'full_verification_busy' })); return;
     }
     const job = { id: ++nextId, options, resolve, reject,
-      origin: origins.has(options.origin) ? options.origin : 'operation', queuedAt: Date.now(), startedAt: null };
+      origin: origins.has(options.origin) ? options.origin : 'operation', queuedAt: Date.now(), startedAt: null,
+      operation: storageOperationHealth.begin('verification', { queued: true, scope: 'shared' }) };
     job.abort = () => {
       const index = pending.indexOf(job);
       if (index < 0) return;
       pending.splice(index, 1);
       options.signal?.removeEventListener('abort', job.abort);
+      job.operation.finish('cancelled', { reason: 'cancelled' });
       reject(options.signal.reason);
     };
     pending.push(job);
@@ -76,7 +82,7 @@ function enqueue(options) {
     catch (error) {
       const index = pending.indexOf(job);
       if (index >= 0) pending.splice(index, 1);
-      options.signal?.removeEventListener('abort', job.abort); reject(error);
+      options.signal?.removeEventListener('abort', job.abort); job.operation.finish('failed', { reason: 'operation-failed' }); reject(error);
     }
     drain();
   });

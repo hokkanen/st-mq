@@ -1,3 +1,4 @@
+import { storageOperationHealth } from '../storage/operation-health.js';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 import { randomUUID } from 'node:crypto';
@@ -14,6 +15,8 @@ const permittedErrors = new Set(['database_schema_mismatch', 'database_schema_in
  * control. Verification shares the application's bounded full-check worker queue. */
 export function createBackupInspection({ catalog, verify = verifyDatabase, clock = Date.now,
   onDownloadEvent = () => {} } = {}) {
+  storageOperationHealth.register('backup-inspection');
+  storageOperationHealth.register('backup-download');
   let running, cancellation, latest = null, closed = false;
   const results = new Map();
   const status = () => { const { fingerprint, ...value } = latest ?? {}; return latest ? value : null; };
@@ -42,11 +45,14 @@ export function createBackupInspection({ catalog, verify = verifyDatabase, clock
       throw fail('backup_copy_unavailable', 'Refresh the backup list and select a saved copy.', 400);
     if (running) {
       if (latest.sourceId === sourceId) return status();
+      storageOperationHealth.refuse('backup-inspection');
       throw fail('backup_verification_busy', 'A saved-copy check is already running. Wait for it to finish.');
     }
     cancellation = new AbortController();
     const signal = cancellation.signal;
     remember({ sourceId, scope: 'current-run', state: 'queued', startedAt: clock(), finishedAt: null, error: null, progress: null });
+    const operation = storageOperationHealth.begin('backup-inspection', { scope: 'history' });
+    let outcome = 'completed';
     running = (async () => {
       const source = await catalog.open(sourceId);
       try {
@@ -65,20 +71,23 @@ export function createBackupInspection({ catalog, verify = verifyDatabase, clock
           checkedAt: result.verifiedAt ?? clock() });
       } finally { await source.release(); }
     })().catch(error => {
+      outcome = signal.aborted ? 'cancelled' : 'failed';
       remember({ ...latest, state: error?.code === 'backup_copy_unavailable' ? 'changed' : 'error',
         finishedAt: clock(), progress: null,
         error: signal.aborted ? 'backup_verification_interrupted'
           : permittedErrors.has(error?.code) ? error.code : 'backup_verification_failed' });
-    }).finally(() => { running = null; cancellation = null; });
+    }).finally(() => { operation.finish(outcome, { reason: outcome === 'completed' ? null : outcome === 'cancelled' ? 'cancelled' : 'operation-failed' }); running = null; cancellation = null; });
     return status();
   }
   async function download({ sourceId, response, authorized }) {
     if (closed || !authorized()) throw fail('backup_access_revoked', 'Backup access is unavailable.', 403);
-    const source = await catalog.open(sourceId);
+    const operation = storageOperationHealth.begin('backup-download', { scope: 'history' });
+    let source, outcome = 'completed';
     const operationId = randomUUID();
     const notify = (phase, extra = {}) => { try { onDownloadEvent({ operationId, phase, kind: 'download', at: clock(), ...extra }); } catch {} };
-    notify('start');
     try {
+      source = await catalog.open(sourceId);
+      notify('start');
       await source.assertCurrent();
       if (!authorized()) throw fail('backup_access_revoked', 'Backup access is unavailable.', 403);
       response.writeHead(200, { 'content-type': 'application/vnd.sqlite3', 'cache-control': 'no-store',
@@ -101,11 +110,15 @@ export function createBackupInspection({ catalog, verify = verifyDatabase, clock
       await pipeline(source.handle.createReadStream({ autoClose: false, start: 0 }), guard, response);
       notify('complete', { bytes: source.row.bytes });
     } catch (error) {
-      notify(['backup_access_revoked', 'ABORT_ERR', 'ERR_STREAM_PREMATURE_CLOSE', 'ECONNRESET'].includes(error?.code) ? 'cancelled' : 'failed',
+      outcome = ['backup_access_revoked', 'ABORT_ERR', 'ERR_STREAM_PREMATURE_CLOSE', 'ECONNRESET'].includes(error?.code) ? 'cancelled' : 'failed';
+      if (source) notify(['backup_access_revoked', 'ABORT_ERR', 'ERR_STREAM_PREMATURE_CLOSE', 'ECONNRESET'].includes(error?.code) ? 'cancelled' : 'failed',
         { errorCode: 'backup_failed' });
       if (response.headersSent) { response.destroy(); return; }
       throw error;
-    } finally { await source.release(); }
+    } finally {
+      try { await source?.release(); } catch (error) { outcome = 'failed'; throw error; }
+      finally { operation.finish(outcome, { reason: outcome === 'completed' ? null : outcome === 'cancelled' ? 'cancelled' : 'operation-failed' }); }
+    }
   }
   return { list, start, status, download,
     health(copies) {

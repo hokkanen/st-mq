@@ -8,6 +8,7 @@ import { validShellyDeviceHold, shellyDevicePermission } from './shelly-system-p
 import { chargingDeviceInfo } from './device-info.js';
 import { classifySourceTime, validateAdmittedSourceTime, sourceTimeAdmission } from '../domain/time-evidence.js';
 import { createSourceTimePending } from '../acquisition/source-time-pending.js';
+import { createControlAttempt } from '../storage/control-attempt.js';
 const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
@@ -69,6 +70,8 @@ export function validateShellyAcquisitionState(state, association = state?.assoc
 /** EVSE RPC transport, deliberately separate from generic relay equipment. */
 export function createShellyEvseAdapter({ config, broker, client, store, engine, clock = Date.now, canControl = () => false } = {}) {
   config = shellyProfile(config);
+  try { store.writeHealth?.monitorCommands?.('charger2-command'); } catch { /* Passive monitoring. */ }
+  const controlAttempt = () => createControlAttempt({ store, context: 'charger2-command' });
   const association = shellyAssociation(config, broker), key = `charging:shelly:${association}`;
   let state = store.getState(key) ?? { version: 2, association, fields: {}, connection: null, counter: null, sessionSequence: 0 };
   validateShellyAcquisitionState(state, association);
@@ -129,7 +132,12 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       if (!current()) return Promise.reject(fail('evse-offline'));
       try { return Promise.resolve(action()); } catch (cause) { return Promise.reject(cause); }
     }
-    return store.runWrite(action, { signal: cancellation.signal, isCurrent: current, bytes });
+    return store.runWrite(action, { signal: cancellation.signal, isCurrent: current, bytes }).catch(cause => {
+      for (const waiter of admissionWaiters) {
+        try { waiter.storageFailure?.(cause); } catch { /* Diagnostics cannot change input failure. */ }
+      }
+      throw cause;
+    });
   };
   const publishStatus = () => {
     for (const settled of [...admissionWaiters]) settled();
@@ -159,7 +167,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   const ready = () => controlReady && observationServiceReady() && storagePending === 0 && sourcePending.size === 0
     && (store.canDispatch?.() ?? true);
   const currentReady = () => ready() && currentControlReady;
-  function waitForInputAdmission({ deadlineAt = clock() + RPC_TIMEOUT_MS, signal } = {}) {
+  function waitForInputAdmission({ deadlineAt = clock() + RPC_TIMEOUT_MS, signal, attempt } = {}) {
     if (!Number.isSafeInteger(deadlineAt)) return Promise.reject(fail('invalid-evse-command'));
     const epoch = generation, remaining = Math.max(0, deadlineAt - clock());
     // This waits only for observations already received by this connection.
@@ -170,18 +178,23 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       const finish = value => {
         if (finished) return;
         finished = true; clearTimeout(timer); admissionWaiters.delete(check);
-        signal?.removeEventListener('abort', cancelled); resolve(value);
+        signal?.removeEventListener('abort', cancelled); attempt?.storageWaiting(false); resolve(value);
       };
       const cancelled = () => finish(false);
       const check = () => {
-        if (closed || !connected || epoch !== generation || signal?.aborted || clock() >= deadlineAt
+        if (closed || !connected || epoch !== generation || signal?.aborted
           || !observationServiceReady() || error) { finish(false); return; }
-        if (store.writerFailed) { finish(false); return; }
+        attempt?.storageWaiting(sourcePending.size === 0 && (storagePending > 0 || store.writePending === true));
+        if (clock() >= deadlineAt) { attempt?.expire(); finish(false); return; }
+        if (store.writerFailed) { attempt?.notSent('recording-failed'); finish(false); return; }
         if (storagePending === 0 && sourcePending.size === 0 && (store.canDispatch?.() ?? true)) finish(true);
+      };
+      check.storageFailure = cause => {
+        if (!finished && !closed && connected && epoch === generation && !signal?.aborted && canControl()) attempt?.fail(cause);
       };
       admissionWaiters.add(check);
       signal?.addEventListener('abort', cancelled, { once: true });
-      timer = setTimeout(cancelled, remaining);
+      timer = setTimeout(() => { attempt?.expire(); finish(false); }, remaining);
       check();
     });
   }
@@ -227,7 +240,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       && now - field.receivedAt <= config.maxAgeMs;
   };
   function rejectPending(reason) { for (const item of pending.values()) { clearTimeout(item.timer); item.reject(fail(reason)); } pending.clear(); }
-  async function rpc(method, params = {}, { mutation = false, guard, beforePublish = () => {}, statusReadback = false, identificationCurrent = null } = {}) {
+  async function rpc(method, params = {}, { mutation = false, guard, beforePublish = () => {}, statusReadback = false, identificationCurrent = null,
+    attempt = createControlAttempt({ store, context: 'charger2-command', kind: mutation ? 'mutation' : 'query' }) } = {}) {
+    try {
     const epoch = generation;
     let remainingAdmissionMs = RPC_TIMEOUT_MS;
     const mayWait = mutation && typeof guard === 'function';
@@ -254,7 +269,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       // still revalidates the original scope before dispatch below.
       const startedAt = clock(), started = performance.now();
       const admitted = await waitForInputAdmission({ deadlineAt: startedAt + Math.max(0, Math.floor(remainingAdmissionMs)),
-        signal: cancellation.signal });
+        signal: cancellation.signal, attempt });
       remainingAdmissionMs -= Math.max(performance.now() - started, clock() - startedAt);
       if (!admitted || remainingAdmissionMs <= 0) throw fail('evse-control-unavailable');
     };
@@ -275,7 +290,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     if (!connected || !admitted || closed || epoch !== generation
       || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-command-revoked');
     if (remainingAdmissionMs <= 0) throw fail('evse-control-unavailable');
-    return new Promise((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
       const requestedAt = clock(), started = performance.now();
       const replyTimeoutMs = Math.max(1, Math.floor(remainingAdmissionMs));
       const item = { generation: epoch, retired: false,
@@ -295,10 +310,16 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       if (mutation && params.role) fieldRevisions.set(params.role, (fieldRevisions.get(params.role) ?? 0) + 1);
       item.timer = timer; timer.unref?.(); pending.set(id, item);
       // No offline queue, retention or automatic application-level retry.
-      try { client.publish(`${config.topicPrefix}/rpc`, JSON.stringify({ id, src: source, method, params }), { qos: 0, retain: false }, error => {
+      // The shared MQTT gate reports actual stream writes. Simpler transports
+      // can only establish that publication was attempted, never known unsent.
+      if (typeof client._writePacket !== 'function' || typeof client.stream?.write !== 'function') attempt.dispatched();
+      try { client.publish(`${config.topicPrefix}/rpc`, JSON.stringify({ id, src: source, method, params }),
+        { qos: 0, retain: false, onFirstWrite: () => attempt.dispatched() }, error => {
         if (error && pending.has(id)) { clearTimeout(timer); pending.delete(id); item.reject(fail(mutation ? 'evse-publish-unconfirmed' : 'evse-read-unavailable')); }
       }); } catch { clearTimeout(timer); pending.delete(id); item.reject(fail(mutation ? 'evse-publish-unconfirmed' : 'evse-read-unavailable')); }
     });
+    } catch (cause) { attempt.fail(cause); throw cause; }
+    finally { attempt.finish(); }
   }
   function reconcileConnection(value, measuredAt, receivedAt, eventClock = false, valueUpdatedAt = null) {
     if (!discovered || !profileSupported) return;
@@ -927,7 +948,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       ['ev2_import_energy_counter', reading(physical?.total_act_energy, 'kWh')],
     ]);
   };
-  const adapter = { association, config, snapshot, readings, refresh, rpc, waitForInputAdmission,
+  const adapter = { association, config, snapshot, readings, refresh, rpc, waitForInputAdmission, controlAttempt,
     deviceInfo() {
       return device ? { ...device, available: !closed && connected && admitted && online && discovered
         && deviceGeneration === generation && time(readAt) && clock() >= readAt && clock() - readAt <= config.maxAgeMs } : null;
@@ -1551,12 +1572,13 @@ export function createShellyController({ adapter, initialState, saveState = () =
         && scheduleToken(live) === nativeSchedule
         && (restoring || live.session?.sessionId === test.sessionId && clock() < test.expiresAt);
     };
+    const attempt = adapter.controlAttempt?.() ?? createControlAttempt();
     try {
       test.phase = restoring ? 'restoring' : 'applying';
       test.pending = { value: target, dispatchedAt: clock(), acceptedAt: null };
       await persist();
       await adapter.rpc('Number.Set', { owner: `service:${adapter.config.serviceId}`, role: 'current_limit', value: target },
-        { mutation: true, identificationCurrent: copy(test), guard });
+        { mutation: true, identificationCurrent: copy(test), guard, attempt });
       test.pending.acceptedAt = clock(); await persist();
       await refreshCommandReadback('current_limit', snapshot);
       const confirmedSnapshot = adapter.snapshot(), actual = confirmedSnapshot.fields.current_limit;
@@ -1566,12 +1588,13 @@ export function createShellyController({ adapter, initialState, saveState = () =
       await persist();
       return { before: snapshot, after: confirmedSnapshot };
     } catch (cause) {
+      attempt.fail(cause);
       if (['evse-control-unavailable', 'evse-command-revoked', 'invalid-evse-command',
         'unsupported-evse-method', 'evse-request-limit'].includes(cause.code)) {
         test.pending = null; test.phase = restoring ? 'restoring' : 'proposed';
       } else test.phase = 'uncertain';
       await persist();
-    }
+    } finally { attempt.finish(); }
   }
   const stopObserving = adapter.observeStatus?.(() => { if (!closed) notifyStatus(); });
   return { status, supportsIdentification: true, invalidate() { revision++; cancelPlanning(); },
@@ -1790,14 +1813,18 @@ export function createShellyController({ adapter, initialState, saveState = () =
                   && adapter.snapshot().nativeScheduleRevision === expectedScheduleRevision;
                 state.pending = { association: state.association, sessionId, revision: intentRevision, expiresAt,
                   role: 'start_charging', value: false, reason: 'automatic-takeover-wait', stage: 'proposed' };
+                const attempt = adapter.controlAttempt?.() ?? createControlAttempt();
+                try {
                 await persist();
                 await adapter.rpc('Boolean.Set', { owner: `service:${adapter.config.serviceId}`, role: 'start_charging', value: false },
-                  { mutation: true, guard: pauseGuard, beforePublish: async () => {
+                  { mutation: true, attempt, guard: pauseGuard, beforePublish: async () => {
                     if (!pauseGuard()) throw fail('evse-takeover-changed');
                     const prior = copy(state.pending);
                     state.pending.stage = 'dispatched'; state.commandAt = state.pending.dispatchedAt = clock();
                     try { await persist(); } catch (cause) { state.pending = prior; throw cause; }
                   } });
+                } catch (cause) { attempt.fail(cause); throw cause; }
+                finally { attempt.finish(); }
                 state.pending.stage = 'accepted'; state.pending.acceptedAt = clock(); await persist();
                 await refreshCommandReadback('start_charging', snapshot);
                 snapshot = adapter.snapshot();
@@ -2118,6 +2145,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
           if (!permittedOwnedStop()) return false;
           if (!adapter.snapshot().controlReady || role === 'start_charging' && value === true
             && devicePermission(adapter.snapshot()).held) return false;
+          const attempt = adapter.controlAttempt?.() ?? createControlAttempt();
+          try {
           const expiresAt = clock() + 10000;
           // Save the exact baseline guarded at publication, including after a
           // current test changed the setting earlier in this reconciliation.
@@ -2125,7 +2154,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
           state.pending = { association: state.association, sessionId, revision: intentRevision, expiresAt, role, value, reason,
             stage: 'proposed', ...(owned ? { owned: copy(owned) } : {}) };
           if (stopPass) stopPass.pending = state.pending;
+          attempt.storageWaiting(true);
           await persist();
+          if (guard() && clock() >= expiresAt) attempt.expire();
+          attempt.storageWaiting(false);
           if (!guard() || clock() >= expiresAt || !sameSetting(adapter.snapshot().fields.start_charging, expectedStart)
             || !sameSetting(adapter.snapshot().fields.current_limit, expectedCurrent)
             || scheduleToken(adapter.snapshot()) !== nativeSchedule || !permittedOwnedStop()) { state.pending = null; await persist(); return false; }
@@ -2137,7 +2169,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             try { await persist(); } catch (cause) { state.pending = prior; throw cause; }
           }
           await adapter.rpc(role === 'current_limit' ? 'Number.Set' : 'Boolean.Set', { owner: `service:${adapter.config.serviceId}`, role, value },
-            { mutation: true, guard: () => guard() && clock() < expiresAt
+            { mutation: true, attempt, guard: () => guard() && clock() < expiresAt
               && sameSetting(adapter.snapshot().fields.start_charging, expectedStart)
               && sameSetting(adapter.snapshot().fields.current_limit, expectedCurrent)
               && scheduleToken(adapter.snapshot()) === nativeSchedule
@@ -2208,6 +2240,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
           await persist();
           if (stopPass && role === 'start_charging' && value === false) stopPass.stopped = true;
           return true;
+          } catch (cause) { attempt.fail(cause); throw cause; }
+          finally { attempt.finish(); }
         };
         if (!guard()) return;
         try {

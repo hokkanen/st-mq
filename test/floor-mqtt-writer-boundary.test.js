@@ -27,6 +27,7 @@ async function fixture(t, { deferAcquireReply = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-floor-mqtt-writer-'));
   const store = new Store(join(directory, 'history.sqlite'));
   let authority = true, acquisition, client, stream, readOnly, acquireSignal, bytes = 0;
+  let expectedIngress = 0, receivedIngress = 0;
   const clock = { wall: Date.parse('2026-10-15T12:00:00Z'), mono: 10000 };
   const wire = [], held = [], acquireReplies = [], heldAcquireBodies = [], commitGates = [], actions = new Set();
   const native = { active: false, mask: 0, gpio_mask: 0, owner: '', treatment: 0,
@@ -36,8 +37,11 @@ async function fixture(t, { deferAcquireReply = false } = {}) {
     device: DEVICE, generation: GENERATION, connected: true, gpio_match: true,
     state_evidence: 'gpio_output_readback', board_ok: true, now_ms: clock.mono,
     max_lease_ms: 900000, ...native, ...extra });
-  const incoming = (value, packet = {}) => stream.push(mqttPacket.generate({ cmd: 'publish', qos: 0,
-    retain: false, dup: false, ...packet, topic: FLOOR_MQTT_TOPICS.state, payload: JSON.stringify(value) }));
+  const incoming = (value, packet = {}) => {
+    expectedIngress++;
+    return stream.push(mqttPacket.generate({ cmd: 'publish', qos: 0,
+      retain: false, dup: false, ...packet, topic: FLOOR_MQTT_TOPICS.state, payload: JSON.stringify(value) }));
+  };
   const outgoing = new mqtt.Store(), put = outgoing.put.bind(outgoing);
   outgoing.put = (packet, callback) => put(packet, error => {
     const body = packet.cmd === 'publish' && packet.topic === FLOOR_MQTT_TOPICS.command
@@ -110,6 +114,7 @@ async function fixture(t, { deferAcquireReply = false } = {}) {
         return stream;
       }, { ...options, reconnectPeriod: 0, keepalive: 0, outgoingStore: outgoing });
       client.on('error', () => {});
+      client.on('message', topic => { if (topic === FLOOR_MQTT_TOPICS.state) receivedIngress++; });
       return client;
     } });
   const publish = client.publish;
@@ -127,6 +132,7 @@ async function fixture(t, { deferAcquireReply = false } = {}) {
   };
   const lastRecordedAt = () => readOnly.prepare("SELECT MAX(received_at) AS at FROM observations WHERE source='sonoff-floor'").get().at;
   return { store, acquisition, wire, held, acquireReplies, releaseOutgoing, state, lastRecordedAt,
+    get expectedIngress() { return expectedIngress; }, get receivedIngress() { return receivedIngress; },
     advance(ms) { clock.wall += ms; clock.mono += ms; },
     authority(value) { authority = value; },
     deliverAcquireReply(change = {}, packet) { incoming({ ...acquireReplies.at(-1), ...change }, packet); },
@@ -185,6 +191,7 @@ test('actual acquisition and installed MQTT dispatch a committed floor lease aft
   assert.equal(f.wire.filter(row => row.op === 'acquire').length, 1);
   assert.equal(f.state().outstanding.phase, 'active');
   assert.equal(f.nativeMask, 1);
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, 0, 'Queries and a dispatched confirmed lease add no known-unsent commands');
 });
 
 test('new floor ingress awaiting real writer COMMIT cancels delayed MQTT activation before its first byte', async t => {
@@ -208,6 +215,7 @@ test('new floor ingress awaiting real writer COMMIT cancels delayed MQTT activat
   assert.equal(f.byteCount, beforeBytes, 'Pending ingress must be rechecked before any MQTT command byte');
   assert.equal(f.wire.some(row => row.op === 'acquire' || row.op === 'renew'), false);
   assert.equal(f.nativeMask, 0);
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsByContext['floor-control'], 1, 'A recording veto before first wire bytes is one known unsent floor command');
   commit.release();
   const result = await action;
   assert(result.error instanceof Error, 'This attempt is cancelled, rather than replayed when storage recovers');
@@ -240,9 +248,11 @@ async function timedOutAcquire(t, { unsent = false } = {}) {
 }
 
 async function settledInput(f) {
-  await flush();
-  await f.store.whenWritesSettled();
-  await flush();
+  // Stream parsing can arrive after an event-loop turn. A rejected ingress can
+  // also queue its diagnostic after the current transaction has settled. Wait
+  // for actual receipt and the entire writer queue, including that follow-up.
+  await until(() => f.receivedIngress === f.expectedIngress
+    && f.store.writeQueueStatus().pending === 0 && !f.store.writeQueue.running && !f.store.writePending);
 }
 
 test('a late acquire capability commits through real acquisition only for fresh-readback release', async t => {

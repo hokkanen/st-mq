@@ -15,6 +15,7 @@ import { updateTeslaCurrentRequest } from '../src/charging/tesla-current-request
 import { Engine } from '../src/app/engine.js';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
+import { createWriteHealth } from '../src/storage/write-health.js';
 const NOW = 1800000000000;
 const config = extra => shellyProfile(chargingConfiguration({chargers:{charger2:{enabled:true, deviceId:'synthetic-evse',topicPrefix:'test/evse',
   limiterEnabled:false,marginA:[0,0,0],...extra}}}).chargers.charger2);
@@ -87,13 +88,13 @@ function fixture(t, extra={}, backingStore=null) {
     const reply=()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{});
     cb?.();if(!holdReply?.(frame,reply))queueMicrotask(reply);
   };
-  const store=backingStore??{getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
+  const store=backingStore??{writeHealth:createWriteHealth(()=>now),getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
     event:(type,payload,at)=>events.push({type,payload,at})};
   const engine={recorder:{recordEnergy:value=>energy.push(value),energyGap:value=>gaps.push(value)},voltage:{ingest:value=>voltages.push(value)}};
   const createAdapter=()=>createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,canControl:()=>authority});
   let adapter=createAdapter();
   t.after(()=>adapter.close());
-  return {get adapter(){return adapter;},client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,sources,currentComponent,deviceInfo,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
+  return {get adapter(){return adapter;},health:store.writeHealth,client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,sources,currentComponent,deviceInfo,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
     holdReplies:value=>holdReply=value,
     restartAdapter() { adapter.close(); adapter=createAdapter(); },
     setSourceTime(role, at) { settingClock.set(role, { value: fields[role], at }); },
@@ -501,6 +502,7 @@ test('Shelly input admission keeps its bounded wait after ordinary intent persis
   assert.equal(outcome, 'evse-control-unavailable', 'A stationary wall clock cannot extend actual admission waiting');
   await command;
   assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+  assert.equal(f.health.status().history.windows.day.commandsNotSent, 0, 'Source-clock waiting is not storage waiting');
 });
 
 test('Shelly admission joins share actual waiting before and after persistence', async t => {
@@ -1711,6 +1713,34 @@ test('absolute command expiry after durable intent persistence prevents an unsen
   if(state.pending?.stage==='proposed')f.setNow(NOW+11000);
  }});t.after(()=>controller.close());await controller.update({enabled:false,allocation:{}});
  assert.equal(f.writes.some(row=>row.method.endsWith('.Set')),false);assert.equal(controller.status().pending,null);
+ assert.equal(f.health.status().history.windows.day.commandsNotSent,1);
+});
+
+for (const stage of ['proposed', 'accepted']) test(`Shelly command accounting distinguishes ${stage} intent save failure from dispatch`, async t => {
+  const f = fixture(t, { limiterEnabled: true }); await f.ready(); let armed = true;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: async state => {
+      if (armed && state.pending?.stage === stage) {
+        armed = false;
+        throw Object.assign(new Error('Synthetic private command save failure'), { errcode: 10 });
+      }
+    } });
+  t.after(() => controller.close());
+  await controller.update({ enabled: false, allocation: {} });
+  assert.equal(armed, false);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, stage === 'proposed' ? 0 : 1);
+  assert.equal(f.health.status().history.windows.day.commandsNotSent, stage === 'proposed' ? 1 : 0);
+});
+
+test('Shelly before-publication save failure counts mutations once and excludes read requests', async t => {
+  const f = fixture(t); await f.ready();
+  const beforePublish = () => { throw Object.assign(new Error('Synthetic private save failure'), { errcode: 13 }); };
+  await assert.rejects(f.adapter.rpc('Boolean.GetStatus', { owner: 'service:0', role: 'start_charging' }, { beforePublish }));
+  assert.equal(f.health.status().history.windows.day.commandsNotSent, 0);
+  await assert.rejects(f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: false },
+    { mutation: true, guard: () => true, beforePublish }));
+  assert.equal(f.health.status().history.windows.day.commandsNotSent, 1);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
 });
 
 test('Charge Now releases a Shelly economic pause for this session and automatic handover restores the price plan', async t => {

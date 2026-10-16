@@ -1,3 +1,4 @@
+import { storageOperationHealth, observeStorageOperation } from '../storage/operation-health.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat, open, readFile, readdir, rm } from 'node:fs/promises';
@@ -98,6 +99,7 @@ export async function createReplicaPublicationGuard({ directory, accepted, signa
 /** Immutable export generations are separate from every writable or protected DB. */
 export class SnapshotRepository {
   constructor({ directory, clock = Date.now, snapshot = createSourceSnapshot }) {
+    storageOperationHealth.register('pairing-snapshot');
     this.directory = directory;
     this.clock = clock;
     this.snapshot = snapshot;
@@ -106,7 +108,10 @@ export class SnapshotRepository {
     this.mutations = Promise.resolve();
   }
 
-  async init() {
+  init() {
+    return observeStorageOperation('local-publication', () => this.#initialize(), { scope: 'shared' });
+  }
+  async #initialize() {
     await ownedDirectory(this.directory, '.st-mq-pair-exports');
     const names = new Set(await readdir(this.directory));
     for (const name of names) {
@@ -117,7 +122,7 @@ export class SnapshotRepository {
         && !names.has(`export-${match[1]}.pin`)) await rm(join(this.directory, name), { force: true });
       if (/^export-[a-f0-9-]+\.json\.tmp$/.test(name)) await rm(join(this.directory, name), { force: true });
     }
-    await this.prune(null);
+    await this.serializeMutation(() => this.pruneExports(null));
   }
 
   serializeMutation(action) {
@@ -127,7 +132,7 @@ export class SnapshotRepository {
   }
 
   async create({ dbPath, claim, sequence, signal, force = false, pin = false, assertSource = () => {} }) {
-    if (this.active) throw pairError('peer_busy');
+    if (this.active) { storageOperationHealth.refuse('pairing-snapshot'); throw pairError('peer_busy'); }
     // Reserve admission before even source validation can yield. Retention
     // changes share this queue so a successful pin always retains its export.
     this.active = true;
@@ -139,6 +144,7 @@ export class SnapshotRepository {
         await assertSource();
         return this.current;
       }
+      return observeStorageOperation('pairing-snapshot', async () => {
       const generation = randomUUID(), path = join(this.directory, `export-${generation}.sqlite`);
       try {
         const result = await this.snapshot({ dbPath, destination: path, signal });
@@ -162,6 +168,7 @@ export class SnapshotRepository {
         for (const suffix of ['json', 'pin']) await rm(join(this.directory, `export-${generation}.${suffix}`), { force: true });
         throw error;
       }
+      }, { signal, scope: 'shared' });
     }); } finally { this.active = null; }
   }
 
@@ -187,6 +194,7 @@ export class SnapshotRepository {
   async chunk({ generation, index }) {
     const metadata = await this.load(generation);
     if (!Number.isSafeInteger(index) || index < 0 || index >= metadata.hashes.length) throw pairError('peer_protocol_failed');
+    return observeStorageOperation('pairing-snapshot', async () => {
     const path = join(this.directory, `export-${generation}.sqlite`);
     await privateFile(path);
     const file = await open(path, 'r');
@@ -197,10 +205,13 @@ export class SnapshotRepository {
       if (result.bytesRead !== bytes || hash(buffer) !== metadata.hashes[index]) throw pairError('verification_failed');
       return { data: buffer.toString('base64') };
     } finally { await file.close(); }
+    }, { scope: 'shared' });
   }
 
   pin(generation) {
-    return this.serializeMutation(() => this.pinExport(generation));
+    return observeStorageOperation('local-publication', operation => this.serializeMutation(() => {
+      operation.start(); return this.pinExport(generation);
+    }), { queued: true, scope: 'shared' });
   }
 
   async pinExport(generation) {
@@ -212,7 +223,9 @@ export class SnapshotRepository {
   }
 
   unpin(generation) {
-    return this.serializeMutation(() => this.unpinExport(generation));
+    return observeStorageOperation('local-publication', operation => this.serializeMutation(() => {
+      operation.start(); return this.unpinExport(generation);
+    }), { queued: true, scope: 'shared' });
   }
 
   async unpinExport(generation) {
@@ -222,7 +235,9 @@ export class SnapshotRepository {
   }
 
   prune(current) {
-    return this.serializeMutation(() => this.pruneExports(current));
+    return observeStorageOperation('local-publication', operation => this.serializeMutation(() => {
+      operation.start(); return this.pruneExports(current);
+    }), { queued: true, scope: 'shared' });
   }
 
   async pruneExports(current) {
@@ -243,7 +258,7 @@ export class SnapshotRepository {
 }
 
 /** Receive an exceptional full seed with bounded frames and resumable progress. */
-export async function receiveSnapshot({ directory, metadata, peer, signal, guard = async () => {},
+async function performReceiveSnapshot({ directory, metadata, peer, signal, guard = async () => {},
   publish = true, onProgress = () => {}, commit = action => action() }) {
   validateSnapshot(metadata);
   await guard();
@@ -313,4 +328,8 @@ export async function receiveSnapshot({ directory, metadata, peer, signal, guard
   });
   return { ...result, transferredBytes };
   } finally { await unlock(); }
+}
+
+export function receiveSnapshot(options) {
+  return observeStorageOperation('pairing-snapshot', () => performReceiveSnapshot(options), { signal: options?.signal, scope: 'shared' });
 }

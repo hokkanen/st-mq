@@ -9,18 +9,22 @@ const EDGES = [0, .1, .25, .5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512,
 const METRICS = ['queueDelay', 'controlQueueDelay', 'normalQueueDelay', 'transactionDuration', 'commitDuration',
   'journalSealDuration', 'nativeCommitDuration'];
 const COUNTERS = ['acceptedJobs', 'failedWrites', 'queueRejected', 'cancelledJobs', 'failedJobs',
-  'postCommitFailures', 'transactionAttempts', 'committedTransactions', 'commandsNotSent'];
-const CATEGORIES = new Set(['save-failed', 'queue-refused', 'command-not-sent', 'follow-up-failed']);
+  'postCommitFailures', 'transactionAttempts', 'committedTransactions', 'commandsNotSent', 'controlRequestsBlocked'];
+export const COMMAND_CONTEXTS = Object.freeze(['heat-pump-command', 'switch-command', 'cover-command', 'garage-command',
+  'floor-control', 'caravan-command', 'garage-protection', 'charger1-command', 'charger2-command']);
+const CATEGORIES = new Set(['save-failed', 'queue-refused', 'command-not-sent', 'follow-up-failed', 'control-request-blocked']);
 const CONTEXTS = new Set(['storage', 'mqtt-input', 'provider-input', 'charging-input',
-  'heat-pump-command', 'switch-command', 'cover-command', 'garage-command']);
+  'control-request', ...COMMAND_CONTEXTS]);
 const REASONS = new Set(['write-queue-full', 'disk-full', 'database-busy', 'database-read-only',
-  'database-io', 'database-corrupt', 'database-unavailable', 'recording-failed', 'recording-wait-expired', 'follow-up-failed']);
+  'database-io', 'database-corrupt', 'database-unavailable', 'recording-failed', 'recording-pending', 'recording-wait-expired', 'follow-up-failed']);
 const OUTCOMES = new Set(['save-failed', 'not-retained-for-retry', 'retained-for-retry',
-  'original-update-saved', 'queue-refused', 'command-not-sent', 'saved-follow-up-failed']);
+  'original-update-saved', 'queue-refused', 'command-not-sent', 'saved-follow-up-failed', 'control-request-blocked']);
 const metric = () => ({ count: 0, total: 0, max: 0, histogram: new Float64Array(EDGES.length) });
 const bucket = index => ({ index, peakPending: 0, episodes: 0, waitMs: 0, maxWaitMs: 0,
   leadingWaitMs: 0, trailingWaitMs: 0, leadingCarried: false,
   ...Object.fromEntries(COUNTERS.map(key => [key, 0])),
+  commandsByContext: Object.fromEntries(COMMAND_CONTEXTS.map(key => [key, 0])),
+  commandCoverageMs: Object.fromEntries(COMMAND_CONTEXTS.map(key => [key, 0])),
   ...Object.fromEntries(METRICS.map(key => [key, metric()])) });
 function addMetric(target, value) {
   if (!Number.isFinite(value) || value < 0) return;
@@ -47,6 +51,7 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
   const bins = new Map([[0, bucket(0)]]);
   // One latest incident per fixed category; tokens never contain operation data.
   const incidents = new Map();
+  const commandCoverage = new Map();
   const describeIncidents = from => [...incidents.values()].filter(row => row.elapsed >= from)
     .sort((a, b) => b.elapsed - a.elapsed).map(row => ({ category: row.category, at: row.at,
       context: row.context, reason: row.reason, outcome: row.outcome, recoveredAt: row.recoveredAt }));
@@ -63,6 +68,10 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
     for (let index = first; index <= last; index++) {
       let bin = bins.get(index);
       if (!bin) { bin = bucket(index); bins.set(index, bin); }
+      const covered = Math.max(0, Math.min(now, (index + 1) * RESOLUTION) - Math.max(elapsed, index * RESOLUTION));
+      if (covered > 0) for (const [context, value] of commandCoverage) if (value.enabled) {
+        bin.commandCoverageMs[context] += covered;
+      }
       bin.peakPending = Math.max(bin.peakPending, pending);
       if (waitingAt !== null) {
         const start = index * RESOLUTION, end = Math.min(now, start + RESOLUTION);
@@ -76,6 +85,7 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
         }
       }
     }
+    for (const value of commandCoverage.values()) if (value.enabled) value.totalMs += now - elapsed;
     elapsed = now;
     for (const [category, row] of incidents) if (row.elapsed < oldest * RESOLUTION) incidents.delete(category);
     return bins.get(last);
@@ -89,6 +99,8 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
       coveredMs: elapsed - from, complete: elapsed - from === requestedMs,
       peakPending: 0, contention: { episodes: 0, totalMs: 0, maxMs: 0, active: waitingAt !== null },
       ...Object.fromEntries(COUNTERS.map(key => [key, 0])) };
+    result.commandsByContext = Object.fromEntries(COMMAND_CONTEXTS.map(key => [key, 0]));
+    result.commandCoverageMs = Object.fromEntries(COMMAND_CONTEXTS.map(key => [key, 0]));
     result.incidents = describeIncidents(from);
     const metrics = Object.fromEntries(METRICS.map(key => [key, metric()]));
     let carry = 0, first = true;
@@ -103,6 +115,10 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
       carry = bin.leadingWaitMs === duration && bin.trailingWaitMs === duration ? joined : bin.trailingWaitMs;
       first = false;
       for (const key of COUNTERS) result[key] += bin[key];
+      for (const key of COMMAND_CONTEXTS) {
+        result.commandsByContext[key] += bin.commandsByContext[key];
+        result.commandCoverageMs[key] += bin.commandCoverageMs[key];
+      }
       for (const key of METRICS) {
         const target = metrics[key], source = bin[key];
         target.count += source.count; target.total += source.total; target.max = Math.max(target.max, source.max);
@@ -135,10 +151,23 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
       token.outcome = 'original-update-saved'; token.recoveredAt = previousWall;
     },
     commandNotSent(context, reason) {
-      if (!['heat-pump-command', 'switch-command', 'cover-command', 'garage-command'].includes(context)
-        || !['recording-failed', 'recording-wait-expired'].includes(reason)) return;
-      advance().commandsNotSent++;
+      if (!COMMAND_CONTEXTS.includes(context)
+        || !['recording-failed', 'recording-pending', 'recording-wait-expired'].includes(reason)) return;
+      const bin = advance(); bin.commandsNotSent++; bin.commandsByContext[context]++;
       this.incident({ category: 'command-not-sent', context, reason, outcome: 'command-not-sent' });
+    },
+    monitorCommands(context, { enabled = true } = {}) {
+      if (!COMMAND_CONTEXTS.includes(context) || typeof enabled !== 'boolean') return;
+      advance();
+      const previous = commandCoverage.get(context);
+      if (previous?.enabled === enabled) return;
+      commandCoverage.set(context, { enabled, startedAt: previous?.startedAt ?? (enabled ? previousWall : null),
+        totalMs: previous?.totalMs ?? 0, everMonitored: previous?.everMonitored === true || enabled });
+    },
+    controlRequestBlocked(reason) {
+      if (!REASONS.has(reason)) return;
+      advance().controlRequestsBlocked++;
+      this.incident({ category: 'control-request-blocked', context: 'control-request', reason, outcome: 'control-request-blocked' });
     },
     queue(event) {
       const bin = advance();
@@ -165,8 +194,13 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
     },
     status(queue = {}) {
       advance();
-      return { version: 2, retentionMs: RETENTION, resolutionMs: RESOLUTION,
+      return { version: 3, retentionMs: RETENTION, resolutionMs: RESOLUTION,
         percentileMethod: 'histogram-upper-bound', startedAt, elapsedMs: elapsed, checkedAt: previousWall, clockChanged,
+        commandCoverage: COMMAND_CONTEXTS.map(context => {
+          const value = commandCoverage.get(context);
+          return { context, state: value ? value.enabled ? 'monitored' : 'disabled' : 'unknown',
+            startedAt: value?.startedAt ?? null, monitoredMs: value?.everMonitored ? value.totalMs : null };
+        }),
         incidents: describeIncidents(0),
         current: { pending: queue.queued ?? queue.pending ?? 0, activeJobs: queue.activeJobs ?? 0,
           oldestPendingMs: queue.oldestPendingMs ?? null, waitingMs: waitingAt === null ? null : elapsed - waitingAt },

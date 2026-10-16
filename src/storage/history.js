@@ -1,3 +1,4 @@
+import { observeStorageOperation } from './operation-health.js';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { once } from 'node:events';
 import { finished } from 'node:stream/promises';
@@ -163,7 +164,7 @@ function csvCell(value) {
 }
 
 /** Canonical long-form observations; raw original records are recovered through provenance. */
-export async function exportCsv(store, destination, options = {}) {
+async function performExportCsv(store, destination, options = {}) {
   const output = createWriteStream(destination, { flags: 'wx', mode: 0o600 });
   const completion = finished(output);
   // Attach immediately so filesystem failures never become unhandled rejections.
@@ -183,4 +184,8 @@ export async function exportCsv(store, destination, options = {}) {
     }
     output.end(); await completion; return { rows, destination: resolve(destination) };
   } catch (error) { output.destroy(); await completion.catch(() => {}); throw error; }
+}
+
+export function exportCsv(...args) {
+  return observeStorageOperation('csv-export', () => performExportCsv(...args), { scope: 'history' });
 }

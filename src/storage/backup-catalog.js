@@ -1,3 +1,4 @@
+import { storageOperationHealth } from './operation-health.js';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, opendir, readFile } from 'node:fs/promises';
@@ -60,7 +61,7 @@ async function metadata(copies) {
 
 /** One bounded inventory for health, explicit backup actions and history recovery.
  * Metadata discovery is never a current integrity or household-identity check. */
-export async function listBackupCatalog(config, { clock = Date.now, maxEntries = 4096, maxCopies = 100 } = {}) {
+async function performBackupCatalog(config, { clock = Date.now, maxEntries = 4096, maxCopies = 100 } = {}) {
   const directory = backupDirectory(config), reasons = new Set(), candidates = [];
   for (const entry of await names(directory, maxEntries, reasons, true)) {
     if (!DATABASE_EXPORT_NAME.test(entry.name)) continue;
@@ -145,6 +146,7 @@ export function publicBackupCatalog(catalog) {
 /** A selection never supplies a filesystem path; resolve afresh from trusted
  * configuration, then fence replacements and nonportable SQLite companions. */
 export function createBackupCatalog({ getConfig, clock = Date.now, cacheMs = 300_000 } = {}) {
+  storageOperationHealth.register('backup-catalog');
   let cached = null, task = null, forcedFollowup = null, generation = 0, dirty = false;
   const list = async ({ force = false } = {}) => {
     if (task) {
@@ -200,4 +202,13 @@ export function createBackupCatalog({ getConfig, clock = Date.now, cacheMs = 300
       } catch (error) { await handle.close(); throw error; }
     },
   };
+}
+
+export async function listBackupCatalog(...args) {
+  const operation = storageOperationHealth.begin('backup-catalog', { scope: 'shared' });
+  try {
+    const result = await performBackupCatalog(...args);
+    operation.finish(result.complete ? 'completed' : 'unconfirmed', { reason: result.complete ? null : 'operation-failed' });
+    return result;
+  } catch (error) { operation.finish('failed', { reason: 'operation-failed' }); throw error; }
 }

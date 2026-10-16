@@ -1,3 +1,4 @@
+import { storageOperationHealth } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 
 const unavailable = 'Previous recoveries are unavailable. Refresh to retry.';
@@ -14,6 +15,7 @@ function validate(input, options) {
 /** Keep large contribution counts off the HTTP/control thread. Duplicate polls
  * share a request; both pending work and the short-lived page cache are bounded. */
 export function createRecoveryHistoryReader(store, { WorkerClass = Worker, clock = Date.now } = {}) {
+  storageOperationHealth.register('history-query');
   let worker = null, closed = false, sequence = 0, generation = 0;
   const pending = new Map(), cache = new Map(), terminating = new Set();
   const keyOf = (input, options) => JSON.stringify([input, options.before ?? null, options.limit]);
@@ -37,15 +39,18 @@ export function createRecoveryHistoryReader(store, { WorkerClass = Worker, clock
       if (worker !== current) return;
       const entry = pending.get(message.id);
       if (!entry) return;
+      if (message.storageOperationStart) { entry.operation?.start(); return; }
       pending.delete(message.id);
+      entry.operation?.finish(message.error ? 'failed' : 'completed', { reason: message.error ? 'operation-failed' : null });
       remember(entry, message.error ? { error: unavailable, rows: cache.get(entry.key)?.rows ?? [] } : { rows: message.rows });
     });
     const stop = () => {
       if (worker !== current) return;
       worker = null;
-      for (const entry of pending.values()) remember(entry, { error: unavailable, rows: cache.get(entry.key)?.rows ?? [] });
+      const entries = [...pending.values()];
+      for (const entry of entries) remember(entry, { error: unavailable, rows: cache.get(entry.key)?.rows ?? [] });
       pending.clear();
-      void terminate(current);
+      void terminate(current).then(() => { for (const entry of entries) entry.operation?.finish('failed', { reason: 'worker-lost' }); });
     };
     worker.on('error', stop);
     worker.on('exit', stop);
@@ -58,10 +63,10 @@ export function createRecoveryHistoryReader(store, { WorkerClass = Worker, clock
       const key = keyOf(input, options), hit = cache.get(key);
       const inflight = [...pending.values()].some(entry => entry.key === key && entry.generation === generation);
       if ((!hit || (refresh || hit.error) && clock() - hit.at >= 1000) && !inflight) {
-        if (pending.size >= 8) return { rows: hit?.rows ?? [], loading: false, error: unavailable };
-        const id = ++sequence, entry = { key, generation };
+        if (pending.size >= 8) { storageOperationHealth.refuse('history-query'); return { rows: hit?.rows ?? [], loading: false, error: unavailable }; }
+        const id = ++sequence, entry = { key, generation, operation: storageOperationHealth.begin('history-query', { queued: true, scope: 'history' }) };
         try { start(); pending.set(id, entry); worker.postMessage({ id, input, options }); }
-        catch { pending.delete(id); remember(entry, { error: unavailable, rows: hit?.rows ?? [] }); }
+        catch { entry.operation?.finish('failed', { reason: 'operation-failed' }); pending.delete(id); remember(entry, { error: unavailable, rows: hit?.rows ?? [] }); }
       }
       const result = cache.get(key);
       return { rows: result?.rows ?? [], loading: !result, error: result?.error ?? null };
@@ -69,9 +74,11 @@ export function createRecoveryHistoryReader(store, { WorkerClass = Worker, clock
     async close() {
       closed = true;
       const previous = worker; worker = null;
+      const entries = [...pending.values()];
       pending.clear(); cache.clear();
       if (previous) void terminate(previous);
       await Promise.all([...terminating]);
+      for (const entry of entries) entry.operation?.finish('cancelled', { reason: 'cancelled' });
     },
   };
 }

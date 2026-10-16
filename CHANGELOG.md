@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Extend Storage health to both charging adapters, floor and Caravan commands,
+  Garage protection setup and storage-blocked control requests. Show separate
+  local storage-job outcomes, durations and monitoring coverage, including
+  backups, rebuilds, queries and publication.
+
 - Keep a forecast target-risk warning in charging attention details when
   charger control is unconfirmed, alongside the reported control problem.
 

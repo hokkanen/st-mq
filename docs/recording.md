@@ -1578,7 +1578,7 @@ the normal controller status. The dashboard can still display storage health whe
 controller status fails. Filesystem checks time out from the request's perspective
 without claiming zero free bytes or blocking ordinary control. A stopped process,
 unreachable dashboard or complete host failure cannot report its own condition.
-The current version-2 response adds `recording.writer.state`: `ready`, `saving`,
+The current version-3 response includes `recording.writer.state`: `ready`, `saving`,
 `confirming`, `unavailable`, `stopped` or `unknown`. This is current Store and queue
 evidence, independent of saved outcomes and historical windows. A failed worker
 with unsettled work reports `confirming`; after settlement it remains
@@ -2184,6 +2184,12 @@ and independent worker connections are not attributed to this Store.
 
 ### Storage health
 
+The authenticated transient health and writer-history contracts are version 3.
+Current producers, dashboard consumers and fixtures use that contract directly;
+older transient shapes are unknown. Persisted backup receipts and database,
+journal and learning formats are independent and unchanged.
+
+
 The **Storage health** summary belongs to **Recording & storage**. Its current state
 and selected-period evidence occupy separate summary fields; historical problems
 remain visible even when the writer is caught up. **Caught up** requires usable
@@ -2236,23 +2242,36 @@ was lost. These counters describe this Store's observed operations; they do not
 count every household reading, establish who held a competing writer lock, or
 prove missed equipment actions. Independent workers' transaction durations are
 outside this Store's timings, although their contention can delay its queue.
-The command count covers explicitly instrumented MQTT device requests. It
-includes only a known pre-dispatch recording failure or an existing command
-deadline that expires while explicitly awaiting the storage write for a received
-input. Source-clock admission waits and input-validation failures are excluded.
-Unrelated cancellation, changed authority or device identity, unconfirmed
-readback and generic execution failures are excluded. The count describes
-attempted commands, not missed schedules or physical actions that never became
-a command. The monitored boundaries cover heat-pump, switch, cover and Garage
-requests through the shared MQTT publisher. Charging command paths, including
-OCPP and the Shelly EVSE's direct MQTT publisher, and outer transaction rollbacks
-before that shared publisher starts are outside this count. Zero does not prove
-all expected actions succeeded. An expired attempt remains counted even if later
-control succeeds.
+The device-command count covers instrumented mutation attempts for heat-pump,
+switch, door/cover, Garage, floor, Caravan, and both charging adapters through
+MQTT, OCPP and Easee cloud writes. A passive attempt follows required intent
+persistence, admission, rollback and actual transport dispatch. It counts once
+only when a required save fails, dispatch is demonstrably refused by pending
+recording, or the existing command deadline expires during an explicit storage
+wait before transmission. A validated mutation discarded by its parent's
+storage-caused rollback retains a safe cause; the dependent publication is not
+counted as another SQLite save. Calling MQTT publish alone does not prove that
+bytes reached its stream.
 
-Recent problems retain at most the latest incident of each of four kinds: failed
-save, queue refusal, command not sent and follow-up failure after a successful
-commit. Context and reasons use fixed safe categories, without private device
+Queries, source-clock admission waits, unrelated cancellation, changed authority
+or identity, native restrictions and unconfirmed readback do not establish a
+known-unsent command. Once dispatched, a timeout cannot establish that a command
+was not sent. The count describes concrete attempted mutations, never inferred
+missed schedules or physical actions. Command-family coverage begins at owner
+registration; disabled or absent instrumentation cannot establish zero failures
+for an earlier period.
+
+A separate counter records supported authenticated dashboard control requests
+refused by storage. Such a request can fail before any native command exists;
+it does not establish valid actuator intent or permission. Requests, commands,
+save attempts and queue refusals describe different boundaries and can overlap.
+Do not sum them. Request-shape rejection, unauthorized access and non-storage
+failures are not storage-blocked requests. An expired command remains counted
+when later control succeeds.
+
+Recent problems retain at most the latest incident of each of five kinds: failed
+save, queue refusal, command not sent, control request blocked by storage and
+follow-up failure after a successful commit. Context and reasons use fixed safe categories, without private device
 identifiers, topics, payloads or raw error messages. A failed transaction may
 contain several readings, so failed saves cannot be relabelled as lost readings.
 Where an input is discarded, its incident can say that the update was not
@@ -2261,6 +2280,44 @@ update was saved, the incident can show that recovery. A later successful save
 means saving resumed; a newer reading cannot prove recovery of missing history.
 Historical failure counts remain after recovery and are separate from current
 writer status.
+
+**Local storage operations** is separate process-local evidence, available on
+this computer even while it displays a snapshot or runs as standby. It covers
+existing backup/download, verification, saved-copy discovery/inspection,
+learning/rebuild, correction publication, checkpoint cache, recovery, journal
+maintenance, replication/pairing publication, reset archive, history query and
+inventory owners. CSV workers are observable only in their own process; a
+separate command-line invocation or remote peer is not observed by this dashboard.
+Pure computation and provider credential/configuration files remain outside
+these database-operation families.
+
+Families register when their owner is constructed or first used. Missing
+registration is unobserved, not zero; each family reports its own monitoring
+start and summarized coverage. Underlying admitted work counts once: shared
+waiters, cache hits, repeated starts and coalesced snapshots dropped before
+execution add no completed jobs. Existing queue-capacity refusals have a separate
+outcome and no execution-duration sample. Fixed categories distinguish completed,
+failed, cancelled, superseded and unconfirmed outcomes. A failed cache does not
+mean committed learning inputs were lost, and a follow-up failure cannot erase
+a confirmed publication.
+
+Whole-job elapsed time uses a monotonic clock, includes queue and owned cleanup,
+and ends after the owner has joined any worker. It includes computation, transfer
+and cleanup where applicable; it is neither SQLite transaction time nor isolated
+disk latency. Parent jobs can include separately observed verification or
+publication jobs. Per-family counts and durations are not additive and are not
+merged into runtime writer timings. Existing feature views remain authoritative
+for detailed results and physical/control meaning.
+
+The observer performs no I/O, schedules no work and cannot change admission,
+control, deadlines, cancellation or operation results. Sparse five-minute
+aggregates and the latest dated result per fixed family expire after seven days
+of elapsed time. At most 128 active summaries are retained; omitted details are
+reported while all observed job counts continue, without imposing an execution
+limit. Background history survives Store replacement until this application
+exits. Each operation retains its original local scope and cannot update a
+replacement Store's writer history. Health polling reads the RAM snapshot and
+launches no additional scans or persisted diagnostics.
 
 **Transaction timings** shows successful transaction and commit timings with
 averages, approximate 95th percentiles and worst durations. Indentation, connecting
@@ -2278,7 +2335,7 @@ different transactions. No new delay threshold changes warnings or
 command deadlines. Ordinary saving preserves the recording source and loop
 status; a writer fault raises separate storage attention. Reading the summaries
 never runs a database check or grants control
-authority. The current memory-history API has version 2; earlier history shapes
+authority. The current memory-history API has version 3; earlier history shapes
 are unsupported rather than translated.
 
 The separate **Application responsiveness** disclosure shows maximum and p99

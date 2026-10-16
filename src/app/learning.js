@@ -1,7 +1,9 @@
+import { storageOperationHealth } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { learningConfiguration } from './committed-learning.js';
 
 export function startHistoryLearning({ store, config = {}, WorkerClass = Worker, stderr = message => process.stderr.write(message) }) {
+  storageOperationHealth.register('learning-rebuild');
   let worker = null, stopped = false, fallbackReported = false;
   const reports = new Set(), lifetime = new AbortController();
   const reportFailure = () => {
@@ -18,10 +20,17 @@ export function startHistoryLearning({ store, config = {}, WorkerClass = Worker,
     if (worker || stopped) return;
     // Only model settings cross this boundary; provider credentials are irrelevant.
     const modelConfig = learningConfiguration(config);
-    worker = new WorkerClass(new URL('./learning-worker.js', import.meta.url), { workerData: { dbPath: store.path, config: modelConfig } });
-    worker.on('message', result => { if (result?.error) reportFailure(); });
-    worker.on('error', reportFailure);
-    worker.on('exit', () => { worker = null; });
+    const operation = storageOperationHealth.begin('learning-rebuild', { scope: 'history' });
+    let failed = false;
+    try { worker = new WorkerClass(new URL('./learning-worker.js', import.meta.url), { workerData: { dbPath: store.path, config: modelConfig } }); }
+    catch (error) { operation.finish('failed', { reason: 'operation-failed' }); throw error; }
+    worker.on('message', result => { if (result?.error) { failed = true; reportFailure(); } });
+    worker.on('error', () => { failed = true; reportFailure(); });
+    worker.on('exit', code => {
+      worker = null;
+      void Promise.allSettled([...reports]).then(() => operation.finish(failed || code ? 'failed' : stopped ? 'cancelled' : 'completed',
+        { reason: failed || code ? 'operation-failed' : stopped ? 'cancelled' : null }));
+    });
   };
   run();
   const timer = setInterval(run, 15 * 60_000);

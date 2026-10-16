@@ -54,7 +54,7 @@ test('saved-copy verification is an explicit read-only inspection with a bounded
   assert.throws(() => assertDashboardWrite('/api/recording-backups/verify', { sourceId: 'a'.repeat(64) }, null), { status: 403 });
 });
 
-const writerStatus = state => ({ role: 'master', input: 'simulated', recordingHealth: { version: 2, scope: 'simulated', checkedAt: 100,
+const writerStatus = state => ({ role: 'master', input: 'simulated', recordingHealth: { version: 3, scope: 'simulated', checkedAt: 100,
   recording: { writer: { state } } } });
 
 test('writer confirmation and loss restrict mutations while saving and read-only inspections remain usable', () => {

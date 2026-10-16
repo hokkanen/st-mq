@@ -184,7 +184,7 @@
 .recording-performance-results { padding: 16px 0 20px; border-top: 1px solid var(--border); }
 .recording-performance-results-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 20px; align-items: baseline; margin-bottom: 12px; }
 .recording-performance-results-heading :is(h5, p) { margin: 0; }
-.recording-performance-result-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 24px; margin: 0; padding: 14px 16px; border-radius: 6px; background: var(--surface-soft); font-size: 12px; line-height: 1.5; }
+.recording-performance-result-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 24px; margin: 0; padding: 14px 16px; border-radius: 6px; background: var(--surface-soft); font-size: 12px; line-height: 1.5; }
 .recording-performance-result-counts > div { display: grid; grid-template-rows: 1fr auto; gap: 6px; }
 .recording-performance-result-counts dt { color: var(--muted); }
 .recording-performance-result-counts dd { margin: 0; font-size: 18px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
@@ -300,3 +300,19 @@ body[data-authenticated="false"][data-recording-health="true"] .recording-backup
 .recording-empty-datasets > summary { padding: 12px 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .recording-storage-allocation { margin-top: 12px; border-top: 1px solid var(--border); }
 .recording-storage-allocation > summary { padding: 12px 0; font-size: 12px; }
+.recording-operation-list { display: grid; gap: 0; margin-block: 12px; }
+.recording-operation-list > details { min-width: 0; border-top: 1px solid var(--border); }
+.recording-operation-list > details > summary { display: flex; justify-content: space-between; gap: 8px 16px; padding: 9px 0; font-size: 12px; cursor: pointer; }
+.recording-operation-list > details > summary strong { color: var(--muted); font-weight: 500; text-align: right; }
+.recording-operation-list > details[data-tone="warning"] > summary strong { color: var(--stale); }
+.recording-operation-list > details > div { padding: 0 0 12px 12px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.recording-operation-list > details > div p { margin: 6px 0; line-height: 1.6; }
+.recording-command-coverage { padding-inline-start: 18px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .recording-operation-list > details > summary { flex-wrap: wrap; }
+  .recording-operation-list > details > summary strong { text-align: left; }
+}
+
+.recording-operation-list > details > summary::before { content: "›"; flex: none; color: var(--muted); }
+.recording-operation-list > details[open] > summary::before { transform: rotate(90deg); }
+.recording-operation-list > details > summary > span { flex: 1; min-width: 0; }

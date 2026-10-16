@@ -2,6 +2,7 @@ import { H66_DOCUMENTATION, H66_REGISTERS } from '../domain/telemetry.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { H66_SETTING_LIMITS, validateH66ControlState } from '../domain/heating-control-state.js';
 import { createWriteScope } from '../storage/write-scope.js';
+import { createControlAttempt } from '../storage/control-attempt.js';
 
 const HOUR = 3_600_000;
 const MAX_PAUSE_MS = 366 * 24 * HOUR;
@@ -29,7 +30,8 @@ function validateValues(values) {
  * Persisted obligations are restored on expiry/restart/reconnect; this is not a device-side lease.
  */
 export function createH66Controller({ deviceId, publish, requestSnapshot = async () => {},
-  store, clock = Date.now, monotonicClock = () => performance.now(), config = {}, closeWriteTimeoutMs = 5000 } = {}) {
+  store, clock = Date.now, monotonicClock = () => performance.now(), config = {}, closeWriteTimeoutMs = 5000,
+  canAttributeStorageBlock = () => true } = {}) {
   if (typeof deviceId !== 'string' || !deviceId || /[\/# +\u0000]/.test(deviceId)) throw new TypeError('Exact MQTT device identifier required');
   if (typeof publish !== 'function' || !store?.getState || !store?.setState) throw new TypeError('H66 requires transport and persistent state storage');
   const configuredAge = config.maxAgeMs ?? H66_MAX_AGE_MS;
@@ -188,7 +190,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     if (!Number.isFinite(scale) || scale === 0 || !Number.isFinite(offset)) throw failure('H66_SCALE_INVALID', 'The H66 MQTT scale is invalid.');
     return String(Number(((value - offset) / scale).toFixed(6)));
   }
-  function publishAndReadback(index, value, validate) {
+  function publishAndReadback(index, value, validate, recordingAttempt) {
     return new Promise((resolve, reject) => {
       let settled = false, recordingDeadlineExpired = false;
       const cancellation = new AbortController();
@@ -215,7 +217,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       try {
         Promise.resolve(publish(`${deviceId}/HP/SET/${index}`, wireValue(index, value),
           { qos: 0, retain: false, noReplay: true, beforePublish, signal: cancellation.signal,
-            recordingContext: 'heat-pump-command', recordingDeadlineExpired: () => recordingDeadlineExpired }))
+            recordingContext: 'heat-pump-command', recordingAttempt, recordingDeadlineExpired: () => recordingDeadlineExpired }))
           .then(() => { if (!settled) return requestSnapshot(); })
           .catch(() => finish(failure('H66_WRITE_FAILED', 'The H66 write could not be confirmed.')));
       } catch { finish(failure('H66_WRITE_FAILED', 'The H66 write could not be confirmed.')); }
@@ -233,12 +235,12 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     const activationElapsedEnd = Number.isFinite(activationDeadline)
       ? monotonicClock() + Math.max(0, activationDeadline - checkedAt) : Infinity;
     const expectedReadings = Object.fromEntries(Object.keys(values).map(index => [index, current(index, checkedAt)]));
-    const check = index => {
+    const check = (index, allowExpired = false) => {
       requireConnection(clock());
       if (!restoring && closing) throw failure('H66_CLOSED', 'H66 is closing; no new setting changes are accepted.');
       if (connectionGeneration !== generation) throw failure('H66_DISCONNECTED', 'The H66 connection changed while saving the setting.');
       if (!restoring && restoreRequired) throw failure('H66_RESTORATION_PENDING', 'The H66 transition was interrupted.');
-      if (!restoring && (clock() >= Math.min(end ?? Infinity, activationExpiresAt ?? Infinity)
+      if (!allowExpired && !restoring && (clock() >= Math.min(end ?? Infinity, activationExpiresAt ?? Infinity)
         || monotonicClock() >= activationElapsedEnd)) throw failure('H66_EXPIRED', 'The H66 override expired before activation.');
       const reading = current(index, clock());
       if (!reading) throw failure('H66_BASELINE_UNAVAILABLE', 'A native-setting readback became stale during the transition.');
@@ -250,7 +252,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     for (const index of SETTINGS.filter(index => Object.hasOwn(values, index))) {
       const value = values[index];
       // Baseline and restoration obligation must reach durable storage before MQTT.
-      const writtenObligation = await writeState(() => {
+      let attempt, writtenObligation;
+      try { writtenObligation = await writeState(() => {
         if (restoring && (!tokens[index] || state.obligations[index] !== tokens[index])) return null;
         const reading = check(index);
         if (restoring && !equal(reading.value, tokens[index].baseline)
@@ -275,10 +278,25 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
           requestedAt: clock(), requestedRevision: reading.revision, confirmed: false, restoring };
         state.obligations[index] = written;
         state.requested[index] = value;
+        attempt = createControlAttempt({ store, context: 'heat-pump-command' });
+        attempt.storageWaiting(true);
         return written;
-      });
+      }); } catch (error) { attempt?.fail(error); attempt?.finish(); throw error; }
+      if (attempt) {
+        // The original activation lease can expire while its required intent
+        // save commits. Diagnose that existing deadline only when every other
+        // connection, native-reading and ownership check still holds.
+        if (!restoring && (clock() >= activationDeadline || monotonicClock() >= activationElapsedEnd)) {
+          try {
+            check(index, true);
+            if (state.obligations[index] === writtenObligation && canAttributeStorageBlock() === true) attempt.expire();
+          } catch { /* A different invalidation does not establish storage expiry. */ }
+        }
+        attempt.storageWaiting(false);
+      }
       armExpiry();
       if (!writtenObligation) continue;
+      try {
       // Admission can outlive evidence or permission. Committed intent alone
       // does not authorize a command on a replaced connection or changed value.
       const beforePublish = () => {
@@ -287,7 +305,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
           throw failure('H66_SETTING_CHANGED', 'The saved native-setting obligation was superseded.');
       };
       beforePublish();
-      const readback = await publishAndReadback(index, value, beforePublish);
+      const readback = await publishAndReadback(index, value, beforePublish, attempt);
       await writeState(() => {
         if (state.obligations[index] === writtenObligation) {
           if (restoring) delete state.obligations[index];
@@ -297,6 +315,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       });
       changes.push(index);
       if (!restoring && (clock() >= Math.min(state.expiresAt ?? Infinity, activationExpiresAt ?? Infinity) || monotonicClock() >= activationElapsedEnd)) throw failure('H66_EXPIRED', 'The H66 override expired during activation.');
+      } catch (error) { attempt?.fail(error); throw error; }
+      finally { attempt?.finish(); }
     }
     await writeState(() => event('h66-settings-confirmed', { registers: changes, reason, phase: state.phase }));
     armExpiry();
@@ -395,15 +415,17 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       // Reasserting the current value deliberately promotes it immediately.
       const requested = { register, value, previousValue: previous.value, at: now, scope: 'native-setting',
         status: 'pending', confirmed: false, sent: changed ? null : false };
-      await writeState(() => {
+      let attempt;
+      try { await writeState(() => {
         check();
         if (!changed) supersede();
         state.lastManual = requested;
-      });
+        if (changed) attempt = createControlAttempt({ store, context: 'heat-pump-command' });
+      }); } catch (error) { attempt?.fail(error); attempt?.finish(); throw error; }
       armExpiry();
       try {
         check();
-        const readback = changed ? await publishAndReadback(register, value, check) : previous;
+        const readback = changed ? await publishAndReadback(register, value, check, attempt) : previous;
         await writeState(() => {
           supersede();
           state.lastManual = { ...requested, status: 'confirmed', confirmed: true, sent: changed,
@@ -413,11 +435,12 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         });
         return copy(state.lastManual);
       } catch (error) {
+        attempt?.fail(error);
         const code = ['H66_READBACK_TIMEOUT', 'H66_WRITE_FAILED', 'H66_DISCONNECTED', 'H66_CLOSED'].includes(error?.code)
           ? error.code : 'H66_WRITE_FAILED';
         await writeState(() => { state.lastManual = { ...state.lastManual, status: 'unconfirmed', confirmed: false, code }; });
         throw failure(code, 'The native setting change was not confirmed. Check its live value before trying again.');
-      }
+      } finally { attempt?.finish(); }
     });
   }
   async function setPhase({ phase, roomBoostC = 5, compressorOnly = false, holdDhwReduced = false, now = clock(), expiresAt, activationExpiresAt = expiresAt, manual = false, pauseId = null } = {}) {

@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { createControlAttempt } from '../storage/control-attempt.js';
 import { FLOOR_PREHEAT_DEVICE, FLOOR_PREHEAT_CIRCUITS } from '../domain/floor-circuits.js';
 
 const KEY = 'floor-override:v1';
@@ -233,13 +234,14 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
         manualSelected: mode === 'manual' && Boolean(out.mask & (1 << (channel.id - 1))) })) });
     return result;
   };
-  const request = (op, fields = {}, { timeout = 5000, guard = () => {}, generation = null } = {}) => new Promise((resolve, reject) => {
+  const request = (op, fields = {}, { timeout = 5000, guard = () => {}, generation = null, recordingAttempt } = {}) => new Promise((resolve, reject) => {
     if (!connected || closed || !settings.deviceMac || !publish || !canControl()) { reject(failure('FLOOR_UNAVAILABLE', 'Floor MQTT control is unavailable.')); return; }
     const id = randomBytes(16).toString('hex'), connectionEpoch = epoch, cancellation = new AbortController(), deadline = monotonicClock() + timeout;
     const body = { v: 1, op, id, device: settings.deviceMac, ...fields };
+    const evidence = recordingAttempt ?? createControlAttempt({ store, context: 'floor-control', kind: ['get', 'challenge'].includes(op) ? 'query' : 'mutation' });
     let dispatched = false, sentMono = null, done = false;
     const finish = (error, value) => {
-      if (done) return; done = true; clearTimeout(timer); pending.delete(id); cancellation.abort();
+      if (done) return; done = true; clearTimeout(timer); pending.delete(id); cancellation.abort(); evidence.finish();
       if (error) reject(error); else resolve(value);
     };
     const timer = setTimeout(() => finish(failure('FLOOR_UNCONFIRMED', 'Floor command or GPIO readback was not confirmed.')), timeout);
@@ -249,6 +251,7 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
       guard(); if (!dispatched) sentMono = monotonicClock(); dispatched = true;
     };
     const onFirstWrite = () => {
+      evidence.dispatched();
       if (!closed && connected && epoch === connectionEpoch && canControl()
         && op === 'acquire' && dispatchedAcquire?.id !== id) {
         const out = saved?.outstanding;
@@ -262,7 +265,7 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
       resolve: value => finish(null, value), reject: error => finish(error) });
     if (Buffer.byteLength(JSON.stringify(body)) > 640) { finish(failure('FLOOR_COMMAND', 'Floor command exceeds the supported protocol.')); return; }
     Promise.resolve().then(() => publish(FLOOR_MQTT_TOPICS.command, JSON.stringify(body), { qos: 1, retain: false, noReplay: true,
-      beforePublish, beforeWrite: beforePublish, onFirstWrite, signal: cancellation.signal, recordingContext: 'floor-control', recordingDeadlineExpired: () => monotonicClock() >= deadline }))
+      beforePublish, beforeWrite: beforePublish, onFirstWrite, signal: cancellation.signal, recordingContext: 'floor-control', recordingKind: ['get', 'challenge'].includes(op) ? 'query' : 'mutation', recordingAttempt: evidence, recordingDeadlineExpired: () => monotonicClock() >= deadline }))
       .catch(() => finish(failure('FLOOR_UNCONFIRMED', 'Floor command publication was not confirmed.')));
   });
   const refresh = async ({ allowFault = false } = {}) => {
@@ -347,8 +350,15 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
     // A healthy unchanged renewal keeps the current admitted grant until the
     // replacement reply commits. A changed mask remains an uncertain transition.
     if (existing && runtime && existing.mask === mask && matchesLease(snapshot.frame, existing)) runtime.renewing = { ...existing };
-    await persist(withRequest({ ...saved, sequence: Math.max(saved.sequence, treatment), outstanding: out,
-      retired: saved.retired.filter(row => row.until > clock()) }, requestRecord));
+    const evidence = createControlAttempt({ store, context: 'floor-control' });
+    evidence.storageWaiting(true);
+    try {
+      await persist(withRequest({ ...saved, sequence: Math.max(saved.sequence, treatment), outstanding: out,
+        retired: saved.retired.filter(row => row.until > clock()) }, requestRecord));
+      if (healthy() && canControl() && !closed && epoch === challengeReply.epoch && currentIdentity(saved.outstanding)
+        && monotonicClock() >= Math.min(endMono, beforeChallenge + 1800)) evidence.expire();
+    } catch (error) { evidence.fail(error); evidence.finish(); throw error; }
+    finally { evidence.storageWaiting(false); }
     const guard = () => {
       if (!healthy() || !canControl() || !settings.commissioned || epoch !== challengeReply.epoch || snapshot.frame.generation !== out.generation
         || monotonicClock() >= endMono || monotonicClock() - beforeChallenge >= 1800 || !currentIdentity(saved.outstanding))
@@ -357,7 +367,7 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
     try {
       const reply = await request(existing ? 'renew' : 'acquire', { generation: out.generation, owner: out.owner, treatment, seq,
         challenge: frame.challenge, mask, ttl_ms: settings.leaseSeconds * 1000, end_ms: deviceEnd, ...(existing ? { token: out.token } : {}) },
-        { timeout: Math.max(1, Math.floor(1800 - (monotonicClock() - beforeChallenge))), generation: out.generation, guard });
+        { timeout: Math.max(1, Math.floor(1800 - (monotonicClock() - beforeChallenge))), generation: out.generation, guard, recordingAttempt: evidence });
       const accepted = reply.frame;
       // A correlated capability can release partial activation even when GPIO
       // confirmation fails. It never grants a replacement activation.

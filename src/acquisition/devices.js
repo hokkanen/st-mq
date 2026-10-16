@@ -15,6 +15,7 @@ import { createEaseeStream } from './easee-stream.js';
 import { createEaseeOcpp } from './easee-ocpp.js';
 import { createOcppSetup, isOcppSetupState } from './easee-ocpp-setup.js';
 import { createOcppScheduleAdapter } from '../charging/ocpp.js';
+import { createControlAttempt } from '../storage/control-attempt.js';
 import { ProviderError, providerFailureCode } from './http.js';
 import { classifySourceTime, sourceTimeAdmission } from '../domain/time-evidence.js';
 
@@ -235,7 +236,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   streamFactory = createEaseeStream, ocppFactory = createEaseeOcpp, ocppState, ocppSetupState, ocppInstallation,
   onOcppControlTransition,
   onStreamDisconnect = () => {}, onChargerObservation = () => {}, retryState,
-  fallbackIntervalMs = 15_000 } = {}) {
+  fallbackIntervalMs = 15_000, controlAttempt = () => createControlAttempt() } = {}) {
   if (typeof http?.json !== 'function') throw new TypeError('An HTTP JSON transport is required');
   const easee = { ...connections.easee };
   let tokens = { accessToken: easee.access_token ?? '', refreshToken: easee.refresh_token ?? '' };
@@ -269,6 +270,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   const localConfig = ocppInstallation ? { ...easee.local_ocpp, password: ocppInstallation.password,
     enabled: !invalidOcppSetup && (ocppInstallation.enabled || restorationPending) } : easee.local_ocpp;
   const local = ocppFactory({ config: localConfig, chargerId: easee.charger_id, clock, virtualTag: ocppInstallation?.virtualTag,
+    controlAttempt,
     canControl: () => !closed && !nativeStopped && !invalidOcppSetup && canControl(), state: ocppState,
     canStart: () => {
       const permission = nativeStartPermission, current = local.controlSnapshot?.();
@@ -431,7 +433,8 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     if (responseText && options.controlGuard && !options.controlGuard()) throw new Error('Charging schedule authority was revoked');
     if (options.signal?.aborted) throw new Error('Provider request was aborted');
     admitRequest();
-    const { controlGuard, nativeTakeover, ...transportOptions } = options;
+    const { controlGuard, nativeTakeover, controlAttempt: attempt, ...transportOptions } = options;
+    attempt?.dispatched();
     try { return await request(url, transportOptions, 'Easee', responseText); }
     catch (error) {
       if (httpStatus(error) === 429) blockedUntil = Math.max(blockedUntil, clock() + (error.retryAfterMs ?? 300_000));
@@ -597,6 +600,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     return { observations: rows, allowanceEvidence: evidence ?? { source: 'easee-stream', connected: false, synchronized: false } };
   }
   const scheduleControl = Object.assign(createEaseeScheduleAdapter({ request: easeeAuthenticated, readObservations,
+    controlAttempt, dispatchObserved: true,
     chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock,
     readAllowanceEvidence: () => stream?.evidence?.(easee.charger_id, [230, 231, 232]),
     canControl: () => !invalidOcppSetup && canControl() }),
@@ -610,6 +614,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   // A positively observed vendor zero-current pause (or supported vendor
   // schedule) still needs its API. Ordinary local takeover does not read cloud.
   const nativeTakeoverControl = createEaseeScheduleAdapter({
+    controlAttempt, dispatchObserved: true,
     request: async (url, options, responseText) => {
       const result = await easeeAuthenticated(url, { ...options, nativeTakeover: true }, responseText);
       return options.method === 'GET' && url.endsWith('/schedules') && result?.enabled === 'ocpp.direct'
@@ -771,6 +776,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     return { availableCurrentA: telemetry.availableCurrentA, maxCurrentA: telemetry.maxCurrentA };
   };
   const nativeScheduleControl = ocppInstallation ? createOcppScheduleAdapter({ scope: ocppInstallation.scope, clock,
+    controlAttempt,
     readAllowanceTelemetry: nativeAllowanceTelemetry,
     readCurrentSupply,
     readDeviceInfo: () => local.deviceInfo?.() ?? null,
@@ -801,13 +807,18 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         if (expectedAppControl?.enabled !== false && !expectedAppControl?.stopped && current?.connectorStatus !== 'Unavailable')
           return nativeAppControl();
         const dynamicAt = nativeDynamicChargerAt, scheduleInstruction = nativeScheduleInstruction, stopBefore = observedNativeStop;
-        await beforeWrite({ local: true });
+        const attempt = controlAttempt();
         let dispatchedAt = null;
-        const reply = await local.request('ChangeAvailability', { connectorId: 0, type: 'Operative' },
-          { signal, guard: canMutate, beforeSend: () => {
+        let reply;
+        try {
+          await beforeWrite({ local: true });
+          reply = await local.request('ChangeAvailability', { connectorId: 0, type: 'Operative' },
+          { signal, attempt, guard: canMutate, beforeSend: () => {
             if (!allowed()) return false;
             dispatchedAt = clock(); return true;
           } });
+        } catch (cause) { attempt.fail(cause); throw cause; }
+        finally { attempt.finish(); }
         if (reply?.status !== 'Accepted') throw Object.assign(new Error('The charger rejected local enablement.'), { code: 'availability-rejected' });
         // Acknowledgement alone is not readback. Wait for the fresh operative
         // connector status on the same authenticated local connection.

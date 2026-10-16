@@ -7,6 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createWriteHealthHistory } from '../../src/storage/write-health-history.js';
+import { createStorageOperationHealth } from '../../src/storage/operation-health.js';
 import { Store } from '../../src/storage/store.js';
 import { Recorder } from '../../src/storage/recorder.js';
 import { getDatabaseOverview } from '../../src/app/database-overview.js';
@@ -49,6 +50,17 @@ for (let index = 0; index < 12680; index++) {
 }
 fixtureElapsed = 8 * 3600_000;
 const performanceHistory = performanceRuntime.status({ queued: 0, activeJobs: 0, oldestPendingMs: null });
+let operationTick = 0;
+const operationRuntime = createStorageOperationHealth({ clock: () => now - 2 * 3600_000 + operationTick, monotonic: () => operationTick });
+const backupOperation = operationRuntime.begin('backup', { queued: true, scope: 'runtime' });
+operationTick = 40; backupOperation.start(); operationTick = 320; backupOperation.finish('completed');
+const publicationOperation = operationRuntime.begin('learning-publication', { scope: 'standby' });
+operationTick = 600; publicationOperation.finish('failed', { reason: 'committed-followup-failed', committed: true });
+operationRuntime.refuse('history-query');
+const historyOperation = operationRuntime.begin('history-query', { scope: 'history' });
+operationTick = 800; historyOperation.finish('cancelled', { reason: 'cancelled' });
+operationTick = 2 * 3600_000;
+const localOperationHistory = operationRuntime.status();
 const measurement = (signal, streamId, extra = {}) => ({ signal, streamId, source: 'simulation',
   unit: 'degC', policy: 'adaptive-value', observedThisRun: true, lastPollAt: now - 10000,
   lastSourceTime: now - 12000, lastSavedAt: now - 60000, threshold: .15,
@@ -56,7 +68,7 @@ const measurement = (signal, streamId, extra = {}) => ({ signal, streamId, sourc
   hour: { records: 12, averageIntervalMs: 300000 }, day: { records: 248, estimatedBytes: 16000, averageIntervalMs: 348000 },
   week: { records: 1800, averageIntervalMs: 336000 },
   freshness: { status: 'fresh', sourceObservedAt: now - 12000, maxAgeMs: 120000, reasons: [] }, ...extra });
-const status = { webAccess: { role: 'admin' }, recordingHealth: { version: 2, checkedAt: now, scope: 'live', contextId: 'synthetic-live',
+const status = { webAccess: { role: 'admin' }, recordingHealth: { version: 3, checkedAt: now, operations: localOperationHistory, scope: 'live', contextId: 'synthetic-live',
   disk: { state: 'critical', totalBytes: 128e9, freeBytes: 2.1e9, checkedAt: now,
     detail: 'Free space is critically low. Recordings and backup copies share this filesystem.' },
   recording: { writer: { state: 'ready' }, state: 'write-failed', lastLoopCompletedAt: now - 1000, lastSourceCheckAt: now - 180000, lastFailureAt: now - 60000,
@@ -220,7 +232,7 @@ function resetRecordingContext(health) {
   inventoryRefresh.reset();
 }
 window.renderStatus = value => {
-  if (value.recordingHealth?.version === 2) resetRecordingContext(value.recordingHealth);
+  if (value.recordingHealth?.version === 3) resetRecordingContext(value.recordingHealth);
   panel.update(value);
   void inventoryRefresh();
 };
@@ -340,7 +352,7 @@ try {
   const captureGlance = name => captureFold('recording-health', name);
   const checkLayout = async label => {
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${label}: page fits`);
-    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-backup-list, .recording-backup-toolbar, .recording-backup-actions, .recording-source-exceptions, .recording-source-heading, .recording-source-reason, .recording-source-clocks, .recording-source-clocks dd, #recording-recording-unknown, #recording-recording-coverage, .recording-storage-inventory, .recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-dataset, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents')).filter(node => {
+    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-backup-list, .recording-backup-toolbar, .recording-backup-actions, .recording-source-exceptions, .recording-source-heading, .recording-source-reason, .recording-source-clocks, .recording-source-clocks dd, #recording-recording-unknown, #recording-recording-coverage, .recording-storage-inventory, .recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-dataset, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents, .recording-operation-list, .recording-operation-list > details, .recording-command-coverage')).filter(node => {
       if(!node.checkVisibility()) return false;
       const b = node.getBoundingClientRect(), owner=node.closest('.recording-health-card')?.getBoundingClientRect();
       return b.width <= 0 || b.left < 0 || b.right > innerWidth + 1 || node.scrollWidth > node.clientWidth + 1
@@ -487,6 +499,12 @@ try {
       await captureFold('recording-recording-card', `recording-sources-${width}-${theme}`);
       await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=false); document.getElementById('recording-performance-details').open=true; setPerformance('healthy')");
       await settle(); await checkLayout(`${width}/${theme}/performance`); await capture(`performance-${width}-${theme}`); await captureGlance(`glance-storage-${width}-${theme}`);
+      await evaluate("document.getElementById('recording-performance-operations').open=true; document.querySelector('#recording-performance-operation-list > details[data-kind=learning-publication]').open=true");
+      await settle(); await checkLayout(`${width}/${theme}/local-operations`);
+      assert.match(await evaluate("document.querySelector('#recording-performance-operation-list > details[data-kind=learning-publication]').textContent"), /Model publication.*Problems observed.*save committed; follow-up work failed/s);
+      assert.match(await evaluate("document.querySelector('#recording-performance-operation-list > details[data-kind=csv-import] > summary').textContent"), /Not observed/);
+      await captureFold('recording-performance-details', `local-operations-${width}-${theme}`);
+
       for(const state of ['saving','confirming','unavailable','busy','failed','recovered','unknown','empty','reset','snapshot']) {
         await evaluate(`setPerformance('${state}')`); await settle();
         await checkLayout(`${width}/${theme}/performance-${state}`); await capture(`performance-${state}-${width}-${theme}`);
@@ -512,6 +530,10 @@ try {
       await evaluate("setScenario('critical')");
     }
   }
+  await evaluate("setPerformance('snapshot'); document.getElementById('recording-performance-details').open=true; document.getElementById('recording-performance-operations').open=true; window.operationRow=document.querySelector('#recording-performance-operation-list > details[data-kind=learning-publication]'); operationRow.open=true; operationRow.querySelector('summary').focus(); panel.update(payload)");
+  assert.equal(await evaluate("document.getElementById('recording-performance-data').hidden && document.getElementById('recording-performance-operations').checkVisibility()"), true, 'Local-node jobs remain visible in a snapshot without claiming live writer monitoring');
+  assert.equal(await evaluate("operationRow.open && document.activeElement===operationRow.querySelector('summary')"), true, 'Operation polling preserves disclosure and keyboard focus');
+  assert.match(await evaluate("document.getElementById('recording-performance-operations-evidence').textContent"), /On this computer/);
   await evaluate("setDetailedSources(); document.getElementById('recording-details').open=true; document.getElementById('recording-recording-card').open=true; window.sourceRow=document.querySelector('#recording-recording-sources > li'); window.sourceLink=sourceRow.querySelector('.recording-source-link'); sourceLink.focus(); panel.update(payload)");
   assert.equal(await evaluate("document.activeElement===sourceLink && sourceLink.closest('li')===sourceRow && document.getElementById('recording-recording-card').open"), true,
     'Routine source polling preserves its row, disclosure and focused link');

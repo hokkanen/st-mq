@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
 import { admittedChargingDeadlineRevision } from './flexibility.js';
 import { validateAdmittedSourceTime } from '../domain/time-evidence.js';
+import { createControlAttempt } from '../storage/control-attempt.js';
 
 const copy = value => structuredClone(value);
 const isTime = value => Number.isSafeInteger(value) && value >= 0;
@@ -515,11 +516,14 @@ export function createChargingController({ adapter, initialState = null, saveSta
   }
   async function clearCurrent(kind, expectedGeneration, cleanup = false, guardNative = false) {
     if (!['delayed', 'daily', 'weekly'].includes(kind)) throw Object.assign(new Error('Unsupported schedule'), { code: 'unsupported-schedule' });
+    const attempt = adapter.controlAttempt?.() ?? createControlAttempt();
+    try {
     const expectedFingerprint = snapshot.fingerprint, expectedControlFingerprint = snapshot.controlFingerprint;
     state.pending = { action: 'clear', kind, previousFingerprint: expectedFingerprint,
       previousActiveFingerprint: currentFingerprint(), startedAt: clock() };
     await persist();
     snapshot = await adapter.clear({ kind, expectedFingerprint, expectedControlFingerprint,
+      attempt,
       ...(guardNative ? { expectedNativeFingerprint: easeeTakeoverFingerprint(snapshot) } : {}),
       canMutate: () => permitted() && generation === expectedGeneration && (cleanup || controlRequested()) });
     state.lastReadAt = snapshot.readAt;
@@ -527,6 +531,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
     state.pending = null; state.owned = null;
     if (state.vehicleDisconnect?.cleanupPending) state.vehicleDisconnect.cleanupPending = false;
     rememberOwnInstruction(clock());
+    } catch (cause) { attempt.fail(cause); throw cause; }
+    finally { attempt.finish(); }
   }
   async function takeOver(expectedGeneration, token, automatic = false) {
     takeoverState = 'blocked'; takeoverAttempt = token;
@@ -626,8 +632,11 @@ export function createChargingController({ adapter, initialState = null, saveSta
       expectedFingerprint: scheduleFingerprint(expectedState), expectedActiveFingerprint,
       previousFingerprint: snapshot.fingerprint, previousActiveFingerprint: currentFingerprint(), startedAt: now };
     state.pending = pending;
-    await phase('identifying', 'Requesting a brief charging pause to identify the connected vehicle.');
+    const attempt = adapter.controlAttempt?.() ?? createControlAttempt();
+    try { await phase('identifying', 'Requesting a brief charging pause to identify the connected vehicle.'); }
+    catch (cause) { attempt.fail(cause); attempt.finish(); throw cause; }
     snapshot = await adapter.installDelayed({ startAt, timezone: desired.timezone, maximumAmps,
+      attempt,
       identification: { id: request.id, connectedAt: request.connectedAt }, allowChargingPause: true,
       expectedFingerprint: snapshot.fingerprint, expectedControlFingerprint: snapshot.controlFingerprint,
       canMutate: () => permitted() && expectedGeneration === generation && identification?.id === request.id
@@ -1008,9 +1017,12 @@ export function createChargingController({ adapter, initialState = null, saveSta
         ...(execution ? { execution: copy(execution), periods: copy(execution.periods), finalStartAt: execution.finalStartAt } : {}) };
       preparedInstall = state.pending;
       const pending = copy(state.pending);
-      await phase('unconfirmed', 'The delayed start is being confirmed with Easee.');
+      const attempt = adapter.controlAttempt?.() ?? createControlAttempt();
+      try { await phase('unconfirmed', 'The delayed start is being confirmed with Easee.'); }
+      catch (cause) { attempt.fail(cause); attempt.finish(); throw cause; }
       operation = 'command-failed';
       snapshot = await adapter.installDelayed({ startAt: plan.startAt, timezone: desired.timezone, maximumAmps,
+        attempt,
         allowChargingPause: pauseRequested,
         expectedFingerprint: snapshot.fingerprint, expectedControlFingerprint: snapshot.controlFingerprint,
         canMutate: () => permitted() && expectedGeneration === generation && desired.enabled === true && !sessionPauseActive(),

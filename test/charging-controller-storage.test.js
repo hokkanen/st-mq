@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
 import { createChargingController } from '../src/charging/controller.js';
 import { createEaseeScheduleAdapter, normalizeScheduleState } from '../src/charging/easee.js';
+import { createControlAttempt } from '../src/storage/control-attempt.js';
 
 const NOW = Date.parse('2026-01-01T18:00:00Z');
 const KEY = 'charging:synthetic-owner';
@@ -18,7 +19,7 @@ function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-charging-controller-storage-'));
   const store = new Store(join(directory, 'history.sqlite'));
   const reader = new DatabaseSync(store.path, { readOnly: true });
-  const h = { now: NOW, enabled: true, mode: 2, schedule: normalizeScheduleState({ enabled: 'none' }),
+  const h = { store, now: NOW, enabled: true, mode: 2, schedule: normalizeScheduleState({ enabled: 'none' }),
     writes: [], errors: [], fault: null, witnessed: null, prior: null, identification: null };
   h.read = () => {
     const row = reader.prepare('SELECT value FROM state WHERE key=?').get(KEY);
@@ -35,6 +36,7 @@ function fixture(t) {
     return exec(sql);
   };
   const adapter = createEaseeScheduleAdapter({ chargerId: 'synthetic-charger', clock: () => h.now,
+    controlAttempt: () => createControlAttempt({ store, context: 'charger1-command' }),
     canControl: () => true, waitForReadback: async () => {}, request: async (url, options) => {
       if (options.method === 'GET') {
         if (url.endsWith('/schedules')) return structuredClone(h.schedule);
@@ -111,6 +113,8 @@ for (const kind of ['observer', 'IOERR', 'FULL']) {
     assert.equal(result.handoverConfirmed, false, 'An observer failure remains visible even though persistence succeeded.');
     assert.equal(result.errorCode, 'read-failed');
     assert.equal(h.writes.length, 0);
+    assert.equal(h.store.writeHealth.status().history.windows.day.commandsNotSent, 0,
+      'A source-only save failure is not an attempted device mutation');
     await h.restart();
     assert.equal(h.controller.status().session.connected, !committed);
     const recovered = await h.update({ enabled: false, vehicleDisconnect: event });
@@ -128,6 +132,8 @@ for (const kind of ['observer', 'IOERR', 'FULL']) {
     assert.equal(result.takeover.state, 'blocked', 'The observer error is not reported as an entirely successful operation.');
     assert.equal(h.enabled, true);
     assert.equal(h.schedule.enabled, 'delayed');
+    assert.equal(h.store.writeHealth.status().history.windows.day.commandsNotSent, 0,
+      'The completed native mutations cannot become known unsent after a final save failure');
     assert.ok(result.owned, 'Native readback already confirmed the new instruction.');
     assert.deepEqual(h.read().owned, result.owned);
     if (kind === 'observer') {
@@ -161,6 +167,8 @@ for (const kind of ['observer', 'IOERR', 'FULL']) {
       assert.deepEqual(h.read().pending, result.pending);
       assert.equal(result.owned, null);
       assert.equal(h.writes.length, 0, 'A failed beforeWrite callback always prevents physical dispatch.');
+      assert.equal(h.store.writeHealth.status().history.windows.day.commandsNotSent, kind === 'observer' ? 0 : 1,
+        'Only a recognized pre-dispatch storage failure counts; a committed observer failure stays separate');
       assert.equal(h.schedule.enabled, 'none');
       await h.restart();
       assert.deepEqual(h.controller.status().pending, result.pending);

@@ -1,3 +1,4 @@
+import { storageOperationHealth, observeStorageOperation } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { createHash, randomUUID } from 'node:crypto';
 import { open, readdir, rm } from 'node:fs/promises';
@@ -11,8 +12,10 @@ export const CHANGE_CHUNK_BYTES = 256 * 1024;
 
 export function peerOperation(operation,{dbPath,signal,onYield,...args}) {
   if(signal?.aborted) return Promise.reject(signal.reason);
-  const worker=new Worker(new URL('./coalesced-worker.js',import.meta.url),{workerData:{operation,dbPath,...args},
-    ...(process.execArgv.some(value=>value.startsWith('--input-type'))?{execArgv:[]}: {})});
+  const observation=storageOperationHealth.begin('replication-worker',{scope:'shared'});
+  let worker;
+  try { worker=new Worker(new URL('./coalesced-worker.js',import.meta.url),{workerData:{operation,dbPath,...args},
+    ...(process.execArgv.some(value=>value.startsWith('--input-type'))?{execArgv:[]}: {})}); } catch(error) {observation.finish('failed',{reason:'operation-failed'});throw error;}
   return new Promise((resolve,reject)=>{
     let result,error;
     const abort=()=>{error=signal.reason;void worker.terminate();};
@@ -25,6 +28,8 @@ export function peerOperation(operation,{dbPath,signal,onYield,...args}) {
     });
     worker.once('error',()=>{error??=replicationError('verification_failed');});
     worker.once('exit',code=>{signal?.removeEventListener('abort',abort);
+      observation.finish(signal?.aborted?'cancelled':!error&&code===0&&result?.ok?'completed':'failed',
+        {reason:signal?.aborted?'cancelled':!error&&code===0&&result?.ok?null:'operation-failed'});
       if(error)reject(error);else if(code===0 && result?.ok)resolve(result.value);
       else reject(Object.assign(replicationError(result?.error?.code ?? 'verification_failed'),result?.error));});
     if(signal?.aborted)abort();
@@ -38,8 +43,11 @@ export function validPeerTransfer(value) {
     && Number.isSafeInteger(value.bytes) && value.bytes>0 && /^[a-f0-9]{64}$/.test(value.digest ?? '');
 }
 export class PeerTransfers {
-  constructor(directory){this.directory=directory;}
-  async export({dbPath,after,signal,sourcePath,sourceSnapshot,refresh=false,onYield}) {
+  constructor(directory){storageOperationHealth.register('peer-transfer');storageOperationHealth.register('replication-worker');this.directory=directory;}
+  export(options) {
+    return observeStorageOperation('peer-transfer', () => this.#performExport(options), { signal: options?.signal, scope: 'shared' });
+  }
+  async #performExport({dbPath,after,signal,sourcePath,sourceSnapshot,refresh=false,onYield}) {
     await ownedDirectory(this.directory,'.st-mq-peer-transfers');
     const unlock=await acquireReceiverLock(this.directory);
     try {
@@ -54,6 +62,7 @@ export class PeerTransfers {
   async chunk({id,offset}) {
     if(!GENERATION_PATTERN.test(id ?? '') || !Number.isSafeInteger(offset) || offset<0 || offset%CHANGE_CHUNK_BYTES)
       throw replicationError('invalid_protocol');
+    return observeStorageOperation('peer-transfer',async()=>{
     const file=await open(join(this.directory,`peer-${id}.changes`),'r').catch(()=>{throw replicationError('snapshot_unavailable');});
     try {
       const info=await file.stat();if(offset>=info.size)throw replicationError('invalid_protocol');
@@ -61,9 +70,10 @@ export class PeerTransfers {
       if((await file.read(bytes,0,bytes.length,offset)).bytesRead!==bytes.length)throw replicationError('transfer_failed');
       return {data:bytes.toString('base64')};
     }finally{await file.close();}
+    },{scope:'shared'});
   }
 }
-export async function receivePeerTransfer({directory,peer,after,signal,refresh=false,guard=async()=>{}}) {
+async function performReceivePeerTransfer({directory,peer,after,signal,refresh=false,guard=async()=>{}}) {
   await guard();
   const metadata=await peer.request('peer-transfer',{after,refresh},{signal});
   if(!validPeerTransfer(metadata) || !sameCheckpoint(metadata.base,after))throw replicationError('invalid_protocol');
@@ -88,4 +98,8 @@ export async function receivePeerTransfer({directory,peer,after,signal,refresh=f
     const parent=await open(directory,'r');try{await parent.sync();}finally{await parent.close();}
     return {metadata,path};
   }finally{await unlock();}
+}
+
+export function receivePeerTransfer(options) {
+  return observeStorageOperation('peer-transfer', () => performReceivePeerTransfer(options), { signal: options?.signal, scope: 'shared' });
 }

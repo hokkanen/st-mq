@@ -133,7 +133,8 @@ export function createGarageSender({ settings: input = {}, protection = garageSe
     lastCommand = { commandId: command.commandId, requestedAt: now, status: 'published', reason: null };
     onState(snapshot());
     publications.add(cancellation);
-    const timer = setTimeout(() => cancellation.abort(), CONFIGURATION_TIMEOUT_MS);
+    let recordingDeadlineExpired = false;
+    const timer = setTimeout(() => { recordingDeadlineExpired = true; cancellation.abort(); }, CONFIGURATION_TIMEOUT_MS);
     const beforePublish = () => {
       if (cancellation.signal.aborted || closed || !fresh(clock()) || pendingTime.size || writeReason()
         || clock() - now >= CONFIGURATION_TIMEOUT_MS || monotonicClock() >= elapsedEnd
@@ -142,7 +143,8 @@ export function createGarageSender({ settings: input = {}, protection = garageSe
         throw new Error('Local frost-protection configuration authority changed while waiting.');
     };
     try { await publish(settings.commandTopic, JSON.stringify(command),
-      { qos: 0, retain: false, noReplay: true, beforePublish, signal: cancellation.signal }); }
+      { qos: 0, retain: false, noReplay: true, beforePublish, signal: cancellation.signal,
+        recordingContext: 'garage-protection', recordingKind: 'mutation', recordingDeadlineExpired: () => recordingDeadlineExpired }); }
     catch {
       // A delayed publish failure cannot overwrite a newer command or readback.
       if (pending?.commandId !== command.commandId) return;

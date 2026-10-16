@@ -1,3 +1,4 @@
+import { storageOperationHealth } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { sensorRevision } from './sensor-inputs.js';
 import { validLearningCheckpoint } from './committed-learning.js';
@@ -13,6 +14,7 @@ export class LearningCheckpointCache {
   constructor({ store, input, canWrite = () => true }) {
     if (!store || !['mqtt', 'providers', 'simulated', 'offline'].includes(input) || typeof canWrite !== 'function')
       throw new TypeError('A current learning store, input and write-authority check are required');
+    storageOperationHealth.register('checkpoint-cache');
     this.store = store; this.input = input; this.canWrite = canWrite;
     this.worker = null; this.ready = false; this.active = null; this.pending = null;
     this.closed = false; this.stopping = null; this.waiters = new Set(); this.sequence = 0;
@@ -106,8 +108,12 @@ export class LearningCheckpointCache {
   }
   pump() {
     if (this.closed || this.stopping || this.active || !this.pending?.committed) { this.idle(); return; }
-    if (!this.writable()) { this.pending = null; this.idle(); return; }
+    if (!this.writable()) {
+      this.pending = null; this.startupOperation?.finish('cancelled', { reason: 'cancelled' }); this.startupOperation = null; this.idle(); return;
+    }
     if (!this.worker) {
+      this.startupOperation = storageOperationHealth.begin('checkpoint-cache');
+      this.startupOperation.progress('starting');
       try {
         const cancellation = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
         const worker = new Worker(new URL('./learning-checkpoint-cache-worker.js', import.meta.url), {
@@ -123,6 +129,12 @@ export class LearningCheckpointCache {
           if (message?.type === 'failed') { this.workerFailed(worker); return; }
           if (message?.type !== 'result' || message.id !== this.active?.id) return;
           const request = this.active; this.active = null;
+          const confirmed = ['saved', 'current'].includes(message.status) && Number.isSafeInteger(message.journalCursor) && message.journalCursor > 0;
+          if (confirmed && message.status === 'current') request.operation?.discard();
+          else request.operation?.finish(confirmed ? 'completed' : ['saved', 'current'].includes(message.status) ? 'unconfirmed'
+            : message.status === 'stale' ? 'superseded' : message.status === 'cancelled' ? 'cancelled' : 'failed',
+          { reason: message.status === 'stale' ? 'stale' : message.status === 'cancelled' ? 'cancelled'
+            : confirmed ? null : ['saved', 'current'].includes(message.status) ? 'durability-unconfirmed' : 'operation-failed', committed: confirmed ? true : null });
           if (['saved', 'current'].includes(message.status) && Number.isSafeInteger(message.journalCursor) && message.journalCursor > 0) {
             this.result = { ...this.result, status: this.result.error ? 'failed' : 'idle',
               saved: this.result.saved + Number(message.status === 'saved'),
@@ -134,13 +146,18 @@ export class LearningCheckpointCache {
           else this.fail(request);
           this.pump();
         });
-      } catch { const request = this.pending; this.pending = null; this.fail(request); this.idle(); }
+      } catch {
+        this.startupOperation?.finish('failed', { reason: 'operation-failed' }); this.startupOperation = null;
+        const request = this.pending; this.pending = null; this.fail(request); this.idle();
+      }
       return;
     }
     this.worker.ref();
     if (!this.ready) return;
     const job = this.pending; this.pending = null;
-    this.active = { id: job.id, fences: job.fences, journalCursor: job.journalCursor };
+    this.active = { id: job.id, fences: job.fences, journalCursor: job.journalCursor,
+      operation: this.startupOperation ?? storageOperationHealth.begin('checkpoint-cache') };
+    this.startupOperation = null;
     this.result = { ...this.result, status: 'saving' };
     try { this.worker.postMessage({ type: 'save', ...job }); }
     catch { this.workerFailed(this.worker); }
@@ -148,16 +165,22 @@ export class LearningCheckpointCache {
   workerFailed(worker) {
     if (this.worker !== worker) return;
     const request = this.pending ?? this.active;
-    this.active = null; this.pending = null;
+    const observation = this.active?.operation ?? this.startupOperation ?? (request ? storageOperationHealth.begin('checkpoint-cache') : null);
+    this.active = null; this.pending = null; this.startupOperation = null;
     if (!this.closed) this.fail(request);
     this.stopWorker(worker);
+    void Promise.resolve(this.stopping).then(() => observation?.finish(this.closed ? 'cancelled' : 'unconfirmed',
+      { reason: this.closed ? 'cancelled' : 'durability-unconfirmed' }));
   }
   stopWorker(worker = this.worker) {
     if (!worker) { this.idle(); return; }
+    const observation = this.active?.operation ?? this.startupOperation;
+    this.startupOperation = null;
     if (this.cancellation) Atomics.store(this.cancellation, 0, 1);
     this.worker = null; this.ready = false;
     worker.ref();
     this.stopping = Promise.resolve().then(() => worker.terminate()).catch(() => {}).finally(() => {
+      observation?.finish('cancelled', { reason: 'cancelled' });
       this.stopping = null; this.active = null; this.pump(); this.idle();
     });
   }

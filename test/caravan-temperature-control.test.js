@@ -729,7 +729,9 @@ test('a small matched electrical rise and fall qualify recording without applian
   assert.equal(inventory.find(row => row.id === 'state-caravan-power-timing').count, 1);
   for (const publication of f.publications) {
     assert.equal(publication.body.expiresAt, publication.body.requestedAt + 10000);
-    const { beforePublish, preparePublish, signal, ...flags } = publication.flags;
+    const { beforePublish, preparePublish, signal, recordingContext, recordingKind, recordingDeadlineExpired, ...flags } = publication.flags;
+    assert.equal(recordingContext, 'caravan-command'); assert.equal(recordingKind, 'mutation');
+    assert.equal(typeof recordingDeadlineExpired, 'function');
     assert.equal(typeof beforePublish, 'function'); assert.equal(typeof preparePublish, 'function'); assert(signal instanceof AbortSignal);
     assert.deepEqual(flags, { qos: 1, retain: false, noReplay: true });
   }

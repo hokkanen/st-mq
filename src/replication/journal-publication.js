@@ -1,3 +1,4 @@
+import { observeStorageOperation } from '../storage/operation-health.js';
 import { randomUUID } from 'node:crypto';
 import { lstat, readFile, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -63,8 +64,8 @@ export async function acceptPeerPublication({directory,signal,guard=async()=>{}}
   return applyPublication({directory,signal,guard,from:previous.checkpoint,to:previous.checkpoint,
     metadata:previous,kind:'peer-seed',apply:dbPath=>peerOperation('accept',{dbPath,checkpoint:previous.checkpoint,signal})});
 }
-async function applyPublication({ directory, from, to, apply, metadata, signal,
-  kind,guard = async () => {}, beforeCommit = async () => {} }) {
+async function performApplyPublication({ directory, from, to, apply, metadata, signal,
+  kind,guard = async () => {}, beforeCommit = async () => {} }, observation) {
   const previous = await recoverJournalPublication(directory, { signal });
   if(previous && !sameCheckpoint(from,to) && sameCheckpoint(previous.checkpoint,to)) {await guard();return previous;}
   if (!previous || !sameCheckpoint(previous.checkpoint, from)) throw replicationError('verification_failed');
@@ -82,16 +83,19 @@ async function applyPublication({ directory, from, to, apply, metadata, signal,
   await prepareJson(join(directory, 'publication.json'), next);
   await guard();
   await beforeCommit();
-  await apply(previous.dbPath);
+  try { await apply(previous.dbPath); }
+  catch (error) { observation?.finish('unconfirmed', { reason: 'durability-unconfirmed' }); throw error; }
   // A failed acknowledgement leaves the durable receipt for restart/retry.
-  await publishPreparedJson(join(directory, 'publication.json'));
-  await removePending(directory);
+  await publishPreparedJson(join(directory, 'publication.json'), observation);
+  try { await removePending(directory); }
+  catch (error) { observation?.finish('failed', { reason: 'committed-followup-failed', committed: true }); throw error; }
+  observation?.finish('completed', { committed: true });
   return { ...next, dbPath: previous.dbPath };
 }
 
 /** Role changes reuse the closed database at its existing physical location.
  * The local configuration roots authorize this selector; peer metadata cannot. */
-export async function adoptJournalDatabase({ directory, dbPath, metadata, signal }) {
+async function performAdoptJournalDatabase({ directory, dbPath, metadata, signal }, observation) {
   const databasePath = await validatePublicationDatabasePath(directory, dbPath);
   const checkpoint = await databaseCheckpoint({ dbPath: databasePath, signal });
   if (!sameCheckpoint(checkpoint, metadata.checkpoint)) throw replicationError('verification_failed');
@@ -102,7 +106,8 @@ export async function adoptJournalDatabase({ directory, dbPath, metadata, signal
   const publication = { ...remoteMetadata, checkpoint, databasePath, format: PUBLICATION_FORMAT,
     fileGeneration, digest: checkpoint.hash, digestAlgorithm: JOURNAL_DIGEST,
     previousGeneration: null, verifiedAt: Date.now() };
-  await durableJson(join(directory, 'publication.json'), publication);
+  await durableJson(join(directory, 'publication.json'), publication, observation);
+  observation?.finish('completed', { committed: true });
   return { ...publication, dbPath: databasePath };
 }
 
@@ -111,4 +116,11 @@ export async function checkpointMetadata({ dbPath, checkpoint, claim, sequence, 
   return { generation: randomUUID(), checkpoint, digest: checkpoint.hash, digestAlgorithm: JOURNAL_DIGEST,
     bytes: (await lstat(dbPath)).size, sourceStartedAt: at, sourceAt: at,
     ...(claim ? { claim, sequence, chunkBytes: 1024 * 1024 } : {}) };
+}
+
+function applyPublication(options) {
+  return observeStorageOperation('local-publication', observation => performApplyPublication(options, observation), { signal: options?.signal, scope: 'shared' });
+}
+export function adoptJournalDatabase(options) {
+  return observeStorageOperation('local-publication', observation => performAdoptJournalDatabase(options, observation), { signal: options?.signal, scope: 'shared' });
 }

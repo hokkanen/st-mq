@@ -6,7 +6,7 @@ const observationFields = ['webAccess', 'topology', 'role', 'instance', 'control
 
 export function dashboardWriterState(status) {
   const health = status?.recordingHealth;
-  const state = health?.version === 2 && ['live', 'simulated'].includes(health.scope)
+  const state = health?.version === 3 && ['live', 'simulated'].includes(health.scope)
     ? health.recording?.writer?.state : null;
   return writerStates.has(state) ? state : 'unknown';
 }
@@ -22,7 +22,7 @@ export function dashboardWriterRestriction(status) {
 
 /** Action replies omit the separately checked health. Keep its original clock. */
 export function retainDashboardHealth(previous, next) {
-  if (!next || next.recordingHealth?.version === 2 || previous?.recordingHealth?.version !== 2
+  if (!next || next.recordingHealth?.version === 3 || previous?.recordingHealth?.version !== 3
     || previous.input !== next.input || isReadOnlyReplica(previous) !== isReadOnlyReplica(next)) return next;
   return { ...next, recordingHealth: previous.recordingHealth,
     ...(previous.storageContextPending === true ? { storageContextPending: true } : {}) };
@@ -60,7 +60,7 @@ export function retainNewerDashboardObservations(result, atRequest, latest) {
 
 /** A health response cannot establish a role, dataset or authenticated session. */
 export function observeDashboardHealth(displayed, health) {
-  if (!displayed || health?.version !== 2) return displayed;
+  if (!displayed || health?.version !== 3) return displayed;
   const expected = isReadOnlyReplica(displayed) ? 'snapshot' : displayed.input === 'offline' ? 'history'
     : displayed.input === 'simulated' ? 'simulated' : 'live';
   if (health.scope !== expected || displayed.recordingHealth?.contextId !== health.contextId)

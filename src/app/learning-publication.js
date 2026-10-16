@@ -1,3 +1,4 @@
+import { storageOperationHealth } from '../storage/operation-health.js';
 import { randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { validLearningCheckpoint } from './committed-learning.js';
@@ -37,7 +38,11 @@ export function publishLearning({ store, input, kind, message, context = {}, sig
   // publication handoff before further ordinary learning, or a continuously
   // changing controller can overtake every candidate. Existing queue fairness
   // still admits normal work; source/head/authority checks remain unchanged.
-  return store.runPublication(async () => {
+  const observation = storageOperationHealth.begin('learning-publication', { queued: true });
+  let workerStarted = false, receiptChecked = false;
+  let publication;
+  try { publication = store.runPublication(async () => {
+    observation.start();
     const cancelled = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
     const lifetime = AbortSignal.any([store.writeQueue.shutdown.signal, ...(signal ? [signal] : [])]);
     const abort = () => Atomics.store(cancelled, 0, 1);
@@ -52,6 +57,7 @@ export function publishLearning({ store, input, kind, message, context = {}, sig
         worker = workerFactory({
           workerData: { dbPath: store.path, input, databaseId, token, kind, message, context, cancellation: cancelled.buffer },
         });
+        workerStarted = true;
         await new Promise((resolve, reject) => {
           const stop = () => { abort(); void worker.terminate(); };
           lifetime.addEventListener('abort', stop, { once: true });
@@ -81,6 +87,7 @@ export function publishLearning({ store, input, kind, message, context = {}, sig
       // Receipt is in the same transaction as the model and all selection state.
       // Even an abort after commit must adopt it before queued updates resume.
       const receipt = store.getState(publicationKey(input));
+      receiptChecked = true;
       if (receipt?.token === token && store.checkpoint().databaseId === databaseId)
         result = { ...receipt.result, checkpoint: message.checkpoint };
       else if (result) throw failure();
@@ -93,5 +100,16 @@ export function publishLearning({ store, input, kind, message, context = {}, sig
     }
     if (error) throw error;
     return null;
-  }, { signal, isCurrent, priority: kind === 'correction' ? 'control' : 'normal' });
+  }, { signal, isCurrent, priority: kind === 'correction' ? 'control' : 'normal' }); }
+  catch (error) { observation.finish('failed', { reason: 'operation-failed' }); throw error; }
+  return publication.then(result => {
+    observation.finish(result ? 'completed' : 'superseded', { reason: result ? null : 'stale', committed: Boolean(result) });
+    return result;
+  }, error => {
+    const unknown = workerStarted && !receiptChecked;
+    observation.finish(unknown ? 'unconfirmed' : signal?.aborted ? 'cancelled' : 'failed', {
+      reason: unknown ? 'durability-unconfirmed' : error?.committed === true ? 'committed-followup-failed'
+        : signal?.aborted ? 'cancelled' : 'operation-failed', committed: error?.committed === true ? true : null });
+    throw error;
+  });
 }

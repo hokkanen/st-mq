@@ -16,6 +16,7 @@ test('floor acquire bytes wait for the real worker obligation COMMIT', async t =
   assert.equal(f.committedState().outstanding.phase, 'active');
   assert.equal(f.committedState().outstanding.mask, 1);
   assert.equal(f.nativeMask, 1);
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, 0, 'Queries and confirmed activation are not unsent commands');
 });
 
 test('a rejected worker obligation COMMIT cannot activate or retain provisional learning', async t => {
@@ -31,6 +32,8 @@ test('a rejected worker obligation COMMIT cannot activate or retain provisional 
   assert.equal(f.nativeMask, 0);
   assert.equal(f.committedState(), null);
   assert.deepEqual(f.contexts(), before);
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsByContext['floor-control'], 1,
+    'A selected acquire prevented by its required COMMIT is counted once before publisher entry');
 });
 
 test('an obligation COMMIT delayed beyond its challenge cannot publish late activation', async t => {
@@ -46,6 +49,8 @@ test('an obligation COMMIT delayed beyond its challenge cannot publish late acti
   const saved = f.committedState();
   assert.equal(saved.outstanding, null, 'Fresh GPIO OFF may retire the committed unsent obligation');
   assert(saved.retired.some(row => row.key === 'manual_writer-too-late' && row.until === originalEnd));
+  assert.equal(f.store.writeHealth.status().history.windows.day.commandsByContext['floor-control'], 1,
+    'The existing challenge deadline expired during required persistence');
 });
 
 test('GPIO readback and its learning boundary become visible only after worker COMMIT', async t => {

@@ -1,3 +1,4 @@
+import { observeStorageOperation } from '../storage/operation-health.js';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { chmod, copyFile, lstat, mkdir, mkdtemp, open, opendir, readFile, readdir, realpath, rename, rm, rmdir, unlink, writeFile } from 'node:fs/promises';
@@ -168,7 +169,7 @@ function recoveryBackupCandidates(plan) {
 
 /** The caller stops database writers first, then persists its protected reset marker
  * before calling resumeResetArchive. Creating this plan never moves source files. */
-export async function createResetArchive({ config, state, mode, requestId, clock = Date.now }) {
+async function performCreateResetArchive({ config, state, mode, requestId, clock = Date.now }) {
   return checked(async () => {
     if (!['keep', 'fresh'].includes(mode) || !UUID.test(requestId)) throw failure('pair_reset_unsafe_storage');
     const paths = await locations(config);
@@ -483,7 +484,7 @@ export async function listResetBackups(config, options) {
 
 /** Explicit retry only. Trusted configuration and the persisted reset request
  * fence the archive manifest; files in an archive cannot redefine their scope. */
-export async function resumeResetArchive(planOrArchiveDirectory, expected) {
+async function performResumeResetArchive(planOrArchiveDirectory, expected) {
   return checked(async () => {
     if (!expected?.config || !UUID.test(expected.requestId) || !['keep', 'fresh'].includes(expected.mode))
       throw failure('pair_reset_unsafe_storage');
@@ -522,4 +523,11 @@ export async function resumeResetArchive(planOrArchiveDirectory, expected) {
     await durableJson(manifestPath, plan);
     return resetResult(plan);
   });
+}
+
+export function createResetArchive(options) {
+  return observeStorageOperation('reset-archive', () => performCreateResetArchive(options), { scope: 'shared' });
+}
+export function resumeResetArchive(...args) {
+  return observeStorageOperation('reset-archive', () => performResumeResetArchive(...args), { scope: 'shared' });
 }
