@@ -109,9 +109,9 @@ and actual connection loss retain their own unavailable reasons. These checks
 do not extend an observation's lifetime or establish that a requested setting
 has taken physical effect.
 The five-second native poll stays independent of controller persistence and
-planning. Its ordinary reconciliation may reuse that same successfully completed
-read once, within the exact adapter/controller owner, connection and physical
-session. Received input, pending admission or RPC work, changed revisions,
+planning. Its ordinary reconciliation, including after a complete notification
+readback, may reuse that same successfully completed read once, within the exact
+adapter/controller owner, connection and physical session. Received input, pending admission or RPC work, changed revisions,
 another poll, unavailable evidence or expired original freshness selects a fresh
 read instead. Controller replacement during the poll also invalidates completion;
 new-session and pending automatic/native-schedule takeover keep fresh preflight.

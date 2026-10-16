@@ -642,10 +642,11 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     if (notificationRefreshQueued) return;
     notificationRefreshQueued = true;
     queueMicrotask(() => {
-      void refresh({ force: true }).finally(() => {
+      const completed = completedRead => {
         notificationRefreshQueued = false;
-        void engine.charging?.reconcileShellyObservation?.().catch(() => {});
-      });
+        void engine.charging?.reconcileShellyObservation?.(completedRead).catch(() => {});
+      };
+      void refresh({ force: true }).then(completed, () => completed());
     });
   }
   function admitNotification(params, at, retained, method = 'NotifyStatus', admittedAt) {
@@ -720,21 +721,23 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     return accepted;
   }
 
-  // An ordinary periodic reconciliation may consume its own completed poll
-  // once. Received input fences this before its asynchronous admission; source
+  // Ordinary reconciliation may consume its own completed poll or notification
+  // readback once. Received input fences this before admission; source
   // clocks and command/readback freshness are never renewed by reuse.
   // The controller owns the single status observer, including during a poll.
   const readBoundary = () => [generation, receivedInputRevision, sourcePacketSequence, statusObserver, readinessRevision, verifiedReadinessRevision,
     state.sessionSequence, state.connection?.connected, state.connection?.sessionId, state.connection?.connectedAt,
     state.notificationRevision, readAt, serviceAt, ...Object.keys(TYPES).map(role => fieldRevisions.get(role))];
   const reusableRead = () => Number.isSafeInteger(receivedInputRevision) && !closed && connected && admitted && online && !error && !meterError
-    && !pending.size && !storagePending && !sourcePending.size && !notificationPending.size && !notificationRefreshQueued
+    && !pending.size && !storagePending && !sourcePending.size && !notificationPending.size
     && basicReady() && Boolean(live('phase_info'));
   const consumeRead = proof => {
     const boundary = completedReads.get(proof);
     completedReads.delete(proof);
     try {
-      return Boolean(boundary && !polling && canControl() && reusableRead()
+      // A notification round may create proof before its queue flag clears;
+      // consuming it still waits for that round's completion callback.
+      return Boolean(boundary && !polling && !notificationRefreshQueued && canControl() && reusableRead()
         && readBoundary().every((value, index) => Object.is(value, boundary[index])));
     } catch { return false; }
   };

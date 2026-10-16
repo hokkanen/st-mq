@@ -73,7 +73,7 @@ async function fixture(t) {
   t.after(async () => {
     for (const release of ownedGates.get(t) ?? []) release();
     adapter.close(); await runtime.close(); await store.runWrite(() => {}).catch(() => {});
-    store.close(); await rm(dir, { recursive: true, force: true });
+    await store.close(); await rm(dir, { recursive: true, force: true });
   });
   client.emit('connect'); client.emit('message', `${PREFIX}/online`, Buffer.from('true'), { retain: true });
   await adapter.refresh(); await runtime.setAdapter('charger2', adapter); await runtime.reconcile('charger2');
@@ -135,6 +135,37 @@ test('one periodic episode reuses its actual completed read without renewing ori
   assert.equal(f.requests.length, 8);
   assertRound(f.requests); assert.deepEqual(clocks(f.adapter), before);
   assert.equal(f.adapter.snapshot().generation, 1); assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.equal(f.requests.some(row => row.method.endsWith('.Set')), false);
+});
+
+for (const writer of [false, true])
+test(`notification readback and its real reconciliation share one complete native round; writer ${writer}`, async t => {
+  const f = await fixture(t), entered = gate(t);
+  if (writer) await f.store.startWriter();
+  const reconcile = f.runtime.reconcileShellyObservation.bind(f.runtime);
+  const controller = f.runtime.chargers.charger2.controller, update = controller.update.bind(controller);
+  let flight, proof, consumed, updates = 0;
+  t.mock.method(controller, 'update', input => {
+    updates++; consumed = input.completedRead; return update(input);
+  });
+  t.mock.method(f.runtime, 'reconcileShellyObservation', completedRead => {
+    proof = completedRead; flight = reconcile(completedRead); entered.release(); return flight;
+  });
+  f.advance(); f.fields.current_limit = 12; f.measuredAt.current_limit = f.now();
+  const before = clocks(f.adapter);
+  // A value-only native notification needs correlated source/provenance
+  // readback. The completed full round already contains all command inputs.
+  f.client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE, method: 'NotifyStatus',
+    params: { ts: f.now() / 1000, 'number:200': { value: 12, source: 'rpc' } } })), {});
+  await entered.promise; await flight; await f.store.runWrite(() => {});
+  assert.equal(f.requests.length, 8, 'Reconciliation must not repeat all eight just-completed native reads');
+  assertRound(f.requests); assert.equal(typeof proof, 'object'); assert(Object.isFrozen(proof));
+  assert.equal(updates, 1); assert.equal(consumed, proof, 'The actual controller consumes its own completed read');
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.equal(f.adapter.snapshot().fields.current_limit.value, 12);
+  const after = clocks(f.adapter);
+  assert.equal(after.current_limit, f.now());
+  for (const role of ['start_charging', 'work_state', 'phase_info']) assert.equal(after[role], before[role]);
   assert.equal(f.requests.some(row => row.method.endsWith('.Set')), false);
 });
 
