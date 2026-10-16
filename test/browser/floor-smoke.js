@@ -92,28 +92,43 @@ try {
   // The app and database are disposable simulations. Every mutation is
   // intercepted before dispatch; this suite cannot send a device command.
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
-    globalThis.floorFixture = { mask: 0, mode: null, offline: false, readOnly: false, calls: [], reads: 0, pending: false, receipts: {} };
+    globalThis.floorFixture = { mask: 0, mode: null, offline: false, readOnly: false, commissioned: true,
+      reportAt: ${now}, calls: [], reads: 0, pending: false, receipts: {} };
     const nativeFetch = globalThis.fetch.bind(globalThis);
     const fixture = status => {
       const f = floorFixture; f.reads++;
       status.readOnly = f.readOnly;
       status.webAccess = { ...status.webAccess, role: f.family ? 'family' : 'admin' };
-      status.preheatValves = { enabled: true, commissioned: true, configured: true, integrationSupported: true,
-        connected: !f.offline, available: !f.offline, manualAvailable: !f.offline && !f.pending && f.mode !== 'automatic',
+      status.h66 = { ...status.h66, connected: true, available: true, brokerConnected: true,
+        enabled: true, lastPublicationAt: f.reportAt };
+      status.garage = { ...status.garage, enabled: true, adapter: { ...status.garage?.adapter,
+        connected: true, health: { deviceOnline: true, driverProgressing: true, pumpCommunicating: true },
+        native: { ...status.garage?.adapter?.native, powerAt: f.reportAt } } };
+      status.equipment = { ...status.equipment, topicGroups: [
+        ...(status.equipment?.topicGroups ?? []).filter(group => !['h66', 'garage-adapter'].includes(group.id)),
+        { id: 'h66', topics: [{ role: 'Heat-pump readings', topic: 'fixture/h66/readings', direction: 'subscribe' }] },
+        { id: 'garage-adapter', topics: [{ role: 'Heat-pump readings', topic: 'fixture/garage/readings', direction: 'subscribe' }] },
+      ] };
+      status.preheatValves = { enabled: true, commissioned: f.commissioned, configured: true, integrationSupported: true,
+        connected: !f.offline, available: !f.offline && f.commissioned,
+        manualAvailable: !f.offline && !f.pending && f.commissioned && f.mode !== 'automatic',
         commandScope: 'synthetic-floor-device-scope', active: f.mode === 'automatic', mode: f.mode,
         manualUntil: f.mode === 'manual' ? status.now + 900000 : null,
         leaseUntil: f.mask ? status.now + 900000 : null,
         restorationPending: f.pending, manualResult: f.manualResult ?? null, reason: f.offline ? 'feedback-stale' : f.pending ? 'restoration-pending' : 'ready',
         manualReason: f.mode === 'automatic' ? 'automatic-treatment-active' : null, renewSeconds: 300, leaseSeconds: 900,
-        topics: [{ role: 'Lease requests', direction: 'publish', topic: 'cmnd/sonoff4chpro/LEASE' },
-          { role: 'Output feedback', direction: 'subscribe', topic: 'stat/sonoff4chpro/LEASE' },
-          { role: 'Availability', direction: 'subscribe', topic: 'tele/sonoff4chpro/LWT' }],
-        mqttStatus: { broker: 'primary', brokerConnected: !f.offline, subscriptionStatus: 'subscribed', lastLiveAt: status.now },
-        devices: [{ group: 'groundfloor', available: !f.offline, at: status.now,
+        topics: [{ role: 'Lease commands and fresh status requests', direction: 'publish', topic: 'cmnd/sonoff4chpro/LEASE' },
+          { role: 'GPIO output feedback and lease replies', direction: 'subscribe', topic: 'stat/sonoff4chpro/LEASE' },
+          { role: 'Native availability', direction: 'subscribe', topic: 'tele/sonoff4chpro/LWT' }],
+        mqttStatus: { broker: 'primary', brokerConnected: !f.offline, subscriptionStatus: 'subscribed', lastLiveAt: f.reportAt },
+        devices: [{ group: 'groundfloor', available: !f.offline, at: f.reportAt,
           firmwareBuild: 'Synthetic current firmware', stateEvidence: 'gpio_output_readback',
-          channels: [1,2,3,4].map(id => ({ id, output: Boolean(f.mask & (1 << (id - 1))), at: status.now,
+          channels: [1,2,3,4].map(id => ({ id, output: Boolean(f.mask & (1 << (id - 1))), at: f.reportAt,
             outputEvidence: 'gpio_output_readback', quality: f.offline ? ['floor-feedback-stale'] : [],
             lastResult: f.receipts[id] ?? null, manualSelected: f.mode === 'manual' && Boolean(f.mask & (1 << (id - 1))) })) }] };
+      // Acquisition groups and the controller expose the same current routes.
+      // Their shared connection card must show one copy of each role and topic.
+      status.equipment.topicGroups.push({ id: 'sonoff-floor', topics: status.preheatValves.topics });
       return status;
     };
     globalThis.fetch = async (input, options = {}) => {
@@ -145,6 +160,28 @@ try {
   await until(`globalThis.floorFixture?.poll && document.getElementById('floor-preheat-state')?.textContent === 'Ready'`);
   await checkDashboardDisclosures({ evaluate, keyPress, until });
   const root = `[data-device-id="floor-override:groundfloor"].equipment-device`;
+  const mqtt = '#equipment-connections [data-device-id="floor-override:groundfloor"]';
+  const availability = [`${root} .equipment-source`, `${mqtt} .equipment-device-status`,
+    '#home-pump-health', '#garage-controller-state',
+    '#equipment-connections [data-device-id="connection:h66:home"] .equipment-device-status',
+    '#equipment-connections [data-device-id="connection:garage-adapter:garage"] .equipment-device-status'];
+  const assertAvailable = async () => {
+    assert.deepEqual(await evaluate(`${JSON.stringify(availability)}.map(selector => document.querySelector(selector)?.textContent)`),
+      availability.map(() => 'Available'), 'Healthy floor and heat-pump availability uses the same label');
+  };
+  await assertAvailable();
+  const reportClock = await evaluate(`document.querySelector('${mqtt} .equipment-connection-recent').textContent`);
+  assert.match(reportClock, /^Reported /);
+  assert.equal(await evaluate(`document.querySelector('${root} .equipment-device-recent').textContent`), reportClock,
+    'Home and MQTT headers preserve the same original device report clock');
+  assert.equal(await evaluate(`document.querySelector('#floor-preheat-details > summary small').textContent`), 'Installation & setup');
+  assert.equal(await evaluate(`document.querySelector('#floor-preheat-details #floor-preheat-state')`), null);
+  assert.equal(await evaluate(`document.querySelector('${root} #floor-preheat-state') !== null`), true,
+    'Readiness is inside the Home device, separate from connection availability');
+  assert.equal(await evaluate(`document.querySelectorAll('#floor-preheat-state').length`), 1);
+  assert.equal(await evaluate(`document.querySelectorAll('#floor-preheat-details .equipment-setup-hardware').length`), 1);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('#floor-preheat-details .floor-preheat-circuits tbody tr')].map(row => [...row.cells].map(cell => cell.textContent))`),
+    [['1', 'Living', '106 m'], ['2', 'Living', '62 m'], ['3', 'Storage', '38 m'], ['4', 'Storage', '80 m']]);
   const on = channel => `${root} [data-floor-channel="${channel}"] [data-floor-action="on"]`;
   const release = channel => `${root} [data-floor-channel="${channel}"] [data-floor-action="release"]`;
   await evaluate(`document.getElementById('home-equipment-details').open = true; document.querySelector('${root}').open = true`);
@@ -152,6 +189,15 @@ try {
   assert.equal(await evaluate(`document.querySelectorAll('${root} button[data-floor-action]').length`), 8);
   assert.match(await evaluate(`document.querySelector('${root}').textContent`), /15 minutes.*Living.*106 m.*Living.*62 m.*Storage.*38 m.*Storage.*80 m/s);
   assert.match(await evaluate(`document.querySelector('${root} .floor-output-evidence').textContent`), /GPIO.*not measured/);
+  await evaluate(`floorFixture.commissioned = false; floorFixture.poll()`);
+  await until(`document.getElementById('floor-preheat-state').textContent === 'Not commissioned'`);
+  await assertAvailable();
+  assert.equal(await evaluate(`document.querySelectorAll('${root} button[data-floor-action]:not(:disabled)').length`), 0,
+    'A healthy connection does not supply commissioning or command authority');
+  assert.equal(await evaluate(`document.querySelector('${mqtt} .equipment-connection-recent').textContent`), reportClock,
+    'Readiness changes never renew the device report clock');
+  await evaluate(`floorFixture.commissioned = true; floorFixture.poll()`);
+  await until(`!document.querySelector('${on(1)}').disabled`);
   await evaluate(`document.querySelector('${on(1)}').focus(); floorFixture.hold = true`);
   await keyPress('Enter');
   await until(`floorFixture.calls.length === 1 && floorFixture.finish`);
@@ -182,21 +228,43 @@ try {
   assert.equal(await evaluate(`document.activeElement === document.querySelector('#floor-preheat-details > summary')`), true);
   await evaluate(`document.querySelector('[data-open-floor-controls]').focus()`); await keyPress('Enter');
   assert.equal(await evaluate(`document.activeElement === document.querySelector('${root} > summary')`), true);
-  await evaluate(`document.querySelector('${root} [data-open-floor-setup]').click(); document.getElementById('floor-commissioning-details').open = true`);
-  assert.deepEqual(await evaluate(`[...document.querySelectorAll('#floor-preheat-details a[href^="https://github.com/hokkanen/sonoff-"]')].map(a => a.href)`), [
+  await evaluate(`document.querySelector('${root} [data-open-floor-setup]').click(); document.getElementById('floor-circuits-details').open = true;
+    document.querySelector('#floor-circuits-details > summary').focus(); floorFixture.poll()`);
+  await pause(150);
+  assert.equal(await evaluate(`document.getElementById('floor-circuits-details').open && document.activeElement === document.querySelector('#floor-circuits-details > summary')`), true,
+    'Quiet refresh preserves the setup disclosure and keyboard focus');
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('#floor-preheat-details a[href^="https://github.com/hokkanen/sonoff-"]')].map(a => a.href).sort()`), [
     'https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/compatibility.md',
     'https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/operations.md',
     'https://github.com/hokkanen/sonoff-4chpro-mqtt',
     'https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/protocol.md',
-  ]);
+  ].sort());
   assert.doesNotMatch(await evaluate(`document.getElementById('floor-preheat-details').textContent`), /integration unavailable|planned to preheat|no supported device/i);
   await evaluate(`document.getElementById('mqtt-devices-details').open = true;
     document.querySelector('#equipment-connections [data-device-id="floor-override:groundfloor"]').open = true`);
   assert.match(await evaluate(`document.querySelector('#equipment-connections [data-device-id="floor-override:groundfloor"]').textContent`), /stat\/sonoff4chpro\/LEASE.*cmnd\/sonoff4chpro\/LEASE/s);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('${mqtt} .equipment-topic-groups code')].map(node => node.textContent)`),
+    ['stat/sonoff4chpro/LEASE', 'tele/sonoff4chpro/LWT', 'cmnd/sonoff4chpro/LEASE']);
+  assert.equal(await evaluate(`document.querySelector('${mqtt} .equipment-topic-groups').textContent.split('GPIO output feedback and lease replies').length - 1`), 1,
+    'The shared MQTT role is not duplicated across acquisition and controller routes');
+  assert.doesNotMatch(await evaluate(`document.querySelector('${mqtt}').textContent`), /outputs report|outputs? reported|override off|override on|commissioned controller is ready|valve position|water flow|contact continuity|release pending/i,
+    'MQTT diagnostics contain connectivity and routes, without a second output or operational status');
+  const setupText = await evaluate(`document.getElementById('floor-preheat-details').textContent`);
+  await evaluate(`document.getElementById('floor-operation-details').open = true; document.getElementById('floor-device-details').open = true`);
   for (const width of [320, 390, 768, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1200, deviceScaleFactor: 1, mobile: false });
     await evaluate(`window.homeEnergyTheme.setTheme('${theme}')`); await pause(80);
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${width}px has no horizontal page overflow`);
+    assert.equal(await evaluate(`(() => {
+      const summaries = [document.querySelector('${root} > summary'), document.querySelector('${mqtt} > summary')];
+      return summaries.every(summary => {
+        const heading = summary.querySelector('.equipment-device-heading, .equipment-connection-identity').getBoundingClientRect();
+        const health = summary.querySelector('.equipment-device-health, .equipment-connection-health').getBoundingClientRect();
+        const bounds = summary.getBoundingClientRect();
+        return health.right <= bounds.right + 1 && health.left >= bounds.left - 1
+          && (health.top >= heading.bottom - 1 || heading.top >= health.bottom - 1 || health.left >= heading.right - 1);
+      });
+    })()`), true, `${width}px ${theme} availability and device identity remain balanced without overlap`);
     for (const id of ['floor-preheat-details', 'home-equipment-details', 'mqtt-devices-details']) {
       assert.deepEqual(await evaluate(`(() => {
         const parent = document.getElementById('${id}'), box = parent.getBoundingClientRect();
@@ -207,6 +275,7 @@ try {
     }
     await screenshot(`floor-home-${width}-${theme}`, 'home-equipment-details');
     await screenshot(`floor-setup-${width}-${theme}`, 'floor-preheat-details');
+    await screenshot(`floor-mqtt-${width}-${theme}`, 'mqtt-devices-details');
     if (width === 390) {
       await evaluate(`document.getElementById('home-equipment-details').scrollIntoView({block:'start'})`);
       await pause(80);
@@ -227,6 +296,11 @@ try {
   }
   await evaluate(`floorFixture.offline = false; floorFixture.pending = true; floorFixture.poll()`);
   await until(`document.getElementById('floor-preheat-state').textContent === 'Release pending'`);
+  await assertAvailable();
+  assert.equal(await evaluate(`document.querySelectorAll('${root} button[data-floor-action]:not(:disabled)').length`), 0);
+  assert.equal(await evaluate(`document.getElementById('floor-preheat-details').textContent`), setupText,
+    'Device state changes cannot replace installation guidance with live state');
+  assert.equal(await evaluate(`document.querySelector('${mqtt} .equipment-connection-recent').textContent`), reportClock);
   await evaluate(`floorFixture.pending = false; floorFixture.mode = 'automatic'; floorFixture.mask = 15; floorFixture.poll()`);
   await until(`document.getElementById('floor-preheat-state').textContent === 'Preheating'`);
   assert.equal(await evaluate(`document.querySelectorAll('${root} button[data-floor-action]:not(:disabled)').length`), 0);
@@ -234,6 +308,17 @@ try {
   await evaluate(`floorFixture.readOnly = true; floorFixture.poll()`);
   await until(`document.getElementById('floor-preheat-state').textContent === 'Recorded snapshot'`);
   assert.equal(await evaluate(`document.querySelectorAll('${root} button[data-floor-action]:not(:disabled)').length`), 0);
+  assert.deepEqual(await evaluate(`${JSON.stringify(availability)}.map(selector => document.querySelector(selector)?.textContent)`),
+    availability.map(() => 'Recorded snapshot'), 'Recorded device data never claims current availability');
+  assert.equal(await evaluate(`document.querySelector('${mqtt} .equipment-connection-recent').textContent`), reportClock);
+  for (const theme of ['dark', 'light']) {
+    await evaluate(`window.homeEnergyTheme.setTheme('${theme}')`); await pause(80);
+    assert.equal(await evaluate(`(() => {
+      const source = document.querySelector('${root} .equipment-source');
+      return source.dataset.state === 'pending'
+        && getComputedStyle(source, '::before').backgroundColor === getComputedStyle(source).color;
+    })()`), true, `${theme} recorded availability has a neutral dot instead of the live green indicator`);
+  }
   await evaluate(`floorFixture.readOnly = false; floorFixture.mode = null; floorFixture.mask = 0; floorFixture.family = true; floorFixture.poll()`);
   await until(`document.body.dataset.accessRole === 'family' && document.getElementById('floor-preheat-state').textContent === 'Ready'`);
   assert.equal(await evaluate(`document.querySelectorAll('${root} button[data-floor-action]:not(:disabled)').length`), 0, 'Actual access gates disable every individual valve action for Family');
@@ -243,11 +328,33 @@ try {
   await evaluate(`floorFixture.family = false; floorFixture.poll()`);
   await until(`document.body.dataset.accessRole === 'admin' && !document.querySelector('${on(1)}').disabled`);
   assert.equal(await evaluate('floorFixture.calls.length'), 3);
+  await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/?fixture=bookmark#home-floor-device` });
+  await until(`globalThis.floorFixture?.poll && document.getElementById('home-floor-device')?.open
+    && document.activeElement === document.querySelector('#home-floor-device > summary')`);
+  assert.equal(await evaluate(`document.getElementById('home-equipment-details').open`), true,
+    'A bookmarked dynamic floor device opens its Home ancestors after the first status arrives');
+  await keyPress('Enter');
+  await until(`!document.getElementById('home-floor-device').open && location.hash === ''`);
+  await evaluate(`floorFixture.poll()`); await pause(150);
+  assert.equal(await evaluate(`document.getElementById('home-floor-device').open`), false,
+    'Polling does not reopen a deliberately closed bookmarked device');
+  await evaluate(`location.hash = '#home-floor-device'`);
+  await until(`document.getElementById('home-floor-device').open`);
+  await evaluate(`document.getElementById('dashboard-reset').click()`);
+  await until(`!document.getElementById('home-floor-device').open && location.hash === ''`);
+  assert.equal(await evaluate(`document.activeElement.id`), 'dashboard-reset');
+  await evaluate(`location.hash = '#unrelated-section'; floorFixture.poll()`); await pause(150);
+  assert.equal(await evaluate(`document.getElementById('home-floor-device').open`), false,
+    'Unrelated navigation does not reopen the floor card');
+  assert.equal(await evaluate('floorFixture.calls.length'), 0, 'Navigation and refresh send no floor commands');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'floor-browser-smoke-passed', artifacts,
     checks: ['Four independent bounded controls', 'Keyboard actions', 'Duplicate mutation blocked',
       'Per-channel release retains peer override', 'Focus and disclosure preserved during polling',
       'Bidirectional setup navigation', 'Sonoff references and MQTT routes',
+      'Shared healthy availability independent of commissioning and restoration', 'Setup and MQTT contain no live output status',
+      'Original device report clocks and snapshot semantics',
+      'Bookmarked dynamic Home card, close/reset, and unrelated navigation',
       '320/390/768/1440px both themes', 'Stale and pending release evidence', 'Pooled/manual exclusion', 'Read-only controls', 'Real Family/Admin access gates'] }));
   await send('Page.close');
 } finally {

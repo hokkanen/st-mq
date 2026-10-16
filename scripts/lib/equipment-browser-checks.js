@@ -60,6 +60,9 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
     assert.equal(await evaluate("document.getElementById('floor-preheat-details').parentElement.id"), 'connections-details', 'Floor commissioning has its own place beside MQTT and configuration');
     assert.equal(await evaluate("document.getElementById('floor-commissioning-details').closest('#floor-preheat-details') !== null"), true);
     assert.equal(await evaluate("document.querySelector('#home-manual-controls #floor-commissioning-details')"), null, 'Hardware setup is outside everyday heating controls');
+    assert.equal(await evaluate("document.querySelector('#floor-preheat-details > summary small').textContent"), 'Installation & setup');
+    assert.equal(await evaluate("document.querySelector('#floor-preheat-details #floor-preheat-state')"), null, 'Setup does not duplicate operational status');
+    assert.equal(await evaluate("document.querySelector('#home-equipment-readings #floor-preheat-state') !== null"), true, 'Live floor status belongs in Home');
     assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /unavailable|waiting|unknown/i, 'Missing status cannot report disabled or commissioned hardware');
     await evaluate(`(() => {const f=window.equipmentUiFixture;f.status.preheatValves={enabled:false,commissioned:false,
       integrationSupported:true,configured:true,connected:false,available:false,active:false,restorationPending:false,
@@ -69,9 +72,9 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
     assert.equal(await evaluate("document.getElementById('floor-preheat-state').textContent"), 'Not commissioned');
     assert.equal(await evaluate("document.querySelector('#floor-preheat-details > summary > span').textContent"), 'Home floor preheating');
     assert.match(await evaluate("document.getElementById('floor-preheat-commissioning-status').textContent"), /not commissioned/i);
-    assert.equal(await evaluate("document.querySelectorAll('#floor-preheat-details .floor-preheat-intro').length"), 1);
+    assert.equal(await evaluate("document.querySelectorAll('#floor-preheat-details .equipment-setup-hardware').length"), 1);
     assert.deepEqual(await evaluate("[...document.querySelectorAll('.floor-preheat-circuits tbody tr')].map(row=>[...row.cells].map(cell=>cell.textContent))"),
-      [['1','Living 106 m','Unknown'],['2','Living 62 m','Unknown'],['3','Storage 38 m','Unknown'],['4','Storage 80 m','Unknown']]);
+      [['1','Living','106 m'],['2','Living','62 m'],['3','Storage','38 m'],['4','Storage','80 m']]);
     assert.doesNotMatch(await evaluate("document.getElementById('floor-preheat-details').textContent"), /Shelly|both devices|two outputs/i);
     const floorCards = '#equipment-connections [data-device-id^="floor-override:"]';
     assert.equal(await evaluate(`document.querySelectorAll('${floorCards}').length`), 1);
@@ -83,7 +86,7 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
     await evaluate("window.equipmentUiFixture.status.preheatValves.restorationPending=true;true");
     await refresh();
     assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /release pending/i);
-    assert.match(await evaluate(`document.querySelector('${floorCards} .equipment-device-status').textContent`), /release pending/i);
+    assert.equal(await evaluate(`document.querySelector('${floorCards} .equipment-device-status').textContent`), 'Disconnected', 'MQTT availability does not present the separate restoration obligation');
     await evaluate("window.equipmentUiFixture.status.preheatValves.restorationPending=false;true");
     await refresh();
     await evaluate(`(() => {document.getElementById('connections-details').open=true;
@@ -93,10 +96,10 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
     await settle();
     assert.equal(await evaluate("document.getElementById('connections-details').open&&document.getElementById('floor-preheat-details').open"), true);
     assert.equal(await evaluate("document.activeElement===document.querySelector('#floor-preheat-details > summary')"), true);
-    await evaluate("document.getElementById('floor-commissioning-details').open=true;document.querySelector('#floor-commissioning-details > summary').focus();true");
+    await evaluate("document.getElementById('floor-circuits-details').open=true;document.querySelector('#floor-circuits-details > summary').focus();true");
     await refresh();
-    assert.equal(await evaluate("document.getElementById('floor-commissioning-details').open"), true);
-    assert.equal(await evaluate("document.activeElement===document.querySelector('#floor-commissioning-details > summary')"), true);
+    assert.equal(await evaluate("document.getElementById('floor-circuits-details').open"), true);
+    assert.equal(await evaluate("document.activeElement===document.querySelector('#floor-circuits-details > summary')"), true);
     assert.equal(await evaluate("document.getElementById('floor-preheat-script')"), null, 'Retired hardware script is not offered');
     for (const [id, route, source] of [
       ['floor-preheat-guide','floor-preheat-guide','../../docs/floor-preheat.md'],

@@ -1249,6 +1249,7 @@ details.energy-check-details { margin: 8px 0 0; border: 0; font-size: 12px; line
 .equipment-source { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .equipment-device .equipment-source::before { content: ''; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--chart-indoor); margin: 0 5px 1px 0; }
 .equipment-device .equipment-source[data-state="attention"]::before { background: var(--stale); }
+.equipment-device .equipment-source[data-state="pending"]::before { background: var(--muted); }
 .equipment-device .equipment-source[data-state="attention"] { color: var(--stale); }
 .equipment-device-status { font-size: 11px; margin: 8px 0 12px; color: var(--muted); }
 .equipment-device-status[data-state="available"] { color: var(--chart-indoor); }
@@ -1607,26 +1608,18 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .floor-preheat-panel { scroll-margin-top: 20px; }
 .floor-preheat-panel .section-fold-body { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
 .floor-preheat-panel p { margin: 0 0 12px; }
-.floor-preheat-intro { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 16px; margin-bottom: 14px; }
-.floor-preheat-intro > div { min-width: 0; }
-.floor-preheat-intro h4 { margin: 0 0 3px; font-size: 13px; font-weight: 550; }
-.floor-preheat-intro p { margin: 0; color: var(--muted); font-size: 11px; }
-.floor-preheat-intro > a { font-size: 11px; }
-.floor-preheat-status { color: var(--muted); font-size: 11px; line-height: 1.65; }
-.floor-preheat-facts { margin: 0 0 20px; }
-.floor-preheat-facts > div { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.5fr); gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
-.floor-preheat-facts dt { color: var(--muted); }
-.floor-preheat-facts dd { margin: 0; min-width: 0; }
+.floor-preheat-hardware { margin: 14px 0; }
+.floor-preheat-status { margin: 6px 0 12px; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.floor-control-state [data-state="attention"], .floor-preheat-status[data-state="attention"] { color: var(--stale); }
+.floor-control-deadline { margin: 0 0 10px; font-size: 11px; line-height: 1.65; }
 .floor-preheat-circuits { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 0 0 18px; font-size: 12px; }
 .floor-preheat-circuits caption { text-align: left; font-weight: 550; margin-bottom: 10px; }
 .floor-preheat-circuits caption span { display: block; color: var(--muted); font-size: 11px; font-weight: 400; margin-top: 4px; }
 .floor-preheat-circuits th, .floor-preheat-circuits td { padding: 8px 4px; border-bottom: 1px solid var(--border); text-align: left; font-weight: 400; }
 .floor-preheat-circuits thead th { color: var(--muted); font-size: 10px; }
 .floor-preheat-circuits th:first-child { width: 18%; padding-left: 0; }
-.floor-preheat-circuits td small { display: block; color: var(--muted); font-size: 10px; }
 .floor-preheat-circuits th:last-child, .floor-preheat-circuits td:last-child { text-align: right; padding-right: 0; font-variant-numeric: tabular-nums; }
 .floor-preheat-circuits td:last-child { font-size: 11px; }
-.floor-preheat-circuits [data-state="pending"] { color: var(--muted); }
 .floor-channel { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 11px; }
 .floor-preheat-limit { padding-left: 12px; border-left: 2px solid var(--border); }
 .floor-preheat-panel .equipment-fold > summary { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -1640,6 +1633,9 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .floor-commissioning-steps h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; }
 .floor-commissioning-steps p { color: var(--muted); }
 .floor-controls { margin: 0; }
+.floor-controls > .floor-control-state { margin-top: 0; }
+.floor-controls > .equipment-fold > p { margin: 6px 0 14px; font-size: 11px; line-height: 1.65; }
+.floor-controls .floor-device-facts { margin-bottom: 12px; font-size: 11px; line-height: 1.65; }
 .floor-control-scope { margin: 0 0 12px; color: var(--muted); font-size: 11px; line-height: 1.65; }
 .floor-control-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--border); }
 .floor-control-identity { display: flex; gap: 9px; align-items: center; min-width: 0; }
@@ -1660,7 +1656,6 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
   .floor-channel-actions { grid-column: auto; margin: 0; }
 }
 @media (max-width: 480px) {
-  .floor-preheat-facts > div { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 8px; }
   .floor-control-row { gap: 8px; }
   .floor-control-identity strong { font-size: 11px; }
   .floor-channel-actions .secondary-button { min-height: 40px; }
@@ -1827,6 +1822,7 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .equipment-device-summary > .equipment-device-heading:has(.equipment-device-meta) { grid-column: 1; display: grid; align-content: start; }
 .equipment-device-meta, .equipment-device-recent { color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.6; }
 .equipment-device-summary > .equipment-device-health { grid-column: 2; grid-row: 1; display: grid; gap: 4px; align-content: start; text-align: right; }
+.equipment-device-health > .equipment-device-status { margin: 0; }
 .equipment-device-health > .equipment-connection-recent { color: var(--muted); font-size: 10px; }
 .equipment-device-preview { display: block; margin: 2px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
 .equipment-device > .equipment-device-body { min-width: 0; padding: 0 14px 18px; overflow-wrap: anywhere; }

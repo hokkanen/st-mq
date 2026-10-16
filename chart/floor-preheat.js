@@ -49,10 +49,10 @@ export function floorPreheatView(status = {}) {
     ? `Automatic leases renew every ${floor.renewSeconds / 60} minutes and expire locally within ${floor.leaseSeconds / 60} minutes, or at the original preheat deadline. Manual overrides share one fixed deadline and do not extend it when another circuit is added.`
     : 'Every override needs a fixed device-local deadline. A new report must confirm release after expiry or connection loss.';
   const view = (label, state, detail) => ({ label, state, detail, commissioning, renewal, channels,
-    connection: device?.available && live ? 'Live GPIO feedback' : floor?.connected === false ? 'Disconnected' : 'Awaiting live feedback',
+    connection: isReadOnlyReplica(status) ? 'Recorded feedback only' : device?.available && live ? 'Live GPIO feedback' : floor?.connected === false ? 'Disconnected' : 'Awaiting live feedback',
     automatic: floor?.enabled === true ? 'Enabled in configuration' : floor?.enabled === false ? 'Disabled in configuration' : 'Unknown',
-    deadline: Number.isFinite(floor?.manualUntil) ? `Manual override ends at ${time(floor.manualUntil)}`
-      : Number.isFinite(floor?.leaseUntil) ? `Preheat override ends at ${time(floor.leaseUntil)}` : 'No confirmed active lease',
+    deadline: Number.isFinite(floor?.manualUntil) ? `Manual override deadline · ${reportedClock.format(floor.manualUntil)}`
+      : Number.isFinite(floor?.leaseUntil) ? `Preheat override deadline · ${reportedClock.format(floor.leaseUntil)}` : 'No confirmed active lease',
     firmware: device?.firmwareBuild || 'Not reported',
     reported: Number.isFinite(device?.at) ? reportedClock.format(device.at) : 'No report received',
   });
@@ -65,7 +65,7 @@ export function floorPreheatView(status = {}) {
   if (!floor.commissioned) return view('Not commissioned', 'pending', reasons['uncommissioned']);
   if (floor.mode === 'manual' && live) {
     const count = channels.filter(channel => channel.output === true).length;
-    return view('Manual override', 'available', `${count} of 4 outputs reported on. Individual overrides end together at ${time(floor.manualUntil)}; adding a circuit keeps that deadline.`);
+    return view('Manual override', 'available', `${count} of 4 outputs reported on.`);
   }
   if (floor.mode === 'automatic' && floor.active === true && live && channels.every(channel => channel.output === true))
     return view('Preheating', 'available', 'All four outputs report the pooled preheat override. The device lease and the original preheat deadline bound this request.');
@@ -91,7 +91,7 @@ export function floorManualMessage(status, busy = false) {
   if (floor?.mode === 'automatic') return reasons['automatic-treatment-active'];
   if (!floor?.manualAvailable) return reasons[floor?.manualReason] ?? floorPreheatView(status).detail;
   return floor.mode === 'manual' && Number.isFinite(floor.manualUntil)
-    ? `Overrides end together at ${time(floor.manualUntil)}. Adding a circuit keeps this deadline.`
+    ? 'All selected circuits end together. Adding a circuit keeps this deadline.'
     : 'A manual override lasts 15 minutes. Release ends that circuit’s override sooner.';
 }
 
@@ -121,11 +121,31 @@ export function floorReceiptText(receipt, now) {
 export function createFloorControls({ document, onAction, blocked = () => false }) {
   const make = (tag, text = '', className = '') => { const node = document.createElement(tag); node.textContent = text; node.className = className; return node; };
   const root = make('div', '', 'floor-controls'), rows = new Map();
+  const fields = new Map();
+  const field = (tag, id, className = '') => {
+    const node = make(tag, '', className); node.id = id; fields.set(id, node); return node;
+  };
+  const operation = make('p', '', 'equipment-control-state floor-control-state');
+  operation.append(make('span', 'Floor control'), field('strong', 'floor-preheat-state'));
+  const detail = field('p', 'floor-preheat-status', 'floor-preheat-status'); detail.setAttribute('role', 'status');
+  const deadline = field('p', 'floor-preheat-deadline', 'floor-control-deadline');
   const scope = make('p', '', 'floor-control-scope'); scope.id = 'floor-control-scope';
   const list = make('div', '', 'floor-control-circuits');
-  const evidence = make('p', 'Reported states are GPIO output feedback. Valve movement, water flow and actual thermostat operation are not measured.', 'muted floor-output-evidence');
+  const evidence = make('p', 'Reported states are GPIO output feedback. Contact continuity, valve movement, water flow and actual thermostat operation are not measured.', 'muted floor-output-evidence');
   const access = make('p', 'Admin access is required to operate floor overrides.', 'family-access-note');
   const result = make('p', '', 'equipment-control-result'); result.setAttribute('role', 'status'); result.setAttribute('aria-live', 'polite');
+  const explanation = make('details', '', 'equipment-fold'); explanation.id = 'floor-operation-details';
+  explanation.append(make('summary', 'Overrides & release'),
+    make('p', 'Automatic preheating requests all four circuits together. Individual overrides leave the heat-pump ROOM setting unchanged and cannot run during pooled preheating.', 'muted'),
+    make('p', 'Override off means the device reports its output released. The installed wiring must allow ordinary thermostat heating in that state; GPIO feedback cannot verify physical restoration.', 'muted'),
+    field('p', 'floor-preheat-renewal', 'muted'),
+    make('p', 'Device-local expiry bounds the override if the host is lost. Fresh OFF feedback is still required to confirm release. Restoring a preheat ROOM increase also requires the controller and its heat-pump connection.', 'muted'));
+  const deviceDetails = make('details', '', 'equipment-fold'); deviceDetails.id = 'floor-device-details';
+  const facts = make('dl', '', 'equipment-readings floor-device-facts');
+  for (const [id, label] of [['connection', 'Device feedback'], ['commissioning-status', 'Commissioning'],
+    ['automatic', 'Automatic preheating'], ['firmware', 'Reported firmware'], ['reported', 'Latest output report']])
+    facts.append(make('dt', label), field('dd', `floor-preheat-${id}`));
+  deviceDetails.append(make('summary', 'Device details'), facts);
   for (const circuit of FLOOR_PREHEAT_CIRCUITS) {
     const row = make('div', '', 'floor-control-row'); row.dataset.floorChannel = String(circuit.id);
     const identity = make('div', '', 'floor-control-identity'), name = make('strong', `${circuit.label} · ${circuit.lengthM} m`);
@@ -144,10 +164,23 @@ export function createFloorControls({ document, onAction, blocked = () => false 
     const receipt = make('p', '', 'floor-channel-receipt'); receipt.setAttribute('role', 'status');
     buttons.append(...controls); row.append(identity, status, buttons, receipt); list.append(row); rows.set(circuit.id, { row, reading, detail, controls, receipt });
   }
-  root.append(scope, list, access, evidence, result);
+  root.append(operation, detail, deadline, scope, list, access, evidence, result, explanation, deviceDetails);
   return { root, update(snapshot) {
     const { status, busy, actionKind, message, error } = snapshot;
+    const display = floorPreheatView(status);
+    for (const [id, text] of [
+      ['state', display.label], ['status', display.detail], ['deadline', display.deadline],
+      ['commissioning-status', display.commissioning], ['renewal', display.renewal],
+      ['connection', display.connection], ['automatic', display.automatic],
+      ['firmware', display.firmware], ['reported', display.reported],
+    ]) fields.get(`floor-preheat-${id}`).textContent = text;
+    fields.get('floor-preheat-state').dataset.state = display.state;
+    detail.dataset.state = display.state;
+    // The original deadline remains visible beside controls during outages and
+    // restoration. An elapsed deadline is never confirmation of release.
+    deadline.hidden = !Number.isFinite(status?.preheatValves?.manualUntil) && !Number.isFinite(status?.preheatValves?.leaseUntil);
     const locked = busy || blocked(); scope.textContent = floorManualMessage(status, locked);
+    scope.hidden = scope.textContent === display.detail;
     for (const channel of floorChannels(status)) {
       const row = rows.get(channel.id);
       row.reading.textContent = channel.stateLabel; row.reading.dataset.state = channel.usable ? 'available' : 'pending';
@@ -180,28 +213,6 @@ export function renderFloorPreheat(document, status) {
     report.hidden = !visible;
     report.textContent = visible ? receipt.message : '';
     report.classList.toggle('form-error', Boolean(visible && (receipt.floorOutcome === 'unverified' || receipt.roomOutcome === 'pending')));
-  }
-  const summary = document.getElementById('floor-preheat-state');
-  if (summary) {
-    summary.textContent = display.label;
-    summary.dataset.state = display.state;
-  }
-  for (const [id, text] of [
-    ['floor-preheat-status', display.detail],
-    ['floor-preheat-commissioning-status', display.commissioning],
-    ['floor-preheat-renewal', display.renewal],
-    ['floor-preheat-connection', display.connection],
-    ['floor-preheat-automatic', display.automatic],
-    ['floor-preheat-deadline', display.deadline],
-    ['floor-preheat-firmware', display.firmware],
-    ['floor-preheat-reported', display.reported],
-  ]) {
-    const element = document.getElementById(id);
-    if (element) element.textContent = text;
-  }
-  for (const channel of display.channels) {
-    const cell = document.getElementById(`floor-preheat-output-${channel.id}`);
-    if (cell) { cell.textContent = channel.stateLabel; cell.dataset.state = channel.usable ? 'available' : 'pending'; }
   }
   return display;
 }

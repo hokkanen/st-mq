@@ -82,7 +82,7 @@ export function floorOverrideStatus(settings = floorOverrideConfiguration(), { r
     lastResult: restorationPending ? { status: 'release-pending', reason: stateUnknown ? 'state-invalid' : 'mqtt-disconnected' } : null,
     manualResult: null, topics: settings.deviceMac ? [
       { role: 'Lease commands and fresh status requests', topic: FLOOR_MQTT_TOPICS.command, direction: 'publish' },
-      { role: 'GPIO feedback and lease replies', topic: FLOOR_MQTT_TOPICS.state, direction: 'subscribe' },
+      { role: 'GPIO output feedback and lease replies', topic: FLOOR_MQTT_TOPICS.state, direction: 'subscribe' },
       { role: 'Native availability', topic: FLOOR_MQTT_TOPICS.availability, direction: 'subscribe' },
     ] : [], mqttStatus: { connected: false, subscriptionStatus: 'unavailable', lastLiveAt: null }, lastLeaseEnd: null };
 }

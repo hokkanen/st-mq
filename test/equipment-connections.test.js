@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { equipmentConnections, equipmentConnectionSummary, equipmentConnectionIntroduction, equipmentSource, equipmentTopicGroups, vehicleConnections } from '../chart/equipment.js';
 import { dashboardProviders } from '../chart/provider-status.js';
+import { floorOverrideConfiguration, floorOverrideStatus } from '../src/control/floor-override.js';
 
 const NOW = Date.parse('2026-09-14T12:00:00Z');
 const topic = (role, value, direction = 'subscribe') => ({ role, topic: value, direction });
@@ -40,6 +41,7 @@ test('home connections show pump, temperatures in configured order, circulation 
     ['Incoming', ['fixture/h66/HP/#']], ['Status requests', ['fixture/h66/HP/CMD']], ['Commands', ['fixture/h66/HP/SET/0203']],
   ]);
   assert.equal(equipmentConnectionSummary(native).state, 'available');
+  assert.equal(equipmentConnectionSummary(native).label, 'Available');
 });
 
 test('shared groups do not repeat owned feeds and separate Home and Garage legacy probes', () => {
@@ -244,16 +246,16 @@ test('one SONOFF device identifies all four floor circuits without bypass contro
   assert.deepEqual(device.topics, []);
   assert.deepEqual(Object.values(device.readings).map(row => row.value), [null, null, null, null]);
   assert.deepEqual(equipmentConnectionSummary(device), {
-    label: 'Not configured', state: 'pending', recent: '1 device · 4 floor circuits',
+    label: 'Not configured', state: 'pending', recent: 'No live report yet',
   });
   assert.deepEqual(Object.values(device.readings).map(row => row.label), ['1 · Living · 106 m', '2 · Living · 62 m', '3 · Storage · 38 m', '4 · Storage · 80 m']);
   assert.doesNotMatch(JSON.stringify(device), /Shelly|Output 0|local.script/);
-  assert.match(equipmentConnectionIntroduction(device), /timed MQTT leases.*GPIO readback/);
+  assert.match(equipmentConnectionIntroduction(device), /reports.*status requests.*timed lease commands.*MQTT/);
   const unavailable = equipmentConnections({}).find(device => device.kind === 'floor_override');
   assert.equal(equipmentConnectionSummary(unavailable).label, 'Status unavailable');
 });
 
-test('floor device requires current channel evidence and preserves pending release', () => {
+test('floor connection requires current channel evidence without representing override readiness', () => {
   const view = extra => equipmentConnections({ now: NOW, preheatValves: { integrationSupported: true, configured: true, enabled: true, commissioned: true,
     devices: [{ group: 'living', available: true, at: NOW, channels: [{ id: 0, output: true }, { id: 1, output: true }] }], ...extra } })
     .filter(device => device.kind === 'floor_override');
@@ -264,13 +266,37 @@ test('floor device requires current channel evidence and preserves pending relea
   assert.equal(active[0].enabled, true);
   assert.deepEqual(Object.values(active[0].readings).map(row => row.value), [null, null, null, null]);
   assert.equal(active[0].lastReportAt, undefined);
-  assert.equal(equipmentConnectionSummary(view({ restorationPending: true })[0]).label, 'Release pending');
-  assert.equal(equipmentConnectionSummary(view({ enabled: false, restorationPending: true })[0]).label, 'Release pending', 'Disabling new overrides does not hide the release obligation');
-  assert.equal(equipmentConnectionSummary(view({ restorationPending: true })[0]).recent, 'Previous override release is unconfirmed');
+  assert.equal(equipmentConnectionSummary(view({ restorationPending: true })[0]).label, 'Needs attention');
+  assert.equal(equipmentConnectionSummary(view({ enabled: false, restorationPending: true })[0]).label, 'Needs attention');
+  assert.equal(equipmentConnectionSummary(view({ restorationPending: true })[0]).recent, 'No live report yet');
   const claimed = view({ integrationSupported: true, devices: [{ group: 'groundfloor', available: true, at: NOW,
     channels: [1, 2, 3, 4].map(id => ({ id, output: false })) }] })[0];
   assert.equal(equipmentConnectionSummary(claimed).label, 'Needs attention');
   assert.deepEqual(Object.values(claimed.readings).map(row => row.value), [null, null, null, null], 'Missing GPIO evidence cannot become floor observations');
+});
+
+test('floor status and shared MQTT inventory describe each lease route once', () => {
+  const preheatValves = floorOverrideStatus(floorOverrideConfiguration({ device_mac: '02:00:00:00:00:01' }));
+  const device = equipmentConnections({ preheatValves, equipment: { topicGroups: [{ id: 'floor-preheat', topics: [
+    topic('GPIO output feedback and lease replies', 'stat/sonoff4chpro/LEASE'),
+    topic('Native availability', 'tele/sonoff4chpro/LWT'),
+    topic('Lease commands and fresh status requests', 'cmnd/sonoff4chpro/LEASE', 'publish'),
+  ] }] } }).find(device => device.kind === 'floor_override');
+  assert.deepEqual(equipmentTopicGroups(device.topics).map(group => [group.label, group.topics.map(row => row.role)]), [
+    ['Incoming', ['GPIO output feedback and lease replies', 'Native availability']],
+    ['Requests & commands', ['Lease commands and fresh status requests']],
+  ]);
+});
+
+test('heat-pump availability uses the shared label while retaining native health requirements', () => {
+  const connected = { connected: true, health: { deviceOnline: true, driverProgressing: true, pumpCommunicating: true } };
+  const connection = adapter => equipmentConnections({ garage: { adapter }, equipment: { topicGroups: [
+    { id: 'garage-adapter', topics: [topic('Status', 'invented/pump/state')] },
+  ] } }).find(device => device.kind === 'heat_pump');
+  assert.equal(equipmentConnectionSummary(connection(connected)).label, 'Available');
+  assert.equal(equipmentConnectionSummary(connection({ ...connected, connected: false })).label, 'Disconnected');
+  assert.equal(equipmentConnectionSummary(connection({ ...connected, health: { ...connected.health, driverProgressing: false } })).label, 'Driver not reporting');
+  assert.equal(equipmentConnectionSummary(connection({ ...connected, health: { ...connected.health, pumpCommunicating: false } })).label, 'Awaiting pump reports');
 });
 
 test('configured vehicle feeds retain independent names before reports and follow a vehicle between chargers', () => {
@@ -333,7 +359,9 @@ test('MQTT device introductions describe purpose independently of connection che
     assert.doesNotMatch(introduction, /timeout|Last check|No live/);
     assert.equal(equipmentConnectionIntroduction({ ...device, available: true, check: { status: 'available' } }), introduction);
   }
-  assert.match(equipmentConnectionIntroduction({ kind: 'floor_override' }), /One Sonoff controls four ground-floor thermostat overrides/);
+  const floorIntroduction = equipmentConnectionIntroduction({ kind: 'floor_override' });
+  assert.match(floorIntroduction, /MQTT/);
+  assert.doesNotMatch(floorIntroduction, /Ready|ready|outputs? report|override off|commissioned/);
 });
 
 test('Garage MQTT order puts local frost protection directly below heat pump before temperatures and other equipment', () => {

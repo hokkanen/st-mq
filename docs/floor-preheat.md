@@ -6,11 +6,18 @@ That repository owns firmware, installation, the versioned MQTT protocol and
 hardware qualification. This application owns circuit assignment, manual controls,
 pooled preheating, recording and durable restoration.
 
-**Home → Sensors & Equipment** shows each circuit's reported output and individual
-timed controls. **Data & settings → Connections & configuration → Home floor
-preheating**, above Garage freeze protection, shows connection readiness,
-commissioning, circuit feedback and the setup guides. MQTT diagnostics describe
-the same connection; they do not provide a second control path.
+**Home → Sensors & Equipment → Ground-floor circuits** shows current control
+readiness, each circuit's reported GPIO output and individual timed controls.
+The device header shows connection availability independently of commissioning,
+active overrides or pending release. **Overrides & release** explains operation;
+**Device details** contains commissioning, automatic enablement, firmware and
+report evidence. Release obligations remain visible when the card is closed.
+
+**Data & settings → Connections & configuration → Home floor preheating**, above
+Garage freeze protection, contains the hardware details, installation steps,
+circuit assignment and setup guide. MQTT diagnostics describe connection health
+and routing. Output states and control readiness stay in Home; setup and MQTT
+diagnostics do not provide another control path.
 
 | Connection | Floor circuit | Pipe length |
 | --- | --- | --- |

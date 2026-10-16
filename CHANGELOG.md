@@ -13,6 +13,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Report an unsent Shelly relay command's witnessed recording deadline as
   waiting for storage, while keeping dispatched readback outcomes unconfirmed.
 
+- Align floor-controller and heat-pump availability labels with other devices.
+  Keep floor output status, timed controls and release recovery together in Home;
+  separate installation guidance and hardware details from live operating state.
+
 - Keep a forecast target-risk warning in charging attention details when
   charger control is unconfirmed, alongside the reported control problem.
 

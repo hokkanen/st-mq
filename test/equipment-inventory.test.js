@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { equipmentDevices, equipmentInventory, equipmentReadingRows } from '../chart/equipment.js';
+import { equipmentConnectionSummary, equipmentDevices, equipmentInventory, equipmentReadingRows } from '../chart/equipment.js';
 import { floorManualAllowed } from '../chart/floor-preheat.js';
 import { floorOverrideConfiguration, floorOverrideStatus } from '../src/control/floor-override.js';
 
@@ -26,14 +26,40 @@ test('floor setup stays visible with unknown outputs before current feedback and
   const statuses = [
     [undefined, 'Status unavailable'],
     [{ now, preheatValves: floorOverrideStatus() }, 'Not configured'],
-    [{ now, preheatValves: floorOverrideStatus(floorOverrideConfiguration({ device_mac: '02:00:00:00:00:01' })) }, 'Not commissioned'],
-    [{ now, preheatValves: floorOverrideStatus(floorOverrideConfiguration({ device_mac: '02:00:00:00:00:01', commissioned: true, enabled: false })) }, 'Needs attention'],
+    [{ now, preheatValves: floorOverrideStatus(floorOverrideConfiguration({ device_mac: '02:00:00:00:00:01' })) }, 'Disconnected'],
+    [{ now, preheatValves: floorOverrideStatus(floorOverrideConfiguration({ device_mac: '02:00:00:00:00:01', commissioned: true, enabled: false })) }, 'Disconnected'],
   ];
   for (const [status, label] of statuses) {
     const inventory = equipmentInventory(status);
     assert.deepEqual(withoutUnknownFloor(status, inventory), []);
     assert.equal(inventory[0].connectionState.label, label);
   }
+});
+
+test('floor connection availability follows current evidence independently of operational permissions', () => {
+  const floor = { integrationSupported: true, configured: true, connected: true, enabled: true, commissioned: true,
+    manualAvailable: true, available: true, devices: [{ group: 'groundfloor', available: true, at: now,
+      channels: [1, 2, 3, 4].map(id => ({ id, output: false, at: now, outputEvidence: 'gpio_output_readback', quality: [] })) }] };
+  for (const restriction of [{}, { commissioned: false, manualAvailable: false, available: false }, { enabled: false },
+    { restorationPending: true, manualAvailable: false, available: false }, { stateUnknown: true, manualAvailable: false, available: false }]) {
+    const status = { now, preheatValves: { ...floor, ...restriction } };
+    const device = equipmentDevices(status)[0], summary = equipmentConnectionSummary(device);
+    assert.equal(device.available, true);
+    assert.equal(summary.label, 'Available');
+    assert.equal(summary.state, 'available');
+    assert.match(summary.recent, /^Reported /);
+    assert.doesNotMatch(summary.recent, /ready|commission|release|override/i);
+  }
+  const live = { ...floor, mode: 'manual', devices: [{ ...floor.devices[0],
+    channels: floor.devices[0].channels.map(channel => ({ ...channel, output: true })) }] };
+  assert.equal(equipmentConnectionSummary(equipmentDevices({ now, preheatValves: live })[0]).label, 'Available');
+  const lost = { ...floor, connected: false, devices: [{ ...floor.devices[0], available: false }] };
+  const device = equipmentDevices({ now, preheatValves: lost })[0];
+  assert.equal(equipmentConnectionSummary(device).label, 'Disconnected');
+  assert.deepEqual(equipmentReadingRows(device).map(row => row.value), ['Unknown', 'Unknown', 'Unknown', 'Unknown']);
+  const recorded = equipmentDevices({ now, readOnly: true, preheatValves: floor })[0];
+  assert.equal(equipmentConnectionSummary(recorded).label, 'Recorded snapshot');
+  assert.equal(recorded.available, false);
 });
 
 test('inventory uses the current equipment contract and retains tariff relays, meters and doors', () => {
