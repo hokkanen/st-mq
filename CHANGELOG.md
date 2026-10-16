@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep explicit charging takeover bound to its initial published plan, preserving
+  newer native current choices and charger limits.
+
 - Complete an accepted Shelly charging-period pause while a replacement plan is
   still calculating, retaining native instruction checks and confirmed idle
   current fallback.

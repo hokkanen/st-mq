@@ -3413,7 +3413,7 @@ export class ChargingRuntime {
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
     try {
-      await this.updatePlanForControl();
+      await this.updatePlanForControl(this.clock(), { sourceId: id });
       await this.reconcile(id, { takeover: attempt.token });
       if (!this.takeoverCurrent(item, attempt))
         throw new Error('Charging controls or connection changed during takeover. Review the current status.');
