@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Route shared-client MQTT messages only through their owning receiver, avoiding
+  duplicate writer work and heating-state copies for native charger traffic.
+
 - Preserve checkpoint-worker and publication-guard cancellation reasons so
   interrupted work does not falsely classify an intact paired replica as a
   verification failure.

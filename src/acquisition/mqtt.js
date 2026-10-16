@@ -492,6 +492,15 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     const isPrimary = channel.id === 'primary', ownsTesla = channel.id === routing.teslaBroker;
     const equipmentTopics = shelly?.topicsForBroker(channel.id) ?? [];
     const vehicleRoutes = (engine.charging?.mqttRoutes() ?? []).filter(route => routing.vehicleBroker(route) === channel.id);
+    // The charger adapter subscribes on this same client and owns its own
+    // listener. Its frames must not enter this receiver's writer queue or take
+    // an unrelated heating rollback snapshot. Include every configured route,
+    // including replies and unknown H66 registers, independently of whether a
+    // frame has a recording/admission key.
+    const ownedTopics = [...new Set([...equipmentTopics, ...vehicleRoutes.map(route => route.topic),
+      ...(ownsTesla && chargingTesla ? [teslamate.topic] : []),
+      ...(isPrimary ? [...floorOverride.topics, ...(garage?.topics ?? []), ...(garageSender?.topics ?? []),
+        ...(decoder ? [`${deviceId}/HP/#`] : [])] : [])])];
     const vehicleSource = key => {
       if (!key) return null;
       const [kind, topic] = JSON.parse(key);
@@ -780,7 +789,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       let equipmentAccepted = false;
       if (shelly?.receive(topic, payload, packet, receivedAt, channel.id, () => { equipmentAccepted = true; }, receivedMonotonicAt)) return equipmentAccepted;
       if (!isPrimary) return;
-      if (!decoder) return;
+      if (!decoder || !topic.startsWith(`${deviceId}/HP/`)) return;
       if (topic.startsWith(`${deviceId}/HP/STATUS`) && !packet.retain) lastGatewayStatusAt = receivedAt;
       const decoderCheckpoint = decoder.checkpoint(), held = engine.ingestionCheckpoint?.();
       const decoderGeneration = channel.generation;
@@ -820,6 +829,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     };
     client.on('message', (topic, payload, packet = {}) => {
       if (!channel.connected || stopped || stopping) return;
+      if (!ownedTopics.some(subscription => matchesTopic(topic, subscription))) return;
       const receivedAt = engine.clock(), generation = channel.generation, bytes = Buffer.byteLength(payload);
       // Capture at transport receipt, before writer admission and SUBACK buffering.
       let receivedMonotonicAt = null;

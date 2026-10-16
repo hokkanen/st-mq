@@ -18,14 +18,14 @@ const dryer = { id: 'caravan_dehumidifier', area: 'garage', kind: 'dehumidifier'
     availability_topic: 'fixture/dryer/online', bridge_availability_topic: 'homeassistant/status' } };
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-async function fixture(t, { separate = true, deferred = false, temperatureControl = false } = {}) {
+async function fixture(t, { separate = true, deferred = false, temperatureControl = false, h66 = false } = {}) {
   const store = new Store(':memory:'), clients = new Map(), observations = [], vehicleMessages = [], vehicleStatus = new Map();
   let now = initial, authority = true;
   const engine = { clock: () => now, ingest: row => observations.push(row),
     charging: { mqttRoutes: () => [{ id: 'bmw', provider: 'bmw-cardata', topic: 'fixture/bmw', label: 'BMW' }],
       setMqttStatus: (status, id = 'bmw') => vehicleStatus.set(id, status),
       receiveSoc: (...args) => { vehicleMessages.push(args); return true; } } };
-  const config = { input: 'mqtt', h66: { readbackTimeoutMs: 100 }, connections: {
+  const config = { input: 'mqtt', ...(h66 ? { deviceId: 'synthetic-routing-device' } : {}), h66: { readbackTimeoutMs: 100 }, connections: {
     mqtt: { address: 'mqtt://primary.invalid', user: 'primary-user', pw: 'synthetic-primary-password',
       ...(separate ? { ha: { address: 'mqtt://ha.invalid', user: 'ha-user', pw: 'synthetic-ha-password' } } : {}) },
     teslamate: { enabled: true }, equipment: equipmentConfiguration({ devices: [door, sensor,
@@ -62,6 +62,37 @@ test('one optional HA broker selects exactly the supported integration groups', 
   assert.equal(routing.vehicleBroker({ provider: 'other' }), 'primary');
   assert.equal(routing.equipmentBroker({ protocol: 'shelly', area: 'garage', kind: 'switch' }), 'primary');
   assert.equal(mqttRouting({ connections: { mqtt: { address: 'mqtt://primary.invalid' } } }).teslaBroker, 'primary');
+});
+
+test('shared-client charger traffic bypasses general recording and heating rollback copies', async t => {
+  const f = await fixture(t, { separate: false, h66: true });
+  f.clients.get('primary').emit('connect'); await f.reader.ready();
+  await f.store.runWrite(() => {});
+  let writes = 0, snapshots = 0, heatingSnapshots = 0;
+  const runWrite = f.store.runWrite.bind(f.store);
+  f.store.runWrite = (...args) => { writes++; return runWrite(...args); };
+  f.engine.ingestionCheckpoint = () => { snapshots++; return {}; };
+  f.engine.restoreIngestionCheckpoint = () => {};
+  const heatingCheckpoint = f.reader.h66.ingestionCheckpoint.bind(f.reader.h66);
+  f.reader.h66.ingestionCheckpoint = () => { heatingSnapshots++; return heatingCheckpoint(); };
+  for (let i = 0; i < 50; i++) {
+    f.send('primary', 'synthetic-evse/events/rpc', { method: 'NotifyStatus', params: { current: i } });
+    f.send('primary', 'synthetic-charger-replies/rpc', { id: i, result: { enable: false } });
+  }
+  await settle();
+  assert.equal(writes, 0, 'The charger listener retains sole ownership of its frames');
+  assert.equal(snapshots, 0);
+  f.send('primary', 'fixture/air/state', { temperature: 7, timestamp: initial });
+  await settle();
+  assert.equal(f.view('air').available, true, 'Configured equipment still records');
+  assert.ok(writes > 0);
+  assert.equal(heatingSnapshots, 0, 'Equipment retains its own rollback without entering the heating decoder');
+  const equipmentWrites = writes;
+  f.send('primary', 'synthetic-routing-device/HP/STATUS', 'online');
+  f.send('primary', 'synthetic-routing-device/HP/UNKNOWN_REGISTER', '12');
+  await settle();
+  assert.equal(writes, equipmentWrites + 2, 'H66 wildcard ownership includes status and unknown registers');
+  assert.equal(heatingSnapshots, 2);
 });
 
 test('primary readiness and independent observations do not wait for an unavailable HA broker', async t => {
