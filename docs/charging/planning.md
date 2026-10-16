@@ -215,6 +215,11 @@ and expected native command bookkeeping. New connections, actual battery/request
 changes, priority, effective electrical/vehicle restrictions, source quality and
 relevant published-price changes receive prompt assessment. No schedulable request
 needs a new economic search; independently active peers still affect other requests.
+Queued vehicle observations retain their durability fence. Background economic
+work waits for their admission outcome instead of searching a temporary fallback
+and then the unchanged accepted reading. Settlement requests one assessment;
+failed admission remains unavailable evidence. Explicit controls and native stop
+deadlines retain their separate priority and evidence requirements.
 
 Ordinary forecast changes settle for ten seconds after the latest meaningful
 change, with a sixty-second maximum from the first pending change. Irrelevant

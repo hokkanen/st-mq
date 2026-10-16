@@ -110,3 +110,54 @@ test('economic snapshots retain independent household values when a provider cha
   input.household[0].phaseCurrentA[0]+=1;
   assert.equal(economicPlanningChange(before,state(input),input.now),'soft');
 });
+
+test('pending vehicle admission coalesces background work until the original source settles', async t => {
+  const f = await waiting(t), runtime = f.runtime;
+  let pending = true, searches = 0, writes = 0;
+  t.mock.method(runtime, 'vehicleAdmissionBasis', () => pending ? [['tesla', true, false]] : null);
+  const request = runtime.plannerService.request.bind(runtime.plannerService), write = runtime.write.bind(runtime);
+  t.mock.method(runtime.plannerService, 'request', options => { searches++; return request(options); });
+  t.mock.method(runtime, 'write', (...args) => { writes++; return write(...args); });
+  const before = runtime.coordination;
+  const calls = Array.from({ length: 8 }, () => runtime.updatePlan(f.now, { background: true }));
+  await runtime.planningFlight;
+  assert.equal(searches, 0);
+  assert.equal(writes, 0, 'Waiting for durability creates no extra storage turns');
+  assert.equal(runtime.planningWaiters.size, calls.length, 'An unassessed request has not borrowed another publication');
+  runtime.vehicleInputSettled();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(searches, 0, 'A remaining packet still holds the assessment');
+  pending = false;
+  runtime.vehicleInputSettled(); runtime.vehicleInputSettled();
+  await Promise.all(calls);
+  assert.equal(searches, 0, 'Unchanged committed values retain the accepted program');
+  assert.equal(runtime.coordination, before);
+  assert.equal(runtime.planningAdmissionDeferred, false);
+});
+
+test('a changed published price is assessed once after queued vehicle packets settle', async t => {
+  const f = await waiting(t), runtime = f.runtime;
+  let pending = true, searches = 0;
+  t.mock.method(runtime, 'vehicleAdmissionBasis', () => pending ? [['tesla', true, false]] : null);
+  const request = runtime.plannerService.request.bind(runtime.plannerService);
+  t.mock.method(runtime.plannerService, 'request', options => { searches++; return request(options); });
+  runtime.prices = runtime.prices.map(row => ({ ...row, priceCtPerKwh: row.priceCtPerKwh + 1 }));
+  const call = runtime.updatePlan(f.now, { background: true });
+  await runtime.planningFlight;
+  assert.equal(searches, 0);
+  pending = false; runtime.vehicleInputSettled();
+  await call;
+  assert.equal(searches, 1);
+  await runtime.updatePlan(f.now, { background: true });
+  assert.equal(searches, 1, 'Settlement does not become a periodic search');
+});
+
+test('closing during deferred vehicle admission resolves callers without late work', async t => {
+  const f = await waiting(t), runtime = f.runtime;
+  t.mock.method(runtime, 'vehicleAdmissionBasis', () => [['tesla', true, false]]);
+  const call = runtime.updatePlan(f.now, { background: true });
+  await runtime.planningFlight;
+  runtime.vehicleInputSettled();
+  await runtime.close(); await call;
+  assert.equal(runtime.closed, true);
+});

@@ -510,8 +510,11 @@ function newRecord(view, now, id, startedAt) {
 }
 function publicReport(record, now) {
   if (record?.version !== VERSION) throw unsupported();
-  const result = clone(record);
-  for (const key of ['pendingChecks', 'expectationAt', 'planContext', 'events', 'findingContext', 'association']) delete result[key];
+  // Observer comparison context can hold large price and plan arrays. Detach
+  // only the public projection; copying discarded context serves no reader.
+  const omitted = new Set(['pendingChecks', 'expectationAt', 'planContext', 'events', 'findingContext', 'association']);
+  const result = clone(Object.fromEntries(Object.keys(record).filter(key => !omitted.has(key))
+    .map(key => [key, record[key]])));
   const stale = result.endedAt === null && !fresh(result.observedAt, now, 3 * MINUTE);
   const active = result.findings.filter(row => row.resolvedAt === null);
   const issues = result.findings.filter(row => row.severity === 'attention');

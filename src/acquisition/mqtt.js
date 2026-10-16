@@ -849,6 +849,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       let released = false;
       const release = () => { if (!released) {
         released = true; channel.pendingReceipts--; channel.pendingVehicleReceipts.delete(sequence);
+        if (source && currentReceipt()) engine.charging?.vehicleInputSettled?.();
       } };
       const acceptVehicle = fields => {
         if (!vehicleReceipt) return false;

@@ -2301,7 +2301,7 @@ export class ChargingRuntime {
   }
   updatePlan(now = this.clock(), { sourceId, sourceWaiter, background = false } = {}) {
     if (this.closed) return Promise.resolve();
-    if (this.planningFlight && !this.stateRefreshFlight) {
+    if (this.planningFlight && !this.stateRefreshFlight && !this.planningVehicleInputsPending()) {
       this.stateRefreshFlight = this.write(() => this.refreshPlanningState(this.clock()))
         .catch(() => {}).finally(() => { this.stateRefreshFlight = null; });
     }
@@ -2335,6 +2335,22 @@ export class ChargingRuntime {
       });
     }
     return completion;
+  }
+  planningVehicleInputsPending() {
+    return Object.values(this.chargers).some(item => this.vehicleAdmissionBasis(item)?.some(row => row[1]));
+  }
+  vehicleInputSettled() {
+    if (this.closed || !this.planningAdmissionDeferred || this.planningAdmissionScheduled) return;
+    // Reception outcomes and the remaining queued packets settle after the
+    // committed callback. Coalesce that turn without polling a busy writer.
+    this.planningAdmissionScheduled = setImmediate(() => {
+      this.planningAdmissionScheduled = null;
+      if (this.closed || !this.planningAdmissionDeferred || this.planningVehicleInputsPending()) return;
+      this.planningAdmissionDeferred = false;
+      void this.updatePlan(this.clock(), { background: true }).catch(() => {
+        if (!this.closed) this.error = 'charging-planning-unavailable';
+      });
+    });
   }
   async updatePlanForControl(now = this.clock(), options = {}) {
     const { signal, ...planningOptions } = options;
@@ -2397,12 +2413,24 @@ export class ChargingRuntime {
     this.persistAcceptedState(now);
   }
   async calculatePlan(now, { sourceId, sourceWaiter, background = false }) {
+    if (background && this.planningVehicleInputsPending()) {
+      // Pending durability withdraws live authority; it is not a different
+      // economic battery measurement. Assess the settled source once instead
+      // of searching fallback and then the identical admitted values.
+      this.planningAdmissionDeferred = true;
+      return false;
+    }
     // Receiving another notification is not itself a changed planning input.
     // The evidence check below rejects changed intent, authority and source
     // values without starving useful work during steady healthy reporting.
     const current = () => !this.closed && this.store.db.isOpen;
     await this.write(() => { if (current()) this.refreshPlanningState(this.clock()); });
     if (!current()) return false;
+    if (background && this.planningVehicleInputsPending()) {
+      this.planningAdmissionDeferred = true;
+      return false;
+    }
+    if (!this.planningVehicleInputsPending()) this.planningAdmissionDeferred = false;
     now = this.clock();
     const views = this.views(now).map(view => {
       const attempt = this.charger(view.id).takeoverAttempt;
@@ -3517,6 +3545,9 @@ export class ChargingRuntime {
   beginShutdown() {
     for (const feed of Object.values(this.vehicleFeeds)) feed.sourcePending.clear();
     this.closed = true; this.writeAbort.abort(); clearInterval(this.timer); clearTimeout(this.boundaryTimer); clearTimeout(this.streamTimer);
+    clearImmediate(this.planningAdmissionScheduled);
+    for (const waiter of this.planningWaiters?.values() ?? []) waiter.resolve();
+    this.planningWaiters?.clear();
   }
   async close() {
     this.beginShutdown();

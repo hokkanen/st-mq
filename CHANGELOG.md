@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Coalesce background planning while vehicle observations await durable
+  admission, avoiding fallback/recovery searches for unchanged readings. Copy
+  only public charging-report fields when preparing dashboard summaries.
+
 - Reduce charging planner CPU use with exact allocation reuse, a flow-guided
   bounded search and meaningful-change admission. Keep accepted programs through
   unchanged reporting; require more than 5 cents to replace ongoing charging or

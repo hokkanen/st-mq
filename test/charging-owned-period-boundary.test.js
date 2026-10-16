@@ -72,6 +72,22 @@ async function acceptedProgram(t, { limiter = true } = {}) {
     execution: structuredClone(view.control.execution), initialCurrent: f.fields.current_limit.value });
 }
 
+test('an accepted Shelly period stops while background planning awaits vehicle admission', async t => {
+  const f = await acceptedProgram(t);
+  let pending = true;
+  t.mock.method(f.runtime, 'vehicleAdmissionBasis', () => pending ? [['tesla', true, false]] : null);
+  const background = f.runtime.updatePlan(f.now, { background: true });
+  await f.runtime.planningFlight;
+  assert.equal(f.runtime.planningAdmissionDeferred, true);
+  f.advance(f.execution.periods[0].endAt - f.now);
+  f.runtime.tick({ force: true });
+  await stage(f.runtime.reconcile('charger2'), 'native period stop during vehicle admission');
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.runtime.chargers.charger2.controller.status().pending, null);
+  pending = false; f.runtime.vehicleInputSettled();
+  await background;
+});
+
 for (const condition of ['healthy', 'healthy with expired cached permission', 'authority lost', 'newer native Start', 'source unavailable'])
 test(`accepted Shelly period end while planning is held: ${condition}`, async t => {
   const f = await acceptedProgram(t), item = f.runtime.chargers.charger2;
