@@ -107,7 +107,7 @@ for (const interruption of ['authority', 'revocation', 'reconnect', 'expiry', 'i
 test('circulation timeout cancels an unsent command before a later storage recovery', async t => {
   const f = await relayFixture(t);
   f.lock(); f.send('0203', 21);
-  await assert.rejects(f.transport.publishDhwr(true), { code: 'SHELLY_READBACK_TIMEOUT' });
+  await assert.rejects(f.transport.publishDhwr(true), { code: 'MQTT_STORAGE_PENDING' });
   const failed = f.store.writeHealth.status().history.windows.day;
   assert.equal(failed.commandsNotSent, 1);
   assert.equal(failed.incidents.find(row => row.category === 'command-not-sent').reason, 'recording-wait-expired');
@@ -169,7 +169,7 @@ test('Gen1 timeout cancels the unsent command before later storage recovery', as
     generation: 1, switch_control: true }]);
   f.client.emit('message', 'shellies/fixture-relay/relay/0', Buffer.from('on'), {});
   f.lock(); f.send('0203', 21);
-  await assert.rejects(f.reader.equipment.setSwitch('relay', false), { code: 'SHELLY_READBACK_TIMEOUT' });
+  await assert.rejects(f.reader.equipment.setSwitch('relay', false), { code: 'MQTT_STORAGE_PENDING' });
   assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, 1);
   f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0); await delay(20);
   assert.equal(f.commands.some(row => row.topic.endsWith('/relay/0/command')), false);

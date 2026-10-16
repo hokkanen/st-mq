@@ -9,7 +9,7 @@ import { equipmentSignature, equipmentMeterIdentity } from './equipment-config.j
 import { GARAGE_TEMPERATURE_POLL_MS, GARAGE_TEMPERATURE_MAX_AGE_MS } from '../domain/temperature-reports.js';
 import { Recorder } from '../storage/recorder.js';
 import { readPlanningVoltage } from '../storage/voltage.js';
-import { heatingErrorCode } from '../control/mqtt.js';
+import { heatingErrorCode, heatingErrorMessage } from '../control/mqtt.js';
 
 const scalar = value => typeof value === 'number' && Number.isFinite(value);
 const valid = (value, min, max) => scalar(value) && value >= min && value <= max;
@@ -199,7 +199,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     } finally { receptionAt = before; }
   };
   const send = async (device, method, params = {}, { purpose = 'status', commandId = null, complete = null,
-    beforePublish, signal, recordingDeadlineExpired } = {}) => {
+    beforePublish, signal, recordingDeadlineExpired, onRecordingBlocked } = {}) => {
     if (!connected || closed || !canControl()) throw error('MQTT unavailable');
     const id = ++sequence;
     if (purpose === 'write') device.writeOrder = id;
@@ -207,7 +207,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       complete: (...args) => { if (!request.retired) { request.retired = true; complete?.(...args); } } };
     requests.set(id, request);
     try { await publish(`${device.prefix}/rpc`, JSON.stringify({ id, src: source, method, params }), { qos: 1, retain: false,
-      ...(purpose === 'write' ? { noReplay: true, signal, recordingContext: 'switch-command', recordingDeadlineExpired, beforePublish: () => {
+      ...(purpose === 'write' ? { noReplay: true, signal, recordingContext: 'switch-command', recordingDeadlineExpired, onRecordingBlocked, beforePublish: () => {
         beforePublish?.(); requests.get(id).at = engine.clock();
       } } : {}) }); }
     catch (cause) { request.retired = true; requests.delete(id); throw heatingErrorCode(cause?.code) ? cause : error('publication failed'); }
@@ -364,8 +364,16 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       const finish = reason => { if (done) return; done = true; clearTimeout(timer); device.waiters.delete(waiter);
         cancellation.abort(); reason ? reject(reason) : resolve(); };
       const timer = setTimeout(() => { recordingDeadlineExpired = true;
+        // A publisher already waiting for storage can synchronously identify a
+        // known-unsent deadline. Publication deferred until COMMIT has no such
+        // witness yet, so retain the immediate original timeout fallback.
+        if (!waiter.dispatched) cancellation.abort();
         finish(error('relay readback timed out; delivery unconfirmed')); }, readbackTimeoutMs);
       device.waiters.add(waiter);
+      const onRecordingBlocked = code => {
+        if (code === 'MQTT_STORAGE_PENDING' || code === 'MQTT_STORAGE_FAILED')
+          finish(Object.assign(new Error(heatingErrorMessage(code)), { code }));
+      };
       const beforePublish = () => {
         if (done || closed || !connected || !canControl()) throw error('control authority unavailable');
         if (performance.now() >= deadline) throw error('relay readback timed out; delivery unconfirmed');
@@ -378,10 +386,10 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         // after storage admission, then require a newly committed live report.
         ? publish(`${device.prefix}/relay/${device.switchId}/command`, output ? 'on' : 'off',
           { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal,
-            recordingContext: 'switch-command', recordingDeadlineExpired: () => recordingDeadlineExpired }).then(() => requestStatus(device))
+            recordingContext: 'switch-command', recordingDeadlineExpired: () => recordingDeadlineExpired, onRecordingBlocked }).then(() => requestStatus(device))
         : send(device, 'Switch.Set', { id: device.switchId, on: output },
           { purpose: 'write', commandId: waiter.commandId, beforePublish, signal: cancellation.signal,
-            recordingDeadlineExpired: () => recordingDeadlineExpired });
+            recordingDeadlineExpired: () => recordingDeadlineExpired, onRecordingBlocked });
       action.catch(cause => finish(heatingErrorCode(cause?.code) ? cause : error('relay command failed; delivery unconfirmed')));
     });
     return { confirmed: true, status: 'confirmed', sent: true, deviceId: device.id, on: output,

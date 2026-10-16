@@ -214,7 +214,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     if (!channel?.connected || stopped) { reject(new Error('MQTT unavailable')); return; }
     if (!canControl()) { reject(new Error('This instance no longer owns device control')); return; }
     const { client, pendingPublications } = channel;
-    const { noReplay = false, beforePublish, beforeWrite, preparePublish, signal, recordingContext, recordingDeadlineExpired,
+    const { noReplay = false, beforePublish, beforeWrite, preparePublish, signal, recordingContext, recordingDeadlineExpired, onRecordingBlocked,
       ...publicationOptions } = options ?? {};
     const generation = channel.generation;
     const readRequest = decoder && topic === `${deviceId}/HP/CMD` && payload === 'GETALL'
@@ -235,14 +235,18 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     };
     const finish = (error, recordingExpired = false) => {
       if (finished) return;
+      let blockedCode = null;
       // This is a count of witnessed unsent attempts, never a command-success
       // tracker. Source-clock/subscription waits and ordinary cancellation do
       // not establish that storage prevented dispatch.
       if (error && !readRequest && !dispatched) {
         const reason = error.code === 'MQTT_STORAGE_FAILED' && recordingFailed() ? 'recording-failed'
           : recordingExpired && waitingPublications.has(attempt) && recordingPending() ? 'recording-wait-expired' : null;
-        if (reason) try { store.writeHealth?.commandNotSent?.(recordingContext, reason); }
-        catch { /* Diagnostic failure cannot change the command outcome. */ }
+        if (reason) {
+          blockedCode = reason === 'recording-failed' ? 'MQTT_STORAGE_FAILED' : 'MQTT_STORAGE_PENDING';
+          try { store.writeHealth?.commandNotSent?.(recordingContext, reason); }
+          catch { /* Diagnostic failure cannot change the command outcome. */ }
+        }
       }
       finished = true; failed = Boolean(error); clearTimeout(timer); pendingPublications.delete(finish);
       waitingPublications.delete(attempt); signal?.removeEventListener('abort', cancelled);
@@ -250,6 +254,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       // MQTT.js normally retransmits unacknowledged QoS 1 packets after its
       // connection recovers. A manual door movement must require a new request.
       removeOutgoing();
+      // Report only the witnessed pre-dispatch storage cause, after removing
+      // listeners so the caller can complete and abort without reentering us.
+      if (blockedCode) try { onRecordingBlocked?.(blockedCode); }
+      catch { /* Reporting cannot change publication or its original deadline. */ }
       if (error) {
         const code = heatingErrorCode(error.code);
         reject(code ? publicationFailure(code, heatingErrorMessage(code)) : new Error('MQTT publication failed'));
