@@ -9,6 +9,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Keep a forecast target-risk warning in charging attention details when
   charger control is unconfirmed, alongside the reported control problem.
 
+- Retain a precisely correlated late floor-acquisition capability for release
+  recovery while keeping the timed-out action failed and requiring fresh readback.
+
 - Keep explicit charging takeover bound to its initial published plan, preserving
   newer native current choices and charger limits.
 

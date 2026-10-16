@@ -130,6 +130,7 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
   const loaded = readState(store), stateUnknown = loaded.stateUnknown;
   let saved = loaded.state, connected = false, closed = false, epoch = 0, snapshot = null, busy = false, freshnessTimer = null;
   let chain = Promise.resolve(), runtime = null, recoveryToken = null, lastPoll = -Infinity, lastResult = null, lastLeaseEnd = null, unavailableRecorded = false;
+  let dispatchedAcquire = null;
   const pending = new Map(), instance = randomBytes(16).toString('hex'), controllerOwner = `stmq_${randomBytes(12).toString('hex')}`;
   const brokerDigest = hash(brokerIdentity);
   const afterCommit = effect => { if (store.afterCommit) store.afterCommit(effect); else effect(); };
@@ -163,6 +164,27 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
     };
     if (store.runWrite) await store.runWrite(write, { isCurrent: () => !closed && canControl() }); else await write();
     saved = structuredClone(next);
+  };
+  const sameAcquire = (out, sent) => out && out.token === null && ['acquiring', 'releasing'].includes(out.phase)
+    && ['device', 'brokerDigest', 'generation', 'owner', 'treatment', 'seq', 'mask', 'until', 'deviceEnd', 'kind', 'key']
+      .every(key => out[key] === sent[key]);
+  const retainReleaseCapability = frame => {
+    const sent = dispatchedAcquire;
+    if (!sent || closed || !connected || epoch !== sent.epoch || !canControl()
+      || !sameAcquire(saved?.outstanding, sent.out) || frame.kind !== 'reply' || frame.op !== 'acquire' || frame.id !== sent.id
+      || !frame.accepted || frame.duplicate || frame.code !== 'ok' || !frame.active || !frame.connected || !matches(NONCE, frame.token)
+      || frame.generation !== sent.out.generation || frame.owner !== sent.out.owner || frame.treatment !== sent.out.treatment
+      || frame.seq !== sent.out.seq || frame.mask !== sent.out.mask || frame.end_ms !== sent.out.deviceEnd) return;
+    // A late capability is useful only to release this exact committed duty.
+    // It never confirms an activation or supplies a fresh observation.
+    afterCommit(() => {
+      const current = readState(store);
+      if (sent !== dispatchedAcquire || closed || !connected || epoch !== sent.epoch || !canControl()
+        || current.stateUnknown || !currentIdentity(saved?.outstanding)
+        || !sameAcquire(saved?.outstanding, sent.out) || !sameAcquire(current.state?.outstanding, sent.out)
+        || snapshot && snapshot.frame.generation !== sent.out.generation) return;
+      recoveryToken = { generation: sent.out.generation, treatment: sent.out.treatment, token: frame.token };
+    });
   };
   const emit = (frame, at, quality = [], lifetimeMs = MAX_AGE) => {
     const mode = !frame || !frame.board_ok || !frame.gpio_match ? 'unknown' : frame.gpio_mask === 0 ? 'off'
@@ -226,11 +248,21 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
         fail('FLOOR_AUTHORITY', 'Floor command authority changed before publication.');
       guard(); if (!dispatched) sentMono = monotonicClock(); dispatched = true;
     };
+    const onFirstWrite = () => {
+      if (!closed && connected && epoch === connectionEpoch && canControl()
+        && op === 'acquire' && dispatchedAcquire?.id !== id) {
+        const out = saved?.outstanding;
+        if (out?.phase === 'acquiring' && out.token === null && currentIdentity(out)
+          && out.generation === fields.generation && out.owner === fields.owner && out.treatment === fields.treatment
+          && out.seq === fields.seq && out.mask === fields.mask && out.deviceEnd === fields.end_ms)
+          dispatchedAcquire = { id, epoch: connectionEpoch, out: structuredClone(out) };
+      }
+    };
     pending.set(id, { op, epoch: connectionEpoch, generation, deadline, dispatched: () => dispatched, sentMono: () => sentMono,
       resolve: value => finish(null, value), reject: error => finish(error) });
     if (Buffer.byteLength(JSON.stringify(body)) > 640) { finish(failure('FLOOR_COMMAND', 'Floor command exceeds the supported protocol.')); return; }
     Promise.resolve().then(() => publish(FLOOR_MQTT_TOPICS.command, JSON.stringify(body), { qos: 1, retain: false, noReplay: true,
-      beforePublish, beforeWrite: beforePublish, signal: cancellation.signal, recordingContext: 'floor-control', recordingDeadlineExpired: () => monotonicClock() >= deadline }))
+      beforePublish, beforeWrite: beforePublish, onFirstWrite, signal: cancellation.signal, recordingContext: 'floor-control', recordingDeadlineExpired: () => monotonicClock() >= deadline }))
       .catch(() => finish(failure('FLOOR_UNCONFIRMED', 'Floor command publication was not confirmed.')));
   });
   const refresh = async ({ allowFault = false } = {}) => {
@@ -247,7 +279,7 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
     // A full fence is kept until its deadlines pass; never evict a live fence.
     if (retired.length > 256) fail('FLOOR_PENDING', 'Too many unfinished floor treatment fences.');
     await persist({ ...saved, outstanding: null, retired });
-    runtime = null; recoveryToken = null; lastLeaseEnd = { owner: out.key, until: out.until, at: clock(), reason };
+    runtime = null; recoveryToken = null; dispatchedAcquire = null; lastLeaseEnd = { owner: out.key, until: out.until, at: clock(), reason };
     lastResult = { status: 'released', reason, at: clock() };
   };
   const releaseInternal = async ({ reason = 'released', scope: releaseScope = 'all' } = {}) => {
@@ -355,7 +387,7 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
     status,
     setConnected(value) {
       if (Boolean(value) === connected) return;
-      connected = Boolean(value); epoch++; lastPoll = -Infinity;
+      connected = Boolean(value); epoch++; dispatchedAcquire = null; lastPoll = -Infinity;
       withdraw('floor-mqtt-disconnected');
     },
     ingest(topic, payload, packet = {}, receivedAt = clock(), receivedMono = monotonicClock()) {
@@ -369,6 +401,7 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
       if (packet.retain || packet.dup) return true;
       const frame = decode(payload);
       if (!frame || frame.device !== settings.deviceMac) { withdraw('floor-feedback-invalid', receivedAt); return true; }
+      retainReleaseCapability(frame);
       const waiting = frame.kind === 'reply' ? pending.get(frame.id) : null;
       if (frame.kind === 'reply' && (!waiting || waiting.op !== frame.op || !waiting.dispatched() || waiting.epoch !== epoch
         || receivedMono >= waiting.deadline || waiting.generation && frame.generation !== waiting.generation)) return true;
@@ -463,7 +496,7 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
     },
     async close({ restore = true } = {}) {
       if (restore && canControl()) await api.release({ reason: 'application-shutdown' });
-      closed = true; connected = false; epoch++; withdraw('floor-mqtt-disconnected');
+      closed = true; connected = false; epoch++; dispatchedAcquire = null; withdraw('floor-mqtt-disconnected');
     },
   };
   return api;

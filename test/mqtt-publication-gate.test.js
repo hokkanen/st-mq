@@ -8,7 +8,7 @@ import { gateMqttPublications } from '../src/control/mqtt-publication-gate.js';
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 async function fixture(t, { holdStore = false, timeoutMs = 1000 } = {}) {
-  let allowed = true, acknowledge = false;
+  let allowed = true, acknowledge = false, bytes = 0;
   const wire = [], streams = [], delayed = [];
   const store = new mqtt.Store(), put = store.put.bind(store);
   store.put = (packet, callback) => put(packet, error => {
@@ -16,7 +16,7 @@ async function fixture(t, { holdStore = false, timeoutMs = 1000 } = {}) {
   });
   const client = new mqtt.MqttClient(() => {
     const parser = mqttPacket.parser();
-    const stream = new Duplex({ read() {}, write(chunk, _encoding, callback) { parser.parse(chunk); callback(); } });
+    const stream = new Duplex({ read() {}, write(chunk, _encoding, callback) { bytes += chunk.length; parser.parse(chunk); callback(); } });
     streams.push(stream);
     parser.on('packet', packet => {
       if (packet.cmd === 'connect') queueMicrotask(() => stream.push(mqttPacket.generate({ cmd: 'connack', returnCode: 0, sessionPresent: false })));
@@ -31,8 +31,9 @@ async function fixture(t, { holdStore = false, timeoutMs = 1000 } = {}) {
   const gate = gateMqttPublications(client, { canControl: () => allowed, timeoutMs });
   t.after(async () => { gate.revoke(); await client.endAsync(true); });
   await once(client, 'connect');
-  const publish = (topic = 'invented/switch/set', { signal, beforeWrite } = {}) => new Promise((resolve, reject) => client.publish(topic, 'ON', { qos: 1, retain: false, signal, beforeWrite }, error => error ? reject(error) : resolve()));
+  const publish = (topic = 'invented/switch/set', { signal, beforeWrite, onFirstWrite } = {}) => new Promise((resolve, reject) => client.publish(topic, 'ON', { qos: 1, retain: false, signal, beforeWrite, onFirstWrite }, error => error ? reject(error) : resolve()));
   return { client, gate, wire, streams, delayed, store, publish,
+    get byteCount() { return bytes; },
     authority: value => { allowed = value; }, acknowledge: value => { acknowledge = value; },
     pendingCount: () => store._inflights.size };
 }
@@ -127,4 +128,66 @@ test('installed MQTT.js: device-specific guard still applies after packetsend be
   f.client.on('packetsend', packet => { if (packet.cmd === 'publish') current = false; });
   await assert.rejects(f.publish('cmnd/sonoff4chpro/LEASE', { beforeWrite: () => current }), /unconfirmed/);
   assert.equal(f.wire.length, 0); assert.equal(f.pendingCount(), 0);
+});
+
+
+test('installed MQTT.js: first-write notification follows accepted stream writes after outgoing storage', async t => {
+  const f = await fixture(t, { holdStore: true }), notifications = [];
+  f.acknowledge(true);
+  const stream = f.streams.at(-1), write = stream.write, before = f.byteCount;
+  let successfulReturns = 0;
+  stream.write = function(...args) {
+    const value = write.apply(this, args);
+    successfulReturns++;
+    return value;
+  };
+  try {
+    const pending = f.publish(undefined, { onFirstWrite: () => notifications.push(successfulReturns) });
+    assert.equal(f.delayed.length, 1);
+    assert.deepEqual(notifications, []);
+    assert.equal(successfulReturns, 0);
+    assert.equal(f.byteCount, before);
+    f.delayed.shift()();
+    await pending;
+  } finally { stream.write = write; }
+  assert.equal(f.wire.length, 1);
+  assert.deepEqual(notifications, [1], 'The first original write returned before its single notification');
+  assert(f.byteCount > before, 'The completed encoded packet also reached the synthetic transport');
+});
+
+test('installed MQTT.js: rejected guards and a throwing stream create no first-write notification', async t => {
+  const f = await fixture(t), notifications = [];
+  await assert.rejects(f.publish(undefined, { beforeWrite: () => false,
+    onFirstWrite: () => notifications.push('rejected') }), /unconfirmed/);
+  assert.deepEqual(notifications, []);
+  assert.equal(f.wire.length, 0);
+  const stream = f.streams.at(-1), write = stream.write, before = f.byteCount;
+  stream.write = () => { throw new Error('Synthetic failure before accepting any bytes'); };
+  try {
+    await assert.rejects(f.publish(undefined, { onFirstWrite: () => notifications.push('thrown') }), /unconfirmed/);
+  } finally { stream.write = write; }
+  assert.equal(f.byteCount, before);
+  assert.equal(f.wire.length, 0);
+  assert.deepEqual(notifications, []);
+  assert.equal(f.pendingCount(), 0);
+});
+
+test('installed MQTT.js: first-write notification survives accepted stream backpressure', async t => {
+  const f = await fixture(t), notifications = [];
+  f.acknowledge(true);
+  const stream = f.streams.at(-1), write = stream.write, before = f.byteCount;
+  let successfulReturns = 0;
+  stream.write = function(...args) {
+    write.apply(this, args);
+    successfulReturns++;
+    queueMicrotask(() => this.emit('drain'));
+    return false;
+  };
+  try {
+    await f.publish(undefined, { onFirstWrite: () => notifications.push(successfulReturns) });
+  } finally { stream.write = write; }
+  assert.equal(f.wire.length, 1, 'False write return is flow control, not a rejected command');
+  assert.deepEqual(notifications, [1]);
+  assert(f.byteCount > before);
+  assert.equal(f.pendingCount(), 0);
 });
