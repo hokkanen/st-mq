@@ -85,11 +85,12 @@ test('native identity and exact Switch.GetStatus confirm circulation; PUBACK, wa
   await settle();
   const command = f.publications.findLast(row => row.frame.method === 'Switch.Set');
   assert.deepEqual(command.frame.params, { id: 0, on: true });
-  const { beforePublish, signal, recordingContext, recordingDeadlineExpired, ...wireOptions } = command.options;
+  const { beforePublish, signal, recordingContext, recordingDeadlineExpired, onRecordingBlocked, ...wireOptions } = command.options;
   assert.deepEqual(wireOptions, { qos: 1, retain: false, noReplay: true });
   assert.equal(typeof beforePublish, 'function'); assert.equal(signal.aborted, false);
   assert.equal(recordingContext, 'switch-command');
   assert.equal(typeof recordingDeadlineExpired, 'function'); assert.equal(recordingDeadlineExpired(), false);
+  assert.equal(typeof onRecordingBlocked, 'function');
   f.report(25); assert.equal(complete, false);
   f.reply(command, { was_on: false }); await settle(); assert.equal(complete, false);
   f.at(INITIAL + 1);
