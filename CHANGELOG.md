@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep explicit charging takeover bound to its initial published plan, preserving
+  newer native current choices and charger limits.
+
 - Recheck received-input storage before floor-valve MQTT dispatch so a newly
   pending observation cancels an unsent lease command.
 
