@@ -1,5 +1,5 @@
 import { chargingDefaults, mergeChargingSettings, chargingSettingsFromConfiguration, resolveChargingDeadline } from './settings.js';
-import { acceptVehicleReading, bmwConsumedChargingAt, bmwHomeContext, bmwIdentityContextValid, connectionEvidenceStart, matchTeslaSession, matchTeslaMinimumCurrent, teslaMinimumCurrentMeasurements, measuredChargingCurrent, bmwSessionMatchDetails, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
+import { acceptVehicleReading, bmwConsumedChargingAt, bmwHomeContext, bmwIdentityContextValid, connectionEvidenceStart, matchTeslaCurrent, teslaCurrentMeasurements, measuredChargingCurrent, bmwSessionMatchDetails, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
@@ -1604,45 +1604,50 @@ export class ChargingRuntime {
           && (this.chargers[peerId].controller || this.chargers[peerId].adapter
             || this.configuration.chargers[peerId]?.enabled === true
             || peerId === 'charger1' && Boolean(this.config.connections?.easee?.charger_id))).map(([, physical]) => physical);
-        const alone = peers.every(peer => peer.connected?.available === true && peer.connected.value === false);
-        // Start-time/power coincidence cannot distinguish two connected cars.
-        // In that case only the bounded minimum-current comparison can assert
-        // Tesla; a negative result never supplies BMW evidence.
-        if (alone && vehicleAssociations.tesla && (!reidentifying || tesla.fields?.charger_power?.receivedAt > item.identification.startedAt)
-          && matchTeslaSession(tesla, { physical: result[id], connectedAt, lastDisconnectedAt: session.lastDisconnectedAt,
-          chargingAt: evidence.chargingTimes, now, consumedPowerAt: (reidentifying || item.vehicleMatch?.id !== 'tesla')
-            && this.consumedTeslaPower?.association === tesla.association ? this.consumedTeslaPower.receivedAt : null })) {
-          candidates[id].push('tesla'); independentTeslaMatches.add(id);
-        }
         const minimumControl = controls.charger2, currentTest = minimumControl?.currentTest;
         const currentScope = currentTest?.sessionId === minimumControl?.session?.sessionId
           && currentTest?.connectedAt === minimumControl?.session?.connectedAt
           && minimumControl?.session?.connected === true;
-        const retryCurrentFresh = !reidentifying || tesla.fields?.charger_actual_current?.receivedAt > item.identification.startedAt;
-        const current = currentScope && retryCurrentFresh && matchTeslaMinimumCurrent(tesla, { physical: result[id], peers,
-          minimumPhysical: result.charger2, currentTest, connectedAt, lastDisconnectedAt: session.lastDisconnectedAt, now,
+        const minimumContext = currentScope && currentTest.phase === 'active';
+        const state = item.identification, probe = state?.probe;
+        const ownProbe = state?.connectedAt === connectedAt && probe?.endedAt === null
+          && ['waiting', 'charging'].includes(state.phase) && now < probe.deadlineAt;
+        const comparison = minimumContext ? { currentTest, minimumPhysical: result.charger2 }
+          : ownProbe ? { probe: { id: state.id, startedAt: probe.startedAt, deadlineAt: probe.deadlineAt } } : {};
+        const current = matchTeslaCurrent(tesla, { physical: result[id], peers, ...comparison,
+          connectedAt, lastDisconnectedAt: session.lastDisconnectedAt, chargingAt: evidence.chargingTimes, now,
+          matchingSince: reidentifying ? state.startedAt : null,
+          consumedPowerAt: (reidentifying || item.vehicleMatch?.id !== 'tesla') && this.consumedTeslaPower?.association === tesla.association
+            ? this.consumedTeslaPower.receivedAt : null,
           consumedCurrentAt: item.vehicleMatch?.id !== 'tesla' && this.consumedTeslaCurrent?.association === tesla.association
             ? this.consumedTeslaCurrent.receivedAt : null });
-        if (current) {
+        const comparisonId = current?.kind === 'current' ? createHash('sha256').update(JSON.stringify([current.testId, current.minimumTest, current.minimumTest ? currentTest.confirmedAt : null,
+          id, item.association, connectedAt, Object.entries(this.chargers).filter(([peerId]) => peerId !== id)
+            .map(([peerId, peer]) => [peerId, peer.association, controls[peerId]?.session?.connectedAt ?? null,
+              result[peerId].connected?.value ?? null])])).digest('hex') : null;
+        if (current?.kind === 'start-power') {
+          candidates[id].push('tesla'); independentTeslaMatches.add(id); evidence.teslaCurrentCandidate = null;
+        } else if (current) {
           const prior = evidence.teslaCurrentCandidate;
-          if (!prior || prior.testId !== current.testId || prior.receivedAt !== current.receivedAt || prior.vehicleAssociation !== tesla.association)
-            evidence.teslaCurrentCandidate = { testId: current.testId, vehicleAssociation: tesla.association, receivedAt: current.receivedAt,
-              observedAt: now, physicalAt: current.physicalAt, minimumPhysicalAt: current.minimumPhysicalAt };
+          if (!prior || prior.testId !== comparisonId || prior.receivedAt !== current.receivedAt
+            || prior.vehicleAssociation !== tesla.association || !Array.isArray(prior.peerPhysicalAts))
+            evidence.teslaCurrentCandidate = { testId: comparisonId, vehicleAssociation: tesla.association, receivedAt: current.receivedAt,
+              observedAt: now, physicalAt: current.physicalAt, minimumPhysicalAt: current.minimumPhysicalAt,
+              peerPhysicalAts: current.peerPhysicalAts };
           else if (now - prior.observedAt >= 5000 && current.physicalAt > prior.physicalAt
-            && current.minimumPhysicalAt > prior.minimumPhysicalAt) {
+            && (current.minimumPhysicalAt === null && prior.minimumPhysicalAt === null
+              || current.minimumPhysicalAt !== null && current.minimumPhysicalAt > prior.minimumPhysicalAt)
+            && current.peerPhysicalAts.length === prior.peerPhysicalAts.length
+            && current.peerPhysicalAts.every((at, index) => at >= prior.peerPhysicalAts[index])) {
             candidates[id].push('tesla'); currentMatches[id] = current; independentTeslaMatches.add(id);
           }
         } else {
           const prior = evidence.teslaCurrentCandidate, admission = tesla.reception?.admission;
-          // A queued report is not a contrary comparison. Keep this already
-          // observed sample dormant; identification still requires the normal
-          // admitted matcher and a later physical sample on its original clock.
-          const pendingComparison = prior && currentScope && currentTest.phase === 'active' && prior.testId === currentTest.id
+          const pendingComparison = prior && (minimumContext || ownProbe)
             && prior.vehicleAssociation === tesla.association && prior.receivedAt === tesla.fields?.charger_actual_current?.receivedAt
             && admission?.pending && !admission.failed && tesla.observationHealthy === true
-            && this.identificationAdmissionPending(this.chargers.charger2, now)
-            && teslaMinimumCurrentMeasurements(tesla, { physical: result[id], peers,
-              minimumPhysical: result.charger2, currentTest, now });
+            && this.identificationAdmissionPending(minimumContext ? this.chargers.charger2 : item, now)
+            && teslaCurrentMeasurements(tesla, { physical: result[id], peers, ...comparison, now });
           if (!pendingComparison) evidence.teslaCurrentCandidate = null;
         }
         if (independentTeslaMatches.has(id) && item.vehicleMatch?.id === 'tesla') delete item.vehicleMatch.pauseRequestedAt;
@@ -1702,7 +1707,7 @@ export class ChargingRuntime {
     const jointQualified = new Set();
     if (currentWinners.length === 1 || historicalWinner) {
       const winner = currentWinners[0] ?? historicalWinner;
-      const episode = sharedEpisode(winner);
+      const episode = historicalWinner || currentMatches[winner]?.minimumTest ? sharedEpisode(winner) : null;
       if (episode) {
         // Both chargers independently match the same complete BMW episode.
         // The positive Tesla comparison resolves its location; the peer keeps
@@ -1760,7 +1765,7 @@ export class ChargingRuntime {
       const freshIdentity = Boolean(vehicleId && (freshCandidates[id]?.includes(vehicleId) || jointQualified.has(id)));
       if (vehicleId === 'tesla' && jointQualified.has(id) && item.vehicleMatch) delete item.vehicleMatch.pauseRequestedAt;
       if (vehicleId === 'tesla' && currentMatches[id]) {
-        this.chargers.charger2.vehicleEvidence.teslaCurrentResolvedTestId = currentMatches[id].testId;
+        if (currentMatches[id].minimumTest) this.chargers.charger2.vehicleEvidence.teslaCurrentResolvedTestId = currentMatches[id].testId;
         this.consumedTeslaCurrent = { association: tesla.association, receivedAt: currentMatches[id].receivedAt };
       }
       if (vehicleId && (item.vehicleMatch?.id !== vehicleId || reidentifying && freshIdentity)) {
@@ -1935,7 +1940,7 @@ export class ChargingRuntime {
     // Freeze the first settled comparison after identification IDs have been
     // created. A delayed BMW stop may use it within these exact attempts, even
     // after Stop/restoration; it never becomes new metering or another test.
-    if (currentWinners.length === 1 && tesla.association && bmw.association) {
+    if (currentWinners.length === 1 && currentMatches[currentWinners[0]].minimumTest && tesla.association && bmw.association) {
       const winner = currentWinners[0], item = this.chargers[winner], current = currentMatches[winner];
       if (item.vehicleEvidence?.teslaCurrentMatchTestId !== current.testId) {
         const connections = Object.fromEntries(Object.entries(comparisonConnections()).map(([id, { connected: _connected, ...scope }]) => [id, scope]));

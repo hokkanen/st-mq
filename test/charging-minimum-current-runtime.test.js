@@ -1960,3 +1960,34 @@ test('a complete phase delta keeps the original bounded probe while native measu
   assert.deepEqual(f.item('charger2').identification.probe, probe);
   assert.equal(f.item('charger2').identification.phase, 'charging');
 });
+
+
+for (const peerStopped of [false, true]) test(`Charger1 own probe identifies unique Tesla without a Charger2 test (${peerStopped ? 'physical zero' : 'different measured draw'})`, async t => {
+  const f = await fixture(t, { currentWritable: false, economicStartAt: START + 3600_000 });
+  const first = f.item('charger1'); first.controls.enabled = true; f.runtime.refreshSettings();
+  const beforeWrites = f.writes.length;
+  if (peerStopped) {
+    f.fields.start_charging.value = false; f.fields.start_charging.at = f.now;
+    f.fields.work_state.value = 'charger_pause'; f.fields.work_state.at = f.now;
+    f.setMeasuredCurrent(0); await f.adapter.refresh();
+  }
+  first.identification = advanceIdentification(null, { connectedAt: START, now: f.now,
+    normalCharging: false, charging: true, powerKw: 11.04, probeAllowed: true,
+    probeReturnAt: START + 3600_000, probeDurationMs: 34_000 });
+  const deadline = first.identification.probe.deadlineAt;
+  f.advance(1000); await f.sampleTesla(16);
+  assert.equal(first.vehicleMatch, null, 'One sample is not a settled comparison');
+  const candidate = structuredClone(first.vehicleEvidence.teslaCurrentCandidate);
+  assert.ok(candidate, 'Own probe creates a settling comparison without a peer test');
+  assert.equal(candidate.minimumPhysicalAt, null);
+  assert.equal(f.item('charger2').controller.status().currentTest ?? null, null);
+  f.advance(5000); f.setFirstSourceTime(candidate.physicalAt); f.observe();
+  assert.equal(first.vehicleMatch, null, 'A cached target measurement cannot settle the comparison');
+  f.setFirstSourceTime(f.now); await f.adapter.refresh(); f.observe();
+  assert.equal(first.vehicleMatch.id, 'tesla');
+  assert.equal(first.identification.probe.deadlineAt, deadline);
+  assert.equal(first.vehicleEvidence.teslaCurrentMatch, undefined, 'No joint BMW6A proof is manufactured');
+  assert.equal(f.item('charger2').vehicleEvidence.teslaCurrentResolvedTestId, undefined);
+  assert.equal(f.item('charger2').vehicleMatch, null, 'A negative Tesla comparison does not identify BMW');
+  assert.equal(f.writes.length, beforeWrites, 'No peer current or permission mutation');
+});
