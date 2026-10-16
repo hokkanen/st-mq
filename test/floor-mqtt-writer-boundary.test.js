@@ -23,12 +23,12 @@ async function until(predicate) {
   }
 }
 
-async function fixture(t) {
+async function fixture(t, { deferAcquireReply = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-floor-mqtt-writer-'));
   const store = new Store(join(directory, 'history.sqlite'));
-  let authority = true, acquisition, client, stream, readOnly, bytes = 0;
+  let authority = true, acquisition, client, stream, readOnly, acquireSignal, bytes = 0;
   const clock = { wall: Date.parse('2026-10-15T12:00:00Z'), mono: 10000 };
-  const wire = [], held = [], commitGates = [], actions = new Set();
+  const wire = [], held = [], acquireReplies = [], heldAcquireBodies = [], commitGates = [], actions = new Set();
   const native = { active: false, mask: 0, gpio_mask: 0, owner: '', treatment: 0,
     seq: 0, highwater: 0, lease_until_ms: 0, end_ms: 0, reason: 'connected' };
   const frame = extra => ({ v: 1, build: 'sonoff4chpro-lease-v1', sketch_md5: 'd'.repeat(32),
@@ -36,13 +36,13 @@ async function fixture(t) {
     device: DEVICE, generation: GENERATION, connected: true, gpio_match: true,
     state_evidence: 'gpio_output_readback', board_ok: true, now_ms: clock.mono,
     max_lease_ms: 900000, ...native, ...extra });
-  const incoming = value => stream.push(mqttPacket.generate({ cmd: 'publish', qos: 0,
-    retain: false, dup: false, topic: FLOOR_MQTT_TOPICS.state, payload: JSON.stringify(value) }));
+  const incoming = (value, packet = {}) => stream.push(mqttPacket.generate({ cmd: 'publish', qos: 0,
+    retain: false, dup: false, ...packet, topic: FLOOR_MQTT_TOPICS.state, payload: JSON.stringify(value) }));
   const outgoing = new mqtt.Store(), put = outgoing.put.bind(outgoing);
   outgoing.put = (packet, callback) => put(packet, error => {
     const body = packet.cmd === 'publish' && packet.topic === FLOOR_MQTT_TOPICS.command
       ? JSON.parse(String(packet.payload)) : null;
-    if (body?.op === 'acquire') held.push(() => callback(error));
+    if (body?.op === 'acquire') { heldAcquireBodies.push(body); held.push(() => callback(error)); }
     else callback(error);
   });
   const releaseOutgoing = () => { for (const callback of held.splice(0)) callback(); };
@@ -91,6 +91,8 @@ async function fixture(t) {
           const body = JSON.parse(String(packet.payload));
           wire.push(body);
           if (packet.qos === 1) respond({ cmd: 'puback', messageId: packet.messageId });
+          if (native.active && clock.mono >= native.lease_until_ms) Object.assign(native, {
+            active: false, mask: 0, gpio_mask: 0, lease_until_ms: 0, reason: 'expired' });
           if (body.op === 'acquire' || body.op === 'renew') Object.assign(native, {
             active: true, mask: body.mask, gpio_mask: body.mask, owner: body.owner,
             treatment: body.treatment, seq: body.seq, highwater: body.treatment,
@@ -101,13 +103,21 @@ async function fixture(t) {
             gpio_mask: 0, seq: body.seq, lease_until_ms: 0, reason: 'released' });
           const extra = body.op === 'challenge' ? { challenge: CHALLENGE, issued_ms: clock.mono, lifetime_ms: 2000 }
             : body.op === 'acquire' ? { token: TOKEN } : {};
-          queueMicrotask(() => incoming(frame({ id: body.id, op: body.op, ...extra })));
+          const response = frame({ id: body.id, op: body.op, ...extra });
+          if (body.op === 'acquire' && deferAcquireReply) acquireReplies.push(response);
+          else queueMicrotask(() => incoming(response));
         });
         return stream;
       }, { ...options, reconnectPeriod: 0, keepalive: 0, outgoingStore: outgoing });
       client.on('error', () => {});
       return client;
     } });
+  const publish = client.publish;
+  client.publish = function(...args) {
+    if (args[0] === FLOOR_MQTT_TOPICS.command && JSON.parse(String(args[1])).op === 'acquire')
+      acquireSignal = args[2]?.signal;
+    return publish.apply(this, args);
+  };
   await acquisition.ready();
   await until(() => acquisition.floorOverride.status().manualAvailable && store.canDispatch());
   await store.whenWritesSettled();
@@ -116,30 +126,45 @@ async function fixture(t) {
     return row ? JSON.parse(row.value) : null;
   };
   const lastRecordedAt = () => readOnly.prepare("SELECT MAX(received_at) AS at FROM observations WHERE source='sonoff-floor'").get().at;
-  return { store, acquisition, wire, held, releaseOutgoing, state, lastRecordedAt,
+  return { store, acquisition, wire, held, acquireReplies, releaseOutgoing, state, lastRecordedAt,
+    advance(ms) { clock.wall += ms; clock.mono += ms; },
+    authority(value) { authority = value; },
+    deliverAcquireReply(change = {}, packet) { incoming({ ...acquireReplies.at(-1), ...change }, packet); },
+    primeUnsentAcquire() {
+      const body = heldAcquireBodies.at(-1); assert(body);
+      // Deliberately adversarial evidence: no command byte was dispatched.
+      Object.assign(native, { active: true, mask: body.mask, gpio_mask: body.mask, owner: body.owner,
+        treatment: body.treatment, seq: body.seq, highwater: body.treatment, end_ms: body.end_ms,
+        lease_until_ms: body.end_ms, reason: 'acquired' });
+      acquireReplies.push(frame({ id: body.id, op: 'acquire', token: TOKEN }));
+    },
     get byteCount() { return bytes; }, get observations() { return observed.length; },
     get nativeMask() { return native.gpio_mask; },
+    get acquireCancelled() { return acquireSignal?.aborted === true; },
     pendingOutgoing: () => outgoing._inflights.size,
-    manual(id) {
-      const promise = acquisition.floorOverride.manual({ channel: 1, enabled: true, requestId: id,
+    manual(id, channel = 1) {
+      const promise = acquisition.floorOverride.manual({ channel, enabled: true, requestId: id,
         scope: acquisition.floorOverride.status().commandScope }).then(value => ({ value }), error => ({ error }));
       actions.add(promise);
       promise.then(() => actions.delete(promise));
       return promise;
     },
-    holdNextCommit() {
+    holdNextCommit({ fail = false } = {}) {
       const request = store.writer.request.bind(store.writer);
       let entered = false, release;
       const barrier = new Promise(resolve => { release = resolve; });
       store.writer.request = async (name, ...args) => {
-        if (name === 'commit' && !entered) { entered = true; await barrier; }
+        if (name === 'commit' && !entered) {
+          entered = true; await barrier;
+          if (fail) throw Object.assign(new Error('Synthetic rejected ingress COMMIT'), { code: 'ERR_SQLITE_ERROR', errcode: 13 });
+        }
         return request(name, ...args);
       };
       const gate = { get entered() { return entered; }, release };
       commitGates.push(gate);
       return gate;
     },
-    reportCurrentOff() {
+    reportCurrentState() {
       clock.wall++; clock.mono++;
       incoming(frame({ kind: 'state', id: '', op: 'state' }));
     },
@@ -169,7 +194,7 @@ test('new floor ingress awaiting real writer COMMIT cancels delayed MQTT activat
   const before = { recordedAt: f.lastRecordedAt(), observed: f.observations,
     floorAt: f.acquisition.floorOverride.status().devices[0].at };
   const commit = f.holdNextCommit();
-  f.reportCurrentOff();
+  f.reportCurrentState();
   await until(() => commit.entered);
   assert.equal(f.store.canDispatch(), false, 'A real received floor report is not committed');
   assert(f.observations >= before.observed + 4, 'The real acquisition handler reached the Recorder');
@@ -190,5 +215,185 @@ test('new floor ingress awaiting real writer COMMIT cancels delayed MQTT activat
   await flush();
   assert.equal(f.wire.some(row => row.op === 'acquire' || row.op === 'renew'), false);
   assert.equal(f.pendingOutgoing(), 0);
+  assert.equal(f.nativeMask, 0);
+});
+
+async function timedOutAcquire(t, { unsent = false } = {}) {
+  const f = await fixture(t, { deferAcquireReply: true }), action = f.manual('late-acquire');
+  await until(() => f.held.length === 1);
+  const original = structuredClone(f.state().outstanding);
+  assert.equal(original.phase, 'acquiring');
+  if (unsent) f.primeUnsentAcquire();
+  else {
+    f.releaseOutgoing();
+    await until(() => f.acquireReplies.length === 1);
+    assert.equal(f.wire.filter(row => row.op === 'acquire').length, 1);
+  }
+  f.advance(1801);
+  const result = await action;
+  assert.equal(result.error?.code, 'FLOOR_UNCONFIRMED');
+  assert.equal(f.state().lastRequest.status, 'failed');
+  assert.equal(f.state().lastRequest.confirmed, false);
+  assert.equal(f.state().outstanding.until, original.until);
+  assert.equal(f.nativeMask, 1);
+  return { f, original };
+}
+
+async function settledInput(f) {
+  await flush();
+  await f.store.whenWritesSettled();
+  await flush();
+}
+
+test('a late acquire capability commits through real acquisition only for fresh-readback release', async t => {
+  const { f, original } = await timedOutAcquire(t);
+  const before = { observed: f.observations, floorAt: f.acquisition.floorOverride.status().devices[0].at,
+    saved: structuredClone(f.state()), wire: f.wire.length };
+  const commit = f.holdNextCommit();
+  f.deliverAcquireReply();
+  await until(() => commit.entered);
+  assert.equal(f.store.canDispatch(), false);
+  assert.deepEqual(f.state(), before.saved, 'The independent reader retains the failed obligation');
+  assert.equal(f.wire.length, before.wire);
+  commit.release();
+  await settledInput(f);
+  assert.equal(f.observations, before.observed, 'The late reply creates no fresh measurement');
+  assert.equal(f.acquisition.floorOverride.status().devices[0].at, before.floorAt);
+  assert.deepEqual(f.state(), before.saved, 'A release capability cannot promote the saved activation');
+  const releaseAt = f.wire.length;
+  const released = await f.acquisition.floorOverride.release();
+  assert.equal(released.released, true);
+  assert.deepEqual(f.wire.slice(releaseAt).map(row => row.op), ['get', 'release']);
+  assert.equal(f.nativeMask, 0);
+  assert.equal(f.state().outstanding, null);
+  assert(f.state().retired.some(row => row.key === original.key && row.until === original.until));
+  assert.equal(f.state().lastRequest.status, 'failed', 'Late restoration does not rewrite the action outcome');
+});
+
+test('timely acquire ingress whose real COMMIT outlives the request can still release safely', async t => {
+  const f = await fixture(t, { deferAcquireReply: true }), action = f.manual('commit-delayed-acquire');
+  await until(() => f.held.length === 1);
+  f.releaseOutgoing();
+  await until(() => f.acquireReplies.length === 1);
+  const original = structuredClone(f.state().outstanding), beforeBytes = f.byteCount;
+  const commit = f.holdNextCommit();
+  f.deliverAcquireReply();
+  await until(() => commit.entered);
+  assert.equal(f.state().outstanding.phase, 'acquiring');
+  assert.equal(f.store.canDispatch(), false);
+  // Observe the unchanged real 1800ms request timer. It starts restoration,
+  // whose normal state write queues behind this actual ingress COMMIT.
+  await until(() => f.acquireCancelled);
+  f.advance(1801);
+  assert.equal(f.byteCount, beforeBytes, 'No replacement or release bypasses the held COMMIT');
+  commit.release();
+  const result = await action;
+  assert.equal(result.error?.code, 'FLOOR_UNCONFIRMED');
+  assert.equal(f.nativeMask, 0);
+  assert.equal(f.state().outstanding, null);
+  assert(f.state().retired.some(row => row.key === original.key && row.until === original.until));
+  assert.equal(f.state().lastRequest.status, 'failed');
+  assert.equal(f.wire.filter(row => row.op === 'acquire').length, 1);
+  assert.equal(f.wire.some(row => row.op === 'renew'), false);
+  assert(f.wire.some(row => row.op === 'release'));
+});
+
+test('rolled-back late acquire ingress cannot supply a release capability', async t => {
+  const { f } = await timedOutAcquire(t), commit = f.holdNextCommit({ fail: true });
+  f.deliverAcquireReply();
+  await until(() => commit.entered);
+  commit.release();
+  await settledInput(f);
+  f.reportCurrentState();
+  await settledInput(f);
+  assert.equal(f.store.canDispatch(), true, 'Fresh committed native evidence recovers input admission');
+  const release = await f.acquisition.floorOverride.release();
+  assert.equal(release.released, false);
+  assert.equal(f.wire.some(row => row.op === 'release'), false);
+  assert.equal(f.nativeMask, 1);
+  assert.notEqual(f.state().outstanding, null);
+  assert.equal(f.state().lastRequest.status, 'failed');
+});
+
+test('late packets with another correlation, duty or provenance cannot authorize release', async t => {
+  const { f } = await timedOutAcquire(t), original = f.acquireReplies[0];
+  const invalid = [
+    [{ id: 'e'.repeat(32) }], [{ device: '02:00:00:00:00:02' }], [{ generation: 'f'.repeat(32) }],
+    [{ owner: 'another-owner' }], [{ treatment: original.treatment + 1 }], [{ seq: original.seq + 1 }],
+    [{ mask: 2, gpio_mask: 2 }], [{ end_ms: original.end_ms + 1 }],
+    [{ accepted: false, token: undefined }], [{ duplicate: true, code: 'duplicate' }],
+    [{ code: 'wrong-owner' }], [{ op: 'renew', token: undefined }],
+    [{}, { retain: true }], [{}, { dup: true }],
+  ];
+  for (const [change, packet] of invalid) {
+    f.deliverAcquireReply(change, packet);
+    await settledInput(f);
+    const released = await f.acquisition.floorOverride.release();
+    assert.equal(released.released, false);
+    assert.equal(f.wire.some(row => row.op === 'release'), false);
+    assert.equal(f.nativeMask, 1);
+    assert.equal(f.state().lastRequest.status, 'failed');
+  }
+});
+
+test('an acquire never admitted to the MQTT byte boundary has no late release authority', async t => {
+  const { f } = await timedOutAcquire(t, { unsent: true });
+  assert.equal(f.wire.some(row => row.op === 'acquire'), false);
+  f.deliverAcquireReply();
+  await settledInput(f);
+  f.releaseOutgoing();
+  await settledInput(f);
+  const release = await f.acquisition.floorOverride.release();
+  assert.equal(release.released, false);
+  assert.equal(f.wire.some(row => ['acquire', 'renew', 'release'].includes(row.op)), false);
+  assert.equal(f.nativeMask, 1);
+});
+
+for (const boundary of ['authority-loss', 'connection-change', 'closed']) {
+  test(`late acquire COMMIT cannot cross ${boundary}`, async t => {
+    const { f } = await timedOutAcquire(t), commit = f.holdNextCommit();
+    f.deliverAcquireReply();
+    await until(() => commit.entered);
+    if (boundary === 'authority-loss') f.authority(false);
+    if (boundary === 'connection-change') {
+      f.acquisition.floorOverride.setConnected(false);
+      f.acquisition.floorOverride.setConnected(true);
+    }
+    if (boundary === 'closed') await f.acquisition.floorOverride.close({ restore: false });
+    commit.release();
+    await settledInput(f);
+    f.authority(true);
+    const release = await f.acquisition.floorOverride.release();
+    assert.equal(release.released, false);
+    assert.equal(f.wire.some(row => row.op === 'release'), false);
+    assert.equal(f.nativeMask, 1);
+    assert.notEqual(f.state().outstanding, null);
+  });
+}
+
+test('retiring the original duty prevents its old acquire reply from changing a replacement', async t => {
+  const { f } = await timedOutAcquire(t);
+  f.advance(900001);
+  assert.equal((await f.acquisition.floorOverride.release()).released, true);
+  assert.equal(f.nativeMask, 0);
+  const next = f.manual('replacement-duty', 2);
+  await until(() => f.held.length === 1);
+  f.releaseOutgoing();
+  await until(() => f.acquireReplies.length === 2);
+  const old = f.acquireReplies.shift();
+  f.deliverAcquireReply();
+  assert.equal((await next).error, undefined);
+  const replacement = structuredClone(f.state());
+  const floorAt = f.acquisition.floorOverride.status().devices[0].at;
+  // Deliver the original valid ACK through installed MQTT, while a newer
+  // confirmed treatment owns the board. It must not become current evidence.
+  f.acquireReplies.push(old);
+  f.deliverAcquireReply();
+  await settledInput(f);
+  assert.deepEqual(f.state(), replacement);
+  assert.equal(f.acquisition.floorOverride.status().devices[0].at, floorAt);
+  assert.equal(f.nativeMask, 2);
+  assert.equal(f.wire.filter(row => row.op === 'acquire').length, 2);
+  assert.equal((await f.acquisition.floorOverride.release()).released, true);
   assert.equal(f.nativeMask, 0);
 });

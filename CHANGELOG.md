@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Retain a precisely correlated late floor-acquisition capability for release
+  recovery while keeping the timed-out action failed and requiring fresh readback.
+
 - Keep explicit charging takeover bound to its initial published plan, preserving
   newer native current choices and charger limits.
 

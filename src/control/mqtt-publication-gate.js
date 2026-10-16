@@ -36,11 +36,11 @@ export function gateMqttPublications(client, { canControl = () => true, timeoutM
   }
   client.publish = function(topic, payload, options, callback) {
     if (typeof options === 'function') { callback = options; options = {}; }
-    const { signal, beforeWrite, ...publicationOptions } = options ?? {};
+    const { signal, beforeWrite, onFirstWrite, ...publicationOptions } = options ?? {};
     if (signal?.aborted || !authority() || this.connected === false || this._storeProcessing || this._storeProcessingQueue?.length) {
       callback?.(failure()); return this;
     }
-    const token = { generation, callback, signal, beforeWrite, done: false, sent: false };
+    const token = { generation, callback, signal, beforeWrite, onFirstWrite, done: false, sent: false };
     token.cancel = () => finish(token, failure());
     signal?.addEventListener('abort', token.cancel, { once: true });
     token.timer = setTimeout(() => finish(token, failure()), timeoutMs); token.timer.unref?.();
@@ -64,13 +64,17 @@ export function gateMqttPublications(client, { canControl = () => true, timeoutM
     const token = packets.get(packet) ?? ids.get(packet.messageId);
     if (!allowed(token) || token.sent) { if (token) finish(token, failure()); else discard(packet); callback?.(failure()); return; }
     const stream = this.stream, streamWrite = stream?.write;
-    let blocked = false, called = false;
+    let blocked = false, called = false, notified = false;
     const complete = error => { if (!called) { called = true; callback?.(error); } };
     // packetsend listeners run before MQTT.js writes bytes. Recheck at the
     // actual stream boundary as well, including synchronous revocation there.
     if (typeof streamWrite === 'function') stream.write = function(...args) {
       if (!allowed(token)) { blocked = true; return false; }
-      return streamWrite.apply(this, args);
+      const value = streamWrite.apply(this, args);
+      // A non-throwing write is a dispatch attempt even under backpressure.
+      // Keep this notification separate from the repeatable admission guard.
+      if (!notified) { notified = true; token.onFirstWrite?.(); }
+      return value;
     };
     try { write.call(this, packet, complete); }
     catch { finish(token, failure()); complete(failure()); }
