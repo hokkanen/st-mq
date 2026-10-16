@@ -1617,9 +1617,9 @@ export class ChargingRuntime {
         const current = matchTeslaCurrent(tesla, { physical: result[id], peers, ...comparison,
           connectedAt, lastDisconnectedAt: session.lastDisconnectedAt, chargingAt: evidence.chargingTimes, now,
           matchingSince: reidentifying ? state.startedAt : null,
-          consumedPowerAt: (reidentifying || item.vehicleMatch?.id !== 'tesla') && this.consumedTeslaPower?.association === tesla.association
+          consumedPowerAt: (reidentifying || item.vehicleMatch?.id !== 'tesla') && this.consumedTeslaPower && this.consumedTeslaPower.association === tesla.association
             ? this.consumedTeslaPower.receivedAt : null,
-          consumedCurrentAt: item.vehicleMatch?.id !== 'tesla' && this.consumedTeslaCurrent?.association === tesla.association
+          consumedCurrentAt: item.vehicleMatch?.id !== 'tesla' && this.consumedTeslaCurrent && this.consumedTeslaCurrent.association === tesla.association
             ? this.consumedTeslaCurrent.receivedAt : null });
         const comparisonId = current?.kind === 'current' ? createHash('sha256').update(JSON.stringify([current.testId, current.minimumTest, current.minimumTest ? currentTest.confirmedAt : null,
           id, item.association, connectedAt, Object.entries(this.chargers).filter(([peerId]) => peerId !== id)
