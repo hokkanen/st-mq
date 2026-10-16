@@ -10,6 +10,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   received input waits for storage, without allowing another command through that
   admission hold.
 
+- Let either charger's bounded probe identify Tesla from unique measured current
+  and power without requiring a charger 2 test; retain the joint 6 A and BMW
+  evidence requirements.
+
 - Report an unsent Shelly relay command's witnessed recording deadline as
   waiting for storage, while keeping dispatched readback outcomes unconfirmed.
 

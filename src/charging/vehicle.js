@@ -97,61 +97,88 @@ export function measuredChargingCurrent(physical, now) {
     phases: energized.length, measuredAt: Math.min(...clocks) };
 }
 
-/** A minimum-current test on Charger 2 distinguishes simultaneous loads only
- * after actual draw and independent live Tesla current agree uniquely. Missing
- * peer evidence and equal currents remain ambiguous, never BMW by elimination.
- * Tesla's reported phase count is not a reliable count of energized phases;
- * measured current and corroborating power supply the electrical comparison.
- * The confirmed setting is an offered ceiling, not a required vehicle draw. */
-export function matchTeslaMinimumCurrent(tesla, { physical, peers = [], minimumPhysical, currentTest,
-  connectedAt, lastDisconnectedAt, consumedCurrentAt, now = Date.now() } = {}) {
+/** One ordinary Tesla comparison. A disconnected peer permits the existing
+ * positive start/power evidence; connected peers require unique measured current.
+ * Only a real confirmed minimum-current test can supply joint BMW proof. */
+export function matchTeslaCurrent(tesla, { physical, peers = [], minimumPhysical, currentTest, probe,
+  connectedAt, lastDisconnectedAt, consumedCurrentAt, consumedPowerAt, matchingSince, chargingAt = [], now = Date.now() } = {}) {
   const field = tesla?.fields?.charger_actual_current, power = tesla?.fields?.charger_power;
   const departure = (tesla?.boundaries ?? []).filter(edge => edge.association === tesla.association
     && (teslamateDeparture(edge)
       || edge.field === 'geofence' && edge.value !== tesla.fields?.geofence?.value)
     && time(edge.at) && edge.at <= now).reduce((at, edge) => Math.max(at, edge.at), lastDisconnectedAt ?? -1);
   const since = connectionEvidenceStart(connectedAt, departure);
-  if (!time(connectedAt) || connectedAt > now || tesla?.healthy !== true || !teslamateConnectionContext(tesla, { now })
-    || tesla.atHome !== true || tesla.charging !== true || currentTest?.phase !== 'active'
-    || !Number.isFinite(currentTest.appliedCurrentA) || currentTest.appliedCurrentA <= 0
-    || !time(currentTest.confirmedAt) || currentTest.confirmedAt < currentTest.startedAt
-    || !time(currentTest.expiresAt) || now >= currentTest.expiresAt || now < currentTest.confirmedAt + 5000
-    || field?.retained !== false || !time(field.receivedAt) || field.receivedAt < Math.max(since, currentTest.confirmedAt)
-    || field.receivedAt > now || now - field.receivedAt > MINUTE
-    || time(consumedCurrentAt) && field.receivedAt <= consumedCurrentAt
-    || power?.retained !== false || !time(power.receivedAt) || power.receivedAt < since || power.receivedAt > now) return null;
-  const measurements = teslaMinimumCurrentMeasurements(tesla, { physical, peers, minimumPhysical, currentTest, now });
-  return measurements && { receivedAt: field.receivedAt, ...measurements, testId: currentTest.id };
+  const minimum = currentTest != null;
+  const boundary = minimum ? currentTest.confirmedAt : probe?.startedAt;
+  const validScope = minimum ? currentTest.phase === 'active'
+    && currentTest.appliedCurrentA === 6
+    && time(boundary) && boundary >= currentTest.startedAt && time(currentTest.expiresAt)
+    && now < currentTest.expiresAt && now >= boundary + 5000
+    : typeof probe?.id === 'string' && probe.id.length > 0 && probe.id.length <= 128 && time(boundary) && boundary <= now && time(probe.deadlineAt) && now < probe.deadlineAt;
+  const currentReady = time(connectedAt) && connectedAt <= now && tesla?.healthy === true
+    && teslamateConnectionContext(tesla, { now }) && tesla.atHome === true && tesla.charging === true && validScope
+    && field?.retained === false && time(field.receivedAt) && field.receivedAt >= Math.max(since, boundary)
+    && field.receivedAt <= now && now - field.receivedAt <= MINUTE
+    && !(time(consumedCurrentAt) && field.receivedAt <= consumedCurrentAt)
+    && !(time(matchingSince) && field.receivedAt <= matchingSince)
+    && power?.retained === false && time(power.receivedAt) && power.receivedAt >= since && power.receivedAt <= now
+    && (minimum || power.receivedAt >= boundary && now - power.receivedAt <= MINUTE)
+    && (minimum || !(time(consumedPowerAt) && power.receivedAt <= consumedPowerAt));
+  const measurements = currentReady && teslaCurrentMeasurements(tesla, { physical, peers, minimumPhysical, currentTest, probe, now });
+  if (measurements) return { kind: 'current', receivedAt: field.receivedAt, ...measurements,
+    testId: minimum ? currentTest.id : probe.id, minimumTest: minimum };
+  if (!(time(matchingSince) && !(power?.receivedAt > matchingSince))
+    && peers.every(peer => peer.providerConnected !== false && peer.connected?.available === true && peer.connected.value === false)
+    && matchTeslaSession(tesla, { physical, connectedAt, lastDisconnectedAt, chargingAt, consumedPowerAt, now }))
+    return { kind: 'start-power' };
+  return null;
 }
 
-/** Physical comparison only. This can reject a dormant settling sample while
- * vehicle admission is pending; it never supplies vehicle identity by itself. */
-export function teslaMinimumCurrentMeasurements(tesla, { physical, peers = [], minimumPhysical, currentTest, now }) {
+/** Physical checks may retain a dormant settling sample during admission;
+ * they cannot establish vehicle health or identity themselves. */
+export function teslaCurrentMeasurements(tesla, { physical, peers = [], minimumPhysical, currentTest, probe, now }) {
   const field = tesla?.fields?.charger_actual_current;
   const freshPower = view => view?.powerKw?.available === true && view.powerKw.retained !== true
-    && view.powerKw.value > .5 && time(view.powerKw.measuredAt) && view.powerKw.measuredAt <= now
-    && now - view.powerKw.measuredAt <= MINUTE && view.charging?.available === true && view.charging.value === true;
-  if (!time(currentTest?.confirmedAt) || !Number.isFinite(currentTest.appliedCurrentA) || !time(field?.receivedAt)
+    && view.powerKw.assumed !== true && view.powerKw.value > .5 && time(view.powerKw.measuredAt)
+    && view.powerKw.measuredAt <= now && now - view.powerKw.measuredAt <= MINUTE
+    && view.charging?.available === true && view.charging.value === true;
+  const minimum = currentTest != null, boundary = minimum ? currentTest.confirmedAt : probe?.startedAt;
+  if (!time(boundary) || minimum && !Number.isFinite(currentTest.appliedCurrentA) || !time(field?.receivedAt)
     || !Number.isFinite(tesla?.actualCurrentA) || tesla.actualCurrentA <= .5
     || !Number.isFinite(tesla.actualPowerKw) || tesla.actualPowerKw <= .5
     || !freshPower(physical) || Math.abs(physical.powerKw.value - tesla.actualPowerKw) > .75) return null;
-  const current = measuredChargingCurrent(physical, now), minimum = measuredChargingCurrent(minimumPhysical, now);
-  if (!current || !minimum || !freshPower(minimumPhysical) || minimum.measuredAt < currentTest.confirmedAt
-    || current.measuredAt < currentTest.confirmedAt
-    || minimumPhysical.phaseCurrentA.value.some(value => value > currentTest.appliedCurrentA + .5)
-    || Math.abs(current.value - tesla.actualCurrentA) > .5) return null;
+  const current = measuredChargingCurrent(physical, now), limited = minimum && measuredChargingCurrent(minimumPhysical, now);
+  if (!current || current.measuredAt < boundary || !minimum && physical.powerKw.measuredAt < boundary
+    || Math.abs(current.value - tesla.actualCurrentA) > .5
+    || minimum && (!limited || !freshPower(minimumPhysical) || limited.measuredAt < boundary
+      || minimumPhysical.phaseCurrentA.value.some(value => value > currentTest.appliedCurrentA + .5))) return null;
+  const peerPhysicalAts = [];
   for (const peer of peers) {
-    if (peer.connected?.available === true && peer.connected.value === false) continue;
-    const zero = peer.powerKw;
-    if (peer.providerConnected !== false && peer.charging?.available === true && peer.charging.value === false
+    if (peer.providerConnected === false || peer.connected?.available !== true) return null;
+    if (peer.connected.value === false) {
+      if (!time(peer.connected.measuredAt) || peer.connected.measuredAt > now) return null;
+      peerPhysicalAts.push(peer.connected.measuredAt); continue;
+    }
+    if (peer.connected.value !== true) return null;
+    const zero = peer.powerKw, phases = peer.phaseCurrentA;
+    const clocks = phases?.inputs?.map(input => input.measuredAt) ?? [phases?.measuredAt];
+    const measuredZero = minimum || phases?.available === true && phases.retained !== true && phases.assumed !== true
+      && Array.isArray(phases.value) && phases.value.length === 3
+      && phases.value.every(value => Number.isFinite(value) && value >= 0 && value <= .5)
+      && clocks.length > 0 && clocks.every(at => time(at) && at <= now && now - at <= MINUTE)
+      && Math.max(...clocks) - Math.min(...clocks) <= 15_000;
+    if (peer.charging?.available === true && peer.charging.value === false && measuredZero
       && zero?.available === true && zero.retained !== true && zero.assumed !== true && zero.value === 0
-      && time(zero.measuredAt) && zero.measuredAt >= currentTest.confirmedAt && zero.measuredAt <= now
-      && now - zero.measuredAt <= MINUTE && field.receivedAt >= (peer.charging.measuredAt ?? now)) continue;
+      && time(zero.measuredAt) && (!minimum || zero.measuredAt >= boundary) && zero.measuredAt <= now
+      && now - zero.measuredAt <= MINUTE && field.receivedAt >= (peer.charging.measuredAt ?? now)) {
+      peerPhysicalAts.push(minimum ? zero.measuredAt : Math.min(zero.measuredAt, ...clocks)); continue;
+    }
     const other = measuredChargingCurrent(peer, now);
-    if (!other || !freshPower(peer) || other.measuredAt < currentTest.confirmedAt
-      || Math.abs(other.value - tesla.actualCurrentA) <= 1) return null;
+    if (!other || !freshPower(peer) || other.measuredAt < boundary || Math.abs(other.value - tesla.actualCurrentA) <= 1) return null;
+    peerPhysicalAts.push(other.measuredAt);
   }
-  return { physicalAt: current.measuredAt, minimumPhysicalAt: minimum.measuredAt };
+  return { physicalAt: minimum ? current.measuredAt : Math.min(current.measuredAt, physical.powerKw.measuredAt),
+    minimumPhysicalAt: minimum ? limited.measuredAt : null, peerPhysicalAts };
 }
 
 /** Independent vehicle facts keep their source clocks and original MQTT delivery

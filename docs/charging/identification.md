@@ -92,6 +92,27 @@ The owner approved this exception on 2026-10-09, accepting the residual risk of
 a coincident unobserved peer transition. It identifies only the reachable
 connection and does not relax the static matching rules below.
 
+## One Tesla comparison
+
+The same positive comparison evaluates either charger. It does not require
+Charger 2 to run a test or receive a command. When all observed peers are
+confirmed disconnected, the start/power evidence above remains sufficient.
+With a connected peer, the target's own bounded probe can instead supply fresh
+live Tesla actual current and power that uniquely agree with measured target
+draw. Every peer must have fresh distinguishing measured draw, confirmed physical
+zero draw, or an observed disconnect; unknown and overlapping evidence blocks
+assignment. Current and power retain the existing measurement tolerances and
+original clocks. Two admitted observations at least five seconds apart must
+agree, with advancing physical measurements and unchanged connection/feed scope.
+The original probe energy allowance, deadline, retry and evidence consumption
+remain binding. Identification sends no command to its peer.
+
+A confirmed 6 A intervention adds distinguishing evidence when needed; it is not
+a prerequisite for a uniquely measured Tesla-only assignment. The joint BMW
+resolution below still requires the actual confirmed minimum-current test and
+BMW's own positive episode. An ordinary probe cannot create that joint proof.
+This clarification was explicitly requested by the owner on 2026-10-16.
+
 ## Minimum-current comparison and joint assignment
 
 When current-write capability is verified, Charger 2 can temporarily use its

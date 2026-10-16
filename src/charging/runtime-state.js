@@ -77,9 +77,12 @@ function validateCurrentIdentificationEvidence(evidence) {
   const time = value => Number.isSafeInteger(value) && value >= 0;
   const id = value => typeof value === 'string' && value.length > 0 && value.length <= 128;
   if (candidate != null && (!object(candidate)
-    || Object.keys(candidate).sort().join(',') !== 'minimumPhysicalAt,observedAt,physicalAt,receivedAt,testId,vehicleAssociation'
+    || !fields(candidate, ['minimumPhysicalAt', 'observedAt', 'physicalAt', 'receivedAt', 'testId', 'vehicleAssociation', 'peerPhysicalAts'])
     || !id(candidate.testId) || !id(candidate.vehicleAssociation) || !time(candidate.observedAt)
-    || ['receivedAt', 'physicalAt', 'minimumPhysicalAt'].some(key => !time(candidate[key]) || candidate[key] > candidate.observedAt))
+    || ['receivedAt', 'physicalAt'].some(key => !time(candidate[key]) || candidate[key] > candidate.observedAt)
+    || candidate.minimumPhysicalAt !== null && (!time(candidate.minimumPhysicalAt) || candidate.minimumPhysicalAt > candidate.observedAt)
+    || candidate.peerPhysicalAts !== undefined && (!Array.isArray(candidate.peerPhysicalAts) || candidate.peerPhysicalAts.length > 1
+      || candidate.peerPhysicalAts.some(at => !time(at) || at > candidate.observedAt)))
     || ['teslaCurrentResolvedTestId', 'teslaCurrentMatchTestId'].some(key => evidence?.[key] != null && !id(evidence[key]))
     || evidence?.bmwContestedPauseRequestedAt !== undefined && !time(evidence.bmwContestedPauseRequestedAt)
     || evidence?.teslaContestedPauseRequestedAt !== undefined && !time(evidence.teslaContestedPauseRequestedAt)
