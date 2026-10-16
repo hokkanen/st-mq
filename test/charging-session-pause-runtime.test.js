@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store } from '../src/storage/store.js';
 import { fixture, HOUR } from './helpers/charging-joint-fixture.js';
 import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import { familyRouteAllowed } from '../src/app/web-permissions.js';
@@ -8,6 +12,58 @@ import { ChargingRuntime } from '../src/charging/runtime.js';
 
 const automaticScope = view => ({ association: view.association, sessionId: view.request.sessionId,
   revision: view.request.revision, controlRevision: view.controls.revision });
+
+test('Shelly Pause is admitted while an unchanged native reply waits behind its intent', { timeout: 15_000 }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-pause-input-admission-'));
+  const store = new Store(join(directory, 'fixture.sqlite'));
+  const f = await fixture(t, { store });
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  await f.connect('charger2');
+  await f.runtime.chargeNow('charger2', f.scope('charger2')); await f.settle();
+  const item = f.runtime.chargers.charger2, adapter = item.adapter, scope = f.scope('charger2');
+  await store.runWrite(() => {}); await store.startWriter();
+  let entered, release;
+  const began = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const request = store.writer.request.bind(store.writer);
+  let intercepted = false, nativeRead, pause;
+  store.writer.request = async (operation, args) => {
+    if (operation === 'begin' && !intercepted) { intercepted = true; entered(); await gate; }
+    return request(operation, args);
+  };
+  const barrier = store.runWrite(() => {});
+  let intentSavedDuringHold = false, prematureStop = false, originalReadAdmitted = false;
+  const commandsBefore = f.commands.length;
+  const remove = store.onWriteSettled(() => {
+    if (!originalReadAdmitted && item.request.pause
+      && adapter.snapshot().commandBlockReason === 'evse-input-persistence-pending') {
+      intentSavedDuringHold = true;
+      prematureStop ||= f.commands.slice(commandsBefore).some(command => command.chargerId === 'charger2'
+        && command.role === 'start_charging' && command.value === false);
+    }
+  });
+  try {
+    await began;
+    nativeRead = adapter.rpc('Service.GetStatus', { id: 0 });
+    void nativeRead.then(() => { originalReadAdmitted = true; }, () => {});
+    void nativeRead.catch(() => {});
+    for (let attempt = 0; adapter.snapshot().commandBlockReason !== 'evse-input-persistence-pending' && attempt < 50; attempt++)
+      await new Promise(resolve => setImmediate(resolve));
+    assert.equal(adapter.snapshot().commandBlockReason, 'evse-input-persistence-pending');
+    assert.equal(adapter.snapshot().observationReady, true, 'Committed session observations remain healthy');
+    assert.equal(adapter.snapshot().controlReady, false, 'Native command publication is still held');
+    pause = f.runtime.pause('charger2', scope); void pause.catch(() => {});
+    release();
+    await pause; await nativeRead; await barrier; await f.settle();
+    assert.equal(intentSavedDuringHold, true, 'The control turn can save intent before the waiting reply is admitted');
+    assert.equal(prematureStop, false, 'Saved intent cannot bypass native input admission');
+    assert.equal(f.view('charger2').control.sessionPause.confirmed, true);
+    assert.equal(f.view('charger2').values.powerKw.value, 0);
+  } finally {
+    release(); remove();
+    await Promise.allSettled([barrier, nativeRead, pause].filter(Boolean));
+  }
+});
 
 for (const id of ['charger1', 'charger2']) {
   test(`${id}: Pause persists independently of Automatic, Charge now and ready-by`, async t => {

@@ -1418,6 +1418,11 @@ export function createShellyController({ adapter, initialState, saveState = () =
       && physical.measuredAt >= requestedSessionPause.requestedAt
       && adapter.config.connectedStates.includes(work.value) && !adapter.config.chargingStates.includes(work.value)
       && physical.value.total_power === 0 && PHASE_KEYS.every(key => physical.value[key]?.current < .5));
+    // Saving session intent does not publish a native command. A reply waiting
+    // for admission does not itself revoke the fresh committed connection used
+    // by Pause; execution still joins admission and revalidates below.
+    const pauseInputReady = snapshot.controlReady || snapshot.observationReady
+      && ['evse-input-persistence-pending', 'evse-source-time-pending'].includes(snapshot.commandBlockReason);
     return { ...copy(state), devicePermissionHeld: projected.held, owned: owned ? copy(owned) : null, planningRevision, enabled, manual,
       scheduleConfirmed, currentAdjustment,
       takeover: takeoverStatus(snapshot),
@@ -1425,7 +1430,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         || permission?.value === false && !projected.held && !(state.ownedPause && !projected.pauseBroken
           && fresh(permission) && sameSetting(permission, { value: false, measuredAt: state.lastStartAt }))),
       externalStopAt: state.manual?.kind === 'stop' && state.manual.origin === 'external-command' ? state.manual.detectedAt : null,
-      sessionPause: { available: !closed && snapshot.online && snapshot.controlReady && snapshot.session?.connected === true
+      sessionPause: { available: !closed && snapshot.online && pauseInputReady && snapshot.session?.connected === true
           && fresh(permission) && fresh(work), active: userPause,
         ...(sessionPauseScope(snapshot) ? { requestedAt: requestedSessionPause.requestedAt } : {}),
         ...(pauseSupersededAt(snapshot) !== null ? { supersededAt: pauseSupersededAt(snapshot) } : {}),

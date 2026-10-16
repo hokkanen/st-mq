@@ -3256,6 +3256,35 @@ test('an unresolved current-only write preserves the confirmed schedule and paus
   assert.equal(f.fields.start_charging, false);
 });
 
+test('Pause eligibility survives bounded source-clock admission without allowing an early native Stop', async t => {
+  const f = fixture(t); await f.ready(); f.setNow(NOW + 1000);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState() {}, getPlan: () => null });
+  t.after(() => controller.close());
+  f.setSourceTime('current_limit', f.now() + 25);
+  const reading = f.adapter.rpc('Number.GetStatus', { owner: 'service:0', role: 'current_limit' }, { statusReadback: true });
+  let stop;
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-source-time-pending');
+    assert.equal(f.adapter.snapshot().observationReady, true);
+    assert.equal(controller.status().sessionPause.available, true);
+    const before = f.writes.length;
+    stop = f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: false },
+      { mutation: true, guard: () => true });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.writes.slice(before).some(frame => frame.method === 'Boolean.Set'), false);
+    f.setNow(f.now() + 25);
+    await reading; await stop;
+    assert.equal(f.fields.start_charging, false);
+    f.client.emit('offline');
+    assert.equal(controller.status().sessionPause.available, false, 'Actual transport loss still withdraws eligibility');
+  } finally {
+    f.setNow(f.now() + 1000);
+    await Promise.allSettled([reading, stop].filter(Boolean));
+  }
+});
+
 test('session Pause stops immediately without a plan and survives OFF, restart and device SYS Enable', async t => {
   const f = fixture(t); await f.ready(); advanceCommandClock(f);
   let saved;

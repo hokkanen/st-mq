@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep Shelly Pause available while fresh committed connection evidence remains
+  healthy and a native reply awaits admission; commands still wait and revalidate.
+
 - Complete Shelly's confirmed idle-current return when an unrelated native
   reply briefly awaits storage, retaining fresh input and instruction checks.
 

@@ -127,6 +127,13 @@ request clock remain distinct from observed external Stop evidence. Admin and
 family users share the same scoped action. A stale browser, changed equipment or
 replacement physical connection cannot receive the request.
 
+A Shelly reply waiting for storage or bounded source-clock admission does not
+withdraw Pause eligibility while its committed connection observations remain
+fresh and healthy. This admits only the scoped dashboard instruction. Native
+dispatch still waits for input admission and rechecks the session, authority,
+readiness and newer instructions; failed admission or actual evidence loss does
+not acquire command permission.
+
 The hold survives restart, transport reconnect, transaction rollover and ready-by
 expiry. Changing the Automatic preference does not release it. Confirmed unplug
 ends the scope; reconnection follows that equipment's saved Automatic preference.
