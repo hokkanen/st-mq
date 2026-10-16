@@ -6,6 +6,7 @@ import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
 import { forecastFixedPlans, currentChargingAllocation } from './planner.js';
 import { createChargingPlannerService } from './planner-service.js';
 import { chargingPlannerInput, chargingPlanValidUntil } from './planner-input.js';
+import { copyChargingValue, immutableChargingValue, isImmutableChargingValue } from './immutable.js';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
 import { backgroundPlanDeadline } from './plan-settling.js';
 import { createChargingController, validateChargingOwnershipState } from './controller.js';
@@ -210,11 +211,18 @@ const clearChargeNow = request => { delete request.chargeNow; delete request.cha
 const nativeTakeoverNeeded = control => Boolean(control?.manual || control?.takeoverRequired);
 // Persist deadlines, accepted periods and compact estimated totals, never a
 // forecast-price cache in the ordinary runtime snapshot or replica view.
+const durablePlans = new WeakMap();
 const durablePlan = plan => {
   if (!plan) return plan;
+  if (isImmutableChargingValue(plan) && durablePlans.has(plan)) return durablePlans.get(plan);
   const { decisionPriceSnapshot, ...result } = plan;
   if (Array.isArray(result.intervals)) result.intervals = result.intervals.filter(row => row.predicted !== true);
   if (Array.isArray(result.accounting)) result.accounting = result.accounting.filter(row => row.predicted !== true);
+  if (isImmutableChargingValue(plan)) {
+    const owned = immutableChargingValue(result);
+    durablePlans.set(plan, owned);
+    return owned;
+  }
   return result;
 };
 // Retaining an earlier economic plan also retains its allocation urgency. Only
@@ -383,7 +391,7 @@ export class ChargingRuntime {
       const streamMatches = previous.streamAssociation === this.streamAssociation;
       return [definition.id, { definition, association, ownershipAdmitted: saved.chargers?.[definition.id]?.association === association,
         controls: previous.controls ?? { enabled: initialAutomatic, revision: 0 }, replan: previous.replan === true,
-        request: previous.request ?? null, plan: previous.plan ?? null,
+        request: previous.request ?? null, plan: immutableChargingValue(previous.plan ?? null),
         sessionCost: previous.sessionCost ?? null,
         vehicleMatch: previous.vehicleMatch?.id === 'bmw' && !this.vehicleFeeds.bmw.reading
           ? null : previous.vehicleMatch ?? null,
@@ -429,11 +437,11 @@ export class ChargingRuntime {
       'vehicleEvidence', 'vehicleConflict', 'identification', 'targetState', 'vehicleDisconnect', 'streamEvidence',
       'forecast', 'newEpisode', 'wasPluggedIn', 'limiterPlanBasis', 'commandBasis', 'priceRecheckAt'];
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
-      structuredClone(Object.fromEntries(fields.map(field => [field, item[field]])))]));
+      copyChargingValue(Object.fromEntries(fields.map(field => [field, item[field]])))]));
     const feeds = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id,
       structuredClone({ reading: item.reading, mqtt: item.mqtt, consumedPlugId: item.consumedPlugId, consumedChargingId: item.consumedChargingId })]));
     const feedRevisions = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id, item.mqttStatusRevision ?? 0]));
-    const saved = structuredClone({ controls: this.controls, revision: this.revision, coordination: this.coordination,
+    const saved = copyChargingValue({ controls: this.controls, revision: this.revision, coordination: this.coordination,
       allocationScope: this.allocationScope, consumedTeslaPower: this.consumedTeslaPower, consumedTeslaCurrent: this.consumedTeslaCurrent });
     this.store.afterRollback(() => {
       // These native events were already consumed outside writer admission.
@@ -587,7 +595,17 @@ export class ChargingRuntime {
   persistAcceptedState(now) {
     return this.store.transaction(() => this.persistAcceptedStateTransaction(now));
   }
+  ownCalculations() {
+    // Publishing takes an independent immutable snapshot once. Later telemetry,
+    // views and rollback frames reuse that snapshot without copying scenarios.
+    for (const item of Object.values(this.chargers)) {
+      item.plan = immutableChargingValue(item.plan);
+      item.forecast = immutableChargingValue(item.forecast);
+    }
+    this.coordination = immutableChargingValue(this.coordination);
+  }
   persistAcceptedStateTransaction(now) {
+    this.ownCalculations();
     const diagnostics = { state: this.sessionDiagnostics.state, lastSavedAt: this.sessionDiagnostics.lastSavedAt,
       lastPrunedAt: this.sessionDiagnostics.lastPrunedAt };
     const assessment = structuredClone(this.physicalTests.state);
@@ -2164,7 +2182,7 @@ export class ChargingRuntime {
       if (this.charger(view.id).flexibilityPreview?.scope !== view.flexibility.comparisonScope)
         view.flexibility.preview = null;
     }
-    return structuredClone(views);
+    return copyChargingValue(views);
   }
   flexibilityScope(views, id, now = this.clock()) {
     // A displayed comparison is an as-of estimate, not command authority. Live
@@ -2237,7 +2255,7 @@ export class ChargingRuntime {
   }
   async calculateFlexibilityPreview(id) {
     const now = this.clock(), views = this.views(now), view = views.find(charger => charger.id === id), item = this.charger(id);
-    const flexibility = structuredClone(view.flexibility), context = this.flexibilityContext, scope = this.flexibilityScope(views, id, now);
+    const flexibility = copyChargingValue(view.flexibility), context = this.flexibilityContext, scope = this.flexibilityScope(views, id, now);
     const unavailable = (reason, blocker = null) => {
       const currentViews = this.views(), sameScope = scope === this.flexibilityScope(currentViews, id);
       const retained = sameScope ? currentViews.find(charger => charger.id === id).flexibility.preview : null;
@@ -2263,7 +2281,7 @@ export class ChargingRuntime {
       || this.clock() >= flexibility.normalReadyByAt || scope !== this.flexibilityScope(this.views(), id))
       return unavailable('comparison-changed');
     if (!comparison.available) return unavailable(comparison.reason, comparison);
-    item.flexibilityPreview = { scope, comparison };
+    item.flexibilityPreview = { scope, comparison: immutableChargingValue(comparison) };
     item.previewInputs = this.flexibilityInputs(id, context, now);
     return { flexibility: { ...flexibility, preview: comparison }, comparison, refreshReason: null };
   }
@@ -2765,6 +2783,7 @@ export class ChargingRuntime {
           noHistory: this.historyReady && householdReferenceSummary(this.household).noHistory,
           loading: this.historyFlights.size > 0, unavailable: Boolean(this.historyError) } } };
     this.allocationScope = allocationScope;
+    this.ownCalculations();
     // Forecast inputs keep their original time. Observing the live session
     // after the asynchronous search uses the current clock and source data.
     const observedAt = this.clock();
@@ -2792,7 +2811,7 @@ export class ChargingRuntime {
     });
     if (current() && this.historyReady) {
       const contextNow = this.clock(), contextViews = this.views(contextNow);
-      this.flexibilityContext = structuredClone({ ...planning, now: contextNow, prices: this.getPlanningPrices(contextNow), chargers: contextViews,
+      this.flexibilityContext = copyChargingValue({ ...planning, now: contextNow, prices: this.getPlanningPrices(contextNow), chargers: contextViews,
         scopes: Object.fromEntries(contextViews.map(view => [view.id, this.flexibilityScope(contextViews, view.id, contextNow)])),
         market: this.flexibilityMarket(contextNow),
         fixedPeriods: Object.fromEntries(contextViews.flatMap(view => {
@@ -3297,7 +3316,7 @@ export class ChargingRuntime {
     if (!view.identification.available) {
       throw new Error(identificationBlockerDetail(view.identification.availabilityReason));
     }
-    const previous = Object.fromEntries(Object.entries(this.chargers).map(([key, charger]) => [key, structuredClone({
+    const previous = Object.fromEntries(Object.entries(this.chargers).map(([key, charger]) => [key, copyChargingValue({
       identification: charger.identification, vehicleMatch: charger.vehicleMatch, vehicleEvidence: charger.vehicleEvidence,
       vehicleConflict: charger.vehicleConflict, targetState: charger.targetState, plan: charger.plan, request: charger.request })]));
     const consumed = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([key, feed]) => [key,
@@ -3455,7 +3474,7 @@ export class ChargingRuntime {
         reception: this.teslaCapture.reception?.() ?? null,
         setup: teslaVehicleSetup(tesla, { now }), usedByChargerId: usedBy('tesla') });
     }
-    return { revision: this.revision, timezone: TIME_ZONE, controls: { priority: this.controls.priority, revision: this.controls.revision }, settings: structuredClone(this.settings), chargers, vehicleFeeds, coordination: structuredClone(this.coordinationView()), error: this.error ?? null,
+    return { revision: this.revision, timezone: TIME_ZONE, controls: { priority: this.controls.priority, revision: this.controls.revision }, settings: structuredClone(this.settings), chargers, vehicleFeeds, coordination: copyChargingValue(this.coordinationView()), error: this.error ?? null,
       limiterHistoryError: this.limiterHistoryError ?? null,
       diagnostics: { ...this.sessionDiagnostics.status(now), canManage: !this.closed && this.canControl() && this.config.input !== 'offline',
         ...(this.diagnosticsError ? { available: false, error: this.diagnosticsError } : {}) },

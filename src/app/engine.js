@@ -44,6 +44,7 @@ import { validateGarageModeState } from '../garage/room-temperature.js';
 import { garageSettings } from '../garage/settings.js';
 import { validateGarageSenderSnapshot } from '../garage/sender.js';
 import { ChargingRuntime } from '../charging/runtime.js';
+import { copyChargingValue } from '../charging/immutable.js';
 import { isGarageDoorSignal, confirmedGarageDoor } from '../garage/door-state.js';
 import { HeatingExplorer, validateHeatingTrialState } from './heating-explorer.js';
 import { applyExplorerOverrides } from '../control/heating-explorer.js';
@@ -66,6 +67,25 @@ function manualHeatingHeld(executor, native, pause, now) {
 const WEATHER_SOURCES = ['fmi', 'openmeteo'];
 const OUTDOOR_SOURCES = [...WEATHER_SOURCES];
 const PROVIDER_OBSERVATION_SOURCES = ['easee', ...WEATHER_SOURCES];
+
+function statusWithoutCharging(status) {
+  if (status == null) return status;
+  const result = {};
+  for (const key of Object.keys(status)) if (key !== 'charging') result[key] = status[key];
+  return result;
+}
+
+// Keep native cloning for the heating/learning graph, including its aliases.
+// Charging owns immutable plan and forecast trees, so only its mutable shells
+// need detaching for public views and transactional rollback.
+function copyControllerState(state) {
+  const status = state.latestStatus;
+  const result = structuredClone({ ...state, latestStatus: statusWithoutCharging(status) });
+  if (status != null && Object.hasOwn(status, 'charging'))
+    result.latestStatus.charging = copyChargingValue(status.charging);
+  return result;
+}
+const copyControllerStatus = status => copyControllerState({ latestStatus: status }).latestStatus;
 
 function garageOwner(config, signal) {
   if (!['garage_temperature', 'garage_temperature_2'].includes(signal) && !isGarageDoorSignal(signal)) return null;
@@ -1131,7 +1151,7 @@ export class Engine {
     });
   }
   tick() {
-    if (this.suspended) return structuredClone(this.latestStatus);
+    if (this.suspended) return copyControllerStatus(this.latestStatus);
     // Ordered learning may advance for context, completed windows and cycles in
     // one update. Keep its full RAM result, but persist only the final cache.
     this.collectingLearningCheckpoint = true;
@@ -1150,7 +1170,7 @@ export class Engine {
     if (this.store.transactionDepth) {
       const fields = ['checkpoint', 'settings', 'pendingPlan', 'applied', 'lastSample',
         'latestStatus', 'fireplaceReserveOverride', 'startupRestorationPending'];
-      const previous = structuredClone(Object.fromEntries(fields.map(key => [key, this[key]])));
+      const previous = copyControllerState(Object.fromEntries(fields.map(key => [key, this[key]])));
       const automation = structuredClone(this.automation.features);
       const plant = this.plant ? structuredClone(this.plant.state) : null;
       const ingestion = this.ingestionCheckpoint();
@@ -1602,7 +1622,7 @@ export class Engine {
       this.dispatchPending = execution.then(result => {
         const at = this.clock(), receipt = { at, executorStatus: this.executor.status(), floorMode: this.floorOverrideMode(at) };
         return this.runWrite(() => {
-          const previous = structuredClone({ applied: this.applied, checkpoint: this.checkpoint,
+          const previous = copyControllerState({ applied: this.applied, checkpoint: this.checkpoint,
             latestStatus: this.latestStatus, explorer: this.heatingExplorer.input });
           this.store.afterRollback(() => {
             this.applied = previous.applied; this.checkpoint = previous.checkpoint;
@@ -1664,7 +1684,7 @@ export class Engine {
   initializeCommittedStatus({ signal, isCurrent = () => true } = {}) {
     const current = () => !this.suspended && this.canControl() && isCurrent();
     return this.store.runWrite(() => {
-      const view = structuredClone(this.status());
+      const view = copyControllerStatus(this.status());
       // A complete initial view belongs to the committed boundary, even when
       // another source invalidates the live view before startup returns.
       this.store.afterCommit(() => { if (current()) this.committedStatus = view; });
@@ -1680,7 +1700,7 @@ export class Engine {
         if (!this.suspended) { try { this.status(); } catch { /* First complete tick is still pending. */ } }
       });
       if (!this.committedStatus) throw Object.assign(new Error('Waiting for the first controller update to commit.'), { statusCode: 503 });
-      return { ...structuredClone(this.committedStatus), storagePending: true, runtimeTiming: this.runtimeTiming?.() ?? null };
+      return { ...copyControllerStatus(this.committedStatus), storagePending: true, runtimeTiming: this.runtimeTiming?.() ?? null };
     }
     const checkTime = this.clock();
     if (!this.latestStatus || Number.isFinite(this.latestStatus.override?.expiresAt) && this.latestStatus.override.expiresAt <= checkTime
@@ -1696,7 +1716,8 @@ export class Engine {
         if (!this.latestStatus) throw Object.assign(new Error('Waiting for the first controller update to commit.'), { statusCode: 503 });
       }
     }
-    const result = structuredClone(this.latestStatus);
+    // Charging is refreshed below; never traverse the superseded large view.
+    const result = structuredClone(statusWithoutCharging(this.latestStatus));
     if (this.learningCheckpointCache) result.learning.checkpointCache = this.learningCheckpointCache.status();
     const now = this.clock();
     result.now = now;
@@ -1738,7 +1759,7 @@ export class Engine {
       const outlook = assembleOutlook(this.store.getState('provider:market'), this.store.getState('provider:weather'), this.contract(), now);
       Object.assign(result, outlook);
     }
-    if (!this.store.transactionDepth && !this.store.writePending) this.committedStatus = structuredClone(result);
+    if (!this.store.transactionDepth && !this.store.writePending) this.committedStatus = copyControllerStatus(result);
     return result;
   }
 }

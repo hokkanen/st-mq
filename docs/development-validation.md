@@ -5,6 +5,19 @@ validate those contracts; existing assertions do not authorize conflicting chang
 Follow the [conflict procedure](../AGENTS.md#conflicting-requests) before changing
 a foundation, even when the requested implementation would require it.
 
+Charging copy ownership checks in `test/charging-copy-ownership.test.js`,
+`test/charging-runtime-storage-ownership.test.js` and
+`test/engine-charging-copy-ownership.test.js` exercise immutable calculations,
+detached mutable views, nested rollback, failed COMMIT, pending committed status
+and exact current-format storage publication. Existing runtime, storage,
+replication and native-control suites retain scheduling and evidence fences.
+`node --expose-gc scripts/benchmarks/charging-copy.js [source-root]` runs the same
+synthetic in-memory workload against a selected checkout. It separates initial
+adoption from repeated views, rollback snapshots, persistence and status; compares
+semantic output fingerprints; and labels GC heap occupancy separately from total
+allocations. These measurements do not establish live Pi savings or physical
+charging behavior.
+
 Storage health coverage uses the current transient version-3 health/history
 contract. `test/storage-control-coverage.test.js` and
 `test/control-attempt.test.js` check exact-once known-unsent outcomes, safe parent

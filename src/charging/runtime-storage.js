@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { validateChargingRuntimeState } from './runtime-state.js';
 import { createChargingCalculationWriter } from './calculation-persistence.js';
+import { isImmutableChargingValue } from './immutable.js';
 
 // Charging owns this representation. The shared Store/journal still sees normal
 // state rows and publishes every changed field in one ordinary transaction.
@@ -8,6 +9,11 @@ export const CHARGING_RUNTIME_VERSION = 7;
 export const CHARGING_VIEW_INTERVAL_MS = 30_000;
 const projections = new WeakMap();
 const costWriters = new WeakMap();
+// This caches only preparation of owned immutable values, not their presence in
+// a database. Every publication still checks/installs its required content rows
+// inside the transaction, including after rollback, removal or Store replacement.
+const encodedPlans = new WeakMap();
+const planMeanings = new WeakMap();
 const inputs = /^charging:(mqtt|providers|simulated|offline)$/;
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -166,13 +172,29 @@ function allowanceMeaning(value) {
   if (object(record) && record.source === 'st-mq-load-balancing') delete record.measuredAt;
   return record;
 }
+function planMeaning(value) {
+  if (!object(value)) return value;
+  const immutable = isImmutableChargingValue(value);
+  if (immutable && planMeanings.has(value)) return planMeanings.get(value);
+  // This token belongs only to the transient publication comparison. Its hash
+  // uses the exact existing recursive clock normalization, while persisted plans
+  // and their content IDs keep every original value and clock. Apply it to both
+  // mutable and immutable plans so ownership alone cannot force publication.
+  const meaning = Object.freeze({ content: digest(withoutReceiptClocks(value)) });
+  if (immutable) planMeanings.set(value, meaning);
+  return meaning;
+}
+function planFieldsMeaning(value) {
+  return Object.fromEntries(Object.entries(value).map(([key, value]) => [key,
+    key === 'plan' || key === 'forecast' ? planMeaning(value) : value]));
+}
 /** Conservative early-publication fence. Only repeated receipt/calculation
  * clocks and already-durable metering/progress may wait for the view cadence.
  * Unknown fields remain in the comparison rather than silently being batched. */
 function projectionMeaning(saved) {
   const chargers = Object.fromEntries(Object.entries(saved.chargers ?? {}).map(([id, record]) => {
     const { progress, supplyEstimate, sessionCost, ...durable } = record;
-    return [id, { ...durable, ...(progress ? { battery: { connected: progress.connected,
+    return [id, { ...planFieldsMeaning(durable), ...(progress ? { battery: { connected: progress.connected,
       reference: progress.reference, batteryInputs: progress.batteryInputs } } : {}) }];
   }));
   const { recordedAt, diagnostics, chargers: cards, ...view } = saved.view ?? {};
@@ -193,7 +215,7 @@ function projectionMeaning(saved) {
     if (projectedControl?.session) {
       projectedControl.session = { ...projectedControl.session }; delete projectedControl.session.observedAt;
     }
-    return { ...rest, ...(rest.mqtt ? { mqtt: receptionMeaning(rest.mqtt) } : {}),
+    return { ...planFieldsMeaning(rest), ...(rest.mqtt ? { mqtt: receptionMeaning(rest.mqtt) } : {}),
       ...(rest.vehicleMqtt ? { vehicleMqtt: receptionMeaning(rest.vehicleMqtt) } : {}),
       ...(rest.allowance ? { allowance: allowanceMeaning(rest.allowance) } : {}),
       control: projectedControl, telemetry: telemetryMeaning(telemetry),
@@ -205,6 +227,37 @@ function projectionMeaning(saved) {
     view: { ...view, chargers: cardMeaning } }));
 }
 
+function encodePlan(value) {
+  const immutable = isImmutableChargingValue(value);
+  if (immutable && encodedPlans.has(value)) return encodedPlans.get(value);
+  // An owned calculation's descendants are immutable too. Only the interval
+  // shells change representation; its large scenario/reference graphs can be
+  // shared while preparing the exact existing content-addressed representation.
+  // Mutable callers retain the independent snapshot and cannot claim this cache.
+  const plan = immutable ? { ...value } : structuredClone(value), context = [];
+  if (Array.isArray(plan.intervals)) plan.intervals = plan.intervals.map((row, index) => {
+    const { scenarios, reference, ...compact } = row;
+    if (scenarios !== undefined || reference !== undefined) context.push({ index,
+      ...(scenarios !== undefined ? { scenarios } : {}), ...(reference !== undefined ? { reference } : {}) });
+    return compact;
+  });
+  const contextId = context.length ? digest(context) : null;
+  const record = { value: plan, context: contextId }, id = digest(record);
+  const encoded = { id, record, contextId, context };
+  if (immutable) {
+    // These private shells share only branded immutable descendants. Freeze the
+    // shells as well so a consumer cannot invalidate their cached content IDs.
+    for (const row of context) Object.freeze(row);
+    if (Array.isArray(plan.intervals)) {
+      for (const row of plan.intervals) Object.freeze(row);
+      Object.freeze(plan.intervals);
+    }
+    Object.freeze(context); Object.freeze(plan); Object.freeze(record); Object.freeze(encoded);
+    encodedPlans.set(value, encoded);
+  }
+  return encoded;
+}
+
 function encode(saved) {
   validateChargingRuntimeState(saved);
   validateProjectionDate(saved.view);
@@ -213,16 +266,8 @@ function encode(saved) {
   const put = (path, value) => {
     if (planPath(path) && value != null) {
       if (!object(value)) fail();
-      const plan = structuredClone(value), context = [];
-      if (Array.isArray(plan.intervals)) plan.intervals = plan.intervals.map((row, index) => {
-        const { scenarios, reference, ...compact } = row;
-        if (scenarios !== undefined || reference !== undefined) context.push({ index,
-          ...(scenarios !== undefined ? { scenarios } : {}), ...(reference !== undefined ? { reference } : {}) });
-        return compact;
-      });
-      const contextId = context.length ? digest(context) : null;
+      const { id, record, contextId, context } = encodePlan(value);
       if (contextId) contexts.set(contextId, context);
-      const record = { value: plan, context: contextId }, id = digest(record);
       plans.set(id, record); records.set(path, { value: { ref: id } });
     } else records.set(path, { value });
   };

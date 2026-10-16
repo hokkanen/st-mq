@@ -128,6 +128,23 @@ silently clear durable context. Returned projections do not expose writable
 references to requests, observations, plans or configured defaults. Diagnostics
 consume these same projections without becoming an additional transition owner.
 
+Published plans, forecasts and joint calculation contexts have immutable in-memory
+ownership. Adoption detaches the producer once and freezes the complete plain
+record/array graph. Projections and rollback frames may then share these owned
+trees; mutable requests, observations, controls and settings remain detached.
+An outer shallow freeze does not establish this ownership. Mutable built-in
+graphs retain native snapshot semantics. Each nested transaction still captures
+its own mutable state and restores its own previous calculation references.
+
+Durable plan filtering and storage preparation reuse only owned immutable values.
+The cache holds preparation, never proof that a content row exists in a Store;
+transactional publication, rollback, reference cleanup and cross-Store writes
+retain their existing checks. Current persisted bytes, content identities, view
+publication rules and restart format do not change. Controller status avoids
+copying an old charging view before replacing it, while pending writes continue
+to expose the last committed status. These ownership rules do not change planner
+inputs, search selection, cache validity, evidence checks or scheduling frequency.
+
 Runtime and Easee ownership serializers validate the candidate current durable
 shape before saving, using the same validators as restart. Failure before COMMIT
 keeps previous committed state and rolls back the owning transition. A failure

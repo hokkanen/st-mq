@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Reduce CPU and memory use when reading and saving charging state by reusing
+  unchanged plans and forecasts, while preserving scheduling, rollback and
+  recorded history.
+
 - Preserve native confirmation of an acknowledged Shelly charging command while
   received input waits for storage, without allowing another command through that
   admission hold.
