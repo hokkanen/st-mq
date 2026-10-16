@@ -784,7 +784,7 @@ function renderH66(s) {
     if (!notice) { notice = document.createElement('p'); notice.className = 'equipment-alarm'; root.append(notice); }
     notice.textContent = 'Heat-pump alarm active';
   } else notice?.remove();
-  $('home-pump-health').textContent = isReadOnlyReplica(s) ? 'Recorded snapshot' : h66.connected ? 'Connected' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected';
+  $('home-pump-health').textContent = isReadOnlyReplica(s) ? 'Recorded snapshot' : h66.connected ? 'Available' : h66.brokerConnected ? 'Awaiting readings' : 'Not connected';
   $('home-pump-health').dataset.state = isReadOnlyReplica(s) ? 'pending' : h66.connected ? 'available' : 'attention';
   $('h66-context').hidden = !h66.restorationPending;
   $('h66-context').textContent = h66.restorationPending

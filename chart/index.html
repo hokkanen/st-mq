@@ -448,54 +448,39 @@
                     <div id="charging-setup-content" class="section-fold-body"></div>
                   </details>
                   <details id="floor-preheat-details" class="section-fold controller-fold floor-preheat-panel">
-                    <summary><span>Home floor preheating</span><small id="floor-preheat-state" class="equipment-device-status" data-state="pending">Status unavailable</small></summary>
+                    <summary><span>Home floor preheating</span><small>Installation &amp; setup</small></summary>
                     <div class="section-fold-body">
-                      <div class="floor-preheat-intro">
-                        <div><h4>Ground-floor thermostat overrides</h4><p>SONOFF 4CH PRO R3 · four independent outputs</p></div>
-                        <a href="#home-equipment-details" data-open-floor-controls>Open valve controls →</a>
-                      </div>
-                      <p id="floor-preheat-status" class="floor-preheat-status" role="status">Waiting for floor control status.</p>
-                      <dl class="floor-preheat-facts">
-                        <div><dt>Device feedback</dt><dd id="floor-preheat-connection">Awaiting live feedback</dd></div>
-                        <div><dt>Commissioning</dt><dd id="floor-preheat-commissioning-status">Unknown</dd></div>
-                        <div><dt>Automatic preheating</dt><dd id="floor-preheat-automatic">Unknown</dd></div>
-                        <div><dt>Override deadline</dt><dd id="floor-preheat-deadline">No confirmed active lease</dd></div>
+                      <p class="floor-setup-link"><a href="#home-floor-device" data-open-floor-controls>View floor status &amp; controls in Home →</a></p>
+                      <dl class="equipment-setup-hardware floor-preheat-hardware">
+                        <div><dt>Floor controller</dt><dd><strong>SONOFF 4CH PRO R3</strong><span>Four thermostat overrides · MQTT</span><small>Requires the custom lease firmware</small></dd></div>
                       </dl>
-                      <table class="floor-preheat-circuits">
-                        <caption>Circuits &amp; reported outputs <span>Pipe lengths identify each circuit. Output feedback does not measure valve position or flow.</span></caption>
-                        <thead><tr><th scope="col">Channel</th><th scope="col">Circuit</th><th scope="col">GPIO readback</th></tr></thead>
-                        <tbody>
-                          <tr><th scope="row"><span class="floor-channel">1</span></th><td>Living <small>106 m</small></td><td id="floor-preheat-output-1">Unknown</td></tr>
-                          <tr><th scope="row"><span class="floor-channel">2</span></th><td>Living <small>62 m</small></td><td id="floor-preheat-output-2">Unknown</td></tr>
-                          <tr><th scope="row"><span class="floor-channel">3</span></th><td>Storage <small>38 m</small></td><td id="floor-preheat-output-3">Unknown</td></tr>
-                          <tr><th scope="row"><span class="floor-channel">4</span></th><td>Storage <small>80 m</small></td><td id="floor-preheat-output-4">Unknown</td></tr>
-                        </tbody>
-                      </table>
-                      <details id="floor-operation-details" class="equipment-fold">
-                        <summary><span>Overrides &amp; release</span><small>Manual and automatic</small></summary>
-                        <p class="muted">Automatic preheating requests all four circuits together. Individual manual controls in Home request a timed thermostat override without changing the heat-pump ROOM setting. Manual control and pooled preheating cannot own the same outputs at once.</p>
-                        <p class="muted"><strong>Override off</strong> means the device reports its output released. The installed wiring must allow ordinary thermostat heating in that state. GPIO readback cannot verify contact continuity, valve movement or water flow.</p>
-                        <p id="floor-preheat-renewal" class="muted">Release timing must be verified during setup.</p>
-                        <p class="floor-preheat-limit">Device-local expiry bounds the override if the host is lost. ST-MQ still needs fresh OFF feedback to confirm release. Restoring a preheat ROOM increase also requires the controller and its heat-pump connection.</p>
-                      </details>
-                      <details id="floor-commissioning-details" class="equipment-fold">
-                        <summary><span>Installation &amp; setup</span><small>Before enabling control</small></summary>
+                      <p class="muted">The controller applies timed overrides to four ground-floor circuits. Commission the wiring and release path before enabling controls; GPIO feedback cannot verify valve movement, water flow or contact continuity.</p>
+                      <div id="floor-commissioning-details">
                         <ol class="floor-commissioning-steps">
                           <li><h4>Prepare the Sonoff</h4><p>Use the <a href="https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/compatibility.md" target="_blank" rel="noopener noreferrer">supported board guide</a> and <a href="https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/operations.md" target="_blank" rel="noopener noreferrer">firmware installation instructions</a>. This integration requires the custom lease firmware. Connect it to the primary MQTT broker and record its exact device identity in <code>controller.floor_preheat</code>.</p></li>
-                          <li><h4>Verify each circuit and its release path</h4><p>Match channels 1–4 to the circuits above. Check that OFF and loss of device power leave ordinary thermostat heating possible. Test local expiry, connection loss, restart and output feedback. Unwired bench tests verify the controller only; they do not commission the heating installation.</p></li>
+                          <li><h4>Verify each circuit and its release path</h4><p>Match channels 1–4 to the circuit assignment below. Check that OFF and loss of device power leave ordinary thermostat heating possible. Test local expiry, connection loss, restart and output feedback. Unwired bench tests verify the controller only; they do not commission the heating installation.</p></li>
                           <li><h4>Commission, then enable</h4><p>Record the installation checks privately before setting <code>commissioned</code> to true and applying the reviewed configuration. Individual manual controls then become available with fresh device feedback. Set <code>enabled</code> to true separately to allow pooled floor preheating, and supervise the complete preheat and recovery.</p></li>
                         </ol>
                         <p class="floor-preheat-limit">Use the custom lease connection for monitoring. Native Sonoff commands, including ordinary status queries, release an active lease as maintenance.</p>
-                        <dl class="floor-preheat-facts floor-preheat-device-facts">
-                          <div><dt>Reported firmware</dt><dd id="floor-preheat-firmware">Not reported</dd></div>
-                          <div><dt>Latest output report</dt><dd id="floor-preheat-reported">No report received</dd></div>
-                        </dl>
                         <p>Firmware and full instructions: <a href="https://github.com/hokkanen/sonoff-4chpro-mqtt" target="_blank" rel="noopener noreferrer">sonoff-4chpro-mqtt</a> · <a href="https://github.com/hokkanen/sonoff-4chpro-mqtt/blob/main/docs/protocol.md" target="_blank" rel="noopener noreferrer">MQTT protocol</a></p>
                         <p class="family-access-note">Admin access is required to download the guide.</p>
                         <div class="floor-preheat-downloads">
                           <button id="floor-preheat-guide" data-admin-only class="secondary-button" type="button">Download setup guide (.md)</button>
                         </div>
                         <p id="floor-download-message" class="muted" role="status"></p>
+                      </div>
+                      <details id="floor-circuits-details" class="equipment-fold">
+                        <summary>Circuit assignment</summary>
+                        <table class="floor-preheat-circuits">
+                          <caption>Ground-floor circuits <span>Pipe lengths identify each circuit; they do not measure flow or heat storage.</span></caption>
+                          <thead><tr><th scope="col">Channel</th><th scope="col">Circuit</th><th scope="col">Pipe length</th></tr></thead>
+                          <tbody>
+                            <tr><th scope="row"><span class="floor-channel">1</span></th><td>Living</td><td>106 m</td></tr>
+                            <tr><th scope="row"><span class="floor-channel">2</span></th><td>Living</td><td>62 m</td></tr>
+                            <tr><th scope="row"><span class="floor-channel">3</span></th><td>Storage</td><td>38 m</td></tr>
+                            <tr><th scope="row"><span class="floor-channel">4</span></th><td>Storage</td><td>80 m</td></tr>
+                          </tbody>
+                        </table>
                       </details>
                       <details id="floor-thermal-details" class="equipment-fold">
                         <summary><span>Heat storage &amp; planning</span><small>Configured assumptions</small></summary>

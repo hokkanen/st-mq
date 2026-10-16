@@ -302,7 +302,7 @@ try {
   for (const [register, value] of [['0203', 20], ['0212', 40], ['0208', 55], ['2201', 1], ['3104', 0], ['1A01', 1], ['1A07', 0], ['1A06', 1], ['0005', 4.5], ['0006', 1.2], ['3110', 80]]) readback(register, value);
   app.engine.setH66(h66); app.engine.tick();
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
-  await until("document.getElementById('home-pump-health')?.textContent === 'Connected'");
+  await until("document.getElementById('home-pump-health')?.textContent === 'Available'");
   await until("document.getElementById('h66-test-submit')?.disabled === false");
   assert.equal(publications.length, 0, 'Shadow startup never publishes H66 settings');
   assert.equal(await evaluate("document.querySelector('#h66-readings tr[data-register=\"0005\"] .status-detail-label').textContent"), '4.5 °C');

@@ -22,6 +22,10 @@ treatment, GPIO output history and unknown physical heat delivery.
 individual controls, pending actions, keyboard/focus preservation, setup navigation,
 read-only states and phone/desktop layouts in both themes. No floor fixture
 commissions installed wiring or measures relay contacts, valves or water flow.
+The floor UI checks keep live status and release obligations in Home, installation
+content in Connections & configuration, and connection availability separate from
+commissioning and control readiness. They also compare the shared availability
+headers and preserve report clocks, keyboard focus and disclosure state.
 The separate firmware repository owns its own host tests and firmware builds.
 
 `test/charging-session-pause-runtime.test.js` exercises both charger controllers

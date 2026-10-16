@@ -42,20 +42,6 @@ test('pending physical release remains visible while the new device is unavailab
   }
 });
 
-test('renderer clears stale status and tolerates absent sections', () => {
-  const elements = new Map(['floor-preheat-state', 'floor-preheat-status',
-    'floor-preheat-commissioning-status', 'floor-preheat-renewal'].map(id => [id, { textContent: '', dataset: {} }]));
-  const document = { getElementById: id => elements.get(id) ?? null };
-  renderFloorPreheat(document, current());
-  assert.equal(elements.get('floor-preheat-state').textContent, 'Ready');
-  const view = renderFloorPreheat(document, {});
-  assert.equal(elements.get('floor-preheat-state').textContent, view.label);
-  assert.equal(elements.get('floor-preheat-state').dataset.state, 'pending');
-  assert.equal(elements.get('floor-preheat-status').textContent, view.detail);
-  assert.equal(elements.get('floor-preheat-commissioning-status').textContent, 'Unknown');
-  assert.doesNotThrow(() => renderFloorPreheat({ getElementById: () => null }, current()));
-});
-
 test('each circuit retains its identity and rejects unsupported, stale, future or partial output evidence', () => {
   const status = current();
   assert.deepEqual(floorChannels(status).map(row => [row.label, row.lengthM, row.stateLabel]),
@@ -86,8 +72,14 @@ test('manual controls require current scope and authority and retain the shared 
   assert.equal(floorManualAllowed(manual, 1, true), false);
   assert.equal(floorManualAllowed(manual, 1, false), true);
   assert.equal(floorManualAllowed(manual, 2, true), true);
-  assert.match(floorManualMessage(manual), /15:15.*keeps this deadline/);
+  assert.match(floorManualMessage(manual), /All selected circuits end together.*keeps this deadline/);
+  assert.match(floorPreheatView(manual).deadline, /Manual override deadline.*15 Oct, 15:15/);
   assert.match(floorPreheatView(manual).detail, /1 of 4 outputs reported on/);
+  const expired = { ...manual, now: now + 86400000,
+    preheatValves: { ...manual.preheatValves, restorationPending: true } };
+  assert.equal(floorPreheatView(expired).label, 'Release pending');
+  assert.equal(floorPreheatView(expired).deadline, floorPreheatView(manual).deadline,
+    'An elapsed deadline retains its original date while release remains unconfirmed');
 });
 
 test('manual actions send a bounded scoped request and block duplicates while awaiting its result', async () => {

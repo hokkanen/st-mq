@@ -7,7 +7,7 @@ import { TEMPERATURE_SENSORS } from '../src/domain/indoor-sensors.js';
 import { FLOOR_PREHEAT_DEVICE } from '../src/domain/floor-circuits.js';
 import { createCaravanContents, dehumidifierCommandAllowed, temperatureControlAllowed, temperatureControlValueAllowed } from './caravan.js';
 import { EQUIPMENT_COMMAND_ERRORS } from '../src/domain/equipment-command-errors.js';
-import { createFloorControls, floorChannels, floorPreheatView, floorManualAllowed, floorCommandError, floorRequestId } from './floor-preheat.js';
+import { createFloorControls, floorChannels, floorManualAllowed, floorCommandError, floorRequestId } from './floor-preheat.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
@@ -34,11 +34,19 @@ export function equipmentDevices(status = {}) {
     devices.set(device.id, { ...device, area: device.area });
   }
   const floor = status.preheatValves ?? {};
-  const display = floorPreheatView(status), channels = floorChannels(status);
+  const channels = floorChannels(status);
   const floorDevice = floor.devices?.find(device => device.group === FLOOR_PREHEAT_DEVICE.group);
+  // Availability describes the connection's current evidence. Commissioning,
+  // lease ownership and release obligations belong to the Home controls.
+  const available = channels.every(channel => channel.usable);
+  const connectionState = floor.integrationSupported !== true ? { label: 'Status unavailable', state: 'pending' }
+    : floor.configured !== true ? { label: 'Not configured', state: 'pending' }
+      : floor.connected === false ? { label: 'Disconnected', state: 'attention' }
+        : available ? { label: 'Available', state: 'available' }
+          : { label: 'Needs attention', state: 'attention' };
   const floorId = `floor-override:${FLOOR_PREHEAT_DEVICE.group}`;
   devices.set(floorId, { ...FLOOR_PREHEAT_DEVICE, id: floorId, area: 'home', kind: 'floor_override',
-    enabled: true, commissioned: floor.commissioned === true, available: channels.every(channel => channel.usable),
+    enabled: true, commissioned: floor.commissioned === true, available,
     topics: floor.topics ?? [], mqttStatus: floor.mqttStatus, lastReportAt: floorDevice?.at,
     recorded: isReadOnlyReplica(status), readOnly: isReadOnlyReplica(status),
     readings: Object.fromEntries(channels.map(channel => [`floor_groundfloor_${channel.id}_active`, {
@@ -46,9 +54,7 @@ export function equipmentDevices(status = {}) {
       unit: 'state', observedAt: channel.at, stale: !channel.usable, quality: channel.usable ? [] : ['floor-feedback-unavailable'],
     }])),
     controls: { switch: false, tariff: false },
-    connectionState: { label: display.label, state: display.state },
-    recent: floor.restorationPending ? 'Previous override release is unconfirmed' : '1 device · 4 floor circuits',
-    connectionDetail: display.detail,
+    connectionState,
     packetDetail: 'Custom lease requests and live GPIO feedback use the primary broker. Retained availability does not confirm output state.',
   });
   return [...devices.values()];
@@ -424,7 +430,7 @@ function vehicleConnection({ reception = {}, enabled = true, label, source, deta
 
 /** Device purpose stays separate from changing connection-check results. */
 export function equipmentConnectionIntroduction(device) {
-  if (device.kind === 'floor_override') return 'One Sonoff controls four ground-floor thermostat overrides through timed MQTT leases. Fresh GPIO readback confirms the reported output; valve position, water flow and contact continuity are not measured.';
+  if (device.kind === 'floor_override') return 'Floor-controller reports, status requests and timed lease commands use MQTT. Circuit readings and controls are shown in Home.';
   if (device.connectionDetail) return device.connectionDetail;
   if (device.controls?.tariff || device.controlsHeat || device.role === 'heat_savings')
     return 'Heating requests and relay readback use MQTT. Reported relay state confirms whether the requested mode was applied.';
@@ -520,7 +526,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
         const native = status.h66 ?? {};
         Object.assign(row, { kind: 'heat_pump', source: 'H66', lastReportAt: native.lastPublicationAt,
           connectionState: native.enabled === false ? { label: 'Not enabled', state: 'pending' }
-            : native.available && native.brokerConnected !== false ? { label: 'Live reports', state: 'available' }
+            : native.available && native.brokerConnected !== false ? { label: 'Available', state: 'available' }
               : native.brokerConnected === false ? { label: 'Disconnected', state: 'attention' }
                 : { label: 'Awaiting pump reports', state: 'pending' },
           connectionDetail: 'Heat-pump readings, status requests and native parameter commands.',
@@ -553,7 +559,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
           && native.health?.driverProgressing === true && native.health?.pumpCommunicating === true;
         Object.assign(row, { label: 'Garage heat pump', kind: 'heat_pump', source: 'Mitsubishi',
           lastReportAt: native.native?.powerAt,
-          connectionState: communicating ? { label: 'Pump communicating', state: 'available' }
+          connectionState: communicating ? { label: 'Available', state: 'available' }
             : native.connected === false ? { label: 'Disconnected', state: 'attention' }
               : native.health?.deviceOnline === false ? { label: 'Device offline', state: 'attention' }
                 : native.health?.driverProgressing === false ? { label: 'Driver not reporting', state: 'attention' }
@@ -659,7 +665,7 @@ export function dhwrReadingSummary(status) {
 
 export function createEquipmentPanel({ document, request, onStatus, beforeRequest, onBusy = () => {}, onChange = () => {}, blocked = () => false }) {
   const $ = id => document.getElementById(id), connectionNodes = new Map(), connectionGroups = new Map(), restoreNodes = new Map(), readingNodes = new Map();
-  let current;
+  let current, pendingSetupId = null;
   const make = (tag, text = '', className = '') => {
     const node = document.createElement(tag); node.textContent = text; node.className = className; return node;
   };
@@ -668,7 +674,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   };
   const floorSetupLink = () => {
     const paragraph = make('p', '', 'floor-setup-link');
-    const link = make('a', 'Home floor preheating status & setup →');
+    const link = make('a', 'Floor preheating setup →');
     link.href = '#floor-preheat-details'; link.setAttribute('data-open-floor-setup', '');
     link.addEventListener('click', event => {
       if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -682,15 +688,17 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   };
   function openSetup(id) {
     const target = $(id);
-    if (!target) return;
+    if (!target) { pendingSetupId = id; return; }
+    pendingSetupId = null;
     for (let fold = target; fold; fold = fold.parentElement?.closest('details')) fold.open = true;
     target.querySelector('summary')?.focus({ preventScroll: true });
     target.scrollIntoView({ block: 'start' });
   }
   const openSetupHash = () => {
     const id = document.defaultView?.location?.hash?.slice(1);
-    if (['floor-preheat-details', 'garage-protection-details', 'garage-protection-settings-details',
+    if (['floor-preheat-details', 'home-floor-device', 'garage-protection-details', 'garage-protection-settings-details',
       'garage-protection-configuration-details'].includes(id)) openSetup(id);
+    else pendingSetupId = null;
   };
   document.defaultView?.addEventListener('hashchange', openSetupHash);
   openSetupHash();
@@ -711,6 +719,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         const summary = make(staticReadings ? 'div' : 'summary', '', 'equipment-device-summary');
         const heading = make('div', '', 'equipment-device-heading'), body = make('div', '', 'equipment-device-body');
         section.dataset.deviceId = device.id;
+        if (device.kind === 'floor_override') section.id = 'home-floor-device';
         const title = make('h4'), metadata = make('small', '', 'equipment-device-meta');
         const preview = make('span', '', 'equipment-device-preview'), health = make('span', '', 'equipment-device-health');
         const source = make('span', '', 'equipment-source'), recent = make('small', '', 'equipment-device-recent');
@@ -780,7 +789,9 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       if (node.floor) {
         node.floor.update(snapshot); node.list.hidden = true; node.empty.hidden = true;
         const channels = floorChannels(status), known = channels.every(channel => channel.usable), count = channels.filter(channel => channel.output === true).length;
-        node.preview.textContent = known ? count ? `${count} of 4 overrides on` : '4 overrides off' : 'Output feedback unavailable';
+        const floor = status.preheatValves;
+        node.preview.textContent = floor?.restorationPending || floor?.brokerMismatch || floor?.stateUnknown ? 'Release pending'
+          : known ? count ? `${count} of 4 overrides on` : '4 overrides off' : 'Output feedback unavailable';
         node.preview.hidden = false;
       }
       if (node.caravan) {
@@ -971,8 +982,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       const summary = equipmentConnectionSummary(device);
       node.state.textContent = summary.label; node.state.dataset.state = summary.state; node.recent.textContent = summary.recent;
       node.intro.textContent = equipmentConnectionIntroduction(device);
-      node.detail.textContent = device.kind === 'floor_override' ? device.connectionDetail
-        : Number.isFinite(device.check?.checkedAt) ? equipmentCheckText(device) : '';
+      node.detail.textContent = Number.isFinite(device.check?.checkedAt) ? equipmentCheckText(device) : '';
       node.detail.hidden = !node.detail.textContent;
       node.checked.textContent = Number.isFinite(device.check?.checkedAt) ? `Checked ${clock.format(device.check.checkedAt)}` : '';
       node.checked.hidden = !node.checked.textContent;
@@ -1010,6 +1020,10 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     $('equipment-check-message').textContent = checkMessage || (connections.length ? '' : 'No MQTT devices configured.');
     $('equipment-check-message').hidden = !checkMessage && connections.length > 0;
     $('equipment-check-message').classList.toggle('form-error', Boolean(checkMessage && error));
+    // A bookmarked device card is created by the first status update. Resolve
+    // that navigation once, without reopening folds or moving focus on polling.
+    if (pendingSetupId && document.defaultView?.location?.hash === `#${pendingSetupId}`) openSetup(pendingSetupId);
+    else pendingSetupId = null;
   }
   for (const link of document.querySelectorAll('[data-open-mqtt-settings], [data-open-configuration]')) link.addEventListener('click', () => {
     const target = $(link.hasAttribute('data-open-configuration') ? 'controls-details' : 'mqtt-devices-details');
@@ -1030,10 +1044,6 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     if (document.defaultView?.location?.hash !== `#${id}`)
       document.defaultView?.history?.pushState(null, '', `#${id}`);
     openSetup(id);
-    if (link.hasAttribute('data-open-floor-controls')) {
-      const floor = readingNodes.get(`floor-override:${FLOOR_PREHEAT_DEVICE.group}`)?.section;
-      if (floor) { floor.open = true; floor.querySelector('summary')?.focus({ preventScroll: true }); floor.scrollIntoView({ block: 'start' }); }
-    }
   });
   return { update: status => actions.update(status), refreshControls: () => current && render(current), actions };
 }

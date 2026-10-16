@@ -464,8 +464,9 @@ or water flow.
 **Home → Sensors & Equipment** provides administrator controls for each circuit.
 A manual treatment lasts at most 15 minutes; adding a circuit preserves the
 existing board deadline. Those commands never rewrite configuration or raise
-ROOM. **Home floor preheating** in Connections & configuration describes setup,
-current readiness and the separate firmware repository. See the
+ROOM. Current readiness, output feedback and release obligations stay in Home.
+**Home floor preheating** in Connections & configuration describes the hardware,
+installation and separate firmware repository, with a link back to Home. See the
 [floor contract](floor-preheat.md) for ownership, restoration and commissioning.
 
 ## Charging defaults and dashboard overrides

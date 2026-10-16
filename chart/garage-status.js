@@ -194,7 +194,7 @@ export function renderGarage(document, status = {}) {
   const warningNode = document.getElementById('garage-warming-warning');
   if (warningNode) { warningNode.hidden = !warning; warningNode.textContent = warning; }
   const connected = adapter.connected === true && adapter.health?.pumpCommunicating === true;
-  set('garage-controller-state', readOnly ? 'Recorded snapshot' : connected ? 'Connected' : adapter.connected ? 'Awaiting readings' : 'Not connected');
+  set('garage-controller-state', readOnly ? 'Recorded snapshot' : connected ? 'Available' : adapter.connected ? 'Awaiting readings' : 'Not connected');
   const connection = document.getElementById('garage-controller-state');
   if (connection) connection.dataset.state = readOnly ? 'pending' : connected ? 'available' : 'attention';
   set('garage-controller-reason', [garage.error, display.reason].filter(Boolean).join(' '));
