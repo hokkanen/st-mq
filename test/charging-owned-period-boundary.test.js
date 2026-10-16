@@ -207,6 +207,7 @@ test(`accepted Shelly period end while planning is held: ${condition}`, async t 
       pinnedFirstEndAt: f.execution.periods[0].endAt, waitSeen,
       assertionError: assertionError?.message ?? null,
       originalReconcileError: reconcileResult.ok ? null : reconcileResult.error.message,
+      failureControl: assertionError ? f.view('charger2').control : null,
       beforeBoundary: beforeBoundary ?? null, preStopEvidence: preStopEvidence ?? null,
       heldBoundaryCommands: (afterBoundary ?? []).map(({ method, role, value, at }) => ({ method, role, value, at })),
       events }));
@@ -239,6 +240,43 @@ function holdFirstPlan(f) {
   return { entered: entered.promise, ready: ready.promise, release: released.resolve,
     restore() { f.runtime.plannerService.request = original; } };
 }
+
+test('an unrelated native reply cannot strand the accepted Stop idle-current return', async t => {
+  const f = await acceptedProgram(t), item = f.runtime.chargers.charger2;
+  const held = holdFirstPlan(f), planning = outcome(f.runtime.reconcile('charger2'));
+  const recordLimiterHistory = f.runtime.recordLimiterHistory;
+  let injected = false, nativeReply, failure;
+  t.mock.method(f.runtime, 'recordLimiterHistory', function (...args) {
+    const result = Reflect.apply(recordLimiterHistory, this, args), control = item.controller.status();
+    if (!injected && control.ownedPause && !control.pending && control.permissionCommand?.value === false) {
+      injected = true;
+      // A real correlated reply reaches the real writer between Stop
+      // confirmation and selection/publication of the idle pilot. It changes
+      // no native instruction and supplies no replacement numerical plan.
+      nativeReply = f.adapter.rpc('Service.GetStatus');
+      void nativeReply.catch(() => {});
+    }
+    return result;
+  });
+  try {
+    await stage(held.ready, 'replacement numerical result held');
+    await enterGap(f); f.runtime.tick({ force: true });
+    await until(() => injected, 'native reply during confirmed Stop');
+    await nativeReply;
+    await until(() => f.view('charger2').control.pauseConfirmed && !item.reconcileFlight,
+      'accepted Stop completion while replacement planning is held');
+    assert.equal(f.fields.current_limit.value, f.adapter.config.fallbackCurrentA,
+      'Input admission must settle before the existing idle setting is dispatched');
+    assert.equal(f.commands.some(row => row.role === 'start_charging' && row.value === true), false);
+  } catch (error) { failure = error; }
+  finally {
+    held.release();
+    const result = await planning; held.restore();
+    failure ??= result.error;
+  }
+  if (failure) throw failure;
+});
+
 function holdStopBytes(f) {
   const original = f.adapter.rpc, entered = deferred(), released = deferred();
   let selected = false;

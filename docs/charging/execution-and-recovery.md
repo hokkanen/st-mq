@@ -74,6 +74,9 @@ existing idle-current rule may apply the configured fallback within tighter
 limits without waiting for the same calculation. If physical idle is confirmed
 on a later read, only the exact acknowledged same-session Stop and its unchanged
 native instruction retain this fallback path; false permission alone does not.
+An unrelated reply still awaiting admission uses the adapter's existing bounded
+input wait before another setting can be dispatched; it does not abandon the
+return or bypass fresh instruction, session and native-limit checks.
 The shortcut ends once the legal idle setting is confirmed, or no positive
 current return is required, so ordinary replacement planning can resume.
 A later display proposal does

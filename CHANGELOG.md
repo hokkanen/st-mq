@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Complete Shelly's confirmed idle-current return when an unrelated native
+  reply briefly awaits storage, retaining fresh input and instruction checks.
+
 - Route shared-client MQTT messages only through their owning receiver, avoiding
   duplicate writer work and heating-state copies for native charger traffic.
 

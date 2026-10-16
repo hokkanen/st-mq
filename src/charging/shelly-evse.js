@@ -2146,7 +2146,13 @@ export function createShellyController({ adapter, initialState, saveState = () =
           const permittedOwnedStop = () => !stopPass || role === 'start_charging' && value === false && !stopPass.stopped
             || role === 'current_limit' && stopPass.stopped && value === idleCurrentSetting(adapter.snapshot(), context);
           if (!permittedOwnedStop()) return false;
-          if (!adapter.snapshot().controlReady || role === 'start_charging' && value === true
+          const commandSnapshot = adapter.snapshot();
+          // A received, unchanged input may still be committing after our
+          // Stop readback. Let rpc join that bounded admission before its full
+          // native/scope checks instead of abandoning the idle return here.
+          const inputPending = commandSnapshot.observationReady && adapter.waitForInputAdmission
+            && ['evse-input-persistence-pending', 'evse-source-time-pending'].includes(commandSnapshot.commandBlockReason);
+          if (!commandSnapshot.controlReady && !inputPending || role === 'start_charging' && value === true
             && devicePermission(adapter.snapshot()).held) return false;
           const attempt = adapter.controlAttempt?.() ?? createControlAttempt();
           try {
