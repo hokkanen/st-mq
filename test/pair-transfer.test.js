@@ -234,3 +234,17 @@ test('an empty replica guard rejects an unexpected publication instead of adopti
   await receiveSnapshot({ directory, metadata, peer: f.peer });
   await assert.rejects(guard(), { code: 'verification_failed' });
 });
+
+test('cancelling a returned publication guard preserves cancellation instead of reporting damaged history', async t => {
+  const f = await fixture(t), directory = join(f.root, 'slave');
+  const metadata = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 1 });
+  await receiveSnapshot({ directory, metadata, peer: f.peer });
+  const controller = new AbortController();
+  const guard = await createReplicaPublicationGuard({ directory, accepted: acceptedSnapshot(metadata), signal: controller.signal });
+  const cancelled = Object.assign(new Error('Synthetic authority change'), { code: 'authority_changed' });
+  const checking = guard();
+  controller.abort(cancelled);
+  await assert.rejects(checking, error => error === cancelled);
+  const current = await createReplicaPublicationGuard({ directory, accepted: acceptedSnapshot(metadata) });
+  await current();
+});

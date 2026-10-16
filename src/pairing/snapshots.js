@@ -69,8 +69,13 @@ export async function createReplicaPublicationGuard({ directory, accepted, signa
       if (accepted || originalManifest) throw pairError('verification_failed');
       return async () => {
         try {
+          signal?.throwIfAborted();
           if (await manifestState()) throw pairError('verification_failed');
-        } catch { throw pairError('verification_failed'); }
+          signal?.throwIfAborted();
+        } catch {
+          if (signal?.aborted) throw signal.reason ?? pairError('stopped');
+          throw pairError('verification_failed');
+        }
       };
     }
     validateSnapshot(publication);
@@ -80,17 +85,22 @@ export async function createReplicaPublicationGuard({ directory, accepted, signa
     const before = originalManifest;
     const assertUnchanged = async () => {
       try {
+        signal?.throwIfAborted();
         const current = await manifestState();
         if (!isDeepStrictEqual(before, current)) throw pairError('verification_failed');
         const checkpoint = await databaseCheckpoint({ dbPath: publication.dbPath, signal });
         if (!sameCheckpoint(checkpoint, publication.checkpoint)) throw pairError('verification_failed');
-      } catch { throw pairError('verification_failed'); }
+      } catch {
+        if (signal?.aborted) throw signal.reason ?? pairError('stopped');
+        throw pairError('verification_failed');
+      }
     };
     await verifySnapshot(publication.dbPath, publication, signal);
     await assertUnchanged();
     return assertUnchanged;
   } catch (error) {
-    if (signal?.aborted || error?.code === 'stopped') throw pairError('stopped');
+    if (signal?.aborted) throw signal.reason ?? pairError('stopped');
+    if (error?.code === 'stopped') throw error;
     const details = databaseErrorDetails(error);
     throw Object.assign(pairError(details?.code ?? 'verification_failed'), details);
   }

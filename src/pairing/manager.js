@@ -558,7 +558,7 @@ export class PairManager {
       return result;
     } catch (error) {
       this.sync = { ...this.sync, state: 'error', error: publicPairError(error) };
-      if (this.state.value.role === 'slave' && ['verification_failed', 'database_journal_invalid',
+      if (!signal.aborted && this.state.value.role === 'slave' && ['verification_failed', 'database_journal_invalid',
         'journal_checkpoint_mismatch', 'journal_hash_mismatch', 'journal_history_expired'].includes(error?.code))
         await this.state.update({ role: 'protected', reason: error.code==='journal_history_expired' ? 'journal_history_expired' : 'snapshot_verification_failed', bootstrapPending: false });
       if (['snapshot_unavailable', 'authority_changed'].includes(error?.code)) await this.state.update({ pendingSnapshot: null });
@@ -654,7 +654,7 @@ export class PairManager {
       try { return await operation(); }
       catch (error) {
         const database = databaseErrorDetails(error);
-        if ((['verification_failed', 'database_journal_invalid', 'journal_checkpoint_mismatch', 'journal_hash_mismatch'].includes(error?.code)
+        if (!signal?.aborted && (['verification_failed', 'database_journal_invalid', 'journal_checkpoint_mismatch', 'journal_hash_mismatch'].includes(error?.code)
           || database) && this.state.value.role === 'slave') {
           this.sync = { ...this.sync, state: 'error', error: publicPairError(error) };
           await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false,
