@@ -9,6 +9,9 @@ requested. A connected vehicle can be waiting even when charging is allowed.
 Use the chevron beside **Charger 1** or **Charger 2** to expand readings and
 settings. Below the energy figures, the compact footer keeps the current status
 and allowance visible, including while an action is pending, saved or failed.
+When control needs attention, its details retain any forecast target-risk warning
+alongside the control problem. A charging instruction alone does not confirm
+that the vehicle is drawing power or will reach its target.
 **Session report ↗** opens the report window independently of the card. It shares
 the same arrow placement with **One extra day ↗**.
 

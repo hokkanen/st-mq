@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep a forecast target-risk warning in charging attention details when
+  charger control is unconfirmed, alongside the reported control problem.
+
 - Keep explicit charging takeover bound to its initial published plan, preserving
   newer native current choices and charger limits.
 

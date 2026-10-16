@@ -54,7 +54,8 @@ function chargingNoticeContent(charger, view, summary) {
   if (view.sessionPause) return { label: view.sessionPause.label, detail: view.sessionPause.detail, state: view.sessionPause.unconfirmed ? 'attention' : 'manual' };
   if (view.identification?.recovery) return { label: view.identification.label, detail: view.identification.detail, state: 'attention' };
   if (view.problem || summary.roleState === 'uncertain') return { label: 'Charger needs attention',
-    detail: [...new Set([view.problem, summary.roleDetail, view.priority, ...view.notes].filter(Boolean))].join('\n\n'), state: 'attention' };
+    detail: [...new Set([view.problem, view.risk === true ? view.readiness : '',
+      summary.roleDetail, view.priority, ...view.notes].filter(Boolean))].join('\n\n'), state: 'attention' };
   if ((charger.identification?.active || charger.identification?.phase === 'observing') && view.showMetrics) return { label: view.identification?.label ?? view.vehicle.label,
     detail: view.vehicle.detail, state: 'quiet' };
   if (charger.identification?.phase === 'inconclusive' && view.showMetrics) return { label: 'Identification inconclusive',
