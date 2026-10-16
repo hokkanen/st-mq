@@ -39,7 +39,7 @@ export function chargingPlannerInput(options) {
 }
 
 export function chargingPlanValidUntil(options, result) {
-  const boundaries = [options.now + 30_000,
+  const boundaries = [
     ...(result.allocations ?? []).flatMap(row => [row.start, row.end]),
     ...Object.values(result.plans ?? {}).flatMap(plan => [plan.deadlineAt,
       ...(plan.periods ?? []).flatMap(row => [row.startAt, row.endAt])]),

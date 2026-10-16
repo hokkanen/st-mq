@@ -113,6 +113,7 @@ test(`accepted Shelly period end while planning is held: ${condition}`, async t 
   };
   // The actual controller owns this flight, including its native readback and
   // private cancellable readPlan wait. No execution or native reply is injected.
+  f.runtime.prices = f.runtime.prices.map(row => ({ ...row, priceCtPerKwh: (row.priceCtPerKwh ?? row.price) + .01 }));
   const reconcile = f.runtime.reconcile('charger2');
   const settled = reconcile.then(() => ({ ok: true }), error => ({ ok: false, error }));
   let assertionError = null, beforeBoundary, afterBoundary;
@@ -209,6 +210,8 @@ const outcome = promise => promise.then(value => ({ value }), error => ({ error 
 async function joinOutcome(result) { const settled = await result; if (settled.error) throw settled.error; return settled.value; }
 
 function holdFirstPlan(f) {
+  // Changed published rates request work; age and unchanged polling do not.
+  f.runtime.prices = f.runtime.prices.map(row => ({ ...row, priceCtPerKwh: (row.priceCtPerKwh ?? row.price) + .01 }));
   const original = f.runtime.plannerService.request, entered = deferred(), ready = deferred(), released = deferred();
   let selected = false;
   f.runtime.plannerService.request = function (...args) {

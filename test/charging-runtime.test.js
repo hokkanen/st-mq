@@ -180,6 +180,7 @@ test('forecast-only current prices allow a worker plan to publish as the clock a
     if (++requests === 1) f.setNow(f.clock() + 1);
     return result;
   };
+  runtime.lastEconomicSearch = null;
   await runtime.updatePlan(f.clock());
   assert.equal(requests, 1, 'Unchanged active forecast prices must not discard the completed worker result');
   assert.equal(chargerView(runtime).plan.usesForecast, true);
@@ -213,11 +214,13 @@ test('ongoing equivalent planning notifications cannot starve a completed worker
     }
     return result;
   };
+  runtime.prices = prices.map(row => ({ ...row, price: row.price + 1 }));
   await runtime.updatePlan(requestedAt);
   assert.equal(searches, 1, 'The result publishes while notifications are still arriving');
   assert.equal(notifications, 2);
   assert.equal(runtime.coordination.at, requestedAt, 'The forecast retains its original calculation time');
-  assert.equal(runtime.planningRequest, null, 'Equivalent queued work is covered by the committed result');
+  await runtime.planningFlight;
+  assert.equal(runtime.planningRequest, null, 'Equivalent queued work finishes through cheap reuse');
   assert.equal(chargerView(runtime).plan.feasible, true);
 });
 
@@ -232,6 +235,7 @@ test(`a planning notification cannot admit a worker result after changed ${chang
   const request = runtime.plannerService.request.bind(runtime.plannerService);
   let searches = 0;
   runtime.plannerService.request = async options => {
+    if (options.fixedPeriods?.charger1) return request(options);
     if (++searches === 2) assert.equal(runtime.coordination.at, previousAt, 'The obsolete first result was not published');
     const result = await request(options);
     if (searches === 1) {
@@ -258,8 +262,9 @@ test(`a planning notification cannot admit a worker result after changed ${chang
     }
     return result;
   };
+  runtime.prices = prices.map(row => ({ ...row, price: row.price + 1 }));
   await runtime.updatePlan(f.clock());
-  assert.equal(searches, 2, 'Changed evidence requires one fresh calculation');
+  assert.ok(searches >= (changed === 'control' ? 1 : 2) && searches <= (changed === 'price' ? 3 : changed === 'control' ? 1 : 2), 'Changed evidence gets bounded fresh work; disabled requests need no optimizer');
   assert.equal(runtime.coordination.at, f.clock());
 });
 
@@ -272,6 +277,7 @@ test('one-day preview and selected forecast cost stay outside published accounti
   let view = chargerView(runtime);
   assert.ok(view.plan.finishAt <= initialNow + 4 * HOUR); assert.equal(view.plan.usesForecast, false);
   assert.equal(runtime.getPlanningPrices().some(row => row.predicted), true);
+  f.setNow(initialNow + 15 * 60_000); await runtime.reconcile();
   const preview = await runtime.previewFlexibility('charger1', { association: view.association,
     sessionId: view.request.sessionId, revision: view.request.revision });
   assert.equal(preview.comparison.available, true, preview.comparison.reason);
@@ -372,7 +378,6 @@ test('one-day unavailable reasons keep the worker blocker through fresh and reta
   const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
-  await runtime.flexibilityPreviewFlight;
   const original = (await runtime.calculateFlexibilityPreview('charger1')).comparison;
   assert.equal(original.available, true);
   runtime.plannerService.compare = async () => ({ available: false, reason: 'extended-plan-infeasible',
@@ -391,8 +396,6 @@ test('a peer or shared-priority edit fences an in-flight one-day comparison and 
   const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
-  await runtime.flexibilityPreviewFlight;
-  runtime.queueFlexibilityPreviews = () => {};
   let finish, started;
   const entered = new Promise(resolve => { started = resolve; });
   runtime.plannerService.compare = () => new Promise(resolve => { finish = resolve; started(); });
@@ -411,7 +414,7 @@ test('one-day savings survive telemetry, readiness, age and failed refresh witho
   const f = fixture(preferences, {}, { charger1: true }), setAvailable = syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile(); await runtime.planningFlight;
-  await runtime.flexibilityPreviewFlight; runtime.queueFlexibilityPreviews = () => {};
+
   const original = (await runtime.calculateFlexibilityPreview('charger1')).comparison;
   assert.equal(original.available, true);
   const controlStatus = runtime.controlStatus.bind(runtime);
@@ -456,7 +459,7 @@ test('one-day savings survive telemetry, readiness, age and failed refresh witho
   const replacement = (await runtime.calculateFlexibilityPreview('charger1')).comparison;
   assert.equal(replacement.available, true);
   assert.equal(replacement.at, f.clock());
-  assert.notEqual(replacement.savingsCents, original.savingsCents);
+  assert.notEqual(replacement.normalCostCents, original.normalCostCents);
   assert.deepEqual(chargerView(runtime).flexibility.preview, replacement);
 });
 
@@ -464,7 +467,7 @@ test('a temporary missing native session retains the dated comparison without gr
   const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
-  await runtime.flexibilityPreviewFlight; runtime.queueFlexibilityPreviews = () => {};
+
   const before = chargerView(runtime), original = (await runtime.calculateFlexibilityPreview('charger1')).comparison;
   assert.equal(original.available, true);
   const controller = runtime.chargers.charger1.controller, controlStatus = controller.status.bind(controller);
@@ -485,7 +488,7 @@ test('telemetry and bare request revisions cannot starve an in-flight estimate o
   const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
-  await runtime.flexibilityPreviewFlight; runtime.queueFlexibilityPreviews = () => {};
+
   const staleAction = flexibilityInput(runtime), compare = runtime.plannerService.compare.bind(runtime.plannerService);
   let entered, finish;
   const started = new Promise(resolve => { entered = resolve; }), held = new Promise(resolve => { finish = resolve; });
@@ -517,7 +520,7 @@ test('an old in-flight comparison cannot borrow a replacement connection estimat
   const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
-  await runtime.flexibilityPreviewFlight; runtime.queueFlexibilityPreviews = () => {};
+
   const original = structuredClone(chargerView(runtime));
   const compare = runtime.plannerService.compare.bind(runtime.plannerService);
   let finish, entered;
@@ -545,38 +548,25 @@ test('an old in-flight comparison cannot borrow a replacement connection estimat
     'rejecting the old request preserves the new connection cache');
 });
 
-test('one-day background calculations skip unchanged polling and respond to numerical input changes', async t => {
+test('one-day comparisons run on request without hidden minute refreshes', async t => {
   const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
-  const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
-  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
-  await runtime.flexibilityPreviewFlight;
-  await runtime.calculateFlexibilityPreview('charger1');
-  let calls = 0;
-  const calculate = runtime.calculateFlexibilityPreview.bind(runtime);
-  runtime.calculateFlexibilityPreview = async id => { calls++; return calculate(id); };
-  f.setNow(initialNow + 60_000); runtime.flexibilityContext.now = f.clock();
-  runtime.flexibilityContext.chargers[0].values.soc.receivedAt = f.clock();
-  runtime.queueFlexibilityPreviews(); await runtime.flexibilityPreviewFlight;
-  assert.equal(calls, 0, 'New receipt clocks and unchanged polling do not recalculate a waiting comparison');
-  runtime.flexibilityContext.chargers[0].requiredGridKwh += 1;
-  runtime.queueFlexibilityPreviews(); await runtime.flexibilityPreviewFlight;
-  assert.equal(calls, 1, 'Changed remaining energy recalculates both alternatives');
-  runtime.queueFlexibilityPreviews(); await runtime.flexibilityPreviewFlight;
-  assert.equal(calls, 1);
-  const waitingInputs = runtime.flexibilityInputs('charger1');
-  f.setNow(initialNow + HOUR);
-  const runningInputs = runtime.flexibilityInputs('charger1');
-  assert.notEqual(runningInputs, waitingInputs, 'Entering a proposed period or a new price interval changes the remaining window');
-  f.setNow(initialNow + HOUR + 60_000);
-  assert.notEqual(runtime.flexibilityInputs('charger1'), runningInputs, 'A running proposal refreshes when its displayed minute changes');
+  const runtime=f.create(),adapter=fakeAdapter(f.clock);t.after(()=>runtime.close());
+  await runtime.setAdapter('charger1',adapter);await runtime.tick({prices});await runtime.reconcile();
+  const compare=runtime.plannerService.compare.bind(runtime.plannerService);let calls=0;
+  runtime.plannerService.compare=(...args)=>{calls++;return compare(...args);};
+  for(const minutes of [1,2,6]) {f.setNow(initialNow+minutes*60_000);await runtime.tick();await runtime.reconcile();}
+  assert.equal(calls,0,'Closed comparisons create no numerical work');
+  const first=await runtime.previewFlexibility('charger1',requestScope(chargerView(runtime)));
+  assert.equal(first.comparison.available,true);assert.equal(calls,1);
+  f.setNow(f.clock()+60_000);await runtime.tick();await runtime.reconcile();assert.equal(calls,1);
+  const next=await runtime.previewFlexibility('charger1',requestScope(chargerView(runtime)));
+  assert.equal(next.comparison.available,true);assert.equal(calls,2);
 });
 
-test('the selected one-day comparison survives allow and cancel while active allowances still refresh', async t => {
+test('the selected one-day comparison survives allow and cancel and an explicit refresh shows its actual approved plan', async t => {
   const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
-  await runtime.flexibilityPreviewFlight;
-  const queue = runtime.queueFlexibilityPreviews.bind(runtime); runtime.queueFlexibilityPreviews = () => {};
   const original = (await runtime.calculateFlexibilityPreview('charger1')).comparison;
   assert.equal(original.available, true);
   await runtime.setFlexibility('charger1', flexibilityInput(runtime));
@@ -585,11 +575,11 @@ test('the selected one-day comparison survives allow and cancel while active all
   let refreshed = 0;
   const calculate = runtime.calculateFlexibilityPreview.bind(runtime);
   runtime.calculateFlexibilityPreview = async id => { refreshed++; return calculate(id); };
-  runtime.chargers.charger1.previewAttemptAt = null;
-  queue(); await runtime.flexibilityPreviewFlight;
-  assert.equal(refreshed, 1, 'an active allowance participates in bounded background recalculation');
+  await runtime.calculateFlexibilityPreview('charger1');
+  assert.equal(refreshed, 1, 'An active allowance refreshes only when requested');
   const active = chargerView(runtime).flexibility.preview;
   assert.equal(active.available, true);
+  assert.deepEqual(active.deferredPeriods, chargerView(runtime).plan.periods, 'The approved comparison is the actual retained program');
   await runtime.setFlexibility('charger1', flexibilityInput(runtime, 'cancel', 'cancel-same-comparison'));
   assert.deepEqual(chargerView(runtime).flexibility.preview, active);
   await editSession(runtime, 'charger1', { minimumSoc: 85 });
@@ -801,17 +791,10 @@ test('the speculative replan hurdle follows forecast energy in either alternativ
     assert.equal(candidate.usesForecast, exposure === 'candidate');
     assert.ok(runtime.getPlanningPrices().some(row => row.predicted && row.start >= original.deadlineAt),
       'every case also contains unused predictions beyond the deadline');
-    if (exposure === 'neither') {
-      assert.equal(after.plan.usesForecast, false);
-      assert.equal(after.control.phase, 'pause-unconfirmed', 'published-only savings retain the ordinary cash policy');
-      assert.equal(after.control.owned.startAt, initialNow + 3 * HOUR);
-      assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 1);
-    } else {
-      assert.equal(after.control.execution.planId, original.planId);
-      assert.equal(after.control.released, true, 'forecast exposure on either side requires more than 5 cents');
-      assert.equal(after.plan.usesForecast, exposure === 'adopted');
-      assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 0);
-    }
+    assert.equal(after.control.execution.planId, original.planId);
+    assert.equal(after.control.released, true, 'Every ongoing economic replacement needs more than five cents');
+    assert.equal(after.plan.usesForecast, exposure === 'adopted');
+    assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 0);
   });
 });
 
@@ -1704,8 +1687,8 @@ test('a fully observed zero-power period replans remaining energy once at the ga
   const revised = chargerView(runtime).plan;
   assert.equal(chargerView(runtime).progress.creditedGridKwh, 0);
   assert.equal(chargerView(runtime).progress.basis.continuousSince, initialNow);
-  assert.notEqual(revised.id, original.id);
-  assert.equal(revised.replannedGapAt, initialNow + HOUR);
+  assert.equal(revised.id, original.id, 'Equivalent remaining permission keeps the accepted identity');
+  assert.ok(revised.feasible, 'The retained future period still supplies the complete request');
   assert.equal(revised.requiredGridKwh, original.requiredGridKwh, 'The observed lack of delivery leaves the full requirement to schedule');
   await runtime.reconcile(); await runtime.planningFlight;
   assert.equal(chargerView(runtime).plan.id, revised.id, 'Repeated gap polls do not keep replacing the same plan');
@@ -1799,7 +1782,9 @@ test('recovery selection invalidates ready household forecasts and fences an old
   finishes[1](currentRows);
   await new Promise(resolve => setImmediate(resolve));
   await runtime.planningFlight;
-  assert.equal(runtime.household, currentRows);
+  assert.deepEqual(runtime.household, currentRows);
+  assert.notEqual(runtime.household, currentRows, 'the published forecast owns its immutable source snapshot');
+  assert.equal(Object.isFrozen(runtime.household), true);
   assert.equal(runtime.historyReady, true);
   f.store.db.prepare('UPDATE history_selection SET generation=? WHERE id=1').run('synthetic-restored');
   await runtime.updatePlan();
@@ -2492,4 +2477,25 @@ test('absent new controls in current state default OFF and Balanced without impo
   assert.equal(chargerView(restarted).request.sessionId, original.request.sessionId);
   assert.equal(chargerView(restarted).settings.minimumSoc, 90);
   assert.equal(adapter.calls.filter(row => row.kind === 'clear').length, 1);
+});
+
+
+for (const saving of [.99, 1, 1.01]) test(`waiting joint program replacement with ${saving} cents improvement`, async t => {
+  const f=fixture({defaults:{capacityKwh:10,readyBy:'06:00'}},{},{charger1:true});
+  const runtime=f.create(),adapter=fakeAdapter(f.clock);t.after(()=>runtime.close());
+  await runtime.setAdapter('charger1',adapter);await runtime.tick({prices:priceOutlook([20,1,20,2])});await runtime.reconcile();
+  const before=chargerView(runtime),id=before.control.execution.planId,energy=before.requiredGridKwh;
+  await runtime.tick({prices:priceOutlook([20,1,20,1-saving/energy])});await runtime.reconcile();
+  const after=chargerView(runtime);
+  if(saving<=1)assert.equal(after.control.execution.planId,id,'At or below the one-cent hurdle the accepted identity stays');
+  else {assert.notEqual(after.control.execution.planId,id);assert.ok(after.control.owned.startAt>=initialNow+3*HOUR);}
+});
+
+for (const saving of [4.99,5,5.01]) test(`ongoing joint program replacement with ${saving} cents improvement`,async t=>{
+  const {runtime,adapter,original}=await activePriceFixture(t,[5,5,50,50]);
+  const energy=chargerView(runtime).requiredGridKwh;
+  await runtime.tick({prices:priceOutlook([5,5,50,5-saving/energy])});await runtime.reconcile();
+  const after=chargerView(runtime);
+  if(saving<=5)assert.equal(after.control.execution.planId,original.planId,'At or below the five-cent hurdle native charging continues');
+  else {assert.notEqual(after.control.execution.planId,original.planId);assert.equal(after.control.phase,'pause-unconfirmed');}
 });

@@ -19,8 +19,8 @@ for (const mode of ['native', 'charge-now', 'automatic'])
     // A forecast can reserve capacity for a secondary deadline or assume a
     // higher household scenario. It is deliberately distinct from the live
     // property/peer/meter inputs above.
-    f.runtime.coordination.allocations = [{ start: f.now, end: f.now + MINUTE,
-      chargers: { charger1: { currentA: 8 }, charger2: { currentA: 8, currentLimitA: 8 } } }];
+    f.runtime.coordination = { ...f.runtime.coordination, allocations: [{ start: f.now, end: f.now + MINUTE,
+      chargers: { charger1: { currentA: 8 }, charger2: { currentA: 8, currentLimitA: 8 } } }] };
     f.advance(5000);
     await f.runtime.reconcileShellyObservation();
     assert.equal(f.fields.current_limit.value, 16);

@@ -6,6 +6,16 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Reduce charging planner CPU use with exact allocation reuse, a flow-guided
+  bounded search and meaningful-change admission. Keep accepted programs through
+  unchanged reporting; require more than 5 cents to replace ongoing charging or
+  1 cent while waiting. Preserve 15-minute charging windows with 10-minute minimum
+  economic pauses and absolute price-slot boundaries.
+
+- Calculate extra-day comparisons on request, show the actual approved program
+  for active allowances and keep Web access status inside its details. Align
+  hot-water circulation availability with neighboring equipment.
+
 - Reduce CPU and memory use when reading and saving charging state by reusing
   unchanged plans and forecasts, while preserving scheduling, rollback and
   recorded history.

@@ -1,4 +1,4 @@
-import { planChargers, chargingPlanParticipants, chargingPlanTotals } from './planner.js';
+import { planChargers, forecastFixedPlans, chargingPlanParticipants, chargingPlanTotals } from './planner.js';
 
 const priced = row => Number.isFinite(row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price);
 // Only modeled energy-delivery spans count as charging time. An allowed period
@@ -39,7 +39,15 @@ export function compareChargingFlexibility(options, { chargerId, normalReadyByAt
       // native instruction or manual vehicle restriction.
       control: charger.settings.enabled && !charger.request?.chargeNow && !charger.control?.manual
         ? { ...charger.control, released: false, phase: null } : charger.control })) });
-  const normal = planChargers(prepare(false)), deferred = planChargers(prepare(true));
+  const normal = planChargers(prepare(false));
+  // An active allowance compares canceling it with the program actually chosen
+  // for this joint request, including monetary retention and peer allocations.
+  // A newly optimized hypothetical must not replace the displayed approved plan.
+  const deferred = existingAllowance && options.approvedPeriods
+    ? forecastFixedPlans({ ...prepare(true),
+      chargers: prepare(true).chargers.map(charger => ({ ...charger,
+        allocationTargetAt: options.approvedTargets?.[charger.id] })), periodsByCharger: options.approvedPeriods })
+    : planChargers(prepare(true));
   const connected = chargingPlanParticipants(options.chargers, normal, deferred);
   const comparable = result => connected.some(charger => charger.id === chargerId)
     && chargingPlanTotals(result, connected) !== null;

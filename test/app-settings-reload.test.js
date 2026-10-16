@@ -353,7 +353,7 @@ test('controller-only reload retains provider snapshots and rate-limit backoff',
   assert.deepEqual(app.store.getState('providers:health').weather.sourceBackoff.fmi, backoff);
   assert.equal(app.store.getState('providers:health').weather.nextAttemptAt, health.weather.nextAttemptAt);
   health.weather.nextAttemptAt = now + 1800_000;
-  app.store.setState('providers:health', health);
+  await app.store.runWrite(() => app.store.setState('providers:health', health));
   write({ ...options, controller: { input: 'providers', max_drop_c: 0.5 }, acquisition: { weather_poll_minutes: 5 } });
   assert.equal((await post()).status, 200);
   assert.equal(app.store.getState('providers:health').weather.nextAttemptAt, now + 300_000);

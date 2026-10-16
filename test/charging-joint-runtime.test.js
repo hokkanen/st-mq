@@ -67,10 +67,11 @@ test('editing a request updates the other charger through the real OCPP and Shel
   await f.plan();
   await f.connect('charger1'); await f.connect('charger2'); await f.plan();
   assert.equal(f.view('charger1').plan.state, 'waiting'); assert.equal(f.view('charger2').plan.state, 'waiting');
-  const peerBefore = f.reads.charger2, previous = structuredClone(f.view('charger2').plan.periods);
+  const previous = structuredClone(f.view('charger2').plan.periods);
   await f.edit('charger1', { capacityKwh: 25, readyBy: '04:00' });
   assert.notDeepEqual(f.view('charger2').plan.periods, previous, 'The changed shared demand moves the peer schedule');
-  assert.ok(f.reads.charger2 > peerBefore, 'The edited joint plan must reach the peer controller before the action finishes');
+  await f.settle();
+  assert.deepEqual(f.view('charger2').control.execution.periods, f.view('charger2').plan.periods, 'The peer adopts the edited joint program using admitted native evidence');
   assert.equal(f.view('charger2').control.reason, 'economic-wait');
   assert.equal(f.fields.start_charging.value, false);
 });

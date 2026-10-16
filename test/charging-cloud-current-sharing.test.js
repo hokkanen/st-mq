@@ -84,14 +84,14 @@ async function sharingFixture(t, { budgetA = 24, gapMinutes = 16, initialWaitMin
 }
 
 test('a planned cloud pause cannot release current entitlement before native pause confirmation', async t => {
-  const x = await sharingFixture(t), { f } = x;
+  const x = await sharingFixture(t, {gapMinutes:11}), { f } = x;
   assert.equal(x.controller.status().phase, 'active');
   assert.equal(f.view('charger1').telemetry.currentSharingActive, true);
   const before = x.limit(); assert.equal(before.currentA, 12);
   await x.adjust(); assert.equal(f.fields.current_limit.value, 12);
   const request = structuredClone(f.view('charger1').request), execution = structuredClone(x.controller.status().execution);
   const nativeClocks = Object.fromEntries([31, 96, 100, 109, 120].map(id => [id, x.controller.status().snapshot.observations[id].at]));
-  assert.equal(execution.periods[1].startAt - execution.periods[0].endAt, 16 * MINUTE,
+  assert.equal(execution.periods[1].startAt - execution.periods[0].endAt, 11 * MINUTE,
     'The newly accepted synthetic program is representable before latency');
   f.advance(15 * MINUTE + 1000);
   x.delayPreflight(2 * MINUTE);
@@ -119,7 +119,7 @@ test('a planned cloud pause cannot release current entitlement before native pau
 });
 
 test('an unconfirmed cloud pause keeps entitlement through an Equalizer zero draw', async t => {
-  const x = await sharingFixture(t), { f } = x;
+  const x = await sharingFixture(t, {confirmPause:false}), { f } = x;
   f.advance(16 * MINUTE + 1000);
   for (const draw of [0, 8, 16]) {
     f.cars.charger1.demandA = draw;

@@ -5,10 +5,10 @@ import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
 import { forecastFixedPlans, currentChargingAllocation } from './planner.js';
 import { createChargingPlannerService } from './planner-service.js';
-import { chargingPlannerInput, chargingPlanValidUntil } from './planner-input.js';
+import { chargingPlanValidUntil } from './planner-input.js';
 import { copyChargingValue, immutableChargingValue, isImmutableChargingValue } from './immutable.js';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
-import { backgroundPlanDeadline } from './plan-settling.js';
+import { backgroundPlanDeadline, economicPlanningState, economicPlanningChange, economicProgressChange, IMMINENT_PLAN_MS } from './replanning.js';
 import { createChargingController, validateChargingOwnershipState } from './controller.js';
 import { validateOcppChargingOwnershipState, ocppLocalStopInSession, ocppLocalStopAfter } from './ocpp.js';
 import { easeeChargerTelemetry, effectiveScheduleFingerprint } from './easee.js';
@@ -176,7 +176,7 @@ const vehicleReception = (feed, now) => ({ ...feed.mqtt, provider: feed.provider
   available: Boolean(vehicleFeedAvailable(feed, now)),
   reason: !feed.mqtt.connected || !feed.mqtt.subscribed ? feed.mqtt.reason
     : vehicleFeedAdmission(feed)?.reason ?? (vehicleFeedAvailable(feed, now) ? null : feed.mqtt.lastValidLiveAt === null ? 'awaiting-report' : 'vehicle-feed-stale') });
-const MIN_PRICE_PAUSE_MS = 15 * MINUTE, MIN_PRICE_SAVINGS_CENTS = 0;
+const MIN_CHARGING_PERIOD_MS = 15 * MINUTE, MIN_PRICE_PAUSE_MS = 10 * MINUTE;
 // Current sharing follows native permission, never the momentary charging
 // state. Equalizer may reduce a permitted transaction to zero without changing
 // its request or surrendering its planned entitlement.
@@ -2209,49 +2209,12 @@ export class ChargingRuntime {
   }
   flexibilityMarket(now = this.clock()) {
     const forecast = this.engine.electricityForecast?.snapshot({ now });
-    return digest([priceSnapshot(this.prices), forecast?.enabled, forecast?.available, forecast?.fetchedAt,
-      forecast?.generatedAt, forecast?.expiresAt]);
+    return digest([priceSnapshot(this.getPlanningPrices(now)), forecast?.enabled, forecast?.available]);
   }
   getPlanningPrices(now = this.clock()) {
     const forecast = this.engine.electricityForecast?.snapshot({ now });
     if (!forecast?.available) return this.prices;
     return forecastPriceOutlook({ official: this.prices, forecast, contract: this.engine.contract(), now });
-  }
-  flexibilityInputs(id, context = this.flexibilityContext, now = this.clock()) {
-    if (!context) return null;
-    const inputs = chargingPlannerInput({ chargers: context.chargers, supply: context.supply });
-    // Source receipt clocks do not change a counterfactual plan. Preserve the
-    // numerical inputs, request scope and actual changes of forecast coverage.
-    for (const charger of inputs.chargers) {
-      const soc = charger.values.soc;
-      charger.values.soc = { value: soc?.value, available: soc?.available, assumed: soc?.assumed };
-    }
-    const interval = row => [row.start <= now ? null : row.start, row.end];
-    const comparison = this.charger(id).flexibilityPreview?.comparison;
-    const periods = [...(comparison?.normalPeriods ?? []), ...(comparison?.deferredPeriods ?? [])];
-    // A proposed period starting now changes its visible start/finish as time
-    // advances, even before another energy reading. Waiting plans need only
-    // refresh when an input or an actual price/household/period boundary changes.
-    const running = periods.some(period => period.startAt <= now && (period.endAt === null || period.endAt > now));
-    return digest({ scope: context.scopes[id], inputs, priority: context.priority,
-      prices: context.prices.filter(row => row.end > now).map(row => [...interval(row),
-        row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price, row.predicted === true, row.uncertaintyCtPerKwh ?? 0]),
-      household: (context.household ?? []).filter(row => row.end > now).map(row => [...interval(row), row.phaseCurrentA, row.scenarios]),
-      fixedPeriods: context.fixedPeriods, periodBoundaries: periods.map(period => [period.startAt <= now, Number.isFinite(period.endAt) && period.endAt <= now]),
-      runningMinute: running ? Math.floor(now / MINUTE) : null });
-  }
-  queueFlexibilityPreviews() {
-    if (this.flexibilityPreviewFlight || this.closed || !this.canControl()) return;
-    this.flexibilityPreviewFlight = (async () => {
-      for (const candidate of this.views()) {
-        const item = this.charger(candidate.id), now = this.clock();
-        if (!candidate.flexibility.eligible && !candidate.flexibility.active
-          || item.previewInputs && item.previewInputs === this.flexibilityInputs(candidate.id)
-          || item.previewAttemptAt && now - item.previewAttemptAt < MINUTE) continue;
-        item.previewAttemptAt = now;
-        try { await this.calculateFlexibilityPreview(candidate.id); } catch { /* A preview never interrupts control. */ }
-      }
-    })().finally(() => { this.flexibilityPreviewFlight = null; });
   }
   async calculateFlexibilityPreview(id) {
     const now = this.clock(), views = this.views(now), view = views.find(charger => charger.id === id), item = this.charger(id);
@@ -2269,20 +2232,32 @@ export class ChargingRuntime {
         recommended: false, estimated: true }, refreshReason: retained ? blocker?.blockingReason ?? reason : null };
     };
     if (!flexibility.active && !flexibility.eligible) return unavailable(flexibility.reason);
-    if (!context || now < context.now || now - context.now >= 30_000 || !this.historyReady
-      || context.scopes[id] !== scope || context.market !== this.flexibilityMarket(now))
+    if (!context || now < context.now || !this.historyReady
+      || context.scopes[id] !== scope)
       return unavailable('planning-unavailable');
     const selected = context.chargers.find(charger => charger.id === id);
     if (selected?.association !== view.association || selected.request?.sessionId !== view.request?.sessionId)
       return unavailable('connection-changed');
-    const comparison = await this.plannerService.compare(context,
+    const market = this.flexibilityMarket(now);
+    const comparisonContext = { ...context, now, chargers: views, prices: this.getPlanningPrices(now),
+      approvedTargets: Object.fromEntries(views.map(view => [view.id,
+        withAllocationTarget(view, this.charger(view.id), now, true).allocationTargetAt])),
+      approvedPeriods: Object.fromEntries(views.flatMap(view => {
+        const periods = this.charger(view.id).plan?.periods;
+        return periods?.length && !view.control?.manual ? [[view.id, periods]] : [];
+      })),
+      fixedPeriods: Object.fromEntries(views.flatMap(view => {
+        const running = view.control?.execution?.periods?.find(period => period.startAt <= now
+          && (period.endAt === null || period.endAt > now));
+        return running && now - running.startAt < MIN_CHARGING_PERIOD_MS ? [[view.id, confirmedPeriods(view, now)]] : [];
+      })) };
+    const comparison = await this.plannerService.compare(comparisonContext,
       { chargerId: id, normalReadyByAt: flexibility.normalReadyByAt, deferredReadyByAt: flexibility.deferredReadyByAt });
-    if (!comparison || this.closed || !this.canControl() || context.market !== this.flexibilityMarket()
+    if (!comparison || this.closed || !this.canControl() || market !== this.flexibilityMarket()
       || this.clock() >= flexibility.normalReadyByAt || scope !== this.flexibilityScope(this.views(), id))
       return unavailable('comparison-changed');
     if (!comparison.available) return unavailable(comparison.reason, comparison);
     item.flexibilityPreview = { scope, comparison: immutableChargingValue(comparison) };
-    item.previewInputs = this.flexibilityInputs(id, context, now);
     return { flexibility: { ...flexibility, preview: comparison }, comparison, refreshReason: null };
   }
   async previewFlexibility(id, input) {
@@ -2326,75 +2301,80 @@ export class ChargingRuntime {
   }
   updatePlan(now = this.clock(), { sourceId, sourceWaiter, background = false } = {}) {
     if (this.closed) return Promise.resolve();
-    // Accepted observations/progress must survive a restart even while an old
-    // numerical search is still running. They are independent of plan adoption.
     if (this.planningFlight && !this.stateRefreshFlight) {
       this.stateRefreshFlight = this.write(() => this.refreshPlanningState(this.clock()))
-        .catch(() => { if (!this.closed) this.error = 'charging-planning-unavailable'; })
-        .finally(() => { this.stateRefreshFlight = null; });
+        .catch(() => {}).finally(() => { this.stateRefreshFlight = null; });
     }
-    // A later background notification cannot demote an explicit request that
-    // has not started yet. No timer or settling permission survives restart.
-    this.planningRequest = { sourceId, sourceWaiter, background: background && this.planningRequest?.background !== false };
+    const ticket = this.planningSequence = (this.planningSequence ?? 0) + 1;
+    this.planningWaiters ??= new Map();
+    const completion = new Promise((resolve, reject) => this.planningWaiters.set(ticket, { resolve, reject }));
+    this.planningRequest = { sourceId, sourceWaiter, ticket,
+      background: background && this.planningRequest?.background !== false };
     if (!this.planningFlight) {
-      this.planningFlight = (async () => {
+      const flight = (async () => {
         while (this.planningRequest && !this.closed) {
           const request = this.planningRequest; this.planningRequest = null;
-          // A queued request may outlive new native readback. Start its live
-          // evidence snapshot at execution time; the request's older clock
-          // must not turn that readback into future data and end identification.
-          await this.calculatePlan(this.clock(), request);
-          // A cached result can settle immediately. Repeated input changes must
-          // still let native replies, requests and timers run between retries.
+          try {
+            const covered = await this.calculatePlan(this.clock(), request);
+            if (covered) for (const [id, waiter] of this.planningWaiters) if (id <= request.ticket) {
+              this.planningWaiters.delete(id); waiter.resolve();
+            }
+          } catch (error) {
+            for (const [id, waiter] of this.planningWaiters) if (id <= request.ticket) {
+              this.planningWaiters.delete(id); waiter.reject(error);
+            }
+          }
           if (this.planningRequest && !this.closed) await new Promise(resolve => setImmediate(resolve));
         }
-      })().finally(() => { this.planningFlight = null; });
+      })();
+      this.planningFlight = flight;
+      void flight.finally(() => {
+        if (this.planningFlight === flight) this.planningFlight = null;
+        if (this.closed) for (const waiter of this.planningWaiters.values()) waiter.resolve();
+        else if (this.planningRequest) void this.updatePlan(this.clock(), this.planningRequest).catch(() => {});
+      });
     }
-    return this.planningFlight;
+    return completion;
   }
   async updatePlanForControl(now = this.clock(), options = {}) {
     const { signal, ...planningOptions } = options;
     if (signal?.aborted) throw signal.reason;
-    let published;
-    const publication = new Promise(resolve => { published = resolve; });
-    this.planPublicationWaiters ??= new Set();
-    this.planPublicationWaiters.add(published);
     let onAbort;
     const cancelled = signal && new Promise((_resolve, reject) => {
       onAbort = () => reject(signal.reason);
       signal.addEventListener('abort', onAbort, { once: true });
     });
     try {
-      // Later source traffic may keep the global planning loop busy. A native
-      // caller needs its first committed current result, not silence from all
-      // inputs. Publication keeps the complete evidence checks below; native
-      // preflight still validates the caller's connection and instruction.
-      // Revoke the caller's wait without cancelling shared numerical work.
-      await Promise.race([this.updatePlan(now, planningOptions), publication, ...(cancelled ? [cancelled] : [])]);
+      // Economic admission filters ordinary reporting before it reaches the
+      // worker. Wait for this request's pass to finish; a previous publication
+      // cannot complete a newer takeover while its plan is still null.
+      await Promise.race([this.updatePlan(now, planningOptions), ...(cancelled ? [cancelled] : [])]);
     } finally {
-      this.planPublicationWaiters.delete(published);
       if (onAbort) signal.removeEventListener('abort', onAbort);
     }
   }
-  planningEvidence() {
-    const views = this.views(this.clock());
+  planningScope(views = this.views(this.clock())) {
+    return { canControl: this.canControl(), historySelection: this.historySelection,
+      ready: this.historyReady, historyError: this.historyError,
+      sessions: views.map(view => {
+        const item = this.charger(view.id), control = view.control ?? {}, snapshot = control.snapshot ?? {};
+        return [view.association, item.request, view.controls, view.vehicle?.id, view.vehicle?.state,
+          control.session?.connected, control.session?.connectedAt,
+          snapshot.transport, snapshot.connectionId, snapshot.instructionRevision, snapshot.nativeStop,
+          control.manual];
+      }) };
+  }
+  planningEvidence(supply) {
+    const now = this.clock(), views = this.views(now);
     const external = views.find(view => view.capabilities.externalLoadBalancing);
     const installation = this.configuration.chargers.charger2;
-    const supply = { ...(external?.telemetry.providerConnected === false ? {} : external?.telemetry.supply),
+    supply ??= { ...(external?.telemetry.providerConnected === false ? {} : external?.telemetry.supply),
       ...(installation.enabled && installation.limiterEnabled ? { configuredBudgetCurrentA:
         installation.mainFuseA.map((amps, phase) => Math.max(0, amps - installation.marginA[phase])) } : {}) };
-    return digest({ revision: this.revision, canControl: this.canControl(),
-      inputs: chargingPlannerInput({ chargers: views, supply }),
-      sessions: views.map(view => {
-        // A completed unchanged native read is not a new physical connection.
-        // Keep all source/session boundaries; omit only its receipt clock.
-        const { observedAt, ...session } = view.control?.session ?? {};
-        return [view.association, view.request, view.controls, session,
-          view.control?.manual, view.control?.owned, view.control?.pending,
-          view.control?.execution, view.control?.takeover];
-      }),
-      prices: priceSnapshot(this.getPlanningPrices(this.clock())), historyReady: this.historyReady, historyError: this.historyError,
-      historyAt: this.historyAt });
+    // Economic evidence excludes meter progress and our own expected command
+    // bookkeeping. Fresh native command guards still own all actual writes.
+    const state = economicPlanningState({ now, chargers: views, supply, priority: this.settings.priority }, this.planningScope(views));
+    return digest({ hard: state.hard, prices: priceSnapshot(this.getPlanningPrices(now)) });
   }
   refreshPlanningState(now) {
     this.advanceTelemetry(now);
@@ -2422,7 +2402,7 @@ export class ChargingRuntime {
     // values without starving useful work during steady healthy reporting.
     const current = () => !this.closed && this.store.db.isOpen;
     await this.write(() => { if (current()) this.refreshPlanningState(this.clock()); });
-    if (!current()) return;
+    if (!current()) return false;
     now = this.clock();
     const views = this.views(now).map(view => {
       const attempt = this.charger(view.id).takeoverAttempt;
@@ -2462,9 +2442,13 @@ export class ChargingRuntime {
       this.historySelection = historySelection;
       this.household = []; this.historyReady = false; this.historyAt = null;
     }
-    const historyKey = digest({ deadlineAt, weather: this.weather, voltage: planningVoltageV, historySelection });
+    const historyVoltage = planningVoltageV.map((value, phase) => {
+      const previous = this.historyVoltage?.[phase];
+      return Number.isFinite(value) && Number.isFinite(previous) && Math.abs(value - previous) < 1 ? previous : value;
+    });
+    const historyKey = digest({ deadlineAt, weather: this.weather, voltage: historyVoltage, historySelection });
     if (this.historyAt === null || now - this.historyAt >= 5 * MINUTE || historyKey !== this.historyKey) {
-      this.historyKey = historyKey;
+      this.historyKey = historyKey; this.historyVoltage = historyVoltage;
       if (!this.historyService) {
         this.household = forecastHousehold(this.store, historyOptions);
         this.historyReady = true; this.historyAt = now; this.historyDeadline = deadlineAt;
@@ -2487,16 +2471,30 @@ export class ChargingRuntime {
     }
     const planningPrices = this.getPlanningPrices(now);
     const currentPrices = priceSnapshot(planningPrices);
+    this.household = immutableChargingValue(this.household);
+    const economicState = economicPlanningState({ now, chargers: views, supply, household: this.household,
+      prices: planningPrices, priority: this.settings.priority }, this.planningScope(views));
+    const economicChange = economicPlanningChange(this.lastEconomicSearch, economicState, now);
+    const plans = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id, item.plan]));
+    const progressChanged = economicProgressChange(this.lastEconomicProgress ?? this.lastEconomicSearch, economicState, plans, now);
+    const routineReplan = economicChange !== 'hard' && (economicChange !== null || progressChanged);
+    const priceRecheckDue = views.some(view => {
+      const at = this.charger(view.id).priceRecheckAt;
+      return Number.isFinite(at) && at <= now;
+    });
     const priceReplans = new Set(views.filter(view => {
       const item = this.charger(view.id), control = view.control;
-      item.priceRecheckAt = null;
       if (!this.pricesInitialized || !this.historyReady || !view.settings.enabled || !view.capabilities.scheduling
-        || view.request?.chargeNow || control?.manual || control?.pending || control?.provisional || !control?.execution?.planId
-        || !activePeriod(control, now) || item.newEpisode || !item.plan
+        || view.request?.chargeNow || control?.manual || control?.provisional || !control?.execution?.planId
+        || item.newEpisode || !item.plan || item.replan
         || view.values.connected.value !== true || !(view.requiredGridKwh > 1e-7) || view.deadlineAt <= now) return false;
+      // An edited request held through an active period is still owed at its
+      // next gap. Fulfilling it is not an unsolicited monetary improvement.
+      if (!activePeriod(control, now) && item.plan.deadlineAt !== view.deadlineAt && !item.request?.flexibility) return false;
       const priorPrices = item.plan.decisionPriceSnapshot ?? item.plan.priceSnapshot ?? priceSnapshot(item.plan.intervals ?? []);
       return Boolean(item.request?.flexibility) && item.plan.deadlineAt !== view.deadlineAt
-        || priceWindow(priorPrices, now, view.deadlineAt) !== priceWindow(currentPrices, now, view.deadlineAt);
+        || routineReplan || Number.isFinite(item.priceRecheckAt) && item.priceRecheckAt <= now
+        || economicChange !== null && priceWindow(priorPrices, now, view.deadlineAt) !== priceWindow(currentPrices, now, view.deadlineAt);
     }).map(view => view.id));
     const planningViews = views.map(view => priceReplans.has(view.id)
       || !view.control?.manual && (this.charger(view.id).replan || !this.charger(view.id).plan)
@@ -2511,26 +2509,50 @@ export class ChargingRuntime {
         ...['connected', 'soc', 'minimumSoc', 'capacityKwh', 'maximumCurrentA',
           'vehicleNotBefore', 'vehicleCurrentA', 'nativeCurrentA', 'vehicleCeilingSoc'].map(key =>
           key === 'vehicleCurrentA' ? vehicleCurrentConstraint(view.values[key]) : view.values[key]?.value ?? null)]) });
-    const settlingKey = digest({ stabilityBasis, historySelection, authority: this.canControl(),
-      ready: this.historyReady, historyError: this.historyError,
-      supply: { configuredBudgetCurrentA: supply.configuredBudgetCurrentA,
-        available: Boolean(supply.configuredBudgetCurrentA || supply.availableCurrentA || supply.estimate?.available),
-        voltageAvailable: planningVoltageV.map(Number.isFinite) },
-      chargers: views.map(view => [view.id, view.association, view.request?.sessionId, view.request?.chargeNow,
-        view.control?.session?.connectedAt, view.control?.snapshot?.generation, view.control?.snapshot?.connectionId,
-        view.control?.snapshot?.instructionRevision, view.control?.snapshot?.nativeStop, view.control?.manual,
-        view.telemetry?.providerConnected, view.vehicle?.state, view.vehicle?.id,
-        ...['connected', 'soc', 'minimumSoc', 'capacityKwh', 'maximumCurrentA', 'nativeCurrentA',
-          'vehicleCurrentA', 'vehicleNotBefore', 'vehicleCeilingSoc'].map(key => {
-          const field = view.values[key]; return [field?.available, field?.assumed, field?.source];
-        })]) });
-    const settlingUntil = background && !priceReplans.size && !Object.values(this.chargers).some(item => item.replan || item.newEpisode)
-      ? backgroundPlanDeadline({ now, previous: this.lastBackgroundPlan, key: settlingKey, chargers: views,
-        plans: Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id, item.plan])), coordination: this.coordination }) : null;
-    if (settlingUntil) {
-      this.backgroundPlanDueAt = settlingUntil;
-      this.scheduleWakeup(this.clock());
-      return;
+    const boundaryDue = Number.isFinite(this.economicValidUntil) && now >= this.economicValidUntil;
+    const assessmentDue = progressChanged || boundaryDue;
+    let retainedAssessment = null;
+    const assessRetained = () => retainedAssessment ??= forecastFixedPlans({ now, prices: planningPrices,
+      household: this.household, supply, priority: this.settings.priority,
+      chargers: views.map(view => withAllocationTarget(view, this.charger(view.id), now)),
+      periodsByCharger: Object.fromEntries(views.flatMap(view => {
+        const periods = confirmedPeriods(view, now);
+        return periods ? [[view.id, periods]] : [];
+      })) });
+    const imminent = views.some(view => [view.deadlineAt,
+      ...(this.charger(view.id).plan?.periods ?? []).flatMap(row => [row.startAt, row.endAt])]
+      .some(at => Number.isFinite(at) && at > now && at <= now + IMMINENT_PLAN_MS));
+    const serviceThreatened = assessmentDue && economicState.schedulable && assessRetained().feasible === false;
+    const deferredRequestDue = views.some(view => {
+      const item = this.charger(view.id);
+      return item.plan && !activePeriod(view.control, now) && item.plan.deadlineAt !== view.deadlineAt;
+    });
+    const required = economicChange !== null || progressChanged || serviceThreatened || priceRecheckDue || deferredRequestDue
+      || Object.values(this.chargers).some(item => item.replan || item.newEpisode || !item.plan);
+    const executionBasis = digest(views.map(view => [view.id, view.control?.execution,
+      view.control?.manual, Boolean(view.control?.pending), view.control?.released,
+      view.control?.pauseConfirmed, view.control?.sessionPause?.confirmed]));
+    const maintenanceOnly = !required && (boundaryDue || executionBasis !== this.lastEconomicExecutionBasis);
+    if (!required && !maintenanceOnly) {
+      this.pendingEconomicChange = null; this.backgroundPlanDueAt = null;
+      this.scheduleWakeup(now);
+      return true;
+    }
+    if (!maintenanceOnly && background && economicChange !== 'hard' && economicChange !== 'hard-price'
+      && (economicChange === 'soft' || progressChanged) && !serviceThreatened && !imminent) {
+      const settlingKey = digest({ hard: economicState.hard, prices: economicState.prices,
+      voltage: economicState.voltage, household: economicState.household,
+      ...(progressChanged ? { progress: economicState.requests.map(row => [row.id, Math.round(row.remaining * 100)]) } : {}) });
+      const pending = this.pendingEconomicChange;
+      const meaningful = !pending?.model || economicPlanningChange(pending.model, economicState, now)
+        || economicProgressChange(pending.model, economicState, plans, now);
+      const settling = backgroundPlanDeadline({ now, pending, key: meaningful ? settlingKey : pending.key });
+      this.pendingEconomicChange = { ...settling.pending, model: meaningful ? immutableChargingValue(economicState) : pending.model };
+      if (settling.until) {
+        this.backgroundPlanDueAt = settling.until;
+        this.scheduleWakeup(now);
+        return true;
+      }
     }
     this.backgroundPlanDueAt = null;
     const previousPeriods = Object.fromEntries(views.flatMap(view => {
@@ -2546,13 +2568,13 @@ export class ChargingRuntime {
           key === 'vehicleCurrentA' ? vehicleCurrentConstraint(view.values[key]) : view.values[key]?.value ?? null)]) });
     const previousAllocations = this.allocationScope === allocationScope ? this.coordination?.allocations ?? [] : [];
     const planning = { now, prices: planningPrices, household: this.household, supply, priority: this.settings.priority, previousAllocations };
-    const evidence = this.planningEvidence();
+    const evidence = this.planningEvidence(supply);
     const acceptResult = result => {
       if (!current() || !result) return false;
       const at = this.clock();
-      if (selectedHistory.get().generation !== historySelection || evidence !== this.planningEvidence() || at < now
+      if (selectedHistory.get().generation !== historySelection || evidence !== this.planningEvidence(supply) || at < now
         || at >= chargingPlanValidUntil({ now: result.at, chargers: planningViews }, result)) {
-        this.planningRequest ??= { sourceId, sourceWaiter, background };
+        this.planningRequest ??= { sourceId, sourceWaiter, background, ticket: this.planningSequence };
         return false;
       }
       return true;
@@ -2565,8 +2587,16 @@ export class ChargingRuntime {
         && !(item.replan && item.request?.flexibility?.lastTransition?.action === 'cancel')
         && !priceReplans.has(view.id) ? [[view.id, periods]] : [];
     }));
-    let result = await this.plannerService.request({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods });
-    if (!acceptResult(result)) return;
+    let result = maintenanceOnly
+      ? forecastFixedPlans({ ...planning, chargers: planningViews,
+        periodsByCharger: Object.fromEntries(views.flatMap(view => {
+          const periods = this.charger(view.id).plan?.periods;
+          return periods?.length && !view.control?.manual ? [[view.id, periods]] : [];
+        })) })
+      : economicState.schedulable
+        ? await this.plannerService.request({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods })
+        : forecastFixedPlans({ ...planning, chargers: planningViews, periodsByCharger: fixedPeriods });
+    if (!acceptResult(result)) return false;
     const adoptedPeriods = Object.fromEntries(views.flatMap(view => {
       const periods = confirmedPeriods(view, now);
       return periods ? [[view.id, periods]] : [];
@@ -2584,11 +2614,6 @@ export class ChargingRuntime {
     const comparableService = economicIds.every(id => adopted.plans[id]?.accounting?.length
       && adopted.plans[id].requiredGridKwh === result.plans[id].requiredGridKwh);
     const newCosts = economicIds.map(id => result.plans[id].decisionCostCents ?? result.plans[id].costCents);
-    // Only forecast energy used by either alternative makes this a speculative
-    // replan. Predictions elsewhere in the outlook cannot raise the hurdle for
-    // a change whose complete remaining service uses published prices.
-    const speculativeReplan = accounting.some(row => row.predicted === true)
-      || economicIds.some(id => result.plans[id].accounting?.some(row => row.predicted === true));
     const explicitAllowances = views.filter(view => priceReplans.has(view.id)
       && view.request?.flexibility?.lastTransition?.action === 'allow'
       && view.request.flexibility.activeDefer?.deferredReadyByAt === view.deadlineAt
@@ -2601,7 +2626,8 @@ export class ChargingRuntime {
       && comparableService && cashDoesNotIncrease
       && newCosts.length > 0 && newCosts.every(Number.isFinite)
       && oldCost - newCosts.reduce((sum, cost) => sum + cost, 0)
-        > (explicitAllowances.length ? 1e-7 : speculativeReplan ? 5 : MIN_PRICE_SAVINGS_CENTS);
+        > (explicitAllowances.length ? 0 : views.some(view => activePeriod(view.control, now)
+          && (view.settings.enabled || view.request?.chargeNow)) ? 5 : 1) + 1e-7;
     // A newly connected peer may still be awaiting its first adopted program.
     // Revisit the price comparison after adoption instead of treating different
     // delivered service as an economic rejection and consuming the new prices.
@@ -2609,20 +2635,26 @@ export class ChargingRuntime {
     if (priceRevisionWorthwhile) for (const view of views.filter(view => priceReplans.has(view.id))) {
       const next = result.plans[view.id], running = view.control.execution.periods.find(period => period.startAt <= now
         && (period.endAt === null || period.endAt > now));
-      if (next?.startAt > now && now - running.startAt < MIN_PRICE_PAUSE_MS) {
-        this.charger(view.id).priceRecheckAt = running.startAt + MIN_PRICE_PAUSE_MS;
+      if (next?.startAt > now && running && now - running.startAt < MIN_CHARGING_PERIOD_MS) {
+        this.charger(view.id).priceRecheckAt = running.startAt + MIN_CHARGING_PERIOD_MS;
         priceRevisionDeferred = true;
       } else if (next?.startAt > now && next.startAt - now < MIN_PRICE_PAUSE_MS) priceRevisionWorthwhile = false;
     }
     if (priceReplans.size && (!priceRevisionWorthwhile || priceRevisionDeferred)) {
       for (const id of priceReplans) if (adoptedPeriods[id]) fixedPeriods[id] = adoptedPeriods[id];
-      result = await this.plannerService.request({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods });
-      if (!acceptResult(result)) return;
+      const retainedComplete = economicChange !== 'hard' && planningViews.every(view =>
+        !view.settings.enabled || !view.capabilities.scheduling || view.request?.pause || view.request?.chargeNow
+        || view.control?.manual || !(view.requiredGridKwh > 1e-7) || view.values.connected.value !== true
+        || adoptedPeriods[view.id]);
+      // The accepted programs were already jointly evaluated above. Rejecting
+      // a tiny improvement does not need another serialized worker request.
+      result = retainedComplete ? adopted
+        : await this.plannerService.request({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods });
+      if (!acceptResult(result)) return false;
     }
+    let published = false;
     await this.write(() => {
-    if (!acceptResult(result)) return;
-    const coveredRequest = this.planningRequest;
-    const coveredWaiters = [...(this.planPublicationWaiters ?? [])];
+    if (!acceptResult(result)) return false;
     const environment = { supply: { budget: supply?.configuredBudgetCurrentA
         ?? (supply?.estimate?.available ? supply.estimate.budgetCurrentA : supply?.availableCurrentA),
         voltageV: planningVoltageV, allocationA: supply?.allocationA,
@@ -2637,6 +2669,11 @@ export class ChargingRuntime {
     for (const view of views) {
       const item = this.charger(view.id), control = view.control;
       item.forecast = result.forecasts?.[view.id] ?? null;
+      if (maintenanceOnly && item.plan) {
+        if (item.plan.priceRevision && item.plan.id !== control?.execution?.planId)
+          item.forecast = adopted.forecasts[view.id];
+        continue;
+      }
       if (view.request?.pause) {
         item.plan = { ...result.plans[view.id], state: 'manual', reason: 'session-pause',
           startAt: null, finishAt: null, periods: [], finalStartAt: null, feasible: null,
@@ -2683,16 +2720,20 @@ export class ChargingRuntime {
       if (priceReplans.has(view.id)) {
         const next = result.plans[view.id], fixed = fixedForecast();
         if (!priceRevisionDeferred) {
+          item.priceRecheckAt = null;
           item.plan = { ...item.plan, ...(item.request?.flexibility ? { deadlineAt: view.deadlineAt } : {}),
             priceSnapshot: priceSnapshot(this.prices), decisionPriceSnapshot: currentPrices };
-          if (priceRevisionWorthwhile) {
+          if (priceRevisionWorthwhile && digest(remainingPeriods(next.periods, now))
+            !== digest(remainingPeriods(execution.periods, now))) {
             item.plan = { ...next, id: randomUUID(), priceSnapshot: priceSnapshot(this.prices), decisionPriceSnapshot: currentPrices,
               replanReadyBy: item.plan.replanReadyBy,
-              priceRevision: { previousPlanId: execution.planId, at: now, previousTargetAt: fixed.plan.targetAt,
-                ...(view.deadlineAt !== execution.deadlineAt ? { deadlineRequest: deadlineRequest(item) } : {}) },
+              priceRevision: activePeriod(control, now)
+                ? { previousPlanId: execution.planId, at: now, previousTargetAt: fixed.plan.targetAt,
+                  ...(view.deadlineAt !== execution.deadlineAt ? { deadlineRequest: deadlineRequest(item) } : {}) }
+                : undefined,
               basis: planBasis(view, planningPrices, environment), creditedGridKwh: view.progress.creditedGridKwh };
             item.lastReconcileAt = null;
-          } else if (revisionPending) retainExecution(fixed);
+          } else retainExecution(fixed);
         }
         // The installed execution remains the forecast until the controller
         // confirms the replacement (including after failed writes or restart).
@@ -2797,31 +2838,24 @@ export class ChargingRuntime {
       item.limiterPlanBasis = this.currentPlanBasis(item);
     }
     this.persist(); this.store.afterCommit(() => {
-      // This committed result already covers any notification queued before
-      // its final evidence check. A later request still owns its next pass.
-      if (this.planningRequest === coveredRequest) this.planningRequest = null;
-      for (const published of coveredWaiters) {
-        this.planPublicationWaiters.delete(published);
-        published();
-      }
-      this.lastBackgroundPlan = { key: settlingKey, at: now };
+      published = true;
+      if (!maintenanceOnly) this.lastEconomicSearch = economicState;
+      this.lastEconomicProgress = { at: economicState.at, requests: economicState.requests };
+      this.lastEconomicExecutionBasis = executionBasis;
+      this.economicValidUntil = chargingPlanValidUntil({ now, chargers: views }, proposed);
+      this.pendingEconomicChange = null;
       this.backgroundPlanDueAt = null;
       this.scheduleWakeup(this.clock());
     });
     });
+    if (!published) return false;
     if (current() && this.historyReady) {
       const contextNow = this.clock(), contextViews = this.views(contextNow);
-      this.flexibilityContext = copyChargingValue({ ...planning, now: contextNow, prices: this.getPlanningPrices(contextNow), chargers: contextViews,
-        scopes: Object.fromEntries(contextViews.map(view => [view.id, this.flexibilityScope(contextViews, view.id, contextNow)])),
-        market: this.flexibilityMarket(contextNow),
-        fixedPeriods: Object.fromEntries(contextViews.flatMap(view => {
-          const running = view.control?.execution?.periods?.find(period => period.startAt <= now
-            && (period.endAt === null || period.endAt > now));
-          return running && now - running.startAt < MIN_PRICE_PAUSE_MS
-            ? [[view.id, confirmedPeriods(view, now)]] : [];
-        })) });
-      this.queueFlexibilityPreviews();
+      this.flexibilityContext = copyChargingValue({ now: contextNow, prices: this.getPlanningPrices(contextNow),
+        household: this.household, supply, priority: this.settings.priority, chargers: contextViews,
+        scopes: Object.fromEntries(contextViews.map(view => [view.id, this.flexibilityScope(contextViews, view.id, contextNow)])) });
     }
+    return true;
   }
   invalidateCommands() {
     for (const item of Object.values(this.chargers)) {
@@ -3020,10 +3054,9 @@ export class ChargingRuntime {
     if (item.replan || !sameConnection
       || item.limiterPlanBasis !== this.currentPlanBasis(item)) return false;
     if (!this.pricesInitialized) return true;
-    const calculation = this.coordination;
-    return Number.isSafeInteger(calculation?.at) && this.clock() >= calculation.at
-      && this.clock() < chargingPlanValidUntil({ now: calculation.at, chargers: [] }, {
-        allocations: calculation.allocations, plans: item.plan ? { charger2: item.plan } : {} });
+    const now = this.clock();
+    return Number.isSafeInteger(this.coordination?.at) && now >= this.coordination.at
+      && (this.economicValidUntil === undefined || now < this.economicValidUntil);
   }
   async reconcileShellyObservation(completedRead) {
     const item = this.chargers.charger2;

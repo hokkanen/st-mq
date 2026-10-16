@@ -342,6 +342,13 @@ plans: a keyed join to a union view can still materialize all historical rows,
 so source inventories use private scratch rows containing only the changed keys
 and their required evidence.
 
+The charging search and replanning regressions cover exact allocator parity,
+cache isolation, bounded refinement, independent flow examples, one/five-cent
+replacement boundaries, quiet/max settling, idle no-work behavior and preserved
+native stop/restoration duties during held numerical work. The held-worker
+fixtures request a genuinely changed model; calculation age alone is not a trigger.
+See `test/charging-search.test.js` and `test/charging-replanning.test.js`.
+
 ## Automated tests and build
 
 ### UI messages and evidence
@@ -648,10 +655,11 @@ priority. `test/charging-planner-service.test.js` separately checks that the rea
 worker leaves the main thread responsive, coalesces queued requests and expires
 cached results at relevant boundaries. These offline checks do not establish
 native Raspberry Pi 5 timing or physical charger behavior.
-`test/charging-plan-settling.test.js` checks the fixed 30-second background
-deadline, timer scheduling, immediate edits and price changes, and bypasses for
-unavailable evidence, restrictions, active periods and imminent deadlines. Its
-runtime fixture retains both accepted native schedules without new commands.
+`test/charging-replanning.test.js` checks semantic input changes, the 10-second
+quiet period and 60-second maximum wait, accumulated voltage/forecast changes,
+and expected meter progress. Runtime checks cover prompt edits, published prices,
+service failures, native boundaries and the 5-cent active/1-cent waiting hurdle.
+Unchanged reporting retains accepted native schedules without another search.
 
 `test/energy-checks-worker.test.js` exercises 100,000 synthetic property counters
 through the actual HTTP route and history worker while independent timers,

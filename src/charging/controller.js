@@ -80,7 +80,7 @@ const nativeStopAt = snapshot => Math.max(snapshot.enabled === false ? snapshot.
 const activeFingerprint = effectiveScheduleFingerprint;
 const STOP_REASON = 'The charger reports paused or disabled. A stop instruction is preventing automatic scheduling.';
 const RELEASE_REASON = 'Charging is released and may continue beyond the minimum and deadline.';
-const MIN_PRICE_PAUSE_MS = 15 * 60_000;
+const MIN_PRICE_PAUSE_MS = 10 * 60_000;
 const MAX_IDENTIFICATION_PAUSE_MS = 5 * 60_000;
 const identificationFields = ['purpose', 'identificationId', 'identificationConnectedAt'];
 const validSession = value => value == null || typeof value === 'object' && !Array.isArray(value)
@@ -1008,7 +1008,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
             && now < state.execution.finalStartAt
             && !state.execution.periods.some(period => period.startAt <= now && now < period.endAt);
           await waitingPhase(Boolean(retainedPause), isTime(state.owned.requestedAt));
-        } else await phase('unavailable', 'The proposed economic pause is shorter than fifteen minutes. The current native instruction is unchanged; waiting for a usable plan.', 'invalid-plan');
+        } else await phase('unavailable', 'The proposed economic pause is shorter than ten minutes. The current native instruction is unchanged; waiting for a usable plan.', 'invalid-plan');
         return status();
       }
       state.pending = { action: 'install', planId: plan.id ?? plan.planId ?? null, startAt: plan.startAt,

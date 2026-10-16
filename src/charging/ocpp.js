@@ -8,7 +8,7 @@ import { easeeScheduleTakeoverSupported, effectiveScheduleFingerprint, manualSch
 import { validateAdmittedSourceTime } from '../domain/time-evidence.js';
 import { createControlAttempt } from '../storage/control-attempt.js';
 
-const KIND = 'ocpp-tx-pause', MAX_PAUSE_MS = 48 * 3600_000, MIN_PAUSE_MS = 15 * 60_000;
+const KIND = 'ocpp-tx-pause', MAX_PAUSE_MS = 48 * 3600_000, MIN_PAUSE_MS = 10 * 60_000;
 const MAX_ATTEMPTS = 3, MAX_AGE_MS = 60_000;
 const MAX_IDENTIFICATION_PAUSE_MS = 5 * 60_000;
 const STATUSES = ['Available', 'Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE', 'Finishing', 'Reserved', 'Unavailable', 'Faulted'];

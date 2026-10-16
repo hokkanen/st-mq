@@ -78,14 +78,17 @@ the latest pending control calculation and at most one pending cost comparison.
 Control calculations take priority, interrupting an optional comparison already
 running when necessary. The interrupted comparison returns no new result; the
 same single worker slot starts control work after termination completes. Repeated equivalent inputs reuse a bounded
-cache for at most 30 seconds and never across a schedule, allocation or deadline
-boundary. Results retain their calculation time. Changed requests, connections,
+cache until the next relevant schedule, allocation or deadline boundary. There
+is no calculation-age timeout. An accepted economic program remains reusable
+while its effective inputs and remaining service remain valid; passing a boundary
+requires current-time assessment, not automatically another optimization. Results retain their calculation time. Changed requests, connections,
 native instructions, authority, source selection or expired results are checked
 before publication; stale work cannot replace the current plan. Equivalent
-notifications received during a search do not invalidate its result. A committed
-result covers those queued notifications so native control can continue while
-healthy reporting remains active. Changed evidence still requires a fresh
-calculation, and result-age and charging-boundary checks remain in force. Accepted session
+notifications received during a search do not invalidate its result. Equivalent queued notifications complete through inexpensive reuse. Each caller
+waits for its own request to be assessed, so an earlier publication cannot complete
+a newer takeover while its plan is still absent. Changed evidence still requires a fresh
+calculation. Calculation clocks remain original, and current-time charging-boundary
+checks remain in force. Accepted session
 evidence and progress are saved independently while planning runs. Device
 readback and command fencing remain authoritative. Native control callers resume
 after a current joint result commits; later changed measurements may keep
@@ -102,12 +105,13 @@ An attempt that has ended can still owe its captured physical return. That
 existing return program does not require a new economic calculation, and remains
 subject to its original connection, instruction and return-time boundaries.
 
-The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. There is no one-cent pause penalty or mandatory one-cent saving hurdle. Practical minimum economic runs/gaps remain 15 minutes; equal-cost choices prefer stability.
+The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. Routine replacement compares complete remaining joint service under the same current inputs and excludes sunk cost. It needs more than 5 cents of decision-cost improvement when a participating accepted charging period is ongoing, or more than 1 cent while waiting. A temporary zero draw does not end an ongoing permitted period. Equality retains the accepted program; successive changes are always compared with that program. Necessary request, service and constraint corrections bypass the monetary hurdle. These are practical replacement thresholds, not a global one-cent optimization-error guarantee. Intermediate planned charging periods last at least 15 minutes; new economic pauses require 10 minutes. The final open release remains separate.
 
 For new Easee cloud programs, an intermediate gap must be strictly longer than
-15 minutes. The cloud adapter installs that next delayed start after the preceding
-period ends and needs at least 15 minutes still remaining at dispatch. An exact
-15-minute gap therefore cannot survive any positive read or storage latency.
+10 minutes. The cloud adapter installs that next delayed start after the preceding
+period ends and needs at least 10 minutes still remaining at dispatch. An exact
+10-minute gap cannot survive positive read or storage latency. Ordinary alternating
+15-minute charging and price-pause slots leave five minutes for that latency.
 The existing `localClockSchedule` capability carries this representation limit;
 local OCPP and Shelly periods retain their own supported execution paths. Initial
 future starts are checked separately and are not excluded by this intermediate-gap
@@ -198,30 +202,58 @@ assumptions. Later voltage changes cannot rewrite that early-CSV basis. Measured
 energy, charging progress and billed interval energy never depend on those
 retrospective voltage assumptions.
 
-For unchanged charging intent, a proposed adjustment of up to two minutes to
-future waiting-period boundaries may retain the existing periods. The planner
-rechecks both chargers together under the new forecasts: every deadline must
-remain feasible, and neither the combined estimate nor either charger's cost may
-exceed the new candidate by more than 0.1 cent. The period count must agree.
-Changed prices, priorities, requests, connection, observed battery charge,
-capacity, targets or current limits bypass this retention. Delivered-energy
-progress is rechecked in the joint simulation without treating every small meter
-increment as new intent. Running periods and starts within the next two minutes
-are not retained by this rule. The retained schedule is the actual plan, so session
-diagnostics do not log discarded candidate movements as schedule changes.
+For unchanged intent, retain accepted periods unless an assessed replacement
+clears the monetary threshold above. The inexpensive joint assessment still checks
+service, applicable limits and continuing peer demand. An unchanged selected
+program keeps its identity; rejected candidates are not adopted-plan events.
+A small internal candidate tie preference may retain nearby equivalent future
+boundaries, without replacing the runtime's complete remaining-cost comparison.
 
-Background forecast updates may share one fixed 30-second settling window when
-both connected chargers already have feasible, accepted future waiting programs.
-The deadline is anchored to the last completed plan calculation; later updates
-cannot extend it, and a timer rechecks the plan even if no new message arrives.
-Explicit actions, changed prices, priorities, requests, connections, battery
-inputs or current limits bypass the window. So do unavailable source evidence,
-native restrictions, pending commands, active identification, running periods,
-and starts, allocation boundaries or deadlines within the next 30 seconds.
-An identification attempt merely waiting for evidence does not block settling.
-This delays only background forecast calculation. Evidence keeps its original
-clocks, diagnostic transitions are recorded, and physical reconciliation, live
-current protection and command permission checks continue independently.
+Economic admission ignores renewed receipt clocks, unchanged battery values,
+idle-current noise, raw live voltage behind an admitted planning-voltage estimate,
+and expected native command bookkeeping. New connections, actual battery/request
+changes, priority, effective electrical/vehicle restrictions, source quality and
+relevant published-price changes receive prompt assessment. No schedulable request
+needs a new economic search; independently active peers still affect other requests.
+
+Ordinary forecast changes settle for ten seconds after the latest meaningful
+change, with a sixty-second maximum from the first pending change. Irrelevant
+receipts cannot extend it. A transition within two minutes or modeled service
+failure bypasses settling. Changes accumulate against the last searched model:
+one volt of effective planning voltage, 0.25 A in forecast phase demand, or a
+changed numerical price/quality model is material. Expected metered delivery
+updates progress without another search; an unexpected completion shift exceeding
+two minutes receives reassessment, and a modeled deadline failure is prompt.
+These operational tolerances do not relax actual current protection or command
+readiness. Households retain the existing five-minute forecast refresh; moved
+horizon starts and provenance clocks alone do not create a changed future model.
+
+The exact allocator reuses equivalent two-charger whole-amp sharing patterns and
+capped deadline-reservation tiers across household scenarios. Its electrical layout
+and allocation classes are exact, with at most 128 layouts and 64 results per layout
+in each specialized cache; other layouts use the same scalar allocator. No energy,
+weight or deadline is rounded into an allocation cache class. Output vectors cannot
+mutate retained calculations. One fractional minimum-cost flow may supply a seed
+and optimistic quality assessment; it relaxes native switching and sharing rules
+and never supplies command permission. A feasible incumbent remains available.
+At most 256 full joint evaluations refine period boundaries and whole periods;
+every accepted candidate retains service and passes the native and phase/scenario
+checks. Negative prices and forecast uncertainty keep their ordinary meaning.
+This improves a bounded heuristic and does not establish a global exact optimizer.
+
+All price periods retain absolute boundaries. A late physical charging start does
+not move later pauses or releases, and fifteen minutes describes the planned
+permission window rather than a promise of fifteen minutes of measured draw.
+Meter missing delivery and reassess service. A newly dispatched cloud pause needs
+its exact requested next absolute start represented by the local clock, timezone
+and next unambiguous occurrence, followed by accepted schedule readback. A success
+reply alone does not prove a physical pause. A retained confirmed pause remains
+valid when its remaining duration falls below ten minutes; refused, late or
+mismatched installations never silently shift the future program.
+
+Accepted evidence, progress, live current control, identification, restoration and
+fresh native preflight continue independently of economic admission. Stored plans
+and readback do not become fresh actuator permission after restart.
 
 Live property and charger currents establish actual draw and household phase
 demand. Shelly applies the same priority, energy and deadline allocation policy
@@ -309,9 +341,10 @@ measured forecast error, and it never enters displayed cash prices, estimated
 cash savings or recorded bills. Comparisons retain each plan's cash cost and
 uncertainty allowance separately so the change in forecast exposure is visible.
 
-Running speculative replans require more than 5 cents of risk-adjusted joint
-improvement and retain the existing minimum-run/pause and period-stability
-checks; published-only replans retain the existing cash-cost policy. Native
+Routine replacements require more than 5 cents of joint decision-cost improvement
+during an ongoing charging period, or more than 1 cent while waiting, under either
+price source. Decision cost includes the separately labelled forecast uncertainty;
+minimum-run/pause and service checks remain binding. Native
 constraints and existing instructions keep their authority under either price
 source. A forecast supplies no command permission, physical delivery evidence
 or guarantee of the final cost.
@@ -398,8 +431,8 @@ A positive individual saving is recommended when combined remaining cash cost
 and the household risk-adjusted result also improve. There is no additional
 minimum-saving hurdle for granting time; the existing running-period interruption
 duration checks remain separate. An explicit allowance also uses positive adjusted
-benefit when revising a running plan; the five-cent uncertainty hurdle belongs to
-unsolicited price refreshes. The uncertainty comparison subtracts the extra-day plan's
+benefit when revising a running plan; the routine five-cent ongoing/one-cent waiting hurdles belong to unsolicited
+improvements. The uncertainty comparison subtracts the extra-day plan's
 allowance and credits the normal plan's allowance; shared forecast exposure is
 not charged twice. Independently confirmed native periods remain
 real competing loads without gaining new scheduling authority. A stopped or idle
@@ -429,23 +462,22 @@ it may choose an earlier supported period and report less saving. A later approv
 deadline remains binding, but it never authorizes an unrepresentable native timer.
 
 All comparisons share the existing CPU worker. One active calculation, one latest
-queued control calculation and one latest low-priority preview keep load bounded;
-control work has queue priority. Cards request background comparisons at most once
-per minute per eligible charger, including an active allowance, when numerical
-planning inputs, forecast coverage or a relevant period boundary changes.
-Unchanged polling and renewed source receipt clocks do not start another search.
-An active proposed period also refreshes as its displayed minute advances; a
-temporary calculation failure remains retryable within the same bound. A successful
-comparison retains its original snapshot time while currents, voltages, progress,
-native command bookkeeping or market inputs change. Recalculation replaces it
-atomically; an unavailable replacement retains the last successful estimate and
-reports the refresh limitation without pretending its source time is new. Equipment,
-physical-session, vehicle, request, shared-priority and peer-deadline changes fence
-incompatible comparisons. Allowing or canceling the selected charger's day keeps
-the same normal/deferred comparison until its earlier checkpoint.
-Temporary loss of live session presentation does not erase the dated estimate:
-its comparison scope uses the retained physical request and vehicle association.
-This scope is display identity only and grants no current command permission.
+queued control calculation and one latest optional preview bound work; control
+has queue priority. Opening or explicitly refreshing a comparison requests it.
+A visible dialog can refresh after a changed accepted model, at most once a minute.
+Closed cards do not start hidden periodic comparisons. Inputs are assessed at
+request time; renewed source clocks and elapsed calculation age alone do not
+invalidate a retained estimate. Equipment, physical session, vehicle, request,
+priority and peer-deadline changes still fence incompatible work.
+
+An active allowance's approved alternative is the actual current joint program,
+including retained periods and allocation targets. Its earlier alternative asks
+what cancelling only that allowance would do now. A cached successful comparison
+keeps its original snapshot time through temporary unavailability; a failed refresh
+explicitly labels the previous estimate rather than renewing its clocks. Allowing
+or cancelling the selected day keeps the same comparison scope until its earlier
+checkpoint. Temporarily missing live presentation retains that dated scope but
+grants no actuator authority.
 
 Opening the dialog requests a comparison, retaining the last successful same-scope
 estimate while it loads or fails, including across closing and reopening. Once open,

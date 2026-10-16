@@ -232,13 +232,13 @@ test('the existing Shelly poll drives one serialized local reconciliation and st
   assert.equal(f.reads.charger2, finalReads, 'Closing the adapter stops its existing poll timer');
 });
 
-test('current reconciliation replans at the original cache deadline and discards a disconnected Charge now scope', async t => {
+test('current reconciliation reuses an unchanged program beyond thirty seconds and discards a disconnected Charge now scope', async t => {
   const f = await fixture(t, { budgetA: 25 });
   await f.connect('charger2'); await f.priority('charger2'); await f.runtime.chargeNow('charger2', f.scope('charger2')); await f.plan();
   const originalSession = f.view('charger2').request.sessionId;
   const planning = t.mock.method(f.runtime, 'updatePlan');
   f.advance(31_000); await f.runtime.reconcileShellyObservation();
-  assert.ok(planning.mock.callCount() > 0, 'The faster limiter loop does not extend the accepted planning cache');
+  assert.equal(planning.mock.callCount(), 0, 'Calculation age alone does not start another search');
   f.cars.charger2.connected = false;
   f.advance(5000); await f.runtime.reconcileShellyObservation();
   assert.equal(f.view('charger2').request, null);

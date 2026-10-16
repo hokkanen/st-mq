@@ -196,11 +196,12 @@ test('changed electrical limits and SoC evidence replace a cached calculation', 
     'Current result provenance cannot come from a cached older SoC report');
 });
 
-test('calculation age and clock reversal force a new plan instead of renewing cached evidence', async t => {
+test('unchanged inputs keep their original calculation beyond thirty seconds and a reversed clock recomputes', async t => {
   const service = serviceFor(t), options = smallRequest();
   assert.equal((await service.request(options)).at, now);
   assert.equal((await service.request({ ...options, now: now + 29_999 })).at, now);
-  assert.equal((await service.request({ ...options, now: now + 30_000 })).at, now + 30_000);
+  assert.equal((await service.request({ ...options, now: now + 30_000 })).at, now);
+  assert.equal((await service.request({ ...options, now: now + 5 * 60_000 })).at, now);
   assert.equal((await service.request({ ...options, now: now - 1000 })).at, now - 1000);
 });
 

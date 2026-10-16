@@ -1,9 +1,13 @@
+import { allocationTable } from './allocation-table.js';
+import { priorityCache } from './allocation-priority.js';
+import { refinePeriods } from './search-refinement.js';
+import { relaxedChargingFlow } from './flow-bound.js';
 import { delayedScheduleFor } from './easee.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { vehicleCurrentConstraint } from './tesla-current-request.js';
 
 const HOUR = 3_600_000, EPS = 1e-7, MIN_CURRENT_A = 6;
-const MIN_PERIOD_MS = 15 * 60_000, MIN_PAUSE_MS = 15 * 60_000;
+const MIN_PERIOD_MS = 15 * 60_000, MIN_PAUSE_MS = 10 * 60_000;
 const STABLE_PERIOD_MS = 2 * 60_000, STABLE_COST_CENTS = 0.1;
 const finite = Number.isFinite;
 const unique = values => [...new Set(values)];
@@ -47,7 +51,7 @@ function nativePeriodsAvailable(job, starts, periods) {
   for (const period of periods?.[job.charger.id] ?? [{ startAt: starts[job.charger.id], endAt: null }]) {
     if (period.startAt > pauseAt) {
       // Cloud installs the next delay only after the preceding period ends.
-      // Its dispatch guard needs fifteen minutes still remaining: an exact
+      // Its dispatch guard needs ten minutes still remaining: an exact
       // minimum gap cannot survive any positive read or storage latency.
       // This excludes new candidates; frozen/adopted programs stay separate.
       if (pauseAt > job.now && period.startAt - pauseAt <= MIN_PAUSE_MS) return false;
@@ -70,7 +74,7 @@ function nativePeriodsAvailable(job, starts, periods) {
   return true;
 }
 
-function electrical(charger, supply = {}) {
+export function chargingElectrical(charger, supply = {}) {
   // Both supported installations use three-phase charging, including while the
   // vehicle is unplugged and Easee has no active output phase observation.
   const phases = { mask: [1, 1, 1], count: 3, known: true };
@@ -117,7 +121,7 @@ function electrical(charger, supply = {}) {
 export function forecastCharger({ now, deadlineAt, charger, supply = {} } = {}) {
   if (!finite(now) || !charger) throw new Error('A charger and numeric UTC forecast time are required');
   const horizon = finite(deadlineAt) ? Math.max(now, deadlineAt) : now + 24 * HOUR;
-  const warnings = [], electric = electrical(charger, supply);
+  const warnings = [], electric = chargingElectrical(charger, supply);
   const base = { state: 'none', reason: null, known: true, startAt: null, endAt: null, finishAt: null,
     currentA: 0, phaseCurrentA: [0, 0, 0], phases: electric.phases?.count ?? null, voltageV: electric.voltageV,
     powerKw: 0, gridEnergyKwh: charger.requiredGridKwh, requiredGridKwh: charger.requiredGridKwh,
@@ -225,7 +229,7 @@ export function currentChargingAllocation({ now, chargers, budgetCurrentA, prior
     if (value(charger, 'connected') !== true || charger.request?.pause || nativeStopped(charger)
       || charger.requiredGridKwh <= EPS && targetKnown(charger)
       || charger.telemetry?.currentSharingActive !== true || value(charger, 'vehicleNotBefore') > now) return [];
-    const electric = electrical(charger);
+    const electric = chargingElectrical(charger);
     if (!electric.available) return [];
     return [{ charger, electric, priority, remaining: charger.requiredGridKwh,
       targetAt: allocationTarget(charger, now), allocationHold }];
@@ -363,15 +367,20 @@ function allocate(active, resource, at) {
     if (!cache) { cache = new WeakMap(); singleAllocations.set(resource, cache); }
     let distribution = cache.get(single.electric);
     if (!distribution) {
-      distribution = allocateUncached(active, resource, at);
+      distribution = allocateForecastResource(active, resource, at);
       cache.set(single.electric, distribution);
     }
     return distribution;
   }
-  return allocateUncached(active, resource, at);
+  return allocateForecastResource(active, resource, at);
 }
 
-function allocateUncached(active, resource, at) {
+export function allocateForecastResource(active, resource, at) {
+  return priorityCache(active, resource, at, () => allocateResourceDirect(active, resource, at))
+    ?? allocationTable(active, resource, at, () => allocateResourceDirect(active, resource, at))
+    ?? allocateResourceDirect(active, resource, at);
+}
+export function allocateResourceDirect(active, resource, at) {
   if (!resource.scenarios?.length) return allocateOne(active, resource, at);
   if (active.length === 1 && active[0].charger.capabilities.externalLoadBalancing) {
     const single = active[0], ceiling = single.electric.currentA;
@@ -477,7 +486,7 @@ function simulate({ starts, periods, jobs, intervals, details = true }) {
           const powerKw = distribution.currents[item.charger.id] * item.electric.voltageV * item.electric.phases.count / 1000;
           if (item.remaining > EPS && powerKw > 0) end = Math.min(end, at + item.remaining / powerKw * HOUR);
         }
-        const row = details ? { start: at, end, phaseCurrentA: distribution.phaseCurrentA,
+        const row = details ? { start: at, end, phaseCurrentA: [...distribution.phaseCurrentA],
           fixedPhaseCurrentA: interval.fixedPhaseCurrentA, phaseHeadroomA: interval.phaseHeadroomA, chargers: {} } : null;
         for (const item of active) {
           const id = item.charger.id, currentA = distribution.currents[id], powerKw = currentA * item.electric.voltageV * item.electric.phases.count / 1000;
@@ -959,7 +968,7 @@ function planChargersAtDeadlines({ now, chargers = [], prices = [], household = 
       startAt: state === 'released' ? now : null, finishAt: forecasts[charger.id].finishAt,
       deadlineAt: charger.deadlineAt, targetAt, minimumSoc: value(charger, 'minimumSoc'),
       requiredGridKwh: charger.requiredGridKwh, costCents: null, feasible: null, soc: charger.values.soc,
-      assumptions: electrical(charger, supply).assumptions,
+      assumptions: chargingElectrical(charger, supply).assumptions,
       warnings: [], accounting: [], allocations: [], intervals: [], periods: state === 'released' ? [{startAt: now, endAt: null}] : [], finalStartAt: state === 'released' ? now : null, continueAfterMinimum: true };
   }
   // Permission to move charging periods is separate from physical current
@@ -970,7 +979,7 @@ function planChargersAtDeadlines({ now, chargers = [], prices = [], household = 
   let jobs = chargers.flatMap(charger => {
     if (charger.request?.pause) return [];
     const canSchedule = shouldPlan(charger, now), economic = canSchedule && !forecastOnly, forecast = forecasts[charger.id];
-    const electric = electrical(charger, supply);
+    const electric = chargingElectrical(charger, supply);
     const explicit = hasPeriods(fixedPeriods[charger.id]) && !manualActive(charger, now);
     const observed = !economic && (charger.capabilities.externalLoadBalancing || charger.capabilities.currentControl || electric.currentAssumed)
       && electric.available && (forecast.charging || forecast.scheduled || forecast.permitted) && finite(forecast.startAt);
@@ -1159,6 +1168,20 @@ function planChargersAtDeadlines({ now, chargers = [], prices = [], household = 
           if (compare(candidate, best, jobs) < 0) best = candidate;
         }
       }
+    }
+  }
+  // Reuse the exact electrical model; a relaxed flow is only an additional
+  // seed. Every replacement must satisfy native periods and the full allocator.
+  // Bound local work independently of the generated-start search.
+  if (!allFixed && !forecastOnly && best.feasible) {
+    const model = { jobs, intervals, now };
+    const flow = !partialPrices && jobs.length <= 2 ? relaxedChargingFlow(model) : null;
+    const refined = refinePeriods({ model, periods: best.periods, simulate, compare,
+      maxEvaluations: 256, extraSeeds: flow?.solved ? [flow.periods] : [] });
+    if (refined.result?.feasible && refined.result.nativeScheduleSupported
+      && decisionCost(refined.result) < decisionCost(best) - EPS) {
+      best = { ...refined.result, ...simulate({ starts: refined.result.starts,
+        periods: refined.periods, jobs, intervals }) };
     }
   }
   if (!best.nativeScheduleSupported) return fallback('native-schedule-unavailable',

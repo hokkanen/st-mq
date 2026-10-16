@@ -169,7 +169,7 @@ manual deadlines and retired schedule fingerprints are not repaired or translate
 into current control permission. Valid same-version restart, pending native
 instruction recovery and known later external instructions remain supported.
 
-Easee cloud economic scheduling checks the existing 15-minute minimum before
+Easee cloud economic scheduling checks the 10-minute minimum before
 preparing a different future delay. A closer proposal can retain only an
 unchanged same-connection owned program within current limits; otherwise it
 remains unadopted. The adapter's immediate pre-request refusal may establish that

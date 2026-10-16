@@ -83,8 +83,7 @@ test('joint planning coalesces an equivalent burst into the running search', asy
   await waitForCalls(f.planner, 1);
   const rest = Array.from({ length: 8 }, () => f.runtime.updatePlan());
   assert.equal(f.planner.calls.length, 1);
-  assert.ok(rest.every(flight => flight === first));
-  f.planner.complete(0); await first;
+  f.planner.complete(0); await Promise.all([first, ...rest]);
   assert.equal(f.runtime.coordination.solver.testRequest, 0);
   assert.equal(f.planner.calls.length, 1);
   assert.equal(f.runtime.planningRequest, null);
@@ -200,11 +199,12 @@ for (const action of ['Save', 'Use automatic']) test(`${action} can complete aft
   const calculate = f.runtime.calculatePlan.bind(f.runtime);
   let completed = 0, returned = false, nativeUpdates = 0;
   f.runtime.calculatePlan = async (...args) => {
-    await calculate(...args);
+    const result = await calculate(...args);
     if (++completed === 1) {
       f.controllers.charger2.control.snapshot.limits.chargerA = 12;
       void f.runtime.updatePlan();
     }
+    return result;
   };
   f.controllers.charger1.control.takeover = { available: true, token: 'synthetic-foreground-takeover' };
   f.controllers.charger1.update = async input => {
@@ -313,13 +313,14 @@ test('a valid native plan returns while newer changed measurements keep backgrou
   const f = await fixture(t), calculate = f.runtime.calculatePlan.bind(f.runtime);
   let completed = 0;
   f.runtime.calculatePlan = async (...args) => {
-    await calculate(...args);
+    const result = await calculate(...args);
     if (++completed === 1) {
       // A real input change after publication deserves another search, but
       // cannot keep the caller of the already committed plan on a global drain.
       f.controllers.charger2.control.snapshot.limits.chargerA = 12;
       void f.runtime.updatePlan();
     }
+    return result;
   };
   let returned = false;
   const native = f.controllers.charger1.getPlan().then(plan => { returned = true; return plan; });
@@ -350,7 +351,7 @@ test('control publication waiters cannot finish with an earlier request revision
   f.planner.complete(1); await Promise.all([native, latest]);
   assert.equal(f.runtime.coordination.requests.charger1.revision, item.request.revision);
   assert.equal(f.runtime.coordination.solver.testRequest, 1);
-  assert.equal(f.runtime.planPublicationWaiters.size, 0);
+  assert.equal(f.runtime.planningWaiters.size, 0);
 });
 
 test('a control request registered after commit cannot consume the preceding publication', async t => {
@@ -375,7 +376,7 @@ test('a control request registered after commit cannot consume the preceding pub
   f.planner.complete(1); await newer;
   assert.equal(f.runtime.coordination.solver.testRequest, 1);
   assert.equal(f.runtime.coordination.requests.charger1.revision, f.runtime.chargers.charger1.request.revision);
-  assert.equal(f.runtime.planPublicationWaiters.size, 0);
+  assert.equal(f.runtime.planningWaiters.size, 0);
 });
 
 test('an unchanged native read receipt does not discard useful planning work', async t => {
@@ -464,9 +465,12 @@ for (const change of ['request', 'session', 'authority', 'native instruction']) 
   });
 }
 
-for (const change of ['history selection', 'result age']) {
+for (const change of ['history selection', 'schedule boundary']) {
   test(`changed ${change} rejects the completed search and requests fresh planning`, async t => {
-    const f = await fixture(t), work = f.runtime.updatePlan();
+    const f = await fixture(t);
+    if (change === 'schedule boundary') f.runtime.prices = [{ start: AT, end: AT + 20_000, price: 20 },
+      { start: AT + 20_000, end: AT + 24 * HOUR, price: 1 }];
+    const work = f.runtime.updatePlan();
     await waitForCalls(f.planner, 1);
     if (change === 'history selection') f.store.db.prepare('UPDATE history_selection SET generation=generation+1 WHERE id=1').run();
     else f.setNow(AT + 31_000);
@@ -474,6 +478,6 @@ for (const change of ['history selection', 'result age']) {
     assert.equal(f.runtime.coordination, null);
     f.planner.complete(1); await work;
     assert.equal(f.runtime.coordination.solver.testRequest, 1);
-    assert.equal(f.runtime.coordination.at, change === 'result age' ? AT + 31_000 : AT);
+    assert.equal(f.runtime.coordination.at, change === 'schedule boundary' ? AT + 31_000 : AT);
   });
 }

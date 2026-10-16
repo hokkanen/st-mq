@@ -5,7 +5,7 @@ import { createChargingPlannerService } from '../src/charging/planner-service.js
 import { createEaseeScheduleAdapter, normalizeScheduleState } from '../src/charging/easee.js';
 import { createChargingController, validateChargingOwnershipState } from '../src/charging/controller.js';
 
-const NOW = Date.parse('2026-01-01T23:45:00Z'), QUARTER = 15 * 60_000;
+const NOW = Date.parse('2026-01-01T23:45:00Z'), QUARTER = 15 * 60_000, MIN_PAUSE = 10 * 60_000;
 const signal = value => ({ value, available: value !== null, assumed: false });
 function fixture(prices, { cloud = true } = {}) {
   return { now: NOW, supply: { configuredBudgetCurrentA: [16, 16, 16] },
@@ -22,16 +22,23 @@ function fixture(prices, { cloud = true } = {}) {
 }
 const exactGap = [{ startAt: NOW, endAt: NOW + QUARTER }, { startAt: NOW + 2 * QUARTER, endAt: null }];
 const approx = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-6, `${actual} != ${expected}`);
+function minimumGapFixture() {
+  const input=fixture([10,100,10]);
+  input.prices[1].end-=5*60_000;
+  input.prices[2].start-=5*60_000;input.prices[2].end-=5*60_000;
+  input.chargers[0].deadlineAt-=5*60_000;
+  return input;
+}
+
 
 test('a new cloud split cannot promise an exact minimum gap which dispatch cannot preserve', () => {
-  const input = fixture([10, 100, 10]), before = structuredClone(input);
+  const input = minimumGapFixture(), before = structuredClone(input);
   const result = planChargers(input), plan = result.plans.charger1;
   assert.equal(result.feasible, true);
   assert.equal(plan.periods.length, 1);
-  // Delivering 5.52 kWh at 11.04 kW needs thirty minutes. In this forty-five
-  // minute horizon any strictly longer-than-fifteen-minute gap cannot fit.
-  // Every continuous thirty-minute choice buys one expensive quarter hour.
-  approx(plan.costCents, 303.6);
+  // Two complete fifteen-minute runs separated by exactly ten minutes leave
+  // no dispatch-latency room. A continuous run buys ten expensive minutes.
+  approx(plan.costCents, 220.8);
   approx(plan.deliveredGridKwh, 5.52);
   assert.ok(plan.finishAt <= input.chargers[0].deadlineAt);
   assert.deepEqual(input, before, 'Original native current and planning inputs stay exact');
@@ -61,7 +68,7 @@ test('cloud planning finds the cheapest valid split instead of forcing a continu
   assert.equal(result.feasible, true);
   assert.ok(plan.periods.length > 1);
   for (let index = 1; index < plan.periods.length; index++)
-    assert.ok(plan.periods[index].startAt - plan.periods[index - 1].endAt > QUARTER);
+    assert.ok(plan.periods[index].startAt - plan.periods[index - 1].endAt > MIN_PAUSE);
   // The witness buys all 2.76 kWh at five cents, then the remainder at six;
   // this independent price lower bound is achievable within the deadline.
   approx(plan.costCents, 30.36);
@@ -103,7 +110,7 @@ test('a later equal-price edge follows available capacity instead of imposing a 
   const result = planChargers(input), plan = result.plans.charger1;
   assert.equal(result.feasible, true);
   assert.equal(plan.periods.length, 2);
-  assert.equal(plan.periods[1].startAt - plan.periods[0].endAt, 25 * 60_000);
+  assert.equal(plan.periods[1].startAt - plan.periods[0].endAt, QUARTER);
   approx(plan.costCents, 30.36);
   approx(plan.deliveredGridKwh, 5.52);
   assert.ok(plan.finishAt <= input.chargers[0].deadlineAt);
@@ -123,10 +130,10 @@ test('an equal-price middle block preserves representable gaps at both adjacent 
   approx(plan.costCents, 44.16, 'Both five-cent quarters and the required six-cent energy remain reachable');
   approx(plan.deliveredGridKwh, 8.28);
   for (let index = 1; index < plan.periods.length; index++)
-    assert.ok(plan.periods[index].startAt - plan.periods[index - 1].endAt > QUARTER);
+    assert.ok(plan.periods[index].startAt - plan.periods[index - 1].endAt > MIN_PAUSE);
 });
 
-test('a centered same-price placement skips a complete unused interval without inventing a run', () => {
+test('an equal-price placement uses a complete cheapest slot without inventing a run', () => {
   const input = fixture([5, 100, 6, 6, 6, 100, 5]);
   input.chargers[0].requiredGridKwh = 8.28;
   const result = planChargers(input), plan = result.plans.charger1;
@@ -134,7 +141,7 @@ test('a centered same-price placement skips a complete unused interval without i
   approx(plan.costCents, 44.16);
   approx(plan.deliveredGridKwh, 8.28);
   assert.equal(plan.periods.length, 3);
-  assert.deepEqual(plan.periods[1], { startAt: NOW + 3 * QUARTER, endAt: NOW + 4 * QUARTER });
+  assert.deepEqual(plan.periods[1], { startAt: NOW + 2 * QUARTER, endAt: NOW + 3 * QUARTER });
   assert.ok(plan.periods.every(row => row.startAt % 1000 === 0 && (row.endAt === null || row.endAt % 1000 === 0)));
   assert.ok(plan.finishAt <= input.chargers[0].deadlineAt);
 });
@@ -215,28 +222,28 @@ test('unequal cloud and adjustable-peer requests can move together into the chea
   assert.ok(result.allocations.every(row => row.phaseCurrentA.every(amps => amps <= 16 + 1e-7)));
   const cloudPeriods = result.plans.charger1.periods;
   for (let index = 1; index < cloudPeriods.length; index++)
-    assert.ok(cloudPeriods[index].startAt - cloudPeriods[index - 1].endAt > QUARTER);
+    assert.ok(cloudPeriods[index].startAt - cloudPeriods[index - 1].endAt > MIN_PAUSE);
   assert.deepEqual(input, original);
 });
 
 test('the real planner worker transports the existing cloud capability and invalidates its cache on backend change', async t => {
   const service = createChargingPlannerService();
   t.after(() => service.close());
-  const input = fixture([10, 100, 10]), original = structuredClone(input);
+  const input = minimumGapFixture(), original = structuredClone(input);
   const cloud = await service.request(input);
   assert.deepEqual(cloud, planChargers(input));
   assert.equal(cloud.plans.charger1.periods.length, 1);
   delete input.chargers[0].capabilities.localClockSchedule;
   const local = await service.request(input);
   assert.deepEqual(local, planChargers(input));
-  assert.deepEqual(local.plans.charger1.periods, exactGap);
+  assert.deepEqual(local.plans.charger1.periods, [{startAt:NOW,endAt:NOW+QUARTER},{startAt:NOW+QUARTER+MIN_PAUSE,endAt:null}]);
   approx(local.plans.charger1.costCents, 55.2);
   assert.deepEqual(original.chargers[0].values, input.chargers[0].values);
 });
 
-test('a selected longer cloud gap dispatches through the actual adapter after read and durable-intent delay', async t => {
+test('a full fifteen-minute cloud gap dispatches through the actual adapter after read and durable-intent delay', async t => {
   const plan = { ...planChargers(fixture([5, 100, 6, 6])).plans.charger1, id: 'representable-cloud-plan' };
-  assert.equal(plan.periods[1].startAt - plan.periods[0].endAt, 30 * 60_000);
+  assert.equal(plan.periods[1].startAt - plan.periods[0].endAt, QUARTER);
   let now = NOW, mode = 3, schedule = normalizeScheduleState({ enabled: 'none' });
   let delayRead = false, delayedIntent = false;
   const posts = [], saved = [];
@@ -275,7 +282,7 @@ test('a selected longer cloud gap dispatches through the actual adapter after re
   await update();
   assert.equal(posts.length, 1);
   assert.ok(posts[0].dispatchedAt > plan.periods[0].endAt, 'Actual positive dispatch latency is exercised');
-  assert.ok(plan.periods[1].startAt - posts[0].dispatchedAt >= QUARTER);
+  assert.ok(plan.periods[1].startAt - posts[0].dispatchedAt >= MIN_PAUSE);
   assert.equal(controller.status().pending, null);
   assert.equal(controller.status().phase, 'paused');
   assert.equal(controller.status().owned.startAt, plan.periods[1].startAt);

@@ -395,7 +395,7 @@
                   <summary class="equipment-device-summary">
                     <div class="equipment-device-heading"><h4 id="dhwr-title">Hot-water circulation</h4><small id="dhwr-source" class="equipment-device-meta">Circulation pump · Shelly</small></div>
                     <p id="dhwr-preview" class="equipment-device-preview">Waiting for readings</p>
-                    <span class="equipment-device-health equipment-connection-health"><span id="dhwr-feedback-status" class="equipment-device-status">Awaiting feedback</span><small id="dhwr-feedback-time" class="equipment-connection-recent">No live report yet</small></span>
+                    <span class="equipment-device-health"><span id="dhwr-feedback-status" class="equipment-device-status">Awaiting feedback</span><small id="dhwr-feedback-time" class="equipment-device-recent">No live report yet</small></span>
                   </summary>
                   <div class="equipment-device-body">
                     <dl id="dhwr-live-readings" class="equipment-readings"><dt>Reported operation</dt><dd><strong id="dhwr-live-state">Unknown</strong></dd><dt id="dhwr-live-power-label">Live power</dt><dd><strong id="dhwr-live-power">Unavailable</strong></dd></dl>
@@ -520,10 +520,11 @@
                     </div>
                   </details>
                   <details id="secure-web-access-details" class="section-fold controller-fold">
-                    <summary><span>Web access</span><small id="secure-web-access-state" class="equipment-device-status" data-state="pending">Status unavailable</small></summary>
+                    <summary>Web access</summary>
                     <div class="section-fold-body secure-web-access-body">
                       <p id="secure-web-access-summary" class="muted">Loading this computer’s web access status…</p>
                       <dl class="secure-web-access-facts">
+                        <div><dt>Status</dt><dd id="secure-web-access-state" class="equipment-device-status" data-state="pending">Status unavailable</dd></div>
                         <div><dt>HTTPS listener</dt><dd id="secure-web-access-https">Unknown</dd></div>
                         <div id="secure-web-access-expiry-row" hidden><dt>Certificate expires</dt><dd id="secure-web-access-expiry">Unknown</dd></div>
                         <div><dt>LAN HTTP backup</dt><dd id="secure-web-access-http">Unknown</dd></div>

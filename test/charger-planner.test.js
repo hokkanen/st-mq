@@ -92,12 +92,17 @@ test('adjacent cheap hours remain one unrestricted charging period', () => {
   assert.deepEqual(result.currentLimits, []);
 });
 
-test('the single-session optimizer includes fractional starts rounded earlier to native seconds', () => {
-  const result = run([make('renamed', { preferences: { capacityKwh: 14 }, telemetry: { minimumSoc: 100 }, deadlineAt: now + 3 * HOUR })],
-    { prices: prices([10, 1, 20]) });
-  const exact = now + 2 * HOUR - 14 / .925 / 11.04 * HOUR;
-  assert.equal(result.plans.renamed.startAt, Math.floor(exact / 1000) * 1000);
-  assert.equal(result.plans.renamed.feasible, true);
+test('the single-session optimizer refines a fractional start at native second precision without increasing modeled cost', () => {
+  const charger=make('renamed',{preferences:{capacityKwh:14},telemetry:{minimumSoc:100},deadlineAt:now+3*HOUR});
+  const result=run([charger],{prices:prices([10,1,20])});
+  const exact=now+2*HOUR-14/.925/11.04*HOUR;
+  const earlier=Math.floor(exact/1000)*1000;
+  const incumbent=forecastFixedPlans({now,supply,chargers:[charger],prices:prices([10,1,20]),
+    periodsByCharger:{renamed:[{startAt:earlier,endAt:null}]}});
+  assert.equal(result.plans.renamed.startAt%1000,0);
+  assert.ok(Math.abs(result.plans.renamed.startAt-exact)<1000);
+  assert.equal(result.plans.renamed.feasible,true);
+  assert.ok(result.plans.renamed.costCents<=incumbent.plans.renamed.costCents+1e-7);
 });
 
 test('current and AC voltage are required but three phases are assumed before charging', () => {

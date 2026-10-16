@@ -456,7 +456,7 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       const write = async (stage, url, body, verify) => {
         const attempt = controlAttempt();
         try {
-        const dispatchAllowed = () => allowed() && (stage !== 'schedule' || !pause || pause.startAt - clock() >= 15 * 60_000);
+        const dispatchAllowed = () => allowed() && (stage !== 'schedule' || !pause || pause.startAt - clock() >= 10 * 60_000);
         const before = await adapter.read({ signal, forceRest: true });
         if (!same(before)) throw failure('state-changed', 'The charger instruction changed during automatic handover.');
         if (!allowed() || !usable(before)) throw failure('control-revoked', 'Charging control authority changed.');
@@ -507,7 +507,7 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       if (pause) {
         const priorKind = current.schedule.enabled;
         const delayed = delayedScheduleFor(pause, clock());
-        if (pause.startAt - clock() < 15 * 60_000) throw failure('start-passed', 'The planned pause is too short.');
+        if (pause.startAt - clock() < 10 * 60_000) throw failure('start-passed', 'The planned pause is too short.');
         await write('schedule', `${base}/delayed`, { enabled: true, ...delayed }, (after, before) =>
           after.fingerprint === scheduleFingerprint({ ...before.schedule, enabled: 'delayed', delayed }) && after.enabled === before.enabled
           && after.observations?.[31]?.at === before.observations?.[31]?.at
@@ -566,7 +566,7 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
         throw failure('access-denied', 'The charger is not available for an automatic schedule.');
       const delayed = delayedScheduleFor({ startAt, timezone, maximumAmps }, clock());
       const temporalGuard = () => {
-        if (!canMutate() || !canControl() || startAt - clock() < (identification ? 1000 : 15 * 60000)) return false;
+        if (!canMutate() || !canControl() || startAt - clock() < (identification ? 1000 : 10 * 60000)) return false;
         try { delayedScheduleFor({ startAt, timezone, maximumAmps }, clock()); return true; } catch { return false; }
       };
       const unsentStart = () => Object.assign(failure('start-passed', 'The delayed start expired before dispatch.'), { notDispatched: true });
@@ -575,7 +575,7 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       // request. A failed save must leave the native charger untouched.
       attempt.storageWaiting(true);
       await beforeWrite(before);
-      if (canMutate() && canControl() && startAt - clock() < (identification ? 1000 : 15 * 60000)) attempt.expire();
+      if (canMutate() && canControl() && startAt - clock() < (identification ? 1000 : 10 * 60000)) attempt.expire();
       attempt.storageWaiting(false);
       if (!temporalGuard()) throw unsentStart();
       if (!canControl() || !canMutate()) throw failure('control-revoked', 'Charging control authority changed.');

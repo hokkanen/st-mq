@@ -46,6 +46,7 @@ export function createChargingFlexibility({ document, request, save, formatTime 
   const entries = new Map(), comparisons = new Map(), incomingComparisons = new Map(), listeners = [];
   let status, receivedAt = Date.now(), writable = false, busy = false, timer, disposed = false;
   let dialog, title, description, comparisonRows, savingValue, combined, uncertainty, priceDetails, riskAllowances, snapshotTime, note, message, refresh, back, apply;
+  let loadedModelAt, lastPreviewAttempt = 0;
   let selected, invoker, openedScope, openedComparisonScope, preview, previewScope, snapshot, renderedPlans, loading = false, saving = false, generation = 0;
   const make = (tag, text = '', className = '', id) => {
     const node = document.createElement(tag); node.textContent = text;
@@ -259,7 +260,9 @@ export function createChargingFlexibility({ document, request, save, formatTime 
   async function loadPreview() {
     const charger = chargerFor(selected);
     if (!charger?.request || loading || saving) return;
+    lastPreviewAttempt = Date.now();
     const requestScope = scope(charger), requestGeneration = ++generation, requestedSnapshot = captureSnapshot(charger);
+    loadedModelAt = status?.charging?.coordination?.at;
     if (previewScope !== requestScope || openedComparisonScope !== comparisonScope(charger)) {
       preview = retainComparison(charger) ?? structuredClone(charger.flexibility?.preview ?? null); previewScope = requestScope; snapshot = requestedSnapshot;
     }
@@ -326,6 +329,9 @@ export function createChargingFlexibility({ document, request, save, formatTime 
         message.textContent = ''; message.classList.remove('form-error');
       }
       refreshDialog();
+      if (dialog?.open && !loading && !saving && charger && openedScope === scope(charger)
+        && status?.charging?.coordination?.at !== loadedModelAt && Date.now() - lastPreviewAttempt >= 60_000)
+        void loadPreview();
     },
     removeEntry(id) { entries.delete(id); comparisons.delete(id); incomingComparisons.delete(id); if (selected === id) close(); },
     close() { disposed = true; clearTimeout(timer); generation++; if (dialog?.open) dialog.close(); dialog?.remove(); for (const remove of listeners) remove(); },

@@ -787,6 +787,7 @@ test('a queued planning timestamp cannot interrupt a current comparison after ne
   f.runtime.calculatePlan = async now => {
     if (calculations++ === 0) await blocked;
     else f.runtime.refreshPlanningState(now);
+    return true;
   };
   f.runtime.updatePlan = ChargingRuntime.prototype.updatePlan.bind(f.runtime);
   const planning = f.runtime.updatePlan(requestedAt);
@@ -808,6 +809,9 @@ test('completed planning observes live identification at the post-search clock',
   const f = await fixture(t, { initialCurrentA: 16 }); await f.update();
   const item = f.item('charger2'), before = structuredClone(item.identification);
   assert.equal(item.controller.status().currentTest.phase, 'active');
+  // Keep C2's existing current comparison while a real schedulable peer
+  // supplies the asynchronous economic job; disabled requests need no search.
+  f.item('charger1').controls.enabled = true; f.runtime.refreshSettings();
   await f.runtime.plannerService.close();
   let options, finish;
   f.runtime.plannerService = { request: input => { options = input; return new Promise(resolve => { finish = resolve; }); }, close() {} };
