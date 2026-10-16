@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve checkpoint-worker cancellation reasons so interrupted work does not
+  falsely classify an intact paired replica as a verification failure.
+
 - Coalesce background planning while vehicle observations await durable
   admission, avoiding fallback/recovery searches for unchanged readings. Copy
   only public charging-report fields when preparing dashboard summaries.

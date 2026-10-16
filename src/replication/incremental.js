@@ -29,10 +29,16 @@ export function journalOperation(operation, { dbPath, signal, ...args }) {
     };
     const abort = () => { void worker.terminate().then(() => finish(signal.reason ?? replicationError('stopped'))); };
     signal?.addEventListener('abort', abort, { once: true });
-    worker.once('message', message => finish(message.ok ? null :
-      Object.assign(replicationError(message.error?.code ?? 'verification_failed'), message.error), message.value));
-    worker.once('error', () => finish(replicationError('verification_failed')));
-    worker.once('exit', () => { if (!settled) finish(replicationError('verification_failed')); });
+    worker.once('message', message => {
+      if (signal?.aborted) return; // Cancellation joins the terminated worker.
+      finish(message.ok ? null : Object.assign(replicationError(message.error?.code ?? 'verification_failed'), message.error), message.value);
+    });
+    worker.once('error', () => { if (!signal?.aborted) finish(replicationError('verification_failed')); });
+    // terminate() resolves after exit. Preserve the cancellation reason when
+    // that event wins, rather than reporting an intact replica as unverified.
+    worker.once('exit', () => {
+      if (!settled) finish(signal?.aborted ? signal.reason ?? replicationError('stopped') : replicationError('verification_failed'));
+    });
   });
 }
 
