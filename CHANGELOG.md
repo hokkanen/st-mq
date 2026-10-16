@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve native confirmation of an acknowledged Shelly charging command while
+  received input waits for storage, without allowing another command through that
+  admission hold.
+
 - Report an unsent Shelly relay command's witnessed recording deadline as
   waiting for storage, while keeping dispatched readback outcomes unconfirmed.
 

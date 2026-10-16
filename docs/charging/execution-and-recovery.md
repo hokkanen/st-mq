@@ -399,6 +399,10 @@ readback within the same adapter generation and physical connection. An unrelate
 connected work-state update does not erase that confirmation. Pending observations
 still withhold readiness for further commands, and physical charging or stopping
 requires its own fresh measurement.
+Temporary input-storage admission can likewise block new commands without
+preventing read-only confirmation of an acknowledged setting. That confirmation
+still requires current authority and the same equipment and physical connection;
+it neither replays the write nor renews its original source clock.
 
 Pre-1.0 native state is not migrated. The current charging state uses version 7
 and database schema 31; the physical adapter uses its own explicitly scoped

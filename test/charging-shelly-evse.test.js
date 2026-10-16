@@ -2174,6 +2174,75 @@ test('Shelly preserves an accepted stop when replanning revokes the in-flight in
   assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1, 'Do not replay the stop');
 });
 
+for (const outcome of ['temporary admission gap', 'authority lost'])
+test(`explicit Shelly takeover retains acknowledged Stop readback through ${outcome}`, async t => {
+  const f = fixture(t, { limiterEnabled: false }); f.sources.set('start_charging', 'rpc'); await f.ready();
+  let admitted = true, authority = true, acknowledged = false, postAckRefreshes = 0, saved;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now,
+    canControl: () => admitted && authority, hasAuthority: () => authority,
+    saveState: value => { saved = structuredClone(value); } });
+  t.after(() => controller.close());
+  await controller.update({ enabled: false });
+  const rpc = f.adapter.rpc, refresh = f.adapter.refresh;
+  f.adapter.rpc = async (...args) => {
+    const result = await rpc(...args);
+    if (args[0] === 'Boolean.Set' && args[1].value === false) {
+      acknowledged = true; admitted = false;
+      if (outcome === 'authority lost') authority = false;
+    }
+    return result;
+  };
+  f.adapter.refresh = async options => {
+    if (!acknowledged) return refresh(options);
+    postAckRefreshes++;
+    assert.equal(admitted, false, 'Read-only confirmation begins while publication admission is closed');
+    const result = await refresh(options);
+    admitted = true;
+    return result;
+  };
+  f.setNow(NOW + 1000);
+  const result = await controller.update({ enabled: true, takeover: controller.status().takeover.token,
+    plan: { id: 'synthetic-admission-gap', deadlineAt: NOW + 7200_000,
+      periods: [{ startAt: NOW + 3600_000, endAt: null }] } });
+  assert.equal(acknowledged, true);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1, 'Never replay the native Stop');
+  assert.equal(f.writes.some(row => row.method === 'Number.Set'), false);
+  if (outcome === 'temporary admission gap') {
+    assert.equal(postAckRefreshes, 1);
+    assert.equal(saved.pending, null, 'Temporary admission does not erase independently confirmed command evidence');
+    assert.equal(saved.permissionCommand.value, false);
+    assert.equal(result.takeover.state, 'confirmed');
+    assert.equal(result.manual, null);
+    assert.equal(result.ownedPause, true);
+  } else {
+    assert.equal(postAckRefreshes, 0, 'Actual authority loss still stops the revoked takeover');
+    assert.equal(saved.pending.stage, 'accepted');
+    assert.equal(result.takeover.state, 'blocked');
+  }
+});
+
+test('a Shelly takeover admission gap before publication still prevents its Stop', async t => {
+  const f = fixture(t, { limiterEnabled: false }); await f.ready();
+  let admitted = true, rejectedProposal = false;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now,
+    canControl: () => admitted, hasAuthority: () => true,
+    saveState: value => {
+      if (value.pending?.role === 'start_charging' && value.pending.stage === 'proposed') {
+        rejectedProposal = true; admitted = false;
+      }
+    } });
+  t.after(() => controller.close());
+  await controller.update({ enabled: false }); f.setNow(NOW + 1000);
+  const result = await controller.update({ enabled: true, takeover: controller.status().takeover.token,
+    plan: { id: 'synthetic-unadmitted-stop', deadlineAt: NOW + 7200_000,
+      periods: [{ startAt: NOW + 3600_000, endAt: null }] } });
+  assert.equal(rejectedProposal, true);
+  assert.equal(f.writes.some(row => row.method === 'Boolean.Set' || row.method === 'Number.Set'), false);
+  assert.equal(f.fields.start_charging, true);
+  assert.equal(result.pending, null);
+  assert.equal(result.takeover.state, 'blocked');
+});
+
 test('Shelly post-write verification drains an older poll before requesting fresh correlated readback', async t => {
   for (const mode of ['current', 'stop', 'start']) await t.test(mode, async t => {
     const f = fixture(t, { limiterEnabled: false }); await f.ready();

@@ -2106,9 +2106,12 @@ export function createShellyController({ adapter, initialState, saveState = () =
         };
         publishLimiterStatus();
         let expectedStart = copy(start), expectedCurrent = copy(current), expectedNotificationRevision = snapshot.notificationRevision;
-        const liveIntent = () => !closed && intentRevision === revision && canControl() && adapter.snapshot().session?.sessionId === sessionId
+        // Admission can close while another received input becomes durable.
+        // Confirm an acknowledged command read-only while authority remains;
+        // every further publication still requires current admission below.
+        const liveIntent = () => !closed && intentRevision === revision && hasAuthority() && adapter.snapshot().session?.sessionId === sessionId
           && adapter.snapshot().association === state.association;
-        const guard = () => liveIntent() && adapter.snapshot().notificationRevision === expectedNotificationRevision
+        const guard = () => liveIntent() && canControl() && adapter.snapshot().notificationRevision === expectedNotificationRevision
           && (!stopPass || ownsDueStop());
         const command = async (role, value, reason, owned = null) => {
           // The existing confirmed-idle rule owns any fallback setting. The
