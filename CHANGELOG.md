@@ -11,6 +11,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   Retain earlier local-task failures after later successes, and track database
   saves and downloads through final publication, transfer and cleanup.
 
+- Identify Tesla during ordinary charging without requiring an extra-energy probe
+  or a test on the other charger. Preserve healthy current and power reports while
+  fresh measurements establish settling, retaining source clocks and probe limits.
+
 - Reuse verified immutable heating checkpoints during unchanged controller updates,
   avoiding repeated full-model hashing and rollback copies while preserving replay.
 

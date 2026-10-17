@@ -97,15 +97,21 @@ connection and does not relax the static matching rules below.
 The same positive comparison evaluates either charger. It does not require
 Charger 2 to run a test or receive a command. When all observed peers are
 confirmed disconnected, the start/power evidence above remains sufficient.
-With a connected peer, the target's own bounded probe can instead supply fresh
-live Tesla actual current and power that uniquely agree with measured target
-draw. Every peer must have fresh distinguishing measured draw, confirmed physical
-zero draw, or an observed disconnect; unknown and overlapping evidence blocks
-assignment. Current and power retain the existing measurement tolerances and
+With a connected peer, the target's own bounded probe or ordinary charging can
+instead supply live Tesla actual current and power that uniquely agree with
+fresh measured target draw. Ordinary charging uses the current physical connection
+and identification attempt as its comparison scope; it needs no extra-energy
+probe or peer command. Every peer must have fresh distinguishing measured draw,
+confirmed physical zero draw, or an observed disconnect; unknown and overlapping
+evidence blocks assignment. Current and power retain the existing measurement tolerances and
 original clocks. Two admitted observations at least five seconds apart must
 agree, with advancing physical measurements and unchanged connection/feed scope.
 The original probe energy allowance, deadline, retry and evidence consumption
 remain binding. Identification sends no command to its peer.
+Observation during ordinary charging cannot acquire Start permission or extend
+an extra-energy probe. Healthy change-only reports keep their original clocks
+while new physical measurements establish settling; source loss still withdraws
+their use. The owner approved this ordinary-charging clarification on 2026-10-17.
 
 A confirmed 6 A intervention adds distinguishing evidence when needed; it is not
 a prerequisite for a uniquely measured Tesla-only assignment. The joint BMW
@@ -137,8 +143,13 @@ draw is not a positive match. This owner-approved clarification on 2026-10-07
 retains the independent BMW evidence requirement.
 The physical readings must settle and continue to agree on a later observation. Requested current and the pilot
 ceiling are not measured draw. A Tesla current held from before the test cannot
-identify either charger, even if its value matches. Each other observed charger
-must have fresh distinguishing current evidence, confirmed zero draw or a
+identify either charger, even if its value matches. Live current and power first
+received within the comparison keep their original clocks while a healthy logger
+continues to support those unchanged values. A one-minute receipt-age cutoff must
+not discard them before a later fresh physical measurement can settle the match.
+This does not extend the comparison deadline or admit retained, consumed or
+pre-comparison evidence. Each other observed charger must have fresh
+distinguishing current evidence, confirmed zero draw or a
 confirmed disconnect. Equal currents, missing peer measurements or inconsistent
 measured currents and power leave identification unresolved. A unique Tesla match
 can identify either charger; BMW still requires its own positive evidence.

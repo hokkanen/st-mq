@@ -264,10 +264,10 @@ test('minimum-current matching admits independently corroborated charging while 
 test('one Tesla comparison uses an own probe without a peer current test', () => {
   const f = fixture();
   const options = { ...f.options, currentTest: undefined, minimumPhysical: undefined,
-    probe: { id: 'synthetic-own-probe', startedAt: START + 10_000, deadlineAt: START + 90_000 } };
+    comparison: { id: 'synthetic-own-probe', startedAt: START + 10_000, deadlineAt: START + 90_000 } };
   const match = matchTeslaCurrent(f.tesla, options);
   assert.equal(match.kind, 'current'); assert.equal(match.minimumTest, false);
-  assert.equal(match.minimumPhysicalAt, null); assert.equal(match.testId, options.probe.id);
+  assert.equal(match.minimumPhysicalAt, null); assert.equal(match.testId, options.comparison.id);
   f.tesla.actualCurrentA = 16; f.tesla.actualPowerKw = 11;
   f.tesla.fields.charger_actual_current.value = 16; f.tesla.fields.charger_power.value = 11;
   assert.equal(matchTeslaCurrent(f.tesla, { ...options, physical: f.first, peers: [f.minimumPhysical] }).minimumTest, false);
@@ -279,7 +279,7 @@ test('own-probe uniqueness requires affirmative physical peer evidence', () => {
     powerKw: field(0), phaseCurrentA: field([0, 0, 0]) };
   for (const peer of [zero, { providerConnected: true, connected: field(false) }, physical(16, 11)]) {
     const f = fixture(), options = { ...f.options, currentTest: undefined, minimumPhysical: undefined, peers: [peer],
-      probe: { id: 'synthetic-own-probe', startedAt: START + 10_000, deadlineAt: START + 90_000 } };
+      comparison: { id: 'synthetic-own-probe', startedAt: START + 10_000, deadlineAt: START + 90_000 } };
     assert.ok(matchTeslaCurrent(f.tesla, options));
   }
   for (const peer of [{ connected: { value: false, available: false } }, physical(6, 4.1), physical(6.8, 4.6),
@@ -287,13 +287,13 @@ test('own-probe uniqueness requires affirmative physical peer evidence', () => {
     { ...physical(16, 11), providerConnected: false }]) {
     const f = fixture();
     assert.equal(matchTeslaCurrent(f.tesla, { ...f.options, currentTest: undefined, minimumPhysical: undefined, peers: [peer],
-      probe: { id: 'synthetic-own-probe', startedAt: START + 10_000, deadlineAt: START + 90_000 } }), null);
+      comparison: { id: 'synthetic-own-probe', startedAt: START + 10_000, deadlineAt: START + 90_000 } }), null);
   }
 });
 
 test('own-probe comparison preserves clocks, consumption and the original deadline', () => {
   const changes = [
-    f => { f.options.probe.deadlineAt = NOW; },
+    f => { f.options.comparison.deadlineAt = NOW; },
     f => { f.tesla.fields.charger_actual_current.receivedAt = START; },
     f => { f.tesla.fields.charger_power.receivedAt = START; },
     f => { f.tesla.fields.charger_actual_current.retained = true; },
@@ -303,8 +303,60 @@ test('own-probe comparison preserves clocks, consumption and the original deadli
   ];
   for (const change of changes) {
     const f = fixture(); f.options = { ...f.options, currentTest: undefined, minimumPhysical: undefined,
-      probe: { id: 'synthetic-own-probe', startedAt: START + 10_000, deadlineAt: START + 90_000 } };
+      comparison: { id: 'synthetic-own-probe', startedAt: START + 10_000, deadlineAt: START + 90_000 } };
     assert.ok(matchTeslaCurrent(f.tesla, f.options)); change(f);
     assert.equal(matchTeslaCurrent(f.tesla, f.options), null);
+  }
+});
+
+for (const comparison of ['minimum-current', 'own-probe'])
+test(`healthy change-only Tesla fields remain usable while fresh measurements settle (${comparison})`, () => {
+  const { tesla, options } = fixture();
+  if (comparison === 'own-probe') {
+    delete options.currentTest;
+    delete options.minimumPhysical;
+    options.comparison = { id: 'synthetic-held-fields', startedAt: START + 10_000, deadlineAt: START + 90_000 };
+  }
+  assert.ok(matchTeslaCurrent(tesla, options));
+  const clocks = structuredClone(tesla.fields);
+  options.now = START + 89_000;
+  options.physical.phaseCurrentA.measuredAt = options.now;
+  options.physical.powerKw.measuredAt = options.now;
+  if (options.minimumPhysical) {
+    options.minimumPhysical.phaseCurrentA.measuredAt = options.now;
+    options.minimumPhysical.powerKw.measuredAt = options.now;
+  }
+  for (const peer of options.peers) {
+    peer.phaseCurrentA.measuredAt = options.now;
+    peer.powerKw.measuredAt = options.now;
+  }
+  const match = matchTeslaCurrent(tesla, options);
+  assert.ok(match, 'Held live values from this comparison do not expire while logger health and physical evidence remain current');
+  assert.equal(match.receivedAt, clocks.charger_actual_current.receivedAt);
+  assert.deepEqual(tesla.fields, clocks, 'A later comparison cannot renew source receipt clocks');
+  tesla.healthy = false;
+  assert.equal(matchTeslaCurrent(tesla, options), null);
+  tesla.healthy = true;
+  options.now = START + 90_000;
+  assert.equal(matchTeslaCurrent(tesla, options), null, 'Held fields never extend the existing test deadline');
+});
+
+test('ordinary charging comparison requires its current scope and preserves evidence fences', () => {
+  const f = fixture();
+  delete f.options.currentTest; delete f.options.minimumPhysical;
+  f.options.comparison = { id: 'synthetic-ordinary-comparison', startedAt: START + 10_000, deadlineAt: null };
+  assert.equal(matchTeslaCurrent(f.tesla, f.options)?.kind, 'current');
+  for (const change of [
+    g => { delete g.options.comparison; },
+    g => { g.options.comparison.deadlineAt = undefined; },
+    g => { g.options.comparison.startedAt = NOW + 1; },
+    g => { g.options.matchingSince = NOW; },
+    g => { g.options.peers[0].phaseCurrentA.value = [6, 6, 6]; },
+    g => { g.options.peers[0].connected.available = false; },
+    g => { g.tesla.fields.charger_actual_current.retained = true; },
+    g => { g.tesla.healthy = false; },
+  ]) {
+    const g = structuredClone(f); change(g);
+    assert.equal(matchTeslaCurrent(g.tesla, g.options), null);
   }
 });

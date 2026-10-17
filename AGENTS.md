@@ -540,11 +540,17 @@ permission to act. See [the configuration guide](docs/configuration.md).
   comparison on either charger, without requiring a test or command on Charger 2.
   An observed disconnected peer retains the existing start/power evidence rules.
   With a connected peer, fresh measured Tesla current and corroborating power
-  must uniquely match the target's bounded probe against both physical chargers,
-  including settled observations. Unknown or overlapping peer evidence remains
-  ambiguous. A minimum-current intervention is additional distinguishing evidence,
-  not a universal prerequisite. This Tesla-only comparison cannot identify BMW
+  must uniquely match the target against both physical chargers during its bounded
+  probe or ordinary charging, including settled observations. Unknown or
+  overlapping peer evidence remains ambiguous. A minimum-current intervention is
+  additional distinguishing evidence, not a universal prerequisite. This Tesla-only comparison cannot identify BMW
   by elimination or furnish the preceding joint 6 A proof without that real test.
+  On 2026-10-17 the owner explicitly approved the ordinary-charging comparison:
+  the same current/power, physical-session, source, peer and settling checks apply
+  without requiring an extra-energy probe. Healthy change-only reports retain
+  their original receipt clocks while fresh physical measurements establish the
+  later comparison. This grants no Start permission, additional charging budget
+  or extension of a bounded probe, and does not change restoration duties.
 - On 2026-10-09 the owner approved identification on either reachable charger
   while its peer is explicitly unreachable. Missing peer observations remain
   unknown; they cannot supply disconnection, zero draw or an identity. BMW keeps

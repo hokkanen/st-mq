@@ -841,13 +841,18 @@ export class ChargingRuntime {
     return null;
   }
   identificationFeedReady(item, now) { return this.identificationFeedReason(item, now) === null; }
-  identificationAdmissionPending(item, now = this.clock()) {
+  identificationAdmissionPending(item, now = this.clock(), { ordinaryComparison = false } = {}) {
     const control = item.controller?.status(), test = control?.currentTest, state = item.identification;
     if (!state || control?.session?.connected !== true || state.connectedAt !== control.session.connectedAt) return false;
     const sameTest = test?.id === state.id;
-    if (sameTest && (test.sessionId !== control.session.sessionId || test.connectedAt !== state.connectedAt
-      || !['proposed', 'applying', 'active'].includes(test.phase) || test.expiresAt <= now)) return false;
-    if (!sameTest && this.probeReturn(item, now)?.endedAt !== null) return false;
+    // A dormant ordinary-comparison sample owns no command or temporary
+    // setting. Keep the shared source/departure checks below without borrowing
+    // an extra-energy probe or a completed current test's control authority.
+    if (!ordinaryComparison) {
+      if (sameTest && (test.sessionId !== control.session.sessionId || test.connectedAt !== state.connectedAt
+        || !['proposed', 'applying', 'active'].includes(test.phase) || test.expiresAt <= now)) return false;
+      if (!sameTest && this.probeReturn(item, now)?.endedAt !== null) return false;
+    }
     // Waiting for another received packet is not a failed existing test.
     // Actual source loss or an already admitted contrary fact still wins.
     const bmw = this.vehicleFeeds.bmw, bmwAdmission = vehicleFeedAdmission(bmw);
@@ -1631,12 +1636,18 @@ export class ChargingRuntime {
         const currentScope = currentTest?.sessionId === minimumControl?.session?.sessionId
           && currentTest?.connectedAt === minimumControl?.session?.connectedAt
           && minimumControl?.session?.connected === true;
-        const minimumContext = currentScope && currentTest.phase === 'active';
+        const minimumContext = currentScope && currentTest.phase === 'active' && now < currentTest.expiresAt;
         const state = item.identification, probe = state?.probe;
         const ownProbe = state?.connectedAt === connectedAt && probe?.endedAt === null
           && ['waiting', 'charging'].includes(state.phase) && now < probe.deadlineAt;
+        // Comparing already-authorized charging is observation, independently
+        // of the permission and budget for extra charging during a price delay.
+        const ordinaryComparison = state?.connectedAt === connectedAt
+          && this.identificationChargingChoice(item, now).normalCharging === true;
+        const ownComparison = ownProbe ? { id: state.id, startedAt: probe.startedAt, deadlineAt: probe.deadlineAt }
+          : ordinaryComparison ? { id: state.id, startedAt: state.startedAt, deadlineAt: null } : null;
         const comparison = minimumContext ? { currentTest, minimumPhysical: result.charger2 }
-          : ownProbe ? { probe: { id: state.id, startedAt: probe.startedAt, deadlineAt: probe.deadlineAt } } : {};
+          : ownComparison ? { comparison: ownComparison } : {};
         const current = matchTeslaCurrent(tesla, { physical: result[id], peers, ...comparison,
           connectedAt, lastDisconnectedAt: session.lastDisconnectedAt, chargingAt: evidence.chargingTimes, now,
           matchingSince: reidentifying ? state.startedAt : null,
@@ -1666,10 +1677,11 @@ export class ChargingRuntime {
           }
         } else {
           const prior = evidence.teslaCurrentCandidate, admission = tesla.reception?.admission;
-          const pendingComparison = prior && (minimumContext || ownProbe)
+          const pendingComparison = prior && (minimumContext || ownComparison)
             && prior.vehicleAssociation === tesla.association && prior.receivedAt === tesla.fields?.charger_actual_current?.receivedAt
             && admission?.pending && !admission.failed && tesla.observationHealthy === true
-            && this.identificationAdmissionPending(minimumContext ? this.chargers.charger2 : item, now)
+            && this.identificationAdmissionPending(minimumContext ? this.chargers.charger2 : item, now,
+              { ordinaryComparison: !minimumContext && ordinaryComparison })
             && teslaCurrentMeasurements(tesla, { physical: result[id], peers, ...comparison, now });
           if (!pendingComparison) evidence.teslaCurrentCandidate = null;
         }

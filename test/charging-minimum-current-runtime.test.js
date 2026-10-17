@@ -1998,3 +1998,80 @@ for (const peerStopped of [false, true]) test(`Charger1 own probe identifies uni
   assert.equal(f.item('charger2').vehicleMatch, null, 'A negative Tesla comparison does not identify BMW');
   assert.equal(f.writes.length, beforeWrites, 'No peer current or permission mutation');
 });
+
+for (const charger of ['charger1', 'charger2']) for (const restart of [false, true])
+test(`ordinary charging identifies Tesla on ${charger} without an extra-energy probe or peer current test${restart ? ' across restart' : ''}`, async t => {
+  const f = await fixture(t, { currentWritable: false });
+  let item = f.item(charger);
+  const currentA = charger === 'charger1' ? 16 : 12;
+  const beforeWrites = f.writes.length;
+  f.advance(1000); await f.sampleTesla(currentA);
+  f.observe();
+  assert.equal(item.identification.probe, null, 'Ordinary charging does not acquire an extra-energy allowance');
+  assert.equal(f.item('charger2').controller.status().currentTest ?? null, null);
+  assert.equal(item.vehicleMatch, null, 'The first comparison still needs a later physical measurement');
+  assert.ok(item.vehicleEvidence.teslaCurrentCandidate, 'The ordinary connection can begin its own positive comparison');
+  const original = structuredClone(f.runtime.teslaCapture.snapshot().fields);
+  if (restart) { await f.restart(); item = f.item(charger); }
+  f.advance(65_000); f.publishTesla({ healthy: true });
+  await f.adapter.refresh(); f.observe();
+  assert.equal(item.vehicleMatch?.id, 'tesla');
+  assert.equal(item.identification.phase, 'completed');
+  assert.equal(item.identification.probe, null);
+  assert.equal(f.item('charger2').controller.status().currentTest ?? null, null);
+  assert.deepEqual(f.runtime.teslaCapture.snapshot().fields.charger_actual_current, original.charger_actual_current);
+  assert.deepEqual(f.runtime.teslaCapture.snapshot().fields.charger_power, original.charger_power);
+  assert.equal(f.item(charger === 'charger1' ? 'charger2' : 'charger1').vehicleMatch, null,
+    'The positive Tesla comparison does not identify BMW by elimination');
+  assert.equal(f.writes.length, beforeWrites, 'Observation cannot issue charger commands');
+});
+
+test('ordinary Tesla comparison keeps its admitted settling sample while a source receipt awaits storage', async t => {
+  let pending = false;
+  const f = await fixture(t, { currentWritable: false, admissionStatus: () => ({ pending, failed: false }) });
+  f.advance(1000); await f.sampleTesla(16); f.observe();
+  const item = f.item('charger1'), candidate = structuredClone(item.vehicleEvidence.teslaCurrentCandidate);
+  assert.ok(candidate);
+  const writes = f.writes.length;
+  pending = true; f.advance(6000); f.publishTesla({ healthy: true });
+  await f.adapter.refresh(); f.observe();
+  assert.deepEqual(item.vehicleEvidence.teslaCurrentCandidate, candidate);
+  assert.equal(item.vehicleMatch, null, 'Pending source admission cannot complete identity');
+  pending = false; f.observe();
+  assert.equal(item.vehicleMatch?.id, 'tesla');
+  assert.equal(item.identification.probe, null);
+  assert.equal(f.writes.length, writes);
+});
+
+for (const contrary of ['away', 'departure', 'failed admission'])
+test(`ordinary settling sample is withdrawn during pending admission after ${contrary}`, async t => {
+  let pending = false, failed = false;
+  const f = await fixture(t, { currentWritable: false, admissionStatus: () => ({ pending, failed }) });
+  f.advance(1000); await f.sampleTesla(16); f.observe();
+  const item = f.item('charger1');
+  assert.ok(item.vehicleEvidence.teslaCurrentCandidate);
+  pending = true; f.advance(6000); f.publishTesla({ healthy: true });
+  if (contrary === 'away') f.publishTesla({ geofence: 'Elsewhere' });
+  else if (contrary === 'departure') f.publishTesla({ plugged_in: false, charging_state: 'Disconnected' });
+  else failed = true;
+  await f.adapter.refresh(); f.observe();
+  assert.equal(item.vehicleEvidence.teslaCurrentCandidate, null);
+  assert.equal(item.vehicleMatch, null);
+});
+
+test('an expired extra-energy probe cannot borrow ordinary observation before its economic return', async t => {
+  const f = await fixture(t, { currentWritable: false, economicStartAt: START + 3600_000 });
+  const item = f.item('charger1'); item.controls.enabled = true; f.runtime.refreshSettings();
+  item.identification = advanceIdentification(null, { connectedAt: START, now: f.now,
+    normalCharging: false, charging: true, powerKw: 11.04, probeAllowed: true,
+    probeReturnAt: START + 3600_000, probeDurationMs: 34_000 });
+  f.advance(1000); await f.sampleTesla(16);
+  assert.ok(item.vehicleEvidence.teslaCurrentCandidate);
+  const probe = structuredClone(item.identification.probe);
+  f.advance(probe.deadlineAt - f.now); await f.adapter.refresh(); f.observe();
+  assert.equal(item.vehicleMatch, null);
+  assert.equal(item.vehicleEvidence.teslaCurrentCandidate, null);
+  assert.equal(item.identification.probe.startedAt, probe.startedAt);
+  assert.equal(item.identification.probe.deadlineAt, probe.deadlineAt);
+  assert.equal(item.identification.probe.returnStartAt, probe.returnStartAt);
+});
