@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve explicit charging takeover after an uncertain native command expires;
+  commands still in their active window keep takeover unavailable.
+
 - Avoid repeated session-report events for idle input processing while preserving
   current readiness, actual device changes and meaningful allocation evidence.
 

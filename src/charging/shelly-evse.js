@@ -1367,7 +1367,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
         // An accepted current write may still leave the previous native value
         // in this snapshot. Its token must not invite a takeover until the
         // command's own fresh readback has settled that instruction boundary.
-        : state.pending ? 'evse-command-unconfirmed'
+        // An expired uncertain command remains historical evidence. A new
+        // explicit takeover may supersede it after the fresh native checks
+        // above, without inventing the missing acknowledgement or replaying it.
+        : state.pending && clock() < state.pending.expiresAt ? 'evse-command-unconfirmed'
           : adapter.config.limiterEnabled && snapshot.currentControlReady === false ? 'evse-current-control-unavailable'
             : snapshot.nativeScheduleActive && snapshot.nativeScheduleTakeoverSupported !== true ? 'evse-native-schedule-unsupported' : null;
     return { available: reason === null, token: reason === null ? takeoverToken(snapshot) : null,

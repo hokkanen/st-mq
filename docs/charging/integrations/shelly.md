@@ -38,6 +38,11 @@ shares leave a gap and retain the measured increment as diagnostic evidence.
 Easee keeps its existing measured L1–L3 current/voltage readings, reported total
 active power and explicitly estimated phase-energy intervals.
 
+An active native command withholds takeover until its readback or command
+deadline. After an uncertain command expires, a new explicit takeover can
+supersede it only with fresh native state and the normal session/token checks;
+the old command remains unconfirmed and is never automatically replayed.
+
 ## Reported device information
 
 The dashboard hardware card uses the model and firmware returned by the existing
