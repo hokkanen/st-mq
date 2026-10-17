@@ -334,7 +334,7 @@ function resultOf(phases) {
       : voltageV.some(validVoltage) ? 'recorded-voltage-estimate' : 'voltage-estimate-unavailable' };
 }
 
-/** Bounded point lookups, cached only for this reader. Source and receipt cutoffs
+/** Bounded point lookups within one immutable request. Source and receipt cutoffs
  * both apply, including to the explicit CSV retrospective fallback. */
 export function createVoltageReader(store, { input = 'live', now = Date.now() } = {}) {
   const scope = input === 'simulated' ? "device='simulated'" : "device IN ('mqtt','providers','live')";
@@ -354,15 +354,54 @@ export function createVoltageReader(store, { input = 'live', now = Date.now() } 
   const next = store.db.prepare(`SELECT ${availableAt} AS available_at FROM active_observations AS observations WHERE ${where} AND signal=?
     AND ${availableAt}>? AND source_time<=? ORDER BY available_at,id LIMIT 1`);
   const cached = [null, null, null], firstRows = [undefined, undefined, undefined];
+  // Energy streams and chart passes revisit earlier times. Keep the checked
+  // intervals, rather than repeating two SQL queries every time their cursors
+  // cross. Dense histories still fall back to the same indexed point lookups.
+  const intervals = [[], [], []], cacheBytes = [0, 0, 0];
+  const maxIntervals = 1024, maxCacheBytes = 512 * 1024;
+  const position = (rows, at) => {
+    let low = 0, high = rows.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (rows[mid].from <= at) low = mid + 1; else high = mid;
+    }
+    return low;
+  };
+  const remembered = (phase, at) => {
+    const latest = cached[phase];
+    if (latest && latest.from <= at && latest.to > at) return latest;
+    const rows = intervals[phase], row = rows[position(rows, at) - 1];
+    return row && row.to > at ? row : null;
+  };
+  const remember = (phase, row) => {
+    cached[phase] = row;
+    let bytes = 512;
+    for (const value of Object.values(row.row ?? {})) {
+      if (typeof value === 'string') bytes += value.length * 2;
+      else if (value !== null && typeof value === 'object') return row;
+    }
+    if (bytes > maxCacheBytes) return row;
+    row.bytes = bytes;
+    const rows = intervals[phase], index = position(rows, row.from);
+    if (index && rows[index - 1].from === row.from) {
+      cacheBytes[phase] -= rows[index - 1].bytes;
+      rows[index - 1] = row;
+    }
+    else rows.splice(index, 0, row);
+    cacheBytes[phase] += bytes;
+    while (rows.length > maxIntervals || cacheBytes[phase] > maxCacheBytes) cacheBytes[phase] -= rows.shift().bytes;
+    return row;
+  };
   const lookup = (at, { allowFuture = false } = {}) => {
     if (!validTime(at) || at > now) return resultOf([null, null, null]);
     const phases = VOLTAGE_SIGNALS.map((signal, phase) => {
-      let cachedPhase = cached[phase];
-      if (!cachedPhase || at < cachedPhase.from || at >= cachedPhase.to) {
+      let cachedPhase = remembered(phase, at);
+      if (!cachedPhase) {
         const row = before.get(Math.min(now, at), signal, at);
-        cachedPhase = cached[phase] = { from: row?.available_at ?? 0,
-          to: next.get(now, signal, at, now)?.available_at ?? Infinity, row: decoded(row) };
+        cachedPhase = remember(phase, { from: row?.available_at ?? 0,
+          to: next.get(now, signal, at, now)?.available_at ?? Infinity, row: decoded(row) });
       }
+      cached[phase] = cachedPhase;
       if (cachedPhase.row?.value !== null && cachedPhase.row != null) return cachedPhase.row;
       if (!allowFuture) return cachedPhase.row;
       firstRows[phase] ??= { row: decoded(first.get(now, signal, now), true) };
@@ -372,7 +411,7 @@ export function createVoltageReader(store, { input = 'live', now = Date.now() } 
     return resultOf(phases);
   };
   lookup.boundaries = function* (from, to) {
-    if (cached.every(phase => phase && phase.from <= from && phase.to >= to)) return;
+    if (cached.every((_, phase) => (remembered(phase, from)?.to ?? -Infinity) >= to)) return;
     // Stream large exports in bounded pages. Most adjacent energy intervals
     // stay inside the cached flat estimate and require no additional SQL.
     const query = store.db.prepare(`SELECT DISTINCT ${availableAt} AS at FROM active_observations AS observations WHERE ${where}

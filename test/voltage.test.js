@@ -32,6 +32,48 @@ function estimate(store, at, values, { input = 'providers', receivedAt = at } = 
       voltageAvailability: 'reporting', basis: 'time-weighted-voltage-estimate' } });
 }
 
+test('one historical reader reuses voltage intervals across interleaved traversals without sharing evidence across requests', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  store.transaction(() => {
+    for (let i = 0; i < 64; i++) estimate(store, START + i * MINUTE, [220 + i % 5, 230, 240]);
+  });
+  let pointReads = 0;
+  const facade = { db: { prepare(sql) {
+    const statement = store.db.prepare(sql);
+    if (!sql.includes('ORDER BY available_at')) return statement;
+    return { get(...args) { pointReads++; return statement.get(...args); } };
+  } } };
+  const now = START + 64 * MINUTE, reader = createVoltageReader(facade, { input: 'providers', now });
+  const times = Array.from({ length: 64 }, (_, i) => START + i * MINUTE + 1000);
+  const expected = times.map(at => reader(at));
+  const initialReads = pointReads;
+  for (let i = times.length - 1; i >= 0; i--) assert.deepEqual(reader(times[i]), expected[i]);
+  for (let i = 0; i < times.length; i++) {
+    assert.deepEqual(reader(times[(i * 17) % times.length]), expected[(i * 17) % times.length]);
+    assert.deepEqual([...reader.boundaries(times[i], times[i] + 500)], []);
+  }
+  assert.equal(pointReads, initialReads, 'Repeated chart passes reuse already checked source intervals');
+  estimate(store, times[10], [225, 235, 245]);
+  assert.deepEqual(reader(times[10]), expected[10], 'The existing reader retains its immutable request view');
+  const fresh = createVoltageReader(store, { input: 'providers', now });
+  assert.deepEqual(fresh(times[10]).voltageV, [225, 235, 245], 'A new request reads new committed evidence');
+});
+
+test('dense voltage history retains exact lookups and boundaries after interval-cache eviction', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  for (let batch = 0; batch < 1200; batch += 100) store.transaction(() => {
+    for (let i = batch; i < batch + 100; i++) estimate(store, START + i * MINUTE, [220 + i % 5, 230, 240]);
+  });
+  const reader = createVoltageReader(store, { input: 'providers', now: START + 1200 * MINUTE });
+  for (let i = 0; i < 1200; i++) assert.deepEqual(reader(START + i * MINUTE + 1000).voltageV,
+    [220 + i % 5, 230, 240]);
+  for (const i of [0, 1199, 100, 1100, 3]) {
+    assert.deepEqual(reader(START + i * MINUTE + 1000).voltageV, [220 + i % 5, 230, 240]);
+    assert.deepEqual([...reader.boundaries(START + i * MINUTE, START + (i + 2) * MINUTE)],
+      i === 1199 ? [] : [START + (i + 1) * MINUTE]);
+  }
+});
+
 test('the first valid reading publishes each phase immediately and tiny drift adds no historical rows', t => {
   const f = fixture(t);
   for (let minute = 0; minute <= 24 * 60; minute++) {

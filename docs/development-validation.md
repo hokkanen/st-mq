@@ -711,6 +711,10 @@ below separately cancel an active history scan.
 `test/chart-query-performance.test.js` validates recent-index versus historical
 streaming equality, arbitrarily long overlapping energy intervals, receipt and
 source scope, bounded request-local replay and measured stage progress.
+`test/voltage.test.js` checks repeated and interleaved historical traversals,
+request isolation, receipt cutoffs and exact fallback after cache eviction.
+Each historical voltage reader retains at most 1,024 checked intervals and an
+estimated 512 KiB per phase; source interpretation and recorded rows are unchanged.
 `test/chart-worker-transport.test.js` covers active cancellation, independent
 speculation, worker retirement/failure, concurrent recording, response equality
 and authentication revocation during streaming. `test/chart-browser-performance.test.js`
