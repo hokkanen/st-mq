@@ -30,6 +30,11 @@ async function readyFixture(t, action) {
   assert.equal(f.view('charger2').control.manual.kind, 'stop');
   assert.equal(f.view('charger2').control.manualCurrentA, null);
   await store.runWrite(() => {}); await store.startWriter();
+  // Complete the fixture's native inputs and reconciliation before selecting
+  // the displayed token or intercepting the action's own intent COMMIT.
+  await store.runWrite(() => {});
+  for (const item of Object.values(f.runtime.chargers)) await item.reconcileFlight;
+  await store.runWrite(() => {});
   const view = f.view('charger2'), adapter = f.runtime.chargers.charger2.adapter;
   assert.equal(view.control.takeover.available, true);
   assert.equal(adapter.snapshot().controlReady, true);

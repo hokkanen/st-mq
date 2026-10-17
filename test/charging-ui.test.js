@@ -203,7 +203,8 @@ test('an active allowance with changed shared allocation shows true costs withou
   panel.close();
 });
 
-test('the pending grant allows only cancellation and immediately loses its highlight at the checkpoint', async () => {
+test('the pending grant allows only cancellation and immediately loses its highlight at the checkpoint', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now });
   const document = documentFixture(), $ = id => document.getElementById(id);
   const item = flexibleCharger({ active: true, eligible: false, checkpointAt: now + 25,
     effectiveReadyByAt: deadlineAt + 86400_000 });
@@ -214,7 +215,7 @@ test('the pending grant allows only cancellation and immediately loses its highl
   assert.equal($('charging-flexibility-apply').textContent, 'Cancel flexibility');
   assert.match($('charging-flexibility-risk-allowances').textContent, /€0.20 with the earlier deadline; €0.60 with the approved deadline/);
   assert.doesNotMatch($('charging-flexibility-risk-allowances').textContent, /current deadline|with one extra day/);
-  await new Promise(resolve => setTimeout(resolve, 35));
+  t.mock.timers.tick(25);
   assert.equal($('charger1-defer-badge').hidden, true, 'No dashboard polling is needed to remove the highlight');
   assert.equal($('charger1-deadline').parentElement.matches('.charging-ready-by-deferred'), false);
   assert.equal($('charger1-deadline').textContent, '17 Sept 06:00', 'The authorized later deadline stays visible');
