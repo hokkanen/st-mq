@@ -79,6 +79,12 @@ unknown; the last known allowance may remain explicitly historical with its
 original calculation time. Neither that value nor a command-ready status proves
 physical draw. Readiness and readback changes appear under **Evidence**; an actual
 shared-model or priority change appears under **Plans & inputs**.
+When neither a current allowance nor a usable current readback is being assessed,
+brief input-persistence holds only refresh the current evidence. They do not add
+duplicate shared events. A positively confirmed session Pause also avoids
+duplicate control events caused solely by those holds. Native permission loss,
+pending device commands, physical changes and evidence outages remain distinct
+events. This recording choice never makes a held command ready.
 
 The session selector offers recent and saved reports for that charger, loading
 older sessions and events in pages. An expired or deleted selection stays

@@ -376,7 +376,7 @@ function controlContext(current) {
     availability: current.controlAvailability, physicalKnown: current.charging !== null,
     errorCode: current.errorCode, reasonCode: current.reasonCode, handoverConfirmed: current.handoverConfirmed };
 }
-function assess(record, current, now) {
+function assess(record, current, now, idleProcessing = false) {
   record.findingContext = controlContext(current);
   const previous = record.current;
   // A lapse is not a continuous observation of a failure. In particular,
@@ -409,7 +409,18 @@ function assess(record, current, now) {
     { ...current.reportedChargingEvidence, powerKw: current.powerKw,
       powerMeasuredAt: current.power.measuredAt, powerReceivedAt: current.power.receivedAt });
   }
-  if (!previous || previous.phase !== current.phase || !equal(controlContext(previous), controlContext(current)))
+  const materialControl = row => {
+    const context = controlContext(row);
+    if (idleProcessing && previous?.physicalFresh && current.physicalFresh
+      && previous.charging === false && current.charging === false
+      && !previous.pending && !current.pending && previous.manual === current.manual
+      && previous.expectation === 'hold' && current.expectation === 'hold'
+      && !previous.error && !current.error && !gap) {
+      delete context.availability; delete context.confirmed;
+    }
+    return context;
+  };
+  if (!previous || previous.phase !== current.phase || !equal(materialControl(previous), materialControl(current)))
     event(record, now, 'control', current.phase, controlContext(current));
   if (current.identification !== null && (!previous || previous.identification !== current.identification
     || previous.identificationReason !== current.identificationReason))
@@ -696,6 +707,12 @@ export class ChargingSessionDiagnostics {
       if (!record || now < record.observedAt || id && id !== record.id) continue;
       const before = JSON.stringify([record.findings, record.coverage, record.pendingChecks]);
       const sharedAssessment = advanceSharedAssessment(record.shared, shared);
+      const processingOnly = execution => execution?.state === 'unknown'
+        && execution.expectedCurrentA === null && execution.reportedCurrentA === null
+        && (execution.commandReady || execution.commandBlockReason === 'input-processing');
+      const idleProcessing = view.id === 'charger2' && view.request?.pause
+        && view.control?.sessionPause?.confirmed === true && view.control?.snapshot?.observationReady === true
+        && processingOnly(record.shared?.current.execution) && processingOnly(sharedAssessment.current.execution);
       if (!record.shared || sharedAssessmentKey(record.shared.current) !== sharedAssessmentKey(sharedAssessment.current)) {
         const planning = !record.shared || sharedPlanningKey(record.shared.current) !== sharedPlanningKey(sharedAssessment.current);
         event(record, now, planning ? 'shared' : 'evidence', planning ? 'shared-charging-context' : 'shared-charging-evidence',
@@ -706,7 +723,7 @@ export class ChargingSessionDiagnostics {
       // needs only its current comparison reference and cumulative coverage.
       record.shared.history = [];
       const current = observation(view, now), plan = planFor(view, now), previousPlan = record.planContext.at(-1);
-      assess(record, current, now);
+      assess(record, current, now, idleProcessing);
       if (['consistent', 'inconsistent'].includes(record.shared.current.priority))
         finding(record, 'shared-priority-mismatch', record.shared.current.priority === 'inconsistent', now);
       const sharedModels = [record.shared.current.proposed.state, record.shared.current.adopted.state];

@@ -511,3 +511,50 @@ test('expired allocations remain unknown beside dated history, without carrying 
   diagnostics.observe(f.view.chargers, start + 16_000, f.view.coordination);
   assert.equal(diagnostics.status(start + 16_000).chargers[1].current.shared.current.execution.lastExpectedCurrentA, null);
 });
+
+test('idle processing receipts update current evidence without appending empty shared assessments', t => {
+  const f = fixture(t); f.plug(); f.coordinate();
+  const charger = f.view.chargers[1], diagnostics = f.createDiagnostics(), start = f.now();
+  charger.configuration = { limiterEnabled: true, maximumCurrentA: 16 };
+  charger.request.revision++;
+  charger.request.pause = { requestedAt: start };
+  charger.values.currentA.available = false;
+  charger.values.powerKw = f.reading(0); charger.values.charging = f.reading(false);
+  Object.assign(charger.control, { phase: 'waiting', confirmed: true, pauseConfirmed: true,
+    sessionPause: { active: true, confirmed: true }, reason: 'session-pause' });
+  charger.control.snapshot.observationReady = true;
+  diagnostics.observe(f.view.chargers, start, f.view.coordination);
+  const initial = diagnostics.status(start).chargers[1].current;
+  const ref = { chargerId: 'charger2', reportId: initial.id, limit: 100 };
+  for (let index = 1; index <= 30; index++) {
+    const ready = index % 2 === 0;
+    Object.assign(charger.control.snapshot, { controlReady: ready, currentControlReady: ready,
+      commandBlockReason: ready ? null : 'evse-input-persistence-pending' });
+    diagnostics.observe(f.view.chargers, start + index * 100, f.view.coordination);
+    const current = diagnostics.status(start + index * 100).chargers[1].current;
+    assert.equal(current.shared.current.execution.commandReady, ready, 'Current readiness remains honest');
+    assert.equal(current.current.controlAvailability, ready ? 'available' : 'unavailable');
+  }
+  const events = diagnostics.reportEvents(ref).events;
+  assert.equal(events.filter(row => row.code === 'shared-charging-evidence').length, 0);
+  assert.equal(events.filter(row => row.kind === 'control').length, 1);
+  const restarted = f.createDiagnostics();
+  assert.equal(restarted.status(start + 3000).chargers[1].current.shared.current.execution.commandReady, true);
+  const controlsBefore = restarted.reportEvents(ref).events.filter(row => row.kind === 'control').length;
+  Object.assign(charger.control.snapshot, { controlReady: false, currentControlReady: false,
+    commandBlockReason: 'evse-input-persistence-pending' });
+  charger.control.pending = { role: 'start_charging', value: false };
+  restarted.observe(f.view.chargers, start + 3500, f.view.coordination);
+  assert.equal(restarted.reportEvents(ref).events.filter(row => row.kind === 'control').length, controlsBefore + 1,
+    'An actual pending native command remains a distinct control event');
+  charger.control.pending = null;
+  Object.assign(charger.control.snapshot, { controlReady: false, currentControlReady: false,
+    commandBlockReason: 'device-permission-held' });
+  charger.control.devicePermissionHeld = true;
+  restarted.observe(f.view.chargers, start + 4000, f.view.coordination);
+  assert.equal(restarted.reportEvents(ref).events.filter(row => row.code === 'shared-charging-evidence').length, 1,
+    'Native permission loss remains an event even without an allocation');
+  charger.control.snapshot.online = false;
+  restarted.observe(f.view.chargers, start + 4500, f.view.coordination);
+  assert.ok(restarted.reportEvents(ref).events.some(row => row.code === 'physical-evidence-lost'));
+});

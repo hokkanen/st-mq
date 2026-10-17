@@ -200,9 +200,16 @@ export function sharedPlanningKey(snapshot) {
       row.chargers.map(charger => [charger.id, charger.sufficient, charger.reportedFeasible, charger.deadlineAt])]) });
 }
 export function sharedAssessmentKey(snapshot) {
+  const execution = snapshot.execution;
+  // Without either an admitted allowance or a current readback, an internal
+  // processing gate cannot change the assessed execution. Keep its actual
+  // readiness in current evidence, without recording every receipt as an event.
+  const emptyProcessing = ['unknown', 'not-exercised'].includes(execution.state)
+    && execution.expectedCurrentA === null && execution.reportedCurrentA === null
+    && (execution.commandReady || execution.commandBlockReason === 'input-processing');
   return JSON.stringify({ planning: sharedPlanningKey(snapshot), overlap: snapshot.overlap,
-    execution: [snapshot.execution.state, snapshot.execution.expectedCurrentA, snapshot.execution.reportedCurrentA,
-      snapshot.execution.commandReady, snapshot.execution.commandBlockReason],
+    execution: [execution.state, execution.expectedCurrentA, execution.reportedCurrentA,
+      emptyProcessing ? null : execution.commandReady, emptyProcessing ? null : execution.commandBlockReason],
     peers: snapshot.peers.map(row => [row.id, row.connected, row.session, row.drawing]) });
 }
 

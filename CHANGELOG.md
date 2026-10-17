@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Avoid repeated session-report events for idle input processing while preserving
+  current readiness, actual device changes and meaningful allocation evidence.
+
 - Compute each published charging view once for diagnostics, physical assessments
   and storage, avoiding repeated reads of the same energy history.
 
