@@ -16,6 +16,12 @@ state, honest live readiness, retained native restrictions, active report reads
 after restart and final frozen summaries. No storage format or durability change
 is part of these reductions.
 
+`test/storage-partial-indexes.test.js` separately checks physical schema 32's
+learning-reversal and interval-end index scope, actual query plans, interval-query
+parity and reversible access to records outside the index. Current startup tests
+reject incompatible schemas before mutation. The journaled data layout and hash
+interpretation stay unchanged; installed conversion is not a startup capability.
+
 `test/charging-publication-views.test.js` uses real worker-backed storage and
 recorded phase energy to verify that one synchronous publication reads each
 charger's history once. Report and physical-assessment results remain current,

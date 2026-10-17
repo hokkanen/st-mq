@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chargingPlanSnapshot } from '../src/charging/plan-snapshot.js';
+import { chargingPlanSnapshot, chargingPlanView } from '../src/charging/plan-snapshot.js';
 import { immutableValue } from '../src/domain/immutable.js';
 import { Store } from '../src/storage/store.js';
 
@@ -47,4 +47,9 @@ test('unpublished price caches remain transient while published interval prices 
   assert.equal(snapshot.decisionPriceSnapshot, undefined);
   assert.equal(snapshot.intervals.length, 59);
   assert.equal(snapshot.intervals[0].priceCtPerKwh, 10);
+  const view = chargingPlanView(immutableValue(live));
+  assert.equal(view.intervals.length, 60, 'Live presentation preserves forecast price intervals');
+  assert.equal(view.intervals[1].predicted, true);
+  assert.equal(view.intervals[1].scenarios, undefined);
+  assert.deepEqual(view.periods, live.periods);
 });

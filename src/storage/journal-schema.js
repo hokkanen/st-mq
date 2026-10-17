@@ -1,5 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 
+export const LEARNING_RECORD_INDEX_PREDICATE = `table_name IN ('learning_epochs','history_selection')
+ OR (table_name='state' AND substr(record_key,1,11)='["adaptive:')`;
+
 export const quoteIdentifier = value => `"${value.replaceAll('"', '""')}"`;
 export const journalTextNulExpression = (columns, alias) => columns.map(column => {
   const value = `${alias ? `${quoteIdentifier(alias)}.` : ''}${quoteIdentifier(column)}`;
@@ -32,7 +35,8 @@ CREATE TABLE journal_commits(sequence INTEGER PRIMARY KEY,previous_hash TEXT NOT
 CREATE TABLE journal_changes(sequence INTEGER NOT NULL REFERENCES journal_commits(sequence) DEFERRABLE INITIALLY DEFERRED,
  ordinal INTEGER NOT NULL,table_name TEXT NOT NULL,record_key TEXT NOT NULL,payload TEXT NOT NULL,
  PRIMARY KEY(sequence,ordinal));
-CREATE INDEX journal_changes_record ON journal_changes(table_name,record_key,sequence);
+CREATE INDEX journal_changes_record ON journal_changes(table_name,record_key,sequence)
+ WHERE ${LEARNING_RECORD_INDEX_PREDICATE};
 CREATE TABLE journal_pending(ordinal INTEGER PRIMARY KEY,payload TEXT NOT NULL);
 CREATE TABLE journal_peer(id INTEGER PRIMARY KEY CHECK(id=1),anchor TEXT NOT NULL,content_hash TEXT NOT NULL,
  pending TEXT,rebase_cursor INTEGER,completed_source TEXT);

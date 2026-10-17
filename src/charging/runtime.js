@@ -36,7 +36,7 @@ import { readPlanningVoltage } from '../storage/voltage.js';
 import { jointTeslaComparisonScope } from './joint-identification.js';
 import { validateChargingRuntimeState } from './runtime-state.js';
 import { readChargingRuntime, writeChargingRuntime } from './runtime-storage.js';
-import { chargingPlanSnapshot as durablePlan } from './plan-snapshot.js';
+import { chargingPlanSnapshot as durablePlan, chargingPlanView } from './plan-snapshot.js';
 import { chargingFlexibility, consumeChargingFlexibility, changeChargingFlexibility, flexibilityUnavailable, nextLocalChargingDay } from './flexibility.js';
 import { chargingFlexibilityReason } from '../domain/charging-flexibility-status.js';
 import { forecastPriceOutlook } from '../acquisition/electricity-forecast.js';
@@ -3524,7 +3524,8 @@ export class ChargingRuntime {
     return this.physicalTests[method](input, this.status());
   }
   status(now = this.clock(), { includeAssessments = true } = {}) {
-    const chargers = this.views(now);
+    const chargers = this.views(now).map(charger => ({ ...charger,
+      plan: chargingPlanView(charger.plan), forecast: chargingPlanView(charger.forecast) }));
     const usedBy = id => chargers.find(charger => charger.vehicle?.state === 'identified'
       && charger.vehicle.id === id && charger.values.connected.value === true)?.id ?? null;
     const vehicleFeeds = Object.values(this.vehicleFeeds).filter(feed => feed.mqttTopic).map(feed => ({

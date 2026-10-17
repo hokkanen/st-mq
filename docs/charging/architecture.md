@@ -145,6 +145,11 @@ copying an old charging view before replacing it, while pending writes continue
 to expose the last committed status. These ownership rules do not change planner
 inputs, search selection, cache validity, evidence checks or scheduling frequency.
 
+Public status omits candidate scenario vectors from plans and forecasts while
+retaining their proposed periods, allocation, costs and predicted price intervals.
+The live planner retains its complete immutable calculation; read-only status
+does not serialize those search inputs on every refresh.
+
 Runtime and Easee ownership serializers validate the candidate current durable
 shape before saving, using the same validators as restart. Failure before COMMIT
 keeps previous committed state and rolls back the owning transition. A failure
@@ -253,7 +258,7 @@ last-change clocks and physical confirmation boundaries still force publication.
 Startup validates the current manifest, every required field, content hashes and
 references for all input environments, including inactive ones. Missing records,
 unreferenced fragments, invalid nested state and older aggregate formats fail
-before writable setup. Physical schema 31 retains this charging representation.
+before writable setup. Physical schema 32 retains this charging representation.
 Ordinary startup rejects incompatible installations with fresh-start guidance;
 it never resets or converts them. The separately authorized chart-index operation
 is outside startup and preserves the current journaled data layout.

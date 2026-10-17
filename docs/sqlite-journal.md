@@ -326,7 +326,7 @@ superseded; they are derived caches, not replacement source history. Future grow
 includes unique prepared bodies (including distinct corrected interpretations)
 and small sparse manifests, rather than another complete fitting archive per
 checkpoint. This does not bound total database size or automatically reclaim the
-physical size of an existing file. Development schema 31 supports only this
+physical size of an existing file. Development schema 32 supports only this
 current representation; there is no older cache decoder or database migration.
 Read-only history viewers may still expose independently valid recorded evidence
 when a derived model cache is unavailable. Model access rejects malformed or

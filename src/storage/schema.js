@@ -1,7 +1,7 @@
 import { RECOVERY_DEPENDENCY_SCHEMA } from '../recovery/dependencies.js';
 import { journalSchema } from './journal-schema.js';
 // One current physical schema. Startup never converts an existing database.
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 32;
 // Index changes do not change journaled rows or their hash interpretation.
 // This is one current layout, not a decoder for an earlier database schema.
 export const JOURNALED_DATA_VERSION = 30;
@@ -174,7 +174,8 @@ CREATE INDEX learning_roots_time ON learning_journal_entries(input,at,CASE kind 
 CREATE INDEX observations_easee_acquisition ON observations(device, received_at, id)
 WHERE source='easee' AND import_id IS NULL;
 CREATE INDEX observations_recovery_energy ON observations(device,signal,
-            CASE WHEN json_valid(raw) THEN json_extract(raw,'$.intervalEnd') END);
+            CASE WHEN json_valid(raw) THEN json_extract(raw,'$.intervalEnd') END)
+ WHERE CASE WHEN json_valid(raw) THEN json_extract(raw,'$.intervalEnd') END IS NOT NULL;
 CREATE INDEX observations_signal_id ON observations(signal, id);
 CREATE INDEX observations_signal_time ON observations(signal, source_time, id);
 CREATE INDEX observations_energy_geometry ON observations(

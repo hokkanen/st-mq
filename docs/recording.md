@@ -2480,7 +2480,7 @@ representation change needs current-schema validation and an intentional fresh
 development database when incompatible; no cleanup should add a migration or
 silently remove evidence.
 
-Current physical schema 31 includes a chronological coverage index for seeking
+Current physical schema 32 includes a chronological coverage index for seeking
 the next boundary in one source/device/signal stream. Charts retain the original
 recovery selection, equal-start ID precedence and full successor timestamps,
 including boundaries beyond the drawn range. They do not materialize all retained
@@ -2490,7 +2490,12 @@ For this index only, the owner approved a one-time controlled installation upgra
 on 2026-10-15, preserving all table rows, journal/checkpoint identity and learning
 history, with verified backups, strict current validation and rollback. This adds
 no general migration or startup repair. Journaled data layout 30 is unchanged;
-the physical schema identifier does not redefine journal hashes.
+the physical schema identifier does not redefine journal hashes. Schema 32 also
+restricts the journal record index to model-checkpoint/epoch/selection reversal
+and the recovery-energy index to rows with interval ends. Other journal reverse
+queries retain their complete results without indexing every recorder or charger
+receipt. The earlier exception does not authorize this schema-32 installation
+transition; existing incompatible files are rejected before mutation.
 
 ## History CLI backups and exports
 

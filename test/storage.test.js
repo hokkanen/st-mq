@@ -47,7 +47,7 @@ test('current schema contains the acquisition lookup index and no historical tab
 
 test('physical index schema and the one current journaled data layout have distinct identities', t => {
   const { store, path } = fixture(t);
-  assert.equal(SCHEMA_VERSION, 31);
+  assert.equal(SCHEMA_VERSION, 32);
   assert.equal(JOURNALED_DATA_VERSION, 30);
   const meta = store.db.prepare('SELECT * FROM journal_meta WHERE id=1').get();
   const expected = createHash('sha256').update(JSON.stringify({ version: JOURNAL_VERSION,

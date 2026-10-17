@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { JOURNALED_TABLES, JOURNALED_DATA_VERSION } from './schema.js';
-import { quoteIdentifier as q, journalTextNulExpression } from './journal-schema.js';
+import { quoteIdentifier as q, journalTextNulExpression, LEARNING_RECORD_INDEX_PREDICATE } from './journal-schema.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
 import { encodeChange, rowHash, emptyContentHash, changeContentHash, patchedValue, registerJournalFunctions } from './journal-codec.js';
@@ -416,7 +416,13 @@ export function* changedRecordKeys(db,{after,through=readCheckpoint(db)}={}) {
 }
 export function* reverseChanges(db,{after=journalBase(db),table,key}={}) {
   if(!same(after,checkpointAt(db,after?.sequence))) fail('journal_checkpoint_mismatch');
-  const filter=table ? ' AND table_name=?'+(key?' AND record_key=?':'') : '';
+  // Production prefix reconstruction needs only model checkpoints and their
+  // selected epoch/history. Keep the generic iterator correct for other tables,
+  // without indexing every charger receipt and recorder endpoint for that use.
+  const indexed = ['learning_epochs','history_selection'].includes(table)
+    || table === 'state' && typeof key?.[0] === 'string' && key[0].startsWith('adaptive:');
+  const learning = indexed ? ` AND (${LEARNING_RECORD_INDEX_PREDICATE})` : '';
+  const filter=table ? ' AND table_name=?'+(key?' AND record_key=?':'')+learning : '';
   const args=[after.sequence,...(table?[table]:[]),...(table&&key?[JSON.stringify(key)]:[])];
   for(const row of raw(db).prepare(`SELECT * FROM journal_changes WHERE sequence>?${filter} ORDER BY sequence DESC,ordinal DESC`).iterate(...args))
     yield {...decodeJournalChange(row),sequence:row.sequence,ordinal:row.ordinal};

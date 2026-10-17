@@ -6,10 +6,15 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Limit SQLite journal-reversal and recovery-energy indexes to the records their
+  queries need, reducing recording write amplification. Physical schema 32 keeps
+  the same journaled data/hash layout; incompatible development databases still
+  require an explicit fresh start or a separately approved installation action.
+
 - Reduce charging-history and storage work by omitting routine input-processing
   events, keeping disconnected progress stable, and projecting active report
   summaries from their current checkpoints. Retain schedules, prices and forecast
-  provenance without repeatedly saving candidate scenario vectors.
+  provenance without repeatedly saving or serving candidate scenario vectors.
 
 - Coalesce unchanged heat-pump and voltage recorder metadata within 30 seconds.
   Value and quality changes, real gaps and accepted energy remain immediate;

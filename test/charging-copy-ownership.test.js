@@ -4,6 +4,7 @@ import { Store } from '../src/storage/store.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import { copyOwnedValue, immutableValue, isImmutableValue } from '../src/domain/immutable.js';
+import { chargingPlanView } from '../src/charging/plan-snapshot.js';
 
 const AT = Date.parse('2026-01-15T00:00:00Z');
 const calculation = label => ({ id: label, at: AT, state: 'waiting', feasible: true,
@@ -90,8 +91,12 @@ test('actual runtime views and status detach mutable fields and reuse immutable 
   const { runtime, item, store } = await fixture(t), plan = item.plan, forecast = item.forecast;
   const before = store.checkpoint(), saved = readChargingRuntime(store, runtime.key);
   const first = runtime.views()[0], second = runtime.status().chargers[0];
-  assert.strictEqual(first.plan, plan); assert.strictEqual(second.plan, plan);
-  assert.strictEqual(first.forecast, forecast); assert.strictEqual(second.forecast, forecast);
+  assert.strictEqual(first.plan, plan); assert.strictEqual(second.plan, chargingPlanView(plan));
+  assert.strictEqual(first.forecast, forecast); assert.strictEqual(second.forecast, chargingPlanView(forecast));
+  assert.strictEqual(runtime.status().chargers[0].plan, second.plan);
+  assert.equal(second.plan.intervals[0].scenarios, undefined);
+  assert.equal(plan.intervals[0].scenarios.length, 66);
+  assert.deepEqual(second.plan.periods, plan.periods);
   first.controls.enabled = true; first.settings.capacityKwh = 1; first.values.powerKw.value = 99;
   assert.equal(item.controls.enabled, false);
   assert.notEqual(runtime.settings.chargers.charger1.capacityKwh, 1);
