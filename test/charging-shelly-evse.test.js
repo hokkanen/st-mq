@@ -1958,6 +1958,49 @@ test('retired Shelly resume inputs reject before state or physical mutation', as
   assert.equal(saves, 0); assert.equal(f.writes.length, reads);
 });
 
+test('a real accepted idle-current write withholds takeover until native readback finishes', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-takeover-current-admission-'));
+  const store = new Store(join(directory, 'fixture.sqlite'));
+  await store.startWriter();
+  const f = fixture(t, { limiterEnabled: true }, store);
+  f.fields.start_charging = false; f.fields.work_state = 'charger_end';
+  f.fields.phase_info.total_power = 0;
+  for (const phase of ['phase_a', 'phase_b', 'phase_c']) {
+    f.fields.phase_info[phase].current = 0; f.fields.phase_info[phase].power = 0;
+  }
+  f.sources.set('start_charging', 'rpc'); await f.ready(); advanceCommandClock(f);
+  let entered, release, flight, held = false;
+  const accepted = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: async state => {
+      await store.runWrite(() => store.setState('synthetic-takeover-owner', state));
+      if (!held && state.pending?.role === 'current_limit' && state.pending.stage === 'accepted') {
+        held = true; entered(); await gate;
+      }
+    } });
+  t.after(async () => { release(); await flight?.catch(() => {}); await controller.close();
+    await store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const earlierToken = controller.status().takeover.token;
+  try {
+    flight = controller.update({ enabled: false }); await accepted;
+    const view = controller.status();
+    assert.equal(view.snapshot.controlReady, true, 'Fresh committed observations remain available');
+    assert.equal(view.manual.kind, 'stop');
+    assert.equal(store.getState('synthetic-takeover-owner').pending.stage, 'accepted');
+    assert.equal(view.pending.role, 'current_limit');
+    assert.equal(view.takeover.available, false,
+      'Do not advertise the old current token while our accepted native setting still needs readback');
+    assert.equal(view.takeover.token, null);
+  } finally { release(); await flight; }
+  const complete = controller.status();
+  assert.equal(complete.pending, null); assert.equal(complete.manual.kind, 'stop');
+  assert.equal(complete.takeover.available, true);
+  assert.notEqual(complete.takeover.token, earlierToken);
+  assert.deepEqual(f.writes.filter(row => row.method.endsWith('.Set')).map(row => [row.method, row.params.value]),
+    [['Number.Set', 12]], 'Readback completion never replaces the native Stop with Start');
+});
+
 test('explicit Shelly takeover supersedes a native Stop but follows the current economic window', async t => {
   for (const mode of ['charge', 'wait', 'no-plan']) {
     const f = fixture(t); f.fields.start_charging = false; f.fields.work_state = 'charger_pause'; await f.ready();

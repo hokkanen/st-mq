@@ -122,6 +122,8 @@ not occur between the poll and reconciliation.
 Automatic charging remains a separate dashboard choice. A later setting change
 in the native app takes priority for the connection; turning Automatic charging
 on does not clear a native Stop or a current choice made during that connection.
+Takeover waits while an earlier command still needs native readback; it becomes
+available again for the newly confirmed instruction state.
 Enabled native schedules own start/stop until
 removed; removal gives the app release priority for the current connection.
 Shelly schedule windows are not inferred from unverified cron semantics.

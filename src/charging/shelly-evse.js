@@ -1364,8 +1364,12 @@ export function createShellyController({ adapter, initialState, saveState = () =
       : !snapshot.online || !snapshot.controlReady || !snapshot.session?.connected
         || !fresh(snapshot.fields.start_charging) || !fresh(snapshot.fields.current_limit)
         || !fresh(snapshot.fields.work_state) ? snapshot.error ?? 'evse-control-unavailable'
-        : adapter.config.limiterEnabled && snapshot.currentControlReady === false ? 'evse-current-control-unavailable'
-          : snapshot.nativeScheduleActive && snapshot.nativeScheduleTakeoverSupported !== true ? 'evse-native-schedule-unsupported' : null;
+        // An accepted current write may still leave the previous native value
+        // in this snapshot. Its token must not invite a takeover until the
+        // command's own fresh readback has settled that instruction boundary.
+        : state.pending ? 'evse-command-unconfirmed'
+          : adapter.config.limiterEnabled && snapshot.currentControlReady === false ? 'evse-current-control-unavailable'
+            : snapshot.nativeScheduleActive && snapshot.nativeScheduleTakeoverSupported !== true ? 'evse-native-schedule-unsupported' : null;
     return { available: reason === null, token: reason === null ? takeoverToken(snapshot) : null,
       reason: takeoverResult?.reason ?? reason, ...(takeoverResult ? { state: takeoverResult.state, attemptToken: takeoverAttemptToken } : {}) };
   };
