@@ -670,7 +670,8 @@ test(`an economic OCPP probe uses normal current, stops on its fixed deadline an
   assert.equal(f.physical.charging, true); assert.equal(f.physical.powerKw, 7);
   const startedAt = f.physical.at, probe = structuredClone(item.identification.probe);
   assert.equal(probe.currentA, undefined, 'Identification does not add a positive current limit');
-  assert.ok(probe.deadlineAt - probe.startedAt <= 34_000, 'Native stop is bounded by the conservative energy allowance');
+  assert.ok(probe.deadlineAt - probe.startedAt > 60_000, 'The larger allowance leaves time for slower vehicle evidence');
+  assert.ok(probe.deadlineAt - probe.startedAt <= 79_000, 'Native stop is bounded by the conservative energy allowance');
   f.setNow(startedAt + 30_000); await f.update();
   assert.equal(item.identification.phase, 'charging'); assert.equal(f.view().id, retry ? 'bmw' : null);
   f.setNow(probe.deadlineAt); await f.update();
@@ -681,7 +682,7 @@ test(`an economic OCPP probe uses normal current, stops on its fixed deadline an
   const stoppedAt = f.physical.at;
   f.setNow(f.now + 1000); await f.update();
   assert.equal(item.identification.phase, 'inconclusive'); assert.equal(item.identification.probe.deadlineAt, probe.deadlineAt);
-  assert.ok(item.identification.chargeUsedKwh <= .15);
+  assert.ok(item.identification.chargeUsedKwh <= .30);
   const count = f.writes.filter(row => row.action === 'SetChargingProfile').length;
   f.setNow(f.now + 5 * MINUTE); f.publish({ soc: 45 }, f.now); await f.update();
   assert.equal(item.identification.attempt, retry ? 2 : 1);
@@ -700,12 +701,12 @@ test('cloud scheduling runs a bounded normal-current probe and returns to the ec
   const initial = structuredClone(f.runtime.chargers.charger1.identification);
   assert.ok(initial.probe); assert.equal(initial.probe.currentA, undefined);
   assert.equal(f.physical.charging, true); assert.equal(f.physical.powerKw, 7);
-  assert.ok(initial.probe.deadlineAt - initial.probe.startedAt <= 34_000);
+  assert.ok(initial.probe.deadlineAt - initial.probe.startedAt <= 79_000);
   f.setNow(initial.probe.deadlineAt); await f.update();
   f.setNow(f.now + 1000); await f.update();
   const stopped = f.runtime.chargers.charger1.identification;
   assert.equal(stopped.phase, 'inconclusive'); assert.equal(f.physical.charging, false);
-  assert.ok(stopped.chargeUsedKwh > 0 && stopped.chargeUsedKwh <= .15);
+  assert.ok(stopped.chargeUsedKwh > 0 && stopped.chargeUsedKwh <= .30);
   const count = f.writes.length;
   f.setNow(f.now + MINUTE); await f.restart(); await f.update();
   assert.equal(f.runtime.chargers.charger1.identification.probe.startedAt, initial.probe.startedAt);
@@ -717,8 +718,8 @@ test('normal-current economic probe retains its energy-bound deadline through re
   await f.update();
   const initial = structuredClone(f.runtime.chargers.charger1.identification);
   const durationSeconds = (initial.probe.deadlineAt - initial.probe.startedAt) / 1000;
-  assert.equal(durationSeconds, 34);
-  assert.ok((durationSeconds + 10) * 12.144 / 3600 <= .15,
+  assert.ok(durationSeconds > 60 && durationSeconds <= 79);
+  assert.ok((durationSeconds + 10) * 12.144 / 3600 <= .30,
     'Full three-phase draw at the native 16 A limit and 253 V, including ten seconds of stop latency, fits the energy allowance');
   f.setNow(START + 10_000); f.physical.powerKw = 12.144;
   await f.restart(); await f.update();
@@ -729,7 +730,7 @@ test('normal-current economic probe retains its energy-bound deadline through re
   assert.equal(f.physical.charging, false);
   f.setNow(f.now + 1000); await f.update();
   const ended = f.runtime.chargers.charger1.identification;
-  assert.equal(ended.phase, 'inconclusive'); assert.ok(ended.chargeUsedKwh <= .15);
+  assert.equal(ended.phase, 'inconclusive'); assert.ok(ended.chargeUsedKwh <= .30);
   assert.ok(f.writes.filter(row => row.action === 'SetChargingProfile').every(row =>
     row.payload.csChargingProfiles.chargingSchedule.chargingSchedulePeriod.every(period => period.limit === 0)),
   'No positive current profile is installed');
@@ -758,7 +759,7 @@ test('unassigned Tesla receives the same economic OCPP probe allowance and resto
   await f.update();
   assert.equal(f.writes.length, 0, 'The ordinary native current is allowed without installing a positive profile');
   const initial = structuredClone(f.runtime.chargers.charger1.identification), probe = initial.probe;
-  assert.ok(probe.deadlineAt - probe.startedAt <= 34_000);
+  assert.ok(probe.deadlineAt - probe.startedAt <= 79_000);
   f.setNow(f.now + 30_000); await f.update();
   assert.equal(f.runtime.chargers.charger1.identification.phase, 'charging'); assert.equal(f.view().id, null);
   assert.equal(f.physical.powerKw, 7);
@@ -766,7 +767,7 @@ test('unassigned Tesla receives the same economic OCPP probe allowance and resto
   f.setNow(f.now + 1000); await f.update();
   const stopped = f.runtime.chargers.charger1.identification;
   assert.equal(stopped.phase, 'inconclusive'); assert.equal(stopped.candidate, null); assert.equal(f.physical.charging, false);
-  assert.ok(stopped.chargeUsedKwh > 0 && stopped.chargeUsedKwh <= .15);
+  assert.ok(stopped.chargeUsedKwh > 0 && stopped.chargeUsedKwh <= .30);
   const count = f.writes.filter(row => row.action === 'SetChargingProfile').length;
   f.setNow(f.now + 5 * MINUTE); await f.restart(); await f.update();
   assert.equal(f.runtime.chargers.charger1.identification.id, initial.id);

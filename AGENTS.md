@@ -593,6 +593,11 @@ Details: [recording and provenance](docs/recording.md),
   Loss of that optional source does not revoke valid local authority or erase a
   known restriction. Physical device refusals, faults, electrical protection,
   identification limits and restoration obligations remain authoritative.
+- On 2026-10-17 the owner explicitly increased the extra identification charging
+  allowance from 0.15 to 0.30 kWh per probe. Retain the current energy accounting,
+  source checks, hardware-ceiling deadline calculation, ten-second stopping
+  reserve, five-minute maximum and current-test restoration deadlines. This
+  amendment adds no startup-energy exemption, new metering API or polling change.
 - Ordinary application stop, restart and paired handover preserve the charger's
   OCPP configuration and current instructions. Only explicit native-control
   deactivation or connection reconfiguration owns return to cloud control.

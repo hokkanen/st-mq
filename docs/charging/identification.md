@@ -441,7 +441,7 @@ Shelly uses the verified minimum-current comparison when available, preserving
 its native limits and configured electrical limiter. A conclusive vehicle match ends the extra test immediately and
 returns to the current charging choice. A usable BMW baseline triggers its
 correlation pause; Tesla's qualified baseline can do so under the unreachable-peer
-exception. Absent a match, the shared 0.15 kWh extra-energy allowance
+exception. Absent a match, the shared 0.30 kWh extra-energy allowance
 ends probing for either vehicle.
 An independent five-minute maximum and loss of current power evidence also end
 probing. These limits do not expire the saved identification evidence. Metering

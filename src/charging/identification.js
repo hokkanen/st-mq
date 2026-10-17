@@ -4,7 +4,7 @@ import { validateAdmittedSourceTime } from '../domain/time-evidence.js';
 
 const MINUTE = 60_000;
 export const IDENTIFICATION_CHARGE_LIMIT_MS = 5 * MINUTE;
-export const IDENTIFICATION_ENERGY_LIMIT_KWH = .15;
+export const IDENTIFICATION_ENERGY_LIMIT_KWH = .30;
 export const IDENTIFICATION_PAUSE_WAIT_MS = 90_000;
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const object = value => value && typeof value === 'object' && !Array.isArray(value);

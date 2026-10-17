@@ -630,7 +630,7 @@ control after an abrupt controller loss.
 
 Extra identification charging during an economic delay briefly releases the
 owned pause at the charger's normal current, retaining all native charger,
-vehicle and Equalizer limits. The controller monitors the 0.15 kWh allowance and
+vehicle and Equalizer limits. The controller monitors the 0.30 kWh allowance and
 saved safety deadline, then reinstates the applicable economic pause. This uses
 the established zero-current pause and release commands; no positive-current
 profile is installed. The energy/time guards need the application and working
@@ -709,7 +709,8 @@ availability report does not verify behavior under competing household loads.
 
 Additional bounded application checks confirmed normal-current charging,
 vehicle identification and native pause readback. They did not validate an exact
-0.15 kWh physical cutoff or positive-current limiting. The current software can
+0.15 kWh physical cutoff or positive-current limiting. The later increase to
+0.30 kWh does not establish an exact physical cutoff either. The current software can
 recover an observed transaction from distinct fresh meter reports, but hardware
 acceptance of a pause profile for a recovered transaction identifier remains
 unverified. Recovery does not invent a missing StartTransaction event, meter

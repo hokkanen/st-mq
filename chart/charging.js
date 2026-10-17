@@ -147,7 +147,7 @@ function identificationPresentation(charger, { now = Date.now(), timezone = 'Eur
     detail: identification.phase === 'waiting' || blocked ? waiting[1]
       : identification.phase === 'pausing' ? 'A brief pause waits for corresponding vehicle stop evidence, until its 90-second deadline. A confirmed identity ends the pause sooner; the current charging choice then resumes. Matching vehicle evidence remains accepted afterward; BMW event reports may arrive later.'
         : identification.probe && identification.probe.endedAt === null
-          ? 'The extra charging test uses the charger’s normal current settings and has a 0.15 kWh energy budget, with a safety deadline. The controller ends the test when useful vehicle evidence arrives or a limit is reached; identification can still finish afterward.'
+          ? 'The extra charging test uses the charger’s normal current settings and has a 0.30 kWh energy budget, with a safety deadline. The controller ends the test when useful vehicle evidence arrives or a limit is reached; identification can still finish afterward.'
           : 'Normal charging continues while identification waits, without a short charging timeout. Charging will pause briefly as soon as enough evidence is available, if a pause is needed.',
   };
   if (identification.phase === 'inconclusive') return { label: 'Identification inconclusive', state: 'Inconclusive', activity: 'Identification inconclusive',

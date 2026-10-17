@@ -116,7 +116,7 @@ test('normal authorized charging has no probe time or energy allowance', () => {
 
 test('probe time and delivered-energy limits request a stop even without BMW evidence and never reset on restart', () => {
   for (const override of [{ now: START + IDENTIFICATION_CHARGE_LIMIT_MS, reason: 'probe-time-limit' },
-    { now: START + 10_000, energyKwh: 2.151, reason: 'probe-energy-limit' }]) {
+    { now: START + 10_000, energyKwh: 2.301, reason: 'probe-energy-limit' }]) {
     let state = advanceIdentification(null, probeInput({ charging: true, energyKwh: 2 }));
     state = advanceIdentification(state, probeInput({ charging: true, ...override }));
     assert.equal(state.phase, 'pausing'); assert.equal(state.action, 'pause');
@@ -137,8 +137,10 @@ test('probe time and delivered-energy limits request a stop even without BMW evi
 test('power integration reserves stopping time within the extra-charge budget without a session meter', () => {
   let state = advanceIdentification(null, probeInput({ charging: true, powerKw: 4.14 }));
   state = advanceIdentification(state, probeInput({ now: START + 122_000, charging: true, powerKw: 4.14 }));
+  assert.equal(state.phase, 'charging', 'The earlier 0.15 kWh threshold no longer ends the probe');
+  state = advanceIdentification(state, probeInput({ now: START + 252_000, charging: true, powerKw: 4.14 }));
   assert.equal(state.phase, 'pausing'); assert.equal(state.reason, 'probe-energy-limit');
-  assert.ok(state.chargeUsedKwh > .13 && state.chargeUsedKwh < .15);
+  assert.ok(state.chargeUsedKwh > .28 && state.chargeUsedKwh < .30);
 });
 
 test('meter resets cannot renew a probe and missing physical telemetry requests a stop', () => {

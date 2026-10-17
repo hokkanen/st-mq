@@ -1879,7 +1879,7 @@ test('BMW awaiting-stop identification explains the pending evidence while leavi
 test('active probing describes normal current and the controller energy allowance', () => {
   const item = { ...active(), vehicle: { state: 'identifying', id: null },
     identification: { phase: 'charging', active: true, available: true, probe: { endedAt: null } } };
-  assert.match(view(item).vehicle.detail, /normal current settings.*0\.15 kWh energy budget.*controller ends the test/);
+  assert.match(view(item).vehicle.detail, /normal current settings.*0\.30 kWh energy budget.*controller ends the test/);
   assert.doesNotMatch(view(item).vehicle.detail, /minimum.current|6 A|three phases/);
 });
 
