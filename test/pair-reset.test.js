@@ -99,7 +99,7 @@ for (const asyncSink of [false, true]) test(`shutdown failure reports safe reset
 
 test('keep history archives previous pairing identity and returns a master as protected without losing records', async t => {
   const f = await fixture(t), app = await f.open(); await promote(app);
-  app.store.event('synthetic-reset-evidence', { value: 7 }, Date.now());
+  await app.store.runWrite(() => app.store.event('synthetic-reset-evidence', { value: 7 }, Date.now()));
   const previousId = app.pair.state.value.nodeId;
   const op = await completed(app, command(app, 'keep'));
   assert.equal(op.state, 'complete', op.error);
@@ -257,7 +257,7 @@ test('a linked data directory supports keep, explicit promotion, then fresh rese
   Object.assign(f.config.pair, { directory: join(alias, 'pairing'), snapshotDirectory: join(alias, 'pair-snapshots'),
     databasePath: f.config.dbPath });
   const app = await f.open(); await promote(app);
-  app.store.event('synthetic-linked-storage', { value: 3 }, Date.now());
+  await app.store.runWrite(() => app.store.event('synthetic-linked-storage', { value: 3 }, Date.now()));
   const kept = await completed(app, command(app, 'keep'));
   assert.equal(kept.state, 'complete', kept.error);
   assert.equal(app.pair.state.value.activeDbPath, join(physical, 'pairing', 'kept-history.sqlite'));
