@@ -49,13 +49,25 @@ async function fixtureBoundary(t, promise) {
   try { t.signal.throwIfAborted(); return await Promise.race([promise, cancelled]); }
   finally { t.signal.removeEventListener('abort', abort); }
 }
-async function diagnosed(manager) { for (let i = 0; i < 200 && !manager.status().error; i++) await wait(5); assert.ok(manager.status().error); return manager.status(); }
-async function actionWhenIdle(manager, input) {
-  for (let i = 0; i < 200; i++) {
+// Filesystem publication completes under the test deadline, independently of
+// host scheduling. These waits do not change any application operation limit.
+async function fixtureCondition(t, predicate) {
+  while (!predicate()) await waitForPoll(5, undefined, { signal: t.signal });
+  t.signal.throwIfAborted();
+}
+async function diagnosed(t, manager) {
+  await fixtureCondition(t, () => Boolean(manager.status().error));
+  assert.ok(manager.status().error); return manager.status();
+}
+async function actionWhenIdle(t, manager, input) {
+  while (true) {
+    t.signal.throwIfAborted();
     try { return await manager.action(input); }
-    catch (error) { if (error.code !== 'https_manager_busy') throw error; await wait(5); }
+    catch (error) {
+      if (error.code !== 'https_manager_busy') throw error;
+      await waitForPoll(5, undefined, { signal: t.signal });
+    }
   }
-  assert.fail('The controlled startup finishes before its next explicit action');
 }
 function restart(t, context, { pair = null, dependencies = {}, onCertificate } = {}) {
   const manager = createHttpsManager({ getConfig: () => context.config, pair,
@@ -349,7 +361,7 @@ for (const action of ['recheck', 'enable']) test(`an explicit ${action} adopts a
   const context = await setup(t); const { manager, calls } = context;
   await manager.action({ action: 'enable' }); const original = await settled(t, manager);
   const renamed = 'renamed.test-tailnet.ts.net'; context.setReportedHostname(renamed); context.setCertificateId(2);
-  await manager.configure(); await diagnosed(manager); await wait(10);
+  await manager.configure(); await diagnosed(t, manager); await wait(10);
   const waiting = manager.status();
   assert.equal(waiting.error, 'helper_hostname_changed'); assert.equal(waiting.hostname, hostname);
   assert.equal(waiting.certificate.generation, original.certificate.generation); assert.equal(calls.certificate, 1);
@@ -360,7 +372,7 @@ for (const action of ['recheck', 'enable']) test(`an explicit ${action} adopts a
   assert.equal(calls.certificateNames.at(-1), renamed); assert.equal(calls.activationNames.at(-1), renamed);
   assert.equal(JSON.stringify(manager.status({ admin: false })).includes(renamed), false);
   await manager.close(); const current = restart(t, context); current.start();
-  for (let i = 0; i < 200 && current.status().phase !== 'ready'; i++) await wait(5);
+  await fixtureCondition(t, () => current.status().phase === 'ready');
   assert.equal(current.status().hostname, renamed); assert.equal(current.status().certificate.generation, 2);
   await current.close();
 });
@@ -389,9 +401,9 @@ for (const failure of ['validation', 'activation', 'durable-write', 'pair-bindin
       }
       return { listening: true, fingerprint: certificate.metadata.fingerprint };
     } });
-  current.start(); for (let i = 0; i < 200 && current.status().phase !== 'ready'; i++) await wait(5); await wait(10);
+  current.start(); await fixtureCondition(t, () => current.status().phase === 'ready'); await wait(10);
   context.setReportedHostname(renamed); context.setCertificateId(2);
-  await actionWhenIdle(current, { action: 'recheck' }); await entered;
+  await actionWhenIdle(t, current, { action: 'recheck' }); await entered;
   assert.equal(current.status().hostname, hostname); assert.equal(current.status().url, old.url);
   assert.equal(current.status().certificate.generation, 1);
   const exported = await current.exportCertificate(); assert.equal(exported.hostname, hostname); assert.equal(exported.generation, 1);
@@ -408,7 +420,7 @@ for (const failure of ['validation', 'activation', 'durable-write', 'pair-bindin
   const saved = JSON.parse(await readFile(statePath, 'utf8')); assert.equal(saved.hostname, hostname); assert.equal(saved.certificate.generation, 1);
   if (failure !== 'validation') assert.deepEqual(activated.at(-1), { generation: 1, name: hostname }, 'Rollback reactivates the old certificate with its original hostname');
   await current.close(); const recovered = restart(t, context, { pair }); recovered.start();
-  for (let i = 0; i < 200 && recovered.status().error !== 'helper_hostname_changed'; i++) await wait(5);
+  await fixtureCondition(t, () => recovered.status().error === 'helper_hostname_changed');
   assert.equal(recovered.status().hostname, hostname); assert.equal(recovered.status().certificate.generation, 1);
   await recovered.close();
 });
@@ -580,7 +592,7 @@ for (const comparison of ['matching', 'older']) test(`current admitted ${compari
   if (comparison === 'older') saved.updates.latest = '1.104.0';
   await atomicJson(path, saved);
   const current = restart(t, context); current.start();
-  for (let i = 0; i < 200 && current.status().phase !== 'ready'; i++) await wait(5);
+  await fixtureCondition(t, () => current.status().phase === 'ready');
   const status = current.status(); assert.equal(status.error, null, 'The actual current strict state reader admits the null observation clock');
   assert.equal(status.updates.latest, comparison === 'older' ? '1.104.0' : status.updates.installed);
   assert.equal(status.updates.lastSuccessfulCheck, null);
@@ -636,7 +648,7 @@ for (const recovery of ['interrupted-restart', 'forward-retry']) test(`a state r
     // the same fixture installation and complete current generation bytes.
     await atomicJson(statePath, JSON.parse(selectedBytes));
     const recovered = restart(t, context); recovered.start();
-    for (let i = 0; i < 200 && recovered.status().phase !== 'ready'; i++) await wait(5);
+    await fixtureCondition(t, () => recovered.status().phase === 'ready');
     assert.equal(recovered.status().hostname, renamed); assert.equal(recovered.status().certificate.generation, 2);
     assert.equal(recovered.status().operation.state, 'interrupted'); assert.equal(context.calls.certificate, 2);
     await recovered.close();
@@ -669,7 +681,7 @@ async function securityFixture(t, initialInfo) {
   const manager = restart(t, context);
   const poll = async () => {
     const before = reads; await manager.configure();
-    for (let i = 0; i < 200 && reads <= before; i++) await wait(5);
+    await fixtureCondition(t, () => reads > before);
     assert(reads > before); await wait(20);
   };
   return { context, manager, poll, setInfo: value => { info = value; }, advance: ms => { now += ms; } };
@@ -695,7 +707,7 @@ test('current vendor urgent evidence is durable once, preserves its original clo
     assert.equal(manager.status().helper.securityObservedAt, originalSignal.observedAt);
   }
   fixture.setInfo({ RunningLatest: true }); fixture.advance(1000);
-  await actionWhenIdle(manager, { action: 'recheck' }); const resolved = await settled(t, manager);
+  await actionWhenIdle(t, manager, { action: 'recheck' }); const resolved = await settled(t, manager);
   assert.equal(resolved.helper.runningLatest, true); assert.equal(resolved.helper.securityUpdate, false);
   const saved = JSON.parse(await readFile(path, 'utf8')).updates.securitySignal;
   assert.equal(saved.urgent, false); assert.equal(saved.observedAt, originalSignal.observedAt); assert(saved.resolvedAt > saved.observedAt);
@@ -730,7 +742,7 @@ test('failed urgent-signal persistence retries identical evidence and keeps the 
   assert.equal(saved.operation.state, 'completed'); assert.equal(saved.helper.securityUpdate, true);
   assert.equal(JSON.parse(await readFile(path, 'utf8')).updates.securitySignal.urgent, true);
   await manager.close(); const restarted = restart(t, context); restarted.start();
-  for (let i = 0; i < 200 && restarted.status().phase !== 'ready'; i++) await wait(5);
+  await fixtureCondition(t, () => restarted.status().phase === 'ready');
   assert.equal(restarted.status().helper.securityUpdate, true); await restarted.close();
 });
 
@@ -780,7 +792,7 @@ test('restart resumes previously requested HTTPS enrollment when the helper lost
   const identity = await readFile(resolve(identities[0], 'tailscaled.state'));
   assert.equal(authorizations, 1); await context.manager.close();
   const current = restart(t, context); current.start();
-  for (let i = 0; i < 200 && current.status().phase !== 'authorization_required'; i++) await wait(5);
+  await fixtureCondition(t, () => current.status().phase === 'authorization_required');
   const view = current.status();
   assert.equal(view.enabled, true); assert.equal(view.phase, 'authorization_required');
   assert.equal(Boolean(view.helper.authorizationUrl), true, 'The current restarted helper must provide a new link without another setup click');
@@ -801,7 +813,7 @@ for (const backend of ['Running', 'NeedsMachineAuth', 'NeedsLogin']) test(`resta
     status: async () => { reads++; return observation; },
     authorize: async () => { authorizations++; return observation; },
   }) } });
-  current.start(); for (let i = 0; i < 200 && reads < 2; i++) await wait(5);
+  current.start(); await fixtureCondition(t, () => reads >= 2);
   await current.close(); assert(reads >= 2); assert.equal(authorizations, 0);
   assert.equal(context.calls.install, 1); assert.equal(context.calls.helperStart, 2);
 });
@@ -852,7 +864,7 @@ test('updating the runtime resumes pending enrollment on its newly started helpe
   saved.updates.candidate = releaseCandidate({ TarballsVersion: '1.104.2', Tarballs: { [architecture()]: `tailscale_1.104.2_${architecture()}.tgz` } });
   await atomicJson(statePath, saved);
   const resumed = restart(t, context); resumed.start();
-  for (let i = 0; i < 200 && resumed.status().helper?.version !== '1.104.2'; i++) await wait(5);
+  await fixtureCondition(t, () => resumed.status().helper?.version === '1.104.2');
   assert.equal(resumed.status().updates.candidate, null, 'A current saved vendor candidate equal to installed grants no update availability after restart');
   assert.equal(secureWebAccessView(resumed.status(), { admin: true }).updateAvailable, false);
   assert.equal(context.calls.install, 2); await resumed.close();
@@ -886,7 +898,7 @@ test('resumed startup authorization still stops a helper whose effective restric
     return helper;
   } } });
   await context.manager.action({ action: 'enable' }); await settled(t, context.manager); await context.manager.close();
-  const current = restart(t, context); current.start(); const failed = await diagnosed(current);
+  const current = restart(t, context); current.start(); const failed = await diagnosed(t, current);
   assert.equal(failed.error, 'helper_restrictions_not_confirmed'); assert.equal(failed.phase, 'degraded');
   assert.equal(activeHelper.expectedStop, true); assert.equal(failed.helper.state, 'stopped');
   assert.equal(failed.helper.authorizationUrl ?? null, null, 'An unqualified helper cannot publish an enrollment URL');
@@ -914,7 +926,7 @@ test('pending startup enrollment renders progress and an unavailable link keeps 
   const preparing = secureWebAccessView(current.status(), { admin: true });
   assert.equal(preparing.next.title, 'Setting up HTTPS'); assert.equal(preparing.busy, true);
   assert.equal(preparing.authorizationUrl, null, 'The old daemon link is not reused during restart');
-  release(); await diagnosed(current); await wait(10);
+  release(); await diagnosed(t, current); await wait(10);
   assert.equal(JSON.stringify(current.status()).includes('private authorization detail'), false);
   const failed = secureWebAccessView(current.status(), { admin: true });
   assert.equal(failed.busy, false); assert.equal(failed.authorizationUrl, null); assert.equal(failed.retryAvailable, true);
@@ -1129,7 +1141,7 @@ test('a stored valid peer certificate restarts offline without depending on the 
   const before = await readFile(resolve(context.directory, 'https', 'state.json'), 'utf8');
   const changed = restart(t, context, { pair: { ...offlinePair, configuration: () => ({ pairId: 'offline-pair', localId: 'new-local-node', peerId: null }) },
     onCertificate: async () => { throw Error('A changed node cannot activate the old identity'); } });
-  changed.start(); assert.equal((await diagnosed(changed)).error, 'https_pair_identity_changed');
+  changed.start(); assert.equal((await diagnosed(t, changed)).error, 'https_pair_identity_changed');
   assert.equal(await readFile(resolve(context.directory, 'https', 'state.json'), 'utf8'), before);
 });
 
@@ -1139,7 +1151,7 @@ test('altered cached certificate metadata is rejected before lock or interrupted
   value.certificate.expiresAt += 90 * 86400000; value.operation.state = 'running'; await atomicJson(path, value);
   const before = await readFile(path, 'utf8'); let activated = 0;
   const resumed = restart(t, context, { onCertificate: async () => { activated++; return { listening: true }; } });
-  resumed.start(); const view = await diagnosed(resumed);
+  resumed.start(); const view = await diagnosed(t, resumed);
   assert.equal(view.error, 'certificate_integrity_failed'); assert.equal(view.certificate, null); assert.equal(activated, 0);
   assert.equal(await readFile(path, 'utf8'), before); await assert.rejects(lstat(resolve(context.directory, 'https', 'manager.lock')), { code: 'ENOENT' });
 });
@@ -1177,11 +1189,11 @@ test('null-like and retired nested records fail closed without rewriting current
   const path = resolve(context.directory, 'https', 'state.json'); const initial = JSON.parse(await readFile(path, 'utf8'));
   for (const [field, wrong] of [['certificate', false], ['runtime', 0], ['highestVersion', false], ['operation', []]]) {
     const value = structuredClone(initial); value[field] = wrong; await atomicJson(path, value); const before = await readFile(path, 'utf8');
-    const resumed = restart(t, context); resumed.start(); assert.equal((await diagnosed(resumed)).error, 'https_state_invalid');
+    const resumed = restart(t, context); resumed.start(); assert.equal((await diagnosed(t, resumed)).error, 'https_state_invalid');
     assert.equal(await readFile(path, 'utf8'), before); await resumed.close();
   }
   const value = structuredClone(initial); value.updates.retiredPolicy = 'always'; await atomicJson(path, value);
-  const resumed = restart(t, context); resumed.start(); assert.equal((await diagnosed(resumed)).error, 'https_state_invalid');
+  const resumed = restart(t, context); resumed.start(); assert.equal((await diagnosed(t, resumed)).error, 'https_state_invalid');
 });
 
 test('failed certificate activation never exports an uncommitted generation to a peer', async t => {
@@ -1199,7 +1211,7 @@ test('failed certificate activation never exports an uncommitted generation to a
   t.after(() => release());
   resumed.start(); await entered;
   assert.equal((await resumed.exportCertificate()).generation, 1); assert.equal(resumed.pairStatus().generation, 1);
-  release(); for (let i = 0; i < 200 && !resumed.status().error; i++) await wait(5);
+  release(); await fixtureCondition(t, () => Boolean(resumed.status().error));
   assert.equal((await resumed.exportCertificate()).generation, 1);
 });
 
@@ -1207,16 +1219,18 @@ test('copying or moving an identity requires fenced restoration and cannot trans
   const directory = await mkdtemp(resolve('/var/tmp', 'stmq-https-binding-')); t.after(() => rm(directory, { recursive: true, force: true }));
   const dataDir = resolve(directory, 'controller'); const first = resolve(directory, 'first'); const second = resolve(directory, 'second');
   await privateDirectory(dataDir); await privateDirectory(first); await privateDirectory(second);
-  const oldLocations = await helperLocations(dataDir, first);
+  // The ownership test supplies its own installation identity on every host.
+  const binding = { getInstallationBinding: async () => '1'.repeat(64) };
+  const oldLocations = await helperLocations(dataDir, first, binding);
   const target = process.getuid() === 0 ? resolve(directory, '.second-https-helper') : resolve(second, 'identity');
   await cp(oldLocations.identity, target, { recursive: true }); if (process.getuid() === 0) await chown(target, 65534, 65534);
   const marker = resolve(target, 'stmq-owner.json'); const before = await readFile(marker, 'utf8');
-  await assert.rejects(helperLocations(dataDir, second), { code: 'identity_restore_required' }); assert.equal(await readFile(marker, 'utf8'), before);
-  const restored = await helperLocations(dataDir, second, { restoreFenced: true }); assert.equal(restored.identity, target);
+  await assert.rejects(helperLocations(dataDir, second, binding), { code: 'identity_restore_required' }); assert.equal(await readFile(marker, 'utf8'), before);
+  const restored = await helperLocations(dataDir, second, { ...binding, restoreFenced: true }); assert.equal(restored.identity, target);
   const value = JSON.parse(await readFile(marker, 'utf8')); value.installationBinding = '0'.repeat(64); await atomicJson(marker, value);
-  await assert.rejects(helperLocations(dataDir, second), { code: 'identity_restore_required' });
+  await assert.rejects(helperLocations(dataDir, second, binding), { code: 'identity_restore_required' });
   value.retiredOwner = true; await atomicJson(marker, value);
-  await assert.rejects(helperLocations(dataDir, second, { restoreFenced: true }), { code: 'helper_identity_marker_invalid' });
+  await assert.rejects(helperLocations(dataDir, second, { ...binding, restoreFenced: true }), { code: 'helper_identity_marker_invalid' });
 });
 
 test('checkout storage is refused before downloads, including an external symlink into a checkout', async t => {
