@@ -10,6 +10,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   Coordinate runtime WAL checkpoints separately from commits, targeting 100
   outstanding frames while retaining FULL durability and atomic peer publication.
   Native queries and file synchronization still have no hard duration bound.
+  Cancelling a chart releases its storage reservation after worker termination.
 
 - Keep clock-aligned OCPP interval reports separate from instantaneous charger
   measurements so they cannot cause false telemetry loss during identification.

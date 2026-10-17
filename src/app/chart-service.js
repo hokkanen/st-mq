@@ -33,7 +33,8 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
     clearTimeout(lane.timer); lane.timer = null;
     const previous = lane.worker; lane.worker = null;
     if (previous) {
-      previous.removeAllListeners();
+      // Admission cleanup must observe release/exit through termination. The
+      // service's own handlers already ignore this retired worker generation.
       const observations = [...lane.observations.values()]; lane.observations.clear();
       lane.retiring = previous.terminate().finally(() => {
         for (const entry of observations) entry.observation?.finish(outcome, { reason });

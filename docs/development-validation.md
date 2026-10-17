@@ -100,7 +100,9 @@ suite contacts configured providers; see [live testing](live-testing.md).
 `test/storage-priority.test.js` checks real worker-backed control/ordinary priority
 between background turns, release only after worker exit, frozen peer staging
 under concurrent writes, admitted urgent saves during mirror export and FULL
-durability with runtime-owned checkpoints. Existing queue, writer, peer, chart,
+durability with runtime-owned checkpoints. Chart cancellation also covers a
+terminated worker whose storage admission is still queued, followed by a real
+urgent save. Existing queue, writer, peer, chart,
 cache, recovery and pairing tests retain their current transaction/publication
 contracts. These tests do not establish a maximum installed filesystem-sync time;
 live trials must measure complete save latency, checkpoint duration, background

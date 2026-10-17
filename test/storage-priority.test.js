@@ -10,6 +10,7 @@ import { attachStorageAdmission } from '../src/storage/worker-admission.js';
 import { peerOperation } from '../src/replication/coalesced.js';
 import { enrollJournalPeer, preparePeerTransfer, peerTransferRows, applyPeerTransfer, acknowledgePeer } from '../src/storage/journal-peer.js';
 import { verifyJournal } from '../src/storage/journal.js';
+import { createChartService } from '../src/app/chart-service.js';
 
 async function fixture(t) {
   const directory=await mkdtemp(join(tmpdir(),'stmq-storage-priority-'));
@@ -51,6 +52,41 @@ test('worker cancellation releases its storage reservation only after worker exi
   const urgent=store.runWrite(()=>{assert(exited);store.setState('after-exit',true);committed=true;},{priority:'control'});
   await turn();assert.equal(committed,false);
   await worker.terminate();await urgent;assert.equal(store.getState('after-exit'),true);
+});
+
+test('cancelling a chart releases storage admission requested before worker termination',async t=>{
+  const {store}=await fixture(t);await store.startWriter();store.walMaintenance.close();
+  const charts=createChartService({store}),controller=new AbortController();
+  let releaseHeld,entered,requested,admitted,rescue;
+  const heldEntered=new Promise(resolve=>{entered=resolve;});
+  const historyRequested=new Promise(resolve=>{requested=resolve;});
+  const historyAdmitted=new Promise(resolve=>{admitted=resolve;});
+  const rescued=new Promise(resolve=>{rescue=resolve;});
+  const held=store.runStorageTask(async()=>{entered();await new Promise(resolve=>{releaseHeld=resolve;});});
+  await heldEntered;
+  const original=store.runStorageTask;let historyTurn,completed=false;
+  store.runStorageTask=function(operation,options={}) {
+    if(options.kind!=='history')return original.call(this,operation,options);
+    historyTurn=original.call(this,async()=>{
+      const work=operation();admitted();
+      // Rescue a broken reservation in cleanup so a regression cannot hang
+      // the suite while closing the real Store.
+      await Promise.race([work,rescued]);
+    },options).then(()=>{completed=true;});
+    requested();return historyTurn;
+  };
+  try {
+    const rejected=assert.rejects(charts.pin({signal:controller.signal}),{name:'AbortError'});
+    await historyRequested;controller.abort();await rejected;
+    await charts.close(); // Join termination while its admission is still queued.
+    releaseHeld();await held;await historyAdmitted;await turn();
+    assert.equal(completed,true,'A terminated chart worker must release its queued storage turn');
+    await store.runWrite(()=>store.setState('after-chart-cancel',true),{priority:'control'});
+    assert.equal(store.getState('after-chart-cancel'),true);
+  } finally {
+    rescue();releaseHeld();await held;await historyTurn;
+    store.runStorageTask=original;await charts.close();
+  }
 });
 
 test('continuous ordinary ingestion cannot starve background maintenance',async t=>{
