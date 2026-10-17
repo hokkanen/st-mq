@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Compute each published charging view once for diagnostics, physical assessments
+  and storage, avoiding repeated reads of the same energy history.
+
 - Withhold Shelly takeover while an accepted current setting still needs native
   readback, so the controls do not advertise a token that is already changing.
 

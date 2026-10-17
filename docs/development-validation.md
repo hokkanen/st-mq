@@ -5,6 +5,12 @@ validate those contracts; existing assertions do not authorize conflicting chang
 Follow the [conflict procedure](../AGENTS.md#conflicting-requests) before changing
 a foundation, even when the requested implementation would require it.
 
+`test/charging-publication-views.test.js` uses real worker-backed storage and
+recorded phase energy to verify that one synchronous publication reads each
+charger's history once. Report and physical-assessment results remain current,
+the assessors leave their input unchanged, and the next publication sees newly
+recorded energy. This sharing lasts only for that synchronous publication.
+
 Charging copy ownership checks in `test/charging-copy-ownership.test.js`,
 `test/charging-runtime-storage-ownership.test.js` and
 `test/engine-charging-copy-ownership.test.js` exercise immutable calculations,

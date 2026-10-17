@@ -618,13 +618,17 @@ export class ChargingRuntime {
       this.limiterHistory.previous = allowance;
       Object.assign(this, errors);
     });
-    // Assessors only observe the production view. A diagnostic storage failure
-    // must not block charging or an outstanding physical restoration duty.
-    try { this.sessionDiagnostics.observe(this.views(now), now, this.coordinationView()); this.diagnosticsError = null; }
-    catch { this.diagnosticsError = 'Session diagnostics could not be saved.'; }
-    try { this.physicalTests.update(this.status(now), now); this.physicalTestsError = null; }
-    catch { this.physicalTestsError = 'The charging assessment could not be saved.'; }
+    // One synchronous admission owns these charger inputs. Assessors change
+    // only their own results; rebuilding the charger view for each assessor
+    // rereads the same recorded energy history and repeats the same projection.
     const view = this.status(now);
+    // A diagnostic storage failure must not block charging or restoration.
+    try { this.sessionDiagnostics.observe(view.chargers, now, view.coordination); this.diagnosticsError = null; }
+    catch { this.diagnosticsError = 'Session diagnostics could not be saved.'; }
+    view.diagnostics = this.diagnosticsStatus(now);
+    try { this.physicalTests.update(view, now); this.physicalTestsError = null; }
+    catch { this.physicalTestsError = 'The charging assessment could not be saved.'; }
+    view.physicalTests = this.physicalTestsStatus();
     view.chargers = view.chargers.map(charger => ({ ...charger, plan: durablePlan(charger.plan),
       forecast: durablePlan(charger.forecast), flexibility: { ...charger.flexibility, preview: null } }));
     this.recordLimiterHistory(now);
@@ -3537,10 +3541,15 @@ export class ChargingRuntime {
     }
     return { revision: this.revision, timezone: TIME_ZONE, controls: { priority: this.controls.priority, revision: this.controls.revision }, settings: structuredClone(this.settings), chargers, vehicleFeeds, coordination: copyChargingValue(this.coordinationView()), error: this.error ?? null,
       limiterHistoryError: this.limiterHistoryError ?? null,
-      diagnostics: { ...this.sessionDiagnostics.status(now), canManage: !this.closed && this.canControl() && this.config.input !== 'offline',
-        ...(this.diagnosticsError ? { available: false, error: this.diagnosticsError } : {}) },
-      physicalTests: { ...this.physicalTests.status(), canManage: !this.closed && this.canControl() && ['mqtt', 'providers'].includes(this.config.input),
-        ...(this.physicalTestsError ? { available: false, error: this.physicalTestsError } : {}) } };
+      diagnostics: this.diagnosticsStatus(now), physicalTests: this.physicalTestsStatus() };
+  }
+  diagnosticsStatus(now) {
+    return { ...this.sessionDiagnostics.status(now), canManage: !this.closed && this.canControl() && this.config.input !== 'offline',
+      ...(this.diagnosticsError ? { available: false, error: this.diagnosticsError } : {}) };
+  }
+  physicalTestsStatus() {
+    return { ...this.physicalTests.status(), canManage: !this.closed && this.canControl() && ['mqtt', 'providers'].includes(this.config.input),
+      ...(this.physicalTestsError ? { available: false, error: this.physicalTestsError } : {}) };
   }
   beginShutdown() {
     for (const feed of Object.values(this.vehicleFeeds)) feed.sourcePending.clear();
