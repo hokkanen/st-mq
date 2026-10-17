@@ -1,3 +1,4 @@
+import { shellyComponentReply } from './helpers/shelly-component-reply.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -65,10 +66,19 @@ function fixture(t, extra={}, backingStore=null) {
   const currentComponent={id:ids.current_limit,owner:'service:0',access:'crw',min:6,max:16,meta:{ui:{step:1}}};
   const settingClock = new Map(), sources = new Map();
   const fields={current_limit:16,start_charging:true,work_state:'charger_charging',phase_info:{total_power:8.28,total_act_energy:0,phase_a:{voltage:230,current:12,power:2.76},phase_b:{voltage:230,current:12,power:2.76},phase_c:{voltage:230,current:12,power:2.76}}};
+  const status = role => {
+    const value=fields[role];
+      if (['start_charging','current_limit'].includes(role)) {
+        if (settingClock.get(role)?.value !== value) settingClock.set(role,{value,at:now});
+        return {value,last_update_ts:settingClock.get(role).at/1000,...(sources.has(role)?{source:sources.get(role)}:{})};
+      } else return {value:structuredClone(value),last_update_ts:(settingClock.get(role)?.at??now)/1000};
+  };
+  const components = () => Object.fromEntries(roles.map(role => [role, role==='current_limit'?structuredClone(currentComponent):{id:ids[role],owner:'service:0',access:'crw',min:6,max:16,meta:{ui:{step:1}},options:['charger_free','charger_wait','charger_pause','charger_charging','charger_end']} ]));
   client.subscribe=(topics,_opts,cb)=>{client.topics=topics;cb(null,topics.map(topic=>({topic,qos:0})));};
   client.publish=(topic,payload,options,cb)=>{
     const frame=JSON.parse(payload);writes.push({...frame,topic,options});let result;
     if(frame.method==='Shelly.GetDeviceInfo')result=structuredClone(deviceInfo);
+    else if(frame.method==='Shelly.GetComponents')result=shellyComponentReply(frame.params.keys,{service,serviceStatus,components:components(),status});
     else if(frame.method==='Service.GetConfig')result=structuredClone(service);
     else if(frame.method==='Schedule.List')result=structuredClone(schedules);
     else if(frame.method==='Schedule.Update') {
@@ -76,15 +86,9 @@ function fixture(t, extra={}, backingStore=null) {
       assert.ok(job);assert.deepEqual(frame.params,{id:job.id,enable:false});job.enable=false;result={rev:++schedules.rev};
     }
     else if(frame.method==='Service.GetStatus')result=structuredClone(serviceStatus);
-    else if(frame.method.endsWith('.GetConfig'))result=frame.params.role==='current_limit'?structuredClone(currentComponent):{id:ids[frame.params.role],owner:'service:0',access:'crw',min:6,max:16,meta:{ui:{step:1}},options:['charger_free','charger_wait','charger_pause','charger_charging','charger_end']};
+    else if(frame.method.endsWith('.GetConfig'))result=components()[frame.params.role];
     else if(frame.method.endsWith('.Set')) {fields[frame.params.role]=frame.params.value;settingClock.set(frame.params.role,{value:frame.params.value,at:now});result=null;}
-    else {
-      const role=frame.params.role, value=fields[role];
-      if (['start_charging','current_limit'].includes(role)) {
-        if (settingClock.get(role)?.value !== value) settingClock.set(role,{value,at:now});
-        result={value,last_update_ts:settingClock.get(role).at/1000,...(sources.has(role)?{source:sources.get(role)}:{})};
-      } else result={value:structuredClone(value),last_update_ts:(settingClock.get(role)?.at??now)/1000};
-    }
+    else result=status(frame.params.role);
     const reply=()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{});
     cb?.();if(!holdReply?.(frame,reply))queueMicrotask(reply);
   };
@@ -96,6 +100,8 @@ function fixture(t, extra={}, backingStore=null) {
   t.after(()=>adapter.close());
   return {get adapter(){return adapter;},health:store.writeHealth,client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,sources,currentComponent,deviceInfo,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
     holdReplies:value=>holdReply=value,
+    componentReply(frame, overrides = {}) { return shellyComponentReply(frame.params.keys, { service, serviceStatus, components: components(),
+      status: role => Object.hasOwn(overrides, role) ? overrides[role] : status(role) }); },
     restartAdapter() { adapter.close(); adapter=createAdapter(); },
     setSourceTime(role, at) { settingClock.set(role, { value: fields[role], at }); },
     delta(role, delta, { eventAt = now, retained = false, apply = true, method = 'NotifyStatus' } = {}) {
@@ -1201,7 +1207,7 @@ test('correlated Shelly readback with small clock skew settles without a second 
     assert.equal(field.measuredAt, receivedAt + lead); assert.equal(field.receivedAt, receivedAt);
     assert.equal(field.readback.receivedAt, receivedAt); assert.ok(field.admittedAt >= field.measuredAt);
     assert.equal(f.adapter.snapshot().controlReady, true);
-    assert.equal(f.writes.slice(before).filter(row => row.method === 'Number.GetStatus').length, 1);
+    assert.equal(f.writes.slice(before).filter(row => row.method === 'Shelly.GetComponents' && row.params.keys.includes('number:200')).length, 1);
   });
 });
 test('future Shelly packets cannot cross a reconnect and excessive skew never becomes deferred authority', async t => {
@@ -1632,11 +1638,11 @@ test('a direct work-state query resolves whole-second transitions without changi
   const value = 'charger_end';
   f.client.publish = (topic, payload, options, callback) => {
     const frame = JSON.parse(payload);
-    if (frame.method !== 'Enum.GetStatus') return publish(topic, payload, options, callback);
+    if (frame.method !== 'Shelly.GetComponents' || !frame.params.keys.includes('enum:202')) return publish(topic, payload, options, callback);
     callback?.();
     queueMicrotask(() => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
       id: frame.id, src: 'synthetic-evse', dst: frame.src,
-      result: { value, last_update_ts: (NOW + 1000) / 1000, source: 'sys' },
+      result: f.componentReply(frame, { work_state: { value, last_update_ts: (NOW + 1000) / 1000, source: 'sys' } }),
     })), {}));
   };
   f.setNow(NOW + 2000); await f.adapter.refresh();
@@ -1659,13 +1665,13 @@ test('work-state collision recovery rejects old, fractional and in-flight eviden
     const requested = new Promise(resolve => { published = resolve; });
     f.client.publish = (topic, payload, options, callback) => {
       const frame = JSON.parse(payload);
-      if (frame.method !== 'Enum.GetStatus') return publish(topic, payload, options, callback);
+      if (frame.method !== 'Shelly.GetComponents' || !frame.params.keys.includes('enum:202')) return publish(topic, payload, options, callback);
       callback?.();
       const send = () => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
         id: frame.id, src: 'synthetic-evse', dst: frame.src,
-        result: { value: mode === 'invalid-value' ? false : mode === 'disconnect' ? 'charger_free'
+        result: f.componentReply(frame, { work_state: { value: mode === 'invalid-value' ? false : mode === 'disconnect' ? 'charger_free'
           : mode === 'unknown-state' ? 'unknown-fault' : 'charger_end',
-          last_update_ts: (mode === 'older-clock' ? NOW : originalAt) / 1000 },
+          last_update_ts: (mode === 'older-clock' ? NOW : originalAt) / 1000 } }),
       })), {});
       if (mode === 'in-flight') { reply = send; published(); } else queueMicrotask(send);
     };
@@ -1687,6 +1693,7 @@ test('work-state collision recovery rejects old, fractional and in-flight eviden
   });
 });
 test('work-state tie recovery does not authorize tied permission, current or power changes', async t => {
+  const roleTypesForTest = { start_charging: 'boolean', current_limit: 'number', phase_info: 'object' }, roleIdForTest = { start_charging: 201, current_limit: 200, phase_info: 203 };
   for (const role of ['start_charging', 'current_limit', 'phase_info']) await t.test(role, async t => {
     const f = fixture(t); await f.ready();
     const before = f.adapter.snapshot().fields[role];
@@ -1697,11 +1704,11 @@ test('work-state tie recovery does not authorize tied permission, current or pow
     const publish = f.client.publish;
     f.client.publish = (topic, payload, options, callback) => {
       const frame = JSON.parse(payload);
-      if (!frame.method.endsWith('.GetStatus') || frame.params.role !== role)
+      if (frame.method !== 'Shelly.GetComponents' || !frame.params.keys.includes(`${roleTypesForTest[role]}:${roleIdForTest[role]}`))
         return publish(topic, payload, options, callback);
       callback?.(); queueMicrotask(() => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
         id: frame.id, src: 'synthetic-evse', dst: frame.src,
-        result: { value, last_update_ts: NOW / 1000 },
+        result: f.componentReply(frame, { [role]: { value, last_update_ts: NOW / 1000 } }),
       })), {}));
     };
     f.setNow(NOW + 2000); await f.adapter.refresh();
@@ -2350,7 +2357,7 @@ test('Shelly post-write verification drains an older poll before requesting fres
     const entered = new Promise(resolve => { enteredRead = resolve; });
     f.client.publish = (topic, payload, options, callback) => {
       const frame = JSON.parse(payload);
-      if (frame.params.role === role && frame.method.endsWith('.GetStatus')) {
+      if (frame.method === 'Shelly.GetComponents' && frame.params.keys.includes(role === 'current_limit' ? 'number:200' : 'boolean:201')) {
         reads.push(f.now());
         if (paused && !releaseRead) {
           releaseRead = () => publish(topic, payload, options, callback);
@@ -2862,7 +2869,7 @@ test(`post-ACK confirmation waits for a query after the late notification: ${sce
       f.setSourceTime('start_charging', NOW + 1000);
       f.setNow(NOW + 1347); return;
     }
-    if (sent && frame.method === 'Boolean.GetStatus') {
+    if (sent && frame.method === 'Shelly.GetComponents' && frame.params.keys.includes('boolean:201')) {
       reads++;
       if (reads === 1) {
         f.writes.push({ ...frame, topic, options }); done?.();
@@ -2876,7 +2883,7 @@ test(`post-ACK confirmation waits for a query after the late notification: ${sce
           f.setNow(NOW + 2299);
           f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({ id: frame.id,
             src: 'synthetic-evse', dst: frame.src,
-            result: { value: ownValue, source: 'rpc', last_update_ts: (NOW + 1000) / 1000 } })), {});
+            result: f.componentReply(frame, { start_charging: { value: ownValue, source: 'rpc', last_update_ts: (NOW + 1000) / 1000 } }) })), {});
           fenced = !f.adapter.snapshot().controlReady;
           assert.equal(f.adapter.snapshot().fields.start_charging.value, !ownValue,
             'The pre-event query must not confirm even our own accepted command');
@@ -2976,7 +2983,7 @@ test(`automatic takeover waits for final work readback: ${outcome}`, async t => 
   let injected = false, hold = false, release, resolved = false;
   f.client.publish = (topic, payload, options, done) => {
     const frame = JSON.parse(payload);
-    if (hold && frame.method === 'Enum.GetStatus') {
+    if (hold && frame.method === 'Shelly.GetComponents' && frame.params.keys.includes('enum:202')) {
       release = () => { hold = false; publish(topic, payload, options, done); }; return;
     }
     publish(topic, payload, options, done);

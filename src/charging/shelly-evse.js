@@ -16,7 +16,7 @@ const PERMISSION_EVENT_LIMIT = 64;
 const RPC_TIMEOUT_MS = 5000;
 const PHASE_KEYS = ['phase_a', 'phase_b', 'phase_c'];
 const MUTATIONS = new Set(['Number.Set', 'Boolean.Set', 'Schedule.Update']);
-const METHODS = new Set(['Shelly.GetDeviceInfo', 'Service.GetConfig', 'Service.GetStatus', 'Schedule.List', ...Object.values(TYPES).map(type => `${type}.GetConfig`), ...Object.values(TYPES).map(type => `${type}.GetStatus`), ...MUTATIONS]);
+const METHODS = new Set(['Shelly.GetDeviceInfo', 'Shelly.GetComponents', 'Service.GetConfig', 'Service.GetStatus', 'Schedule.List', ...Object.values(TYPES).map(type => `${type}.GetConfig`), ...Object.values(TYPES).map(type => `${type}.GetStatus`), ...MUTATIONS]);
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fail = code => Object.assign(new Error(code), { code });
 export function shellyAssociation(config, broker) {
@@ -262,6 +262,25 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       && now - field.receivedAt <= config.maxAgeMs;
   };
   function rejectPending(reason) { for (const item of pending.values()) { clearTimeout(item.timer); item.reject(fail(reason)); } pending.clear(); }
+  const componentKey = role => [...componentRoles].find(([, candidate]) => candidate === role)?.[0];
+  // Keep physical observation independent of control/metadata failures. Each
+  // field retains its own native clock and query revision within the batch.
+  const componentBatches = () => [[`service:${config.serviceId}`, componentKey('current_limit'), componentKey('start_charging')],
+    [componentKey('work_state'), componentKey('phase_info')]];
+  function componentRows(result, keys) {
+    if (result?.offset !== 0 || result.total !== keys.length || !Array.isArray(result.components)
+      || result.components.length !== keys.length || new Set(result.components.map(row => row?.key)).size !== keys.length
+      || result.components.some(row => !row || typeof row !== 'object' || !keys.includes(row.key)))
+      throw fail('evse-component-mapping-unverified');
+    return new Map(result.components.map(row => [row.key, row]));
+  }
+  const replySourceClocks = (result, readback) => {
+    const components = Array.isArray(result?.components) ? result.components : [];
+    const values = readback?.components ? readback.components.map(scope =>
+      components.find(row => row?.key === scope.key)?.status) : readback ? [result] : [];
+    return values.filter(value => finite(value?.last_update_ts) && value.last_update_ts > 0)
+      .map(value => Math.round(value.last_update_ts * 1000));
+  };
   async function rpc(method, params = {}, { mutation = false, guard, beforePublish = () => {}, statusReadback = false, identificationCurrent = null,
     attempt = createControlAttempt({ store, context: 'charger2-command', kind: mutation ? 'mutation' : 'query' }) } = {}) {
     try {
@@ -271,8 +290,11 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     guard ??= () => true;
     if (MUTATIONS.has(method) && !mutation) throw fail('invalid-evse-command');
     if (!METHODS.has(method) || mutation && !MUTATIONS.has(method)) throw fail('unsupported-evse-method');
-    if (statusReadback && (params.owner !== `service:${config.serviceId}` || !TYPES[params.role]
-      || method !== `${TYPES[params.role]}.GetStatus`)) throw fail('unsupported-evse-method');
+    const componentReadback = statusReadback && method === 'Shelly.GetComponents';
+    if (componentReadback ? !discovered || !componentBatches().some(keys => JSON.stringify(params.keys) === JSON.stringify(keys))
+      || JSON.stringify(params.include) !== JSON.stringify(['config', 'status'])
+      : statusReadback && (params.owner !== `service:${config.serviceId}` || !TYPES[params.role]
+        || method !== `${TYPES[params.role]}.GetStatus`)) throw fail('unsupported-evse-method');
     const identificationCurrentAllowed = () => method === 'Number.Set' && identificationCurrent != null && validCurrentTest(identificationCurrent)
       && ['applying', 'restoring'].includes(identificationCurrent.phase)
       && params.value === (identificationCurrent.phase === 'restoring' ? identificationCurrent.restoreCurrentA : identificationCurrent.appliedCurrentA)
@@ -318,8 +340,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       const item = { generation: epoch, retired: false,
         resolve(value) { item.retired = true; resolve(value); },
         reject(cause) { item.retired = true; reject(cause); },
-        readback: statusReadback ? { role: params.role, generation: epoch,
-          revision: fieldRevisions.get(params.role) ?? 0, sessionSequence: state.sessionSequence, requestedAt: clock() } : null };
+        readback: statusReadback ? { generation: epoch, sessionSequence: state.sessionSequence, requestedAt: clock(),
+          ...(componentReadback ? { keys: [...params.keys], components: [...componentRoles].filter(([key]) => params.keys.includes(key)).map(([key, role]) =>
+            ({ key, role, revision: fieldRevisions.get(role) ?? 0 })) }
+            : { role: params.role, revision: fieldRevisions.get(params.role) ?? 0 }) } : null };
       const timer = setTimeout(() => {
         pending.delete(id);
         const timedOutAt = clock(), elapsedMs = performance.now() - started;
@@ -503,6 +527,32 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     if (!retained) { fieldGenerations.set(role, generation); readAt = receivedAt; }
     return true;
   }
+  function admitReadback(readback, result, receivedAt, admittedAt) {
+    const role = readback.role;
+    const eligible = readback.generation === generation && readback.revision === (fieldRevisions.get(role) ?? 0);
+    accept(role, result, receivedAt, false, readback, admittedAt);
+    if (eligible && state.fields[role] && result && Object.hasOwn(result, 'value')) {
+      const previous = notificationBaselines.get(role), awaiting = notificationPending.get(role);
+      notificationBaselines.set(role, { value: copy(result.value), measuredAt: state.fields[role].measuredAt,
+        commandSource: Object.hasOwn(result, 'source') ? typeof result.source === 'string' ? result.source : null
+          : previous && JSON.stringify(previous.value) === JSON.stringify(result.value) ? previous.commandSource : state.fields[role].commandSource });
+      if (awaiting && readback.requestedAt >= awaiting.receivedAt
+        && (!awaiting.valueKnown || awaiting.value === null || JSON.stringify(result.value) === JSON.stringify(awaiting.value)
+          || state.fields[role].measuredAt > awaiting.eventAt)) {
+        const before = copy(state);
+        // A source-only selection can leave last_update_ts unchanged.
+        // Retain its separate event clock only after matching readback;
+        // polling itself never creates a new instruction.
+        if (role === 'current_limit' && awaiting.instructionAt !== undefined && state.fields[role].measuredAt <= awaiting.eventAt
+          && (!awaiting.valueKnown || result.value === awaiting.value)
+          && (!Object.hasOwn(result, 'source') || result.source === awaiting.commandSource))
+          state.fields[role].instructionAt = awaiting.instructionAt;
+        delete state.notificationPending?.[role];
+        try { persist(); } catch (cause) { state = before; throw cause; }
+        notificationPending.delete(role);
+      }
+    }
+  }
   function receiveAdmitted(topic, payload, packet = {}, receivedAt = clock(), admittedAt) {
     if (closed || !connected || Buffer.byteLength(payload) > 65536) return;
     if (!topic.startsWith(`${config.topicPrefix}/`) && topic !== `${source}/rpc`) return;
@@ -528,32 +578,19 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       if (frame.error) item.reject(fail('evse-rpc-rejected'));
       else {
         try {
-          if (item.readback) {
-            const role = item.readback.role;
-            const eligible = item.readback.generation === generation && item.readback.revision === (fieldRevisions.get(role) ?? 0);
-            accept(role, frame.result, receivedAt, false, item.readback, admittedAt);
-            if (eligible && state.fields[role] && frame.result && Object.hasOwn(frame.result, 'value')) {
-              const previous = notificationBaselines.get(role), awaiting = notificationPending.get(role);
-              notificationBaselines.set(role, { value: copy(frame.result.value), measuredAt: state.fields[role].measuredAt,
-                commandSource: Object.hasOwn(frame.result, 'source') ? typeof frame.result.source === 'string' ? frame.result.source : null
-                  : previous && JSON.stringify(previous.value) === JSON.stringify(frame.result.value) ? previous.commandSource : state.fields[role].commandSource });
-              if (awaiting && item.readback.requestedAt >= awaiting.receivedAt
-                && (!awaiting.valueKnown || awaiting.value === null || JSON.stringify(frame.result.value) === JSON.stringify(awaiting.value)
-                  || state.fields[role].measuredAt > awaiting.eventAt)) {
-                const before = copy(state);
-                // A source-only selection can leave last_update_ts unchanged.
-                // Retain its separate event clock only after matching readback;
-                // polling itself never creates a new instruction.
-                if (role === 'current_limit' && awaiting.instructionAt !== undefined && state.fields[role].measuredAt <= awaiting.eventAt
-                  && (!awaiting.valueKnown || frame.result.value === awaiting.value)
-                  && (!Object.hasOwn(frame.result, 'source') || frame.result.source === awaiting.commandSource))
-                  state.fields[role].instructionAt = awaiting.instructionAt;
-                delete state.notificationPending?.[role];
-                try { persist(); } catch (cause) { state = before; throw cause; }
-                notificationPending.delete(role);
-              }
+          if (item.readback?.components) {
+            const rows = componentRows(frame.result, item.readback.keys);
+            let readError;
+            for (const scope of item.readback.components) {
+              try {
+                const row = rows.get(scope.key);
+                if (row.attrs?.owner !== `service:${config.serviceId}` || row.attrs?.role !== scope.role)
+                  throw fail('evse-component-mapping-unverified');
+                admitReadback({ ...item.readback, ...scope }, row.status, receivedAt, admittedAt);
+              } catch (cause) { readError ??= cause; }
             }
-          }
+            if (readError) throw readError;
+          } else if (item.readback) admitReadback(item.readback, frame.result, receivedAt, admittedAt);
           afterCommit(() => item.resolve(frame.result));
         } catch (cause) {
           controlReady = false; readinessRevision++; error = cause.code ?? 'evse-read-unavailable';
@@ -626,8 +663,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       try { frame = JSON.parse(body); } catch {}
       if (frame?.src === config.deviceId) {
         const sourceClocks = topic === `${source}/rpc`
-          ? response?.readback && finite(frame.result?.last_update_ts) && frame.result.last_update_ts > 0
-            ? [Math.round(frame.result.last_update_ts * 1000)] : []
+          ? replySourceClocks(frame.result, response?.readback)
           : ['NotifyStatus', 'NotifyFullStatus'].includes(frame.method)
             ? [frame.params?.ts, ...Object.values(frame.params ?? {}).map(value => value?.last_update_ts)]
               .filter(value => finite(value) && value > 0).map(value => Math.round(value * 1000)) : [];
@@ -805,9 +841,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       });
       const metadata = async () => {
         // Native limits and flags remain authoritative and may change in the app.
-        const reads = await Promise.allSettled([rpc('Service.GetConfig', { id: config.serviceId }),
-          rpc('Service.GetStatus', { id: config.serviceId }), rpc('Schedule.List'),
-          rpc('Number.GetConfig', { owner: `service:${config.serviceId}`, role: 'current_limit' })].map(checked));
+        const reads = await Promise.allSettled([controlComponents.then(rows => rows.get(`service:${config.serviceId}`).config),
+          controlComponents.then(rows => rows.get(`service:${config.serviceId}`).status), rpc('Schedule.List'),
+          controlComponents.then(rows => rows.get(componentKey('current_limit')).config)].map(checked));
         if (epoch !== generation) return;
         const failed = reads.find(result => result.status === 'rejected');
         if (failed) throw failed.reason;
@@ -839,8 +875,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       // Physical state and metering remain observable when a control-only read
       // fails. Close command admission on the first error, but settle every
       // independent read before a new refresh can begin.
-      const reads = await Promise.allSettled([checked(metadata()), ...Object.keys(TYPES).map(role => checked(
-        rpc(`${TYPES[role]}.GetStatus`, { owner: `service:${config.serviceId}`, role }, { statusReadback: true })))]);
+      const [controlComponents, physicalComponents] = componentBatches().map(keys =>
+        rpc('Shelly.GetComponents', { keys, include: ['config', 'status'] }, { statusReadback: true })
+          .then(result => componentRows(result, keys)));
+      const reads = await Promise.allSettled([checked(metadata()), checked(controlComponents), checked(physicalComponents)]);
       if (epoch !== generation) return;
       const failed = reads.find(result => result.status === 'rejected');
       if (failed) throw failed.reason;

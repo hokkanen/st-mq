@@ -91,6 +91,18 @@ not establish a firmware cause or cure for the
 Basic start/stop requires fresh native state, start permission and current setting, working MQTT,
 a running service and no active errors or flags. It preserves native current
 settings, energy/time caps, automatic-start settings and `auto_balance`.
+After typed-role discovery, each complete read round uses two
+[`Shelly.GetComponents`](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Shelly/#shellygetcomponents)
+requests and `Schedule.List`. One component request contains the service,
+current setting and Start permission; the other contains work state and electrical
+measurements. A control-query failure therefore does not block independent
+physical readback. Each response must contain exactly its requested discovered
+keys and role ownership. Invalid or incomplete control evidence closes command
+admission; valid physical fields remain observable. Individual source clocks,
+receipt times, notification revisions and session/generation fences still apply;
+a combined response does not establish an atomic physical sample. Bounded future
+clocks retain ordered source admission. Forced confirmation starts a new round
+after the native write, including when an older query is still pending.
 Unchanged correlated polls refresh live receipt/readback evidence through the same
 transaction admission without saving another acquisition checkpoint. Changes to
 values, native source clocks, provenance, connection boundaries, counter state or

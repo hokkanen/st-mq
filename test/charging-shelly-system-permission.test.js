@@ -1,3 +1,4 @@
+import { shellyComponentReply } from './helpers/shelly-component-reply.js';
 import { admitChargingObservation } from './helpers/charging-observation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,40 +54,10 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
   const meter = () => ({ total_power: measuredCurrentA * .69, total_act_energy: 0,
     ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c'].map(phase => [phase,
       { voltage: 230, current: measuredCurrentA, power: measuredCurrentA * .23 }])) });
-  client.subscribe = (topics, _options, done) => done(null, topics.map(topic => ({ topic, qos: 0 })));
-  client.publish = (_topic, payload, _options, done) => {
-    const frame = JSON.parse(payload), role = frame.params.role;
-    let result;
-    if (frame.method === 'Shelly.GetDeviceInfo') result = { id: DEVICE, model: 'synthetic-model', fw_id: 'synthetic-firmware' };
-    else if (frame.method === 'Service.GetConfig') result = structuredClone(service);
-    else if (frame.method === 'Service.GetStatus') result = structuredClone(serviceStatus);
-    else if (frame.method === 'Schedule.List') result = structuredClone(schedules);
-    else if (frame.method.endsWith('.GetConfig')) result = { id: COMPONENTS[role][1], owner: 'service:0',
-      access: role === 'current_limit' ? currentCapability.access : 'crw',
-      min: 6, max: 16, meta: { ui: { step: 1 } },
-      options: ['charger_free', 'charger_insert', 'charger_wait', 'charger_pause', 'charger_end', 'charger_charging'] };
-    else if (frame.method.endsWith('.Set')) {
-      writes.push({ method: frame.method, ...frame.params, at: now });
-      const echoKind = frame.params.value ? startEcho : stopEcho;
-      if (role === 'start_charging' && echoKind) {
-        pendingStartEcho = { dispatchedAt: now, nativeAt: now - (echoKind === 'different native second' ? 1083 : 83),
-          value: frame.params.value, kind: echoKind };
-        echoTrace.push(pendingStartEcho);
-      }
-      now += 100;
-      fields[role] = { value: frame.params.value, at: Math.floor(now / 1000) * 1000, source: 'rpc' };
-      if (role === 'start_charging') fields.work_state = { value: frame.params.value ? 'charger_wait' : 'charger_pause', at: fields[role].at };
-      if (role === 'start_charging' && frame.params.value === true && startOutcome === 'delayed system readback') {
-        delayedStart = true;
-        fields.start_charging = { value: false, at: START, source: 'rpc' };
-      }
-      if (role === 'start_charging' && (frame.params.value ? startOutcome : stopOutcome) === 'no acknowledgement') {
-        // Publication failed after the synthetic device applied the command;
-        // the application cannot infer whether delivery or execution occurred.
-        done?.(Error('synthetic uncertain publication')); return;
-      }
-      result = null;
-    } else {
+  const components = () => Object.fromEntries(Object.keys(COMPONENTS).map(role => [role, { id: COMPONENTS[role][1], owner: 'service:0',
+    access: role === 'current_limit' ? currentCapability.access : 'crw', min: 6, max: 16, meta: { ui: { step: 1 } },
+    options: ['charger_free', 'charger_insert', 'charger_wait', 'charger_pause', 'charger_end', 'charger_charging'] }]));
+  const status = role => {
       if (role === 'start_charging' && pendingStartEcho) {
         const echo = pendingStartEcho; pendingStartEcho = null;
         echo.readRequestedAt = now;
@@ -115,12 +86,44 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
         // before the first confirmation query. The returned clock tells them apart.
         newerStartInjected = true; now += 1000; fields[role].at = Math.floor(now / 1000) * 1000;
       }
-      result = role === 'phase_info' ? { value: meter(), last_update_ts: now / 1000 }
+      return role === 'phase_info' ? { value: meter(), last_update_ts: now / 1000 }
         : { value: role === 'start_charging' && (fields[role].value ? startOutcome : stopOutcome) === 'unknown readback'
           && writes.some(row => row.role === role && row.value === fields[role].value)
           ? null : fields[role].value, last_update_ts: fields[role].at / 1000,
           ...(fields[role].source !== undefined ? { source: fields[role].source } : {}) };
-    }
+  };
+  client.subscribe = (topics, _options, done) => done(null, topics.map(topic => ({ topic, qos: 0 })));
+  client.publish = (_topic, payload, _options, done) => {
+    const frame = JSON.parse(payload), role = frame.params.role;
+    let result;
+    if (frame.method === 'Shelly.GetDeviceInfo') result = { id: DEVICE, model: 'synthetic-model', fw_id: 'synthetic-firmware' };
+    else if (frame.method === 'Shelly.GetComponents') result = shellyComponentReply(frame.params.keys, { service, serviceStatus, components: components(), status });
+    else if (frame.method === 'Service.GetConfig') result = structuredClone(service);
+    else if (frame.method === 'Service.GetStatus') result = structuredClone(serviceStatus);
+    else if (frame.method === 'Schedule.List') result = structuredClone(schedules);
+    else if (frame.method.endsWith('.GetConfig')) result = components()[role];
+    else if (frame.method.endsWith('.Set')) {
+      writes.push({ method: frame.method, ...frame.params, at: now });
+      const echoKind = frame.params.value ? startEcho : stopEcho;
+      if (role === 'start_charging' && echoKind) {
+        pendingStartEcho = { dispatchedAt: now, nativeAt: now - (echoKind === 'different native second' ? 1083 : 83),
+          value: frame.params.value, kind: echoKind };
+        echoTrace.push(pendingStartEcho);
+      }
+      now += 100;
+      fields[role] = { value: frame.params.value, at: Math.floor(now / 1000) * 1000, source: 'rpc' };
+      if (role === 'start_charging') fields.work_state = { value: frame.params.value ? 'charger_wait' : 'charger_pause', at: fields[role].at };
+      if (role === 'start_charging' && frame.params.value === true && startOutcome === 'delayed system readback') {
+        delayedStart = true;
+        fields.start_charging = { value: false, at: START, source: 'rpc' };
+      }
+      if (role === 'start_charging' && (frame.params.value ? startOutcome : stopOutcome) === 'no acknowledgement') {
+        // Publication failed after the synthetic device applied the command;
+        // the application cannot infer whether delivery or execution occurred.
+        done?.(Error('synthetic uncertain publication')); return;
+      }
+      result = null;
+    } else result = status(role);
     done?.(); queueMicrotask(() => {
       if (role === 'start_charging' && frame.method.endsWith('.Set') && pendingStartEcho)
         pendingStartEcho.acknowledgedAt = now;

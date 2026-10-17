@@ -90,7 +90,11 @@ controller, runtime and Store with one manually invoked existing polling callbac
 It verifies a single completed read round for an unchanged periodic episode,
 independent acquisition during held Store admission and controller planning,
 one-use owner/session/input fences, rollback and post-commit failure, and fresh
-explicit/takeover/post-write confirmation. Native replies and economic results
+explicit/takeover/post-write confirmation. A round has two scoped component
+requests and a schedule request. Missing, duplicate or foreign component rows,
+role ownership, missing service/setting data, source-time admission and real
+combined-packet COMMIT rollback are covered; control failures retain independent
+physical observations. Native replies and economic results
 are synthetic; reduced request count is not a measured device-latency improvement.
 
 Time admission regressions in `test/time-evidence.test.js` and

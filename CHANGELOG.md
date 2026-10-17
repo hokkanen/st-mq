@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Read Shelly's discovered control and physical components in two independent
+  batches plus its schedules, reducing each ordinary round from eight requests
+  to three while preserving source clocks and fresh command confirmation.
+
 - Preserve explicit charging takeover after an uncertain native command expires;
   commands still in their active window keep takeover unavailable.
 
@@ -22,7 +26,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   readback, so the controls do not advertise a token that is already changing.
 
 - Reuse Shelly's completed notification readback for its following reconciliation,
-  avoiding a duplicate batch of eight native queries while retaining fresh-read fences.
+  avoiding a duplicate native read round while retaining fresh-read fences.
 
 - Keep Shelly Pause available while fresh committed connection evidence remains
   healthy and a native reply awaits admission; commands still wait and revalidate.

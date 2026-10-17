@@ -1,3 +1,4 @@
+import { shellyComponentReply } from './helpers/shelly-component-reply.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -28,12 +29,15 @@ function fixture(t, configuration = {}, { saved = new Map(), initialNow = NOW } 
       phase_a: { voltage: 230, current: 12, power: 2.76 },
       phase_b: { voltage: 230, current: 12, power: 2.76 },
       phase_c: { voltage: 230, current: 12, power: 2.76 } } };
+  const status = role => ({ value: fields[role], last_update_ts: (measuredAt[role] ?? now) / 1000,
+      ...(commandSources[role] ? { source: commandSources[role] } : {}) });
   client.subscribe = (topics, _options, done) => done(null, topics.map(topic => ({ topic, qos: 0 })));
   client.publish = (topic, payload, options, done) => {
     const frame = JSON.parse(payload);
     calls.push({ ...frame, topic, options });
     let result;
     if (frame.method === 'Shelly.GetDeviceInfo') result = info;
+    else if (frame.method === 'Shelly.GetComponents') result = shellyComponentReply(frame.params.keys, { service, serviceStatus, components, status });
     else if (frame.method === 'Service.GetConfig') result = service;
     else if (frame.method === 'Service.GetStatus') result = serviceStatus;
     else if (frame.method === 'Schedule.List') result = schedules;
@@ -43,8 +47,7 @@ function fixture(t, configuration = {}, { saved = new Map(), initialNow = NOW } 
       measuredAt[frame.params.role] = now;
       result = null;
     }
-    else result = { value: fields[frame.params.role], last_update_ts: (measuredAt[frame.params.role] ?? now) / 1000,
-      ...(commandSources[frame.params.role] ? { source: commandSources[frame.params.role] } : {}) };
+    else result = status(frame.params.role);
     const reply = Buffer.from(JSON.stringify({ id: frame.id, src: DEVICE, dst: frame.src, result }));
     done?.();
     queueMicrotask(() => client.emit('message', `${frame.src}/rpc`, reply, {}));
@@ -60,6 +63,8 @@ function fixture(t, configuration = {}, { saved = new Map(), initialNow = NOW } 
   });
   t.after(() => adapter.close());
   return { adapter, client, info, service, serviceStatus, schedules, components, fields, calls, measuredAt, commandSources, saved, now: () => now,
+    componentReply(frame, overrides = {}) { return shellyComponentReply(frame.params.keys, { service, serviceStatus, components,
+      status: role => Object.hasOwn(overrides, role) ? overrides[role] : status(role) }); },
     setClockStep(value) { clockStep = value; },
     advance(milliseconds) { now += milliseconds; },
     mutations: () => calls.filter(call => call.method.endsWith('.Set')),
@@ -132,12 +137,13 @@ test('matching older work-state and start-permission replies preserve connection
 });
 
 test('control read failures keep physical connection and metering observable while commands remain blocked', async t => {
-  for (const failing of ['Service.GetStatus', 'Schedule.List', 'Number.GetStatus', 'Boolean.GetStatus']) await t.test(failing, async t => {
+  for (const failing of ['control components', 'Schedule.List']) await t.test(failing, async t => {
     const f = fixture(t); await f.ready();
     const originalSession = f.adapter.snapshot().session, publish = f.client.publish;
     f.client.publish = (topic, payload, options, done) => {
       const frame = JSON.parse(payload);
-      if (frame.method !== failing) return publish(topic, payload, options, done);
+      if (!(failing === 'control components' ? frame.method === 'Shelly.GetComponents' && frame.params.keys.includes('number:200')
+        : frame.method === failing)) return publish(topic, payload, options, done);
       done?.();
       queueMicrotask(() => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
         id: frame.id, src: DEVICE, dst: frame.src, error: { code: -1, message: 'Synthetic read failure' },
@@ -172,9 +178,9 @@ test('a timed-out current read does not delay independent physical state or mete
   const physicalRead = new Promise(resolve => { observed = resolve; });
   f.client.publish = (topic, payload, options, done) => {
     const frame = JSON.parse(payload);
-    if (frame.method === 'Number.GetStatus') { done?.(); return; }
+    if (frame.method === 'Shelly.GetComponents' && frame.params.keys.includes('number:200')) { done?.(); return; }
     publish(topic, payload, options, done);
-    if (frame.method === 'Object.GetStatus') queueMicrotask(observed);
+    if (frame.method === 'Shelly.GetComponents' && frame.params.keys.includes('object:203')) queueMicrotask(observed);
   };
   f.advance(16000);
   // The RPC timeout is intentionally unref'ed in production. Keep this
@@ -188,7 +194,7 @@ test('a timed-out current read does not delay independent physical state or mete
   await timeout; await refresh;
   assert.equal(f.adapter.snapshot().error, 'evse-read-timeout');
   const timeoutEvidence = f.adapter.snapshot().lastRpcTimeout;
-  assert.equal(timeoutEvidence.method, 'Number.GetStatus'); assert.equal(timeoutEvidence.role, 'current_limit');
+  assert.equal(timeoutEvidence.method, 'Shelly.GetComponents'); assert.equal(timeoutEvidence.role, null);
   assert.equal(timeoutEvidence.requestedAt, f.now()); assert.equal(timeoutEvidence.timedOutAt, f.now());
   assert.ok(timeoutEvidence.elapsedMs >= 4900); assert.ok(timeoutEvidence.timerOverrunMs >= 0);
   assert.deepEqual(Object.keys(timeoutEvidence).sort(), ['elapsedMs', 'method', 'requestedAt', 'role', 'timedOutAt', 'timerOverrunMs']);
@@ -212,7 +218,7 @@ test(`physical readback after a newer notification preserves source and session 
   const publish = f.client.publish, held = [];
   f.client.publish = (topic, payload, options, done) => {
     const frame = JSON.parse(payload);
-    if (frame.method === 'Object.GetStatus') { held.push(frame); done?.(); return; }
+    if (frame.method === 'Shelly.GetComponents' && frame.params.keys.includes('object:203')) { held.push(frame); done?.(); return; }
     publish(topic, payload, options, done);
   };
   f.advance(1000);
@@ -242,7 +248,7 @@ test(`physical readback after a newer notification preserves source and session 
   const frame = held[0], receivedAt = f.now();
   const replyValue = boundary === 'matching reordered keys' ? Object.fromEntries(Object.entries(value).reverse()) : value;
   f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({ id: frame.id, src: DEVICE, dst: frame.src,
-    result: { value: replyValue, last_update_ts: measuredAt / 1000 } })), {});
+    result: f.componentReply(frame, { phase_info: { value: replyValue, last_update_ts: measuredAt / 1000 } }) })), {});
   await refreshing;
   const physical = f.adapter.snapshot().fields.phase_info;
   if (!boundary.startsWith('matching')) {
@@ -277,7 +283,7 @@ test('a missed ordinary read retains a still-fresh accepted Stop without grantin
   const acceptedAt = controller.status().lastStartAt;
   const publish = f.client.publish;
   f.client.publish = (topic, payload, options, done) => {
-    if (JSON.parse(payload).method === 'Service.GetStatus') { done?.(); return; }
+    if (JSON.parse(payload).method === 'Schedule.List') { done?.(); return; }
     publish(topic, payload, options, done);
   };
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -324,7 +330,8 @@ test('an active identification keeps fresh observations through a missed query w
   assert.deepEqual(controller.status().identification, request);
   const publish = f.client.publish;
   f.client.publish = (topic, payload, options, done) => {
-    if (JSON.parse(payload).method === 'Number.GetStatus') { done?.(); return; }
+    const frame = JSON.parse(payload);
+    if (frame.method === 'Shelly.GetComponents' && frame.params.keys.includes('number:200')) { done?.(); return; }
     publish(topic, payload, options, done);
   };
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -452,9 +459,9 @@ test('recovery waits for all setting readbacks while a healthy refresh keeps exi
     const workPending = new Promise(resolve => { workRequested = resolve; });
     f.client.publish = (topic, payload, options, done) => {
       const frame = JSON.parse(payload);
-      if (!['Number.GetStatus', 'Enum.GetStatus'].includes(frame.method)) return publish(topic, payload, options, done);
+      if (frame.method !== 'Shelly.GetComponents') return publish(topic, payload, options, done);
       const release = () => publish(topic, payload, options, done);
-      if (frame.method === 'Number.GetStatus') { releaseCurrent = release; currentRequested(); }
+      if (frame.params.keys.includes('number:200')) { releaseCurrent = release; currentRequested(); }
       else { releaseWork = release; workRequested(); }
     };
     const refresh = f.adapter.refresh(); await currentPending;
@@ -474,14 +481,14 @@ test('recovery waits for all setting readbacks while a healthy refresh keeps exi
 });
 
 test('a conflicting native event during refresh cannot be cleared by the remaining successful replies', async t => {
-  for (const heldMethod of ['Service.GetStatus', 'Number.GetStatus']) await t.test(heldMethod, async t => {
+  for (const heldKey of ['number:200', 'enum:202']) await t.test(heldKey, async t => {
     const f = fixture(t); await f.ready();
     const publish = f.client.publish;
     let release, announced;
     const requested = new Promise(resolve => { announced = resolve; });
     f.client.publish = (topic, payload, options, done) => {
       const frame = JSON.parse(payload);
-      if (frame.method !== heldMethod) return publish(topic, payload, options, done);
+      if (frame.method !== 'Shelly.GetComponents' || !frame.params.keys.includes(heldKey)) return publish(topic, payload, options, done);
       f.client.publish = publish;
       release = () => publish(topic, payload, options, done); announced();
     };
@@ -508,11 +515,11 @@ test('a native event during a pending query fences its delayed setting reply eve
     const requested = new Promise(resolve => { announced = resolve; });
     f.client.publish = (topic, payload, options, done) => {
       const frame = JSON.parse(payload);
-      if (frame.method !== `${TYPES[role]}.GetStatus`) return publish(topic, payload, options, done);
+      if (frame.method !== 'Shelly.GetComponents' || !frame.params.keys.includes(`${TYPES[role].toLowerCase()}:${f.components[role].id}`)) return publish(topic, payload, options, done);
       f.client.publish = publish;
       done?.();
       release = () => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
-        id: frame.id, src: DEVICE, dst: frame.src, result: { value: initial, last_update_ts: NOW / 1000 },
+        id: frame.id, src: DEVICE, dst: frame.src, result: f.componentReply(frame, { [role]: { value: initial, last_update_ts: NOW / 1000 } }),
       })), {});
       announced();
     };
@@ -536,10 +543,10 @@ test('a reply from a disconnected MQTT generation cannot confirm the new connect
   const requested = new Promise(resolve => { announced = resolve; });
   f.client.publish = (topic, payload, options, done) => {
     const frame = JSON.parse(payload);
-    if (frame.method !== 'Number.GetStatus') return publish(topic, payload, options, done);
+    if (frame.method !== 'Shelly.GetComponents' || !frame.params.keys.includes('number:200')) return publish(topic, payload, options, done);
     done?.();
     release = () => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
-      id: frame.id, src: DEVICE, dst: frame.src, result: { value: 6, last_update_ts: NOW / 1000 },
+      id: frame.id, src: DEVICE, dst: frame.src, result: f.componentReply(frame, { current_limit: { value: 6, last_update_ts: NOW / 1000 } }),
     })), {});
     announced();
   };
@@ -561,10 +568,10 @@ test('a setting query started before command dispatch cannot refresh the pre-com
   const requested = new Promise(resolve => { announced = resolve; });
   f.client.publish = (topic, payload, options, done) => {
     const frame = JSON.parse(payload);
-    if (frame.method !== 'Number.GetStatus') return publish(topic, payload, options, done);
+    if (frame.method !== 'Shelly.GetComponents' || !frame.params.keys.includes('number:200')) return publish(topic, payload, options, done);
     f.client.publish = publish; done?.();
     release = () => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
-      id: frame.id, src: DEVICE, dst: frame.src, result: { value: 16, last_update_ts: NOW / 1000 },
+      id: frame.id, src: DEVICE, dst: frame.src, result: f.componentReply(frame, { current_limit: { value: 16, last_update_ts: NOW / 1000 } }),
     })), {});
     announced();
   };

@@ -1,3 +1,4 @@
+import { shellyComponentReply } from './helpers/shelly-component-reply.js';
 import { admitChargingObservation } from './helpers/charging-observation.js';
 import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
@@ -43,12 +44,16 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
     fields.work_state = { value: 'charger_insert', at: START };
   }
   const schedules = { rev: 1, jobs: [] }, serviceStatus = { state: 'running' };
+  const service = { id: 0, auto_balance: { enable: false }, auto_charge: !inserted };
+  const components = Object.fromEntries(Object.keys(roles).map(role => [role, { id: ids[role], owner: 'service:0', access: 'crw', options: ['charger_free', 'charger_insert', 'charger_charging', 'charger_pause', 'charger_wait', 'charger_end'], min: 6, max: 16, meta: { ui: { step: 1 } } }]));
+  const status = role => ({ value: structuredClone(fields[role].value), last_update_ts: (role === 'phase_info' ? now : fields[role].at) / 1000 });
   client.subscribe = (topics, options, cb) => cb(null, topics.map(topic => ({ topic, qos: 0 })));
   client.publish = (topic, payload, options, cb) => {
     const frame = JSON.parse(payload), role = frame.params.role;
     let result;
     if (frame.method === 'Shelly.GetDeviceInfo') result = { id: 'synthetic-evse', model: 'synthetic-model', fw_id: 'synthetic-firmware' };
-    else if (frame.method === 'Service.GetConfig') result = { id: 0, auto_balance: { enable: false }, auto_charge: !inserted };
+    else if (frame.method === 'Shelly.GetComponents') result = shellyComponentReply(frame.params.keys, { service, serviceStatus, components, status });
+    else if (frame.method === 'Service.GetConfig') result = service;
     else if (frame.method === 'Service.GetStatus') result = serviceStatus;
     else if (frame.method === 'Schedule.List') result = schedules;
     else if (frame.method === 'Schedule.Update') {
@@ -56,18 +61,13 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
       const job = schedules.jobs.find(job => job.id === frame.params.id);
       assert.ok(job); assert.equal(frame.params.enable, false); job.enable = false; result = { rev: ++schedules.rev };
     }
-    else if (frame.method.endsWith('.GetConfig')) result = { id: ids[role], owner: 'service:0', access: 'crw', options: ['charger_free', 'charger_insert', 'charger_charging', 'charger_pause', 'charger_wait', 'charger_end'], min: 6, max: 16, meta: { ui: { step: 1 } } };
+    else if (frame.method.endsWith('.GetConfig')) result = components[role];
     else if (frame.method.endsWith('.Set')) {
       writes.push({ ...frame, at: now });
       now += 1000; fields[role] = { value: frame.params.value, at: now };
       if (role === 'start_charging') physical(frame.params.value && vehicleAllows);
       result = null;
-    } else {
-      // Meter readings refresh naturally; settings and work-state retain the
-      // actual source transition time independently from RPC receipt time.
-      result = { value: structuredClone(fields[role].value),
-        last_update_ts: (role === 'phase_info' ? now : fields[role].at) / 1000 };
-    }
+    } else result = status(role);
     cb?.(); queueMicrotask(() => client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
       id: frame.id, src: 'synthetic-evse', dst: frame.src, result })), {}));
   };

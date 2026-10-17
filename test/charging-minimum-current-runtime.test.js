@@ -1,3 +1,4 @@
+import { shellyComponentReply } from './helpers/shelly-component-reply.js';
 import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import { admitChargingObservation } from './helpers/charging-observation.js';
 import test from 'node:test';
@@ -41,17 +42,24 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
       ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c'].map(phase => [phase,
         { voltage: 230, current, power: current * .23 }])) };
   };
+  const service = { id: 0, auto_balance: { enable: false }, auto_charge: true }, serviceStatus = { state: 'running' };
+  const capabilities = () => Object.fromEntries(Object.keys(components).map(role => [role, { id: components[role][1], owner: 'service:0', access: role === 'current_limit' && !currentWritable ? 'r' : 'crw', min: 6, max: 16, meta: { ui: stepMetadata ? { step: 1 } : {} }, options: ['charger_free', 'charger_charging', 'charger_pause'] }]));
+  const status = role => {
+    if (statusReadHook) { const hook = statusReadHook; statusReadHook = null; hook(); }
+    return { value: role === 'phase_info' ? phaseInfo() : fields[role].value, last_update_ts: (role === 'phase_info' ? phaseMeasuredAt ?? now : fields[role].at) / 1000, ...(['start_charging', 'current_limit'].includes(role) ? { source: fields[role].source ?? 'rpc' } : {}) };
+  };
   client.subscribe = (topics, _options, done) => done(null, topics.map(topic => ({ topic, qos: 0 })));
   client.publish = (_topic, payload, _options, done) => {
     const frame = JSON.parse(payload), role = frame.params.role;
+    const reads = role => frame.method === 'Shelly.GetComponents' ? frame.params.keys.includes(`${components[role][0].toLowerCase()}:${components[role][1]}`)
+      : frame.params.role === role && frame.method.endsWith('.GetStatus');
     let result, respond = true, replyBoundary;
     if (frame.method === 'Shelly.GetDeviceInfo') result = { id: 'synthetic-minimum-second' };
-    else if (frame.method === 'Service.GetConfig') result = { id: 0, auto_balance: { enable: false }, auto_charge: true };
+    else if (frame.method === 'Shelly.GetComponents') result = shellyComponentReply(frame.params.keys, { service, serviceStatus, components: capabilities(), status });
+    else if (frame.method === 'Service.GetConfig') result = service;
     else if (frame.method === 'Service.GetStatus') result = { state: 'running' };
     else if (frame.method === 'Schedule.List') result = { rev: 1, jobs: [] };
-    else if (frame.method.endsWith('.GetConfig')) result = { id: components[role][1], owner: 'service:0',
-      access: role === 'current_limit' && !currentWritable ? 'r' : 'crw', min: 6, max: 16, meta: { ui: stepMetadata ? { step: 1 } : {} },
-      options: ['charger_free', 'charger_charging', 'charger_pause'] };
+    else if (frame.method.endsWith('.GetConfig')) result = capabilities()[role];
     else if (frame.method.endsWith('.Set')) {
       writes.push({ method: frame.method, ...frame.params, at: now });
       now++; if (role !== 'current_limit' || acceptCurrentWrite) fields[role] = { value: frame.params.value, at: now };
@@ -67,13 +75,8 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
       }
       if (role === 'start_charging') fields.work_state = { value: frame.params.value ? 'charger_charging' : 'charger_pause', at: now };
       result = null;
-    } else {
-      if (statusReadHook) { const hook = statusReadHook; statusReadHook = null; hook(); }
-      result = { value: role === 'phase_info' ? phaseInfo() : fields[role].value,
-        last_update_ts: (role === 'phase_info' ? phaseMeasuredAt ?? now : fields[role].at) / 1000,
-        ...(['start_charging', 'current_limit'].includes(role) ? { source: fields[role].source ?? 'rpc' } : {}) };
-    }
-    if (role === 'current_limit' && frame.method.endsWith('.GetStatus') && beforeCurrentReadbackHook) {
+    } else result = status(role);
+    if (reads('current_limit') && beforeCurrentReadbackHook) {
       replyBoundary = beforeCurrentReadbackHook();
       if (replyBoundary !== false) beforeCurrentReadbackHook = null;
     }
@@ -82,9 +85,9 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
         id: frame.id, src: 'synthetic-minimum-second', dst: frame.src, result })), {});
       // Real correlated readback is visible before Promise.all refresh and the
       // controller's durable completion run, just as on the live adapter.
-      if (role === 'current_limit' && frame.method.endsWith('.GetStatus') && currentReadbackHook
+      if (reads('current_limit') && currentReadbackHook
         && currentReadbackHook() !== false) currentReadbackHook = null;
-      if (role === 'phase_info' && frame.method.endsWith('.GetStatus') && phaseReadbackHook) {
+      if (reads('phase_info') && phaseReadbackHook) {
         const hook = phaseReadbackHook; phaseReadbackHook = null; hook();
       }
     }); };

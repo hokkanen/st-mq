@@ -1,3 +1,4 @@
+import { shellyComponentReply } from './shelly-component-reply.js';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { Store } from '../../src/storage/store.js';
@@ -54,10 +55,16 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
         { voltage: 230, current: amps2(), power: amps2() * .23 }])) };
   };
   const roles = ['current_limit', 'start_charging', 'work_state', 'phase_info'];
+  const service = { id: 0, auto_balance: { enable: false }, auto_charge: true }, serviceStatus = { state: 'running' };
+  const components = Object.fromEntries(roles.map(role => [role, { id: 200 + roles.indexOf(role), owner: 'service:0', access: 'crw', options: ['charger_free', 'charger_charging', 'charger_pause', 'charger_wait', 'charger_end'], min: 6, max: 16, meta: { ui: { step: 1 } } }]));
+  const status = role => {
+    const meter = physical2();
+    return { value: role === 'phase_info' ? meter : fields[role].value, last_update_ts: (role === 'phase_info' ? now : fields[role].at) / 1000, ...(fields[role]?.source ? { source: fields[role].source } : {}) };
+  };
   client.subscribe = (topics, _options, cb) => cb(null, topics.map(topic => ({ topic, qos: 0 })));
   client.publish = (_topic, payload, _options, cb) => {
     const frame = JSON.parse(payload), role = frame.params.role;
-    if (frame.method === 'Object.GetStatus' && role === 'phase_info' && heldShellyRoleRead?.armed) {
+    if ((frame.method === 'Object.GetStatus' && role === 'phase_info' || frame.method === 'Shelly.GetComponents' && frame.params.keys.includes('object:203')) && heldShellyRoleRead?.armed) {
       const held = heldShellyRoleRead; heldShellyRoleRead = null; held.entered();
       held.wait.then(() => client.publish(_topic, payload, _options, cb));
       return;
@@ -69,22 +76,17 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
     }
     let result, error;
     if (frame.method === 'Shelly.GetDeviceInfo') result = { id: 'synthetic-joint-evse', model: 'synthetic-model', fw_id: 'synthetic-firmware' };
-    else if (frame.method === 'Service.GetConfig') result = { id: 0, auto_balance: { enable: false }, auto_charge: true };
+    else if (frame.method === 'Shelly.GetComponents') { if (frame.params.keys.includes('service:0')) reads.charger2++; result = shellyComponentReply(frame.params.keys, { service, serviceStatus, components, status }); }
+    else if (frame.method === 'Service.GetConfig') result = service;
     else if (frame.method === 'Service.GetStatus') { reads.charger2++; result = { state: 'running' }; }
     else if (frame.method === 'Schedule.List') result = schedules;
-    else if (frame.method.endsWith('.GetConfig')) result = { id: 200 + roles.indexOf(role), owner: 'service:0', access: 'crw',
-      options: ['charger_free', 'charger_charging', 'charger_pause', 'charger_wait', 'charger_end'], min: 6, max: 16, meta: { ui: { step: 1 } } };
+    else if (frame.method.endsWith('.GetConfig')) result = components[role];
     else if (frame.method.endsWith('.Set')) {
       if (frame.method === 'Number.Set' && role === 'current_limit' && heldShellyRoleRead) heldShellyRoleRead.armed = true;
       commands.push({ chargerId: 'charger2', method: frame.method, role, value: frame.params.value, at: now });
       if (rejectShellyWrites) error = { code: -1, message: 'Synthetic command rejection' };
       else { now += 1000; fields[role] = { value: frame.params.value, at: now }; physical2(); result = null; }
-    } else {
-      const meter = physical2();
-      result = { value: role === 'phase_info' ? meter : fields[role].value,
-        last_update_ts: (role === 'phase_info' ? now : fields[role].at) / 1000,
-        ...(fields[role]?.source ? { source: fields[role].source } : {}) };
-    }
+    } else result = status(role);
     cb?.(); queueMicrotask(() => client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
       id: frame.id, src: 'synthetic-joint-evse', dst: frame.src, ...(error ? { error } : { result }) })), {}));
   };

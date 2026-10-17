@@ -11,8 +11,7 @@ import { createShellyEvseAdapter } from '../src/charging/shelly-evse.js';
 
 const START = 1_800_000_000_000, DEVICE = 'synthetic-periodic-evse', PREFIX = 'synthetic/periodic/evse';
 const roles = ['current_limit', 'start_charging', 'work_state', 'phase_info'];
-const round = ['Boolean.GetStatus', 'Enum.GetStatus', 'Number.GetConfig', 'Number.GetStatus',
-  'Object.GetStatus', 'Schedule.List', 'Service.GetConfig', 'Service.GetStatus'].sort();
+const round = ['Shelly.GetComponents', 'Shelly.GetComponents', 'Schedule.List'].sort();
 const ownedGates = new WeakMap();
 function gate(t) {
   let release;
@@ -28,7 +27,7 @@ function gate(t) {
 async function fixture(t) {
   const dir = await mkdtemp(join(tmpdir(), 'stmq-periodic-read-'));
   const store = new Store(join(dir, 'recording.sqlite')), client = new EventEmitter();
-  let now = START, authority = true, authorityThrows = false, timer, runtime, adapter, holdReply = null;
+  let now = START, authority = true, authorityThrows = false, timer, runtime, adapter, holdReply = null, rewriteReply = null;
   const requests = [], metadata = { state: 'running' }, measuredAt = {};
   const fields = { current_limit: 16, start_charging: false, work_state: 'charger_free',
     phase_info: { total_power: 0, total_act_energy: 0, ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c']
@@ -39,16 +38,24 @@ async function fixture(t) {
   client.subscribe = (topics, _options, done) => done(null, topics.map(topic => ({ topic, qos: 0 })));
   client.publish = (_topic, payload, _options, done) => {
     const frame = JSON.parse(payload), role = frame.params.role;
-    requests.push({ method: frame.method, role: role ?? null });
+    requests.push({ method: frame.method, role: role ?? null, keys: frame.params.keys });
     let result;
+    const componentConfig = role => ({ id: 200 + roles.indexOf(role), owner: 'service:0', access: 'crw', min: 6, max: 16,
+      options: ['charger_free', 'charger_charging', 'charger_pause', 'charger_wait', 'charger_end'] });
+    const componentStatus = role => ({ value: structuredClone(fields[role]), last_update_ts: (measuredAt[role] ?? START) / 1000 });
+    const serviceConfig = { id: 0, auto_balance: { enable: false }, auto_charge: true };
     if (frame.method === 'Shelly.GetDeviceInfo') result = { id: DEVICE, model: 'synthetic-model', fw_id: 'synthetic-firmware' };
-    else if (frame.method === 'Service.GetConfig') result = { id: 0, auto_balance: { enable: false }, auto_charge: true };
+    else if (frame.method === 'Shelly.GetComponents') result = { cfg_rev: 1, offset: 0, total: frame.params.keys.length,
+      components: [{ key: 'service:0', config: serviceConfig, status: { ...metadata } }, ...roles.map((role, index) => ({
+        key: `${['number', 'boolean', 'enum', 'object'][index]}:${200 + index}`,
+        attrs: { owner: 'service:0', role }, config: componentConfig(role), status: componentStatus(role) }))].filter(row => frame.params.keys.includes(row.key)) };
+    else if (frame.method === 'Service.GetConfig') result = serviceConfig;
     else if (frame.method === 'Service.GetStatus') result = { ...metadata };
     else if (frame.method === 'Schedule.List') result = { jobs: [] };
-    else if (frame.method.endsWith('.GetConfig')) result = { id: 200 + roles.indexOf(role), owner: 'service:0', access: 'crw', min: 6, max: 16,
-      options: ['charger_free', 'charger_charging', 'charger_pause', 'charger_wait', 'charger_end'] };
+    else if (frame.method.endsWith('.GetConfig')) result = componentConfig(role);
     else if (frame.method.endsWith('.Set')) { fields[role] = frame.params.value; measuredAt[role] = now; result = null; }
-    else result = { value: structuredClone(fields[role]), last_update_ts: (measuredAt[role] ?? START) / 1000 };
+    else result = componentStatus(role);
+    if (rewriteReply) result = rewriteReply(frame, result);
     done?.();
     const reply = () => client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({ id: frame.id, src: DEVICE, dst: frame.src, result })), {});
     const held = holdReply?.(frame);
@@ -84,6 +91,7 @@ async function fixture(t) {
     advance(ms = 5001) { now += ms; }, setNow(at) { now = at; },
     authority(value, throws = false) { authority = value; authorityThrows = throws; },
     holdReplies(check) { holdReply = check; }, fire() { timer(); },
+    rewriteReplies(check) { rewriteReply = check; },
     notify(role, value, at = now, source = 'rpc') {
       fields[role] = value; measuredAt[role] = at;
       const type = ['number', 'boolean', 'enum', 'object'][roles.indexOf(role)];
@@ -129,13 +137,94 @@ async function reserveStore(t, f) {
   return { release: held.release, flight };
 }
 
-test('one periodic episode reuses its actual completed read without renewing original clocks', async t => {
+test('one periodic episode uses a combined component read without renewing original clocks', async t => {
   const f = await fixture(t), before = clocks(f.adapter);
   await periodic(t, f);
-  assert.equal(f.requests.length, 8);
+  assert.equal(f.requests.length, 3);
   assertRound(f.requests); assert.deepEqual(clocks(f.adapter), before);
   assert.equal(f.adapter.snapshot().generation, 1); assert.equal(f.adapter.snapshot().controlReady, true);
   assert.equal(f.requests.some(row => row.method.endsWith('.Set')), false);
+});
+
+for (const defect of ['missing component', 'duplicate component', 'unknown component', 'wrong total', 'partial page',
+  'wrong owner', 'wrong role', 'missing setting', 'missing service config', 'missing service status'])
+test(`a ${defect} in the control batch blocks commands while independent physical reads remain usable`, async t => {
+  const f = await fixture(t);
+  f.advance();
+  f.fields.work_state = 'charger_wait'; f.measuredAt.work_state = f.now(); f.measuredAt.phase_info = f.now();
+  f.rewriteReplies((frame, result) => {
+    if (frame.method !== 'Shelly.GetComponents' || !frame.params.keys.includes('service:0')) return result;
+    const value = structuredClone(result), row = value.components.find(row => row.key === 'number:200');
+    if (defect === 'missing component') value.components.pop();
+    if (defect === 'duplicate component') value.components[2] = value.components[1];
+    if (defect === 'unknown component') row.key = 'number:999';
+    if (defect === 'wrong total') value.total++;
+    if (defect === 'partial page') value.offset = 1;
+    if (defect === 'wrong owner') row.attrs.owner = 'service:99';
+    if (defect === 'wrong role') row.attrs.role = 'start_charging';
+    if (defect === 'missing setting') delete row.status;
+    if (defect === 'missing service config') delete value.components[0].config;
+    if (defect === 'missing service status') delete value.components[0].status;
+    return value;
+  });
+  assert.equal(await f.adapter.refresh(), undefined, 'An incomplete round cannot issue a completed-read proof');
+  const snapshot = f.adapter.snapshot(), telemetry = f.adapter.normalize();
+  assert.equal(snapshot.controlReady, false); assert(snapshot.error);
+  assert.equal(telemetry.connected.value, true); assert.equal(telemetry.connected.available, true);
+  assert.equal(telemetry.powerKw.value, 0); assert.equal(telemetry.powerKw.available, true);
+  assert.equal(snapshot.fields.work_state.measuredAt, f.now());
+  await assert.rejects(f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: true }, { mutation: true }));
+  assert.equal(f.requests.some(row => row.method.endsWith('.Set')), false);
+  f.rewriteReplies(null); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, true);
+});
+
+test('a combined control reply with a small source-clock lead preserves committed physical evidence and original receipt time', async t => {
+  const f = await fixture(t);
+  f.advance(); const receivedAt = f.now();
+  f.fields.current_limit = 12; f.measuredAt.current_limit = receivedAt + 400;
+  f.fields.work_state = 'charger_wait'; f.measuredAt.work_state = receivedAt; f.measuredAt.phase_info = receivedAt;
+  const refresh = f.adapter.refresh();
+  await turn(); await f.store.runWrite(() => {});
+  assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-source-time-pending');
+  assert.equal(f.adapter.snapshot().fields.work_state.measuredAt, START, 'Ordered source admission keeps later packets behind the deferred prefix');
+  assert.equal(f.adapter.normalize().connected.available, true);
+  f.advance(400); await settled(t, refresh);
+  const field = f.adapter.snapshot().fields.current_limit;
+  assert.equal(field.value, 12); assert.equal(field.measuredAt, receivedAt + 400);
+  assert.equal(field.receivedAt, receivedAt); assert.equal(field.readback.receivedAt, receivedAt);
+  assert.equal(f.adapter.snapshot().controlReady, true); assertRound(f.requests);
+});
+
+for (const writer of [false, true])
+test(`a failed combined control admission rolls back every field and can be retried; writer ${writer}`, async t => {
+  const f = await fixture(t);
+  if (writer) await f.store.startWriter();
+  const key = `charging:shelly:${f.adapter.association}`, before = f.store.getState(key), setState = f.store.setState.bind(f.store);
+  f.advance(); f.fields.current_limit = 12; f.fields.start_charging = true;
+  f.measuredAt.current_limit = f.measuredAt.start_charging = f.now();
+  let failed = false, changed = false;
+  const saving = t.mock.method(f.store, 'setState', (stateKey, value) => {
+    const result = setState(stateKey, value);
+    if (stateKey === key && value.fields.current_limit?.value === 12 && value.fields.start_charging?.value === true) changed = true;
+    return result;
+  });
+  const target = writer ? f.store.writer : f.store.db, method = writer ? 'request' : 'exec', original = target[method].bind(target);
+  const committing = t.mock.method(target, method, (operation, ...args) => {
+    if (operation === (writer ? 'commit' : 'COMMIT') && changed && !failed) {
+      failed = true; throw Object.assign(new Error('Synthetic combined-read COMMIT rollback'), { code: 'ERR_SQLITE_ERROR', errcode: 10 });
+    }
+    return original(operation, ...args);
+  });
+  await f.adapter.refresh();
+  assert.equal(failed, true); assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.equal(f.store.getState(key).fields.current_limit.value, before.fields.current_limit.value);
+  assert.equal(f.store.getState(key).fields.start_charging.value, before.fields.start_charging.value);
+  assert.equal(f.adapter.snapshot().fields.current_limit.value, before.fields.current_limit.value);
+  saving.mock.restore(); committing.mock.restore(); await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.equal(f.store.getState(key).fields.current_limit.value, 12);
+  assert.equal(f.store.getState(key).fields.start_charging.value, true);
 });
 
 for (const writer of [false, true])
@@ -183,7 +272,7 @@ test(`notification readback and its real reconciliation share one complete nativ
   f.client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE, method: 'NotifyStatus',
     params: { ts: f.now() / 1000, 'number:200': { value: 12, source: 'rpc' } } })), {});
   await entered.promise; await flight; await f.store.runWrite(() => {});
-  assert.equal(f.requests.length, 8, 'Reconciliation must not repeat all eight just-completed native reads');
+  assert.equal(f.requests.length, 3, 'Reconciliation must not repeat the just-completed native reads');
   assertRound(f.requests); assert.equal(typeof proof, 'object'); assert(Object.isFrozen(proof));
   assert.equal(updates, 1); assert.equal(consumed, proof, 'The actual controller consumes its own completed read');
   assert.equal(f.adapter.snapshot().controlReady, true);
@@ -206,11 +295,11 @@ test('the periodic native poll progresses while real Store evidence admission ho
     if (!reservation) { reservation = await reserveStore(t, f); reconciliation = reconcile(proof); entry.release(); }
   });
   f.advance(); f.fire(); await entry.promise; await started.promise;
-  assert.equal(f.requests.length, 8); assert(f.runtime.chargers.charger2.reconcileFlight);
+  assert.equal(f.requests.length, 3); assert(f.runtime.chargers.charger2.reconcileFlight);
   const replies = gate(t); let published = 0;
-  f.holdReplies(() => { if (++published === 8) replies.release(); return null; });
+  f.holdReplies(() => { if (++published === 3) replies.release(); return null; });
   f.advance(); f.fire(); await replies.promise;
-  assert.equal(f.requests.length, 16, 'Second independent native poll starts before held Store admission releases');
+  assert.equal(f.requests.length, 6, 'Second independent native poll starts before held Store admission releases');
   assert.deepEqual(clocks(f.adapter), before);
   reservation.release(); await reservation.flight; await reconciliation;
   await f.adapter.refresh(); await f.store.runWrite(() => {});
@@ -281,7 +370,7 @@ test('newer known native service restriction is observed by the invalidated ordi
   await periodic(t, f, async () => {
     f.metadata.state = 'stopped'; f.notify('work_state', 'charger_pause'); await f.store.runWrite(() => {});
   });
-  assert(f.requests.length >= 16); assert.equal(f.adapter.snapshot().controlReady, false);
+  assert(f.requests.length >= 6); assert.equal(f.adapter.snapshot().controlReady, false);
   assert.equal(f.adapter.snapshot().commissioning.nativeCaps.state, 'stopped');
 });
 
@@ -315,7 +404,7 @@ for (const replace of ['controller', 'adapter', 'generation']) {
       return result;
     });
     await periodic(t, f).catch(error => { assert.equal(replace, 'adapter'); assert.equal(error.code, 'STORAGE_WRITE_STALE'); });
-    assert.equal(f.requests.length, 16);
+    assert.equal(f.requests.length, 6);
   });
 }
 
@@ -333,7 +422,7 @@ test('unsafe authority and clock freshness cannot turn a completed poll into per
   const fresh = await proofFromTimer(t, f); f.advance(60_000); f.requests.length = 0;
   await f.adapter.refresh({ completedRead: fresh }); assertRound(f.requests);
   const future = await proofFromTimer(t, f); f.setNow(START); f.requests.length = 0;
-  await f.adapter.refresh({ completedRead: future }); assert.equal(f.requests.length, 8);
+  await f.adapter.refresh({ completedRead: future }); assert.equal(f.requests.length, 3);
 });
 
 test('explicit reconciliation and forced post-write confirmation retain their fresh request order', async t => {
@@ -429,7 +518,7 @@ test('an opaque witness from another actual adapter cannot suppress fresh reads'
 
 test('two timer callbacks sharing one in-flight poll cannot consume its completion twice', async t => {
   const f = await fixture(t), held = gate(t), entered = gate(t), completed = gate(t), proofs = [];
-  f.holdReplies(frame => { if (frame.method === 'Service.GetStatus') { entered.release(); return held.promise; } return null; });
+  f.holdReplies(frame => { if (frame.method === 'Shelly.GetComponents') { entered.release(); return held.promise; } return null; });
   t.mock.method(f.runtime, 'reconcileShellyObservation', proof => {
     proofs.push(proof); if (proofs.length === 2) completed.release(); return Promise.resolve();
   });
@@ -478,13 +567,13 @@ test('force waits for an older in-flight poll and then starts its own new round 
   const f = await fixture(t), proof = await proofFromTimer(t, f), entered = gate(t), held = gate(t);
   let hold = true;
   f.holdReplies(frame => {
-    if (hold && frame.method === 'Service.GetStatus') { hold = false; entered.release(); return held.promise; }
+    if (hold && frame.method === 'Shelly.GetComponents') { hold = false; entered.release(); return held.promise; }
     return null;
   });
   f.requests.length = 0; const earlier = f.adapter.refresh(); await entered.promise;
   const confirmation = f.adapter.refresh({ force: true, completedRead: proof }); assertRound(f.requests);
   held.release(); await earlier; await confirmation;
-  assert.equal(f.requests.length, 16); assertRound(f.requests.slice(8));
+  assert.equal(f.requests.length, 6); assertRound(f.requests.slice(3));
 });
 
 test('a takeover request retains its separate fresh preflight even with a valid periodic witness', async t => {
@@ -537,7 +626,7 @@ for (const takeover of ['new-session', 'automatic', 'schedule']) {
 test('real same-adapter controller replacement during a held poll cannot inherit its completion', async t => {
   const f = await fixture(t), entered = gate(t), held = gate(t), completed = gate(t);
   let flight;
-  f.holdReplies(frame => { if (frame.method === 'Service.GetStatus') { entered.release(); return held.promise; } return null; });
+  f.holdReplies(frame => { if (frame.method === 'Shelly.GetComponents') { entered.release(); return held.promise; } return null; });
   const original = f.runtime.reconcileShellyObservation.bind(f.runtime);
   t.mock.method(f.runtime, 'reconcileShellyObservation', proof => {
     flight = original(proof); completed.release(); return flight;
@@ -547,7 +636,7 @@ test('real same-adapter controller replacement during a held poll cannot inherit
   assert.notEqual(f.runtime.chargers.charger2.controller, previous);
   assert.equal(f.runtime.chargers.charger2.adapterGeneration, generation + 1);
   f.holdReplies(null); held.release(); await completed.promise; await flight; await f.store.runWrite(() => {});
-  assert.equal(f.requests.length, 16); assertRound(f.requests.slice(8));
+  assert.equal(f.requests.length, 6); assertRound(f.requests.slice(3));
 });
 
 test('real same-adapter owner replacement after issuance invalidates the unused witness', async t => {
