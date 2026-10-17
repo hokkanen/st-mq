@@ -10,6 +10,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   transactions, allowing urgent saves to proceed during fitting. Recheck changed
   control inputs before dispatch and retain exact replay and correction publication.
   Rebuild a startup view invalidated by source recovery before publishing it.
+  Confirm Home Automatic and Pause only after their updated view is ready.
 
 - Give controller saves priority between bounded mirror and history-read steps.
   Coordinate runtime WAL checkpoints separately from commits, targeting 50

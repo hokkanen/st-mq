@@ -30,6 +30,19 @@ async function fixture(t) {
   return { store, engine, advance: (milliseconds = WINDOW) => { now += milliseconds; } };
 }
 
+test('Automatic and Pause return a complete view after a live control edit', async t => {
+  const { store, engine } = await fixture(t);
+  await engine.update();
+  engine.executor.commandTransport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) },
+    async publish() { return { status: 'mqtt', sent: true }; }, async close() {} };
+  for (const enabled of [true, false]) {
+    const view = await engine.setAutomation({ feature: 'home', enabled });
+    assert.equal(view.automation.home.enabled, enabled);
+    assert.equal(view.learning.adaptive.journalCursor, engine.checkpoint.journalCursor);
+    assert.equal(store.getState('automation:mqtt').features.home.enabled, enabled);
+  }
+});
+
 test('live worker replays the same ordered inputs, preserves prefixes and reads the same canonical window', async t => {
   const { store, engine } = await fixture(t);
   const worker = engine.liveLearning = new LiveLearning({ store, input: 'mqtt' });

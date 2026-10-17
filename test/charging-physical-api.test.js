@@ -48,7 +48,7 @@ test('guided-test API uses real normalized charger readiness and keeps declarati
   // Keep background household preparation out of the action comparison.
   // The numerical charging worker is settled after the synthetic connection.
   await f.runtime.historyService.close(); f.runtime.historyService = null;
-  f.engine.status();
+  await f.engine.update(); await f.engine.initializeCommittedStatus();
   const server = createAppServer({ engine: f.engine, store: f.store, token,
     controlAuthority: { canControl: f.primary, status: () => ({}) } });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

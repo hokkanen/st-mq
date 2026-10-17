@@ -776,7 +776,7 @@ export class Engine {
         }
       }
     } finally { this.automationChangePending = false; }
-    await this.runWrite(() => this.tick()); this.onTemporaryChange?.();
+    await this.update(); this.onTemporaryChange?.();
     return this.status();
   }
   contract() { return this.store.getState(`contract:${this.config.input}`); }

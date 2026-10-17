@@ -11,21 +11,28 @@ import { loadConfig } from '../src/app/config.js';
 import { createAppServer } from '../src/app/server.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
 
-function fixture(t, charging) {
+async function fixture(t, charging) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-charging-integration-'));
   const store = new Store(join(directory, 'test.sqlite'));
   let now = Date.parse('2026-09-15T18:00:00Z');
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory }, directory), input: 'mqtt', deviceId: null, ...(charging ? { charging } : {}),
     connections: { mqtt: { address: 'mqtt://example.invalid' }, teslamate: { enabled: true, carId: '7' } } };
   const engine = new Engine({ store, config, clock: () => now }), cleanup = [];
-  t.after(async () => { for (const close of cleanup) await close(); await engine.charging.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  t.after(async () => {
+    engine.beginShutdown({ restore: false });
+    for (const close of cleanup) await close();
+    await engine.charging.close(); await engine.garage.close({ restore: false });
+    await engine.closeFireplace(); await engine.executor.close({ restore: false });
+    await store.close(); rmSync(directory, { recursive: true, force: true });
+  });
+  await engine.update(); await engine.initializeCommittedStatus();
   return { store, engine, config, cleanup, advance(ms) { now += ms; } };
 }
 
 const chargerView = (runtime, id = 'charger1') => runtime.status().chargers.find(item => item.id === id);
 
 test('one-day API separates preview from approval and fences authentication, authority, revision and repeated clicks', async t => {
-  const { store, engine } = fixture(t, { defaults: { readyBy: '07:15' } });
+  const { store, engine } = await fixture(t, { defaults: { readyBy: '07:15' } });
   engine.electricityForecast = { snapshot: () => ({ enabled: true, available: false }),
     status: () => ({ enabled: true, available: false }) };
   const runtime = engine.charging, item = runtime.chargers.charger1, connectedAt = engine.clock();
@@ -33,7 +40,7 @@ test('one-day API separates preview from approval and fences authentication, aut
     charging: { value: false, available: true, measuredAt: engine.clock() } }) };
   item.controller = { status: () => ({ session: { connectedAt }, snapshot: { online: true, readAt: engine.clock() }, phase: 'waiting' }),
     async update() {}, close() {} };
-  await engine.runWrite(() => engine.tick());
+  await engine.update();
   const before = chargerView(runtime);
   await runtime.setControl('charger1', { association: before.association, revision: before.controls.revision, enabled: true });
   const initial = chargerView(runtime), scope = { association: initial.association, sessionId: initial.request.sessionId,
@@ -69,7 +76,7 @@ test('one-day API separates preview from approval and fences authentication, aut
 });
 
 test('charging API saves fenced dashboard controls separately from defaults and scoped session edits', async t => {
-  const { store, engine, config } = fixture(t, { defaults: { capacityKwh: 79, readyBy: '07:15', manualSoc: 43 } });
+  const { store, engine, config } = await fixture(t, { defaults: { capacityKwh: 79, readyBy: '07:15', manualSoc: 43 } });
   const item = engine.charging.chargers.charger1, connectedAt = engine.clock();
   item.adapter = { normalize: () => ({ connected: { value: true, available: true },
     charging: { value: false, available: true, measuredAt: engine.clock() } }) };
@@ -129,7 +136,7 @@ test('charging API saves fenced dashboard controls separately from defaults and 
 
 test('Charge Now API authenticates and rejects stale scope with automatic charging on or off', async t => {
   for (const automaticEnabled of [true, false]) await t.test(`automatic charging ${automaticEnabled ? 'on' : 'off'}`, async t => {
-    const { store, engine, config, advance } = fixture(t, { defaults: { readyBy: '07:15' } });
+    const { store, engine, config, advance } = await fixture(t, { defaults: { readyBy: '07:15' } });
     const runtime = engine.charging, item = runtime.chargers.charger1, connectedAt = engine.clock(), updates = [];
     let sessionAt = connectedAt, primary = true;
     item.adapter = { normalize: () => ({ connected: { value: true, available: true },
@@ -180,7 +187,7 @@ test('Charge Now API authenticates and rejects stale scope with automatic chargi
 });
 
 test('independent MQTT vehicle routes keep source timestamps without overriding unassigned charger defaults', async t => {
-  const { store, engine, config, cleanup, advance } = fixture(t, { defaults: { manualSoc: 44 }, vehicles: { bmw: { mqttTopic: 'stmq/test/bmw' } } }), client = new EventEmitter(), subscriptions = [];
+  const { store, engine, config, cleanup, advance } = await fixture(t, { defaults: { manualSoc: 44 }, vehicles: { bmw: { mqttTopic: 'stmq/test/bmw' } } }), client = new EventEmitter(), subscriptions = [];
   client.subscribe = (topic, options, done) => { subscriptions.push({ topic, qos: options.qos }); done(null, [{ topic, qos: options.qos }]); };
   client.unsubscribe = (_topic, done) => done();
   client.end = (_force, _options, done) => done();
@@ -215,7 +222,7 @@ test('independent MQTT vehicle routes keep source timestamps without overriding 
 });
 
 test('ordinary BMW target settings authenticate, enforce authority and reject retired routes and stale sessions', async t => {
-  const { store, engine, advance } = fixture(t);
+  const { store, engine, advance } = await fixture(t);
   const runtime = engine.charging, connectedAt = engine.clock();
   runtime.setMqttStatus({connected:true,subscribed:true},'bmw');
   let primary = true, charging = true, sessionAt = connectedAt;
