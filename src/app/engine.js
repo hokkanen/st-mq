@@ -1154,7 +1154,7 @@ export class Engine {
       this.store.afterRollback(() => reject(new Error('The controller update did not commit.')));
     });
   }
-  workerLearning() { return this.store.path !== ':memory:' && !this.plant; }
+  workerLearning() { return this.store.path !== ':memory:' && ['mqtt', 'providers'].includes(this.config.input); }
   requestUpdate() {
     if (this.suspended || this.updateRequested) return;
     this.updateRequested = true;
@@ -1833,14 +1833,24 @@ export class Engine {
   recordingSourceStatus(now = this.clock()) {
     return this.recorder.sourceStatus(now);
   }
-  initializeCommittedStatus({ signal, isCurrent = () => true } = {}) {
+  async initializeCommittedStatus({ signal, isCurrent = () => true } = {}) {
     const current = () => !this.suspended && this.canControl() && isCurrent();
-    return this.store.runWrite(() => {
-      const view = copyOwnedValue(this.status());
-      // A complete initial view belongs to the committed boundary, even when
-      // another source invalidates the live view before startup returns.
-      this.store.afterCommit(() => { if (current()) this.committedStatus = view; });
-    }, { signal, isCurrent: current });
+    let retry;
+    do {
+      // Provider startup can invalidate the earlier view. Rebuild it without
+      // holding the writer, then reserve only the complete publication boundary.
+      if (this.workerLearning() && !this.latestStatus) await this.update({ isCurrent: current });
+      retry = false;
+      await this.store.runWrite(() => {
+        // A queued source recovery can also invalidate the view between the
+        // computation and this turn. Keep startup private and take a fresh view.
+        if (this.workerLearning() && !this.latestStatus) { retry = true; return; }
+        const view = copyOwnedValue(this.status());
+        // A complete initial view belongs to the committed boundary, even when
+        // another source invalidates the live view before startup returns.
+        this.store.afterCommit(() => { if (current()) this.committedStatus = view; });
+      }, { signal, isCurrent: current });
+    } while (retry);
   }
   status() {
     // Callback RAM is provisional until the reserved writer commits. Keep the

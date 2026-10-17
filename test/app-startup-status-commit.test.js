@@ -45,7 +45,7 @@ async function fixture(t, { hold = false, fail = false } = {}) {
   const controller = new AbortController(), entered = deferred(), release = deferred();
   const state = { recovery: null, recoveryCommitted: false, firstTickCommitted: false,
     seedSelected: false, seedCommitted: false, rollback: false, cueCount: 0 };
-  const original = { startWriter: Store.prototype.startWriter, tick: Engine.prototype.tick,
+  const original = { startWriter: Store.prototype.startWriter, tickSteps: Engine.prototype.tickSteps,
     confirm: Engine.prototype.confirmTemperatureConnection, status: Engine.prototype.status, listen: Server.prototype.listen };
   const first = client(), resumed = client({ deferRoom: true });
   const connect = mqtt => (_address, options) => {
@@ -63,7 +63,7 @@ async function fixture(t, { hold = false, fail = false } = {}) {
       if (warm) await attempt(() => warm.close());
     } finally {
       Store.prototype.startWriter = original.startWriter;
-      Engine.prototype.tick = original.tick;
+      Engine.prototype.tickSteps = original.tickSteps;
       Engine.prototype.confirmTemperatureConnection = original.confirm;
       Engine.prototype.status = original.status;
       Server.prototype.listen = original.listen;
@@ -101,8 +101,8 @@ async function fixture(t, { hold = false, fail = false } = {}) {
     }
     return result;
   };
-  Engine.prototype.tick = function (...args) {
-    const result = original.tick.apply(this, args);
+  Engine.prototype.tickSteps = function* (...args) {
+    const result = yield* original.tickSteps.apply(this, args);
     if (this.store.path === config.dbPath && !state.firstTickCommitted && !state.recovery)
       this.store.afterCommit(() => { state.firstTickCommitted = true; });
     if (state.advanceAfterTick) {
@@ -205,13 +205,15 @@ test('shutdown during first-view COMMIT joins startup without publishing or retu
   assert.equal(f.resumed.publications.length, 0);
 });
 
-test('transactional status refresh at an occupancy deadline retains the full public projection', async t => {
+test('asynchronous status refresh at an occupancy deadline retains the full public projection', async t => {
   const f = await fixture(t), result = await f.startup;
   assert.ifError(result.error);
   await result.app.store.runWrite(() => result.app.engine.setTemporary({ awayUntil: new Date(INITIAL + 65_000).toISOString() }));
   f.setNow(INITIAL + 66_000);
   f.state.advanceAfterTick = () => f.setNow(INITIAL + 67_000);
-  const view = await result.app.store.runWrite(() => result.app.engine.status());
+  result.app.engine.status();
+  await result.app.engine.statusRefresh;
+  const view = result.app.engine.status();
   assert.equal(view.settings.occupancy.mode, 'occupied');
   assert.equal(view.now, INITIAL + 67_000, 'Public projection observes the clock after the deadline-triggered tick');
   assert.equal(view.observations.upstairs.observedAt, INITIAL, 'Projection cannot renew the recovered source clock');

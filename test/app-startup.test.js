@@ -126,7 +126,7 @@ test('H66 observations coexist with weather and prices and acquisition only requ
     fake.emit('message', 'fixture-h66/HP/8105', Buffer.from('-180'), { retain: true });
     await committedWrites(app.store);
     assert.equal(app.store.latestObservation('heating_integral').source, 'husdata-h66');
-    const status = await app.store.runWrite(() => app.engine.tick());
+    const status = await app.engine.update();
     assert.equal(status.providers.market.source, 'elering');
     assert.equal(status.observations.outdoor.source, 'fmi');
     assert.ok(status.prices.length > 0);

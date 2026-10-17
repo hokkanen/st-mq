@@ -130,7 +130,7 @@ test('history input cannot enable automation, ingest does not fabricate unknown 
   const { engine, store } = setup(t, 'offline');
   await assert.rejects(engine.setAutomation({ feature: 'home', enabled: true }), /history viewer/);
   engine.ingest({ source: 'mqtt', device: 'h66', signal: 'indoor_temperature', value: 21, unit: 'degC', sourceTime: null, receivedAt: engine.clock(), quality: ['unknown-source-time'] });
-  const status = engine.tick();
+  const status = await engine.update();
   assert.equal(store.latestObservation('indoor_temperature').sourceTime, null);
   assert.equal(status.observations.indoor.stale, true);
   assert.equal(status.decision.action, 'normal');

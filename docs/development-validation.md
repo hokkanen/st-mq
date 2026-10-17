@@ -55,6 +55,9 @@ sensor-reversal, publication and restart tests retain the held interpretation
 until atomic correction publication. Learning inputs may commit before the final
 control stage; commands still depend on that final durable stage. Offline results
 do not establish installed event-loop or save-latency improvements.
+`test/app-startup-status-commit.test.js` checks recovery of an invalidated startup
+view through the staged update, its actual COMMIT, rollback and joined shutdown.
+The history-viewer fixture remains outside live-learning worker execution.
 
 Charging copy ownership checks in `test/charging-copy-ownership.test.js`,
 `test/charging-runtime-storage-ownership.test.js` and
