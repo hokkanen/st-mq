@@ -2419,6 +2419,10 @@ lose the unsaved unchanged-report endpoint/count tail; restart does not invent
 continuity or healthy device evidence from it. Read-only recording status describes
 committed endpoints and does not force a write.
 
+Recovery, revert and restore flush the pending metadata before changing history.
+Confirmations remain immediate for that operation, so its worker compares current
+committed coverage. Ordinary batching resumes after success, failure or cancellation.
+
 Charging history records meaningful physical, planning, native instruction and
 restriction changes. A brief input-persistence processing gate stays visible in
 live command readiness without becoming another shared-history event on every

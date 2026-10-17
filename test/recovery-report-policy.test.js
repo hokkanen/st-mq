@@ -21,10 +21,13 @@ function fixture(t) {
     reopen() { target.close(); target = new Store(join(directory, 'target.sqlite')); } };
 }
 function record(store, receivedOffset, reportIntervalMs, { sourceOffset = 0, value = 1 } = {}) {
-  return new Recorder(store).record({ source: 'garage-adapter', device: 'garage-heat-pump', signal: SIGNAL,
+  const recorder = new Recorder(store);
+  const result = recorder.record({ source: 'garage-adapter', device: 'garage-heat-pump', signal: SIGNAL,
     value, unit: 'state', sourceTime: BASE + sourceOffset, receivedAt: BASE + receivedOffset,
     quality: ['observed-unverified'], raw: { usableForControl: false, diagnosticAvailable: true,
       timeBasis: 'source-measured', reportIntervalMs, reportGraceMs: 0 } });
+  recorder.flush(BASE + receivedOffset, { force: true });
+  return result;
 }
 function history(store, offset = 180_000) {
   return getChartData({ store, input: 'mqtt', startDate: '2026-09-24', endDate: '2026-09-24',

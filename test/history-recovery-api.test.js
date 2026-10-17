@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { PassThrough } from 'node:stream';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
+import { Recorder } from '../src/storage/recorder.js';
 import { createDatabaseBackup } from '../src/storage/backup.js';
 import { createBackupCatalog, listBackupCatalog } from '../src/storage/backup-catalog.js';
 import { createHistoryRecovery } from '../src/app/history-recovery.js';
@@ -83,6 +84,46 @@ async function fixture(t, options = {}) {
   return { root, store, engine, calls, coordinator, backup, base, upload, post, restartCoordinator,
     loseAuthority: () => { control = false; coordinator.cancel(); }, replaceEngine: () => { currentEngine = { ...engine }; } };
 }
+
+for (const outcome of ['success', 'failure', 'cancelled']) test(`recovery flushes pending source metadata and releases immediate recording after ${outcome}`, { timeout: 15_000 }, async t => {
+  const entered = deferred(), gate = deferred();
+  const f = await fixture(t, { module: { recoverHistory: async value => {
+    entered.resolve();
+    await new Promise(resolve => {
+      const stop = () => resolve();
+      value.signal.addEventListener('abort', stop, { once: true });
+      gate.promise.then(() => { value.signal.removeEventListener('abort', stop); resolve(); });
+    });
+    if (outcome === 'failure' || value.signal.aborted) throw new Error('Synthetic recovery interruption');
+    value.onPublish({ checkpoint: { recovered: true } });
+    return { report: { status: 'complete' } };
+  } } });
+  t.after(() => gate.resolve());
+  const at = Date.now() - 10_000;
+  f.engine.recorder = new Recorder(f.store, { clock: () => at + 10_000 });
+  const recorder = f.engine.recorder;
+  const put = offset => f.store.runWrite(() => recorder.record({ source: 'husdata-h66', device: 'synthetic-pump',
+    signal: 'supply_temperature', value: 20, unit: 'degC', sourceTime: at + offset, receivedAt: at + offset, quality: [] }));
+  await put(0); await put(1000);
+  assert.equal(recorder.pendingSignals.size, 1);
+  const source = await (await f.upload(await f.backup())).json();
+  await f.post(request('check', { sourceId: source.sourceId, installationConfirmed: true }));
+  await f.coordinator.settled();
+  await f.post(request('recover', { previewId: 'a'.repeat(64), confirmed: true }));
+  await within(entered.promise, 5000);
+  assert.equal(recorder.pendingSignals.size, 0);
+  assert.equal(f.store.db.prepare('SELECT samples FROM recorder_coverage').get().samples, 2);
+  await put(2000);
+  assert.equal(recorder.pendingSignals.size, 0, 'A running history mutation sees subsequent confirmed receipts immediately');
+  assert.equal(f.store.db.prepare('SELECT samples FROM recorder_coverage').get().samples, 3);
+  if (outcome === 'cancelled') f.loseAuthority();
+  gate.resolve(); await f.coordinator.settled();
+  assert.equal(recorder.metadataHolds.size, 0);
+  if (outcome !== 'cancelled') {
+    await put(3000);
+    assert.equal(recorder.pendingSignals.size, 1, 'Ordinary batching resumes after the operation settles');
+  }
+});
 
 test('full recovery verification is opt-in, runs before the operation and rejects invalid option types', async t => {
   const verified = [];

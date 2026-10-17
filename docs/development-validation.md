@@ -16,6 +16,11 @@ state, honest live readiness, retained native restrictions, active report reads
 after restart and final frozen summaries. No storage format or durability change
 is part of these reductions.
 
+History recovery API checks cover the metadata flush before a history mutation,
+immediate confirmations while its worker runs, and resumed batching after success,
+failure and cancellation. Policy-recovery fixtures explicitly commit their donor
+and master endpoints before assessing conflicts.
+
 `test/storage-partial-indexes.test.js` separately checks physical schema 32's
 learning-reversal and interval-end index scope, actual query plans, interval-query
 parity and reversible access to records outside the index. Current startup tests

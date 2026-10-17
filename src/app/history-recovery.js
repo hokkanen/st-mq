@@ -223,8 +223,13 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       // admission or confer permission to resume an interrupted operation.
       if (validProgress(value) && isCurrent()) job.progress = value;
     };
-    running = committed.then(() => {
+    let releaseMetadata;
+    running = committed.then(async () => {
       if (!isCurrent()) throw fail('recovery_authority_changed');
+      if (['recover', 'revert', 'restore'].includes(kind) && engine.recorder) {
+        releaseMetadata = engine.recorder.holdMetadata();
+        await store.runWrite(() => engine.recorder.flushMetadata(clock(), { force: true }), { signal, isCurrent });
+      }
       return operation({ engine, signal, isCurrent, onProgress,
         onPublish(result) {
           // An unchanged learning interpretation may return an older persisted
@@ -250,7 +255,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
         try { await persist({ signal, isCurrent }); } catch { /* Keep the original operation failure. */ }
       }
       throw error;
-    }).finally(() => { running = null; abort = null; operationSignal = null; });
+    }).finally(() => { releaseMetadata?.(); running = null; abort = null; operationSignal = null; });
     // The HTTP acceptance and dialog lifetime do not own an accepted operation.
     void running.catch(() => {});
     return running;

@@ -18,7 +18,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 - Coalesce unchanged heat-pump and voltage recorder metadata within 30 seconds.
   Value and quality changes, real gaps and accepted energy remain immediate;
-  normal shutdown flushes the remaining metadata.
+  normal shutdown flushes the remaining metadata. Recovery, revert and restore
+  keep confirmations immediate while assessing and publishing history changes.
 
 - Reorganize Storage health around current activity, dated problems and grouped
   diagnostics, with one history period selector and separate monitoring coverage.

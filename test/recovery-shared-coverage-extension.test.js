@@ -233,8 +233,10 @@ test('fresh shared-prefix admission rejects contrary or unproven overlapping evi
   for (const [name, alter, now = start + 45 * MINUTE] of cases) await t.test(name, async t => {
     const f = fixture(t), recorder = new Recorder(f.master);
     for (let minute = 0; minute <= 5; minute++) recordMinute(recorder, minute);
+    recorder.flush(start + 5 * MINUTE, { force: true });
     const donor = await f.donor(), donorRecorder = new Recorder(donor);
     for (let minute = 6; minute <= 20; minute++) recordMinute(donorRecorder, minute);
+    donorRecorder.flush(start + 20 * MINUTE, { force: true });
     const old = f.master.db.prepare("SELECT * FROM recorder_coverage WHERE signal='compressor_active'").get();
     const row = donor.db.prepare("SELECT * FROM recorder_coverage WHERE signal='compressor_active'").get();
     alter(f, donor, old, row);

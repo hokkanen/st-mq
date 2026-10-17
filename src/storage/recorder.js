@@ -211,6 +211,7 @@ export class Recorder {
     // restart never extends committed coverage from remembered live health.
     this.pendingMetrics = new Map();
     this.pendingSignals = new Map();
+    this.metadataHolds = new Set();
     this.configure(config);
     this.adaptiveBudgetState();
     readStorageMetrics(store.db);
@@ -275,6 +276,15 @@ export class Recorder {
       signal: observation.signal, unit: observation.unit, startedAt: now, last: null, lastPollAt: null,
       lastSourceTime: null, mean: null, variance: 0, step: 0, scale: 0, previousValue: null,
       lastFreshAt: null, coverageId: null, status: null };
+  }
+
+  // A history mutation must compare the latest confirmed coverage, not an
+  // older endpoint awaiting its ordinary batch. The caller flushes inside its
+  // queued admission; this scope keeps later receipts immediate until it ends.
+  holdMetadata() {
+    const token = {};
+    this.metadataHolds.add(token);
+    return () => this.metadataHolds.delete(token);
   }
 
   setPendingSignal(key, value) {
@@ -749,7 +759,7 @@ export class Recorder {
       // actual change, force, policy/quality boundary or energy receipt flushes
       // its earlier endpoint before recording the new evidence.
       const pending = this.pendingSignals.get(s.key);
-      const coalesce = COALESCED_SOURCES.has(o.source) && o.unit !== 'kWh' && !reason && !force
+      const coalesce = !this.metadataHolds.size && COALESCED_SOURCES.has(o.source) && o.unit !== 'kWh' && !reason && !force
         && freshUpdate && fresh && prior && o.value === prior.value && !transition && !reportPolicyChanged
         && s.status === status && s.coverageId && s.coverageObservationId === prior.id
         && Number.isFinite(s.lastSourceTime) && o.sourceTime - s.lastSourceTime <= sourceAge(o)
