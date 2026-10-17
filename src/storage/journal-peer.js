@@ -123,74 +123,99 @@ export function validatePeerTransferExport(db,{after,sourcePath,sourceSnapshot,c
 /** Freeze only keys changed since this configured peer's acknowledged anchor.
  * A private spool is built under a read snapshot: control writers keep their
  * SQLite write lock. Publishing the fsynced spool needs one short transaction. */
-export function preparePeerTransfer(db,{after,sourcePath,sourceSnapshot,refresh=false,clock=Date.now}={}) {
-  validatePeerTransferExport(db,{after,sourcePath,sourceSnapshot,clock});
-  const lease=stageLease(db);
-  try { return stagePeerTransfer(db,{after,sourcePath,sourceSnapshot,refresh,clock}); }
-  finally {lease.close();}
+export function preparePeerTransfer(db,{after,sourcePath,sourceSnapshot,refresh=false,clock=Date.now,step=operation=>operation()}={}) {
+  step(()=>validatePeerTransferExport(db,{after,sourcePath,sourceSnapshot,clock}));
+  const lease=step(()=>stageLease(db));
+  try { return stagePeerTransfer(db,{after,sourcePath,sourceSnapshot,refresh,clock,step}); }
+  finally {step(()=>lease.close());}
 }
-function stagePeerTransfer(db,{after,sourcePath,sourceSnapshot,refresh,clock}) {
-  let anchor=peerAnchor(db);
+function stagePeerTransfer(db,{after,sourcePath,sourceSnapshot,refresh,clock,step}) {
+  let anchor=step(()=>peerAnchor(db));
   if(!anchor) fail('journal_peer_unregistered');
   if(anchor.completedSourcePath) fail('journal_peer_pending');
   if(refresh && anchor.pending) {
     if(anchor.pending.status==='rebasing'||!matchingCheckpoint(after,anchor.checkpoint)) fail();
     const previous=anchor.pending;
-    journalExclusive(db,()=>{
+    step(()=>journalExclusive(db,()=>{
       const current=peerAnchor(db);
       if(current.pending?.id!==previous.id||current.pending.status==='rebasing'||!matchingCheckpoint(current.checkpoint,after)) fail();
       journalConnection(db).prepare('UPDATE journal_peer SET pending=NULL,rebase_cursor=NULL WHERE id=1').run();
-    });
-    if(ownedPath(db,previous.path)) rmSync(previous.path,{force:true});
-    anchor=peerAnchor(db);
+    }));
+    step(()=>{if(ownedPath(db,previous.path)) rmSync(previous.path,{force:true});});
+    anchor=step(()=>peerAnchor(db));
   }
   if(anchor.pending) return {...anchor.pending};
   if(after && !matchingCheckpoint(after,anchor.checkpoint)) fail();
   const id=randomUUID(),path=`${location(db)}.peer-${id}.sqlite`,partial=`${path}.partial`,state=journalConnection(db);
   let spool,metadata,source;
   try {
-    const file=openSync(partial,'wx',0o600);closeSync(file);
-    const sourceDb=sourcePath ? (source=new DatabaseSync(sourcePath,{readOnly:true})) : db;
+    step(()=>{const file=openSync(partial,'wx',0o600);closeSync(file);});
+    const sourceDb=step(()=>sourcePath ? (source=new DatabaseSync(sourcePath,{readOnly:true})) : db);
     const reader=journalConnection(sourceDb);
-    spool=new DatabaseSync(partial);
-    spool.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; CREATE TABLE meta(value TEXT NOT NULL); CREATE TABLE rows(ordinal INTEGER PRIMARY KEY,table_name TEXT NOT NULL,record_key TEXT NOT NULL,change TEXT NOT NULL,after_row TEXT); BEGIN');
+    step(()=>{
+      spool=new DatabaseSync(partial);
+      spool.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; BEGIN; CREATE TABLE meta(value TEXT NOT NULL); CREATE TABLE rows(ordinal INTEGER PRIMARY KEY,table_name TEXT NOT NULL,record_key TEXT NOT NULL,change TEXT NOT NULL,after_row TEXT); COMMIT');
+    });
     const sourceStartedAt=sourcePath ? sourceSnapshot.sourceStartedAt : clock();
-    reader.exec('BEGIN');
+    step(()=>reader.exec('BEGIN'));
     try {
-      validateCheckpoint(sourceDb);
-      anchor=peerAnchor(sourceDb);
+      const {target,contentHash,sourceAt}=step(()=>{
+      validateCheckpoint(sourceDb);anchor=peerAnchor(sourceDb);
       if(anchor.pending?.status==='rebasing' || anchor.pending&&!refresh || after && !matchingCheckpoint(after,anchor.checkpoint)) fail();
       const target=readCheckpoint(sourceDb),contentHash=content(sourceDb);
       const sourceAt=sourcePath ? sourceSnapshot.sourceAt : clock();
       if(!validPeerSourceClocks({sourceStartedAt,sourceAt}) || sourcePath && !matchingCheckpoint(target,sourceSnapshot.checkpoint)) fail('journal_peer_invalid');
+      return {target,contentHash,sourceAt};
+      });
       let rows=0,projected=anchor.contentHash;
-      const put=spool.prepare('INSERT INTO rows VALUES(?,?,?,?,?)');
-      for(const saved of reader.prepare('SELECT c.*,b.row AS before_row FROM journal_peer_changes c JOIN journal_peer_before b USING(table_name,record_key) ORDER BY table_name,record_key').iterate()) {
-        const key=JSON.parse(saved.record_key),row=journalReadRow(sourceDb,{table:saved.table_name,key});
-        const before=parse(saved.before_row);
-        if(rowHash(saved.table_name,key,row)!==saved.after_hash||rowHash(saved.table_name,key,before)!==saved.before_hash) fail();
-        const change=encodeChange(saved.table_name,key,before,row);
-        projected=changeContentHash(projected,[change]);
-        put.run(rows++,saved.table_name,saved.record_key,JSON.stringify(change),stringify(row));
-      }
+      const put=step(()=>spool.prepare('INSERT INTO rows VALUES(?,?,?,?,?)'));
+      const cursor=step(()=>reader.prepare('SELECT c.*,b.row AS before_row FROM journal_peer_changes c JOIN journal_peer_before b USING(table_name,record_key) ORDER BY table_name,record_key').iterate());
+      let complete=false;
+      try {
+        while(!complete) step(()=>{
+          const started=performance.now();let bytes=0,count=0;
+          spool.exec('BEGIN');
+          try {
+            do {
+              const next=cursor.next();if(next.done){complete=true;break;}
+              const saved=next.value,key=JSON.parse(saved.record_key),row=journalReadRow(sourceDb,{table:saved.table_name,key}),before=parse(saved.before_row);
+              if(rowHash(saved.table_name,key,row)!==saved.after_hash||rowHash(saved.table_name,key,before)!==saved.before_hash) fail();
+              const change=encodeChange(saved.table_name,key,before,row),encoded=JSON.stringify(change),afterRow=stringify(row);
+              projected=changeContentHash(projected,[change]);
+              put.run(rows++,saved.table_name,saved.record_key,encoded,afterRow);
+              bytes+=Buffer.byteLength(encoded)+Buffer.byteLength(afterRow??'');count++;
+            } while(count<16&&bytes<128*1024&&performance.now()-started<8);
+            spool.exec('COMMIT');
+          } catch(error){spool.exec('ROLLBACK');throw error;}
+        });
+      } finally {if(!complete)step(()=>cursor.return?.());}
+      // The private spool may contain committed batches, but no receipt points
+      // to it until the complete frozen target and metadata are durable.
       if(projected!==contentHash) fail();
       metadata={version:PEER_TRANSFER_VERSION,id,base:anchor.checkpoint,target,contentHash,rows,sourceStartedAt,sourceAt};
-      spool.prepare('INSERT INTO meta VALUES(?)').run(JSON.stringify(metadata));
-    } finally { reader.exec('ROLLBACK'); source?.close();source=null; }
-    spool.exec('COMMIT');spool.close();spool=null;
-    syncFile(partial);renameSync(partial,path);syncFile(dirname(path));
-    return journalExclusive(db,()=>{
+      step(()=>{
+        spool.exec('BEGIN');
+        try {spool.prepare('INSERT INTO meta VALUES(?)').run(JSON.stringify(metadata));spool.exec('COMMIT');}
+        catch(error){spool.exec('ROLLBACK');throw error;}
+      });
+    } finally {step(()=>{reader.exec('ROLLBACK');source?.close();source=null;});}
+    step(()=>{spool.close();spool=null;});
+    step(()=>syncFile(partial));
+    step(()=>{renameSync(partial,path);syncFile(dirname(path));});
+    return step(()=>journalExclusive(db,()=>{
       const current=peerAnchor(db);
       if(!matchingCheckpoint(current.checkpoint,anchor.checkpoint)||current.pending) fail();
       const pending={...metadata,path,...(sourcePath?{sourcePath}:{})};
       state.prepare('UPDATE journal_peer SET pending=?,rebase_cursor=NULL WHERE id=1').run(JSON.stringify(pending));
       return pending;
-    });
+    }));
   } catch(error) {
-    try{spool?.close();}catch{}
-    try{source?.close();}catch{}
-    rmSync(partial,{force:true});
-    if(peerAnchor(db)?.pending?.path!==path) rmSync(path,{force:true});
+    step(()=>{
+      try{spool?.close();}catch{}
+      try{source?.close();}catch{}
+      rmSync(partial,{force:true});
+      if(peerAnchor(db)?.pending?.path!==path) rmSync(path,{force:true});
+    });
     throw error;
   }
 }
@@ -209,26 +234,26 @@ function openPending(db,id) {
 }
 // A record count alone does not bound memory when durable state rows are large.
 // One legal oversized record is processed on its own; other batches stay small.
-function pendingRows(spool,afterOrdinal,limit) {
+function pendingRows(spool,afterOrdinal,limit,maxBytes=4*1024*1024) {
   const rows=[];let bytes=0;
   for(const row of spool.prepare('SELECT * FROM rows WHERE ordinal>? ORDER BY ordinal LIMIT ?').iterate(afterOrdinal,limit)) {
     const size=Buffer.byteLength(row.change)+Buffer.byteLength(row.after_row??'');
-    if(rows.length && bytes+size>4*1024*1024) break;
+    if(rows.length && bytes+size>maxBytes) break;
     rows.push(row);bytes+=size;
   }
   return rows;
 }
-export function peerTransferRows(db,{id,afterOrdinal=-1,limit=128}={}) {
-  if(!Number.isSafeInteger(afterOrdinal)||afterOrdinal< -1||!Number.isSafeInteger(limit)||limit<1||limit>1024) fail();
+export function peerTransferRows(db,{id,afterOrdinal=-1,limit=128,maxBytes=4*1024*1024}={}) {
+  if(!Number.isSafeInteger(afterOrdinal)||afterOrdinal< -1||!Number.isSafeInteger(limit)||limit<1||limit>1024||!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>4*1024*1024) fail();
   const {spool}=openPending(db,id);
-  try {return pendingRows(spool,afterOrdinal,limit)
+  try {return pendingRows(spool,afterOrdinal,limit,maxBytes)
     .map(row=>({ordinal:row.ordinal,change:JSON.parse(row.change),after:parse(row.after_row)}));}
   finally{spool.close();}
 }
 /** Bounded, resumable cleanup. While rebasing, further capture keeps each key's
  * current baseline; exports are held until the common anchor publishes. */
-export function acknowledgePeer(db,{checkpoint,limit=128}={}) {
-  if(!validCheckpoint(checkpoint)||!Number.isSafeInteger(limit)||limit<1||limit>1024) fail();
+export function acknowledgePeer(db,{checkpoint,limit=128,maxBytes=4*1024*1024}={}) {
+  if(!validCheckpoint(checkpoint)||!Number.isSafeInteger(limit)||limit<1||limit>1024||!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>4*1024*1024) fail();
   const anchor=peerAnchor(db);
   if(!anchor) fail('journal_peer_unregistered');
   if(!anchor.pending) {
@@ -244,7 +269,7 @@ export function acknowledgePeer(db,{checkpoint,limit=128}={}) {
       if(current.pending?.id!==pending.id) fail();
       let cursor=current.pending.cursor??-1;
       let projected=current.pending.ackContentHash??current.contentHash;
-      const rows=pendingRows(spool,cursor,limit);
+      const rows=pendingRows(spool,cursor,limit,maxBytes);
       if(!rows.length && cursor+1<pending.rows) fail();
       const put=state.prepare('INSERT INTO journal_peer_changes VALUES(?,?,?,?,?) ON CONFLICT(table_name,record_key) DO UPDATE SET before_hash=excluded.before_hash,after_hash=excluded.after_hash,last_sequence=excluded.last_sequence');
       const baseline=state.prepare('INSERT INTO journal_peer_before VALUES(?,?,?) ON CONFLICT(table_name,record_key) DO UPDATE SET row=excluded.row');

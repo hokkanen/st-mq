@@ -1,6 +1,7 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
 import { yieldToController as yieldTurn } from './scheduler.js';
+import { storageStep } from '../storage/worker-admission.js';
 import { Store } from '../storage/store.js';
 import { RECOVERABLE_TABLES, recoveryRecordKey } from '../storage/schema.js';
 import { selectedHistory, recoverySource, recoveryEvidenceVersion, recoveryCoverageEvidence } from './ledger.js';
@@ -17,7 +18,8 @@ import { recoveryRevisionImpact } from './impact-report.js';
 
 const previewOnly = workerData.mode === 'revision-preview';
 parentPort.postMessage({ type: 'progress', phase: 'validating', processed: 0 });
-const store = new Store(workerData.masterPath, { readOnly: previewOnly });
+const store = storageStep(()=>new Store(workerData.masterPath, { readOnly: previewOnly,
+  managedCheckpoints:workerData.managedCheckpoints,storageAdmission:storageStep }));
 store.db.exec('PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-8192;');
 if (previewOnly) {
   // SQLite opened MAIN read-only. Permit private TEMP writes while retaining a

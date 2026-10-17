@@ -4,6 +4,7 @@ import { getChartData, chartRequestRange } from './chart-data.js';
 import { getDatabaseOverview } from './database-overview.js';
 import { energyCheckSummaries } from './energy-checks.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
+import { attachStorageAdmission } from '../storage/worker-admission.js';
 
 const aborted = () => Object.assign(new Error('Chart request aborted'), { name: 'AbortError' });
 
@@ -57,12 +58,16 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
     lane.active.started = true; lane.active.observation?.start(); lane.observations.set(lane.active.id, lane.active);
     try {
       if (!lane.worker) {
+        const storageSignal = new Int32Array(new SharedArrayBuffer(4));
         lane.worker = new Worker(new URL('./chart-worker.js', import.meta.url), {
-          workerData: { dbPath: store.path, cacheLimitBytes: (lane.name === 'prefetch' ? 8 : 24) * 1024 * 1024 },
+          workerData: { dbPath: store.path, cacheLimitBytes: (lane.name === 'prefetch' ? 8 : 24) * 1024 * 1024,
+            storageSignal: storageSignal.buffer },
         });
+        attachStorageAdmission(lane.worker, storageSignal, operation => store.runStorageTask(operation, { kind: 'history' }));
         const generation = lane.worker;
         lane.worker.on('message', message => {
           if (lane.worker !== generation) return;
+          if (message.storage) return;
           if (message.storageOperationComplete) {
             const observed = lane.observations.get(message.id); lane.observations.delete(message.id);
             if (message.cacheHit) observed?.observation?.discard();

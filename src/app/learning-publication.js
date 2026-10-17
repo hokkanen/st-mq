@@ -55,7 +55,8 @@ export function publishLearning({ store, input, kind, message, context = {}, sig
         result = store.transaction(() => publishCorrection(store, input, message));
       } else {
         worker = workerFactory({
-          workerData: { dbPath: store.path, input, databaseId, token, kind, message, context, cancellation: cancelled.buffer },
+          workerData: { dbPath: store.path, input, databaseId, token, kind, message, context, cancellation: cancelled.buffer,
+            managedCheckpoints:Boolean(store.walMaintenance) },
         });
         workerStarted = true;
         await new Promise((resolve, reject) => {

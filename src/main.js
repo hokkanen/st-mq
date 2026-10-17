@@ -525,7 +525,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     if (config.topology === 'mirror' && config.role === 'master') {
       const { ReplicationService } = await import('./replication/service.js');
       requireRunning();
-      replication = new ReplicationService({ dbPath: store.path, config: config.mirror, onYield: () => store.runWrite(() => {}) });
+      replication = new ReplicationService({ dbPath: store.path, config: config.mirror, onYield: () => store.runWrite(() => {}),
+        onStorage: operation => store.runStorageTask(operation), managedCheckpoints: Boolean(store.walMaintenance) });
       replication.start();
     }
     if (startupImport) {

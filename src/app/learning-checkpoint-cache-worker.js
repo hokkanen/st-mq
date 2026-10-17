@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { Store } from '../storage/store.js';
 import { LEARNING_ALGORITHM, learningVersion, validLearningCheckpoint } from './committed-learning.js';
 import { sensorRevision } from './sensor-inputs.js';
+import { storageStep } from '../storage/worker-admission.js';
 
 const cancelled = new Int32Array(workerData.cancellation);
 const writable = () => Atomics.load(cancelled, 0) === 0;
@@ -18,12 +19,12 @@ const matchesBoundary = (checkpoint, entry) => entry && checkpoint.journalCursor
 let store;
 try {
   // A missing or replaced path must not become a new writable database.
-  const source = new Store(workerData.dbPath, { readOnly: true });
+  const source = storageStep(()=>new Store(workerData.dbPath, { readOnly: true }));
   try {
     if (!writable() || source.checkpoint().databaseId !== workerData.databaseId) throw new Error('stale');
   } finally { source.close(); }
   if (!writable()) throw new Error('cancelled');
-  store = new Store(workerData.dbPath);
+  store = storageStep(()=>new Store(workerData.dbPath, { managedCheckpoints: workerData.managedCheckpoints }));
   // Admission retries belong to this worker, while the parent remains free to
   // revoke its shared cancellation flag and join termination during demotion.
   store.db.exec('PRAGMA busy_timeout=0;');
@@ -35,7 +36,7 @@ try {
       // Hash the complete candidate before taking SQLite's sole writer lock.
       // Immutable-boundary identity and current source fences are checked inside.
       if (!validLearningCheckpoint(checkpoint)) throw new Error('invalid checkpoint');
-      status = await store.runWrite(() => {
+      status = storageStep(()=>store.transaction(() => {
         if (!writable()) return 'cancelled';
         if (store.checkpoint().databaseId !== fences.databaseId || store.learningEpoch(workerData.input) !== fences.epoch
           || store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation !== fences.selection
@@ -75,7 +76,7 @@ try {
         if (!writable()) throw new Error('cancelled');
         journalCursor = checkpoint.journalCursor;
         return 'saved';
-      }, { isCurrent: writable });
+      }));
     } catch { status = writable() ? 'failed' : 'cancelled'; }
     parentPort.postMessage({ type: 'result', id: message.id, status, journalCursor });
   });

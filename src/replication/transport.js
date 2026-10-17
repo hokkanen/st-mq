@@ -154,7 +154,7 @@ export async function createSourceSnapshot({ dbPath, destination, signal }) {
 
 /** One attempt: peer preflight, bounded journal catch-up, and durable publication.
  * A receiver without a baseline first needs one complete seed. */
-async function performSynchronizeReplica({ dbPath, config, signal, onPhase = () => {}, onYield,
+async function performSynchronizeReplica({ dbPath, config, signal, onPhase = () => {}, onYield,onStorage,managedCheckpoints=false,
   spawnProcess = spawn, snapshot = createSourceSnapshot }) {
   validateTransportConfig(config);
   const sourceDirectory = resolve(config.sourceDirectory ?? join(resolve(dbPath), '..', 'replication'));
@@ -170,13 +170,13 @@ async function performSynchronizeReplica({ dbPath, config, signal, onPhase = () 
   let generation = randomUUID();
   let channel, destination;
   const acknowledge=async checkpoint=>{
-    const result=await peerOperation('acknowledge',{dbPath,checkpoint,signal:abort.signal,onYield});
+    const result=await peerOperation('acknowledge',{dbPath,checkpoint,signal:abort.signal,onYield,onStorage,managedCheckpoints});
     if(result.sourcePath) {
       if(dirname(result.sourcePath)!==sourceDirectory || !/^source-[a-f0-9-]{36}\.sqlite$/.test(basename(result.sourcePath)))
         throw replicationError('verification_failed');
       for(const suffix of ['', '-wal', '-shm', '-journal']) await rm(`${result.sourcePath}${suffix}`,{force:true});
       await syncDirectory(sourceDirectory);
-      await peerOperation('release-source',{dbPath,sourcePath:result.sourcePath,signal:abort.signal});
+      await peerOperation('release-source',{dbPath,sourcePath:result.sourcePath,signal:abort.signal,onStorage,managedCheckpoints});
     }
     return result;
   };
@@ -186,7 +186,7 @@ async function performSynchronizeReplica({ dbPath, config, signal, onPhase = () 
     channel.send({ type: 'prepare', version: 3, schema: SCHEMA_VERSION, generation });
     const ready = await channel.next();
     if (ready.type !== 'ready' || ready.version !== 3 || ready.schema !== SCHEMA_VERSION) throw replicationError('protocol_failed');
-    await peerOperation('enroll',{dbPath,signal:abort.signal,onYield});
+    await peerOperation('enroll',{dbPath,signal:abort.signal,onYield,onStorage,managedCheckpoints});
     const enrolled=await peerOperation('anchor',{dbPath,signal:abort.signal});
     if(enrolled.completedSourcePath)await acknowledge(enrolled.checkpoint);
     const peerTransfers=new PeerTransfers(join(sourceDirectory,'peer-exports'));
@@ -201,7 +201,7 @@ async function performSynchronizeReplica({ dbPath, config, signal, onPhase = () 
         onPhase('transferring');
         const anchor=await peerOperation('anchor',{dbPath,signal:abort.signal});
         if(anchor.pending && sameCheckpoint(anchor.pending.target,after))await acknowledge(after);
-        const transfer=await peerTransfers.export({dbPath,after,signal:abort.signal,onYield});
+        const transfer=await peerTransfers.export({dbPath,after,signal:abort.signal,onYield,onStorage,managedCheckpoints});
         metadata=peerPublicationBoundary(currentMetadata,transfer);
         channel.send({type:'peer-apply-begin',transfer});
         if((await channel.next()).type!=='apply-ready')throw replicationError('protocol_failed');
@@ -236,7 +236,7 @@ async function performSynchronizeReplica({ dbPath, config, signal, onPhase = () 
     onPhase('snapshotting');
     const result = await snapshot({ dbPath, destination, signal: abort.signal });
     const anchor=await peerOperation('anchor',{dbPath,signal:abort.signal});
-    await peerTransfers.export({dbPath,after:anchor.checkpoint,sourcePath:destination,sourceSnapshot:result,refresh:true,signal:abort.signal,onYield});
+    await peerTransfers.export({dbPath,after:anchor.checkpoint,sourcePath:destination,sourceSnapshot:result,refresh:true,signal:abort.signal,onYield,onStorage,managedCheckpoints});
     onPhase('transferring');
     for (let attempt = 0; attempt < 2; attempt++) {
       const remote = `${config.sshHost}:${config.remoteDirectory}/incoming-${generation}.sqlite`;

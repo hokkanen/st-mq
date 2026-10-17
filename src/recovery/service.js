@@ -1,5 +1,6 @@
 import { storageOperationHealth, observeStorageOperation } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
+import { attachStorageAdmission } from '../storage/worker-admission.js';
 import { randomUUID } from 'node:crypto';
 import { learningVersion } from '../app/committed-learning.js';
 import { publishLearning } from '../app/learning-publication.js';
@@ -53,7 +54,7 @@ export async function recoverHistory({ store, donorPath, donorJournalPath, input
   let outcome = 'completed';
   try {
     return await workerJob({ mode: 'recover', masterPath: store.path, donorPath, donorJournalPath, input, preview, source, operationId, operationToken }, {
-      signal, onProgress,
+      signal, onProgress, onStorage:operation=>store.runStorageTask(operation),managedCheckpoints:Boolean(store.walMaintenance),
       onYield: () => store.runWrite(() => {
         if (!isCurrent()) throw unavailable('Recovery authority changed; the previous model remains selected');
       }, { signal }),
@@ -75,11 +76,13 @@ export async function recoverHistory({ store, donorPath, donorJournalPath, input
   }
 }
 
-async function workerJob(workerData, { onProgress, onReady, onYield, signal }) {
+async function workerJob(workerData, { onProgress, onReady, onYield, signal,onStorage,managedCheckpoints=false }) {
   if (signal?.aborted) throw unavailable('Recovery was cancelled; the other instance remains protected');
   return await new Promise((resolve, reject) => {
-    const worker = new Worker(new URL(workerData.mode.startsWith('revision') ? './revision-worker.js' : './worker.js', import.meta.url), { workerData,
+    const storageSignal=onStorage?new Int32Array(new SharedArrayBuffer(4)):null;
+    const worker = new Worker(new URL(workerData.mode.startsWith('revision') ? './revision-worker.js' : './worker.js', import.meta.url), { workerData:{...workerData,managedCheckpoints,storageSignal:storageSignal?.buffer},
       ...(process.execArgv.some(value => value.startsWith('--input-type')) ? { execArgv: [] } : {}) });
+    attachStorageAdmission(worker,storageSignal,onStorage);
     let settled = false, messages = Promise.resolve(), publication = null;
     const finish = (error, result) => {
       if (settled) return;
@@ -115,6 +118,7 @@ async function workerJob(workerData, { onProgress, onReady, onYield, signal }) {
       });
     });
     worker.on('message', message => {
+      if(message.storage)return;
       messages = messages.then(async () => {
       if (settled) return;
       try {
@@ -175,7 +179,7 @@ export async function reviseRecovery({ store, input = 'mqtt', recoveryId, active
   try {
     await store.runWrite(() => store.setState(`recovery:active:${input}`, { status: 'rebuilding', recoveryId, revision: true, operationToken, startedAt: Date.now() }), { signal, isCurrent });
     return await workerJob({ mode: 'revision', masterPath: store.path, input, recoveryId, active, preview }, {
-      signal, onProgress,
+      signal, onProgress, onStorage:operation=>store.runStorageTask(operation),managedCheckpoints:Boolean(store.walMaintenance),
       onYield: () => store.runWrite(() => {
         if (!isCurrent()) throw unavailable('Recovery authority changed; the previous model remains selected');
       }, { signal }),

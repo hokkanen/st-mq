@@ -7,20 +7,25 @@ import { ownedDirectory, GENERATION_PATTERN, replicationError } from './publicat
 import { acquireReceiverLock } from './receiver.js';
 import { PEER_TRANSFER_VERSION, PEER_TRANSFER_FIELDS, validPeerSourceClocks } from './peer-transfer-contract.js';
 import { sameCheckpoint, validCheckpoint } from './incremental.js';
+import { attachStorageAdmission } from '../storage/worker-admission.js';
 
 export const CHANGE_CHUNK_BYTES = 256 * 1024;
 
-export function peerOperation(operation,{dbPath,signal,onYield,...args}) {
+export function peerOperation(operation,{dbPath,signal,onYield,onStorage,managedCheckpoints=false,...args}) {
   if(signal?.aborted) return Promise.reject(signal.reason);
   const observation=storageOperationHealth.begin('replication-worker',{scope:'shared'});
   let worker;
-  try { worker=new Worker(new URL('./coalesced-worker.js',import.meta.url),{workerData:{operation,dbPath,...args},
+  const storageSignal = onStorage ? new Int32Array(new SharedArrayBuffer(4)) : null;
+  try { worker=new Worker(new URL('./coalesced-worker.js',import.meta.url),{workerData:{operation,dbPath,...args,
+    managedCheckpoints,storageSignal:storageSignal?.buffer},
     ...(process.execArgv.some(value=>value.startsWith('--input-type'))?{execArgv:[]}: {})}); } catch(error) {observation.finish('failed',{reason:'operation-failed'});throw error;}
+  attachStorageAdmission(worker,storageSignal,onStorage);
   return new Promise((resolve,reject)=>{
     let result,error;
     const abort=()=>{error=signal.reason;void worker.terminate();};
     signal?.addEventListener('abort',abort,{once:true});
     worker.on('message',message=>{
+      if(message.storage) return;
       if(message.type==='yield') {
         setImmediate(()=>{Promise.resolve().then(()=>onYield?.()).then(()=>{if(!error)worker.postMessage({type:'continue',id:message.id});})
           .catch(failure=>{error=failure;void worker.terminate();});});
@@ -47,11 +52,11 @@ export class PeerTransfers {
   export(options) {
     return observeStorageOperation('peer-transfer', () => this.#performExport(options), { signal: options?.signal, scope: 'shared' });
   }
-  async #performExport({dbPath,after,signal,sourcePath,sourceSnapshot,refresh=false,onYield}) {
+  async #performExport({dbPath,after,signal,sourcePath,sourceSnapshot,refresh=false,onYield,onStorage,managedCheckpoints}) {
     await ownedDirectory(this.directory,'.st-mq-peer-transfers');
     const unlock=await acquireReceiverLock(this.directory);
     try {
-      const result=await peerOperation('export',{dbPath,after,directory:this.directory,sourcePath,sourceSnapshot,refresh,signal,onYield});
+      const result=await peerOperation('export',{dbPath,after,directory:this.directory,sourcePath,sourceSnapshot,refresh,signal,onYield,onStorage,managedCheckpoints});
       for(const name of await readdir(this.directory)) {
         const match=/^peer-([a-f0-9-]{36})\.changes(?:\.partial)?$/.exec(name);
         if(match && (match[1]!==result.id || name.endsWith('.partial'))) await rm(join(this.directory,name),{force:true});
@@ -59,10 +64,10 @@ export class PeerTransfers {
       return result;
     } finally {await unlock();}
   }
-  async chunk({id,offset}) {
+  async chunk({id,offset,onStorage}) {
     if(!GENERATION_PATTERN.test(id ?? '') || !Number.isSafeInteger(offset) || offset<0 || offset%CHANGE_CHUNK_BYTES)
       throw replicationError('invalid_protocol');
-    return observeStorageOperation('peer-transfer',async()=>{
+    const read=async()=>{
     const file=await open(join(this.directory,`peer-${id}.changes`),'r').catch(()=>{throw replicationError('snapshot_unavailable');});
     try {
       const info=await file.stat();if(offset>=info.size)throw replicationError('invalid_protocol');
@@ -70,7 +75,8 @@ export class PeerTransfers {
       if((await file.read(bytes,0,bytes.length,offset)).bytesRead!==bytes.length)throw replicationError('transfer_failed');
       return {data:bytes.toString('base64')};
     }finally{await file.close();}
-    },{scope:'shared'});
+    };
+    return observeStorageOperation('peer-transfer',()=>onStorage?onStorage(read):read(),{scope:'shared'});
   }
 }
 async function performReceivePeerTransfer({directory,peer,after,signal,refresh=false,guard=async()=>{}}) {

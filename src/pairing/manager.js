@@ -706,7 +706,11 @@ export class PairManager {
   }
 
   peerOperation(operation,options) {
-    return peerOperation(operation,{...options,onYield:()=>this.hooks.admitStorageWrite?.()});
+    return peerOperation(operation,{...options,...this.peerStorageOptions(),onYield:()=>this.hooks.admitStorageWrite?.()});
+  }
+  peerStorageOptions() {
+    return this.hooks.runStorageTask ? {onStorage:operation=>this.hooks.runStorageTask(operation),
+      managedCheckpoints:Boolean(this.hooks.managedCheckpoints?.())} : {};
   }
 
   async exportPeerSeed() {
@@ -723,7 +727,7 @@ export class PairManager {
       return metadata;
     }
     const metadata=await this.exportSnapshot({force:true,pin:true});
-    await this.peerTransfers.export({dbPath,onYield:()=>this.hooks.admitStorageWrite?.(),after:anchor.checkpoint,refresh:true,sourcePath:join(this.snapshots.directory,`export-${metadata.generation}.sqlite`),sourceSnapshot:metadata,signal:this.abort.signal});
+    await this.peerTransfers.export({dbPath,...this.peerStorageOptions(),onYield:()=>this.hooks.admitStorageWrite?.(),after:anchor.checkpoint,refresh:true,sourcePath:join(this.snapshots.directory,`export-${metadata.generation}.sqlite`),sourceSnapshot:metadata,signal:this.abort.signal});
     return metadata;
   }
 
@@ -1169,7 +1173,7 @@ export class PairManager {
           sourcePath=join(this.snapshots.directory,`export-${snapshot.generation}.sqlite`);
           verification=await this.fullVerification(sourcePath,snapshot.checkpoint);
         }
-        const delivery=await this.peerTransfers.export({dbPath:await this.journalSource(),after:base,refresh:true,sourcePath,sourceSnapshot,
+        const delivery=await this.peerTransfers.export({dbPath:await this.journalSource(),...this.peerStorageOptions(),after:base,refresh:true,sourcePath,sourceSnapshot,
           signal:this.abort.signal,onYield:()=>this.hooks.admitStorageWrite?.()});
         metadata=peerPublicationBoundary(metadata,delivery);
       } else {
@@ -1304,12 +1308,12 @@ export class PairManager {
       if(anchor?.completedSourcePath) await this.acknowledgePeerTransfer(anchor.checkpoint,dbPath);
       else if(anchor?.pending && sameCheckpoint(anchor.pending.target,body.after))
         await this.acknowledgePeerTransfer(body.after,dbPath);
-      return this.peerTransfers.export({dbPath,onYield:()=>this.hooks.admitStorageWrite?.(),after:body.after,
+      return this.peerTransfers.export({dbPath,...this.peerStorageOptions(),onYield:()=>this.hooks.admitStorageWrite?.(),after:body.after,
         refresh:body.refresh===true && (this.state.value.role==='protected'||Boolean(this.state.value.recovery?.releaseOperation)),signal:this.abort.signal});
     }
     if (operation === 'peer-transfer-chunk') {
       if(!Object.keys(body).every(key=>['id','offset'].includes(key)))throw pairError('peer_protocol_failed');
-      return this.peerTransfers.chunk(body);
+      return this.peerTransfers.chunk({...body,...this.peerStorageOptions()});
     }
     if (operation === 'peer-ack') {
       if(Object.keys(body).some(key=>key!=='checkpoint') || !validCheckpoint(body.checkpoint))throw pairError('peer_protocol_failed');

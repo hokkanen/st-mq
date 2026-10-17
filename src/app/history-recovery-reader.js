@@ -1,5 +1,6 @@
 import { storageOperationHealth } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
+import { attachStorageAdmission } from '../storage/worker-admission.js';
 
 const unavailable = 'Previous recoveries are unavailable. Refresh to retry.';
 function validate(input, options) {
@@ -32,11 +33,14 @@ export function createRecoveryHistoryReader(store, { WorkerClass = Worker, clock
   }
   const start = () => {
     if (worker) return;
-    worker = new WorkerClass(new URL('./history-recovery-reader-worker.js', import.meta.url), { workerData: { path: store.path },
+    const storageSignal = new Int32Array(new SharedArrayBuffer(4));
+    worker = new WorkerClass(new URL('./history-recovery-reader-worker.js', import.meta.url), { workerData: { path: store.path, storageSignal:storageSignal.buffer },
       ...(process.execArgv.some(value => value.startsWith('--input-type')) ? { execArgv: [] } : {}) });
+    attachStorageAdmission(worker,storageSignal,operation=>store.runStorageTask(operation,{kind:'history'}));
     const current = worker;
     worker.on('message', message => {
       if (worker !== current) return;
+      if(message.storage)return;
       const entry = pending.get(message.id);
       if (!entry) return;
       if (message.storageOperationStart) { entry.operation?.start(); return; }

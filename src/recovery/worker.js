@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { yieldToController as yieldTurn } from './scheduler.js';
+import { storageStep } from '../storage/worker-admission.js';
 import { Store } from '../storage/store.js';
 import { readBackupMetadata } from '../storage/backup-metadata.js';
 import { HistoryMerge, RECOVERY_POLICY } from './merge.js';
@@ -48,7 +49,8 @@ async function fileDigest(path) {
 
 async function open() {
   progress({ phase:'validating',processed:0 });
-  target=new Store(workerData.masterPath,{readOnly:workerData.mode==='preview'});
+  target=storageStep(()=>new Store(workerData.masterPath,{readOnly:workerData.mode==='preview',
+    managedCheckpoints:workerData.managedCheckpoints,storageAdmission:storageStep}));
   if(workerData.mode==='preview') { target.db.exec('BEGIN'); target.db.prepare('PRAGMA schema_version').get(); }
   let donorDigest;
   if(workerData.donorJournalPath) {
@@ -387,7 +389,7 @@ async function start() {
   originalFireplaceRevision = target.getState(`adaptive:${workerData.input}`)?.fireplaceRevision
     ?? fireplaceLearningContext(target, workerData.input).fireplaceRevision;
   const merge = new HistoryMerge({ target, donor, donorDigest, input: workerData.input, recoveryId, progress, yieldControl: yieldTurn });
-  target.setState(`recovery:active:${workerData.input}`, { status: 'importing', recoveryId, operationToken: workerData.operationToken, startedAt: Date.now() });
+  storageStep(()=>target.setState(`recovery:active:${workerData.input}`, { status: 'importing', recoveryId, operationToken: workerData.operationToken, startedAt: Date.now() }));
   // A stopped worker can leave an unpublished projection. Remove only those
   // abandoned staging epochs, in bounded batches; successful prior epochs
   // remain the reconstruction archive for their original checkpoints.
@@ -414,7 +416,7 @@ async function start() {
   }
   if (recoveryId) target.db.prepare('UPDATE history_recoveries SET report=?,status=? WHERE id=?')
     .run(JSON.stringify(report), 'rebuilding', recoveryId);
-  target.setState(`recovery:active:${workerData.input}`, { status: 'rebuilding', recoveryId, operationToken: workerData.operationToken, startedAt: Date.now() });
+  storageStep(()=>target.setState(`recovery:active:${workerData.input}`, { status: 'rebuilding', recoveryId, operationToken: workerData.operationToken, startedAt: Date.now() }));
   // Nothing affected learning: still return a guarded publication message so
   // permission to overwrite the donor follows successful source verification.
   if (report.model.status === 'unchanged') {

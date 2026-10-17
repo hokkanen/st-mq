@@ -12,7 +12,7 @@ try {
   try {
     if (!current() || source.checkpoint().databaseId !== workerData.databaseId) throw new Error('stale');
   } finally { source.close(); }
-  store = new Store(workerData.dbPath);
+  store = new Store(workerData.dbPath,{managedCheckpoints:workerData.managedCheckpoints});
   store.db.exec('PRAGMA busy_timeout=0');
   parentPort.once('message', async request => {
     try {

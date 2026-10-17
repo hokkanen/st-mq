@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { WriterClient } from './writer-client.js';
 import { writerDatabase } from './writer-database.js';
+import { WalMaintenance } from './wal-maintenance.js';
 import { validateArchivedLearningCheckpointStorage } from './learning-checkpoint-archive.js';
 import { mkdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -252,10 +253,11 @@ function observationResult(row) {
 
 /** Local authoritative history. All timestamps are UTC milliseconds; queries are bounded. */
 export class Store {
-  constructor(path, { readOnly = false } = {}) {
+  constructor(path, { readOnly = false, managedCheckpoints = false, storageAdmission = null } = {}) {
     label(path, 'database path');
     this.path = path === ':memory:' ? path : resolve(path);
     this.readOnly = readOnly;
+    this.storageAdmission = storageAdmission;
     this.writeQueue = new WriteQueue({ transaction: fn => this._transaction(fn, true),
       onFailure: error => this.writeHealth.failure(error), onHealth: event => this.writeHealth.queue(event) });
     this.writeHealth = createWriteHealth(Date.now, () => this.writeQueue.status());
@@ -292,6 +294,7 @@ export class Store {
       }
       if (readOnly) { storeConnections.set(this, this.db); registerJournalFunctions(this.db); this.db.exec(`PRAGMA query_only = ON; PRAGMA busy_timeout = ${isMainThread ? 0 : 5000};`); return; }
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
+      if (managedCheckpoints) this.db.exec('PRAGMA wal_autocheckpoint=0;');
       installJournal(this.db);
       this.insertObservation = this.db.prepare(`INSERT INTO observations
         (source, device, signal, value, unit, source_time, received_at, quality, raw, import_id, row_number)
@@ -304,8 +307,9 @@ export class Store {
 
   close() {
     if (this.closePending) return this.closePending;
+    this.walMaintenance?.close();
     this.writeQueue.close();
-    if (!this.writer && !this.writerStartPending) { if (this.db.isOpen) this.db.close(); return; }
+    if (!this.writer && !this.writerStartPending && !this.writeQueue.running) { if (this.db.isOpen) this.db.close(); return; }
     this.closePending = (async () => {
       // Startup may own a worker before publishing its connection. Join that
       // lifetime too: callers can release the database path after close.
@@ -345,6 +349,7 @@ export class Store {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       this.insertEvent = this.db.prepare('INSERT INTO events (type, payload, at) VALUES (?, ?, ?)');
       this.writeQueue.asyncTransaction = fn => this._workerTransaction(fn);
+      this.walMaintenance = new WalMaintenance(this);
     });
     return this.writerStartPending;
   }
@@ -495,6 +500,21 @@ export class Store {
 
   writeQueueStatus() { return this.writeQueue.status(); }
 
+  // Shared with worker file/query steps; no SQLite transaction spans the await.
+  // A background failure is not a failed controller save or actuator receipt.
+  runStorageTask(fn, { kind = 'mirror', signal, isCurrent } = {}) {
+    const at = Date.now(), queued = performance.now();
+    return this.writeQueue.exclusive(async () => {
+      const started = performance.now();
+      try { return await fn(); }
+      finally {
+        this.storageTurns ??= [];
+        this.storageTurns.push({ kind, at, queueMs: started - queued, runMs: performance.now() - started });
+        if (this.storageTurns.length > 64) this.storageTurns.shift();
+      }
+    }, { priority: 'background', signal, ...(isCurrent ? { isCurrent } : {}) });
+  }
+
   runPublication(fn, options = {}) {
     if (this.readOnly) return Promise.reject(new Error('Publication requires writable storage.'));
     if (this.transactionDepth) return new Promise((resolve, reject) => {
@@ -524,7 +544,7 @@ export class Store {
   }
 
   transaction(fn) {
-    return this._transaction(fn);
+    return this.storageAdmission ? this.storageAdmission(()=>this._transaction(fn)) : this._transaction(fn);
   }
 
   _transaction(fn, admission = false) {

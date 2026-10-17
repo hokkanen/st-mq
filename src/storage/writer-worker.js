@@ -23,6 +23,7 @@ const signal = new Int32Array(workerData.syncSignal);
 const syncResponse = new Uint8Array(workerData.syncResponse);
 const syncPort = workerData.syncPort;
 let store, phase = 'idle', closed = false;
+let dirtySince = null, checkpointStatusOnly = false, nextCheckpointPoll = 0;
 const statements = new Map();
 
 function encode(message) {
@@ -91,6 +92,22 @@ function rollback() {
 }
 function execute(op, args, synchronous) {
   if (closed) throw failure('STORAGE_CLOSED');
+  if (op === 'checkpoint') {
+    if (synchronous || phase !== 'idle' || !keys(args, [])) invalid();
+    // Supported older Node 22 builds without SQLite's status-only mode use a
+    // periodic PASSIVE call, never an unrecognized pragma silently doing I/O.
+    if(!checkpointStatusOnly&&performance.now()<nextCheckpointPoll)return {ran:false,elapsedMs:0};
+    nextCheckpointPoll=performance.now()+1000;
+    const before = checkpointStatusOnly ? store.db.prepare('PRAGMA wal_checkpoint(NOOP)').get() : null;
+    const outstanding = before ? before.log - before.checkpointed : null;
+    if (outstanding === 0) dirtySince = null;
+    else dirtySince ??= performance.now();
+    if (before && (outstanding <= 0 || outstanding < 100 && performance.now() - dirtySince < 5000))
+      return { ...before, ran: false, elapsedMs: 0 };
+    const started = performance.now(), result = store.db.prepare('PRAGMA wal_checkpoint(PASSIVE)').get();
+    if (result.log === result.checkpointed) dirtySince = null;
+    return { ...result, ran: true, elapsedMs: performance.now() - started };
+  }
   if (op === 'compact') {
     if (!synchronous || phase !== 'idle' || !keys(args, ['options'])
       || args.options !== undefined && !keys(args.options, ['maxBytes', 'maxCommits'])) invalid();
@@ -141,7 +158,9 @@ function receive(frame, synchronous) {
 
 try {
   if (!object(workerData) || typeof workerData.path !== 'string' || workerData.path === ':memory:') invalid();
-  store = new Store(workerData.path);
+  store = new Store(workerData.path, { managedCheckpoints: true });
+  const [major, minor] = store.db.prepare('SELECT sqlite_version() AS version').get().version.split('.').map(Number);
+  checkpointStatusOnly = major > 3 || major === 3 && minor >= 51;
   setJournalControllerBounds(store.db);
   // Lock contention belongs to asynchronous admission, never a hidden sleep
   // inside a synchronous statement request.

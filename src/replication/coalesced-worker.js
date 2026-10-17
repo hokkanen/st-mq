@@ -4,6 +4,7 @@ import { openSync, closeSync, readSync, writeSync, fsyncSync, unlinkSync, rename
 import { StringDecoder } from 'node:string_decoder';
 import { dirname, join } from 'node:path';
 import { yieldToController } from '../recovery/scheduler.js';
+import { storageStep } from '../storage/worker-admission.js';
 import { Store } from '../storage/store.js';
 import { MAX_COMMIT_BYTES, validCheckpoint, matchingCheckpoint } from '../storage/journal.js';
 import { enrollJournalPeer, peerAnchor, validatePeerTransferExport, preparePeerTransfer, peerTransferRows, acknowledgePeer,
@@ -60,60 +61,63 @@ try {
       || !Number.isSafeInteger(stamp.sequence) || stamp.sequence<0
       || !Number.isSafeInteger(workerData.at) || workerData.at<0) invalid();
   }
-  store=new Store(dbPath,{readOnly:operation==='anchor'||operation==='checkpoint'&&!workerData.enroll});
+  store=storageStep(()=>new Store(dbPath,{readOnly:operation==='anchor'||operation==='checkpoint'&&!workerData.enroll,
+    managedCheckpoints:workerData.managedCheckpoints}));
   let value;
-  if(operation==='anchor') value=peerAnchor(store.db);
+  if(operation==='anchor') value=storageStep(()=>peerAnchor(store.db));
   else if(operation==='checkpoint') {
-    if(workerData.enroll)enrollJournalPeer(store.db);
-    value=store.checkpoint();
+    value=storageStep(()=>{if(workerData.enroll)enrollJournalPeer(store.db);return store.checkpoint();});
   }
-  else if(operation==='enroll') value=enrollJournalPeer(store.db,{checkpoint:workerData.checkpoint});
-  else if(operation==='accept') value=acceptPeerCheckpoint(store.db,{checkpoint:workerData.checkpoint});
+  else if(operation==='enroll') value=storageStep(()=>enrollJournalPeer(store.db,{checkpoint:workerData.checkpoint}));
+  else if(operation==='accept') value=storageStep(()=>acceptPeerCheckpoint(store.db,{checkpoint:workerData.checkpoint}));
   else if(operation==='lineage') {
     const stamp=workerData.value;
-    await store.runWrite(()=>store.db.prepare(`INSERT INTO state(key,value,updated_at) VALUES('pairing-lineage',?,?)
+    storageStep(()=>store.transaction(()=>store.db.prepare(`INSERT INTO state(key,value,updated_at) VALUES('pairing-lineage',?,?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`)
-      .run(JSON.stringify(stamp),workerData.at));
+      .run(JSON.stringify(stamp),workerData.at)));
     value=true;
   }
-  else if(operation==='release-source') value=releasePeerSource(store.db,{sourcePath:workerData.sourcePath});
-  else if(operation==='rewind') value=rewindPeer(store.db,{checkpoint:workerData.checkpoint});
+  else if(operation==='release-source') value=storageStep(()=>releasePeerSource(store.db,{sourcePath:workerData.sourcePath}));
+  else if(operation==='rewind') value=storageStep(()=>rewindPeer(store.db,{checkpoint:workerData.checkpoint}));
   else if(operation==='acknowledge') {
-    do { value=acknowledgePeer(store.db,{checkpoint:workerData.checkpoint});if(!value.complete) await yieldToController(); } while(!value.complete);
+    do { value=storageStep(()=>acknowledgePeer(store.db,{checkpoint:workerData.checkpoint,limit:16,maxBytes:128*1024}));if(!value.complete) await yieldToController(); } while(!value.complete);
   } else if(operation==='export') {
-    validatePeerTransferExport(store.db,workerData);
-    const anchor=peerAnchor(store.db);
+    storageStep(()=>validatePeerTransferExport(store.db,workerData));
+    const anchor=storageStep(()=>peerAnchor(store.db));
     if(anchor?.pending && matchingCheckpoint(workerData.after,anchor.pending.target)) {
-      do {value=acknowledgePeer(store.db,{checkpoint:workerData.after});if(!value.complete) await yieldToController();} while(!value.complete);
+      do {value=storageStep(()=>acknowledgePeer(store.db,{checkpoint:workerData.after,limit:16,maxBytes:128*1024}));if(!value.complete) await yieldToController();} while(!value.complete);
     }
-    const metadata=preparePeerTransfer(store.db,{after:workerData.after,sourcePath:workerData.sourcePath,sourceSnapshot:workerData.sourceSnapshot,refresh:workerData.refresh});
+    const metadata=preparePeerTransfer(store.db,{after:workerData.after,sourcePath:workerData.sourcePath,sourceSnapshot:workerData.sourceSnapshot,refresh:workerData.refresh,step:storageStep});
     const directory=workerData.directory;
-    mkdirSync(directory,{recursive:true,mode:0o700});
+    storageStep(()=>mkdirSync(directory,{recursive:true,mode:0o700}));
     const path=join(directory,`peer-${metadata.id}.changes`),temporary=`${path}.partial`;
     // Recreate the bounded-memory wire file from the durable private delivery
     // snapshot after an interrupted response or receiver restart.
-    try {unlinkSync(temporary);}catch(error){if(error.code!=='ENOENT')throw error;}
-    const fd=openSync(temporary,'wx',0o600),hash=createHash('sha256');let bytes=0;
+    storageStep(()=>{try {unlinkSync(temporary);}catch(error){if(error.code!=='ENOENT')throw error;}});
+    const fd=storageStep(()=>openSync(temporary,'wx',0o600)),hash=createHash('sha256');let bytes=0,syncedBytes=0;
     const write=value=>{const chunk=Buffer.from(`${JSON.stringify(value)}\n`);writeAll(fd,chunk);hash.update(chunk);bytes+=chunk.length;};
     try {
-      write({mode:'peer',...publicMetadata(metadata)});
+      storageStep(()=>write({mode:'peer',...publicMetadata(metadata)}));
       let afterOrdinal=-1,count=0;
       for(;;) {
-        const rows=peerTransferRows(store.db,{id:metadata.id,afterOrdinal,limit:128});if(!rows.length)break;
-        for(const row of rows){write(row.change);afterOrdinal=row.ordinal;count++;}
+        const rows=storageStep(()=>peerTransferRows(store.db,{id:metadata.id,afterOrdinal,limit:16,maxBytes:128*1024}));if(!rows.length)break;
+        storageStep(()=>{
+          for(const row of rows){write(row.change);afterOrdinal=row.ordinal;count++;}
+          if(bytes-syncedBytes>=128*1024){fsyncSync(fd);syncedBytes=bytes;}
+        });
       }
       if(count!==metadata.rows) invalid();
-      fsyncSync(fd);
-    } finally {closeSync(fd);}
-    renameSync(temporary,path);const parent=openSync(dirname(path),'r');try{fsyncSync(parent);}finally{closeSync(parent);}
+      storageStep(()=>fsyncSync(fd));
+    } finally {storageStep(()=>closeSync(fd));}
+    storageStep(()=>{renameSync(temporary,path);const parent=openSync(dirname(path),'r');try{fsyncSync(parent);}finally{closeSync(parent);}});
     value={...publicMetadata(metadata),bytes,digest:hash.digest('hex')};
   } else if(operation==='apply') {
     const input=fileRows(workerData.path,workerData.metadata);
-    try{value=applyPeerTransfer(store.db,{...publicMetadata(workerData.metadata),changes:input.rows});}
+    try{value=storageStep(()=>applyPeerTransfer(store.db,{...publicMetadata(workerData.metadata),changes:input.rows}));}
     finally{input.close();}
   } else invalid();
   parentPort.postMessage({ok:true,value});
 } catch(error) {
   const details=databaseErrorDetails(error),code=details?.code ?? (/^journal_[a-z_]+$/.test(error?.code ?? '') ? error.code : 'verification_failed');
   parentPort.postMessage({ok:false,error:{code,...details}});
-} finally {store?.close();}
+} finally {if(store)storageStep(()=>store.close());}

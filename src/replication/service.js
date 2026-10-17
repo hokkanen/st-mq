@@ -4,11 +4,12 @@ import { replicationError } from './publication.js';
 
 /** Completion-based scheduling never overlaps attempts or queues missed intervals. */
 export class ReplicationService {
-  constructor({ dbPath, config, onYield, clock = Date.now, synchronize = synchronizeReplica }) {
+  constructor({ dbPath, config, onYield, onStorage, managedCheckpoints=false, clock = Date.now, synchronize = synchronizeReplica }) {
     storageOperationHealth.register('replication');
     this.dbPath = dbPath;
     this.config = config;
     this.onYield = onYield;
+    this.onStorage = onStorage; this.managedCheckpoints = managedCheckpoints;
     this.clock = clock;
     this.synchronize = synchronize;
     this.running = false;
@@ -35,6 +36,7 @@ export class ReplicationService {
     this.state = { ...this.state, state: 'syncing', phase: 'connecting', lastAttemptAt: this.clock(), nextAttemptAt: null };
     try {
       const result = await this.synchronize({ dbPath: this.dbPath, config: this.config, signal: this.abort.signal, onYield: this.onYield,
+        onStorage: this.onStorage, managedCheckpoints: this.managedCheckpoints,
         onPhase: phase => { this.state.phase = phase; } });
       const { generation, digest, bytes, sourceStartedAt, sourceAt, verifiedAt } = result;
       this.state = { ...this.state, generation, digest, bytes, sourceStartedAt, sourceAt, verifiedAt,

@@ -125,11 +125,48 @@ withdrawal still takes effect immediately for command permission and survives
 an older save's rollback.
 
 This isolates ordinary native COMMIT waits from the event loop; SQLite still has
-one committing writer. FULL synchronous WAL, automatic checkpoints and retained
-evidence remain unchanged. Synchronous callback work, bounded statement RPC and
+one committing writer. FULL synchronous WAL and retained evidence remain
+unchanged. Runtime checkpoint admission is described below. Synchronous callback work, bounded statement RPC and
 main-thread read queries can still delay the event loop. See the
 [responsiveness benchmark](sqlite-storage-benchmarks.md#dedicated-writer-responsiveness)
 for measured benefits, overhead and installed-validation limits.
+
+### Background storage admission
+
+The runtime Store's existing queue admits control and ordinary saves before
+queued background storage steps. Mirror staging, acknowledgement, wire-file
+output and transfer reads share this admission, as do ordinary learning-cache
+writes and history-reader SQL. A worker requests a turn before native I/O and
+releases it afterwards; cancellation retains an admitted reservation until that
+worker actually exits. CPU processing and network waits need no storage turn.
+Exact-head learning publication retains its existing exclusive authority fence.
+After 32 foreground jobs, one pending background step may precede ordinary
+ingestion to prevent maintenance starvation; a pending urgent control save
+continues to take priority.
+
+Read cursors release admission after at most 64 returned rows or about 8 ms of
+iteration work. Their original read transaction remains coherent between turns;
+a pinned reader can still prevent a checkpoint from completing. Mirror staging
+uses private transactions of at most 16 records, approximately 128 KiB, or 8 ms
+of preparation work before COMMIT. One legal larger record is handled alone.
+Private intermediate batches grant no publication authority: the complete frozen
+target, fingerprints, source clocks, file synchronization and pending receipt
+are still required. Source acknowledgement uses the same small row/byte limits.
+The receiver continues to apply each verified transfer atomically.
+
+The persistent runtime writer and admitted background writers disable independent
+automatic checkpoints. One runtime owner polls at most every 250 ms and admits
+PASSIVE checkpoint work through the background lane when at least 100 frames
+remain, or a smaller tail has waited five seconds. SQLite's status-only NOOP mode
+avoids checkpoint I/O during polls. Supported Node builds without that capability
+use a periodic PASSIVE call at most once a second. Offline Stores retain native
+checkpoint ownership. Shutdown closes the maintenance timer before the writer.
+
+These are work/admission budgets, not latency guarantees. A SQLite query step,
+transaction COMMIT, file sync or checkpoint cannot be interrupted to enforce a
+wall-clock budget. A large atomic transaction can exceed the frame target.
+Checkpoint and background-step samples remain bounded in RAM; no extra database
+rows, persisted format, retention reduction or schema conversion is introduced.
 
 ## Local writes and compaction
 

@@ -11,15 +11,15 @@ export class WriteQueue {
   constructor({ transaction, asyncTransaction = null, onFailure = () => {}, onHealth = () => {}, clock = Date.now,
     monotonic = () => performance.now() }) {
     Object.assign(this, { transaction, asyncTransaction, onFailure, onHealth, clock, monotonic });
-    this.queues = { control: [], normal: [] };
+    this.queues = { control: [], normal: [], background: [] };
     this.bytes = 0; this.running = false; this.closed = false; this.timer = null;
-    this.waitingSince = null; this.overflows = 0; this.controlStreak = 0;
+    this.waitingSince = null; this.overflows = 0; this.controlStreak = 0; this.foregroundStreak = 0;
     this.pendingLength = 0;
     this.shutdown = new AbortController();
     this.idleListeners = new Set();
   }
   status() {
-    const jobs = [...this.queues.control, ...this.queues.normal];
+    const jobs = Object.values(this.queues).flat();
     const queued = jobs.filter(job => !job.started);
     return { pending: jobs.length, bytes: this.bytes, waitingSince: this.waitingSince,
       oldestAt: jobs.length ? Math.min(...jobs.map(job => job.at)) : null,
@@ -36,7 +36,8 @@ export class WriteQueue {
       this.waitingSince = null;
     }
   }
-  completed(job) { this.health({ type: 'completed', priority: job.priority, delayMs: job.delayMs }); }
+  completed(job) { if(job.priority!=='background') this.health({ type: 'completed', priority: job.priority, delayMs: job.delayMs }); }
+  failed(job,error) { if(job.priority!=='background') this.onFailure(error); }
   start(job) {
     job.started = true; this.pendingLength--;
     this.health({ type: 'pending', pending: this.pendingLength });
@@ -59,11 +60,11 @@ export class WriteQueue {
     if (!external && fn.constructor?.name === 'AsyncFunction') return Promise.reject(new TypeError('SQLite transaction callback must be synchronous'));
     if (this.closed) return Promise.reject(failure('STORAGE_CLOSED', 'Recording storage is closed.'));
     if (signal?.aborted) return Promise.reject(failure('STORAGE_WRITE_CANCELLED', 'The pending save was cancelled.'));
-    if (this.queues.control.length + this.queues.normal.length >= MAX_PENDING || this.bytes + bytes > MAX_BYTES) {
+    if (Object.values(this.queues).reduce((count, queue) => count + queue.length, 0) >= MAX_PENDING || this.bytes + bytes > MAX_BYTES) {
       this.overflows++;
       this.health({ type: 'rejected' });
       const error = failure('STORAGE_QUEUE_FULL', 'Recording is delayed and the pending save queue is full. This save was not accepted.');
-      this.onFailure(error);
+      if(priority!=='background')this.onFailure(error);
       return Promise.reject(error);
     }
     return new Promise((resolve, reject) => {
@@ -97,7 +98,7 @@ export class WriteQueue {
   }
   schedule(delay) {
     if (this.closed || this.timer) return;
-    if (!this.queues.control.length && !this.queues.normal.length) { this.waiting(false); return; }
+    if (!Object.values(this.queues).some(queue => queue.length)) { this.waiting(false); return; }
     this.timer = setTimeout(() => { this.timer = null; this.pump(); }, delay);
   }
   pump() {
@@ -109,7 +110,7 @@ export class WriteQueue {
     try {
       while (!this.closed && completed < 8 && performance.now() - started < 8) {
         // Control is urgent, but cannot permanently starve retained observations.
-        const priority = this.queues.control.length && (this.controlStreak < 8 || !this.queues.normal.length) ? 'control' : 'normal';
+        const priority = this.nextPriority();
         const job = this.queues[priority][0];
         if (!job) break;
         let invoked = false;
@@ -122,10 +123,12 @@ export class WriteQueue {
               job.delayMs = Math.max(0, this.monotonic() - job.monotonicAt); return job.fn();
             }).then(result => { this.completed(job); job.resolve(result); }, error => {
               if (error?.committed === true) this.completed(job); else this.rejected(error);
-              this.onFailure(error); job.reject(error);
+              this.failed(job,error); job.reject(error);
             }).finally(() => {
               this.remove(job); this.running = false; this.waiting(false);
               this.controlStreak = priority === 'control' ? this.controlStreak + 1 : 0;
+              this.foregroundStreak = priority === 'background' ? 0 : this.foregroundStreak + 1;
+              this.notifyIdle();
               this.schedule(0);
             });
             return;
@@ -145,18 +148,26 @@ export class WriteQueue {
             this.waiting(true); contended = true; break;
           }
           if (error?.committed === true) this.completed(job); else this.rejected(error);
-          this.remove(job); this.onFailure(error); job.reject(error);
+          this.remove(job); this.failed(job,error); job.reject(error);
         }
         this.controlStreak = priority === 'control' ? this.controlStreak + 1 : 0;
+        this.foregroundStreak = priority === 'background' ? 0 : this.foregroundStreak + 1;
         completed++;
       }
-    } finally { if (!external) this.running = false; }
+    } finally { if (!external) {this.running = false;this.notifyIdle();} }
     this.schedule(contended ? RETRY_MS : 0);
   }
   // The writer connection is reserved from asynchronous BEGIN through durable
   // settlement. The callback still runs once, synchronously, after admission.
+  nextPriority() {
+    // Sustained ingestion must not indefinitely prevent WAL maintenance or
+    // mirroring. An explicitly urgent control save still precedes this turn.
+    if(!this.queues.control.length&&this.queues.background.length&&this.foregroundStreak>=32)return 'background';
+    if (this.queues.control.length && (this.controlStreak < 8 || !this.queues.normal.length)) return 'control';
+    return this.queues.normal.length ? 'normal' : 'background';
+  }
   pumpAsync() {
-    const priority = this.queues.control.length && (this.controlStreak < 8 || !this.queues.normal.length) ? 'control' : 'normal';
+    const priority = this.nextPriority();
     const job = this.queues[priority][0];
     if (!job) { this.notifyIdle(); return; }
     this.running = true; job.admitting = true;
@@ -181,10 +192,11 @@ export class WriteQueue {
         contended = true; this.waiting(true); return;
       }
       if (error?.committed === true) this.completed(job); else this.rejected(error);
-      this.remove(job); this.onFailure(error); job.reject(error);
+      this.remove(job); this.failed(job,error); job.reject(error);
     }).finally(() => {
       job.admitting = false; this.running = false;
       if (!contended) this.controlStreak = priority === 'control' ? this.controlStreak + 1 : 0;
+      if (!contended) this.foregroundStreak = priority === 'background' ? 0 : this.foregroundStreak + 1;
       this.notifyIdle(); this.schedule(contended ? RETRY_MS : 0);
     });
   }
@@ -201,7 +213,7 @@ export class WriteQueue {
     if (this.closed) return;
     this.closed = true; clearTimeout(this.timer); this.timer = null;
     this.shutdown.abort();
-    for (const job of [...this.queues.control, ...this.queues.normal]) {
+    for (const job of Object.values(this.queues).flat()) {
       if (job.started || job.admitting) continue;
       this.remove(job); this.health({ type: 'cancelled' });
       job.reject(failure('STORAGE_CLOSED', 'Recording storage closed before the pending save could commit.'));

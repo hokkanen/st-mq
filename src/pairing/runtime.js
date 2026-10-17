@@ -195,6 +195,8 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       return web.acceptCertificate(body);
     },
     admitStorageWrite: () => runtime?.store && !runtime.store.readOnly ? runtime.store.runWrite(() => {}) : undefined,
+    runStorageTask: operation => runtime?.store ? runtime.store.runStorageTask(operation) : operation(),
+    managedCheckpoints: () => Boolean(runtime?.store?.walMaintenance),
     async writeLineage({ dbPath, value }) {
       const owner = manager, active = runtime, token = controllerToken;
       const current = () => manager === owner && !closed && !closing && !owner.closed && !owner.stopping

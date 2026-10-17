@@ -12,11 +12,12 @@ import { CHART_VIEW_BY_KEY } from '../domain/chart-views.js';
 import { CHARGING_ALLOWANCE_SIGNALS } from '../charging/allowance-history.js';
 import { CHARGING_ALLOWANCE_SERIES } from './chart-charging-allowances.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
+import { storageStep, admittedReader } from '../storage/worker-admission.js';
 
 // A separate read-only SQLite connection keeps reconstruction off the control
 // loop. HTTP callers also transfer worker-encoded bytes instead of cloning and
 // serializing the chart object on the main thread.
-const db = new DatabaseSync(workerData.dbPath, { readOnly: true });
+const db = admittedReader(storageStep(() => new DatabaseSync(workerData.dbPath, { readOnly: true })));
 db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE;');
 const store = { db, path: workerData.dbPath };
 const cache = new Map(); let cacheBytes = 0, version = null;

@@ -2,6 +2,7 @@ import { storageOperationHealth } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { sensorRevision } from './sensor-inputs.js';
 import { validLearningCheckpoint } from './committed-learning.js';
+import { attachStorageAdmission } from '../storage/worker-admission.js';
 
 const failureMessage = 'Learning checkpoint cache could not be saved; committed learning remains available for replay.';
 const sameFences = (left, right) => left && right
@@ -116,10 +117,13 @@ export class LearningCheckpointCache {
       this.startupOperation.progress('starting');
       try {
         const cancellation = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+        const storageSignal = new Int32Array(new SharedArrayBuffer(4));
         const worker = new Worker(new URL('./learning-checkpoint-cache-worker.js', import.meta.url), {
           workerData: { dbPath: this.store.path, input: this.input, databaseId: this.pending.fences.databaseId,
-            cancellation: cancellation.buffer },
+            cancellation: cancellation.buffer, storageSignal: storageSignal.buffer,
+            managedCheckpoints: Boolean(this.store.walMaintenance) },
         });
+        attachStorageAdmission(worker, storageSignal, operation => this.store.runStorageTask(operation, { kind: 'learning-cache' }));
         this.worker = worker; this.cancellation = cancellation; this.ready = false;
         worker.on('error', () => this.workerFailed(worker));
         worker.on('exit', () => { if (this.worker === worker) this.workerFailed(worker); });

@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Give controller saves priority between bounded mirror and history-read steps.
+  Coordinate runtime WAL checkpoints separately from commits, targeting 100
+  outstanding frames while retaining FULL durability and atomic peer publication.
+  Native queries and file synchronization still have no hard duration bound.
+
 - Keep clock-aligned OCPP interval reports separate from instantaneous charger
   measurements so they cannot cause false telemetry loss during identification.
   Retain genuine measurement and transaction conflicts, source clocks and probe limits.
