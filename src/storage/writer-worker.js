@@ -102,7 +102,7 @@ function execute(op, args, synchronous) {
     const outstanding = before ? before.log - before.checkpointed : null;
     if (outstanding === 0) dirtySince = null;
     else dirtySince ??= performance.now();
-    if (before && (outstanding <= 0 || outstanding < 100 && performance.now() - dirtySince < 5000))
+    if (before && (outstanding <= 0 || outstanding < 50 && performance.now() - dirtySince < 5000))
       return { ...before, ran: false, elapsedMs: 0 };
     const started = performance.now(), result = store.db.prepare('PRAGMA wal_checkpoint(PASSIVE)').get();
     if (result.log === result.checkpointed) dirtySince = null;

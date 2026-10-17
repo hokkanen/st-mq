@@ -7,7 +7,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 ## Unreleased
 
 - Give controller saves priority between bounded mirror and history-read steps.
-  Coordinate runtime WAL checkpoints separately from commits, targeting 100
+  Coordinate runtime WAL checkpoints separately from commits, targeting 50
   outstanding frames while retaining FULL durability and atomic peer publication.
   Native queries and file synchronization still have no hard duration bound.
   Cancelling a chart releases its storage reservation after worker termination.
