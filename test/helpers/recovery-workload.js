@@ -115,7 +115,7 @@ export async function recoveryWorkload(t, { records = 1024, windows = 32, payloa
   }
 
   const preview = await measure('preview', onProgress => recoveryPreview({ masterPath: f.master.path, donorPath: snapshot,
-    input: 'mqtt', workDirectory: join(f.directory, 'work'), signal: f.signal, onProgress }));
+    input: 'mqtt', signal: f.signal, onProgress }));
   assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n, 1, 'preview never imports source history');
   let tail = windows + 2;
   const recovered = await measure('recover', onProgress => recoverHistory({ store: f.master, donorPath: snapshot,
@@ -137,7 +137,8 @@ export async function recoveryWorkload(t, { records = 1024, windows = 32, payloa
     assert.equal(backup.db.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
   } finally { backup.close(); }
   const originalRows = f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n;
-  observation(f.master, start + 500 * W, 22, { device: 'synthetic-later-sensor' });
+  await f.master.runWrite(() => observation(f.master, start + 500 * W, 22,
+    { device: 'synthetic-later-sensor' }), { signal: f.signal });
   for (const active of [false, true]) {
     const args = { store: f.master, input: 'mqtt', recoveryId: recovered.report.recoveryId, active, signal: f.signal };
     const action = active ? 'restore' : 'revert';
