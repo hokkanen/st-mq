@@ -32,6 +32,12 @@ async function ready(t) {
   // setting carried into a new plug or a direct edit of controller RAM.
   f.fields.current_limit = { value: 9, at: f.now, source: 'rpc' };
   await f.settle(); await store.runWrite(() => {}); await store.startWriter();
+  // Worker startup can overlap an ordinary native polling episode. Join its
+  // accepted input and already queued reconciliation before selecting the
+  // explicit action token; an active admission correctly withholds takeover.
+  await store.runWrite(() => {});
+  for (const item of Object.values(f.runtime.chargers)) await item.reconcileFlight;
+  await store.runWrite(() => {});
   const before = f.view('charger2'), item = f.runtime.chargers.charger2;
   assert.equal(before.control.manualCurrentA, 9);
   assert.equal(before.control.takeover.available, true);
