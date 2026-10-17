@@ -21,8 +21,8 @@ async function fixture(t, { populated = true } = {}) {
   const runtime = new ChargingRuntime({ engine, store, config, clock: engine.clock });
   engine.charging = runtime;
   // This test exercises real observation persistence, without numerical worker
-  // searches or native equipment. Two ordinary day horizons make its current
-  // persisted projection comparable in size to a populated charging runtime.
+  // searches or native equipment. Keep two populated live search horizons while
+  // verifying that their candidate vectors stay out of the durable projection.
   runtime.tick = () => {};
   const intervals = Array.from({ length: 96 }, (_, i) => ({ start: initial + i * 900_000,
     end: initial + (i + 1) * 900_000, priceCtPerKwh: 10 + i / 13, powerKw: 11,
@@ -31,8 +31,14 @@ async function fixture(t, { populated = true } = {}) {
   if (populated) for (const item of Object.values(runtime.chargers)) item.plan = { state: 'waiting', reason: 'economic-pause',
     at: initial, periods: [], intervals: structuredClone(intervals), requiredGridKwh: 20 };
   await store.runWrite(() => runtime.persist());
-  const bytes = Buffer.byteLength(JSON.stringify(readChargingRuntime(store, runtime.key)));
-  if (populated) assert(bytes > 600_000 && bytes < 2 * 1024 * 1024, `Real runtime projection size: ${bytes}`);
+  const saved = readChargingRuntime(store, runtime.key), bytes = Buffer.byteLength(JSON.stringify(saved));
+  if (populated) {
+    const searchBytes = Buffer.byteLength(JSON.stringify(Object.values(runtime.chargers).map(item => item.plan)));
+    assert(searchBytes > 600_000 && searchBytes < 2 * 1024 * 1024, `Live search size: ${searchBytes}`);
+    assert(bytes > 50_000 && bytes < 200_000, `Compact runtime projection size: ${bytes}`);
+    for (const item of Object.values(saved.chargers))
+      assert(item.plan.intervals.every(row => !Object.hasOwn(row, 'scenarios')));
+  }
   const client = new EventEmitter();
   client.pending = [];
   client.subscribe = (topic, _options, done) => client.pending.push({ topic, done });

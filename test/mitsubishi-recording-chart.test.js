@@ -69,6 +69,7 @@ function fixture(t, { disk = false, monotonicClock } = {}) {
       }), {}, now);
     },
     rows(signal = ACTIVE) { return store.observations({ signal }); },
+    flush() { recorder.flush(now, { force: true }); },
     chart(left = ACTIVE, extra = {}) {
       return getChartData({ store, input: 'mqtt', startDate: '2026-09-24', endDate: '2026-09-24',
         now, left, ...extra });
@@ -164,6 +165,7 @@ test('stable cached compressor timestamps remain one measurement and genuine new
   assert.equal(f.emitted.filter(row => row.signal === FREQUENCY).length, 2);
   assert.equal(f.rows(FREQUENCY).length, 1, 'equal values compact without discarding their new measurement coverage');
   f.at(3 * MINUTE);
+  f.flush();
   const points = f.chart(FREQUENCY).series[FREQUENCY];
   assert(points.some(point => point.x === BASE + 30_900 + COVERAGE_AGE && point.y === null), 'coverage expires from the last real measurement');
 });
@@ -178,6 +180,7 @@ test('coarse UTC and source-age jitter retain one stable coverage policy', t => 
   }
   assert.equal(f.rows().length, 1, 'rounding jitter does not create policy observations');
   assert.equal(f.rows()[0].raw.reportIntervalMs, COVERAGE_AGE);
+  f.flush();
   const coverage = f.store.db.prepare('SELECT samples FROM recorder_coverage WHERE signal=?').all(ACTIVE);
   assert.deepEqual(coverage.map(row => row.samples), [10], 'only actual newer measurements extend the span');
 });
