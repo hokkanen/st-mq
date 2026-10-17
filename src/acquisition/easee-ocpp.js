@@ -14,6 +14,8 @@ const FIRST_MESSAGE_TIMEOUT_MS = 30_000;
 const NO_TRANSACTION_STATUSES = new Set(['Available', 'Finishing']);
 const RECOVERABLE_STATUSES = new Set(['Charging', 'SuspendedEVSE', 'SuspendedEV']);
 const EXTERNAL_STOP_REASONS = new Set(['Remote', 'Local', 'DeAuthorized']);
+const METER_CONTEXTS = new Set(['Interruption.Begin', 'Interruption.End', 'Sample.Clock', 'Sample.Periodic',
+  'Transaction.Begin', 'Transaction.End', 'Trigger', 'Other']);
 const REQUEST_ACTIONS = new Set(['SetChargingProfile', 'ClearChargingProfile', 'GetCompositeSchedule', 'GetConfiguration', 'ChangeAvailability', 'TriggerMessage']);
 const requestError = code => Object.assign(new Error(code), { code });
 const unreachableAddresses = new BlockList();
@@ -77,6 +79,8 @@ export function ocppMeterReadings(payload, now) {
       // Easee native firmware reports its connector's measured electricity at
       // Inlet. Connector 1 is still the charger, never the property's meter.
       if (!sample || sample.format && sample.format !== 'Raw' || sample.location && !['Outlet', 'Inlet'].includes(sample.location)) continue;
+      const context = sample.context === undefined ? 'Sample.Periodic' : sample.context;
+      if (!METER_CONTEXTS.has(context)) continue;
       if (typeof sample.value !== 'string' || !/^[+]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(sample.value)) continue;
       const value = Number(sample.value);
       if (!Number.isFinite(value) || value < 0) continue;
@@ -89,7 +93,7 @@ export function ocppMeterReadings(payload, now) {
       } else if (sample.measurand === 'Voltage' && /^L[123]-N$/.test(sample.phase) && (sample.unit ?? 'V') === 'V') {
         id = 193 + Number(sample.phase[1]); unit = 'V'; if (value > 500) continue;
       }
-      if (id) result.push({ id, value: normalized, unit, timestamp: new Date(at).toISOString() });
+      if (id) result.push({ id, value: normalized, unit, timestamp: new Date(at).toISOString(), context });
     }
   }
   return result;
@@ -413,7 +417,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     callQueue.push({ action: 'TriggerMessage', payload: { requestedMessage: 'StatusNotification', connectorId: 1 } });
     sendNextCall();
   }
-  function recoverTransaction({ at, conflicting }, transactionId, receivedAt, messageId) {
+  function recoverTransaction({ at, conflicting, identityOnly = false }, transactionId, receivedAt, messageId) {
     const validId = Number.isSafeInteger(transactionId) && transactionId > 0 && transactionId < 2147483647;
     const fresh = validId && Number.isSafeInteger(at) && at >= evidenceBoundaryAt && at - receivedAt <= MAX_FUTURE_MS
       && clock() >= at && clock() - at <= MAX_AGE_MS;
@@ -427,10 +431,11 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     if (active && active.id !== transactionId || recoveryCandidate && recoveryCandidate.id !== transactionId) {
       recoveryConflict = true; observedTransaction = null; return true;
     }
+    if (identityOnly) return true;
     // An accepted StartTransaction already supplies identity. Its matching
     // non-power reports can confirm continuity even when power is unknown.
     if (active && !isRecovered(active)) return true;
-    // Aligned and periodic samples can disagree at the same source timestamp.
+    // Instantaneous samples can disagree at the same source timestamp.
     // That measurement stays unknown, but does not change transaction identity.
     // Later advancing clean evidence may confirm the same transaction again.
     if (conflicting) {
@@ -461,15 +466,20 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     return true;
   }
   function applyReadings(readings, transactionId, receivedAt, messageId) {
+    const evidenceAt = Math.max(...readings.map(row => instant(row.timestamp)));
+    if (readings.length && Number.isSafeInteger(transactionId) && transactionId > 0 && transactionId < 2147483647) {
+      if (!transactionEvidence || evidenceAt >= transactionEvidence.at) transactionEvidence = { id: transactionId, at: evidenceAt };
+    }
+    // Clock-aligned interval data is not an instantaneous measurement. Keep
+    // its transaction-identity fence, without overwriting live readings or
+    // furnishing positive transaction confirmation from the interval values.
+    if (!recoverTransaction({ at: evidenceAt, identityOnly: true }, transactionId, receivedAt, messageId)) return false;
+    readings = readings.filter(row => row.context !== 'Sample.Clock');
     const powerReadings = readings.filter(row => row.id === 120);
     const powerAt = Math.max(...powerReadings.map(row => instant(row.timestamp)));
     const currentPower = powerReadings.filter(row => instant(row.timestamp) === powerAt), priorPower = values.get(120);
     const conflictingPower = currentPower.length > 0 && (new Set(currentPower.map(row => row.value)).size !== 1
       || instant(priorPower?.timestamp) === powerAt && priorPower.value !== currentPower[0].value);
-    if (readings.length && Number.isSafeInteger(transactionId) && transactionId > 0 && transactionId < 2147483647) {
-      const at = Math.max(...readings.map(row => instant(row.timestamp)));
-      if (!transactionEvidence || at >= transactionEvidence.at) transactionEvidence = { id: transactionId, at };
-    }
     if (!recoverTransaction({ at: powerAt, conflicting: conflictingPower }, transactionId, receivedAt, messageId)) return false;
     const active = activeTransaction();
     if (readings.length && active && transactionId === active.id) {

@@ -872,7 +872,15 @@ that exact identity rather than appending it twice. Unknown response shapes stop
 setup safely.
 
 On boot ST-MQ requests periodic and clock-aligned measurements, including power,
-current and voltage. Both the socket and the measured fields must remain current;
+current and voltage. Live electricity, load allocation and identification use
+instantaneous measurements, including periodic and triggered reports. The parser
+preserves each report's context, with absent context taking OCPP's
+`Sample.Periodic` default; unsupported contexts are rejected. `Sample.Clock`
+interval data cannot supply, overwrite or renew instantaneous measurements, even
+when both contexts share a timestamp. Its transaction identifier can still
+establish a conflict, but its values cannot establish or renew positive
+transaction confirmation. Reporting requests and cadence are unchanged.
+Both the socket and the measured fields must remain current;
 heartbeats do not renew an old power/current sample. Missing or unsupported phases
 stay missing, and a local/cloud transition breaks energy integration rather than
 joining unrelated sample heads. Native Easee measurements marked `Inlet` are
@@ -927,8 +935,8 @@ history. Recovery and guarded profile installation are covered by synthetic
 protocol and production-adapter tests; acceptance by the installed charger still
 needs a separately authorized hardware check.
 
-Power samples from aligned and periodic reporting can disagree at one source
-timestamp. That power value remains unknown. An already accepted
+Conflicting instantaneous power samples at one source timestamp remain unknown;
+clock-aligned interval values are kept out of that comparison. An already accepted
 `StartTransaction` retains its still-fresh identity; fresh matching-ID non-power
 measurements can confirm continuity on the current authenticated connection,
 including after reconnection. Conflicting power alone cannot renew that evidence.

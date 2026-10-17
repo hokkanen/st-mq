@@ -33,7 +33,7 @@ async function fixture(t, overrides = {}, virtualTag = '', initialState) {
     state: { get: () => saved, set: value => { if (broken) throw new Error('Synthetic storage failure'); saved = structuredClone(value); writes++; } } });
   t.after(async () => { for (const client of clients) client.terminate(); await local.close(); });
   await local.start();
-  return { local, port, get saved() { return structuredClone(saved); }, get writes() { return writes; }, set now(value) { now = value; }, set permitted(value) { permitted = value; }, set startPermitted(value) { startPermitted = value; }, set broken(value) { broken = value; },
+  return { local, port, get saved() { return structuredClone(saved); }, get writes() { return writes; }, get now() { return now; }, set now(value) { now = value; }, set permitted(value) { permitted = value; }, set startPermitted(value) { startPermitted = value; }, set broken(value) { broken = value; },
     async connect({ autoReply = true } = {}) {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ocpp/fixture-charger`, 'ocpp1.6', {
         headers: { Authorization: `Basic ${Buffer.from(`fixture-charger:${config.password}`).toString('base64')}` },
@@ -62,6 +62,14 @@ async function fixture(t, overrides = {}, virtualTag = '', initialState) {
 test('OCPP accepts only measured charger fields with source times, units and explicit phase meaning', () => {
   const rows = ocppMeterReadings(meter(), at);
   assert.equal(rows.find(row => row.id === 120).value, 6.9);
+  assert(rows.every(row => row.context === 'Sample.Periodic'), 'Missing context uses the protocol default');
+  for (const context of ['Sample.Periodic', 'Trigger', 'Sample.Clock', 'Transaction.Begin', 'Transaction.End',
+    'Interruption.Begin', 'Interruption.End', 'Other']) {
+    assert.deepEqual(ocppMeterReadings(meter(samples.map(row => ({ ...row, context }))), at)
+      .map(row => row.context), samples.map(() => context), 'Keep the source measurement context');
+  }
+  for (const context of ['unsupported', '', null, 0])
+    assert.deepEqual(ocppMeterReadings(meter(samples.map(row => ({ ...row, context }))), at), []);
   assert.deepEqual(rows.filter(row => row.unit === 'V').map(row => row.value), [230, 230, 230]);
   assert.deepEqual(ocppMeterReadings(meter(samples.map(sample => ({ ...sample, location: 'Inlet' }))), at), rows,
     'Native Easee connector 1 inlet readings retain charger phase and source meanings');
@@ -599,7 +607,7 @@ test('a power timestamp collision does not permanently revoke matching native tr
     await client.call('MeterValues', { ...meter(samples, at + 1000), transactionId });
     const connection = f.local.controlSnapshot().connectionId;
     assert.equal(f.local.controlSnapshot().transaction.confirmed, true, origin);
-    const changed = samples.map(row => row.measurand === 'Power.Active.Import' ? { ...row, value: '6890', context: 'Sample.Clock' } : row);
+    const changed = samples.map(row => row.measurand === 'Power.Active.Import' ? { ...row, value: '6890', context: 'Sample.Periodic' } : row);
     await client.call('MeterValues', { ...meter(changed, at + 1000), transactionId });
     assert.equal(f.local.controlSnapshot().transaction.confirmed, origin === 'accepted',
       'Power disagreement does not revoke accepted identity; recovered identity still needs clean power evidence');
@@ -618,6 +626,108 @@ test('a power timestamp collision does not permanently revoke matching native tr
     assert.equal(power.timestamp, new Date(at + 3000).toISOString());
     assert.equal(power.receivedAt, at + 3000);
   }
+});
+
+test('clock-aligned reports cannot invalidate or renew instantaneous OCPP measurements', async t => {
+  for (const origin of ['accepted', 'recovered']) {
+    for (const [context, order] of [['Sample.Periodic', 'live-first'], ['Sample.Periodic', 'clock-first'],
+      ['Trigger', 'mixed-live-first'], ['Trigger', 'mixed-clock-first']]) {
+      await t.test(`${origin}: ${context}, ${order}`, async t => {
+        const f = await fixture(t), client = await f.connect();
+        await client.call('StatusNotification', connector('Charging'));
+        let transactionId = 731;
+        if (origin === 'accepted') {
+          const reply = await client.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', meterStart: 0,
+            timestamp: new Date(at).toISOString() });
+          transactionId = reply[2].transactionId;
+        }
+        await client.call('MeterValues', { ...meter(), transactionId });
+        f.now = at + 1000;
+        await client.call('MeterValues', { ...meter(samples, f.now), transactionId });
+        assert.equal(f.local.controlSnapshot().transaction.confirmed, true);
+        const connectionId = f.local.controlSnapshot().connectionId;
+        const live = samples.map(row => ({ ...row, context }));
+        const aligned = samples.map(row => ({ ...row, context: 'Sample.Clock',
+          value: row.measurand === 'Power.Active.Import' ? '1000' : row.unit === 'A' ? '2' : '220' }));
+        f.now = at + 2000;
+        let liveReceivedAt = f.now;
+        const send = sampledValue => client.call('MeterValues', { ...meter(sampledValue, at + 2000), transactionId });
+        if (order.startsWith('mixed')) await send(order === 'mixed-live-first' ? [...live, ...aligned] : [...aligned, ...live]);
+        else {
+          await send(order === 'live-first' ? live : aligned);
+          f.now = at + 2025;
+          if (order === 'clock-first') liveReceivedAt = f.now;
+          await send(order === 'live-first' ? aligned : live);
+        }
+        const snapshot = f.local.controlSnapshot();
+        assert.equal(snapshot.connectionId, connectionId);
+        assert.equal(snapshot.transaction.confirmed, true);
+        assert.equal(snapshot.readings.length, samples.length);
+        assert(snapshot.readings.every(row => row.context === context
+          && row.timestamp === new Date(at + 2000).toISOString() && row.receivedAt === liveReceivedAt));
+        assert.equal(snapshot.readings.find(row => row.id === 120).value, 6.9);
+        assert.deepEqual(snapshot.readings.filter(row => row.unit === 'A').map(row => row.value), [10, 10, 10]);
+        assert.deepEqual(snapshot.readings.filter(row => row.unit === 'V').map(row => row.value), [230, 230, 230]);
+        assert(f.local.snapshot(), 'The native measurements used for identification remain available');
+        f.now = at + 3000;
+        await client.call('MeterValues', { ...meter(aligned, f.now), transactionId });
+        assert.deepEqual(f.local.controlSnapshot().readings, snapshot.readings,
+          'A later aligned interval cannot replace measurements or renew their receipt clocks');
+        f.now = at + 63_000;
+        await client.call('MeterValues', { ...meter(aligned, f.now), transactionId });
+        assert.equal(f.local.controlSnapshot().transaction.confirmed, false,
+          'Aligned reports cannot renew positive transaction confirmation');
+        assert.deepEqual(f.local.controlSnapshot().readings, []);
+        assert.equal(f.local.snapshot(), null, 'Aligned traffic cannot keep stale measurements available');
+      });
+    }
+  }
+});
+
+test('clock-aligned reports cannot recover a transaction but still fence a conflicting identity', async t => {
+  const f = await fixture(t), client = await f.connect();
+  const aligned = samples.map(row => ({ ...row, context: 'Sample.Clock' }));
+  await client.call('StatusNotification', connector('Charging'));
+  for (const offset of [0, 1000]) {
+    f.now = at + offset;
+    await client.call('MeterValues', { ...meter(aligned, f.now), transactionId: 731 });
+  }
+  assert.equal(f.local.controlSnapshot().transaction, null);
+  assert.equal(f.saved.recovered, undefined);
+  for (const offset of [2000, 3000]) {
+    f.now = at + offset;
+    await client.call('MeterValues', { ...meter(samples, f.now), transactionId: 731 });
+  }
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, true);
+  f.now = at + 4000;
+  await client.call('MeterValues', { ...meter(aligned, f.now), transactionId: 732 });
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false);
+  for (const offset of [5000, 6000]) {
+    f.now = at + offset;
+    await client.call('MeterValues', { ...meter(samples, f.now), transactionId: 731 });
+  }
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false,
+    'Later matching reports cannot vote away a genuine transaction-identity conflict');
+});
+
+test('future clock-aligned readings retain their context through quarantine', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Charging'));
+  const reply = await client.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', meterStart: 0,
+    timestamp: new Date(at).toISOString() });
+  const transactionId = reply[2].transactionId;
+  await client.call('MeterValues', { ...meter(), transactionId });
+  const before = f.local.controlSnapshot().readings;
+  const aligned = samples.map(row => ({ ...row, context: 'Sample.Clock', value: '0' }));
+  await client.call('MeterValues', { ...meter(aligned, at + 2), transactionId });
+  assert.deepEqual(f.local.controlSnapshot().readings, before);
+  f.now = at + 2;
+  assert.deepEqual(f.local.controlSnapshot().readings, before,
+    'Releasing a future interval cannot replace instantaneous measurements');
+  f.now = at + 3;
+  await client.call('MeterValues', { ...meter(aligned, f.now), transactionId: transactionId + 1 });
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false,
+    'Accepted transaction identity keeps the same conflicting-report fence');
 });
 
 test('a simultaneous power collision cannot hide a conflicting native transaction identity', async t => {

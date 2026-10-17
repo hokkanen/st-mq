@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep clock-aligned OCPP interval reports separate from instantaneous charger
+  measurements so they cannot cause false telemetry loss during identification.
+  Retain genuine measurement and transaction conflicts, source clocks and probe limits.
+
 - Limit SQLite journal-reversal and recovery-energy indexes to the records their
   queries need, reducing recording write amplification. Physical schema 32 keeps
   the same journaled data/hash layout; incompatible development databases still
