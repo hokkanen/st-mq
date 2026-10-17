@@ -36,6 +36,7 @@ import { readPlanningVoltage } from '../storage/voltage.js';
 import { jointTeslaComparisonScope } from './joint-identification.js';
 import { validateChargingRuntimeState } from './runtime-state.js';
 import { readChargingRuntime, writeChargingRuntime } from './runtime-storage.js';
+import { chargingPlanSnapshot as durablePlan } from './plan-snapshot.js';
 import { chargingFlexibility, consumeChargingFlexibility, changeChargingFlexibility, flexibilityUnavailable, nextLocalChargingDay } from './flexibility.js';
 import { chargingFlexibilityReason } from '../domain/charging-flexibility-status.js';
 import { forecastPriceOutlook } from '../acquisition/electricity-forecast.js';
@@ -209,22 +210,6 @@ function currentSharingActive(control, now) {
 const copyRequest = value => structuredClone(value);
 const clearChargeNow = request => { delete request.chargeNow; delete request.chargeNowAt; };
 const nativeTakeoverNeeded = control => Boolean(control?.manual || control?.takeoverRequired);
-// Persist deadlines, accepted periods and compact estimated totals, never a
-// forecast-price cache in the ordinary runtime snapshot or replica view.
-const durablePlans = new WeakMap();
-const durablePlan = plan => {
-  if (!plan) return plan;
-  if (isImmutableValue(plan) && durablePlans.has(plan)) return durablePlans.get(plan);
-  const { decisionPriceSnapshot, ...result } = plan;
-  if (Array.isArray(result.intervals)) result.intervals = result.intervals.filter(row => row.predicted !== true);
-  if (Array.isArray(result.accounting)) result.accounting = result.accounting.filter(row => row.predicted !== true);
-  if (isImmutableValue(plan)) {
-    const owned = immutableValue(result);
-    durablePlans.set(plan, owned);
-    return owned;
-  }
-  return result;
-};
 // Retaining an earlier economic plan also retains its allocation urgency. Only
 // a matching accepted execution can supply C1's target; C2 may additionally use
 // its prospective program while preparing the current before Start.
@@ -622,9 +607,9 @@ export class ChargingRuntime {
     // One synchronous admission owns these charger inputs. Assessors change
     // only their own results; rebuilding the charger view for each assessor
     // rereads the same recorded energy history and repeats the same projection.
-    const view = this.status(now);
+    const view = this.status(now, { includeAssessments: false });
     // A diagnostic storage failure must not block charging or restoration.
-    try { this.sessionDiagnostics.observe(view.chargers, now, view.coordination); this.diagnosticsError = null; }
+    try { this.sessionDiagnostics.observe(view.chargers, now, view.coordination, { project: false }); this.diagnosticsError = null; }
     catch { this.diagnosticsError = 'Session diagnostics could not be saved.'; }
     view.diagnostics = this.diagnosticsStatus(now);
     try { this.physicalTests.update(view, now); this.physicalTestsError = null; }
@@ -3538,7 +3523,7 @@ export class ChargingRuntime {
     if (!method) throw new Error('Unknown charging assessment action.');
     return this.physicalTests[method](input, this.status());
   }
-  status(now = this.clock()) {
+  status(now = this.clock(), { includeAssessments = true } = {}) {
     const chargers = this.views(now);
     const usedBy = id => chargers.find(charger => charger.vehicle?.state === 'identified'
       && charger.vehicle.id === id && charger.values.connected.value === true)?.id ?? null;
@@ -3554,7 +3539,7 @@ export class ChargingRuntime {
     }
     return { revision: this.revision, timezone: TIME_ZONE, controls: { priority: this.controls.priority, revision: this.controls.revision }, settings: structuredClone(this.settings), chargers, vehicleFeeds, coordination: copyOwnedValue(this.coordinationView()), error: this.error ?? null,
       limiterHistoryError: this.limiterHistoryError ?? null,
-      diagnostics: this.diagnosticsStatus(now), physicalTests: this.physicalTestsStatus() };
+      ...(includeAssessments ? { diagnostics: this.diagnosticsStatus(now), physicalTests: this.physicalTestsStatus() } : {}) };
   }
   diagnosticsStatus(now) {
     return { ...this.sessionDiagnostics.status(now), canManage: !this.closed && this.canControl() && this.config.input !== 'offline',

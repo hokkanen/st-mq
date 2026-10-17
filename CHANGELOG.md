@@ -6,6 +6,15 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Reduce charging-history and storage work by omitting routine input-processing
+  events, keeping disconnected progress stable, and projecting active report
+  summaries from their current checkpoints. Retain schedules, prices and forecast
+  provenance without repeatedly saving candidate scenario vectors.
+
+- Coalesce unchanged heat-pump and voltage recorder metadata within 30 seconds.
+  Value and quality changes, real gaps and accepted energy remain immediate;
+  normal shutdown flushes the remaining metadata.
+
 - Reorganize Storage health around current activity, dated problems and grouped
   diagnostics, with one history period selector and separate monitoring coverage.
   Retain earlier local-task failures after later successes, and track database

@@ -201,15 +201,14 @@ export function sharedPlanningKey(snapshot) {
 }
 export function sharedAssessmentKey(snapshot) {
   const execution = snapshot.execution;
-  // Without either an admitted allowance or a current readback, an internal
-  // processing gate cannot change the assessed execution. Keep its actual
-  // readiness in current evidence, without recording every receipt as an event.
-  const emptyProcessing = ['unknown', 'not-exercised'].includes(execution.state)
-    && execution.expectedCurrentA === null && execution.reportedCurrentA === null
-    && (execution.commandReady || execution.commandBlockReason === 'input-processing');
+  // A receipt's admission fence is live command evidence, not a new historical
+  // charging instruction. Keep the actual state/readiness in the assessment;
+  // the event key records changed measurements, allocations and restrictions.
+  // Native command/verification changes also have their own control events.
+  const processing = execution.commandReady || execution.commandBlockReason === 'input-processing';
   return JSON.stringify({ planning: sharedPlanningKey(snapshot), overlap: snapshot.overlap,
-    execution: [execution.state, execution.expectedCurrentA, execution.reportedCurrentA,
-      emptyProcessing ? null : execution.commandReady, emptyProcessing ? null : execution.commandBlockReason],
+    execution: [processing ? null : execution.state, execution.expectedCurrentA, execution.reportedCurrentA,
+      processing ? null : execution.commandReady, processing ? null : execution.commandBlockReason],
     peers: snapshot.peers.map(row => [row.id, row.connected, row.session, row.drawing]) });
 }
 

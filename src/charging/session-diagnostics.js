@@ -548,6 +548,16 @@ function publicReport(record, now) {
   return result;
 }
 
+// Keep unchanged comparison/price context ahead of frequently changing fields.
+// The journal's reversible text splice can then leave that prefix untouched.
+// This changes JSON spelling only; all fields and the current format stay exact.
+function checkpointText(record) {
+  const { version, id, chargerId, association, startedAt, observedFrom, planContext,
+    coverage, findings, outcome, ...current } = record;
+  return JSON.stringify({ version, id, chargerId, association, startedAt, observedFrom,
+    planContext, coverage, findings, outcome, ...current });
+}
+
 // These are comparison references, not retained history. Keep the latest plan
 // for each comparison used by planChanges; the complete plans live in SQL events.
 function planContext(history, next) {
@@ -641,12 +651,18 @@ export class ChargingSessionDiagnostics {
     const pending = record.events;
     record.events = [];
     delete record.findingContext;
-    const summary = publicReport(record, now);
-    this.store.db.prepare(`INSERT INTO charging_reports(namespace,charger_id,report_id,association,started_at,ended_at,saved_at,summary,checkpoint)
+    const checkpoint = checkpointText(record);
+    // Active reports are projected from this checkpoint/RAM by every reader.
+    // Their complete public summary need not be saved again beside each update.
+    // Closed reports retain a frozen summary for bounded history listing.
+    if (existing && !saveMetadata && record.endedAt === null) {
+      this.store.db.prepare('UPDATE charging_reports SET checkpoint=? WHERE namespace=? AND charger_id=? AND report_id=?')
+        .run(checkpoint, this.key, record.chargerId, record.id);
+    } else this.store.db.prepare(`INSERT INTO charging_reports(namespace,charger_id,report_id,association,started_at,ended_at,saved_at,summary,checkpoint)
       VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(namespace,charger_id,report_id) DO UPDATE SET
       ended_at=excluded.ended_at,saved_at=excluded.saved_at,summary=excluded.summary,checkpoint=excluded.checkpoint`)
       .run(this.key, record.chargerId, record.id, record.association, record.startedAt, record.endedAt,
-        record.savedAt, JSON.stringify(summary), JSON.stringify(record));
+        record.savedAt, JSON.stringify(publicReport(record, now)), checkpoint);
     const insert = this.store.db.prepare(`INSERT INTO charging_report_events(namespace,charger_id,report_id,at,category,payload,
       price_context_id,proposed_context_id,adopted_context_id) VALUES(?,?,?,?,?,?,?,?,?)`);
     for (const entry of pending) {
@@ -661,7 +677,7 @@ export class ChargingSessionDiagnostics {
        AND ended_at IS NOT NULL AND ended_at<=? ORDER BY ended_at LIMIT ?)`)
       .run(this.key, now - this.retentionDays * DAY, EXPIRY_BATCH).changes;
   }
-  observe(chargers, now = this.clock(), coordination = null) {
+  observe(chargers, now = this.clock(), coordination = null, { project = true } = {}) {
     this.writable();
     if (!time(now) || !Array.isArray(chargers)) throw new TypeError('Charging diagnostics require runtime views and a UTC timestamp');
     // Publish the bounded working copy only after its SQL transaction commits.
@@ -707,11 +723,9 @@ export class ChargingSessionDiagnostics {
       if (!record || now < record.observedAt || id && id !== record.id) continue;
       const before = JSON.stringify([record.findings, record.coverage, record.pendingChecks]);
       const sharedAssessment = advanceSharedAssessment(record.shared, shared);
-      const processingOnly = execution => execution?.state === 'unknown'
-        && execution.expectedCurrentA === null && execution.reportedCurrentA === null
+      const processingOnly = execution => execution
         && (execution.commandReady || execution.commandBlockReason === 'input-processing');
-      const idleProcessing = view.id === 'charger2' && view.request?.pause
-        && view.control?.sessionPause?.confirmed === true && view.control?.snapshot?.observationReady === true
+      const idleProcessing = view.id === 'charger2' && view.control?.snapshot?.observationReady === true
         && processingOnly(record.shared?.current.execution) && processingOnly(sharedAssessment.current.execution);
       if (!record.shared || sharedAssessmentKey(record.shared.current) !== sharedAssessmentKey(sharedAssessment.current)) {
         const planning = !record.shared || sharedPlanningKey(record.shared.current) !== sharedPlanningKey(sharedAssessment.current);
@@ -755,7 +769,7 @@ export class ChargingSessionDiagnostics {
       if (shouldPrune) this.lastPrunedAt = pruned === EXPIRY_BATCH ? 0 : now;
     }
     this.state = state;
-    return this.status(now);
+    return project ? this.status(now) : null;
   }
   listReports({ chargerId: id, savedOnly = false, before = null, limit = 20 } = {}) {
     chargerId(id); pageLimit(limit);
@@ -772,7 +786,9 @@ export class ChargingSessionDiagnostics {
       ORDER BY started_at DESC,report_id DESC LIMIT ?`).all(...values, limit + 1);
     const more = rows.length > limit; if (more) rows.pop();
     const last = rows.at(-1);
-    return { reports: rows.map(row => this.present(JSON.parse(row.summary), this.clock(), row.association)),
+    const active = this.state.chargers[id]?.current;
+    return { reports: rows.map(row => active?.id === row.report_id
+      ? this.present(active, this.clock()) : this.present(JSON.parse(row.summary), this.clock(), row.association)),
       nextBefore: more ? Buffer.from(JSON.stringify([last.started_at, last.report_id])).toString('base64url') : null };
   }
   getReport({ chargerId: id, reportId: report } = {}) {

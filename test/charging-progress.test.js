@@ -15,6 +15,21 @@ const charger = extra => ({ id: 'charger1', requiredGridKwh: 36, configuration: 
     minimumSoc: value(85), ...extra } });
 const energy = amount => () => ({ gridKwh: amount, coveredMs: HOUR, continuousSince: now, lastMeasuredAt: now + HOUR });
 
+test('disconnected polling is stable and only a new connection starts a fresh anchor', () => {
+  const input = charger({ connected: value(false) });
+  const initial = updateChargingProgress(null, input, now).state;
+  let state = initial;
+  for (let index = 1; index <= 100; index++) {
+    state = updateChargingProgress(state, input, now + index * 1000).state;
+    assert.deepEqual(state, initial);
+  }
+  const restored = restoreChargingProgress(JSON.parse(JSON.stringify(state)));
+  const connected = updateChargingProgress(restored, charger(), now + HOUR).state;
+  assert.equal(connected.connectionAt, now + HOUR);
+  assert.equal(connected.reference.at, now + HOUR);
+  assert.equal(connected.creditKwh, 0);
+});
+
 test('recorded energy advances a separate SoC estimate and applies grid losses once', () => {
   const initial = updateChargingProgress(null, charger(), now);
   const input = charger(), original = structuredClone(input);

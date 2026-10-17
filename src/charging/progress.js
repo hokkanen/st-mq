@@ -85,7 +85,10 @@ export function updateChargingProgress(previous, charger, now, readEnergy = () =
     && previous?.reference?.vehicleScope === vehicleScope
     && previous.reference.source !== 'manual-fallback' && previous.reference.source !== 'session-anchor'
     && finite(charger.settings?.manualSoc) && previous.reference.fallbackSoc === charger.settings.manualSoc;
-  const connectionAt = previous?.connected !== false ? previous?.connectionAt ?? now : now;
+  // Repeated disconnected observations do not start another physical session.
+  // Retain the old anchor until a new connection actually arrives.
+  const connectionAt = connected === false && previous?.connected === false
+    ? previous.connectionAt ?? now : previous?.connected !== false ? previous?.connectionAt ?? now : now;
   const reference = same || retainedVehicleReference || connected === null && previous?.reference ? { ...previous.reference }
     : { key, at: Math.max(connectionAt, Math.min(now, automatic ? measuredAt ?? receivedAt ?? now : now)),
       soc: soc.value, source: soc.source, measuredAt, receivedAt, vehicleScope, fallbackSoc: charger.settings?.manualSoc };

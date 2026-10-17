@@ -16,6 +16,8 @@ const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, YEAR = 365.25 * DAY;
 export const RECORDING_VERSION = 'recording-contract-v2';
 const VERSION = RECORDING_VERSION;
 const METRIC_FLUSH_MS = 30_000, MAX_PENDING_METRIC_BUCKETS = 256;
+const METADATA_FLUSH_MS = 30_000, MAX_PENDING_SIGNALS = 256;
+const COALESCED_SOURCES = new Set(['husdata-h66', 'garage-adapter', 'voltage-estimate']);
 const METRIC_SUMS = ['polls', 'records', 'bytes', 'error_squared_time', 'error_time', 'stale', 'failed', 'unavailable'];
 function combineMetrics(left, right) {
   const row = { ...left };
@@ -203,10 +205,12 @@ export class Recorder {
     // Presentation evidence only. A restored checkpoint is not an acquisition
     // made by this runtime, and this marker grants no device authority.
     this.observedStreams = new Set();
-    // Only optional receipt diagnostics wait in RAM. Source continuity, open
-    // energy, recording thresholds and selected-observation accounting stay
-    // in their original transaction. No independent timer/writer is needed.
+    // Unchanged scalar receipt endpoints can share a bounded metadata flush.
+    // Value/quality boundaries and every accepted energy increment remain
+    // immediate. A crash can lose only this unsaved endpoint/diagnostic tail;
+    // restart never extends committed coverage from remembered live health.
     this.pendingMetrics = new Map();
+    this.pendingSignals = new Map();
     this.configure(config);
     this.adaptiveBudgetState();
     readStorageMetrics(store.db);
@@ -265,10 +269,62 @@ export class Recorder {
 
   signalState(observation, now) {
     const key = keyOf(observation);
+    const pending = this.pendingSignals.get(key);
+    if (pending) return structuredClone(pending.state);
     return this.store.getState(stateKey(key)) ?? { key, source: observation.source, device: observation.device,
       signal: observation.signal, unit: observation.unit, startedAt: now, last: null, lastPollAt: null,
       lastSourceTime: null, mean: null, variance: 0, step: 0, scale: 0, previousValue: null,
       lastFreshAt: null, coverageId: null, status: null };
+  }
+
+  setPendingSignal(key, value) {
+    const previous = this.pendingSignals.get(key);
+    this.store.afterRollback(() => {
+      if (previous) this.pendingSignals.set(key, previous); else this.pendingSignals.delete(key);
+    });
+    if (value) this.pendingSignals.set(key, value); else this.pendingSignals.delete(key);
+    this.store.afterCommit(() => this.scheduleMetadataFlush());
+  }
+
+  scheduleMetadataFlush() {
+    const shutdown = this.store.writeQueue?.shutdown.signal;
+    if (!this.pendingSignals.size || shutdown?.aborted) {
+      clearTimeout(this.metadataTimer); this.metadataTimer = null;
+      if (this.metadataAbort) shutdown?.removeEventListener('abort', this.metadataAbort);
+      return;
+    }
+    if (this.metadataTimer) return;
+    this.metadataAbort ??= () => { clearTimeout(this.metadataTimer); this.metadataTimer = null; };
+    shutdown?.addEventListener('abort', this.metadataAbort, { once: true });
+    this.metadataTimer = setTimeout(() => {
+      this.metadataTimer = null;
+      shutdown?.removeEventListener('abort', this.metadataAbort);
+      if (shutdown?.aborted || !this.store.db.isOpen) return;
+      // One queued flush for all unchanged streams. Never keep an SQLite
+      // transaction open while waiting for more source messages.
+      this.store.runWrite(() => this.flushMetadata(this.clock(), { force: true }))
+        .catch(() => { this.scheduleMetadataFlush(); });
+    }, METADATA_FLUSH_MS);
+    this.metadataTimer.unref?.();
+  }
+
+  savePendingSignal(key) {
+    const pending = this.pendingSignals.get(key);
+    if (!pending) return;
+    const { state, endAt, sourceTime, samples } = pending;
+    this.store.db.prepare('UPDATE recorder_coverage SET end_at=?,source_time=?,samples=samples+? WHERE id=?')
+      .run(endAt, sourceTime, samples, state.coverageId);
+    this.store.setState(stateKey(key), state);
+    this.setPendingSignal(key, null);
+  }
+
+  flushMetadata(now, { force = false } = {}) {
+    if (!this.pendingSignals.size) return;
+    const due = force || this.pendingSignals.size >= MAX_PENDING_SIGNALS
+      || [...this.pendingSignals.values()].some(row => now < row.firstAt || now - row.firstAt >= METADATA_FLUSH_MS);
+    if (!due) return;
+    for (const [key, row] of this.pendingSignals) if (row.endAt <= now) this.savePendingSignal(key);
+    this.flushMetrics(now, { force: true });
   }
 
   /** Resume an already recorded connection after its bounded source-clock wait.
@@ -689,7 +745,19 @@ export class Recorder {
           quality:o.quality,usableForControl:o.raw?.usableForControl,semanticQuality:semanticQuality(o.raw) };
         s.unit=o.unit;
       }
-      this.coverage(s,o,status,freshUpdate,reportPolicyChanged);
+      // Only an exactly unchanged, continuously fresh scalar can wait. A gap,
+      // actual change, force, policy/quality boundary or energy receipt flushes
+      // its earlier endpoint before recording the new evidence.
+      const pending = this.pendingSignals.get(s.key);
+      const coalesce = COALESCED_SOURCES.has(o.source) && o.unit !== 'kWh' && !reason && !force
+        && freshUpdate && fresh && prior && o.value === prior.value && !transition && !reportPolicyChanged
+        && s.status === status && s.coverageId && s.coverageObservationId === prior.id
+        && Number.isFinite(s.lastSourceTime) && o.sourceTime - s.lastSourceTime <= sourceAge(o)
+        && o.receivedAt - s.lastSourceTime <= sourceAge(o);
+      if (!coalesce) {
+        if (pending) this.savePendingSignal(s.key);
+        this.coverage(s,o,status,freshUpdate,reportPolicyChanged);
+      }
       if (periodic) s.reportUnavailableSince = fresh ? null : s.reportUnavailableSince ?? o.receivedAt;
       const elapsed = s.lastPollAt === null ? 0 : Math.min(o.receivedAt - s.lastPollAt,sourceAge(o));
       // Error is the held saved value at every acquisition, time weighted so
@@ -702,7 +770,11 @@ export class Recorder {
       }
       s.lastPollAt = o.receivedAt;
       if (fresh) s.lastSourceTime = Math.max(s.lastSourceTime ?? o.sourceTime,o.sourceTime);
-      this.store.setState(stateKey(s.key),s); this.store.setState(STORAGE_METRICS_KEY,g);
+      if (coalesce) this.setPendingSignal(s.key, { state: s, firstAt: pending?.firstAt ?? o.receivedAt,
+        endAt: o.receivedAt, sourceTime: o.sourceTime, samples: (pending?.samples ?? 0) + 1 });
+      else this.store.setState(stateKey(s.key),s);
+      this.store.setState(STORAGE_METRICS_KEY,g);
+      this.flushMetadata(o.receivedAt);
       if (!this.observedStreams.has(s.key)) this.store.afterRollback(() => this.observedStreams.delete(s.key));
       this.observedStreams.add(s.key);
       return { saved:Boolean(reason),id:committed?.id ?? null,observation:committed,reason:reason ?? (freshUpdate ? 'within-threshold' : 'unchanged-source-time'),
@@ -898,6 +970,7 @@ export class Recorder {
     if (selected?.some(value=>!energySignals(value))) throw new TypeError('Invalid energy flush group');
     return this.store.transaction(() => {
       const observations = [];
+      this.flushMetadata(now, { force });
       this.flushMetrics(now, { force });
       let budget = this.adaptiveBudgetState() ? this.adaptiveBudget(now) : null;
       for (const row of this.store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%'").all()) {

@@ -2408,6 +2408,33 @@ or the page is hidden; an accepted check continues, and reopening reads its resu
 
 ## Retained storage costs
 
+Unchanged scalar receipts from H66, the Garage adapter and the voltage estimator
+share one bounded metadata flush, normally within 30 seconds. Their original
+source/receipt endpoints, coverage samples, sampler state and poll totals are
+coalesced together. A value, quality or reporting-policy change, a real gap or an
+explicit force flush first saves that stream's preceding endpoint. Every accepted
+electrical interval still saves its energy and acquisition cursor immediately.
+Normal shutdown/handover flushes the remaining metadata. An abrupt crash may
+lose the unsaved unchanged-report endpoint/count tail; restart does not invent
+continuity or healthy device evidence from it. Read-only recording status describes
+committed endpoints and does not force a write.
+
+Charging history records meaningful physical, planning, native instruction and
+restriction changes. A brief input-persistence processing gate stays visible in
+live command readiness without becoming another shared-history event on every
+receipt. Real source loss and native permission holds retain their events. An
+active report's current checkpoint supplies its public summary; closing the
+connection freezes a final summary for historical listing. Checkpoint field order
+keeps large unchanged comparison context ahead of frequently changing fields so
+the existing reversible journal splice can leave that prefix untouched.
+
+Durable charging plans retain execution periods, allocations, published prices,
+estimated delivery/cost, assumptions and reference provenance. Candidate scenario
+vectors remain in the live planner and are rebuilt from the current source
+history; they are not retained as a second large runtime/replica cache. Search
+accuracy and the complete in-memory planning inputs are unchanged. This does not
+remove Home learning inputs or introduce an older storage decoder.
+
 The annual recording budget is a soft objective for estimated adaptive additions,
 not a hard storage cap. Exact changes, imports, learning journals, source revisions,
 diagnostics and SQLite overhead add growth on top of it. Adaptive selection limits

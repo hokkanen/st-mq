@@ -456,7 +456,7 @@ test('enabled current adjustment stays unknown before its limiter and coordinati
   assert.equal(result.execution.expectedCurrentA, null);
 });
 
-test('processing holds preserve dated allocation and readback and append evidence without replanning copies', t => {
+test('processing holds preserve live dated evidence without appending receipt lifecycle events', t => {
   const f = fixture(t); f.plug(); f.coordinate('charger2');
   const charger = f.view.chargers[1], diagnostics = f.createDiagnostics(), start = f.now();
   charger.configuration = { limiterEnabled: true, maximumCurrentA: 16 };
@@ -480,15 +480,23 @@ test('processing holds preserve dated allocation and readback and append evidenc
   const ref = { chargerId: 'charger2', reportId: initial.id };
   const evidence = diagnostics.reportEvents({ ...ref, filter: 'evidence', limit: 100 }).events
     .filter(row => row.code === 'shared-charging-evidence');
-  assert.equal(evidence.length, 30, 'Every short command hold and recovery is retained');
+  assert.equal(evidence.length, 0, 'Ordinary receipt processing is not another historical charging change');
   assert.equal(diagnostics.reportEvents({ ...ref, filter: 'plans' }).events.filter(row => row.kind === 'shared').length, 1);
   assert.equal(f.store.db.prepare("SELECT count(*) n FROM charging_report_contexts WHERE report_id=? AND kind='model'").get(initial.id).n, 1,
     'Identical proposed and adopted forecasts are stored once for the report');
-  assert.ok(evidence.every(row => row.shared.adopted.state === 'feasible'), 'Each bounded page reconstructs complete contexts');
-  const text = chargingSharedText(evidence.find(row => !row.shared.execution.commandReady).shared, 'charger2');
+  Object.assign(charger.control.snapshot, { controlReady: false, currentControlReady: false,
+    commandBlockReason: 'evse-input-persistence-pending' });
+  diagnostics.observe(f.view.chargers, start + 3100, f.view.coordination);
+  const current = diagnostics.status(start + 3100).chargers[1].current.shared.current;
+  assert.equal(current.execution.state, 'unknown', 'The event key never grants live command readiness');
+  const text = chargingSharedText(current, 'charger2');
   assert.match(text, /expected allowance 16 A/);
   assert.match(text, /Confirmed current setting 16 A/);
   assert.match(text, /waiting for input processing/);
+  charger.control.devicePermissionHeld = true;
+  diagnostics.observe(f.view.chargers, start + 3200, f.view.coordination);
+  assert.equal(diagnostics.reportEvents({ ...ref, filter: 'evidence' }).events
+    .filter(row => row.code === 'shared-charging-evidence').length, 1, 'Native permission loss is retained');
 });
 
 test('expired allocations remain unknown beside dated history, without carrying it to another connection', t => {

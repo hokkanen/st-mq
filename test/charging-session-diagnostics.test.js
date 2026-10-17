@@ -31,6 +31,29 @@ function fixture() {
     observe: (view, at = now) => readCompleteReport(observer, observer.observe([view], at).chargers[0].current) };
 }
 
+test('active report readers project the current checkpoint without rewriting a duplicate stored summary', () => {
+  const { store, observer, observe } = fixture(), view = charger();
+  const initial = observe(view), cached = store.db.prepare('SELECT summary FROM charging_reports').get().summary;
+  refresh(view, now + MINUTE);
+  view.values.powerKw = reading(0, 'easee', now + MINUTE);
+  view.values.charging = reading(false, 'easee', now + MINUTE);
+  view.control.phase = 'paused';
+  observe(view, now + MINUTE);
+  assert.equal(store.db.prepare('SELECT summary FROM charging_reports').get().summary, cached);
+  const restarted = new ChargingSessionDiagnostics({ store, clock: () => now + MINUTE });
+  const current = restarted.getReport({ chargerId: 'charger1', reportId: initial.id });
+  const listed = restarted.listReports({ chargerId: 'charger1' }).reports[0];
+  assert.equal(current.current.powerKw, 0);
+  assert.deepEqual(listed, current, 'A list never exposes the initial active-report summary after restart');
+  view.values.connected = reading(false, 'easee', now + 2 * MINUTE);
+  refresh(view, now + 2 * MINUTE);
+  observe(view, now + 2 * MINUTE);
+  assert.notEqual(store.db.prepare('SELECT summary FROM charging_reports').get().summary, cached,
+    'Closing the connection freezes a final current summary');
+  const closed = new ChargingSessionDiagnostics({ store, clock: () => now + 2 * MINUTE });
+  assert.equal(closed.listReports({ chargerId: 'charger1' }).reports[0].endedAt, now + 2 * MINUTE);
+});
+
 test('reports retain a timed-out reading separately from an uncertain actuator instruction', () => {
   const { observe } = fixture(), view = charger();
   Object.assign(view.control, { phase: 'unavailable', confirmed: false, pending: null,

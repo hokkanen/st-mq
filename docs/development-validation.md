@@ -5,6 +5,17 @@ validate those contracts; existing assertions do not authorize conflicting chang
 Follow the [conflict procedure](../AGENTS.md#conflicting-requests) before changing
 a foundation, even when the requested implementation would require it.
 
+`test/recorder-metadata-batching.test.js` verifies unchanged-stream transaction
+coalescing, exact coverage endpoints/counts, immediate value/quality/gap boundaries,
+rollback, failed worker COMMIT, exact retry and restart. Recording status remains
+read-only and reflects committed endpoints. `test/charging-plan-snapshot.test.js`
+checks that saved executable/accounting evidence retains its meaning while the
+live search keeps its full scenario vectors. Charging progress, shared assessment,
+session diagnostics, runtime storage and publication tests cover stable unplugged
+state, honest live readiness, retained native restrictions, active report reads
+after restart and final frozen summaries. No storage format or durability change
+is part of these reductions.
+
 `test/charging-publication-views.test.js` uses real worker-backed storage and
 recorded phase energy to verify that one synchronous publication reads each
 charger's history once. Report and physical-assessment results remain current,

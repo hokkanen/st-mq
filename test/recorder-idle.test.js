@@ -189,12 +189,15 @@ test('real paused Shelly adapter holds flat native counters to three history row
   }
 });
 
-test('scalar report revision changes with real H66 confirmations while observation history remains compact',t=>{
+test('scalar report revision follows coalesced H66 confirmations without creating value history',t=>{
   const {store,recorder}=fixture(t);
   const put=at=>recorder.record({source:'husdata-h66',device:'synthetic-pump',signal:'auxiliary_output',unit:'%',value:0,
     sourceTime:at,receivedAt:at,quality:[]});
   put(START);const before=recorder.status(START);
-  put(START+15_000);const after=recorder.status(START+15_000);
+  put(START+15_000);
+  assert.equal(recorder.status(START+15_000).sourceReportRevision,before.sourceReportRevision,
+    'Read-only status does not publish pending metadata');
+  recorder.flush(START+15_000,{force:true});const after=recorder.status(START+15_000);
   assert.equal(store.observations().length,1);assert.equal(before.historyRevision,after.historyRevision);
   assert.notEqual(before.sourceReportRevision,after.sourceReportRevision);
   assert(!after.sourceReportRevision.includes('synthetic-pump'));
