@@ -46,6 +46,44 @@ test('monitoring distinguishes refusals, superseded pending work and cancellatio
   assert.equal(health.status().day.refused, 1); assert.equal(health.status().day.superseded, 1);
   assert.equal(health.status().day.cancelled, 1); assert.equal(health.status().running, 0);
 });
+
+test('a later success preserves the dated problem and a refusal has no execution sample', () => {
+  const { health, advance } = fixture();
+  health.begin('backup-save').finish('failed', { reason: 'cleanup-failed', committed: true });
+  const failed = family(health, 'backup-save').day.lastProblem;
+  advance(1000);
+  health.begin('backup-save').finish('completed');
+  let row = family(health, 'backup-save');
+  assert.equal(health.status().version, 2);
+  assert.equal(row.lastResult.outcome, 'completed');
+  assert.deepEqual(row.day.lastProblem, failed);
+  assert.equal(row.day.failed, 1);
+  advance(1000); health.refuse('backup-save');
+  row = family(health, 'backup-save');
+  assert.equal(row.day.lastProblem.outcome, 'refused');
+  assert.equal(row.day.lastProblem.finishedAt, failed.finishedAt + 2000);
+  assert.equal(row.day.lastProblem.reason, 'capacity');
+  assert.equal(row.day.durationSamples, 2);
+  assert.equal(row.lastResult.outcome, 'completed');
+  advance(86400_000 + 300_000);
+  assert.equal(family(health, 'backup-save').day.lastProblem, null);
+  assert.equal(family(health, 'backup-save').week.lastProblem.outcome, 'refused');
+  advance(6 * 86400_000 + 300_000);
+  assert.equal(family(health, 'backup-save').week.lastProblem, null);
+});
+
+test('dated problems use the counter bucket boundary despite wall-clock changes', () => {
+  let wall = 1_000_000, tick = 1000;
+  const health = createStorageOperationHealth({ clock: () => wall, monotonic: () => tick });
+  health.begin('backup-download').finish('failed');
+  wall += 30 * 86400_000;
+  assert.equal(family(health, 'backup-download').day.lastProblem.finishedAt, 1_000_000);
+  tick += 86400_000 + 1;
+  const row = family(health, 'backup-download');
+  assert.equal(row.day.failed, 0);
+  assert.equal(row.day.lastProblem, null, 'The partial oldest bucket is omitted for both counts and dates');
+  assert.equal(row.week.lastProblem.finishedAt, 1_000_000);
+});
 test('active observation memory is bounded and no writer identity is adopted on store replacement', () => {
   const { health } = fixture();
   for (let index = 0; index < 200; index++) health.begin('checkpoint-cache', { scope: 'standby', databaseId: 'private-store' });

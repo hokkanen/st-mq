@@ -46,7 +46,7 @@ test('memory storage summaries use existing authenticated health access without 
     assert.equal(response.headers.get('cache-control'), 'no-store');
     const result = await response.json();
     assert.equal(result.version, 3);
-    assert.equal(result.operations.version, 1);
+    assert.equal(result.operations.version, 2);
     assert.equal(result.operations.scope, 'local-node');
     assert.deepEqual(result.recording.writer, { state: 'ready' });
     assert.equal(result.recording.history.version, 3);

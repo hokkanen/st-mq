@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRecordingHealth, recordingHealthView, recordingEvidenceTime, backupCheckFailure, storageBytes } from '../chart/recording-health.js';
 import { createStorageOperationHealth } from '../src/storage/operation-health.js';
-import { storagePerformanceView, storageDuration, storageOperationsView } from '../chart/storage-health.js';
+import { storagePerformanceView, storageDuration, storageOperationsView, storageProblemSummary } from '../chart/storage-health.js';
 
 const now = Date.parse('2026-10-07T12:00:00Z');
 const health = (overrides = {}) => ({ version: 3, checkedAt: now, scope: 'live',
@@ -584,11 +584,12 @@ test('storage performance period stays local across polling and failed refresh w
   const value = health({ recording: { history: performanceHistory() } });
   view.panel.update({ recordingHealth: value });
   assert.equal(view.element('recording-performance-live-title').textContent, 'Current activity');
-  assert.equal(view.element('recording-performance-evidence').textContent, 'Past day · 6 h monitored');
-  assert.equal(view.element('recording-performance-history-state').textContent, 'Problems observed');
-  assert.equal(view.element('recording-performance-history-state').dataset.tone, 'warning');
+  assert.match(view.element('recording-performance-evidence').textContent, /^Checked /);
+  assert.equal(view.element('recording-performance-coverage').textContent, 'Writer · Past day · 6 h monitored');
+  assert.match(view.element('recording-performance-history-state').textContent, /^Earlier problems.*past day$/);
+  assert.equal(view.element('recording-performance-history-state').dataset.tone, 'historical');
   assert.equal(view.element('recording-performance-details').dataset.tone, 'neutral', 'Historical problems do not label a caught-up writer as failed');
-  assert.equal(view.element('recording-performance-outcome').textContent, 'Problems observed during this period.');
+  assert.equal(view.element('recording-performance-outcome').textContent, 'Problems were observed in this period. Current activity is shown separately.');
   assert.equal(view.element('recording-performance-journalSeal-worst').textContent, '120 ms');
   assert.equal(view.element('recording-performance-nativeCommit-worst').textContent, '400 ms');
   view.element('recording-performance-week').click();
@@ -609,7 +610,7 @@ test('storage performance period stays local across polling and failed refresh w
   assert.equal(view.element('recording-performance-queue-mean').textContent, 'No samples');
   assert.equal(view.element('recording-performance-week').getAttribute('aria-pressed'), 'true');
   view.panel.clear();
-  assert.equal(view.element('recording-performance-live-title').textContent, 'Storage write evidence');
+  assert.equal(view.element('recording-performance-live-title').textContent, 'Local activity');
   assert.equal(view.element('recording-performance-data').hidden, true);
   assert.equal(view.element('recording-performance-day').getAttribute('aria-pressed'), 'true');
   assert.equal(view.element('recording-performance-history-state').textContent, '');
@@ -665,18 +666,22 @@ test('local operations render actual collector outcomes in standby and preserve 
   const value = health({ scope: 'snapshot', operations: observer.status(), recording: { history: null } });
   const rendered = storageOperationsView(value, 'day', { now });
   assert.equal(rendered.available, true);
-  assert.equal(rendered.rows.length, observer.status().coverage.length, 'Every backend operation family has a current UI label');
+  assert.equal(rendered.rows.length, 1, 'Only task types with activity or outcomes occupy the main view');
+  assert.equal(rendered.groups[0].label, 'Learning & recovery');
   const publication = rendered.rows.find(row => row.kind === 'learning-publication');
-  assert.equal(publication.summary, 'Problems observed');
+  assert.equal(publication.summary, 'Earlier problems');
   assert.match(publication.latest, /Local standby.*save committed; follow-up work failed.*commit was confirmed/i);
-  assert.match(publication.duration, /average 80 ms.*worst 80 ms.*1 finished job/);
-  assert.equal(rendered.rows.find(row => row.kind === 'csv-import').summary, 'Not observed');
-  assert.match(rendered.evidence, /On this computer.*past day/);
-  assert.match(storageOperationsView(value, 'week', { now, unavailable: true }).evidence, /^Last known.*past week/);
+  assert.match(publication.duration, /Average 80 ms.*worst 80 ms.*1 finished task/);
+  assert.equal(rendered.rows.some(row => row.kind === 'csv-import'), false);
+  assert.equal(rendered.coverage.some(row => row.kind === 'csv-import'), false, 'Separate CLI processes are explained once, not rendered as missing app capabilities');
+  assert.match(rendered.evidence, /On this computer.*application started/);
+  assert.match(storageOperationsView(value, 'week', { now, unavailable: true }).evidence, /^Last known.*On this computer/);
   const dashboard = panelFixture(); dashboard.panel.update({ recordingHealth: value });
   assert.equal(dashboard.element('recording-performance-data').hidden, true);
-  assert.equal(dashboard.element('recording-performance-history-state').textContent, 'Problems observed', 'Local failures remain visible in the collapsed Storage health summary');
-  const rows = dashboard.element('recording-performance-operation-list').children;
+  assert.match(dashboard.element('recording-performance-history-state').textContent, /^Earlier problems.*past day$/);
+  assert.equal(dashboard.element('recording-health-badge').textContent, 'Earlier problems');
+  assert.equal(dashboard.element('recording-health-badge').dataset.tone, 'historical');
+  const rows = dashboard.element('recording-performance-operation-list').children[0].children[1].children;
   const node = rows.find(row => row.dataset.kind === 'learning-publication');
   node.open = true; node.children[0].focus();
   dashboard.panel.update({ recordingHealth: value });
@@ -684,6 +689,33 @@ test('local operations render actual collector outcomes in standby and preserve 
   assert.equal(node.open, true); assert.equal(dashboard.document.activeElement, node.children[0]);
   dashboard.panel.clear(); assert.equal(dashboard.element('recording-performance-operation-list').children.length, 0);
   assert.equal(storageOperationsView({ ...value, version: 2 }, 'day', { now }).available, false);
+});
+
+test('local activity, dated failures and later results remain separate across period selection', () => {
+  let tick = 0;
+  const observer = createStorageOperationHealth({ clock: () => now - 2000 + tick, monotonic: () => tick });
+  observer.register('backup-catalog');
+  observer.begin('learning-rebuild').finish('failed', { reason: 'operation-failed' });
+  tick = 1000;
+  observer.begin('learning-rebuild').finish('completed');
+  observer.begin('learning-rebuild');
+  tick = 2000;
+  const value = health({ operations: observer.status(), recording: { history: null } });
+  const view = storageOperationsView(value, 'day', { now });
+  const row = view.rows.find(row => row.kind === 'learning-rebuild');
+  assert.equal(row.summary, '1 running');
+  assert.match(row.latest, /^Completed/);
+  assert.match(row.problemDetail, /^Failed/);
+  assert.equal(view.rows.some(row => row.kind === 'backup-catalog'), false);
+  assert.equal(view.coverage.find(row => row.kind === 'backup-catalog').known, true);
+  assert.equal(storageProblemSummary(value, { now }).problems, true);
+  const dashboard = panelFixture(); dashboard.panel.update({ recordingHealth: value });
+  const summary = dashboard.element('recording-performance-history-state').textContent;
+  dashboard.element('recording-performance-week').click();
+  assert.equal(dashboard.element('recording-performance-history-state').textContent, summary);
+  assert.match(dashboard.element('recording-performance-local-activity').textContent, /1 active task type/);
+  assert.equal(recordingHealthView(value, undefined, now).attention.length, 0, 'Historical evidence does not invent a current fault');
+  assert.equal(storageOperationsView({ ...value, operations: { ...value.operations, version: 1 } }, 'day', { now }).available, false);
 });
 
 test('writer availability is independent of queue emptiness and historical coverage', () => {

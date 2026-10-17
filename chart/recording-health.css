@@ -154,7 +154,8 @@
 /* Storage is one peer in the health overview; expanded evidence stays inside it. */
 .recording-performance-notice { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 0 0 12px; }
 .recording-performance-notice[data-tone="warning"] { color: var(--stale); }
-.recording-history-state { display: block; }
+.recording-history-state { display: block; margin-top: 4px; color: var(--text); }
+.recording-health-badge[data-tone="historical"] { color: var(--muted); border-color: var(--border); }
 .recording-history-state:empty { display: none; }
 .recording-performance-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px 20px; padding: 18px 0 14px; border-top: 1px solid var(--border); }
 .recording-performance-toolbar > div:first-child { min-width: 0; }
@@ -181,9 +182,6 @@
 .recording-performance-outcomes dt { color: var(--muted); }
 .recording-performance-outcomes dd { margin: 0; font-weight: 550; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; text-align: right; }
 .recording-performance-outcome { margin: 0 0 8px; color: var(--muted); font-size: 12px; line-height: 1.5; }
-.recording-performance-results { padding: 16px 0 20px; border-top: 1px solid var(--border); }
-.recording-performance-results-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 20px; align-items: baseline; margin-bottom: 12px; }
-.recording-performance-results-heading :is(h5, p) { margin: 0; }
 .recording-performance-result-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 24px; margin: 0; padding: 14px 16px; border-radius: 6px; background: var(--surface-soft); font-size: 12px; line-height: 1.5; }
 .recording-performance-result-counts > div { display: grid; grid-template-rows: 1fr auto; gap: 6px; }
 .recording-performance-result-counts dt { color: var(--muted); }
@@ -300,19 +298,47 @@ body[data-authenticated="false"][data-recording-health="true"] .recording-backup
 .recording-empty-datasets > summary { padding: 12px 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .recording-storage-allocation { margin-top: 12px; border-top: 1px solid var(--border); }
 .recording-storage-allocation > summary { padding: 12px 0; font-size: 12px; }
-.recording-operation-list { display: grid; gap: 0; margin-block: 12px; }
-.recording-operation-list > details { min-width: 0; border-top: 1px solid var(--border); }
-.recording-operation-list > details > summary { display: flex; justify-content: space-between; gap: 8px 16px; padding: 9px 0; font-size: 12px; cursor: pointer; }
-.recording-operation-list > details > summary strong { color: var(--muted); font-weight: 500; text-align: right; }
-.recording-operation-list > details[data-tone="warning"] > summary strong { color: var(--stale); }
-.recording-operation-list > details > div { padding: 0 0 12px 12px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
-.recording-operation-list > details > div p { margin: 6px 0; line-height: 1.6; }
+/* Local activity and diagnostics share the Health typography and disclosures. */
+.recording-local-activity { margin-top: 16px; }
+.recording-local-activity-heading { display: flex; align-items: baseline; gap: 6px 16px; flex-wrap: wrap; }
+.recording-local-activity-heading :is(h5, p) { margin: 0; }
+.recording-local-activity-heading h5 { font-weight: 500; }
+.recording-active-tasks { list-style: none; margin: 10px 0 0; padding: 0; }
+.recording-active-tasks li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; padding: 10px 12px; border-inline-start: 2px solid var(--border); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.recording-active-tasks li + li { margin-top: 8px; }
+.recording-active-tasks strong { font-weight: 500; }
+.recording-active-tasks span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.recording-active-tasks small { grid-column: 1 / -1; color: var(--muted); font-size: 11px; }
+.recording-storage-diagnostics { padding-top: 8px; }
+.recording-storage-diagnostics > h4 { margin: 0; padding: 12px 0; }
+.recording-performance-incidents > .recording-health-evidence { margin-bottom: 14px; }
+#recording-performance-more-problems { margin-top: 16px; }
+#recording-performance-more-problem-list { margin-bottom: 16px; }
+.recording-operation-list { display: grid; gap: 22px; margin-block: 18px; }
+.recording-operation-group { min-width: 0; }
+.recording-operation-group > h5 { margin-bottom: 4px; }
+.recording-operation { min-width: 0; border-bottom: 1px solid var(--border); }
+.recording-operation > summary { display: grid; grid-template-columns: 10px minmax(0, 1fr) minmax(0, auto); align-items: baseline; gap: 4px 12px; min-height: 44px; padding: 12px 0; box-sizing: border-box; font-size: 12px; line-height: 1.5; list-style: none; cursor: pointer; overflow-wrap: anywhere; }
+.recording-operation > summary::-webkit-details-marker { display: none; }
+.recording-operation > summary::before { content: '›'; color: var(--muted); font-size: 18px; line-height: 1; text-align: center; }
+.recording-operation[open] > summary::before { transform: rotate(90deg); color: var(--accent); }
+.recording-operation > summary > strong { color: var(--muted); font-weight: 400; text-align: right; max-width: 220px; }
+.recording-operation[data-history="problem"] > summary > strong { color: var(--text); }
+.recording-operation > summary:hover { color: var(--accent); }
+.recording-operation > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 3px; }
+.recording-operation-facts, .recording-monitoring-list, .recording-measurement-guide { margin: 0; font-size: 12px; line-height: 1.6; }
+.recording-operation-facts { margin: 0 0 16px 22px; }
+.recording-operation-facts > div, .recording-monitoring-list > div, .recording-measurement-guide > div { display: grid; grid-template-columns: minmax(100px, .6fr) minmax(0, 2fr); gap: 4px 20px; padding: 7px 0; }
+.recording-operation-facts dt, .recording-monitoring-list dt, .recording-measurement-guide dt { color: var(--text); }
+.recording-operation-facts dd, .recording-monitoring-list dd, .recording-measurement-guide dd { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+.recording-monitoring-list > div + div { border-top: 1px solid var(--border); }
 .recording-command-coverage { padding-inline-start: 18px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-@media (max-width: 480px) {
-  .recording-operation-list > details > summary { flex-wrap: wrap; }
-  .recording-operation-list > details > summary strong { text-align: left; }
+#recording-performance-command-monitoring { margin-top: 24px; }
+.recording-performance-priority { margin-top: 20px; }
+@media (max-width: 640px) {
+  .recording-operation > summary { grid-template-columns: 10px minmax(0, 1fr); }
+  .recording-operation > summary > strong { grid-column: 2; text-align: left; max-width: none; font-size: 11px; }
+  .recording-operation-facts > div, .recording-monitoring-list > div, .recording-measurement-guide > div { grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 8px 0; }
+  .recording-active-tasks li { grid-template-columns: minmax(0, 1fr); }
+  .recording-operation-facts { margin-inline-start: 22px; }
 }
-
-.recording-operation-list > details > summary::before { content: "›"; flex: none; color: var(--muted); }
-.recording-operation-list > details[open] > summary::before { transform: rotate(90deg); }
-.recording-operation-list > details > summary > span { flex: 1; min-width: 0; }

@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { randomUUID } from 'node:crypto';
 import { publishDatabaseFile } from '../storage/publication.js';
+import { storageOperationHealth } from '../storage/operation-health.js';
 
 const errors = {
   backup_source_incompatible: 'This database uses an unsupported format, learning algorithm or saved control state. Keep it intact and use matching application software or a supported backup. No backup was published.',
@@ -16,15 +17,22 @@ export const databaseExportErrorMessage = code => typeof code === 'string' && Ob
 /** The SQLite backup API includes committed WAL pages without pausing recording.
  * Keep one private snapshot until its download or server-side publication ends. */
 export function createDatabaseExport({ getDirectory, onBackupEvent = () => {} }) {
+  storageOperationHealth.register('backup-save');
+  storageOperationHealth.register('backup-download');
   let busy = false;
   return async ({ store, response, authorized, save = false }) => {
-    if (busy) throw Object.assign(new Error('A database export is already in progress. Retry when it finishes.'), { statusCode: 409 });
+    const kind = save ? 'backup-save' : 'backup-download';
+    if (busy) {
+      storageOperationHealth.refuse(kind);
+      throw Object.assign(new Error('A database export is already in progress. Retry when it finishes.'), { statusCode: 409 });
+    }
     busy = true;
     const operationId = randomUUID();
     const cancellation = new AbortController();
     const disconnected = () => cancellation.abort();
     response.once?.('close', disconnected);
     let directory, publishedPath, preservePublished = false, saved = false, completed = false, bytes, backupPhase;
+    let operation, outcome = 'cancelled', reason = 'cancelled', committed = null;
     const notify = (phase, extra = {}) => {
       backupPhase = phase;
       // Health reporting cannot turn a completed backup into a failed operation.
@@ -37,6 +45,8 @@ export function createDatabaseExport({ getDirectory, onBackupEvent = () => {} })
     };
     try {
       if (response.destroyed || !authorized()) return;
+      operation = storageOperationHealth.begin(kind, { scope: 'shared' });
+      operation.progress('copying');
       notify('start');
       const destination = save ? resolve(getDirectory()) : tmpdir();
       if (save) await mkdir(destination, { recursive: true, mode: 0o700 });
@@ -51,10 +61,11 @@ export function createDatabaseExport({ getDirectory, onBackupEvent = () => {} })
       const stem = `stmq-${new Date().toISOString().replaceAll(':', '-').replace('.', '-')}`;
       let filename = `${stem}.sqlite`;
       if (save) {
+        operation.progress('publishing');
         for (let collision = 1; ; collision++) {
           if (response.destroyed || !authorized()) return;
           const candidate = join(destination, filename);
-          try { await publishDatabaseFile(path, candidate); publishedPath = candidate; break; }
+          try { await publishDatabaseFile(path, candidate); publishedPath = candidate; committed = true; break; }
           catch (error) {
             if (error.published) { publishedPath = candidate; preservePublished = true; }
             if (!['EEXIST', 'database_destination_occupied'].includes(error.code)) throw error;
@@ -68,6 +79,7 @@ export function createDatabaseExport({ getDirectory, onBackupEvent = () => {} })
         completed = true;
         return { filename, path: publishedPath };
       }
+      operation.progress('reading');
       response.writeHead(200, { 'content-type': 'application/vnd.sqlite3',
         'content-disposition': `attachment; filename="${filename}"`,
         'content-length': size, 'cache-control': 'no-store' });
@@ -78,22 +90,33 @@ export function createDatabaseExport({ getDirectory, onBackupEvent = () => {} })
       // aborted connection is cancellation; an I/O failure must remain visible.
       const cancelled = response.destroyed && (cancellation.signal.aborted && error === cancellation.signal.reason
         || ['ERR_STREAM_PREMATURE_CLOSE', 'ABORT_ERR', 'ECONNRESET'].includes(error?.code));
+      const unconfirmed = error?.code === 'database_publication_unconfirmed' || error?.durability === 'unknown';
+      outcome = unconfirmed ? 'unconfirmed' : cancelled ? 'cancelled' : 'failed';
+      reason = unconfirmed ? 'durability-unconfirmed' : committed === true ? 'committed-followup-failed'
+        : cancelled ? 'cancelled' : 'operation-failed';
       notify(cancelled ? 'cancelled' : 'failed',
         { errorCode: typeof error?.code === 'string' && /^[a-z_0-9-]{1,80}$/i.test(error.code) ? error.code : 'backup_failed' });
       fail(error);
     } finally {
+      operation?.progress('cleanup');
       try {
         // A failed directory flush leaves a complete verified artifact whose
         // crash durability is uncertain. Preserve that evidence without claiming
         // success; only ordinary cancelled publication is disposable here.
-        try { if (publishedPath && !saved && !preservePublished) await rm(publishedPath, { force: true }); }
+        try {
+          if (publishedPath && !saved && !preservePublished) { await rm(publishedPath, { force: true }); committed = null; }
+        }
         finally { if (directory) await rm(directory, { recursive: true, force: true }); }
       } catch {
+        outcome = preservePublished ? 'unconfirmed' : 'failed';
+        reason = preservePublished ? 'durability-unconfirmed' : 'cleanup-failed';
+        completed = false;
         notify('failed', { errorCode: 'backup_cleanup_failed' });
         fail();
       } finally {
         response.removeListener?.('close', disconnected);
         if (backupPhase === 'start') notify(completed ? 'complete' : 'cancelled', completed ? { bytes } : {});
+        operation?.finish(completed ? 'completed' : outcome, { reason: completed ? null : reason, committed });
         busy = false;
       }
     }

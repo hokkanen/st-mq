@@ -1,7 +1,7 @@
 /** Process-local observations of existing storage owners. This is deliberately
  * passive: no timers, I/O, admission rules, retries or persisted identifiers. */
 export const STORAGE_OPERATION_KINDS = Object.freeze([
-  'backup', 'backup-download', 'verification', 'backup-catalog', 'backup-inspection',
+  'backup', 'backup-save', 'backup-download', 'verification', 'backup-catalog', 'backup-inspection',
   'learning-rebuild', 'learning-publication', 'checkpoint-cache', 'recovery',
   'journal-maintenance', 'replication', 'replication-worker', 'peer-transfer', 'pairing-snapshot', 'reset-archive',
   'history-query', 'storage-inventory', 'csv-import', 'csv-export', 'local-publication',
@@ -36,7 +36,7 @@ export function createStorageOperationHealth({ clock = Date.now, monotonic = () 
   const trim = now => { for (const at of buckets.keys()) if (at < now - RETENTION_MS) buckets.delete(at); };
   const register = kind => {
     if (!kinds.has(kind)) return false;
-    if (!families.has(kind)) families.set(kind, { monitoredSince: clock(), sinceTick: elapsed(), lastResult: null });
+    if (!families.has(kind)) families.set(kind, { monitoredSince: clock(), sinceTick: elapsed(), lastResult: null, lastProblem: null });
     return true;
   };
   const record = (kind, values) => {
@@ -74,19 +74,37 @@ export function createStorageOperationHealth({ clock = Date.now, monotonic = () 
         const result = { scope: job.scope, queuedAt: job.queuedAt, startedAt: job.startedAt, finishedAt,
           outcome, reason: reasons.has(reason) ? reason : null, committed: typeof committed === 'boolean' ? committed : null,
           elapsedMs, runningMs, queueMs };
-        families.get(kind).lastResult = result; families.get(kind).lastFinishedTick = elapsed();
+        const family = families.get(kind), finishedTick = elapsed();
+        family.lastResult = result; family.lastFinishedTick = finishedTick;
+        if (outcome === 'failed' || outcome === 'unconfirmed') {
+          family.lastProblem = result; family.lastProblemTick = finishedTick;
+        }
         record(kind, { [outcome]: 1, committed: Number(committed === true), durationSamples: 1, elapsedMs, runningMs, queueMs, maxElapsedMs: elapsedMs });
       },
     };
   };
-  const refuse = kind => { if (register(kind)) record(kind, { refused: 1 }); };
+  const refuse = kind => {
+    if (!register(kind)) return;
+    const family = families.get(kind);
+    // A refusal has no admitted work, execution duration or confirmed commit.
+    family.lastProblem = { scope: 'shared', finishedAt: clock(), outcome: 'refused', reason: 'capacity', committed: null };
+    family.lastProblemTick = elapsed();
+    record(kind, { refused: 1 });
+  };
   const status = () => {
     const observedAt = clock(), nowTick = monotonic(), now = nonnegative(nowTick - startTick); trim(now);
-    for (const family of families.values()) if (now - family.lastFinishedTick > RETENTION_MS) family.lastResult = null;
+    for (const family of families.values()) {
+      if (now - family.lastFinishedTick > RETENTION_MS) family.lastResult = null;
+      if (now - family.lastProblemTick > RETENTION_MS) family.lastProblem = null;
+    }
     const window = (kind, interval) => {
       const monitoredMs = Math.min(interval, Math.max(0, now - (kind ? families.get(kind)?.sinceTick ?? now : 0)));
       const retainedStart = Math.ceil(Math.max(0, now - interval) / BUCKET_MS) * BUCKET_MS;
-      return { ...empty(), requestedMs: interval, monitoredMs, coveredMs: Math.min(monitoredMs, Math.max(0, now - retainedStart)) };
+      const family = families.get(kind);
+      return { ...empty(), requestedMs: interval, monitoredMs, coveredMs: Math.min(monitoredMs, Math.max(0, now - retainedStart)),
+        // Use the same monotonic boundary as counters, including omitted partial
+        // buckets. Browser/server clock skew cannot change period membership.
+        ...(kind ? { lastProblem: family?.lastProblem && family.lastProblemTick >= retainedStart ? { ...family.lastProblem } : null } : {}) };
     };
     const summaries = new Map(STORAGE_OPERATION_KINDS.map(kind => [kind,
       { day: window(kind, DAY_MS), week: window(kind, RETENTION_MS), active: [] }]));
@@ -115,7 +133,7 @@ export function createStorageOperationHealth({ clock = Date.now, monotonic = () 
         lastResult: owner?.lastResult ? { ...owner.lastResult } : null,
         day: summary.day, week: summary.week };
     });
-    return { version: 1, scope: 'local-node', period: 'application-run', startedAt, observedAt,
+    return { version: 2, scope: 'local-node', period: 'application-run', startedAt, observedAt,
       bucketMs: BUCKET_MS, retentionMs: RETENTION_MS, observationsDropped,
       queued: coverage.reduce((sum, row) => sum + row.queued, 0), running: coverage.reduce((sum, row) => sum + row.running, 0),
       day, week, coverage };
@@ -137,7 +155,8 @@ export async function observeStorageOperation(kind, work, options = {}) {
   let result;
   try { result = await work(operation); }
   catch (error) {
-    const cancelled = options.signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
+    const cancelled = options.signal?.aborted && error === options.signal.reason
+      || error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
     const unconfirmed = error?.code === 'database_publication_unconfirmed' || error?.durability === 'unknown';
     finish(unconfirmed ? 'unconfirmed' : cancelled ? 'cancelled' : 'failed', {
       reason: unconfirmed ? 'durability-unconfirmed' : error?.committed === true ? 'committed-followup-failed'

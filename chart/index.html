@@ -1065,17 +1065,23 @@ G_warming = G / 2</code>
               <summary><span class="recording-health-label">Storage health</span><strong id="recording-performance-state" class="recording-health-state">Storage status unknown</strong><span class="recording-health-evidence"><span id="recording-performance-evidence"></span><span id="recording-performance-history-state" class="recording-history-state"></span></span></summary>
               <div class="recording-health-body">
                 <p id="recording-performance-notice" class="recording-performance-notice">Waiting for storage health information.</p>
-                <section id="recording-performance-live" class="recording-health-section recording-performance-live" aria-labelledby="recording-performance-live-title">
+                <section class="recording-health-section" aria-labelledby="recording-performance-live-title">
                   <h4 id="recording-performance-live-title">Current activity</h4>
-                  <p id="recording-performance-detail" class="recording-health-detail"></p>
-                  <dl id="recording-performance-activity" class="recording-activity-facts recording-writer-activity">
-                    <div><dt>Work queue</dt><dd id="recording-performance-current"></dd><dd id="recording-performance-waiting" class="recording-health-evidence" hidden></dd></div>
-                    <div><dt>Last successful save</dt><dd id="recording-performance-lastWrite"></dd><dd class="recording-health-evidence">Includes settings and event writes.</dd></div>
-                  </dl>
+                  <div id="recording-performance-live" class="recording-performance-live">
+                    <p id="recording-performance-detail" class="recording-health-detail"></p>
+                    <dl id="recording-performance-activity" class="recording-activity-facts recording-writer-activity">
+                      <div><dt>Writer queue</dt><dd id="recording-performance-current"></dd><dd id="recording-performance-waiting" class="recording-health-evidence" hidden></dd></div>
+                      <div><dt>Last confirmed save</dt><dd id="recording-performance-lastWrite"></dd><dd class="recording-health-evidence">Includes settings and event writes.</dd></div>
+                    </dl>
+                  </div>
+                  <div class="recording-local-activity">
+                    <div class="recording-local-activity-heading"><h5>Local tasks</h5><p id="recording-performance-local-activity" class="recording-health-evidence"></p></div>
+                    <ul id="recording-performance-active-tasks" class="recording-active-tasks" aria-label="Active local tasks"></ul>
+                  </div>
                 </section>
-                <section id="recording-performance-data" aria-labelledby="recording-performance-history-title" hidden>
+                <section aria-labelledby="recording-performance-history-title">
                   <div class="recording-performance-toolbar">
-                    <div><h4 id="recording-performance-history-title">Runtime writer history</h4><p id="recording-performance-coverage" class="recording-performance-coverage"></p></div>
+                    <div><h4 id="recording-performance-history-title">Monitored history</h4><p id="recording-performance-coverage" class="recording-performance-coverage"></p></div>
                     <div class="recording-performance-period" role="group" aria-label="Storage health period">
                       <button id="recording-performance-day" type="button" aria-pressed="true">Past day</button>
                       <button id="recording-performance-week" type="button" aria-pressed="false">Past week</button>
@@ -1083,35 +1089,35 @@ G_warming = G / 2</code>
                   </div>
                   <p id="recording-performance-clock" class="recording-health-evidence" hidden></p>
                   <p id="recording-performance-precision" class="recording-health-evidence" hidden></p>
-                  <div class="recording-performance-measures">
-                    <div class="recording-performance-measure">
-                      <h5>Queue wait</h5>
-                      <dl class="recording-performance-waits"><div><dt>Average</dt><dd id="recording-performance-queue-mean"></dd></div><div><dt>Worst</dt><dd id="recording-performance-queue-worst"></dd></div></dl>
-                      <p id="recording-performance-queue-samples" class="recording-health-evidence"></p>
-                      <p class="recording-health-evidence">Before successful queued work starts. Pending and failed operations are excluded.</p>
-                    </div>
-                    <div class="recording-performance-measure">
-                      <h5>Save duration</h5>
-                      <dl class="recording-performance-waits"><div><dt>Average</dt><dd id="recording-performance-write-mean"></dd></div><div><dt>Worst</dt><dd id="recording-performance-write-worst"></dd></div></dl>
-                      <p id="recording-performance-write-samples" class="recording-health-evidence"></p>
-                      <p class="recording-health-evidence">Time to complete a successful save, including commit and confirmation.</p>
+                  <p id="recording-performance-outcome" class="recording-performance-outcome"></p>
+                  <div id="recording-performance-data" hidden>
+                    <div class="recording-performance-measures">
+                      <div class="recording-performance-measure">
+                        <h5>Queue wait</h5>
+                        <dl class="recording-performance-waits"><div><dt>Average</dt><dd id="recording-performance-queue-mean"></dd></div><div><dt>Worst</dt><dd id="recording-performance-queue-worst"></dd></div></dl>
+                        <p id="recording-performance-queue-samples" class="recording-health-evidence"></p>
+                        <p class="recording-health-evidence">Before successful queued work starts. Pending and failed operations are excluded.</p>
+                      </div>
+                      <div class="recording-performance-measure">
+                        <h5>Save duration</h5>
+                        <dl class="recording-performance-waits"><div><dt>Average</dt><dd id="recording-performance-write-mean"></dd></div><div><dt>Worst</dt><dd id="recording-performance-write-worst"></dd></div></dl>
+                        <p id="recording-performance-write-samples" class="recording-health-evidence"></p>
+                        <p class="recording-health-evidence">Time to complete a successful save, including commit and confirmation.</p>
+                      </div>
                     </div>
                   </div>
-                  <section class="recording-performance-results" aria-labelledby="recording-performance-results-title">
-                    <div class="recording-performance-results-heading"><h5 id="recording-performance-results-title">Observed outcomes</h5><p id="recording-performance-outcome" class="recording-performance-outcome"></p></div>
-                    <dl class="recording-performance-result-counts">
-                      <div><dt>Failed save attempts</dt><dd id="recording-performance-failed"></dd></div>
-                      <div><dt>Queue-full refusals</dt><dd id="recording-performance-rejected"></dd></div>
-                      <div><dt>Device commands not sent</dt><dd id="recording-performance-commandsNotSent"></dd></div>
-                      <div><dt>Control requests blocked by storage</dt><dd id="recording-performance-controlRequestsBlocked"></dd></div>
-                      <div><dt>Failed queued operations</dt><dd id="recording-performance-failedJobs"></dd></div>
-                      <div><dt>Saved; follow-up failed</dt><dd id="recording-performance-postCommit"></dd></div>
-                    </dl>
-                    <p class="recording-health-evidence">Saves count operations, not readings. Device commands count known unsent attempts blocked by storage, including charging. A blocked control request may fail before any device command exists. Requests, commands and save attempts can overlap; do not add these counts. Queued-operation failures can have application causes.</p>
-                  </section>
                   <div id="recording-performance-incidents" class="recording-performance-incidents" hidden>
-                    <h5>Latest problem of each type</h5><ul id="recording-performance-incident-list"></ul>
+                    <h5>Earlier problems</h5>
+                    <p class="recording-health-evidence">Latest retained problem per type. A later success does not establish recovery of earlier work.</p>
+                    <ul id="recording-performance-incident-list"></ul>
+                    <details id="recording-performance-more-problems" class="recording-performance-explanation" hidden>
+                      <summary id="recording-performance-more-problems-summary">More dated problems</summary>
+                      <ul id="recording-performance-more-problem-list"></ul>
+                    </details>
                   </div>
+                </section>
+                <section class="recording-storage-diagnostics" aria-labelledby="recording-performance-diagnostics-title">
+                  <h4 id="recording-performance-diagnostics-title">Diagnostics</h4>
                   <details id="recording-performance-technical" class="recording-performance-explanation">
                     <summary>Transaction timings<span class="recording-disclosure-hint">Write, commit and its stages</span></summary>
                     <div class="recording-performance-explanation-body">
@@ -1125,14 +1131,20 @@ G_warming = G / 2</code>
                           <tr class="recording-timing-stage"><th scope="row"><span class="recording-timing-label">SQLite COMMIT<small class="recording-timing-relation">Within commit only</small><small id="recording-performance-nativeCommit-samples"></small></span></th><td data-label="Average" id="recording-performance-nativeCommit-mean"></td><td data-label="Approx. p95" id="recording-performance-nativeCommit-p95"></td><td data-label="Worst" id="recording-performance-nativeCommit-worst"></td></tr>
                         </tbody>
                       </table>
-                      <p>Indented stages are part of the parent timing; do not add them. Approx. p95 estimates the duration that 95% of measured operations stayed within. Each row has its own sample count; separate worst values and percentiles can come from different transactions.</p>
-                      <p>Write + commit and Commit only include communication with the writer and time awaiting its result. Journal sealing and SQLite COMMIT are measured inside the writer. These durations do not measure how long the application was unresponsive.</p>
-                      <p>Journal sealing includes validation, hashing and journal SQL. SQLite COMMIT includes any synchronization and automatic checkpoint work. Neither isolates fsync. Unmeasured stages are excluded.</p>
+                      <p>Indented timings are included in their parent. Each row has its own samples; worst values and percentiles can come from different transactions.</p>
                     </div>
                   </details>
                   <details id="recording-performance-diagnostics" class="recording-performance-explanation">
-                    <summary>Queue &amp; operation details<span class="recording-disclosure-hint">Priority, writer lock and counters</span></summary>
+                    <summary>Writer outcomes &amp; queue<span class="recording-disclosure-hint">Counts, priority and writer lock</span></summary>
                     <div class="recording-performance-explanation-body">
+                      <dl class="recording-performance-result-counts">
+                        <div><dt>Failed save attempts</dt><dd id="recording-performance-failed"></dd></div>
+                        <div><dt>Queue-full refusals</dt><dd id="recording-performance-rejected"></dd></div>
+                        <div><dt>Device commands not sent</dt><dd id="recording-performance-commandsNotSent"></dd></div>
+                        <div><dt>Control requests blocked by storage</dt><dd id="recording-performance-controlRequestsBlocked"></dd></div>
+                        <div><dt>Failed queued operations</dt><dd id="recording-performance-failedJobs"></dd></div>
+                        <div><dt>Saved; follow-up failed</dt><dd id="recording-performance-postCommit"></dd></div>
+                      </dl>
                       <table class="recording-performance-timings recording-performance-priority">
                         <caption>Queue wait by priority</caption>
                         <thead><tr><th scope="col">Queue</th><th scope="col">Average</th><th scope="col">Approx. p95</th><th scope="col">Worst</th></tr></thead>
@@ -1145,49 +1157,54 @@ G_warming = G / 2</code>
                         <section aria-labelledby="recording-performance-queue-title"><h5 id="recording-performance-queue-title">Queue &amp; writer lock</h5><dl class="recording-performance-outcomes"><div><dt>Queue wait · approx. p95</dt><dd id="recording-performance-queue-p95"></dd></div><div><dt>Writer-lock wait episodes</dt><dd id="recording-performance-contention"></dd></div><div><dt>Writer-lock wait time</dt><dd id="recording-performance-contentionDetail"></dd></div><div><dt>Peak queued operations</dt><dd id="recording-performance-peak"></dd></div></dl></section>
                         <section aria-labelledby="recording-performance-operations-title"><h5 id="recording-performance-operations-title">Operation outcomes</h5><dl class="recording-performance-outcomes"><div><dt>Committed transactions</dt><dd id="recording-performance-committed"></dd></div><div><dt>Transaction attempts, including retries</dt><dd id="recording-performance-attempts"></dd></div><div><dt>Cancelled queued operations</dt><dd id="recording-performance-cancelled"></dd></div></dl></section>
                       </div>
-                      <p>Writer-lock time includes retries and any active wait. Queued-operation failures can include application errors. Errors after commit do not undo the save. Control priority describes queue scheduling, not device delivery.</p>
+                      <p>Counts can overlap; do not add requests, commands and save attempts. Queued-operation failures can have application causes. A failed follow-up does not undo a confirmed save. Writer-lock time includes retries and active waits.</p>
                     </div>
                   </details>
-
-                </section>
-                <details id="recording-performance-responsiveness" class="recording-performance-explanation" hidden>
-                  <summary><span id="recording-performance-runtime-title">Application responsiveness</span><span class="recording-disclosure-hint">Since application start</span></summary>
-                  <div class="recording-performance-explanation-body">
-                    <dl class="recording-performance-waits recording-runtime-timings"><div><dt>Event-loop delay · p99</dt><dd id="recording-performance-runtime-p99"></dd></div><div><dt>Worst observed</dt><dd id="recording-performance-runtime-max"></dd></div></dl>
-                    <p id="recording-performance-runtime-samples" class="recording-health-evidence"></p>
-                    <p>Observed application timer delays, including the 20 ms sampling interval. This covers the current application run and is independent of the day or week selection. It does not measure a device’s response or guarantee timely control.</p>
-                    <p>Saving and application responsiveness are separate: the writer can be completing a slow commit while the application continues to respond.</p>
-                  </div>
-                </details>
-                <details id="recording-performance-method" class="recording-performance-explanation">
-                  <summary>About these measurements<span class="recording-disclosure-hint">Coverage and limitations</span></summary>
-                  <div class="recording-performance-explanation-body">
-                    <p id="recording-performance-scope" class="recording-health-evidence"></p>
-                    <p>Runtime timings cover the recording writer and its admission queue, including charger measurements. Local storage operations below report separate jobs; their elapsed time includes preparation, computation, transfer and cleanup where applicable. It is not SQLite transaction time or isolated disk latency.</p>
-                    <p>Caught up means the runtime writer is available and its monitored queue has no waiting or running work. Other local storage jobs can still be active. It does not establish complete source history or successful device actions. A confirmed save and the writer’s ability to accept new work are reported separately.</p>
-                    <p>Runtime writer measurements are held in memory for at most seven days and reset on restart or storage reopen. Earlier time is unknown. Five-minute summaries omit the oldest partial interval when it crosses the selected period’s boundary.</p>
-                    <p>Command monitoring covers heat-pump, switch, door/cover, Garage, floor, Caravan and both charging adapters across MQTT, OCPP and cloud commands. Only established storage causes before transmission count, including storage-caused rollback. Queries, unrelated cancellations, changed authority and unconfirmed device readbacks do not establish an unsent command.</p>
-                    <ul id="recording-performance-command-coverage" class="recording-command-coverage"></ul>
-                    <p id="recording-performance-command-coverage-empty" class="recording-health-evidence"></p>
-                    <p>These observations cannot count every lost reading or prove that every expected device action happened. Saving resumed does not mean missing history was recovered.</p>
-                  </div>
-                </details>
-                <details id="recording-performance-operations" class="recording-performance-explanation">
-                  <summary>Local storage operations<span id="recording-performance-operations-summary" class="recording-disclosure-hint">Waiting for evidence</span></summary>
-                  <div class="recording-performance-explanation-body">
-                    <div class="recording-performance-toolbar">
+                  <details id="recording-performance-operations" class="recording-performance-explanation">
+                    <summary>Local tasks<span id="recording-performance-operations-summary" class="recording-disclosure-hint">Waiting for evidence</span></summary>
+                    <div class="recording-performance-explanation-body">
                       <p id="recording-performance-operations-evidence" class="recording-health-evidence"></p>
-                      <div class="recording-performance-period" role="group" aria-label="Local storage operations period">
-                        <button id="recording-performance-operations-day" type="button" aria-pressed="true">Past day</button>
-                        <button id="recording-performance-operations-week" type="button" aria-pressed="false">Past week</button>
+                      <p id="recording-performance-operations-empty" class="recording-health-evidence"></p>
+                      <div id="recording-performance-operation-list" class="recording-operation-list"></div>
+                      <p>Task counts and elapsed times can overlap. For example, saving a copy includes separately observed creation and verification. Snapshot chunks and file maintenance are tasks of their own.</p>
+                    </div>
+                  </details>
+                  <details id="recording-performance-responsiveness" class="recording-performance-explanation" hidden>
+                    <summary><span id="recording-performance-runtime-title">Application responsiveness</span><span class="recording-disclosure-hint">Since application start</span></summary>
+                    <div class="recording-performance-explanation-body">
+                      <dl class="recording-performance-waits recording-runtime-timings"><div><dt>Event-loop delay · p99</dt><dd id="recording-performance-runtime-p99"></dd></div><div><dt>Worst observed</dt><dd id="recording-performance-runtime-max"></dd></div></dl>
+                      <p id="recording-performance-runtime-samples" class="recording-health-evidence"></p>
+                      <p>Observed application timer delays, including the 20 ms sampling interval. This covers the current application run and is independent of the day or week selection. It does not measure a device’s response or guarantee timely control.</p>
+                    </div>
+                  </details>
+                  <details id="recording-performance-monitoring" class="recording-performance-explanation">
+                    <summary>Monitoring coverage<span class="recording-disclosure-hint">Local tasks and device commands</span></summary>
+                    <div class="recording-performance-explanation-body">
+                      <h5>Local tasks</h5>
+                      <p id="recording-performance-monitoring-evidence" class="recording-health-evidence"></p>
+                      <dl id="recording-performance-operation-coverage" class="recording-monitoring-list"></dl>
+                      <p>Separate command-line CSV imports and exports run in their own process and are outside this dashboard. CSV export writes selected observations; it is not a database backup.</p>
+                      <div id="recording-performance-command-monitoring">
+                        <h5>Device commands</h5>
+                        <p>Known unsent attempts blocked by storage. Queries and unconfirmed device responses are excluded; these counts do not prove physical outcomes.</p>
+                        <ul id="recording-performance-command-coverage" class="recording-command-coverage"></ul>
+                        <p id="recording-performance-command-coverage-empty" class="recording-health-evidence"></p>
                       </div>
                     </div>
-                    <div id="recording-performance-operation-list" class="recording-operation-list"></div>
-                    <p>Each family counts its underlying observed jobs once. Shared callers and cached results add no jobs. A backup may include a separately observed check or publication; family counts and elapsed times must not be added together.</p>
-                    <p>Whole-job duration includes queued time and owned cleanup. Refused work has no execution-duration sample. Cancellation, superseded work, failed operations and unconfirmed outcomes remain separate. Existing feature views retain the detailed results.</p>
-                    <p>These observations belong to this application run on this computer, including local standby and saved-copy work. Separate command-line processes and unobserved peer work are outside this view. Missing monitoring is unknown. Five-minute summaries omit the oldest partial interval; evidence expires after seven days and resets when this application exits.</p>
-                  </div>
-                </details>
+                  </details>
+                  <details id="recording-performance-method" class="recording-performance-explanation">
+                    <summary>About these measurements<span class="recording-disclosure-hint">Timing, scope and retention</span></summary>
+                    <div class="recording-performance-explanation-body">
+                      <p id="recording-performance-scope" class="recording-health-evidence"></p>
+                      <dl class="recording-measurement-guide">
+                        <div><dt>Current activity</dt><dd>Caught up describes the runtime writer and its queue. Other local tasks can still be active. Neither establishes complete source history or successful device actions.</dd></div>
+                        <div><dt>Writer timings</dt><dd>Successful writes include communication with the writer and confirmation. Journal sealing includes validation, hashing and SQL; SQLite COMMIT includes synchronization and automatic checkpoint work. Neither isolates fsync. Approximate p95 is the duration 95% of samples stayed within.</dd></div>
+                        <div><dt>Local task duration</dt><dd>Elapsed time includes preparation, queueing, computation, transfer and owned cleanup where applicable. It is not SQLite time or application unresponsiveness. A completed download confirms server transfer, not a file saved on the receiving device.</dd></div>
+                        <div><dt>History &amp; coverage</dt><dd>Evidence is held in memory for up to seven days. Writer history resets when storage reopens; local task history resets when the application exits. Five-minute summaries exclude the oldest partial interval. Earlier and unmonitored work remains unknown.</dd></div>
+                      </dl>
+                    </div>
+                  </details>
+                </section>
               </div>
             </details>
             <details id="recording-disk-card" class="recording-health-card">

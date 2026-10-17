@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync, statSync, existsSync, mkdirSync, symlinkSync, lstatSync } from 'node:fs';
 import { once, EventEmitter } from 'node:events';
+import { Writable } from 'node:stream';
 import fs from 'node:fs/promises';
 import { request } from 'node:http';
 import { join } from 'node:path';
@@ -10,6 +11,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
 import { createAppServer } from '../src/app/server.js';
 import { createDatabaseExport } from '../src/app/database-export.js';
+import { storageOperationHealth } from '../src/storage/operation-health.js';
+
+const observedOperation = kind => storageOperationHealth.status().coverage.find(row => row.kind === kind);
 
 const filenamePattern = /^stmq-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-\d+)?\.sqlite$/;
 const saveCopy = (url, options = {}) => fetch(url, {
@@ -309,6 +313,7 @@ test('backup health reports only completed outer saves and distinguishes failure
 
 test('a failed final export directory flush never acknowledges a saved copy or reports backup success', async t => {
   const { store, exportDirectory } = await fixture(t), events = [];
+  const before = observedOperation('backup-save').week;
   const original = fs.open;
   t.mock.method(fs, 'open', async (...args) => {
     const file = await original(...args);
@@ -320,12 +325,41 @@ test('a failed final export directory flush never acknowledges a saved copy or r
   await assert.rejects(exportDatabase({ store, response: { destroyed: false, headersSent: false }, authorized: () => true, save: true }), { code: 'backup_failed' });
   assert.deepEqual(events.map(event => event.phase), ['start', 'failed']);
   assert.equal(events[1].errorCode, 'database_publication_unconfirmed');
+  assert.equal(observedOperation('backup-save').week.unconfirmed, before.unconfirmed + 1);
+  assert.equal(observedOperation('backup-save').week.lastProblem.reason, 'durability-unconfirmed');
+  assert.equal(observedOperation('backup-save').running, 0);
   const remaining = readdirSync(exportDirectory);
   assert.equal(remaining.length, 1, 'Private staging is cleaned but the unconfirmed published artifact is preserved');
   assert(remaining[0].endsWith('.sqlite'));
   const preserved = new Store(join(exportDirectory, remaining[0]), { readOnly: true });
   try { assert.deepEqual(preserved.checkpoint(), store.checkpoint()); }
   finally { preserved.close(); }
+});
+
+test('a successful snapshot cannot hide a failed outer download or finish before transfer and cleanup', async t => {
+  const { store, exportDirectory } = await fixture(t);
+  const before = observedOperation('backup-download').week;
+  const copyBefore = observedOperation('backup').week.completed;
+  let staging, received, finishWrite;
+  const original = store.backup.bind(store);
+  store.backup = async (...args) => { staging = args[0]; return original(...args); };
+  const transferring = new Promise(resolve => { received = resolve; });
+  const response = new Writable({ write(_chunk, _encoding, callback) { finishWrite = callback; received(); } });
+  response.writeHead = () => { response.headersSent = true; };
+  const exportDatabase = createDatabaseExport({ getDirectory: () => exportDirectory });
+  const running = exportDatabase({ store, response, authorized: () => true });
+  await transferring;
+  assert.equal(observedOperation('backup').week.completed, copyBefore + 1);
+  assert.equal(observedOperation('backup-download').running, 1);
+  assert.equal(observedOperation('backup-download').week.completed, before.completed);
+  finishWrite(Object.assign(Error('synthetic transfer I/O failure'), { code: 'EIO' }));
+  await running;
+  const result = observedOperation('backup-download');
+  assert.equal(result.running, 0);
+  assert.equal(result.week.failed, before.failed + 1);
+  assert.equal(result.week.cancelled, before.cancelled);
+  assert.equal(result.week.lastProblem.outcome, 'failed');
+  assert.equal(existsSync(staging), false);
 });
 
 for (const send of [fetch, saveCopy]) {

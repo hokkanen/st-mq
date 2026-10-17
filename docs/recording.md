@@ -2184,15 +2184,19 @@ and independent worker connections are not attributed to this Store.
 
 ### Storage health
 
-The authenticated transient health and writer-history contracts are version 3.
-Current producers, dashboard consumers and fixtures use that contract directly;
-older transient shapes are unknown. Persisted backup receipts and database,
+The authenticated transient health and writer-history contracts are version 3;
+the nested process-local operations contract is version 2. Current producers,
+dashboard consumers and fixtures use these contracts directly; older transient
+shapes are unknown. There is no decoder or persisted migration for earlier shapes. Persisted backup receipts and database,
 journal and learning formats are independent and unchanged.
 
 
 The **Storage health** summary belongs to **Recording & storage**. Its current state
-and selected-period evidence occupy separate summary fields; historical problems
-remain visible even when the writer is caught up. **Caught up** requires usable
+and dated **Earlier problems** occupy separate summary fields. The historical
+indicator always covers the past day, independently of the selected diagnostic
+period, and also appears on the outer Recording details summary. It is a history
+indicator, not a current fault. Authoritative writer and feature owners still
+report unresolved faults. A later success does not erase an earlier failure. **Caught up** requires usable
 current writer and queue evidence with no monitored work outstanding. Ordinary
 **Writing** activity is neutral, while an actual writer-lock wait has its own
 state. **Confirming last save** reports unresolved durability after worker loss without
@@ -2201,14 +2205,15 @@ save committed successfully and the queue drained. **Writer stopped** reports
 closed admission. Missing or malformed evidence cannot establish readiness.
 
 Opening the fold separates **Current activity** (writer availability, backlog,
-lock wait and last successful write) from **Monitored history**. The selected
-period and coverage apply to the paired queue-wait and save-duration summaries,
-with **Observed outcomes** below: failed save attempts, queue-full refusals,
-failed follow-up work after successful saves, and MQTT device commands known not
-to have been sent because recording blocked them. Latest problems have separate
-type, date, context, outcome and recovery fields. A confirmed save retains its
-original success clock when the worker becomes unavailable; checking health
-neither renews that receipt nor resumes recording or command authority.
+lock wait, last confirmed write and active local tasks) from **Monitored history**.
+One past-day/past-week selector applies to writer and local-task history. The
+writer's paired queue-wait and save-duration summaries remain visible. The latest
+three dated problems are shown directly; additional retained problems have a
+shared disclosure. Each keeps type, date, context, outcome and any established
+recovery separate. Full writer counters, including observed zeroes, belong under
+**Writer outcomes & queue**. A confirmed save retains its original success clock
+when the worker becomes unavailable; checking health neither renews that receipt
+nor resumes recording or command authority.
 It uses the existing authenticated health responses and updates with
 ordinary dashboard refreshes. Its summaries are held solely in memory for at
 most seven days; opening a new Store, including application restart, starts a
@@ -2281,13 +2286,31 @@ means saving resumed; a newer reading cannot prove recovery of missing history.
 Historical failure counts remain after recovery and are separate from current
 writer status.
 
-**Local storage operations** is separate process-local evidence, available on
-this computer even while it displays a snapshot or runs as standby. It covers
-existing backup/download, verification, saved-copy discovery/inspection,
-learning/rebuild, correction publication, checkpoint cache, recovery, journal
-maintenance, replication/pairing publication, reset archive, history query and
-inventory owners. CSV workers are observable only in their own process; a
-separate command-line invocation or remote peer is not observed by this dashboard.
+**Local tasks** is separate process-local evidence, available on this computer
+even while it displays a snapshot or runs as standby. Current activity lists
+running or queued work regardless of the selected history period. The diagnostic
+disclosure shows task types with activity or outcomes, grouped as **Backups &
+checks**, **Learning & recovery**, **Synchronization & maintenance**, and **Queries
+& inventory**. Idle registrations and unobserved task types belong under
+**Monitoring coverage**, alongside device-command coverage. The dashboard does
+not present every registered kind as a permanently empty operation row.
+
+Coverage includes backup saving/downloading, copy creation, verification,
+saved-copy discovery/inspection, learning/rebuild, correction publication,
+checkpoint cache, recovery, journal maintenance, replication/pairing tasks,
+reset archives, history queries and inventory owners. A direct database download
+remains running through transfer and owned cleanup; saving a copy remains running
+through final publication and cleanup. Success of an inner copy or verification
+cannot establish success of that outer action. Unconfirmed directory durability
+preserves the artifact and reports an unconfirmed result. Transfer completion
+does not prove durable retention on the receiving device.
+
+CSV import/export workers are observable only in their own process; separate
+command-line invocations and unobserved peer work are outside this dashboard.
+Unregistered CSV task rows are omitted in favor of one scope explanation. The
+existing CLI CSV export writes selected active observations and their source,
+receipt, unit, quality and import provenance fields. It does not export the whole
+database, learning journal or saved application state and is not a backup.
 Pure computation and provider credential/configuration files remain outside
 these database-operation families.
 
@@ -2295,24 +2318,32 @@ Families register when their owner is constructed or first used. Missing
 registration is unobserved, not zero; each family reports its own monitoring
 start and summarized coverage. Underlying admitted work counts once: shared
 waiters, cache hits, repeated starts and coalesced snapshots dropped before
-execution add no completed jobs. Existing queue-capacity refusals have a separate
+execution add no completed tasks. Existing queue-capacity refusals have a separate
 outcome and no execution-duration sample. Fixed categories distinguish completed,
 failed, cancelled, superseded and unconfirmed outcomes. A failed cache does not
 mean committed learning inputs were lost, and a follow-up failure cannot erase
-a confirmed publication.
+a confirmed publication. Cancellation requires the actual abort reason or an
+explicit abort error; an independently reported I/O failure remains failed even
+if the signal also became aborted.
 
-Whole-job elapsed time uses a monotonic clock, includes queue and owned cleanup,
+Task elapsed time uses a monotonic clock, includes queue and owned cleanup,
 and ends after the owner has joined any worker. It includes computation, transfer
 and cleanup where applicable; it is neither SQLite transaction time nor isolated
-disk latency. Parent jobs can include separately observed verification or
-publication jobs. Per-family counts and durations are not additive and are not
+disk latency. Parent tasks can include separately observed verification or
+publication tasks. Pairing creation, individual snapshot chunks and receiving
+are separate observed tasks, as are file publication, pinning and maintenance.
+The labels do not imply one count per user action. Counts and durations are not additive and are not
 merged into runtime writer timings. Existing feature views remain authoritative
 for detailed results and physical/control meaning.
 
 The observer performs no I/O, schedules no work and cannot change admission,
 control, deadlines, cancellation or operation results. Sparse five-minute
-aggregates and the latest dated result per fixed family expire after seven days
-of elapsed time. At most 128 active summaries are retained; omitted details are
+aggregates, the latest finished result and the latest dated problem per fixed
+family expire after seven days of elapsed time. A success can replace the latest
+result without replacing the problem. Refusals have a dated problem receipt but
+no execution duration. Each period includes its latest problem using the same
+monotonic five-minute boundary as its counters, so browser/server clock changes
+cannot change period membership. At most 128 active summaries are retained; omitted details are
 reported while all observed job counts continue, without imposing an execution
 limit. Background history survives Store replacement until this application
 exits. Each operation retains its original local scope and cannot update a
@@ -2324,9 +2355,10 @@ averages, approximate 95th percentiles and worst durations. Indentation, connect
 rules and explicit relationship labels place **Commit only** within **Write +
 commit**, and **Journal sealing** and **SQLite COMMIT** within **Commit only**.
 The hierarchy remains visible when the table becomes stacked rows on phones.
-**Queue & operation details** holds priority-specific waits, writer-lock statistics,
-peak backlog and other operation counters; **About these measurements** explains
-coverage, in-memory retention and exclusions. Commit is part of the full transaction duration;
+**Writer outcomes & queue** holds priority-specific waits, writer-lock statistics,
+peak backlog and complete outcome counters; **Monitoring coverage** holds local
+task registration and device-command coverage. **About these measurements** gives
+one guide to timing meanings, in-memory retention and exclusions. Commit is part of the full transaction duration;
 the two measured stages are within Commit and these overlapping durations must
 not be added. Stage summaries count only reached, measured stages of successful
 commits; bootstrap can contribute to full transaction/commit summaries without

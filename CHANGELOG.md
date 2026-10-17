@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Reorganize Storage health around current activity, dated problems and grouped
+  diagnostics, with one history period selector and separate monitoring coverage.
+  Retain earlier local-task failures after later successes, and track database
+  saves and downloads through final publication, transfer and cleanup.
+
 - Reuse verified immutable heating checkpoints during unchanged controller updates,
   avoiding repeated full-model hashing and rollback copies while preserving replay.
 

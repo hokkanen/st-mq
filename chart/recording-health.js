@@ -1,4 +1,4 @@
-import { createStoragePerformance } from './storage-health.js';
+import { createStoragePerformance, storageProblemSummary } from './storage-health.js';
 import { recoveryErrorMessage } from '../src/recovery/errors.js';
 import { dashboardWriterState } from './dashboard-storage.js';
 
@@ -83,6 +83,7 @@ export function recordingHealthView(health, recording, now = Date.now()) {
   const attention = count(sources?.attentionStreams), unknown = count(sources?.unknownStreams);
   return {
     known: health?.version === 3,
+    storageHistory: storageProblemSummary(health, { now }),
     outdated: !validTime(current.checkedAt) || now - current.checkedAt > healthFreshnessMs,
     // The server dates the check; the browser renders it with a separate clock.
     // Tolerate skew within the freshness window without changing source times.
@@ -441,8 +442,10 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     $('recording-health-checked').dataset.tone = unavailable || view.clockMismatch ? 'warning' : 'neutral';
     $('recording-health-refresh').disabled = pending;
     set('recording-health-refresh', pending ? 'Checking…' : 'Refresh health');
-    set('recording-health-badge', attention.length ? 'Needs attention' : unavailable ? 'Status unavailable' : dated ? 'Last known' : '');
-    $('recording-health-badge').hidden = !attention.length && !unavailable && !dated;
+    set('recording-health-badge', attention.length ? 'Needs attention' : unavailable ? 'Status unavailable' : dated ? 'Last known' : view.storageHistory.problems ? 'Earlier problems' : '');
+    $('recording-health-badge').dataset.tone = attention.length || unavailable || dated ? 'warning' : 'historical';
+    $('recording-health-badge').title = view.storageHistory.problems ? `${view.storageHistory.label} · past day. Open Storage health for details.` : '';
+    $('recording-health-badge').hidden = !attention.length && !unavailable && !dated && !view.storageHistory.problems;
     for (const section of ['disk', 'recording', 'backup']) {
       set(`recording-${section}-state`, `${dated ? 'Last known: ' : ''}${view[section].cardLabel ?? view[section].label}`);
       $(`recording-${section}-card`).dataset.tone = view[section].tone;

@@ -45,17 +45,24 @@ It verifies complete replay/energy parity and emits a semantic fingerprint befor
 reporting timing. Synthetic timings do not establish installed performance.
 
 Storage health coverage uses the current transient version-3 health/history
-contract. `test/storage-control-coverage.test.js` and
+contract and nested version-2 local-operations contract.
+`test/storage-control-coverage.test.js` and
 `test/control-attempt.test.js` check exact-once known-unsent outcomes, safe parent
 rollback causes, query/post-dispatch exclusions and monitoring enable/disable
 history. Adapter suites exercise the same accounting at native boundaries.
 `test/storage-operation-health.test.js` and
 `test/storage-operation-owners.test.js` cover bounded monotonic retention,
-owner deduplication, refusal, cancellation/worker joins, passive diagnostics and
-publication uncertainty. `test/browser/recording-health-smoke.js` renders real
+owner deduplication, dated refusals, failures retained after later successes,
+cause-based cancellation/worker joins, passive diagnostics and publication
+uncertainty. `test/database-export.test.js` includes failed outer downloads after
+a successful inner copy, transfer lifetime and unconfirmed final publication.
+`test/browser/recording-health-smoke.js` renders real
 collector evidence against production markup at 320/390/768/1440 pixels in both
 themes, including local operations in snapshot scope, focus/disclosure retention,
-per-family labels and historical problems independent of writer readiness.
+grouped observed tasks, a single period selector and dated historical problems
+independent of writer readiness. Period changes must preserve the current overview
+and keyboard focus; a snapshot retains local-task evidence without borrowing the
+live controller's writer history.
 These offline checks establish instrumentation behavior, not live equipment
 receipt, physical outcomes or Raspberry Pi storage performance.
 

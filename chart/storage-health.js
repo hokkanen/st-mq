@@ -75,63 +75,128 @@ function incidentView(value, lastWriteAt) {
   const outcome = originalRecovered ? `The original update was saved on retry ${dates.format(new Date(value.recoveredAt))}.`
     : incidentOutcomes[value.outcome];
   const recovery = !originalRecovered && resumed ? `Saving resumed ${dates.format(new Date(lastWriteAt))}; this does not establish recovery of missing history.` : '';
-  return { title: incidentCategories[value.category], context: incidentContexts[value.context],
+  return { at: value.at, title: incidentCategories[value.category], context: incidentContexts[value.context],
     date: dates.format(new Date(value.at)), dateTime: new Date(value.at).toISOString(),
     reason: incidentReasons[value.reason], outcome, recovery };
 }
 
+const operationGroups = [
+  { id: 'backups', label: 'Backups & checks', kinds: ['backup-save', 'backup-download', 'backup', 'verification', 'backup-catalog', 'backup-inspection'] },
+  { id: 'learning', label: 'Learning & recovery', kinds: ['learning-rebuild', 'learning-publication', 'checkpoint-cache', 'recovery', 'csv-import'] },
+  { id: 'maintenance', label: 'Synchronization & maintenance', kinds: ['replication', 'replication-worker', 'peer-transfer', 'pairing-snapshot', 'local-publication', 'journal-maintenance', 'reset-archive'] },
+  { id: 'queries', label: 'Queries & inventory', kinds: ['history-query', 'storage-inventory', 'csv-export'] },
+];
 const operationLabels = {
-  backup: 'Database backup', 'backup-download': 'Backup download', verification: 'Database verification',
-  'backup-catalog': 'Saved-copy listing', 'backup-inspection': 'Saved-copy inspection',
-  'learning-rebuild': 'Learning and rebuilding', 'learning-publication': 'Model publication',
+  'backup-save': 'Save database copy', 'backup-download': 'Database download', backup: 'Database copy creation',
+  verification: 'Database verification', 'backup-catalog': 'Saved-copy listing', 'backup-inspection': 'Saved-copy inspection',
+  'learning-rebuild': 'Learning & rebuilding', 'learning-publication': 'Model publication',
   'checkpoint-cache': 'Learning checkpoint cache', recovery: 'History recovery',
-  'journal-maintenance': 'Journal maintenance', replication: 'Local synchronization', 'replication-worker': 'Replication storage workers', 'peer-transfer': 'Peer transfer', 'pairing-snapshot': 'Pairing snapshot',
+  'journal-maintenance': 'Journal maintenance', replication: 'Local synchronization',
+  'replication-worker': 'Synchronization workers', 'peer-transfer': 'Peer transfer tasks',
+  'pairing-snapshot': 'Pairing snapshots & chunks', 'local-publication': 'Database files & publication',
   'reset-archive': 'Reset archive', 'history-query': 'History queries', 'storage-inventory': 'Storage inventory',
-  'csv-import': 'CSV import', 'csv-export': 'CSV export', 'local-publication': 'Local database publication',
+  'csv-import': 'CSV import', 'csv-export': 'CSV export',
 };
 const operationOutcomes = { completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', superseded: 'Superseded',
-  unconfirmed: 'Outcome unconfirmed' };
-const operationReasons = { 'operation-failed': 'The operation failed; its cause is not established here.',
+  unconfirmed: 'Unconfirmed', refused: 'Refused' };
+const operationReasons = { 'operation-failed': 'The cause is not established here.',
   'durability-unconfirmed': 'Publication durability is unconfirmed.', 'committed-followup-failed': 'The save committed; follow-up work failed.',
-  'worker-lost': 'The worker became unavailable.', 'cleanup-failed': 'Owned cleanup failed.', cancelled: 'The operation was cancelled.',
-  superseded: 'Newer work superseded this operation.', stale: 'The operation no longer matched its original context.' };
+  'worker-lost': 'The worker became unavailable.', 'cleanup-failed': 'Cleanup failed.', cancelled: 'The task was cancelled.',
+  superseded: 'Newer work superseded this task.', stale: 'The task no longer matched its original context.',
+  capacity: 'Capacity was unavailable; the task did not start.' };
 const operationScopes = { runtime: 'Recording context', history: 'History or saved copy', standby: 'Local standby', shared: 'Local application' };
+const operationStages = { queued: 'Queued', starting: 'Starting', reading: 'Reading', copying: 'Copying', verifying: 'Verifying',
+  rebuilding: 'Rebuilding', publishing: 'Publishing', cleanup: 'Cleaning up', running: 'Running' };
+const outcomeKeys = Object.keys(operationOutcomes);
+const datedResult = result => result && Object.hasOwn(operationOutcomes, result.outcome) && validDate(result.finishedAt)
+  ? `${operationOutcomes[result.outcome]} · ${dates.format(new Date(result.finishedAt))} · ${operationScopes[result.scope] ?? 'Local application'}` : '';
 
 export function storageOperationsView(health, period = 'day', { unavailable = false, now = Date.now() } = {}) {
-  const operations = health?.version === 3 && health.operations?.version === 1
+  const operations = health?.version === 3 && health.operations?.version === 2
     && health.operations.scope === 'local-node' && health.operations.period === 'application-run' ? health.operations : null;
-  const valid = operations && validDate(operations.startedAt) && validDate(operations.observedAt) && Array.isArray(operations.coverage);
+  const valid = Boolean(operations && validDate(operations.startedAt) && validDate(operations.observedAt) && Array.isArray(operations.coverage));
   const stale = unavailable || !valid || Math.abs(now - operations.observedAt) > 180_000;
   const rows = valid ? Object.entries(operationLabels).map(([kind, label]) => {
     const row = operations.coverage.find(value => value?.kind === kind), window = row?.[period];
-    const known = row?.monitored === true && validDate(row.monitoredSince) && finite(window?.coveredMs);
-    const outcomesKnown = known && ['completed', 'failed', 'cancelled', 'superseded', 'unconfirmed', 'refused'].every(key => count(window[key]));
-    const problems = outcomesKnown && (window.failed > 0 || window.unconfirmed > 0 || window.refused > 0);
-    const result = row?.lastResult;
-    const resultKnown = known && Object.hasOwn(operationOutcomes, result?.outcome) && validDate(result.finishedAt);
-    const latest = resultKnown ? `Latest result this run · ${operationOutcomes[result.outcome]} · ${dates.format(new Date(result.finishedAt))} · ${operationScopes[result.scope] ?? 'Local application'}. ${operationReasons[result.reason] ?? ''}${result.committed === true ? ' A commit was confirmed.' : ''}` : 'No result observed in this application run.';
-    const samples = outcomesKnown && count(window.durationSamples) ? window.durationSamples : null;
-    return { kind, label, known, problems,
-      summary: !known ? 'Not observed' : !outcomesKnown ? 'Outcomes unknown' : problems ? 'Problems observed'
-        : window.completed > 0 ? `${integer.format(window.completed)} completed` : 'No completed work',
-      activity: known && count(row.queued) && count(row.running) ? `${integer.format(row.queued)} queued · ${integer.format(row.running)} running${stale ? ' · last known' : ''}` : 'Current activity unknown',
-      outcomes: outcomesKnown ? `${integer.format(window.completed)} completed · ${integer.format(window.failed)} failed · ${integer.format(window.unconfirmed)} unconfirmed · ${integer.format(window.refused)} refused · ${integer.format(window.cancelled)} cancelled · ${integer.format(window.superseded)} superseded` : 'Outcomes are not monitored.',
-      duration: samples > 0 && finite(window.elapsedMs) && finite(window.maxElapsedMs)
-        ? `Whole job elapsed · average ${storageDuration(window.elapsedMs / samples)} · worst ${storageDuration(window.maxElapsedMs)} · ${integer.format(samples)} finished job${samples === 1 ? '' : 's'}`
-        : samples === 0 ? 'No finished-job duration samples.' : 'Duration samples unknown.',
-      coverage: known ? `${coverageDuration(window.monitoredMs)} monitored · ${coverageDuration(window.coveredMs)} summarized. Monitoring began ${dates.format(new Date(row.monitoredSince))}.`
-        : 'This operation has not registered monitoring in this application run. Its history is unknown.',
-      latest,
-      omitted: count(row?.activeDetailsOmitted) && row.activeDetailsOmitted > 0 ? 'Some active details are omitted; activity counts include all observed jobs.' : '',
+    const registered = row?.monitored === true && validDate(row.monitoredSince);
+    const known = registered && finite(window?.coveredMs) && finite(window.monitoredMs);
+    const outcomesKnown = known && outcomeKeys.every(key => count(window[key]));
+    // A known problem is still evidence when another counter is unavailable.
+    const problems = known && ['failed', 'unconfirmed', 'refused'].some(key => count(window[key]) && window[key] > 0);
+    const activityKnown = registered && count(row.queued) && count(row.running);
+    const active = activityKnown && row.queued + row.running > 0;
+    const activity = activityKnown ? [row.running > 0 ? `${integer.format(row.running)} running` : '',
+      row.queued > 0 ? `${integer.format(row.queued)} queued` : ''].filter(Boolean).join(' · ') || 'No active tasks' : 'Activity unknown';
+    const result = row?.lastResult, resultText = known ? datedResult(result) : '';
+    const latest = resultText ? `${resultText}. ${operationReasons[result.reason] ?? ''}${result.committed === true ? ' A commit was confirmed.' : ''}`.trim()
+      : 'No finished task observed in retained history.';
+    const problem = known && ['failed', 'unconfirmed', 'refused'].includes(window.lastProblem?.outcome)
+      && datedResult(window.lastProblem) ? window.lastProblem : null;
+    const samples = known && count(window.durationSamples) ? window.durationSamples : null;
+    const outcomes = outcomeKeys.filter(key => count(window?.[key]) && window[key] > 0)
+      .map(key => `${integer.format(window[key])} ${operationOutcomes[key].toLowerCase()}`).join(' · ');
+    const duration = samples > 0 && finite(window.elapsedMs) && finite(window.maxElapsedMs)
+      ? `Average ${storageDuration(window.elapsedMs / samples)} · worst ${storageDuration(window.maxElapsedMs)} · ${integer.format(samples)} finished task${samples === 1 ? '' : 's'}`
+      : samples === 0 ? 'No duration samples' : 'Duration unknown';
+    const coverage = known ? `${coverageDuration(window.monitoredMs)} monitored · ${coverageDuration(window.coveredMs)} summarized · since ${dates.format(new Date(row.monitoredSince))}`
+      : registered ? 'Monitoring is registered; period coverage is unknown.' : 'Not monitored in this application run.';
+    const moreActive = active && Array.isArray(row.active) ? Math.max(0, row.active.length - 3)
+      + (count(row.activeDetailsOmitted) ? row.activeDetailsOmitted : 0) : 0;
+    const activeDetails = active && Array.isArray(row.active) ? row.active.slice(0, 3)
+      .filter(item => Object.hasOwn(operationStages, item?.stage) && finite(item.elapsedMs))
+      .map(item => `${operationStages[item.stage]} · ${storageDuration(item.elapsedMs)} elapsed · ${operationScopes[item.scope] ?? 'Local application'}`)
+      .concat(moreActive ? [`${integer.format(moreActive)} more active task${moreActive === 1 ? '' : 's'}`] : []).join('; ') : '';
+    const problemDetail = problem ? `${datedResult(problem)}. ${operationReasons[problem.reason] ?? ''}${problem.committed === true ? ' A commit was confirmed.' : ''}`.trim()
+      : problems ? 'Problem counts were observed; dated detail is unavailable.' : '';
+    return { kind, label, registered, known, outcomesKnown, activityKnown, problems, active,
+      visible: active || registered && (Boolean(outcomes) || !outcomesKnown || !activityKnown),
+      summary: active ? `${activity}${stale ? ' · last known' : ''}` : problems ? 'Earlier problems'
+        : outcomes || (outcomesKnown ? 'No observed work' : 'Outcomes unknown'),
+      activity: `${stale ? 'Last known: ' : ''}${activity}`, activeDetails,
+      outcomes: `${outcomes || (outcomesKnown ? 'No finished or refused tasks' : 'Outcomes unknown')}${outcomes && !outcomesKnown ? ' · some counts unknown' : ''}`,
+      duration, coverage, latest, problemDetail,
+      incident: problem ? { title: `${label} · ${operationOutcomes[problem.outcome].toLowerCase()}`,
+        context: `Local task · ${operationScopes[problem.scope] ?? 'Local application'}`, at: problem.finishedAt,
+        date: dates.format(new Date(problem.finishedAt)), dateTime: new Date(problem.finishedAt).toISOString(),
+        reason: operationReasons[problem.reason] ?? 'The cause is not established here.',
+        outcome: problem.committed === true ? 'A commit was confirmed.' : '',
+        recovery: resultText && (result.finishedAt !== problem.finishedAt || result.outcome !== problem.outcome)
+          ? `Latest finished task: ${resultText}. This does not establish recovery of the earlier work.` : '' } : null,
+      omitted: count(row?.activeDetailsOmitted) && row.activeDetailsOmitted > 0 ? 'Some active details are omitted; counts include all observed tasks.' : '',
     };
   }) : [];
-  const monitored = rows.filter(row => row.known).length;
-  return { available: Boolean(valid), rows,
-    problemsObserved: rows.some(row => row.problems),
-    summary: !valid ? 'Operation evidence unavailable' : rows.some(row => row.problems) ? 'Problems observed'
-      : `${integer.format(monitored)} operation families observed`,
-    evidence: !valid ? 'Waiting for local operation evidence.'
-      : `${stale ? 'Last known · ' : ''}On this computer · application started ${dates.format(new Date(operations.startedAt))} · ${period === 'week' ? 'past week' : 'past day'}. Earlier time is unknown.`,
+  const monitored = rows.filter(row => row.registered), visible = rows.filter(row => row.visible);
+  const activeRows = rows.filter(row => row.active), problemsObserved = rows.some(row => row.problems);
+  const registered = rows.filter(row => row.known || !['csv-import', 'csv-export'].includes(row.kind));
+  return { available: valid, stale, observedAt: valid ? operations.observedAt : null, rows: visible, activeRows, coverage: registered,
+    groups: operationGroups.map(group => ({ ...group, rows: visible.filter(row => group.kinds.includes(row.kind)) })).filter(group => group.rows.length),
+    problemsObserved, outcomesKnown: monitored.length > 0 && monitored.every(row => row.outcomesKnown),
+    incidents: rows.map(row => row.incident).filter(Boolean),
+    summary: !valid ? 'Evidence unavailable' : !monitored.length ? 'No monitoring registered' : visible.length ? `${visible.length} task types with activity or outcomes` : 'No tasks observed in this period',
+    activity: !valid ? 'Local task activity unavailable' : activeRows.length ? `${stale ? 'Last known: ' : ''}${activeRows.length} active task type${activeRows.length === 1 ? '' : 's'}`
+      : monitored.length && monitored.every(row => row.activityKnown)
+        ? `${stale ? 'Last known: ' : ''}No observed local tasks active` : 'Local task activity unknown',
+    evidence: !valid ? 'Local task evidence is unavailable.'
+      : `${stale ? 'Last known · ' : ''}On this computer · application started ${dates.format(new Date(operations.startedAt))}.`,
+    empty: !valid ? 'Waiting for local task evidence.' : !monitored.length ? 'No local monitoring has been registered in this application run.'
+      : 'No local tasks have activity or outcomes in the selected monitored period. Monitoring coverage is listed below.',
+  };
+}
+
+// The overview always uses the past day. Selecting a diagnostic period must not
+// change current health or hide a recent problem in the outer Health summary.
+export function storageProblemSummary(health, options = {}) {
+  return historySummary(storagePerformanceView(health, 'day', options), storageOperationsView(health, 'day', options));
+}
+
+function historySummary(writer, operations) {
+  const incidents = [...writer.incidents, ...operations.incidents].sort((a, b) => b.at - a.at);
+  const problems = writer.problemsObserved || operations.problemsObserved;
+  const known = (!writer.currentVisible || writer.outcomesKnown) && operations.outcomesKnown;
+  return { problems, incidents,
+    label: problems ? `Earlier problems${incidents.length ? ` · ${incidents[0].date}` : ' · date unavailable'}` : '',
+    outcome: problems ? 'Problems were observed in this period. Current activity is shown separately.'
+      : known ? 'No problems observed in the monitored period.' : 'No problems reported in the available evidence; coverage is incomplete.',
   };
 }
 
@@ -154,8 +219,8 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
   const running = count(pending.activeJobs) && pending.activeJobs > 0 ? ` · ${integer.format(pending.activeJobs)} running` : '';
   const current = history && queueKnown ? `${stale ? 'Last known: ' : ''}${queued}${running}` : live ? 'Queue activity is not available' : '';
   let notice = !health ? 'Waiting for storage health information.'
-    : health.scope === 'snapshot' ? 'Runtime writer measurements are held only in the live controller’s memory. They are not included in a recorded snapshot. Local storage operations below belong to this computer.'
-      : health.scope === 'history' ? 'Runtime writer health is not monitored by the history viewer. Local storage operations below belong to this computer.'
+    : health.scope === 'snapshot' ? 'Runtime writer measurements are held only in the live controller’s memory. They are not included in a recorded snapshot. Local tasks belong to this computer.'
+      : health.scope === 'history' ? 'Runtime writer health is not monitored by the history viewer. Local tasks belong to this computer.'
         : !live ? 'Storage health is unavailable for this recording scope.' : '';
   if (live && stale) notice = unavailable ? 'Refresh failed. These are the last known measurements.'
     : health.checkedAt > now ? 'The server and browser clocks differ. These are the last known measurements.'
@@ -200,9 +265,10 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
     && count(runtime.samples) && (runtime.samples === 0 || finite(runtime.maxObservedDelayMs) && finite(runtime.p99ObservedDelayMs));
   return {
     available: valid,
+    problemsObserved, outcomesKnown: knownOutcomes,
     notice,
     stale,
-    activityTitle: live ? stale ? 'Last known activity' : 'Current activity' : 'Storage write evidence',
+    activityTitle: live ? stale ? 'Last known activity' : 'Current activity' : 'Local activity',
     detail,
     currentVisible: live,
     state, stateTone, evidence, historyState, historyTone: problemsObserved ? 'warning' : 'neutral',
@@ -256,128 +322,144 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
 export function createStoragePerformance({ document, now = () => Date.now() }) {
   const $ = id => document.getElementById(id);
   const root = $('recording-performance-details');
+  const groupNodes = new Map(), operationNodes = new Map();
   let period = 'day', health, unavailable = false;
-  const set = (suffix, value) => {
-    const element = $(`recording-performance-${suffix}`);
-    if (element && element.textContent !== String(value)) element.textContent = value;
+  const text = (node, value) => { if (node.textContent !== String(value)) node.textContent = value; };
+  const set = (suffix, value) => { const node = $(`recording-performance-${suffix}`); if (node) text(node, value); };
+  const hide = (suffix, hidden) => {
+    const node = $(`recording-performance-${suffix}`);
+    if (hidden && node.contains(document.activeElement)) root.querySelector(':scope > summary')?.focus({ preventScroll: true });
+    node.hidden = hidden;
   };
-  function draw() {
-    const view = storagePerformanceView(health, period, { unavailable, now: now() });
-    const operations = storageOperationsView(health, period, { unavailable, now: now() });
-    if (operations.problemsObserved) {
-      view.historyState = 'Problems observed'; view.historyTone = 'warning';
-      // The primary outcome counters describe runtime recording; background
-      // jobs have their own rows and cannot be silently added to these counts.
-      if (view.outcome.startsWith('No monitored failures')) view.outcome = 'No monitored runtime failures; local operations need attention.';
-    }
-    set('operations-summary', operations.summary);
-    set('operations-evidence', operations.evidence);
-    const operationList = $('recording-performance-operation-list');
-    const existingOperations = new Map([...operationList.children].map(node => [node.dataset.kind, node]));
-    for (const row of operations.rows) {
-      let node = existingOperations.get(row.kind);
-      if (!node) {
-        node = document.createElement('details'); node.dataset.kind = row.kind;
-        const summary = document.createElement('summary');
-        summary.append(document.createElement('span'), document.createElement('strong'));
-        node.append(summary);
-        const body = document.createElement('div');
-        for (let index = 0; index < 6; index++) body.append(document.createElement('p'));
-        node.append(body); operationList.append(node);
-      }
-      node.dataset.tone = row.problems ? 'warning' : 'neutral';
-      const [summary, body] = node.children;
-      const [label, status] = summary.children;
-      label.textContent = row.label; status.textContent = row.summary;
-      [row.activity, row.outcomes, row.duration, row.coverage, row.latest, row.omitted].forEach((value, index) => {
-        body.children[index].textContent = value; body.children[index].hidden = !value;
-      });
-      existingOperations.delete(row.kind);
-    }
-    for (const node of existingOperations.values()) {
+  function resize(list, length, create) {
+    while (list.children.length > length) list.children[list.children.length - 1].remove();
+    while (list.children.length < length) list.append(create());
+  }
+  function renderOperations(operations) {
+    const list = $('recording-performance-operation-list');
+    const visible = new Set(operations.rows.map(row => row.kind));
+    // Remove expired rows first. Moving a surviving focused disclosure around
+    // an obsolete sibling can blur it even though its own evidence is unchanged.
+    for (const [kind, node] of operationNodes) if (!visible.has(kind)) {
       if (node.contains(document.activeElement)) $('recording-performance-operations').querySelector('summary')?.focus({ preventScroll: true });
-      node.remove();
+      node.remove(); operationNodes.delete(kind);
     }
-    set('coverage', view.coverage);
+    for (const [id, node] of groupNodes) if (!operations.groups.some(group => group.id === id)) { node.remove(); groupNodes.delete(id); }
+    operations.groups.forEach((group, groupIndex) => {
+      let section = groupNodes.get(group.id);
+      if (!section) {
+        section = document.createElement('section'); section.className = 'recording-operation-group'; section.dataset.group = group.id;
+        const heading = document.createElement('h5'); heading.id = `recording-task-group-${group.id}`; text(heading, group.label);
+        section.setAttribute('aria-labelledby', heading.id);
+        section.append(heading, document.createElement('div')); groupNodes.set(group.id, section);
+      }
+      if (list.children[groupIndex] !== section) list.insertBefore(section, list.children[groupIndex] ?? null);
+      const rows = section.children[1];
+      group.rows.forEach((row, index) => {
+        let node = operationNodes.get(row.kind);
+        if (!node) {
+          node = document.createElement('details'); node.dataset.kind = row.kind; node.className = 'recording-operation';
+          const summary = document.createElement('summary'); summary.append(document.createElement('span'), document.createElement('strong'));
+          const body = document.createElement('dl'); body.className = 'recording-operation-facts';
+          node.append(summary, body); operationNodes.set(row.kind, node);
+        }
+        if (rows.children[index] !== node) rows.insertBefore(node, rows.children[index] ?? null);
+        const [summary, body] = node.children;
+        text(summary.children[0], row.label); text(summary.children[1], row.summary);
+        // Historical problems have their own dated field, independent of active work.
+        node.dataset.history = row.problems ? 'problem' : 'none';
+        const facts = [['Activity', row.activity], ['Outcomes in period', row.outcomes], ['Elapsed time', row.duration],
+          ['Latest finished task', row.latest], ['Earlier problem', row.problemDetail], ['Monitoring', row.coverage], ['Detail limit', row.omitted]]
+          .filter(([, value]) => value);
+        resize(body, facts.length, () => {
+          const item = document.createElement('div'); item.append(document.createElement('dt'), document.createElement('dd')); return item;
+        });
+        facts.forEach(([label, value], i) => { text(body.children[i].children[0], label); text(body.children[i].children[1], value); });
+      });
+    });
+    set('operations-summary', operations.summary); set('operations-evidence', operations.evidence);
+    set('monitoring-evidence', operations.evidence);
+    set('operations-empty', operations.empty); hide('operations-empty', operations.rows.length > 0);
+    set('local-activity', operations.activity);
+    const active = $('recording-performance-active-tasks');
+    resize(active, operations.activeRows.length, () => {
+      const node = document.createElement('li'); node.append(document.createElement('strong'), document.createElement('span'), document.createElement('small')); return node;
+    });
+    operations.activeRows.forEach((row, index) => {
+      const [label, activity, detail] = active.children[index].children;
+      text(label, row.label); text(activity, row.activity); text(detail, row.activeDetails); detail.hidden = !row.activeDetails;
+    });
+    hide('active-tasks', operations.activeRows.length === 0);
+    const coverage = $('recording-performance-operation-coverage');
+    resize(coverage, operations.coverage.length, () => {
+      const node = document.createElement('div'); node.append(document.createElement('dt'), document.createElement('dd')); return node;
+    });
+    operations.coverage.forEach((row, index) => {
+      text(coverage.children[index].children[0], row.label); text(coverage.children[index].children[1], row.coverage);
+    });
+  }
+  function renderIncidents(list, items) {
+    resize(list, items.length, () => {
+      const node = document.createElement('li'), heading = document.createElement('div');
+      heading.className = 'recording-performance-incident-heading';
+      heading.append(document.createElement('strong'), document.createElement('time')); node.append(heading);
+      for (const name of ['context', 'detail', 'recovery']) {
+        const paragraph = document.createElement('p'); paragraph.className = `recording-performance-incident-${name}`; node.append(paragraph);
+      }
+      return node;
+    });
+    items.forEach((item, index) => {
+      const [heading, context, detail, recovery] = list.children[index].children;
+      text(heading.children[0], item.title); text(heading.children[1], item.date); heading.children[1].dateTime = item.dateTime;
+      text(context, item.context); text(detail, `${item.reason} ${item.outcome}`.trim()); text(recovery, item.recovery); recovery.hidden = !item.recovery;
+    });
+  }
+  function draw() {
+    const options = { unavailable, now: now() };
+    const view = storagePerformanceView(health, period, options);
+    const operations = storageOperationsView(health, period, options);
+    const history = historySummary(view, operations);
+    const overview = period === 'day' ? history : storageProblemSummary(health, options);
+    renderOperations(operations);
+    set('coverage', view.available ? `Writer · ${view.coverage}` : 'Local task coverage varies by owner');
     set('scope', view.scope);
-    set('notice', view.notice);
-    set('clock', view.clock);
-    set('precision', view.precision);
-    set('current', view.current);
-    set('detail', view.detail);
-    $('recording-performance-detail').hidden = !view.detail;
-    $('recording-performance-live').hidden = !view.currentVisible;
-    $('recording-performance-activity').hidden = !view.currentVisible;
-    set('live-title', view.activityTitle);
-    set('waiting', view.waiting);
-    set('state', view.state);
-    set('evidence', view.evidence);
-    set('history-state', view.historyState);
-    set('outcome', view.outcome);
+    set('notice', view.notice); set('clock', view.clock); set('precision', view.precision);
+    set('current', view.current); set('detail', view.detail);
+    hide('detail', !view.detail); hide('live', !view.currentVisible); hide('activity', !view.currentVisible);
+    set('live-title', view.activityTitle); set('waiting', view.waiting);
+    set('state', !view.currentVisible && operations.available ? operations.activity : view.state);
+    const checkedAt = view.currentVisible ? health?.checkedAt : operations.observedAt;
+    set('evidence', validDate(checkedAt) ? `${(view.currentVisible ? view.stale : operations.stale) ? 'Last known · ' : ''}${view.currentVisible ? 'Checked' : 'Local tasks checked'} ${dates.format(new Date(checkedAt))}` : 'Check time unknown');
+    set('history-state', overview.problems ? `${overview.label} · past day` : '');
+    hide('history-state', !overview.problems);
+    set('outcome', history.outcome);
     root.dataset.tone = view.stateTone;
-    $('recording-performance-history-state').dataset.tone = view.historyTone;
-    $('recording-performance-history-state').hidden = !view.historyState;
-    $('recording-performance-outcome').dataset.tone = view.historyTone;
-    for (const name of ['notice', 'clock', 'precision', 'waiting']) $(`recording-performance-${name}`).hidden = !view[name];
+    // Dated history is not an active warning. Current writer/feature owners retain
+    // responsibility for faults that are still unresolved.
+    $('recording-performance-history-state').dataset.tone = 'historical';
+    for (const name of ['notice', 'clock', 'precision', 'waiting']) hide(name, !view[name]);
     $('recording-performance-notice').dataset.tone = view.available && view.stale ? 'warning' : 'neutral';
-    const data = $('recording-performance-data');
-    if (!view.available && data.contains(document.activeElement)) root.querySelector(':scope > summary')?.focus({ preventScroll: true });
-    data.hidden = !view.available;
-    for (const id of ['recording-performance-responsiveness', 'recording-performance-method']) {
-      const section = $(id);
-      if (!view.runtimeVisible && section.contains(document.activeElement)) root.querySelector(':scope > summary')?.focus({ preventScroll: true });
-      section.hidden = !view.runtimeVisible;
-    }
-    set('runtime-title', view.runtimeTitle);
-    set('runtime-max', view.runtimeMax);
-    set('runtime-p99', view.runtimeP99);
-    set('runtime-samples', view.runtimeSamples);
+    for (const name of ['data', 'technical', 'diagnostics']) hide(name, !view.available);
+    for (const name of ['responsiveness', 'command-monitoring']) hide(name, !view.runtimeVisible);
+    set('runtime-title', view.runtimeTitle); set('runtime-max', view.runtimeMax); set('runtime-p99', view.runtimeP99); set('runtime-samples', view.runtimeSamples);
     for (const key of ['mean', 'worst', 'samples']) set(`write-${key}`, view.transaction[key]);
     for (const name of ['queue', 'transaction', 'commit', 'journalSeal', 'nativeCommit', 'controlQueue', 'normalQueue']) {
       for (const [key, value] of Object.entries(view[name])) set(`${name}-${key}`, value);
     }
     for (const name of ['contention', 'contentionDetail', 'peak', 'failed', 'rejected', 'commandsNotSent', 'controlRequestsBlocked', 'committed', 'attempts', 'failedJobs', 'cancelled', 'postCommit']) set(name, view[name]);
-    for (const key of ['day', 'week']) for (const prefix of ['', 'operations-']) $(`recording-performance-${prefix}${key}`).setAttribute('aria-pressed', String(period === key));
-    for (const name of ['failed', 'rejected', 'commandsNotSent', 'controlRequestsBlocked', 'postCommit']) $(`recording-performance-${name}`).dataset.tone = view[name] !== '0' && /^\d/.test(view[name]) ? 'warning' : 'neutral';
+    for (const key of ['day', 'week']) $(`recording-performance-${key}`).setAttribute('aria-pressed', String(period === key));
+    for (const name of ['failed', 'rejected', 'commandsNotSent', 'controlRequestsBlocked', 'postCommit', 'failedJobs']) $(`recording-performance-${name}`).dataset.tone = view[name] !== '0' && /^\d/.test(view[name]) ? 'historical' : 'neutral';
     const commandList = $('recording-performance-command-coverage');
-    while (commandList.children.length > view.commandCoverage.length) commandList.children[commandList.children.length - 1].remove();
-    view.commandCoverage.forEach((row, index) => {
-      let node = commandList.children[index];
-      if (!node) { node = document.createElement('li'); commandList.append(node); }
-      node.textContent = `${row.context} · ${row.state} · ${row.count === 'Not monitored' ? 'No monitored period evidence' : `${row.count} known unsent in the selected period`}`;
-    });
+    resize(commandList, view.commandCoverage.length, () => document.createElement('li'));
+    view.commandCoverage.forEach((row, index) => text(commandList.children[index], `${row.context} · ${row.state} · ${row.count === 'Not monitored' ? 'No monitored period evidence' : `${row.count} known unsent in this period`}`));
     set('command-coverage-empty', view.commandCoverage.length ? '' : 'Command monitoring coverage is unknown.');
-    const incidents = $('recording-performance-incident-list');
-    while (incidents.children.length > view.incidents.length) incidents.children[incidents.children.length - 1].remove();
-    view.incidents.forEach((item, index) => {
-      let node = incidents.children[index];
-      if (!node) {
-        node = document.createElement('li');
-        const heading = document.createElement('div');
-        heading.className = 'recording-performance-incident-heading';
-        heading.append(document.createElement('strong'), document.createElement('time'));
-        node.append(heading);
-        for (const name of ['context', 'detail', 'recovery']) {
-          const paragraph = document.createElement('p');
-          paragraph.className = `recording-performance-incident-${name}`;
-          node.append(paragraph);
-        }
-        incidents.append(node);
-      }
-      const [heading, context, detail, recovery] = node.children;
-      const [title, date] = heading.children;
-      if (title.textContent !== item.title) title.textContent = item.title;
-      if (date.textContent !== item.date) date.textContent = item.date;
-      if (date.dateTime !== item.dateTime) date.dateTime = item.dateTime;
-      if (context.textContent !== item.context) context.textContent = item.context;
-      const explanation = `${item.reason} ${item.outcome}`;
-      if (detail.textContent !== explanation) detail.textContent = explanation;
-      if (recovery.textContent !== item.recovery) recovery.textContent = item.recovery;
-      recovery.hidden = !item.recovery;
-    });
-    $('recording-performance-incidents').hidden = view.incidents.length === 0;
+    renderIncidents($('recording-performance-incident-list'), history.incidents.slice(0, 3));
+    renderIncidents($('recording-performance-more-problem-list'), history.incidents.slice(3));
+    hide('more-problems', history.incidents.length <= 3);
+    set('more-problems-summary', `${Math.max(0, history.incidents.length - 3)} more dated problem${history.incidents.length === 4 ? '' : 's'}`);
+    hide('incidents', history.incidents.length === 0);
   }
-  for (const key of ['day', 'week']) for (const prefix of ['', 'operations-']) $(`recording-performance-${prefix}${key}`).addEventListener('click', () => { period = key; draw(); });
+  for (const key of ['day', 'week']) $(`recording-performance-${key}`).addEventListener('click', () => { period = key; draw(); });
   return {
     update(value, failed = false) { health = value; unavailable = failed; draw(); },
     clear() { period = 'day'; health = undefined; unavailable = false; draw(); },

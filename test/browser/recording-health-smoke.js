@@ -352,7 +352,7 @@ try {
   const captureGlance = name => captureFold('recording-health', name);
   const checkLayout = async label => {
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${label}: page fits`);
-    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-backup-list, .recording-backup-toolbar, .recording-backup-actions, .recording-source-exceptions, .recording-source-heading, .recording-source-reason, .recording-source-clocks, .recording-source-clocks dd, #recording-recording-unknown, #recording-recording-coverage, .recording-storage-inventory, .recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-dataset, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents, .recording-operation-list, .recording-operation-list > details, .recording-command-coverage')).filter(node => {
+    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-backup-list, .recording-backup-toolbar, .recording-backup-actions, .recording-source-exceptions, .recording-source-heading, .recording-source-reason, .recording-source-clocks, .recording-source-clocks dd, #recording-recording-unknown, #recording-recording-coverage, .recording-storage-inventory, .recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-dataset, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents, .recording-operation-list, .recording-operation, .recording-command-coverage')).filter(node => {
       if(!node.checkVisibility()) return false;
       const b = node.getBoundingClientRect(), owner=node.closest('.recording-health-card')?.getBoundingClientRect();
       return b.width <= 0 || b.left < 0 || b.right > innerWidth + 1 || node.scrollWidth > node.clientWidth + 1
@@ -499,10 +499,10 @@ try {
       await captureFold('recording-recording-card', `recording-sources-${width}-${theme}`);
       await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=false); document.getElementById('recording-performance-details').open=true; setPerformance('healthy')");
       await settle(); await checkLayout(`${width}/${theme}/performance`); await capture(`performance-${width}-${theme}`); await captureGlance(`glance-storage-${width}-${theme}`);
-      await evaluate("document.getElementById('recording-performance-operations').open=true; document.querySelector('#recording-performance-operation-list > details[data-kind=learning-publication]').open=true");
+      await evaluate("document.getElementById('recording-performance-operations').open=true; document.querySelector('#recording-performance-operation-list details[data-kind=learning-publication]').open=true");
       await settle(); await checkLayout(`${width}/${theme}/local-operations`);
-      assert.match(await evaluate("document.querySelector('#recording-performance-operation-list > details[data-kind=learning-publication]').textContent"), /Model publication.*Problems observed.*save committed; follow-up work failed/s);
-      assert.match(await evaluate("document.querySelector('#recording-performance-operation-list > details[data-kind=csv-import] > summary').textContent"), /Not observed/);
+      assert.match(await evaluate("document.querySelector('#recording-performance-operation-list details[data-kind=learning-publication]').textContent"), /Model publication.*Earlier problems.*save committed; follow-up work failed/s);
+      assert.equal(await evaluate("document.querySelector('#recording-performance-operation-list details[data-kind=csv-import]')===null"), true);
       await captureFold('recording-performance-details', `local-operations-${width}-${theme}`);
 
       for(const state of ['saving','confirming','unavailable','busy','failed','recovered','unknown','empty','reset','snapshot']) {
@@ -521,8 +521,8 @@ try {
               assert.ok(accessibility.nodes.some(node=>node.role?.value==='rowheader' && node.name?.value?.startsWith(title)),
                 `${title}: mobile timing remains an accessible row header`);
           }
-          assert.match(await evaluate("document.getElementById('recording-performance-history-state').textContent"), /problems observed/i, 'Past problems have their own historical summary cue');
-          assert.doesNotMatch(await evaluate("document.getElementById('recording-performance-evidence').textContent"), /problems observed/i, 'Monitored coverage remains separate from historical outcomes');
+          assert.match(await evaluate("document.getElementById('recording-performance-history-state').textContent"), /earlier problems/i, 'Past problems have their own historical summary cue');
+          assert.doesNotMatch(await evaluate("document.getElementById('recording-performance-evidence').textContent"), /earlier problems/i, 'Monitored coverage remains separate from historical outcomes');
           await captureFold('recording-performance-details', `storage-timings-${width}-${theme}`);
           await evaluate("document.querySelectorAll('.recording-health-card').forEach(node=>node.open=false); document.getElementById('recording-performance-details').open=true; document.getElementById('recording-performance-technical').open=false");
         }
@@ -530,7 +530,7 @@ try {
       await evaluate("setScenario('critical')");
     }
   }
-  await evaluate("setPerformance('snapshot'); document.getElementById('recording-performance-details').open=true; document.getElementById('recording-performance-operations').open=true; window.operationRow=document.querySelector('#recording-performance-operation-list > details[data-kind=learning-publication]'); operationRow.open=true; operationRow.querySelector('summary').focus(); panel.update(payload)");
+  await evaluate("setPerformance('snapshot'); document.getElementById('recording-performance-details').open=true; document.getElementById('recording-performance-operations').open=true; window.operationRow=document.querySelector('#recording-performance-operation-list details[data-kind=learning-publication]'); operationRow.open=true; operationRow.querySelector('summary').focus(); panel.update(payload)");
   assert.equal(await evaluate("document.getElementById('recording-performance-data').hidden && document.getElementById('recording-performance-operations').checkVisibility()"), true, 'Local-node jobs remain visible in a snapshot without claiming live writer monitoring');
   assert.equal(await evaluate("operationRow.open && document.activeElement===operationRow.querySelector('summary')"), true, 'Operation polling preserves disclosure and keyboard focus');
   assert.match(await evaluate("document.getElementById('recording-performance-operations-evidence').textContent"), /On this computer/);
@@ -630,8 +630,8 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-performance-failed').textContent"), '2');
   assert.equal(await evaluate("document.getElementById('recording-performance-rejected').textContent"), '1');
   assert.equal(await evaluate("document.getElementById('recording-performance-commandsNotSent').textContent"),'3');
-  assert.equal(await evaluate("document.querySelectorAll('#recording-performance-incident-list > li').length"),4);
-  assert.match(await evaluate("document.getElementById('recording-performance-incident-list').textContent"),/not retained for retry.*Saving resumed.*does not establish recovery/);
+  assert.equal(await evaluate("document.querySelectorAll('#recording-performance-incident-list > li').length"),3);
+  assert.match(await evaluate("document.getElementById('recording-performance-incidents').textContent"),/not retained for retry.*Saving resumed.*does not establish recovery/);
   assert.equal(await evaluate("document.getElementById('recording-performance-state').textContent"),'Caught up','Historical problems remain distinct from the live queue');
   await evaluate("document.getElementById('recording-performance-technical').open=true; document.querySelector('#recording-performance-technical > summary').focus(); panel.update(payload)");
   assert.equal(await evaluate("document.activeElement===document.querySelector('#recording-performance-technical > summary') && document.getElementById('recording-performance-technical').open"),true,'Polling preserves technical disclosure and focus');
@@ -659,7 +659,7 @@ try {
   await evaluate("setPerformance('snapshot')");
   assert.equal(await evaluate("document.getElementById('recording-performance-data').hidden"), true);
   assert.match(await evaluate("document.getElementById('recording-performance-notice').textContent"), /memory.*not included.*snapshot/);
-  assert.equal(await evaluate("document.activeElement === document.querySelector('#recording-performance-details > summary')"), true, 'Changing to a snapshot retains a keyboard focus target');
+  assert.equal(await evaluate("document.activeElement === document.getElementById('recording-performance-week')"), true, 'The shared period selector remains available in snapshot scope');
   await evaluate("setScenario('critical'); document.querySelectorAll('#recording-details details').forEach(node=>node.open=true)");
   await evaluate("document.getElementById('recording-status-disk').click()");
   assert.equal(await evaluate("document.getElementById('recording-disk-card').open && document.activeElement === document.querySelector('#recording-disk-card > summary')"), true,

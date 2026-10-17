@@ -8,6 +8,19 @@ import { createRecoveryHistoryReader } from '../src/app/history-recovery-reader.
 import { createBackupInspection } from '../src/app/backup-inspection.js';
 
 const row = kind => storageOperationHealth.status().coverage.find(value => value.kind === kind);
+test('an aborted signal cannot disguise an independent I/O failure as cancellation', async () => {
+  const cancellation = new AbortController(), before = row('backup').week;
+  cancellation.abort();
+  const failure = Object.assign(Error('synthetic I/O failure'), { code: 'EIO' });
+  await assert.rejects(observeStorageOperation('backup', () => { throw failure; }, { signal: cancellation.signal }), error => error === failure);
+  assert.equal(row('backup').week.failed, before.failed + 1);
+  assert.equal(row('backup').week.cancelled, before.cancelled);
+  assert.equal(row('backup').week.lastProblem.outcome, 'failed');
+  await assert.rejects(observeStorageOperation('backup', () => { throw cancellation.signal.reason; }, { signal: cancellation.signal }), error => error === cancellation.signal.reason);
+  assert.equal(row('backup').week.cancelled, before.cancelled + 1);
+  assert.equal(row('backup').week.lastProblem.outcome, 'failed');
+});
+
 test('observer failure cannot replace successful work or the original owner error', async () => {
   const begin = storageOperationHealth.begin, expected = Error('synthetic original owner failure');
   try {
