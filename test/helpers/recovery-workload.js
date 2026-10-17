@@ -125,7 +125,10 @@ export async function recoveryWorkload(t, { records = 1024, windows = 32, payloa
     } }));
   assert.equal(recovered.report.model.acceptedSamples, windows);
   assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n, records + 1);
-  assert.deepEqual(replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }), recovered.checkpoint);
+  // Reconstruction can persist replaceable caches, including in this equality
+  // assertion. It must enter the writer queue before using a worker-backed DB.
+  assert.deepEqual(await f.master.runWrite(() => replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }),
+    { signal: f.signal }), recovered.checkpoint);
   assert.equal(recovered.checkpoint.windowCursor, start + (tail - 1) * W, 'recovery catches up live learning');
   const backupPath = join(f.directory, 'verified-export.sqlite');
   await measure('backup', onProgress => f.master.backup(backupPath, { signal: f.signal, onProgress }));
@@ -154,7 +157,8 @@ export async function recoveryWorkload(t, { records = 1024, windows = 32, payloa
     } }));
     assert(appended, `${action} accepts concurrent local learning`);
     assert.equal(revised.checkpoint.windowCursor, start + (tail - 1) * W);
-    assert.deepEqual(replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }), revised.checkpoint);
+    assert.deepEqual(await f.master.runWrite(() => replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }),
+      { signal: f.signal }), revised.checkpoint);
     assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n, originalRows + 1,
       `${action} retains original source rows`);
     const selected = f.master.db.prepare('SELECT COUNT(*) n FROM active_observations').get().n;

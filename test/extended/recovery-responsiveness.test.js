@@ -39,7 +39,7 @@ test(`restoration catches up continuous recording with a ${pendingStart === 900_
     lastPowers: [1, 2, 3], lastQuality: [], scales: [null, null, null],
   });
   const energyKey = 'recorder:energy:["synthetic","synthetic-independent-live-meter","property"]';
-  f.master.setState(energyKey, energyTail(start + 1_000_000, 0));
+  await f.master.runWrite(() => f.master.setState(energyKey, energyTail(start + 1_000_000, 0)), { signal: t.signal });
   const restore = { ...args, active: true }, preview = await previewRecoveryRevision(restore);
   let recorded = 0, sourceStopped = false, largestGap = 0, last = performance.now();
   const held = new Recorder(f.master);
