@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRecordingHealth, recordingHealthView, recordingEvidenceTime, backupCheckFailure, storageBytes } from '../chart/recording-health.js';
 import { createStorageOperationHealth, STORAGE_OPERATION_KINDS } from '../src/storage/operation-health.js';
-import { storagePerformanceView, storageDuration, storageOperationsView, storageProblemSummary } from '../chart/storage-health.js';
+import { storagePerformanceView, storageDuration, storageOperationsView, storageProblemSummary, storageSchedulingView } from '../chart/storage-health.js';
+import { storageHealthFixture } from './helpers/storage-health-fixture.js';
 
 const now = Date.parse('2026-10-07T12:00:00Z');
 const health = (overrides = {}) => ({ version: 3, checkedAt: now, scope: 'live',
@@ -487,12 +488,89 @@ function performanceHistory(overrides = {}) {
     controlQueueDelay: { ...timing, count: 60 }, normalQueueDelay: { ...timing, count: 760 },
     contention: { episodes: 3, totalMs: 925, maxMs: 600, active: false },
     peakPending: 8, failedWrites: 0, queueRejected: 0, commandsNotSent: 0, controlRequestsBlocked: 0, incidents: [], committedTransactions: 640,
+    beginDuration: { ...timing, count: 640, meanMs: 1 }, bodyDuration: { ...timing, count: 640, meanMs: 5 },
+    backgroundQueueDelay: timing, backgroundRunDuration: timing, checkpointDuration: { ...timing, count: 12, meanMs: 60, maxMs: 900 },
+    backgroundFailedJobs: 0, backgroundQueueRejected: 0, backgroundCancelledJobs: 0, checkpointFailures: 0,
     transactionAttempts: 645, failedJobs: 1, cancelledJobs: 2, postCommitFailures: 1 };
   return { version: 3, retentionMs: 7 * 86400_000, resolutionMs: 300_000,
     startedAt: now - 6 * 3600_000, checkedAt: now, elapsedMs: 6 * 3600_000,
     current: { pending: 0, oldestPendingMs: null, waitingMs: null, activeJobs: 0 },
     windows: { day, week: { ...day, requestedMs: 7 * 86400_000, failedWrites: 2, peakPending: 18 } }, ...overrides };
 }
+
+test('storage scheduling renders actual policy, background ownership and separate checkpoint timings', () => {
+  const storage = storageHealthFixture(now);
+  storage.configuration.checkpoint.triggerFrames = 37;
+  storage.configuration.checkpoint.maxDirtyMs = 7200;
+  storage.queue.active = { priority: 'background', kind: 'checkpoint', phase: 'exclusive', elapsedMs: 1200 };
+  storage.queue.lanes.control.queued = 1; storage.queue.lanes.normal.queued = 2;
+  storage.queue.lanes.background.running = 1; storage.checkpoint.state = 'running';
+  const value = health({ recording: { history: performanceHistory(), storage } });
+  const view = storageSchedulingView(value, { now });
+  assert.match(view.checkpointPolicy, /37 outstanding frames.*7.2 s.*not a frame cap/);
+  assert.doesNotMatch(view.checkpointPolicy, /50 outstanding frames/);
+  assert.equal(view.execution, 'Dedicated worker'); assert.equal(view.durability, 'WAL · synchronous FULL');
+  assert.equal(view.active, 'WAL checkpoint · 1.2 s elapsed');
+  assert.match(view.checkpointFrames, /12 outstanding of 82 WAL frames/);
+  assert.equal(storagePerformanceView(value, 'day', { now }).state, '3 saves waiting');
+  const dashboard = panelFixture(); dashboard.panel.update({ recordingHealth: value });
+  assert.equal(dashboard.element('recording-performance-checkpoint-worst').textContent, '900 ms');
+  assert.equal(dashboard.element('recording-performance-commit-worst').textContent, '520 ms');
+  assert.equal(dashboard.element('recording-performance-body-mean').textContent, '5 ms');
+  assert.equal(dashboard.element('recording-performance-checkpoint-history').hidden, false);
+  const disclosure = dashboard.element('recording-performance-scheduling'); disclosure.open = true;
+  disclosure.append(dashboard.document.createElement('summary'));
+  disclosure.querySelector('summary').focus(); dashboard.panel.update({ recordingHealth: value });
+  assert.equal(disclosure.open, true); assert.equal(dashboard.document.activeElement, disclosure.querySelector('summary'));
+  storage.queue.active = null; storage.queue.lanes.control.queued = storage.queue.lanes.normal.queued = 0;
+  storage.queue.lanes.background.queued = 1; storage.queue.lanes.background.running = 0; storage.checkpoint.state = 'queued';
+  value.recording.history.current.pending = 1;
+  assert.equal(storagePerformanceView(value, 'day', { now }).state, 'Background storage queued');
+});
+
+test('periodic, automatic and read-only storage describe their own policy without an invented frame trigger', () => {
+  const storage = storageHealthFixture(now), value = health({ recording: { storage } });
+  storage.configuration.checkpoint = { mode: 'periodic-passive', autoCheckpointFrames: 0,
+    pollMs: 250, triggerFrames: null, maxDirtyMs: null, fallbackPollMs: 1000 };
+  let view = storageSchedulingView(value, { now });
+  assert.match(view.checkpointPolicy, /every 1 s; no frame-count trigger/);
+  assert.doesNotMatch(view.checkpointPolicy, /50|5 s/);
+  storage.configuration.checkpoint = { mode: 'automatic', autoCheckpointFrames: 1234 };
+  view = storageSchedulingView(value, { now });
+  assert.equal(view.separate, false); assert.match(view.checkpointPolicy, /within a commit at 1,234/);
+  storage.configuration.execution = 'read-only'; storage.configuration.checkpoint.mode = 'not-owned';
+  storage.writer.state = 'read-only'; value.scope = 'snapshot';
+  view = storageSchedulingView(value, { now });
+  assert.match(view.checkpointPolicy, /does not own checkpoint scheduling/);
+  const dashboard = panelFixture(); dashboard.panel.update({ recordingHealth: value });
+  assert.equal(dashboard.element('recording-performance-state').textContent, 'Read-only storage');
+  assert.equal(dashboard.element('recording-performance-storage-current').hidden, false);
+  assert.equal(dashboard.element('recording-performance-data').hidden, true);
+  assert.equal(dashboard.element('recording-performance-background-history').hidden, true);
+});
+
+test('checkpoint failures stay distinct from confirmed saves, and stale or missing policy remains explicit', () => {
+  const storage = storageHealthFixture(now), history = performanceHistory();
+  history.windows.day.failedJobs = history.windows.day.postCommitFailures = 0;
+  const value = health({ recording: { storage, history } });
+  storage.checkpoint.state = 'failed'; storage.checkpoint.lastFailureAt = now - 100;
+  history.windows.day.checkpointFailures = 1; history.windows.day.backgroundFailedJobs = 1;
+  let view = storagePerformanceView(value, 'day', { now });
+  assert.equal(view.state, 'Checkpoint needs attention'); assert.equal(view.failed, '0');
+  assert.equal(view.problemsObserved, true);
+  assert.match(storageSchedulingView(value, { now }).checkpointFailure, /does not undo a confirmed save/);
+  const dashboard = panelFixture();
+  dashboard.panel.update({ recordingHealth: { ...value, attention: [{ id: 'storage-checkpoint', severity: 'warning',
+    title: 'WAL checkpoint needs attention', detail: 'The last background checkpoint request failed.' }] } });
+  assert.equal(dashboard.element('recording-status-issues').children[0].firstElementChild.dataset.recordingOpen, 'recording-performance-details');
+  storage.checkpoint.state = 'idle';
+  view = storagePerformanceView(value, 'day', { now });
+  assert.equal(view.state, 'Caught up'); assert.equal(view.problemsObserved, true);
+  assert.match(storageSchedulingView(value, { now, unavailable: true }).active, /^Last known:/);
+  value.recording.storage = { version: 2, scope: 'local-store' };
+  assert.equal(storageSchedulingView(value, { now }).execution, 'Unknown');
+  assert.match(storageSchedulingView(value, { now }).checkpointPolicy, /unavailable/);
+});
 
 test('storage performance names run coverage and separates queue, transaction, commit and unsuccessful operations', () => {
   const value = health({ recording: { history: performanceHistory() } });
@@ -523,13 +601,13 @@ test('storage performance names run coverage and separates queue, transaction, c
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
   const rows = [...html.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)].map(([row]) => row);
   const timingRow = name => rows.find(row => row.includes(`id="recording-performance-${name}-samples"`));
-  assert.match(timingRow('transaction'), /Write \+ commit[\s\S]*Whole transaction/);
-  assert.match(timingRow('commit'), /Commit only[\s\S]*Within write \+ commit/);
-  assert.match(timingRow('journalSeal'), /Journal sealing[\s\S]*Within commit only/);
-  assert.match(timingRow('nativeCommit'), /SQLite COMMIT[\s\S]*Within commit only/);
+  assert.match(timingRow('transaction'), /Transaction[\s\S]*Whole successful attempt/);
+  assert.match(timingRow('commit'), /Commit &amp; confirmation[\s\S]*Within the transaction/);
+  assert.match(timingRow('journalSeal'), /Journal sealing[\s\S]*Within commit &amp; confirmation/);
+  assert.match(timingRow('nativeCommit'), /SQLite COMMIT[\s\S]*Within commit &amp; confirmation/);
   assert.match(html, /do not add them/);
-  assert.match(html, /SQLite COMMIT includes (?:any )?synchronization and automatic checkpoint work/);
-  assert.match(html, /Neither isolates fsync/);
+  assert.match(html, /SQLite COMMIT includes its native synchronization; with separate checkpoint scheduling it excludes the later checkpoint/);
+  assert.match(html, /None of these timings isolates fsync/);
 });
 
 test('storage performance absence, zero samples, zero coverage and unsupported scope do not become healthy history', () => {

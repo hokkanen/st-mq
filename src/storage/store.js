@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { WriterClient } from './writer-client.js';
 import { writerDatabase } from './writer-database.js';
 import { WalMaintenance } from './wal-maintenance.js';
+import { storageConfiguration, storageTaskKind } from './storage-policy.js';
 import { validateArchivedLearningCheckpointStorage } from './learning-checkpoint-archive.js';
 import { mkdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -292,9 +293,14 @@ export class Store {
         try { validateCurrentDatabase(this.db, { readOnly: true }); }
         finally { this.db.exec('ROLLBACK'); }
       }
-      if (readOnly) { storeConnections.set(this, this.db); registerJournalFunctions(this.db); this.db.exec(`PRAGMA query_only = ON; PRAGMA busy_timeout = ${isMainThread ? 0 : 5000};`); return; }
+      if (readOnly) {
+        storeConnections.set(this, this.db); registerJournalFunctions(this.db);
+        this.db.exec(`PRAGMA query_only = ON; PRAGMA busy_timeout = ${isMainThread ? 0 : 5000};`);
+        this.storageConfiguration = storageConfiguration(this.db, { readOnly }); return;
+      }
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
       if (managedCheckpoints) this.db.exec('PRAGMA wal_autocheckpoint=0;');
+      this.storageConfiguration = storageConfiguration(this.db, { managedCheckpoints });
       installJournal(this.db);
       this.insertObservation = this.db.prepare(`INSERT INTO observations
         (source, device, signal, value, unit, source_time, received_at, quality, raw, import_id, row_number)
@@ -330,9 +336,9 @@ export class Store {
       return Promise.reject(new TypeError('The dedicated writer requires a writable file-backed runtime Store.'));
     this.writerStartPending = this.runPublication(async () => {
       const writer = new WriterClient({ path: this.path });
-      let reader;
+      let reader, ready;
       try {
-        await writer.ready;
+        ready = await writer.ready;
         if (this.writeQueue.closed) throw Object.assign(new Error('Recording storage is closed.'), { code: 'STORAGE_CLOSED' });
         reader = new Store(this.path, { readOnly: true });
         this.db.close();
@@ -340,6 +346,7 @@ export class Store {
         await writer.close().catch(() => {}); reader?.close(); throw error;
       }
       this.writer = writer; this.writerReader = reader;
+      this.storageConfiguration = ready.storageConfiguration;
       this.writePending = false; this.writerFailed = false; this.writeSettledListeners = new Set();
       this.db = writerDatabase(this, reader.db, writer);
       storeConnections.set(this, this.db);
@@ -376,6 +383,7 @@ export class Store {
     if (this.writerFailed || this.writer.failed)
       throw Object.assign(new Error('The storage writer is unavailable; restart after checking storage.'), { code: 'STORAGE_WRITER_FAILED' });
     this.writePending = true;
+    this.writePhase = 'acquiring';
     const started = performance.now();
     const timing = { beginMs: 0, bodyMs: 0, commitMs: 0, totalMs: 0,
       journalSealMs: null, nativeCommitMs: null, journal: null, startedAt: Date.now(), committed: false };
@@ -384,6 +392,7 @@ export class Store {
       boundary = await this.writer.request('begin');
       admitted = true; timing.beginMs = performance.now() - started;
       this.transactionDepth = 1; this.writerBodyActive = true; this.savepointSequence ??= 0;
+      this.writePhase = 'building';
       this.commitEffects = []; this.rollbackEffects = []; this.discardedChanges = 0;
       this.writeEvidenceUnknown = false;
       const bodyStarted = performance.now();
@@ -401,9 +410,11 @@ export class Store {
       }
       const commitStarted = performance.now();
       try {
+        this.writePhase = 'sealing';
         prepared = await this.writer.request('seal');
         if (prepared.timing) Object.assign(timing, prepared.timing);
         commitRequested = true;
+        this.writePhase = 'committing';
         const receipt = await this.writer.request('commit');
         if (receipt.timing) Object.assign(timing, receipt.timing);
         committed = true;
@@ -411,6 +422,7 @@ export class Store {
     } catch (caught) {
       error = caught;
       if (this.writer.failed) {
+        this.writePhase = 'confirming';
         // No further writer may run until this connection has exited. BEGIN
         // may have succeeded before its acknowledgement was lost; likewise a
         // lost COMMIT reply is not proof of rollback. Never replay the callback.
@@ -435,6 +447,7 @@ export class Store {
         timing.committed = true;
         // Durability is proven. Follow-ups run synchronously before the next job.
         this.writePending = false;
+        this.writePhase = 'follow-up';
         if (changed) this.writeHealth.success();
         const failures = [];
         for (const effect of this.commitEffects ?? []) {
@@ -461,6 +474,7 @@ export class Store {
       timing.totalMs = performance.now() - started;
       if (!admitted) timing.beginMs = timing.totalMs;
       try { this.writeHealth.transaction(timing); } catch {}
+      this.writePhase = null;
       this._writeSettled();
     }
   }
@@ -500,19 +514,28 @@ export class Store {
 
   writeQueueStatus() { return this.writeQueue.status(); }
 
+  storageStatus(queue = this.writeQueue.status()) {
+    return { version: 1, scope: 'local-store', configuration: this.storageConfiguration ?? null,
+      queue, transactionPhase: this.writePhase ?? null,
+      checkpoint: this.walMaintenance?.status() ?? null };
+  }
+
   // Shared with worker file/query steps; no SQLite transaction spans the await.
   // A background failure is not a failed controller save or actuator receipt.
   runStorageTask(fn, { kind = 'mirror', signal, isCurrent } = {}) {
+    kind = storageTaskKind(kind);
     const at = Date.now(), queued = performance.now();
     return this.writeQueue.exclusive(async () => {
       const started = performance.now();
       try { return await fn(); }
       finally {
         this.storageTurns ??= [];
-        this.storageTurns.push({ kind, at, queueMs: started - queued, runMs: performance.now() - started });
+        const turn = { kind, at, queueMs: started - queued, runMs: performance.now() - started };
+        this.storageTurns.push(turn);
         if (this.storageTurns.length > 64) this.storageTurns.shift();
+        try { this.writeHealth.backgroundTurn(turn); } catch { /* Diagnostics cannot change a task result. */ }
       }
-    }, { priority: 'background', signal, ...(isCurrent ? { isCurrent } : {}) });
+    }, { priority: 'background', kind, signal, ...(isCurrent ? { isCurrent } : {}) });
   }
 
   runPublication(fn, options = {}) {

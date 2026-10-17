@@ -7,9 +7,11 @@ const EDGES = [0, .1, .25, .5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512,
   1000, 2000, 4000, 8000, 16000, 32000, 60000, 120000, 300000, 600000,
   1800000, 3600000, 10800000, DAY, RETENTION, Infinity];
 const METRICS = ['queueDelay', 'controlQueueDelay', 'normalQueueDelay', 'transactionDuration', 'commitDuration',
-  'journalSealDuration', 'nativeCommitDuration'];
+  'beginDuration', 'bodyDuration', 'journalSealDuration', 'nativeCommitDuration',
+  'backgroundQueueDelay', 'backgroundRunDuration', 'checkpointDuration'];
 const COUNTERS = ['acceptedJobs', 'failedWrites', 'queueRejected', 'cancelledJobs', 'failedJobs',
-  'postCommitFailures', 'transactionAttempts', 'committedTransactions', 'commandsNotSent', 'controlRequestsBlocked'];
+  'postCommitFailures', 'transactionAttempts', 'committedTransactions', 'commandsNotSent', 'controlRequestsBlocked',
+  'backgroundAcceptedJobs', 'backgroundQueueRejected', 'backgroundCancelledJobs', 'backgroundFailedJobs', 'checkpointFailures'];
 export const COMMAND_CONTEXTS = Object.freeze(['heat-pump-command', 'switch-command', 'cover-command', 'garage-command',
   'floor-control', 'caravan-command', 'garage-protection', 'charger1-command', 'charger2-command']);
 const CATEGORIES = new Set(['save-failed', 'queue-refused', 'command-not-sent', 'follow-up-failed', 'control-request-blocked']);
@@ -171,24 +173,35 @@ export function createWriteHealthHistory({ clock = Date.now, monotonic = () => p
     },
     queue(event) {
       const bin = advance();
+      const background = event.priority === 'background';
       if (event.type === 'pending') { pending = event.pending; bin.peakPending = Math.max(bin.peakPending, pending); }
-      else if (event.type === 'accepted') bin.acceptedJobs++;
-      else if (event.type === 'rejected') bin.queueRejected++;
-      else if (event.type === 'cancelled') bin.cancelledJobs++;
-      else if (event.type === 'failed') bin.failedJobs++;
+      else if (event.type === 'accepted') bin[background ? 'backgroundAcceptedJobs' : 'acceptedJobs']++;
+      else if (event.type === 'rejected') bin[background ? 'backgroundQueueRejected' : 'queueRejected']++;
+      else if (event.type === 'cancelled') bin[background ? 'backgroundCancelledJobs' : 'cancelledJobs']++;
+      else if (event.type === 'failed') bin[background ? 'backgroundFailedJobs' : 'failedJobs']++;
       else if (event.type === 'completed') {
-        addMetric(bin.queueDelay, event.delayMs);
-        addMetric(bin[event.priority === 'control' ? 'controlQueueDelay' : 'normalQueueDelay'], event.delayMs);
+        if (background) addMetric(bin.backgroundQueueDelay, event.delayMs);
+        else {
+          addMetric(bin.queueDelay, event.delayMs);
+          addMetric(bin[event.priority === 'control' ? 'controlQueueDelay' : 'normalQueueDelay'], event.delayMs);
+        }
       } else if (event.type === 'waiting' && waitingAt === null) { waitingAt = elapsed; bin.episodes++; }
       else if (event.type === 'ready' && waitingAt !== null) { waitingAt = null; bin.trailingWaitMs = 0; }
     },
     failure(code) { if (code !== 'write-queue-full') advance().failedWrites++; },
     postCommitFailure() { advance().postCommitFailures++; },
+    backgroundTurn(value) { addMetric(advance().backgroundRunDuration, value.runMs); },
+    checkpoint(value) {
+      const bin = advance();
+      if (value.failed === true) bin.checkpointFailures++;
+      else if (value.ran === true) addMetric(bin.checkpointDuration, value.elapsedMs);
+    },
     transaction(value) {
       const bin = advance(); bin.transactionAttempts++;
       if (value.committed) {
         bin.committedTransactions++;
         addMetric(bin.transactionDuration, value.totalMs); addMetric(bin.commitDuration, value.commitMs);
+        addMetric(bin.beginDuration, value.beginMs); addMetric(bin.bodyDuration, value.bodyMs);
         addMetric(bin.journalSealDuration, value.journalSealMs); addMetric(bin.nativeCommitDuration, value.nativeCommitMs);
       }
     },

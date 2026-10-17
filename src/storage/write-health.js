@@ -106,6 +106,8 @@ export function createWriteHealth(clock = Date.now, queueStatus = null, { monoto
       history.transaction(value);
     },
     queue(event) { history.queue(event); },
+    backgroundTurn(value) { history.backgroundTurn(value); },
+    checkpoint(value) { history.checkpoint(value); },
     postCommitFailure,
     recovered(token) { history.recovered(token); },
     commandNotSent(context, reason) { history.commandNotSent(context, reason); },

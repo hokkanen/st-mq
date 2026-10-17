@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Align Storage health with the shared storage queue and separate WAL checkpoints.
+  Show the running writer's actual policy, current background turn, all three queue
+  lanes, transaction-building time and independent checkpoint timings. Keep
+  background failures separate from failed saves, preserve dated frame evidence,
+  and retain the local scope of standby diagnostics without adding recorded data.
+
 - Keep an active charger identification attempt running when an older queued
   vehicle report is processed after newer native readback. Evaluate current
   charger readiness at processing time while preserving original report clocks,

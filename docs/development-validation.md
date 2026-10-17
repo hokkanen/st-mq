@@ -662,7 +662,14 @@ health fallback, flush failures and adaptive-budget isolation from unrelated
 writes. Health producer tests also distinguish current writer availability from
 successful save receipts and source status, reject missing/malformed availability
 evidence, and sanitize the existing in-memory application timing diagnostics.
-Read-only snapshots and history have no current writer or application timing.
+Read-only snapshots and history have no active-master writer history or application
+timing. They can show the local Store's configuration, shared queue and dated WAL
+checkpoint evidence. `test/storage-scheduling-health.test.js` checks real owning
+connection policy, status-only versus periodic SQLite capability, SQL-free health
+reads, background/foreground failure separation, and distinct building, commit and
+checkpoint measurements. UI regressions cover dynamic thresholds, active background
+turns, stale evidence, standby scope, and preserved disclosure focus. The browser
+fixture includes these current-contract fields and the expanded save-stage hierarchy.
 `node test/browser/recording-health-smoke.js` checks the real dashboard
 health elements at narrow and wide widths in both themes, including focus,
 stale status, sign-out fencing and the health-only failure view. Full dashboard

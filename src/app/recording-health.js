@@ -245,8 +245,11 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
 
   function recordingStatus({ store, engine, current, readOnly, now }) {
     const writes = store?.writeHealth?.status();
+    const storage = store?.storageStatus?.(writes?.queue) ?? null;
+    if (storage) storage.writer = store?.readOnly ? { state: 'read-only' } : writerStatus(store, writes);
     const base = { pendingWrites: writes?.queue?.pending ?? 0, waitingSince: writes?.queue?.waitingSince ?? null,
       writer: null, runtimeTiming: null,
+      storage,
       storageTimings: writes?.transactions ?? null,
       history: writes?.history ?? null,
       lastLoopCompletedAt: null, sources: null,
@@ -256,7 +259,7 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
       recordingRun = null; recordingScopeSeen = true;
       return { ...base, history: null, state: 'read-only', detail: 'This computer is showing recorded history. Live recording health must be checked on the active master.' };
     }
-    base.writer = writerStatus(store, writes);
+    base.writer = storage?.writer ?? writerStatus(store, writes);
     base.runtimeTiming = runtimeTimingStatus(engine);
     if (!recordingRun || recordingRun.engine !== engine || recordingRun.store !== store) {
       recordingRun = { engine, store, startedAt: recordingScopeSeen ? now : startedAt, usableSourceSeen: false };
@@ -352,6 +355,9 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
       const diskView = diskStale ? { ...disk, state: 'unknown', freeBytes: null, totalBytes: null,
         detail: 'The disk space check has not refreshed. Current available space is unknown; check local storage.' } : { ...disk };
       const attention = [];
+      if (recording.storage?.checkpoint?.state === 'failed') attention.push({ id: 'storage-checkpoint', severity: 'warning',
+        title: 'WAL checkpoint needs attention',
+        detail: 'The last background checkpoint request failed. Confirmed saves remain recorded; outstanding WAL work may grow. Review Storage health.' });
       if (diskStale) attention.push({ id: 'disk-check', severity: disk.state === 'critical' ? 'critical' : 'warning',
         title: ['low', 'critical'].includes(disk.state) ? 'The earlier disk space warning is not cleared' : 'Disk space cannot be confirmed', detail: diskView.detail });
       else if (['low', 'critical'].includes(disk.state)) attention.push({ id: 'disk-space', severity: disk.state === 'critical' ? 'critical' : 'warning',

@@ -42,7 +42,7 @@ const issueTarget = (id, recordingState) => {
   if (['backup', 'backup-check'].includes(id)) return 'recording-backup-card';
   if (id === 'database-verification') return 'database-verification-details';
   if (id === 'recording-sources') return 'recording-recording-card';
-  return ['recording-resumed', 'storage-writer'].includes(id) || ['write-failed', 'write-waiting', 'writer-unavailable', 'writer-confirming'].includes(recordingState)
+  return ['recording-resumed', 'storage-writer', 'storage-checkpoint'].includes(id) || ['write-failed', 'write-waiting', 'writer-unavailable', 'writer-confirming'].includes(recordingState)
     ? 'recording-performance-details' : 'recording-recording-card';
 };
 

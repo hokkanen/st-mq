@@ -200,6 +200,84 @@ function historySummary(writer, operations) {
   };
 }
 
+const storageKinds = { checkpoint: 'WAL checkpoint', mirror: 'Mirroring or recovery', history: 'History read',
+  'live-learning': 'Learning input read', 'learning-cache': 'Learning cache', other: 'Background storage' };
+const storagePhases = { acquiring: 'Acquiring the writer', building: 'Building the transaction',
+  sealing: 'Sealing the journal', committing: 'Committing and confirming the save',
+  confirming: 'Checking an uncertain save', 'follow-up': 'Finishing saved work' };
+
+export function storageSchedulingView(health, { unavailable = false, now = Date.now() } = {}) {
+  const storage = health?.version === 3 && health.recording?.storage?.version === 1
+    && health.recording.storage.scope === 'local-store' ? health.recording.storage : null;
+  const stale = unavailable || !validDate(health?.checkedAt) || Math.abs(now - health.checkedAt) > 180_000;
+  const config = storage?.configuration, checkpoint = config?.checkpoint, queue = storage?.queue;
+  const lanes = ['control', 'normal', 'background'];
+  const queueKnown = lanes.every(key => count(queue?.lanes?.[key]?.queued) && count(queue.lanes[key].running));
+  const active = queue?.active;
+  const activeKnown = active === null || lanes.includes(active?.priority) && finite(active.elapsedMs);
+  const activeLabel = !queueKnown || !activeKnown ? 'Storage activity unknown' : !active ? 'No storage turn active'
+    : active.priority === 'background' ? storageKinds[active.kind] ?? 'Background storage'
+      : storagePhases[storage.transactionPhase] ?? (active.phase === 'admitting' ? 'Acquiring the writer' : active.phase === 'exclusive' ? 'Publishing saved state' : 'Building and saving');
+  const laneText = key => {
+    const value = queue?.lanes?.[key];
+    return !queueKnown ? 'Unknown' : `${integer.format(value.queued)} waiting${value.running ? ` · ${integer.format(value.running)} running` : ''}`
+      + (value.queued > 0 ? ` · oldest ${storageDuration(value.oldestPendingMs)}` : '');
+  };
+  const policy = queue?.policy;
+  const policyKnown = ['limit', 'byteLimit', 'controlBurst', 'foregroundBurst'].every(key => count(policy?.[key]) && policy[key] > 0);
+  const modes = { 'queued-passive': 'Separate background checkpoints', 'periodic-passive': 'Separate background checkpoints',
+    automatic: 'Checkpoints within commits', managed: 'Checkpoints managed by the owning process',
+    'not-owned': 'Read-only connection', 'not-applicable': 'No WAL checkpoints' };
+  let checkpointPolicy = 'Checkpoint policy is unavailable.';
+  if (checkpoint?.mode === 'queued-passive' && [checkpoint.triggerFrames, checkpoint.maxDirtyMs, checkpoint.pollMs].every(value => finite(value) && value > 0))
+    checkpointPolicy = `Request PASSIVE work at ${integer.format(checkpoint.triggerFrames)} outstanding frames, or after ${storageDuration(checkpoint.maxDirtyMs)} with work remaining. Check every ${storageDuration(checkpoint.pollMs)}. These are scheduling triggers, not a frame cap or completion deadline.`;
+  else if (checkpoint?.mode === 'periodic-passive' && finite(checkpoint.fallbackPollMs) && checkpoint.fallbackPollMs > 0)
+    checkpointPolicy = `This SQLite build cannot inspect outstanding frames without checkpoint work. Request PASSIVE work no more often than every ${storageDuration(checkpoint.fallbackPollMs)}; no frame-count trigger is used.`;
+  else if (checkpoint?.mode === 'automatic' && count(checkpoint.autoCheckpointFrames))
+    checkpointPolicy = checkpoint.autoCheckpointFrames > 0 ? `SQLite may checkpoint within a commit at ${integer.format(checkpoint.autoCheckpointFrames)} WAL frames.` : 'Automatic checkpoints are disabled on this connection.';
+  else if (checkpoint?.mode === 'not-owned') checkpointPolicy = 'This connection reads recorded history and does not own checkpoint scheduling.';
+  else if (checkpoint?.mode === 'not-applicable') checkpointPolicy = 'The current journal mode does not use a WAL.';
+  else if (checkpoint?.mode === 'managed') checkpointPolicy = 'Automatic checkpoints are disabled; the owning process schedules maintenance.';
+  const separate = ['queued-passive', 'periodic-passive'].includes(checkpoint?.mode);
+  const maintenance = storage?.checkpoint;
+  const checkpointStates = { idle: 'Waiting for the next check', queued: 'Waiting for a storage turn', running: 'Checkpoint running',
+    failed: 'Last checkpoint request failed', unavailable: 'Checkpoint worker unavailable', stopped: 'Checkpoint scheduler stopped' };
+  const frames = maintenance?.frames;
+  const framesKnown = validDate(frames?.at) && [frames.logFrames, frames.copiedFrames, frames.remainingFrames].every(count)
+    && frames.copiedFrames <= frames.logFrames && frames.remainingFrames === frames.logFrames - frames.copiedFrames;
+  const last = maintenance?.lastRun;
+  const writerStates = { unavailable: 'Writer unavailable', stopped: 'Writer stopped', confirming: 'Confirming last save',
+    saving: 'Writing', ready: 'Storage idle', 'read-only': 'Read-only storage' };
+  const writerState = storage?.writer?.state;
+  const localProblem = ['unavailable', 'stopped', 'confirming'].includes(writerState);
+  const localState = localProblem ? writerStates[writerState]
+    : separate && ['failed', 'stopped'].includes(maintenance?.state) ? 'Checkpoint needs attention'
+      : active && queueKnown ? activeLabel
+        : queueKnown && lanes.some(key => queue.lanes[key].queued > 0) ? 'Storage work queued'
+          : writerStates[writerState] ?? 'Storage status unknown';
+  return { available: Boolean(storage), stale, separate, queueKnown,
+    localState: `${stale && storage ? 'Last known: ' : ''}${localState}`,
+    localTone: localProblem || maintenance?.state === 'failed' ? 'warning' : 'neutral',
+    queuedSaves: queueKnown ? queue.lanes.control.queued + queue.lanes.normal.queued : null,
+    queuedBackground: queueKnown ? queue.lanes.background.queued : null,
+    activeBackground: queueKnown && active?.priority === 'background', activeLabel,
+    active: `${stale && storage ? 'Last known: ' : ''}${activeLabel}${active && finite(active.elapsedMs) ? ` · ${storageDuration(active.elapsedMs)} elapsed` : ''}`,
+    lanes: Object.fromEntries(lanes.map(key => [key, laneText(key)])),
+    execution: ({ worker: 'Dedicated worker', direct: 'Calling thread', 'read-only': 'Read-only connection' })[config?.execution] ?? 'Unknown',
+    durability: config?.execution === 'read-only' ? 'Read-only; this connection does not confirm saves'
+      : ['wal', 'memory', 'delete', 'truncate', 'persist', 'off'].includes(config?.journalMode)
+        && ['off', 'normal', 'full', 'extra'].includes(config?.synchronous)
+        ? `${config.journalMode.toUpperCase()} · synchronous ${config.synchronous.toUpperCase()}` : 'Unknown',
+    policy: policyKnown ? `Control runs first, yielding to waiting ordinary saves after ${integer.format(policy.controlBurst)} consecutive turns. Background runs when no saves are waiting, or after ${integer.format(policy.foregroundBurst)} foreground turns if no control request is waiting. Active turns cannot be interrupted.` : 'Queue scheduling policy is unavailable.',
+    capacity: policyKnown && count(queue.bytes) ? `${integer.format(policy.limit)} admitted operations · ${number.format(policy.byteLimit / 1048576)} MiB of declared queued payload; ${number.format(queue.bytes / 1048576)} MiB currently declared. This is not total process memory.` : 'Queue capacity is unavailable.',
+    checkpointMode: modes[checkpoint?.mode] ?? 'Checkpoint mode unknown', checkpointPolicy,
+    checkpointState: separate ? checkpointStates[maintenance?.state] ?? 'Checkpoint activity unknown' : modes[checkpoint?.mode] ?? 'Unknown',
+    checkpointFrames: separate ? framesKnown ? `${integer.format(frames.remainingFrames)} outstanding of ${integer.format(frames.logFrames)} WAL frames · observed ${dates.format(new Date(frames.at))}` : 'WAL frame count is unavailable.' : '',
+    checkpointLast: separate && validDate(last?.at) && finite(last.elapsedMs) ? `${storageDuration(last.elapsedMs)} · ${dates.format(new Date(last.at))}` : separate ? 'No completed checkpoint observed' : 'Not separately measured',
+    checkpointFailure: separate && validDate(maintenance?.lastFailureAt) ? `Last failed request ${dates.format(new Date(maintenance.lastFailureAt))}. This does not undo a confirmed save.` : '',
+  };
+}
+
 export function storagePerformanceView(health, period = 'day', { unavailable = false, now = Date.now() } = {}) {
   const live = health?.version === 3 && ['live', 'simulated'].includes(health.scope);
   const history = live && health.recording?.history?.version === 3
@@ -213,6 +291,7 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
   const observed = value => monitored ? observedCount(value) : 'Not monitored';
   const pending = history?.current ?? {};
   const writer = live ? health.recording?.writer?.state : null;
+  const scheduling = storageSchedulingView(health, { unavailable, now });
   const queueKnown = count(pending.pending) && count(pending.activeJobs);
   const queued = pending.pending === 0 ? 'No queued operations'
     : `${observedCount(pending.pending)} queued · ${finite(pending.oldestPendingMs) ? `oldest ${storageDuration(pending.oldestPendingMs)}` : 'age unknown'}`;
@@ -227,7 +306,8 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
       : 'These are the last known measurements; the health check is out of date.';
   const contention = window?.contention;
   const historicProblems = [window?.failedWrites, window?.queueRejected, window?.commandsNotSent,
-    window?.postCommitFailures, window?.failedJobs, window?.controlRequestsBlocked];
+    window?.postCommitFailures, window?.failedJobs, window?.controlRequestsBlocked,
+    window?.backgroundFailedJobs, window?.backgroundQueueRejected, window?.checkpointFailures];
   const knownOutcomes = monitored && historicProblems.every(count);
   const problemsObserved = monitored && historicProblems.some(value => count(value) && value > 0);
   let state = 'Storage status unknown', stateTone = 'neutral';
@@ -243,15 +323,28 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
       state = 'Save failed'; stateTone = 'critical';
       detail = 'A save was not confirmed. Review the observed outcomes below; earlier confirmed saves remain recorded.';
     }
+    else if (scheduling.separate && ['failed', 'stopped'].includes(health.recording.storage.checkpoint?.state)) {
+      state = 'Checkpoint needs attention'; stateTone = 'warning';
+      detail = `${scheduling.checkpointState}. Confirmed saves remain recorded; outstanding WAL work may grow.`;
+    }
     else if (finite(pending.waitingMs)) { state = 'Waiting for storage'; stateTone = 'warning'; }
     else if (['ready', 'saving'].includes(writer)) {
-      if (count(pending.pending) && pending.pending > 0) state = `${integer.format(pending.pending)} operation${pending.pending === 1 ? '' : 's'} queued`;
+      if (scheduling.activeBackground) {
+        state = scheduling.queuedSaves > 0 ? `${integer.format(scheduling.queuedSaves)} save${scheduling.queuedSaves === 1 ? '' : 's'} waiting` : scheduling.activeLabel;
+        detail = 'Background work holds the current storage turn. Queued saves can proceed when it finishes.';
+      }
+      else if (scheduling.queuedSaves === 0 && scheduling.queuedBackground > 0 && writer === 'ready') {
+        state = 'Background storage queued';
+        detail = 'Background work is waiting for its next storage turn. No control or ordinary save is queued.';
+      }
+      else if (count(pending.pending) && pending.pending > 0) state = `${integer.format(pending.pending)} operation${pending.pending === 1 ? '' : 's'} queued`;
       else if (writer === 'saving' || count(pending.activeJobs) && pending.activeJobs > 0) state = 'Writing';
       else if (pending.pending === 0 && pending.activeJobs === 0) state = 'Caught up';
       else state = 'Writer ready';
     }
     if (state === 'Waiting for storage') detail = 'Queued work is waiting for the database writer lock. A lock wait does not establish a failed save.';
-    else if (state === 'Writing' || / operations? queued$/.test(state)) detail = 'Saving is in progress. The dashboard keeps the last confirmed values until the save completes.';
+    else if (state === 'Writing') detail = 'Saving is in progress. The dashboard keeps the last confirmed values until the save completes.';
+    else if (/ operations? queued$/.test(state)) detail = 'Storage work is queued. The dashboard keeps the last confirmed values until saves complete.';
     else if (state === 'Caught up') detail = '';
     else if (state === 'Writer ready') detail = 'The writer is available. Queue activity is not known.';
     if (stale) state = `Last known: ${state}`;
@@ -263,6 +356,13 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
   const runtime = live ? health.recording?.runtimeTiming : null;
   const runtimeValid = runtime?.basis === 'observed-event-loop-delay' && runtime.hardRealtime === false
     && count(runtime.samples) && (runtime.samples === 0 || finite(runtime.maxObservedDelayMs) && finite(runtime.p99ObservedDelayMs));
+  const checkpointFailureAt = scheduling.available ? health.recording.storage.checkpoint?.lastFailureAt : null;
+  const checkpointIncidents = valid && window.checkpointFailures > 0 && validDate(checkpointFailureAt) ? [{
+    at: checkpointFailureAt, title: 'Checkpoint request failed', context: 'Background storage',
+    date: dates.format(new Date(checkpointFailureAt)), dateTime: new Date(checkpointFailureAt).toISOString(),
+    reason: 'The background checkpoint request did not complete.',
+    outcome: 'Earlier confirmed saves remain recorded.', recovery: '',
+  }] : [];
   return {
     available: valid,
     problemsObserved, outcomesKnown: knownOutcomes,
@@ -291,6 +391,12 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
     commit: timing(window?.commitDuration, 'commits'),
     journalSeal: timing(window?.journalSealDuration, 'measured seals'),
     nativeCommit: timing(window?.nativeCommitDuration, 'measured SQLite commits'),
+    begin: timing(window?.beginDuration, 'committed transactions'),
+    body: timing(window?.bodyDuration, 'committed transactions'),
+    checkpoint: timing(window?.checkpointDuration, 'completed checkpoint calls'),
+    checkpointVisible: scheduling.separate,
+    backgroundQueue: timing(window?.backgroundQueueDelay, 'completed background turns'),
+    backgroundRun: timing(window?.backgroundRunDuration, 'finished background turns'),
     controlQueue: timing(window?.controlQueueDelay, 'completed priority operations'),
     normalQueue: timing(window?.normalQueueDelay, 'completed normal operations'),
     contention: observed(contention?.episodes),
@@ -314,8 +420,12 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
     failedJobs: observed(window?.failedJobs),
     cancelled: observed(window?.cancelledJobs),
     postCommit: observed(window?.postCommitFailures),
-    incidents: valid && Array.isArray(window.incidents) ? window.incidents.slice(0, 5)
-      .map(value => incidentView(value, health.recording.lastWriteAt)).filter(Boolean) : [],
+    backgroundFailed: observed(window?.backgroundFailedJobs),
+    backgroundRejected: observed(window?.backgroundQueueRejected),
+    backgroundCancelled: observed(window?.backgroundCancelledJobs),
+    checkpointFailures: observed(window?.checkpointFailures),
+    incidents: [...(valid && Array.isArray(window.incidents) ? window.incidents.slice(0, 5)
+      .map(value => incidentView(value, health.recording.lastWriteAt)).filter(Boolean) : []), ...checkpointIncidents],
   };
 }
 
@@ -418,6 +528,7 @@ export function createStoragePerformance({ document, now = () => Date.now() }) {
     const options = { unavailable, now: now() };
     const view = storagePerformanceView(health, period, options);
     const operations = storageOperationsView(health, period, options);
+    const scheduling = storageSchedulingView(health, options);
     const history = historySummary(view, operations);
     const overview = period === 'day' ? history : storageProblemSummary(health, options);
     renderOperations(operations);
@@ -425,15 +536,33 @@ export function createStoragePerformance({ document, now = () => Date.now() }) {
     set('scope', view.scope);
     set('notice', view.notice); set('clock', view.clock); set('precision', view.precision);
     set('current', view.current); set('detail', view.detail);
+    hide('storage-current', !scheduling.available);
+    for (const name of ['active', 'execution', 'durability', 'policy', 'capacity', 'checkpointMode',
+      'checkpointPolicy', 'checkpointState', 'checkpointFrames', 'checkpointLast', 'checkpointFailure']) set(name, scheduling[name]);
+    for (const [name, value] of Object.entries(scheduling.lanes)) set(`lane-${name}`, value);
+    set('scheduling-summary', scheduling.available ? `${scheduling.stale ? 'Last known · ' : ''}${scheduling.execution}` : 'Configuration unknown');
+    set('scheduling-scope', `${scheduling.stale ? 'Last known configuration and activity' : 'Configuration and activity'} on this computer. Save history below belongs to the active recording context.`);
+    hide('checkpointFailure', !scheduling.checkpointFailure);
+    hide('checkpoint-run-evidence', !scheduling.separate);
+    hide('checkpoint-process-note', !scheduling.separate);
+    hide('checkpoint-period-p95', !view.available);
+    hide('checkpoint-period-failures', !view.available);
+    hide('checkpoint-history', !view.available || !view.checkpointVisible);
+    hide('background-history', !view.available);
+    hide('queue-history', !view.available);
+    $('recording-performance-measures').dataset.checkpoints = String(view.checkpointVisible);
+    set('checkpoint-note', scheduling.separate ? 'Separate PASSIVE calls after WAL saves. Queue wait is excluded; these timings are not part of transaction duration.' : 'Not separately measured. See the current checkpoint policy.');
     hide('detail', !view.detail); hide('live', !view.currentVisible); hide('activity', !view.currentVisible);
     set('live-title', view.activityTitle); set('waiting', view.waiting);
-    set('state', !view.currentVisible && operations.available ? operations.activity : view.state);
-    const checkedAt = view.currentVisible ? health?.checkedAt : operations.observedAt;
-    set('evidence', validDate(checkedAt) ? `${(view.currentVisible ? view.stale : operations.stale) ? 'Last known · ' : ''}${view.currentVisible ? 'Checked' : 'Local tasks checked'} ${dates.format(new Date(checkedAt))}` : 'Check time unknown');
+    set('state', !view.currentVisible && scheduling.available ? scheduling.localState
+      : !view.currentVisible && operations.available ? operations.activity : view.state);
+    const localStorage = view.currentVisible || scheduling.available;
+    const checkedAt = localStorage ? health?.checkedAt : operations.observedAt;
+    set('evidence', validDate(checkedAt) ? `${(localStorage ? view.stale : operations.stale) ? 'Last known · ' : ''}${localStorage ? 'Checked' : 'Local tasks checked'} ${dates.format(new Date(checkedAt))}` : 'Check time unknown');
     set('history-state', overview.problems ? `${overview.label} · past day` : '');
     hide('history-state', !overview.problems);
     set('outcome', history.outcome);
-    root.dataset.tone = view.stateTone;
+    root.dataset.tone = !view.currentVisible && scheduling.available ? scheduling.localTone : view.stateTone;
     // Dated history is not an active warning. Current writer/feature owners retain
     // responsibility for faults that are still unresolved.
     $('recording-performance-history-state').dataset.tone = 'historical';
@@ -443,10 +572,10 @@ export function createStoragePerformance({ document, now = () => Date.now() }) {
     for (const name of ['responsiveness', 'command-monitoring']) hide(name, !view.runtimeVisible);
     set('runtime-title', view.runtimeTitle); set('runtime-max', view.runtimeMax); set('runtime-p99', view.runtimeP99); set('runtime-samples', view.runtimeSamples);
     for (const key of ['mean', 'worst', 'samples']) set(`write-${key}`, view.transaction[key]);
-    for (const name of ['queue', 'transaction', 'commit', 'journalSeal', 'nativeCommit', 'controlQueue', 'normalQueue']) {
+    for (const name of ['queue', 'transaction', 'begin', 'body', 'commit', 'journalSeal', 'nativeCommit', 'controlQueue', 'normalQueue', 'backgroundQueue', 'backgroundRun', 'checkpoint']) {
       for (const [key, value] of Object.entries(view[name])) set(`${name}-${key}`, value);
     }
-    for (const name of ['contention', 'contentionDetail', 'peak', 'failed', 'rejected', 'commandsNotSent', 'controlRequestsBlocked', 'committed', 'attempts', 'failedJobs', 'cancelled', 'postCommit']) set(name, view[name]);
+    for (const name of ['contention', 'contentionDetail', 'peak', 'failed', 'rejected', 'commandsNotSent', 'controlRequestsBlocked', 'committed', 'attempts', 'failedJobs', 'cancelled', 'postCommit', 'backgroundFailed', 'backgroundRejected', 'backgroundCancelled', 'checkpointFailures']) set(name, view[name]);
     for (const key of ['day', 'week']) $(`recording-performance-${key}`).setAttribute('aria-pressed', String(period === key));
     for (const name of ['failed', 'rejected', 'commandsNotSent', 'controlRequestsBlocked', 'postCommit', 'failedJobs']) $(`recording-performance-${name}`).dataset.tone = view[name] !== '0' && /^\d/.test(view[name]) ? 'historical' : 'neutral';
     const commandList = $('recording-performance-command-coverage');

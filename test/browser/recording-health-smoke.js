@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { storageHealthFixture } from '../helpers/storage-health-fixture.js';
 import { createWriteHealthHistory } from '../../src/storage/write-health-history.js';
 import { createStorageOperationHealth } from '../../src/storage/operation-health.js';
 import { Store } from '../../src/storage/store.js';
@@ -45,9 +46,13 @@ for (let index = 0; index < 12680; index++) {
   performanceRuntime.queue({ type: 'completed', priority, delayMs: index % 5000 === 0 ? 612 : priority === 'control' ? 1.6 : 3.3 });
   performanceRuntime.queue({ type: 'pending', pending: 0 });
   if (index < 11320) performanceRuntime.transaction({ committed: true,
-    totalMs: index % 3000 === 0 ? 540 : 17.2, commitMs: index % 3000 === 0 ? 410 : 12.1,
+    beginMs: 0.3, bodyMs: index % 3000 === 0 ? 128 : 4.2, totalMs: index % 3000 === 0 ? 540 : 17.2, commitMs: index % 3000 === 0 ? 410 : 12.1,
     journalSealMs: index % 3000 === 0 ? 110 : 2.1, nativeCommitMs: index % 3000 === 0 ? 300 : 10 });
 }
+performanceRuntime.checkpoint({ ran: true, elapsedMs: 450 });
+performanceRuntime.checkpoint({ ran: true, elapsedMs: 60 });
+performanceRuntime.backgroundTurn({ runMs: 470 });
+performanceRuntime.queue({ type: 'completed', priority: 'background', delayMs: 15 });
 fixtureElapsed = 8 * 3600_000;
 const performanceHistory = performanceRuntime.status({ queued: 0, activeJobs: 0, oldestPendingMs: null });
 let operationTick = 0;
@@ -71,7 +76,7 @@ const measurement = (signal, streamId, extra = {}) => ({ signal, streamId, sourc
 const status = { webAccess: { role: 'admin' }, recordingHealth: { version: 3, checkedAt: now, operations: localOperationHistory, scope: 'live', contextId: 'synthetic-live',
   disk: { state: 'critical', totalBytes: 128e9, freeBytes: 2.1e9, checkedAt: now,
     detail: 'Free space is critically low. Recordings and backup copies share this filesystem.' },
-  recording: { writer: { state: 'ready' }, state: 'write-failed', lastLoopCompletedAt: now - 1000, lastSourceCheckAt: now - 180000, lastFailureAt: now - 60000,
+  recording: { storage: storageHealthFixture(now), writer: { state: 'ready' }, state: 'write-failed', lastLoopCompletedAt: now - 1000, lastSourceCheckAt: now - 180000, lastFailureAt: now - 60000,
     detail: 'The last write failed. New observations may not have been recorded.', history: performanceHistory },
   backup: { state: 'available', count: 3, totalBytes: 12288000, complete: true, latestAt: now - 2 * 86400_000, latestKind: 'saved-copy', latestVerifiedAt: null,
     detail: 'A saved copy is listed on this computer. Keep an independent copy on separate storage.' },
@@ -143,7 +148,7 @@ window.productionInventory = ${JSON.stringify(productionInventory)};
 window.setScenario = state => {
   const health = structuredClone(initialHealth);
   if(state !== 'critical') {
-    health.recording = {writer:{state:'ready'},runtimeTiming:{basis:'observed-event-loop-delay',hardRealtime:false,samples:12680,maxObservedDelayMs:72,p99ObservedDelayMs:24,warningThresholdMs:1000},state:state === 'sources' ? 'source-unavailable' : 'ok', lastSourceCheckAt:${now}, lastLoopCompletedAt:${now - 1000}, lastWriteAt:${now - 1000},
+    health.recording = {storage:structuredClone(initialHealth.recording.storage),writer:{state:'ready'},runtimeTiming:{basis:'observed-event-loop-delay',hardRealtime:false,samples:12680,maxObservedDelayMs:72,p99ObservedDelayMs:24,warningThresholdMs:1000},state:state === 'sources' ? 'source-unavailable' : 'ok', lastSourceCheckAt:${now}, lastLoopCompletedAt:${now - 1000}, lastWriteAt:${now - 1000},
       sources:{observedStreams:3,usableStreams:state==='sources'?2:3,attentionStreams:state==='sources'?1:0,unknownStreams:0,complete:false,issues:state==='sources'?[{id:'synthetic-temperature',label:'Outdoor temperature',unit:'°C',status:'stale',sourceObservedAt:${now-900000},lastCheckedAt:${now}}]:[]},
       detail:state === 'sources' ? 'Check source connections.' : 'Source monitoring is active.', history: structuredClone(initialHealth.recording.history)};
     health.disk = {state:'ok', totalBytes:128e9, freeBytes:80e9, checkedAt:${now}, detail:'Local disk space is available.'};
@@ -171,7 +176,10 @@ window.setPerformance = state => {
   setScenario('healthy');
   const health = payload.recordingHealth, history = health.recording.history;
   if(['saving','confirming','unavailable'].includes(state)) {
-    health.recording.writer={state};
+    health.recording.writer={state}; health.recording.storage.writer={state};
+    health.recording.storage.transactionPhase=state==='saving'?'committing':state==='confirming'?'confirming':null;
+    health.recording.storage.queue.active=state==='unavailable'?null:{priority:'control',kind:null,phase:'transaction',elapsedMs:140};
+    health.recording.storage.queue.lanes.control.running=state==='unavailable'?0:1;
     history.current={pending:0,oldestPendingMs:null,waitingMs:null,activeJobs:state==='unavailable'?0:1};
     if(state!=='saving') {
       health.recording.state=state==='confirming'?'writer-confirming':'writer-unavailable';
@@ -201,22 +209,36 @@ window.setPerformance = state => {
     health.disk={state:'unknown',detail:'Local disk space could not be checked.'};
     health.backup={state:'unknown',detail:'Available backups could not be checked.'};
     health.recording.writer={state:'unknown'};
-    history.current={pending:null,oldestPendingMs:null,waitingMs:null,activeJobs:null};
+    history.current={pending:null,oldestPendingMs:null,waitingMs:null,activeJobs:null}; health.recording.storage.queue=null;
     for(const window of Object.values(history.windows)) window.commandsNotSent=null;
   }
   if(state === 'empty' || state === 'reset') {
     history.startedAt=${now}; history.elapsedMs=state === 'reset' ? 0 : 5000;
+    health.recording.storage.checkpoint={state:'idle',frames:null,lastRun:null,lastFailureAt:null};
     for(const window of Object.values(history.windows)) {
       window.coveredMs=history.elapsedMs;
       window.monitoredMs=history.elapsedMs;
-      for(const metric of ['queueDelay','controlQueueDelay','normalQueueDelay','transactionDuration','commitDuration','journalSealDuration','nativeCommitDuration'])
+      for(const metric of ['queueDelay','controlQueueDelay','normalQueueDelay','transactionDuration','commitDuration','beginDuration','bodyDuration','journalSealDuration','nativeCommitDuration','backgroundQueueDelay','backgroundRunDuration','checkpointDuration'])
         window[metric]={count:0,meanMs:null,p95Ms:null,maxMs:null};
       window.contention={episodes:0,totalMs:0,maxMs:0,active:false};
-      for(const metric of ['peakPending','failedWrites','queueRejected','cancelledJobs','failedJobs','postCommitFailures','transactionAttempts','committedTransactions','commandsNotSent']) window[metric]=0;
+      for(const metric of ['peakPending','failedWrites','queueRejected','cancelledJobs','failedJobs','postCommitFailures','transactionAttempts','committedTransactions','commandsNotSent','backgroundFailedJobs','backgroundQueueRejected','backgroundCancelledJobs','checkpointFailures']) window[metric]=0;
       window.incidents=[];
     }
   }
-  if(state === 'snapshot') { health.scope='snapshot'; health.contextId='synthetic-snapshot'; health.recording={state:'read-only',history:null}; }
+  if(state === 'background') {
+    const storage=health.recording.storage;
+    storage.queue.active={priority:'background',kind:'checkpoint',phase:'exclusive',elapsedMs:450};
+    storage.queue.lanes.control={queued:2,running:0,oldestPendingMs:320};
+    storage.queue.lanes.background.running=1; storage.checkpoint.state='running';
+    history.current={pending:2,oldestPendingMs:320,waitingMs:null,activeJobs:1};
+  }
+  if(state === 'periodic-checkpoints') health.recording.storage.configuration.checkpoint={mode:'periodic-passive',autoCheckpointFrames:0,pollMs:250,triggerFrames:null,maxDirtyMs:null,fallbackPollMs:1000};
+  if(state === 'snapshot') {
+    const storage=health.recording.storage;
+    storage.configuration.execution='read-only'; storage.configuration.checkpoint={mode:'not-owned',autoCheckpointFrames:1000};
+    storage.writer={state:'read-only'}; storage.checkpoint=null;
+    health.scope='snapshot'; health.contextId='synthetic-snapshot'; health.recording={state:'read-only',history:null,storage};
+  }
   renderStatus(payload);
 };
 window.failRefresh = false; window.failInventory = false; window.requestCount = 0; window.catalogRequests = 0; window.failCatalog = false;
@@ -391,10 +413,10 @@ try {
       inset:text ? range.getBoundingClientRect().left : null,
       values:Array.from(row.querySelectorAll('td'), cell=>({heading:cell.dataset.label,value:cell.textContent.trim()}))
     }})`);
-    assert.deepEqual(rows.map(row=>row.label), ['Write + commit','Commit only','Journal sealing','SQLite COMMIT'], `${label}: complete transaction timings retain their measurement names`);
-    assert.deepEqual(rows.map(row=>row.relation), ['Whole transaction','Within write + commit','Within commit only','Within commit only'], `${label}: parent/component relationships are explicit text`);
+    assert.deepEqual(rows.map(row=>row.label), ['Transaction','Writer admission','Transaction building','Commit & confirmation','Journal sealing','SQLite COMMIT'], `${label}: complete transaction timings retain their measurement names`);
+    assert.deepEqual(rows.map(row=>row.relation), ['Whole successful attempt','BEGIN and its acknowledgement','Callback and dependent SQL calls','Within the transaction','Within commit & confirmation','Within commit & confirmation'], `${label}: parent/component relationships are explicit text`);
     assert.ok(rows.every(row=>row.rowHeader==='row'), `${label}: timing names remain accessible table row headers`);
-    assert.ok(rows[0].inset < rows[1].inset && rows[1].inset < rows[2].inset && Math.abs(rows[2].inset-rows[3].inset) <= 1,
+    assert.ok(rows[0].inset < rows[1].inset && rows.slice(1,4).every(row=>Math.abs(row.inset-rows[1].inset)<=1) && rows[3].inset < rows[4].inset && Math.abs(rows[4].inset-rows[5].inset)<=1,
       `${label}: transaction, commit and its stages form three visible levels: ${JSON.stringify(rows.map(row=>row.inset))}`);
     assert.ok(rows.every(row=>row.values.length===3 && row.values.every(cell=>cell.heading && cell.value)),
       `${label}: average, percentile and worst values keep their headings in the mobile layout`);
@@ -505,9 +527,11 @@ try {
       assert.equal(await evaluate("document.querySelector('#recording-performance-operation-list details[data-kind=csv-import]')===null"), true);
       await captureFold('recording-performance-details', `local-operations-${width}-${theme}`);
 
-      for(const state of ['saving','confirming','unavailable','busy','failed','recovered','unknown','empty','reset','snapshot']) {
+      for(const state of ['saving','confirming','unavailable','busy','background','periodic-checkpoints','failed','recovered','unknown','empty','reset','snapshot']) {
         await evaluate(`setPerformance('${state}')`); await settle();
         await checkLayout(`${width}/${theme}/performance-${state}`); await capture(`performance-${state}-${width}-${theme}`);
+        if(state==='background') assert.equal(await evaluate("document.getElementById('recording-performance-state').textContent"),'2 saves waiting');
+        if(state==='periodic-checkpoints') assert.match(await evaluate("document.getElementById('recording-performance-checkpointPolicy').textContent"),/every 1 s; no frame-count trigger/);
         if(state==='failed') {
           await captureGlance(`glance-problems-${width}-${theme}`);
           await evaluate("document.querySelectorAll('.recording-health-card').forEach(node=>node.open=true); document.getElementById('recording-performance-technical').open=true");
@@ -517,7 +541,7 @@ try {
             const accessibility = await send('Accessibility.getFullAXTree');
             assert.ok(accessibility.nodes.some(node=>node.role?.value==='table' && /Successful transactions/.test(node.name?.value)),
               'The mobile timing layout retains its accessible table');
-            for(const title of ['Write + commit','Commit only','Journal sealing','SQLite COMMIT'])
+            for(const title of ['Transaction','Writer admission','Transaction building','Commit & confirmation','Journal sealing','SQLite COMMIT'])
               assert.ok(accessibility.nodes.some(node=>node.role?.value==='rowheader' && node.name?.value?.startsWith(title)),
                 `${title}: mobile timing remains an accessible row header`);
           }

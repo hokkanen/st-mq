@@ -170,6 +170,14 @@
 .recording-writer-activity dd.recording-health-evidence { margin-top: 4px; font-size: 11px; }
 #recording-performance-waiting { color: var(--stale); }
 .recording-performance-measures { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px 36px; padding: 12px 0 20px; }
+.recording-performance-measures[data-checkpoints="true"] { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px 24px; }
+.recording-storage-current { margin-bottom: 18px; }
+.recording-storage-current dd.recording-health-evidence { font-size: 11px; }
+.recording-checkpoint-policy, .recording-background-history { margin-top: 22px; }
+.recording-checkpoint-policy { padding-top: 18px; border-top: 1px solid var(--border); }
+.recording-background-history { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 28px; }
+.recording-background-history > p { margin-top: 0; }
+.recording-save-outcomes { margin-top: 22px; max-width: 640px; }
 .recording-performance-measure { min-width: 0; }
 .recording-performance-measure + .recording-performance-measure { border-inline-start: 1px solid var(--border); padding-inline-start: 24px; }
 .recording-performance :is(h4, h5) { font-size: 12px; font-weight: 600; margin: 0 0 10px; line-height: 1.5; }
@@ -236,7 +244,7 @@
   .recording-performance-toolbar { flex-direction: column; gap: 12px; }
   .recording-performance-toolbar { align-items: stretch; }
   .recording-performance-period { align-self: flex-start; }
-  .recording-performance-measures { grid-template-columns: minmax(0, 1fr); gap: 22px; }
+  .recording-performance-measures, .recording-performance-measures[data-checkpoints="true"] { grid-template-columns: minmax(0, 1fr); gap: 22px; }
   .recording-performance-measure + .recording-performance-measure { border-inline-start: 0; padding-inline-start: 0; }
   .recording-performance-waits dd { font-size: 18px; }
   .recording-performance-timings, .recording-performance-timings tbody { display: block; }
@@ -252,7 +260,7 @@
   .recording-performance-timings .recording-timing-part { padding-inline-start: 18px; }
   .recording-performance-timings .recording-timing-stage { padding-inline-start: 36px; }
   .recording-timing-part .recording-timing-label, .recording-timing-stage .recording-timing-label { margin-inline-start: 0; }
-  .recording-performance-diagnostics { grid-template-columns: minmax(0, 1fr); }
+  .recording-performance-diagnostics, .recording-background-history { grid-template-columns: minmax(0, 1fr); }
   .recording-disclosure-hint { flex-basis: 100%; margin-inline-start: 22px; }
   .recording-performance-explanation-body { padding-inline-start: 12px; }
   .recording-activity-facts { grid-template-columns: minmax(0, 1fr); }

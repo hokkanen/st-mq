@@ -1070,10 +1070,14 @@ G_warming = G / 2</code>
                   <div id="recording-performance-live" class="recording-performance-live">
                     <p id="recording-performance-detail" class="recording-health-detail"></p>
                     <dl id="recording-performance-activity" class="recording-activity-facts recording-writer-activity">
-                      <div><dt>Writer queue</dt><dd id="recording-performance-current"></dd><dd id="recording-performance-waiting" class="recording-health-evidence" hidden></dd></div>
+                      <div><dt>Shared storage queue</dt><dd id="recording-performance-current"></dd><dd id="recording-performance-waiting" class="recording-health-evidence" hidden></dd></div>
                       <div><dt>Last confirmed save</dt><dd id="recording-performance-lastWrite"></dd><dd class="recording-health-evidence">Includes settings and event writes.</dd></div>
                     </dl>
                   </div>
+                  <dl id="recording-performance-storage-current" class="recording-activity-facts recording-storage-current" hidden>
+                    <div><dt>Storage turn</dt><dd id="recording-performance-active">Unknown</dd></div>
+                    <div><dt>WAL checkpoint</dt><dd id="recording-performance-checkpointState">Unknown</dd><dd id="recording-performance-checkpointFrames" class="recording-health-evidence"></dd></div>
+                  </dl>
                   <div class="recording-local-activity">
                     <div class="recording-local-activity-heading"><h5>Local tasks</h5><p id="recording-performance-local-activity" class="recording-health-evidence"></p></div>
                     <ul id="recording-performance-active-tasks" class="recording-active-tasks" aria-label="Active local tasks"></ul>
@@ -1091,18 +1095,24 @@ G_warming = G / 2</code>
                   <p id="recording-performance-precision" class="recording-health-evidence" hidden></p>
                   <p id="recording-performance-outcome" class="recording-performance-outcome"></p>
                   <div id="recording-performance-data" hidden>
-                    <div class="recording-performance-measures">
+                    <div id="recording-performance-measures" class="recording-performance-measures">
                       <div class="recording-performance-measure">
-                        <h5>Queue wait</h5>
+                        <h5>Save queue</h5>
                         <dl class="recording-performance-waits"><div><dt>Average</dt><dd id="recording-performance-queue-mean"></dd></div><div><dt>Worst</dt><dd id="recording-performance-queue-worst"></dd></div></dl>
                         <p id="recording-performance-queue-samples" class="recording-health-evidence"></p>
-                        <p class="recording-health-evidence">Before successful queued work starts. Pending and failed operations are excluded.</p>
+                        <p class="recording-health-evidence">Successful control and ordinary saves until their callback starts. Includes writer admission, overlapping transaction time.</p>
                       </div>
                       <div class="recording-performance-measure">
-                        <h5>Save duration</h5>
+                        <h5>Transaction</h5>
                         <dl class="recording-performance-waits"><div><dt>Average</dt><dd id="recording-performance-write-mean"></dd></div><div><dt>Worst</dt><dd id="recording-performance-write-worst"></dd></div></dl>
                         <p id="recording-performance-write-samples" class="recording-health-evidence"></p>
-                        <p class="recording-health-evidence">Time to complete a successful save, including commit and confirmation.</p>
+                        <p class="recording-health-evidence">Writer admission, transaction building, commit and confirmation. Does not include time queued before the attempt.</p>
+                      </div>
+                      <div id="recording-performance-checkpoint-history" class="recording-performance-measure" hidden>
+                        <h5>WAL checkpoint</h5>
+                        <dl class="recording-performance-waits"><div><dt>Average</dt><dd id="recording-performance-checkpoint-mean"></dd></div><div><dt>Worst</dt><dd id="recording-performance-checkpoint-worst"></dd></div></dl>
+                        <p id="recording-performance-checkpoint-samples" class="recording-health-evidence"></p>
+                        <p id="recording-performance-checkpoint-note" class="recording-health-evidence"></p>
                       </div>
                     </div>
                   </div>
@@ -1118,24 +1128,64 @@ G_warming = G / 2</code>
                 </section>
                 <section class="recording-storage-diagnostics" aria-labelledby="recording-performance-diagnostics-title">
                   <h4 id="recording-performance-diagnostics-title">Diagnostics</h4>
+                  <details id="recording-performance-scheduling" class="recording-performance-explanation">
+                    <summary>Storage scheduling<span id="recording-performance-scheduling-summary" class="recording-disclosure-hint">Configuration unknown</span></summary>
+                    <div class="recording-performance-explanation-body">
+                      <p id="recording-performance-scheduling-scope" class="recording-health-evidence"></p>
+                      <dl class="recording-measurement-guide">
+                        <div><dt>Writer</dt><dd id="recording-performance-execution"></dd></div>
+                        <div><dt>Journal &amp; durability</dt><dd id="recording-performance-durability"></dd></div>
+                        <div><dt>Turn order</dt><dd id="recording-performance-policy"></dd></div>
+                        <div><dt>Queue capacity</dt><dd id="recording-performance-capacity"></dd></div>
+                      </dl>
+                      <table class="recording-performance-timings recording-performance-priority">
+                        <caption>Shared queue <span>Current backlog on each lane; timings cover successful turns in the selected period</span></caption>
+                        <thead><tr><th scope="col">Queue</th><th scope="col">Average</th><th scope="col">Approx. p95</th><th scope="col">Worst</th></tr></thead>
+                        <tbody>
+                          <tr><th scope="row">Control saves<small id="recording-performance-lane-control"></small><small id="recording-performance-controlQueue-samples"></small></th><td data-label="Average" id="recording-performance-controlQueue-mean"></td><td data-label="Approx. p95" id="recording-performance-controlQueue-p95"></td><td data-label="Worst" id="recording-performance-controlQueue-worst"></td></tr>
+                          <tr><th scope="row">Ordinary saves<small id="recording-performance-lane-normal"></small><small id="recording-performance-normalQueue-samples"></small></th><td data-label="Average" id="recording-performance-normalQueue-mean"></td><td data-label="Approx. p95" id="recording-performance-normalQueue-p95"></td><td data-label="Worst" id="recording-performance-normalQueue-worst"></td></tr>
+                          <tr><th scope="row">Background work<small id="recording-performance-lane-background"></small><small id="recording-performance-backgroundQueue-samples"></small></th><td data-label="Average" id="recording-performance-backgroundQueue-mean"></td><td data-label="Approx. p95" id="recording-performance-backgroundQueue-p95"></td><td data-label="Worst" id="recording-performance-backgroundQueue-worst"></td></tr>
+                        </tbody>
+                      </table>
+                      <div id="recording-performance-queue-history" class="recording-performance-diagnostics">
+                        <section><h5>Admission pressure</h5><dl class="recording-performance-outcomes"><div><dt>Writer-lock wait episodes</dt><dd id="recording-performance-contention"></dd></div><div><dt>Writer-lock wait time</dt><dd id="recording-performance-contentionDetail"></dd></div><div><dt>Peak queued operations · all lanes</dt><dd id="recording-performance-peak"></dd></div></dl></section>
+                        <section><h5>Background turns</h5><dl class="recording-performance-outcomes"><div><dt>Failed</dt><dd id="recording-performance-backgroundFailed"></dd></div><div><dt>Queue-full refusals</dt><dd id="recording-performance-backgroundRejected"></dd></div><div><dt>Cancelled</dt><dd id="recording-performance-backgroundCancelled"></dd></div></dl></section>
+                      </div>
+                      <div id="recording-performance-background-history" class="recording-background-history">
+                        <section><h5>Time holding a background turn</h5>
+                        <dl class="recording-performance-outcomes"><div><dt>Average</dt><dd id="recording-performance-backgroundRun-mean"></dd></div><div><dt>Approx. p95</dt><dd id="recording-performance-backgroundRun-p95"></dd></div><div><dt>Worst</dt><dd id="recording-performance-backgroundRun-worst"></dd></div></dl>
+                        <p id="recording-performance-backgroundRun-samples"></p></section>
+                        <p>Mirroring, checkpoint requests, and admitted history and learning reads share this queue. A task can use many turns and do computation between them. Checkpoint polls also use turns when no checkpoint is needed. Separate tasks and other processes can still use storage outside this queue.</p>
+                      </div>
+                      <div class="recording-checkpoint-policy">
+                        <h5 id="recording-performance-checkpointMode">Checkpoint mode unknown</h5>
+                        <p id="recording-performance-checkpointPolicy"></p>
+                        <dl id="recording-performance-checkpoint-run-evidence" class="recording-performance-outcomes"><div><dt>Last completed call</dt><dd id="recording-performance-checkpointLast"></dd></div><div id="recording-performance-checkpoint-period-p95"><dt>Approx. p95 · selected period</dt><dd id="recording-performance-checkpoint-p95"></dd></div><div id="recording-performance-checkpoint-period-failures"><dt>Failed requests · selected period</dt><dd id="recording-performance-checkpointFailures"></dd></div></dl>
+                        <p id="recording-performance-checkpointFailure" hidden></p>
+                        <p id="recording-performance-checkpoint-process-note">With separate checkpoints, a successful WAL commit already confirms the save. Checkpointing copies WAL pages into the main database later. Readers can leave frames outstanding, and an active checkpoint can delay the next storage turn. Outstanding frames are dated observations, not WAL file size.</p>
+                      </div>
+                    </div>
+                  </details>
                   <details id="recording-performance-technical" class="recording-performance-explanation">
-                    <summary>Transaction timings<span class="recording-disclosure-hint">Write, commit and its stages</span></summary>
+                    <summary>Save stages<span class="recording-disclosure-hint">Admission, building and commit</span></summary>
                     <div class="recording-performance-explanation-body">
                       <table class="recording-performance-timings">
                         <caption>Successful transactions <span>Selected monitored period · nested stages are included in their parent</span></caption>
                         <thead><tr><th scope="col">Timing</th><th scope="col">Average</th><th scope="col">Approx. p95</th><th scope="col">Worst</th></tr></thead>
                         <tbody>
-                          <tr class="recording-timing-total"><th scope="row"><span class="recording-timing-label">Write + commit<small class="recording-timing-relation">Whole transaction</small><small id="recording-performance-transaction-samples"></small></span></th><td data-label="Average" id="recording-performance-transaction-mean"></td><td data-label="Approx. p95" id="recording-performance-transaction-p95"></td><td data-label="Worst" id="recording-performance-transaction-worst"></td></tr>
-                          <tr class="recording-timing-part"><th scope="row"><span class="recording-timing-label">Commit only<small class="recording-timing-relation">Within write + commit</small><small id="recording-performance-commit-samples"></small></span></th><td data-label="Average" id="recording-performance-commit-mean"></td><td data-label="Approx. p95" id="recording-performance-commit-p95"></td><td data-label="Worst" id="recording-performance-commit-worst"></td></tr>
-                          <tr class="recording-timing-stage"><th scope="row"><span class="recording-timing-label">Journal sealing<small class="recording-timing-relation">Within commit only</small><small id="recording-performance-journalSeal-samples"></small></span></th><td data-label="Average" id="recording-performance-journalSeal-mean"></td><td data-label="Approx. p95" id="recording-performance-journalSeal-p95"></td><td data-label="Worst" id="recording-performance-journalSeal-worst"></td></tr>
-                          <tr class="recording-timing-stage"><th scope="row"><span class="recording-timing-label">SQLite COMMIT<small class="recording-timing-relation">Within commit only</small><small id="recording-performance-nativeCommit-samples"></small></span></th><td data-label="Average" id="recording-performance-nativeCommit-mean"></td><td data-label="Approx. p95" id="recording-performance-nativeCommit-p95"></td><td data-label="Worst" id="recording-performance-nativeCommit-worst"></td></tr>
+                          <tr class="recording-timing-total"><th scope="row"><span class="recording-timing-label">Transaction<small class="recording-timing-relation">Whole successful attempt</small><small id="recording-performance-transaction-samples"></small></span></th><td data-label="Average" id="recording-performance-transaction-mean"></td><td data-label="Approx. p95" id="recording-performance-transaction-p95"></td><td data-label="Worst" id="recording-performance-transaction-worst"></td></tr>
+                          <tr class="recording-timing-part"><th scope="row"><span class="recording-timing-label">Writer admission<small class="recording-timing-relation">BEGIN and its acknowledgement</small><small id="recording-performance-begin-samples"></small></span></th><td data-label="Average" id="recording-performance-begin-mean"></td><td data-label="Approx. p95" id="recording-performance-begin-p95"></td><td data-label="Worst" id="recording-performance-begin-worst"></td></tr>
+                          <tr class="recording-timing-part"><th scope="row"><span class="recording-timing-label">Transaction building<small class="recording-timing-relation">Callback and dependent SQL calls</small><small id="recording-performance-body-samples"></small></span></th><td data-label="Average" id="recording-performance-body-mean"></td><td data-label="Approx. p95" id="recording-performance-body-p95"></td><td data-label="Worst" id="recording-performance-body-worst"></td></tr>
+                          <tr class="recording-timing-part"><th scope="row"><span class="recording-timing-label">Commit &amp; confirmation<small class="recording-timing-relation">Within the transaction</small><small id="recording-performance-commit-samples"></small></span></th><td data-label="Average" id="recording-performance-commit-mean"></td><td data-label="Approx. p95" id="recording-performance-commit-p95"></td><td data-label="Worst" id="recording-performance-commit-worst"></td></tr>
+                          <tr class="recording-timing-stage"><th scope="row"><span class="recording-timing-label">Journal sealing<small class="recording-timing-relation">Within commit &amp; confirmation</small><small id="recording-performance-journalSeal-samples"></small></span></th><td data-label="Average" id="recording-performance-journalSeal-mean"></td><td data-label="Approx. p95" id="recording-performance-journalSeal-p95"></td><td data-label="Worst" id="recording-performance-journalSeal-worst"></td></tr>
+                          <tr class="recording-timing-stage"><th scope="row"><span class="recording-timing-label">SQLite COMMIT<small class="recording-timing-relation">Within commit &amp; confirmation</small><small id="recording-performance-nativeCommit-samples"></small></span></th><td data-label="Average" id="recording-performance-nativeCommit-mean"></td><td data-label="Approx. p95" id="recording-performance-nativeCommit-p95"></td><td data-label="Worst" id="recording-performance-nativeCommit-worst"></td></tr>
                         </tbody>
                       </table>
-                      <p>Indented timings are included in their parent; do not add them. Each row has its own samples; worst values and percentiles can come from different transactions.</p>
+                      <p>Indented timings are included in their parent; do not add them. Transaction building includes synchronous callback and dependent SQL work. Learning computation between transactions is outside these timings. Whole attempts also include follow-up overhead. Each row has its own samples; maxima and percentiles can come from different transactions.</p>
                     </div>
                   </details>
                   <details id="recording-performance-diagnostics" class="recording-performance-explanation">
-                    <summary>Writer outcomes &amp; queue<span class="recording-disclosure-hint">Counts, priority and writer lock</span></summary>
+                    <summary>Save outcomes<span class="recording-disclosure-hint">Confirmed, failed and cancelled work</span></summary>
                     <div class="recording-performance-explanation-body">
                       <dl class="recording-performance-result-counts">
                         <div><dt>Failed save attempts</dt><dd id="recording-performance-failed"></dd></div>
@@ -1145,19 +1195,10 @@ G_warming = G / 2</code>
                         <div><dt>Failed queued operations</dt><dd id="recording-performance-failedJobs"></dd></div>
                         <div><dt>Saved; follow-up failed</dt><dd id="recording-performance-postCommit"></dd></div>
                       </dl>
-                      <table class="recording-performance-timings recording-performance-priority">
-                        <caption>Queue wait by priority</caption>
-                        <thead><tr><th scope="col">Queue</th><th scope="col">Average</th><th scope="col">Approx. p95</th><th scope="col">Worst</th></tr></thead>
-                        <tbody>
-                          <tr><th scope="row">Control priority<small id="recording-performance-controlQueue-samples"></small></th><td data-label="Average" id="recording-performance-controlQueue-mean"></td><td data-label="Approx. p95" id="recording-performance-controlQueue-p95"></td><td data-label="Worst" id="recording-performance-controlQueue-worst"></td></tr>
-                          <tr><th scope="row">Normal priority<small id="recording-performance-normalQueue-samples"></small></th><td data-label="Average" id="recording-performance-normalQueue-mean"></td><td data-label="Approx. p95" id="recording-performance-normalQueue-p95"></td><td data-label="Worst" id="recording-performance-normalQueue-worst"></td></tr>
-                        </tbody>
-                      </table>
-                      <div class="recording-performance-diagnostics">
-                        <section aria-labelledby="recording-performance-queue-title"><h5 id="recording-performance-queue-title">Queue &amp; writer lock</h5><dl class="recording-performance-outcomes"><div><dt>Queue wait · approx. p95</dt><dd id="recording-performance-queue-p95"></dd></div><div><dt>Writer-lock wait episodes</dt><dd id="recording-performance-contention"></dd></div><div><dt>Writer-lock wait time</dt><dd id="recording-performance-contentionDetail"></dd></div><div><dt>Peak queued operations</dt><dd id="recording-performance-peak"></dd></div></dl></section>
+                      <div class="recording-save-outcomes">
                         <section aria-labelledby="recording-performance-operations-title"><h5 id="recording-performance-operations-title">Operation outcomes</h5><dl class="recording-performance-outcomes"><div><dt>Committed transactions</dt><dd id="recording-performance-committed"></dd></div><div><dt>Transaction attempts, including retries</dt><dd id="recording-performance-attempts"></dd></div><div><dt>Cancelled queued operations</dt><dd id="recording-performance-cancelled"></dd></div></dl></section>
                       </div>
-                      <p>Counts can overlap; do not add requests, commands and save attempts. Queued-operation failures can have application causes. A failed follow-up does not undo a confirmed save. Writer-lock time includes retries and active waits.</p>
+                      <p>Counts can overlap; do not add requests, commands and save attempts. Queued-operation failures can have application causes. A failed follow-up does not undo a confirmed save. Background-turn failures are counted separately under Storage scheduling.</p>
                     </div>
                   </details>
                   <details id="recording-performance-operations" class="recording-performance-explanation">
@@ -1166,7 +1207,7 @@ G_warming = G / 2</code>
                       <p id="recording-performance-operations-evidence" class="recording-health-evidence"></p>
                       <p id="recording-performance-operations-empty" class="recording-health-evidence"></p>
                       <div id="recording-performance-operation-list" class="recording-operation-list"></div>
-                      <p>Task counts and elapsed times can overlap. For example, saving a copy includes separately observed creation and verification. Snapshot chunks and file maintenance are tasks of their own.</p>
+                      <p>Whole-task counts and elapsed times can overlap; they are not counts or timings of shared storage turns. For example, saving a copy includes separately observed creation and verification. Snapshot chunks and file maintenance are tasks of their own.</p>
                     </div>
                   </details>
                   <details id="recording-performance-responsiveness" class="recording-performance-explanation" hidden>
@@ -1197,8 +1238,8 @@ G_warming = G / 2</code>
                     <div class="recording-performance-explanation-body">
                       <p id="recording-performance-scope" class="recording-health-evidence"></p>
                       <dl class="recording-measurement-guide">
-                        <div><dt>Current activity</dt><dd>Caught up describes the runtime writer and its queue. Other local tasks can still be active. Neither establishes complete source history or successful device actions.</dd></div>
-                        <div><dt>Writer timings</dt><dd>Successful writes include communication with the writer and confirmation. Journal sealing includes validation, hashing and SQL; SQLite COMMIT includes synchronization and automatic checkpoint work. Neither isolates fsync. Approximate p95 is the duration 95% of samples stayed within.</dd></div>
+                        <div><dt>Current activity</dt><dd>Caught up describes the runtime writer and the shared storage queue. Background storage is shown separately from saving. Other local tasks can still be active. Neither establishes complete source history or successful device actions.</dd></div>
+                        <div><dt>Writer timings</dt><dd>Successful attempts include writer admission, transaction building, communication and confirmation. Journal sealing includes validation, hashing and SQL. SQLite COMMIT includes its native synchronization; with separate checkpoint scheduling it excludes the later checkpoint. A direct connection may still checkpoint inside COMMIT, as shown in its policy. None of these timings isolates fsync. Approximate p95 is the duration 95% of samples stayed within.</dd></div>
                         <div><dt>Local task duration</dt><dd>Elapsed time includes preparation, queueing, computation, transfer and owned cleanup where applicable. It is not SQLite time or application unresponsiveness. A completed download confirms server transfer, not a file saved on the receiving device.</dd></div>
                         <div><dt>History &amp; coverage</dt><dd>Evidence is held in memory for up to seven days. Writer history resets when storage reopens; local task history resets when the application exits. Five-minute summaries exclude the oldest partial interval. Earlier and unmonitored work remains unknown.</dd></div>
                       </dl>

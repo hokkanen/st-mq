@@ -1,4 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads';
+import { WAL_POLICY } from './storage-policy.js';
 import { serialize, deserialize } from 'node:v8';
 import { Store } from './store.js';
 import { prepareJournalCommit, commitPreparedJournal, journalCommitTiming,
@@ -97,12 +98,12 @@ function execute(op, args, synchronous) {
     // Supported older Node 22 builds without SQLite's status-only mode use a
     // periodic PASSIVE call, never an unrecognized pragma silently doing I/O.
     if(!checkpointStatusOnly&&performance.now()<nextCheckpointPoll)return {ran:false,elapsedMs:0};
-    nextCheckpointPoll=performance.now()+1000;
+    nextCheckpointPoll=performance.now()+WAL_POLICY.fallbackPollMs;
     const before = checkpointStatusOnly ? store.db.prepare('PRAGMA wal_checkpoint(NOOP)').get() : null;
     const outstanding = before ? before.log - before.checkpointed : null;
     if (outstanding === 0) dirtySince = null;
     else dirtySince ??= performance.now();
-    if (before && (outstanding <= 0 || outstanding < 50 && performance.now() - dirtySince < 5000))
+    if (before && (outstanding <= 0 || outstanding < WAL_POLICY.triggerFrames && performance.now() - dirtySince < WAL_POLICY.maxDirtyMs))
       return { ...before, ran: false, elapsedMs: 0 };
     const started = performance.now(), result = store.db.prepare('PRAGMA wal_checkpoint(PASSIVE)').get();
     if (result.log === result.checkpointed) dirtySince = null;
@@ -167,7 +168,15 @@ try {
   store.db.exec('PRAGMA busy_timeout=0');
   syncPort.on('message', frame => receive(frame, true));
   parentPort.on('message', frame => receive(frame, false));
-  parentPort.postMessage(encode({ type: 'ready', ok: true, result: { checkpoint: readCheckpoint(store.db) } }));
+  parentPort.postMessage(encode({ type: 'ready', ok: true, result: { checkpoint: readCheckpoint(store.db),
+    storageConfiguration: { ...store.storageConfiguration, execution: 'worker', checkpoint: {
+      mode: checkpointStatusOnly ? 'queued-passive' : 'periodic-passive',
+      autoCheckpointFrames: store.storageConfiguration.checkpoint.autoCheckpointFrames,
+      pollMs: WAL_POLICY.pollMs,
+      triggerFrames: checkpointStatusOnly ? WAL_POLICY.triggerFrames : null,
+      maxDirtyMs: checkpointStatusOnly ? WAL_POLICY.maxDirtyMs : null,
+      fallbackPollMs: checkpointStatusOnly ? null : WAL_POLICY.fallbackPollMs,
+    } } } }));
 } catch (error) {
   parentPort.postMessage(encode({ type: 'ready', ok: false, error: safeError(error) }));
   try { store?.close(); } catch {}

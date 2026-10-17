@@ -2154,8 +2154,11 @@ attempts retain only reached stages; nested savepoints are part of their outer
 attempt, never separate native commits. These
 in-memory diagnostics reset when the Store opens and never write extra history.
 Sealing includes synchronous validation, serialization, hashing, peer-index and
-journal SQL work. SQLite COMMIT time includes any checkpoint and filesystem wait
-performed by that call; neither stage is an isolated CPU or fsync measurement.
+journal SQL work. SQLite COMMIT time includes native synchronization and filesystem
+wait. The dedicated writer disables automatic checkpoints and schedules PASSIVE
+checkpoints as separate background turns, outside this COMMIT duration. Direct
+connections can still perform automatic checkpoint work within COMMIT; Storage
+health reports the owning connection's policy. Neither stage isolates CPU or fsync.
 The latest transaction date does not date an earlier rolling maximum. Queue depth and `waitingSince`
 remain separate asynchronous-admission evidence. Slow successful writes do not
 prove corruption, and these timings do not grant device authority.
@@ -2197,9 +2200,10 @@ indicator always covers the past day, independently of the selected diagnostic
 period, and also appears on the outer Recording details summary. It is a history
 indicator, not a current fault. Authoritative writer and feature owners still
 report unresolved faults. A later success does not erase an earlier failure. **Caught up** requires usable
-current writer and queue evidence with no monitored work outstanding. Ordinary
-**Writing** activity is neutral, while an actual writer-lock wait has its own
-state. **Confirming last save** reports unresolved durability after worker loss without
+current writer and queue evidence with no monitored work outstanding. Background
+storage identifies its active owner instead of being labelled as a save; queued
+saves remain waiting until that turn finishes. Ordinary **Writing** activity is
+neutral, while an actual writer-lock wait has its own state. **Confirming last save** reports unresolved durability after worker loss without
 claiming a failed save. **Writer unavailable** takes precedence even if the last
 save committed successfully and the queue drained. **Writer stopped** reports
 closed admission. Missing or malformed evidence cannot establish readiness.
@@ -2207,11 +2211,12 @@ closed admission. Missing or malformed evidence cannot establish readiness.
 Opening the fold separates **Current activity** (writer availability, backlog,
 lock wait, last confirmed write and active local tasks) from **Monitored history**.
 One past-day/past-week selector applies to writer and local-task history. The
-writer's paired queue-wait and save-duration summaries remain visible. The latest
+period overview separates save queue delay, whole transaction duration and, when
+the runtime schedules them separately, WAL checkpoint calls. The latest
 three dated problems are shown directly; additional retained problems have a
 shared disclosure. Each keeps type, date, context, outcome and any established
 recovery separate. Full writer counters, including observed zeroes, belong under
-**Writer outcomes & queue**. A confirmed save retains its original success clock
+**Save outcomes**. A confirmed save retains its original success clock
 when the worker becomes unavailable; checking health neither renews that receipt
 nor resumes recording or command authority.
 It uses the existing authenticated health responses and updates with
@@ -2231,11 +2236,12 @@ five-minute bucket is omitted, so the summarized span can be up to five minutes
 shorter than the selected period. Bounded summaries supply averages,
 approximate 95th percentiles and worst
 durations. Queue wait measures how long successfully completed queued work
-waited before admission; writing measures successful committed transaction
-duration, including SQLite journal, checkpoint and filesystem work performed by
-that transaction and communication with the dedicated writer. Commit time is part
-of writing, not an additional delay to add
-to it. Neither measures the complete delay of a physical device
+waited until their callback starts, including successful writer admission.
+Transaction duration begins at its BEGIN attempt and includes transaction building,
+journal sealing, durable commit, confirmation and follow-up overhead. Queue delay
+and transaction duration therefore overlap during admission and must not be added.
+Separate checkpoint calls do not belong to either transaction or commit duration.
+Commit time is included in the transaction. Neither measures the complete delay of a physical device
 action or isolates an fsync. Live pending count, oldest queued work, contention
 episodes and time, and peak backlog describe pressure separately from successful
 write timings. Durations use a monotonic clock; wall times only date evidence.
@@ -2350,25 +2356,67 @@ exits. Each operation retains its original local scope and cannot update a
 replacement Store's writer history. Health polling reads the RAM snapshot and
 launches no additional scans or persisted diagnostics.
 
-**Transaction timings** shows successful transaction and commit timings with
-averages, approximate 95th percentiles and worst durations. Indentation, connecting
-rules and explicit relationship labels place **Commit only** within **Write +
-commit**, and **Journal sealing** and **SQLite COMMIT** within **Commit only**.
-The hierarchy remains visible when the table becomes stacked rows on phones.
-**Writer outcomes & queue** holds priority-specific waits, writer-lock statistics,
-peak backlog and complete outcome counters; **Monitoring coverage** holds local
-task registration and device-command coverage. **About these measurements** gives
-one guide to timing meanings, in-memory retention and exclusions. Commit is part of the full transaction duration;
-the two measured stages are within Commit and these overlapping durations must
-not be added. Stage summaries count only reached, measured stages of successful
-commits; bootstrap can contribute to full transaction/commit summaries without
-contributing a stage sample. Separate stage maxima or percentiles can come from
-different transactions. No new delay threshold changes warnings or
-command deadlines. Ordinary saving preserves the recording source and loop
-status; a writer fault raises separate storage attention. Reading the summaries
-never runs a database check or grants control
-authority. The current memory-history API has version 3; earlier history shapes
-are unsupported rather than translated.
+**Storage scheduling** reports the active local Store's writer execution, journal
+mode, synchronous setting and checkpoint policy. These are read from the owning
+SQLite connection when it opens; the dedicated writer supplies its own settings,
+not those of the parent's read connection. Queue and checkpoint policy values
+come from the same constants used by execution. Health polling performs no SQL.
+The nested `recording.storage` contract is version 1, scoped to `local-store`;
+it is distinct from the active master's memory-only save history. Standby can
+show its own local queue and policy without borrowing the master's measurements.
+Missing or unsupported evidence remains unknown.
+
+The shared queue has control, normal and background lanes, each with current
+waiting/running counts and oldest pending age. The active turn reports only a
+fixed safe kind and elapsed duration. Control yields to normal work after eight
+consecutive control turns when normal work is waiting. With no control request
+waiting, background work gets a turn after 32 foreground turns. Limits are 2048
+admitted operations and 8 MiB of caller-declared payload, not total process memory.
+Priority never interrupts an active native query, checkpoint or synchronization.
+Mirroring, recovery, history reads and learning reads can consume many short
+turns; computation outside those turns does not own the storage queue. Other
+processes and uncoordinated tasks remain outside this scheduler.
+
+The dedicated writer uses `synchronous=FULL`, disables automatic checkpoints and
+requests PASSIVE checkpoints through the background lane. When SQLite supports
+status-only inspection, a request is eligible at 50 outstanding frames or after
+five seconds of observed remaining work, checked every 250 ms. These are triggers,
+not hard frame or wall-time bounds: queue waits and pinned read snapshots can let
+frames accumulate. Without status-only inspection, the supported SQLite runtime
+uses PASSIVE calls no more often than once per second, with no frame trigger.
+The dashboard displays the actual selected policy. Direct, unmanaged connections
+report their actual automatic checkpoint threshold; read-only connections own no
+checkpoint schedule.
+
+Checkpoint duration measures only executed native PASSIVE calls, including calls
+that leave frames outstanding. Skipped or throttled polls add no checkpoint sample.
+It excludes queue wait and message overhead. The background-turn duration includes
+that overhead and all admitted work, including finished failed turns. Background
+queue-delay samples cover successful turns only. The last frame observation and
+last completed checkpoint keep their own timestamps; a throttled poll cannot renew
+them. Outstanding frame counts are not allocated WAL file size. Failed checkpoint
+requests have their own current warning and historical counter; they do not turn
+an earlier confirmed commit into a failed save. Background failures, cancellation
+and queue refusals are counted separately from foreground saves. A checkpoint
+failure can also count as a background-turn failure; these are not additive.
+
+**Save stages** places **Writer admission**, **Transaction building**, and **Commit
+& confirmation** within the whole **Transaction**, with **Journal sealing** and
+**SQLite COMMIT** nested within commit. Callback and dependent SQL time is measured
+as building; asynchronous learning between transactions is outside it. Indentation
+and explicit labels preserve this hierarchy on phones. The summaries show averages,
+approximate 95th percentiles and maxima for the selected monitored period; different
+rows can have different sample counts and maxima from different transactions.
+**Save outcomes** holds foreground outcomes, while **Storage scheduling** holds
+priority waits, lock contention, peak backlog, background outcomes and checkpoint
+evidence. **Local tasks** continues to describe complete operations, including work
+outside shared storage turns. **Monitoring coverage** retains task and command
+coverage; **About these measurements** explains scope and retention.
+
+No observer adds persisted diagnostics, changes command deadlines, or grants control
+authority. The current memory-history API remains version 3; earlier history shapes
+are unsupported rather than translated. The additional fixed metrics use the same
+bounded five-minute aggregates and seven-day retention, resetting on Store reopen.
 
 The separate **Application responsiveness** disclosure shows maximum and p99
 observed event-loop delay and the sample count since the application process

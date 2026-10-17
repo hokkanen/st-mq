@@ -150,8 +150,28 @@ test('standby health cannot present local memory counters as active master histo
   assert.equal(result.recording.history, null);
   assert.equal(result.recording.writer, null);
   assert.equal(result.recording.runtimeTiming, null);
+  assert.equal(result.recording.storage.scope, 'local-store');
+  assert.equal(result.recording.storage.configuration.execution, 'direct');
+  assert.equal(result.recording.storage.configuration.checkpoint.mode, 'automatic');
   assert.deepEqual(result.recording.storageTimings, f.store.writeHealth.status().transactions,
     'the existing Store timings remain local evidence within the explicit snapshot scope');
+});
+
+test('failed checkpoint requests have their own attention without declaring confirmed saves lost', async t => {
+  const f = await fixture(t, { writer: true });
+  clearInterval(f.store.walMaintenance.timer);
+  await f.store.runWrite(() => f.store.setState('synthetic-confirmed-before-checkpoint', true));
+  const savedAt = f.store.writeHealth.status().lastWriteAt;
+  const request = f.store.writer.request.bind(f.store.writer);
+  f.store.writer.request = (op, ...args) => op === 'checkpoint' ? Promise.reject(Error('synthetic')) : request(op, ...args);
+  f.store.walMaintenance.poll(); await f.store.walMaintenance.pending;
+  const result = await (await fetch(`${f.base}/api/recording-health`, { headers: f.headers })).json();
+  assert.equal(result.recording.storage.checkpoint.state, 'failed');
+  assert.equal(result.recording.writer.state, 'ready');
+  assert.equal(result.recording.lastWriteAt, savedAt);
+  assert.equal(result.recording.history.windows.day.failedWrites, 0);
+  assert.equal(result.recording.history.windows.day.checkpointFailures, 1);
+  assert.equal(result.attention.find(row => row.id === 'storage-checkpoint').severity, 'warning');
 });
 
 test('an actual worker save remains neutral and health responds while COMMIT is held', { timeout: 10_000 }, async t => {
