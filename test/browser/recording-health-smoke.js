@@ -533,6 +533,13 @@ try {
   await evaluate("setPerformance('snapshot'); document.getElementById('recording-performance-details').open=true; document.getElementById('recording-performance-operations').open=true; window.operationRow=document.querySelector('#recording-performance-operation-list details[data-kind=learning-publication]'); operationRow.open=true; operationRow.querySelector('summary').focus(); panel.update(payload)");
   assert.equal(await evaluate("document.getElementById('recording-performance-data').hidden && document.getElementById('recording-performance-operations').checkVisibility()"), true, 'Local-node jobs remain visible in a snapshot without claiming live writer monitoring');
   assert.equal(await evaluate("operationRow.open && document.activeElement===operationRow.querySelector('summary')"), true, 'Operation polling preserves disclosure and keyboard focus');
+  await evaluate("window.originalOperations=structuredClone(payload.recordingHealth.operations); for(const period of ['day','week']) payload.recordingHealth.operations.coverage.find(row=>row.kind==='backup')[period].completed=0; panel.update(payload)");
+  assert.equal(await evaluate("operationRow.open && document.activeElement===operationRow.querySelector('summary')"), true,
+    'Removing an earlier task group preserves the surviving disclosure and focus');
+  await evaluate("for(const period of ['day','week']) { const row=payload.recordingHealth.operations.coverage.find(row=>row.kind==='learning-publication'); row[period].failed=0; row[period].lastProblem=null; } panel.update(payload)");
+  assert.equal(await evaluate("document.activeElement===document.querySelector('#recording-performance-operations > summary')"), true,
+    'An expired focused task returns focus to its persistent diagnostic disclosure');
+  await evaluate("payload.recordingHealth.operations=originalOperations; panel.update(payload)");
   assert.match(await evaluate("document.getElementById('recording-performance-operations-evidence').textContent"), /On this computer/);
   await evaluate("setDetailedSources(); document.getElementById('recording-details').open=true; document.getElementById('recording-recording-card').open=true; window.sourceRow=document.querySelector('#recording-recording-sources > li'); window.sourceLink=sourceRow.querySelector('.recording-source-link'); sourceLink.focus(); panel.update(payload)");
   assert.equal(await evaluate("document.activeElement===sourceLink && sourceLink.closest('li')===sourceRow && document.getElementById('recording-recording-card').open"), true,
