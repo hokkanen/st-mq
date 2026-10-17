@@ -22,6 +22,7 @@ function fixture(t) {
   let now = start;
   const createEngine = () => {
     const value = new Engine({ store, config, clock: () => now });
+    value.requestUpdate = () => {};
     const manager = value.fireplaceManager.bind(value);
     // These tests deliberately inspect the prepared candidate before allowing
     // publication. Automatic progress is exercised by engine-correction-progress.
@@ -36,6 +37,7 @@ function fixture(t) {
     return key.startsWith('adaptive:') ? decodeLearningCheckpoint(observer, value) : value;
   });
   t.after(async () => {
+    engine.beginShutdown({ restore: false });
     await engine.charging.close();
     await engine.closeFireplace();
     engine.executor.closed = true; clearTimeout(engine.executor.timer);
@@ -54,6 +56,7 @@ function fixture(t) {
   return { store, sample, externalState, observer,
     get engine() { return engine; }, get now() { return now; }, set now(value) { now = value; },
     async restart() {
+      engine.beginShutdown({ restore: false });
       await engine.charging.close();
       await engine.closeFireplace(); engine.executor.closed = true; clearTimeout(engine.executor.timer);
       engine = createEngine(); return engine;
@@ -81,29 +84,29 @@ test('engine holds the old revision through real-worker replay and suffix catchu
     const created = f.engine.changeFireplace({ requestId: 'invented-engine-load', kg: 8 });
     const load = created.entries[0];
     for (let i = 1; i <= 12; i++) f.sample(i);
-    const old = structuredClone(f.engine.readAdaptive(f.now));
+    const old = structuredClone((await f.engine.refreshLearning()));
     assert.equal(old.fireplaceRevision, load.id);
     const journalBefore = f.store.learningJournal({ input: 'mqtt' });
     f.now++;
     const removed = f.engine.changeFireplace({ requestId: 'invented-engine-remove', id: load.id }, true);
     assert.equal(removed.rebuild.status, 'running');
-    assert.equal(f.engine.readAdaptive(f.now).fireplaceRevision, old.fireplaceRevision);
+    assert.equal((await f.engine.refreshLearning()).fireplaceRevision, old.fireplaceRevision);
     assert.deepEqual(f.store.getState('adaptive:mqtt'), old);
     await waitReady(f.engine);
     assert.equal(f.engine.fireplaceStatus().rebuild.status, 'running', 'A ready candidate is not yet an active model');
     assert.deepEqual(f.store.getState('adaptive:mqtt'), old);
     f.sample(13);
-    const retained = f.engine.readAdaptive(f.now);
+    const retained = (await f.engine.refreshLearning());
     assert.equal(retained.fireplaceRevision, old.fireplaceRevision, 'New journal suffixes must catch up before activation');
     assert.equal(retained.samples.length, old.samples.length + 1);
-    assert.equal(f.engine.fireplaceManager().status().status, 'running');
+    assert(['running', 'ready'].includes(f.engine.fireplaceManager().status().status));
     await waitReady(f.engine);
     f.engine.pendingPlan = { invented: true };
     f.store.setState('pending-plan:mqtt', f.engine.pendingPlan);
     const beforeSwap = structuredClone(f.store.getState('adaptive:mqtt'));
     f.observer.exec('BEGIN');
     assert.deepEqual(f.externalState('adaptive:mqtt'), beforeSwap);
-    f.engine.readAdaptive(f.now);
+    (await f.engine.refreshLearning());
     await f.engine.fireplaceManager().publication;
     // A WAL reader retains the old complete interpretation throughout the
     // worker commit; a fresh snapshot then sees the entire replacement.
@@ -111,7 +114,7 @@ test('engine holds the old revision through real-worker replay and suffix catchu
     assert.equal(f.externalState('fireplace:rebuild:mqtt').status, 'ready');
     assert.deepEqual(f.externalState('pending-plan:mqtt'), { invented: true });
     f.observer.exec('ROLLBACK');
-    const current = f.engine.readAdaptive(f.now);
+    const current = (await f.engine.refreshLearning());
     assert.equal(current.fireplaceRevision, removed.revision);
     assert.deepEqual(current, pureReplay(f.store));
     assert.equal(validLearningCheckpoint(current), true);
@@ -126,7 +129,7 @@ test('engine holds the old revision through real-worker replay and suffix catchu
 test('a load exactly at the closed-window boundary and its immediate removal need no retrospective rebuild', async t => {
   const f = fixture(t);
   f.sample(0);
-  const original = structuredClone(f.engine.readAdaptive(f.now));
+  const original = structuredClone((await f.engine.refreshLearning()));
   const created = f.engine.changeFireplace({ requestId: 'invented-boundary-load', kg: 8 });
   assert.equal(created.requiresRebuild, false);
   assert.equal(created.rebuild.status, 'idle');
@@ -138,7 +141,7 @@ test('a load exactly at the closed-window boundary and its immediate removal nee
   assert.equal(removed.rebuild.status, 'idle');
   assert.equal(f.engine.fireplaceRebuild, undefined);
   assert.equal(f.engine.fireplaceReserveOverride, null);
-  const after = f.engine.readAdaptive(f.now);
+  const after = (await f.engine.refreshLearning());
   assert.deepEqual(after.model, original.model);
   assert.deepEqual(after.samples, original.samples);
   assert.equal(after.fireplaceRevision, removed.revision);
@@ -150,19 +153,19 @@ test('restart resumes a pending correction while preserving the previous checkpo
     const f = fixture(t);
     const created = f.engine.changeFireplace({ requestId: 'invented-restart-load', kg: 6 });
     for (let i = 1; i <= 16; i++) f.sample(i);
-    const old = structuredClone(f.engine.readAdaptive(f.now));
+    const old = structuredClone((await f.engine.refreshLearning()));
     f.now++;
     const removed = f.engine.changeFireplace({ requestId: 'invented-restart-remove', id: created.entries[0].id }, true);
     await f.restart();
     assert.equal(f.store.getState('fireplace:rebuild:mqtt').status, 'pending');
     assert.deepEqual(f.store.getState('adaptive:mqtt'), old);
-    const firstRead = f.engine.readAdaptive(f.now);
+    const firstRead = (await f.engine.refreshLearning());
     assert.equal(firstRead.fireplaceRevision, old.fireplaceRevision);
     assert.equal(f.engine.fireplaceStatus().rebuild.status, 'running');
     await waitReady(f.engine);
-    f.engine.readAdaptive(f.now);
+    (await f.engine.refreshLearning());
     await f.engine.fireplaceManager().publication;
-    const current = f.engine.readAdaptive(f.now);
+    const current = (await f.engine.refreshLearning());
     assert.equal(current.fireplaceRevision, removed.revision);
     assert.deepEqual(current, pureReplay(f.store));
     assert.equal(f.engine.fireplaceStatus().rebuild.status, 'idle');
@@ -172,7 +175,7 @@ test('a failed correction publication retains control and is not retried by ever
   const f = fixture(t);
   const load = f.engine.changeFireplace({ requestId: 'invented-publication-failure-load', kg: 4 }).entries[0];
   for (let i = 1; i <= 4; i++) f.sample(i);
-  const old = structuredClone(f.engine.readAdaptive(f.now));
+  const old = structuredClone((await f.engine.refreshLearning()));
   f.now++;
   f.engine.changeFireplace({ requestId: 'invented-publication-failure-remove', id: load.id }, true);
   await waitReady(f.engine);
@@ -186,7 +189,7 @@ test('a failed correction publication retains control and is not retried by ever
   f.store.runPublication = runPublication;
   assert.equal(f.engine.fireplaceManager().status().status, 'failed');
   assert.deepEqual(f.store.getState('adaptive:mqtt'), old);
-  for (let i = 0; i < 3; i++) await f.store.runWrite(() => f.engine.tick());
+  for (let i = 0; i < 3; i++) await f.engine.update();
   assert.equal(attempts, 1);
   assert.equal(f.engine.fireplaceManager().status().status, 'failed');
   assert.equal(f.engine.checkpoint.fireplaceRevision, old.fireplaceRevision);

@@ -37,7 +37,15 @@ export function copyOwnedValue(value) {
  * This is an in-memory ownership rule, never a persisted representation. */
 export function immutableValue(value) {
   if (value === null || typeof value !== 'object' || immutable.has(value)) return value;
-  const owned = copyOwnedValue(value), pending = [], seen = new Set();
+  return takeImmutableValue(copyOwnedValue(value));
+}
+
+/** Adopt a newly detached private graph, such as a worker message. The caller
+ * transfers ownership and must retain no mutable aliases to it. Ordinary callers
+ * use immutableValue(), which first detaches foreign or mutable input. */
+export function takeImmutableValue(owned) {
+  if (owned === null || typeof owned !== 'object' || immutable.has(owned)) return owned;
+  const pending = [], seen = new Set();
   const check = value => {
     if (value === null || typeof value !== 'object' || immutable.has(value) || seen.has(value)) return;
     if (!plain(value)) throw new TypeError('Calculations require plain immutable data');

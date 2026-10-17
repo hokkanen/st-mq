@@ -564,7 +564,8 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
  * Rebuild uses precisely this same ordered entry function. A caller composing
  * a catch-up batch may defer checkpoint persistence until its final result. */
 export function replayLearningJournal(store, input, checkpoint = null,
-  { rebuild = false, fireplaceRevision, sensorRevision, persistCheckpoint = true } = {}) {
+  { rebuild = false, fireplaceRevision, sensorRevision, persistCheckpoint = true, through = Number.MAX_SAFE_INTEGER } = {}) {
+  if (!Number.isSafeInteger(through) || through < 0) throw new TypeError('Invalid learning journal boundary');
   // Source recovery may commit old manual events in bounded batches while the
   // selected journal/model still serves live control. Its completed projection
   // is published atomically; do not accidentally trigger a synchronous rebuild
@@ -584,7 +585,8 @@ export function replayLearningJournal(store, input, checkpoint = null,
     if (!last || !validLearningCheckpoint(next, last)) next = null;
   }
   for (;;) {
-    const entries = store.learningJournal({ input, after: next?.journalCursor ?? 0, limit: 256, algorithmVersion: LEARNING_ALGORITHM });
+    const entries = store.learningJournal({ input, after: next?.journalCursor ?? 0, limit: 256, algorithmVersion: LEARNING_ALGORITHM })
+      .filter(entry => entry.id <= through);
     if (!entries.length) break;
     for (const entry of entries) next = applyLearningRecord(next, entry, fireplaceContext);
     if (persistCheckpoint) store.setState(`adaptive:${input}`, next);

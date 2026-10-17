@@ -8,6 +8,8 @@ import { restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
 import { evaluateCycle, economicAdmission, forecastIntervals, cycleForecastCovered, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope, preheatRoomRequest, effectiveComfortDropC } from '../control/planner.js';
 import { HeatingPlanning } from './heating-planning.js';
 import { LearningCheckpointCache } from './learning-checkpoint-cache.js';
+import { LiveLearning } from './live-learning.js';
+import { sensorRevision } from './sensor-inputs.js';
 import { publishCorrection } from './learning-publication.js';
 import { CycleTracker } from './cycles.js';
 import { controlObservations } from './control-observations.js';
@@ -293,17 +295,17 @@ export class Engine {
     return { ...recovered.observation, sourceTime: recovered.reportSourceTime, receivedAt: recovered.reportReceivedAt,
       reportExpiresAt: recovered.reportSourceTime + temperatureReportMaxAge({ raw: policy }) };
   }
-  temperatureObservations(observations, now, checkpoint = this.checkpoint, rememberAnchor = false) {
+  temperatureObservations(observations, now, checkpoint = this.checkpoint, rememberAnchor = false, source = this) {
     const boundaries = sensorBoundaries(this.store, this.config.input, now);
     const names = { upstairs: 'indoor_temperature', downstairs: 'downstairs_temperature', bedroom: 'bedroom_temperature',
       garage: 'garage_temperature', garageFront: 'garage_temperature_2', outdoor: 'outdoor_temperature' };
     for (const [key, signal] of Object.entries(names)) {
-      const latest = this.latest[signal];
+      const latest = source.latest[signal];
       const reading = latest ? { value: latest.value, observedAt: latest.sourceTime, quality: latest.quality, source: latest.source }
         : key === 'upstairs' ? observations.upstairs ?? observations.indoor : observations[key];
-      const lastKnown = this.lastKnownTemperatures[signal];
+      const lastKnown = source.lastKnownTemperatures[signal];
       if (lastKnown && indoorReadingUsable(lastKnown, now)) {
-        const attempt = this.temperatureAttempts[signal];
+        const attempt = source.temperatureAttempts[signal];
         const attention = indoorReadingAttention(lastKnown, now, { latest: attempt ?? lastKnown });
         // A restart restores the last actual reading and its recorded outage.
         // Only a subsequent live publication can clear that source warning.
@@ -320,14 +322,14 @@ export class Engine {
         if (temperatureReportMaxAge(latest) !== null) observations[key].periodicReports = true;
       }
       if (HELD_TEMPERATURE_SIGNALS.includes(signal)) Object.assign(observations[key],
-        indoorStatusMetadata(lastKnown ?? latest, now, { latest: this.temperatureAttempts[signal] ?? latest,
-          ...(!this.temperatureAttempts[signal] && lastKnown ? { store: this.store } : {}), stale: observations[key].stale }));
+        indoorStatusMetadata(lastKnown ?? latest, now, { latest: source.temperatureAttempts[signal] ?? latest,
+          ...(!source.temperatureAttempts[signal] && lastKnown ? { store: this.store } : {}), stale: observations[key].stale }));
       else Object.assign(observations[key], outdoorReadingStatus(latest, now));
       const changedAt = boundaries[signal];
       observations[key] = temperatureBoundaryStatus(observations[key], changedAt, now);
     }
     if (['mqtt', 'providers'].includes(this.config.input)) {
-      observations.outdoor = this.outdoorObservation(now);
+      observations.outdoor = source === this ? this.outdoorObservation(now) : outdoorReadingStatus(source.latest.outdoor_temperature, now);
       const changedAt = boundaries.outdoor_temperature;
       observations.outdoor = temperatureBoundaryStatus(observations.outdoor, changedAt, now);
     }
@@ -348,6 +350,10 @@ export class Engine {
     return observations;
   }
   replayLearning(checkpoint, { persistCheckpoint = true } = {}) {
+    if (this.workerLearning()) {
+      if (this.store.learningJournalHead(this.config.input) > (checkpoint?.journalCursor ?? 0)) this.requestUpdate();
+      return checkpoint ?? immutableValue(restoreAdaptiveCheckpoint(null, this.control));
+    }
     const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
     const updating = ['pending', 'running', 'ready', 'failed'].includes(job?.status);
     const next = replayCommittedLearning(this.store, this.config.input, checkpoint,
@@ -435,7 +441,7 @@ export class Engine {
       const context = fireplaceLearningContext(this.store, input);
       if (removing) {
         this.cycles.correctFireplace(context, now);
-        if (this.checkpoint?.samples?.length) {
+        if (!this.workerLearning() && this.checkpoint?.samples?.length) {
           const corrected = this.checkpoint.samples.map(sample => withFireplaceInputs(sample, context));
           const state = evaluateThermalModel(this.checkpoint.model, corrected, { rollout: false, observedOnly: false }).state;
           this.fireplaceReserveOverride = state?.reserveC ?? null;
@@ -444,6 +450,7 @@ export class Engine {
       this.cycles.fireplaceContext = context;
       const job = this.store.getState(`fireplace:rebuild:${input}`);
       if (result.requiresRebuild || ['pending', 'running', 'ready', 'failed'].includes(job?.status)) this.fireplaceManager().start();
+      else if (this.workerLearning()) { this.fireplaceReserveOverride = null; this.requestUpdate(); }
       else if (this.checkpoint) {
         // New loads after the consumed history cannot change already fitted inputs.
         this.fireplaceReserveOverride = null;
@@ -452,6 +459,7 @@ export class Engine {
         this.checkpoint = immutableValue(next);
         this.persistLearningCheckpoint(this.checkpoint);
       }
+      if (removing && this.workerLearning()) this.requestUpdate();
       this.onTemporaryChange?.();
       return this.fireplaceStatus();
     } catch {
@@ -467,6 +475,7 @@ export class Engine {
   }
   beginShutdown({ restore = true } = {}) {
     this.suspended = true;
+    this.liveLearning?.beginShutdown();
     this.learningCheckpointCache?.beginShutdown();
     this.fireplaceRebuild?.beginShutdown();
     // Revocation cancels obsolete publication immediately. Orderly shutdown
@@ -478,7 +487,8 @@ export class Engine {
     this.garage?.beginShutdown?.();
   }
   async closeFireplace() { await Promise.all([this.fireplaceRebuild?.close(), this.heatingExplorer?.close(),
-    this.heatingPlanning?.close(), this.learningCheckpointCache?.close()]); }
+    this.heatingPlanning?.close(), this.learningCheckpointCache?.close(), this.liveLearning?.close(),
+    this.updateFlight?.catch(() => {})]); }
   constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true }) {
     validateVoltageState(store, config.input);
     validateHeatingTrialState(store.getState(`heating-explorer:trial:${config.input}`));
@@ -1108,6 +1118,10 @@ export class Engine {
   }
   readAdaptive(now) {
     this.reconcileFireplace();
+    if (this.workerLearning()) {
+      this.checkpoint ??= immutableValue(restoreAdaptiveCheckpoint(null, this.control));
+      return this.checkpoint;
+    }
     const journalExists = this.store.learningJournal({ input: this.config.input, limit: 1 }).length > 0;
     if (journalExists) {
       if (!this.checkpoint) {
@@ -1140,13 +1154,148 @@ export class Engine {
       this.store.afterRollback(() => reject(new Error('The controller update did not commit.')));
     });
   }
+  workerLearning() { return this.store.path !== ':memory:' && !this.plant; }
+  requestUpdate() {
+    if (this.suspended || this.updateRequested) return;
+    this.updateRequested = true;
+    this.store.afterRollback(() => { this.updateRequested = false; });
+    this.store.afterCommit(() => queueMicrotask(() => {
+      this.updateRequested = false;
+      if (!this.suspended && this.canControl()) {
+        if (this.updateFlight) this.updateAgain = true;
+        void this.update().catch(error => this.store.writeHealth.failure(error));
+      }
+    }));
+  }
+  learningReplayOptions(checkpoint) {
+    const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
+    return { config: this.control, ...(['pending', 'running', 'ready', 'failed'].includes(job?.status) && checkpoint
+      ? { fireplaceRevision: checkpoint.fireplaceRevision ?? 0, sensorRevision: checkpoint.sensorRevision ?? 0 } : {}) };
+  }
+  *learningReplayStep(checkpoint, { persistCheckpoint = true } = {}) {
+    const next = yield { kind: 'replay', checkpoint, options: this.learningReplayOptions(checkpoint) };
+    if (persistCheckpoint && next !== checkpoint && next?.journalCursor) this.persistLearningCheckpoint(next);
+    return next;
+  }
+  calculateLearningInline(job) {
+    if (job.kind === 'adaptive') return this.readAdaptive(job.now);
+    if (job.kind === 'replay') return this.replayLearning(job.checkpoint, { persistCheckpoint: false });
+    if (job.kind === 'sample') return committedLearningSample({ ...job.options, store: this.store, input: this.config.input });
+    if (job.kind === 'reserve') return evaluateThermalModel(job.options.checkpoint.model,
+      job.options.checkpoint.samples.map(row => withFireplaceInputs(row, job.options.context)),
+      { rollout: false, observedOnly: false }).state?.reserveC ?? null;
+    if (job.kind === 'control-ready') return null;
+    throw new TypeError('Unknown live learning operation');
+  }
+  updateFence() {
+    const input = this.config.input, native = this.h66Status?.() ?? {}, executor = this.executor.status();
+    const cycle = this.cycles.active(), currentSensorRevision = sensorRevision(this.store, input);
+    return { checkpoint: this.checkpoint, signature: JSON.stringify({
+      databaseId: this.store.checkpoint().databaseId, epoch: this.store.learningEpoch(input),
+      selection: this.store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation,
+      fireplaceRevision: fireplaceRevision(this.store, input), sensorRevision: currentSensorRevision,
+      sensorBoundaries: sensorBoundaries(this.store, input, this.clock(), { revision: currentSensorRevision }),
+      // Ordinary appends do not invalidate an intact committed model prefix.
+      // Retrospective selection, measurement boundaries and control instructions
+      // do; later entries are consumed incrementally without redoing that prefix.
+      settings: this.settings, applied: this.applied, automation: this.automation.features,
+      cycle: cycle && [cycle.id, cycle.status, cycle.lastSample?.timestamp, cycle.endedAt],
+      native: [native.externalChangeRevision, native.phase, native.readings?.['0203']?.value, native.obligations],
+      executor: [executor.phase, executor.manualPause, executor.manualRequested, executor.manualTemporary,
+        executor.restorationPending, executor.pulseUntil],
+    }) };
+  }
+  sameUpdateFence(fence) {
+    const current = this.updateFence();
+    return fence.checkpoint === current.checkpoint && fence.signature === current.signature;
+  }
+  *learningSteps() {
+    this.reconcileFireplace();
+    const previous = this.checkpoint;
+    const checkpoint = yield { kind: 'adaptive', checkpoint: previous };
+    this.checkpoint = checkpoint;
+    if (checkpoint !== previous && checkpoint?.journalCursor) this.persistLearningCheckpoint(checkpoint);
+    return checkpoint;
+  }
+  async refreshLearning() {
+    if (!this.workerLearning()) return this.readAdaptive(this.clock());
+    await this.update({ learningOnly: true });
+    return this.checkpoint;
+  }
+  update({ isCurrent = () => true, learningOnly = false } = {}) {
+    if (!this.workerLearning()) return this.runWrite(() => this.tick(), { isCurrent });
+    if (this.updateFlight) {
+      if (!learningOnly && this.updateLearningOnly) this.updateAgain = true;
+      return this.updateFlight;
+    }
+    const current = () => !this.suspended && this.canControl() && isCurrent();
+    this.updateFlight = (async () => {
+      let pendingCache = null;
+      while (current()) {
+        this.updateAgain = false;
+        this.updateLearningOnly = learningOnly;
+        const steps = learningOnly ? this.learningSteps() : this.tickSteps();
+        let step, fence, restart = false;
+        const advance = value => this.runWrite(() => {
+          if (fence && !this.sameUpdateFence(fence)) { restart = true; return; }
+          this.preserveTickState();
+          this.collectingLearningCheckpoint = true; this.pendingLearningCheckpoint = null;
+          try {
+            step = steps.next(value);
+            const cache = this.pendingLearningCheckpoint;
+            this.store.afterCommit(() => { if (cache) pendingCache = cache; });
+            if (step.done && (cache ?? pendingCache)) {
+              this.collectingLearningCheckpoint = false;
+              this.persistLearningCheckpoint(cache ?? pendingCache);
+            }
+          } finally { this.collectingLearningCheckpoint = false; this.pendingLearningCheckpoint = null; }
+        }, { isCurrent: current });
+        await advance();
+        try {
+          while (!restart && !step.done && current()) {
+            fence = this.updateFence();
+            const job = step.value;
+            let value;
+            if (job.kind === 'control-ready') {
+              // A long catch-up can make the captured control view old. Keep
+              // committed model progress, then take fresh observations for control.
+              if (this.clock() - job.now > 5000) { restart = true; break; }
+            } else {
+              this.liveLearning ??= new LiveLearning({ store: this.store, input: this.config.input });
+              try {
+                value = await this.liveLearning.calculate(job.kind === 'adaptive' ? 'replay' : job.kind,
+                  job.kind === 'adaptive' ? this.learningReplayOptions(job.checkpoint) : job.options, job.checkpoint);
+              } catch (error) {
+                if (current() && !this.sameUpdateFence(fence)) { restart = true; break; }
+                throw error;
+              }
+            }
+            if (!current()) break;
+            await advance(value);
+          }
+        } finally { if (restart || !step?.done) steps.return(); }
+        if (!current()) return copyOwnedValue(this.latestStatus);
+        if (!restart && !this.updateAgain) return step.value;
+        pendingCache = this.checkpoint?.journalCursor ? this.checkpoint : null;
+        if (this.updateAgain) learningOnly = false;
+      }
+      return copyOwnedValue(this.latestStatus);
+    })().finally(() => { this.updateFlight = null; this.updateLearningOnly = false; });
+    return this.updateFlight;
+  }
   tick() {
+    if (this.workerLearning()) {
+      this.requestUpdate();
+      return this.latestStatus && { ...copyOwnedValue(this.latestStatus), settings: copyOwnedValue(this.settings),
+        automation: this.automationStatus(), override: structuredClone(this.automation.features.home.pause) };
+    }
     if (this.suspended) return copyOwnedValue(this.latestStatus);
     // Ordered learning may advance for context, completed windows and cycles in
     // one update. Keep its full RAM result, but persist only the final cache.
     this.collectingLearningCheckpoint = true;
     this.pendingLearningCheckpoint = null;
     try {
+      this.preserveTickState();
       const result = this.tickUpdate();
       this.collectingLearningCheckpoint = false;
       if (this.pendingLearningCheckpoint) this.persistLearningCheckpoint(this.pendingLearningCheckpoint);
@@ -1156,7 +1305,7 @@ export class Engine {
       this.pendingLearningCheckpoint = null;
     }
   }
-  tickUpdate() {
+  preserveTickState() {
     if (this.store.transactionDepth) {
       const fields = ['checkpoint', 'settings', 'pendingPlan', 'applied', 'lastSample',
         'latestStatus', 'fireplaceReserveOverride', 'startupRestorationPending'];
@@ -1177,6 +1326,14 @@ export class Engine {
         this.heatingPlanning.invalidate();
       });
     }
+  }
+  tickUpdate() {
+    const steps = this.tickSteps();
+    let step = steps.next();
+    while (!step.done) step = steps.next(this.calculateLearningInline(step.value));
+    return step.value;
+  }
+  *tickSteps() {
     const now = this.clock(), input = this.config.input;
     this.automation.reconcileTargets();
     recordHeatPumpConfiguration(this.store, input, this.control, now);
@@ -1223,6 +1380,9 @@ export class Engine {
       outlook = assembleOutlook(this.store.getState('provider:market'), this.store.getState('provider:weather'), this.contract(), now);
     }
     this.temperatureObservations(observations, now, this.checkpoint, true);
+    // Later source reports remain live, but cannot become future evidence in
+    // this captured control/sample boundary while its worker is calculating.
+    const source = this.ingestionCheckpoint();
     try { this.garage.tick({ now }); }
     catch { this.garage.fail('garage-runtime-unavailable'); }
     this.charging.tick({ now, prices: outlook.prices, weather: outlook.forecast });
@@ -1233,7 +1393,10 @@ export class Engine {
     const ownsPausedSettings = Boolean(manualPause || h66.pauseId);
     const ownsTemporarySettings = Boolean(priorExecutor?.manualTemporary);
     const holdManualSettings = manualHeatingHeld(priorExecutor, h66, override, now);
-    let checkpoint = this.readAdaptive(now);
+    this.reconcileFireplace();
+    let checkpoint = yield { kind: 'adaptive', checkpoint: this.checkpoint, now };
+    if (checkpoint !== this.checkpoint && checkpoint?.journalCursor) this.persistLearningCheckpoint(checkpoint);
+    this.checkpoint = checkpoint;
     const normalRoom = h66.readings?.['0203'];
     const recordedRoom = this.recorder.committedAt('room_setting', now);
     if (!this.cycles.active() && ['normal','recovery'].includes(h66.phase) && normalRoom?.available
@@ -1268,14 +1431,14 @@ export class Engine {
     }
     if (reference.resetEquipmentResponseAt || reference.historySeed) {
       appendLearningRecord(this.store, input, 'context', reference, { config: this.control, seed: checkpoint });
-      checkpoint = this.replayLearning(checkpoint);
+      checkpoint = yield* this.learningReplayStep(checkpoint);
       this.checkpoint = checkpoint;
     }
     const executorState = this.executor.status?.();
     const manual = executorState?.manualRequested;
     const currentPhase = this.plant ? this.plant.state.phase ?? this.applied.phase
       : manual?.confirmed && manual.at > (this.applied.at ?? 0) ? manual.phase : this.applied.phase;
-    const { sample, equipment, radiation, weather } = controlObservations({ latest: this.latest, now, observations, outlook,
+    const { sample, equipment, radiation, weather } = controlObservations({ latest: source.latest, now, observations, outlook,
       checkpoint, phase: currentPhase, roomBoostC: this.applied.roomBoostC ?? 0, config: this.control, h66 });
     const floorStatus = this.preheatValveStatus(now);
     equipment.floorOverrideAvailable = floorStatus.available;
@@ -1307,8 +1470,8 @@ export class Engine {
         ? (this.floorOverrideMode(now) === 'on' ? 'room-boost-floor-v1' : 'room-boost-v1') : currentPhase === 'reduction' ? 'reduction-only-v1' : 'normal'),
       targetC: this.settings.comfort.targetC ?? checkpoint.baselineC, regime: sample.regime, episodeId: this.cycles.active()?.id ?? null };
     recordLearningContext(this.store,input,context,now,{config:this.control,seed:checkpoint});
-    checkpoint=this.replayLearning(checkpoint);this.checkpoint=checkpoint;
-    this.temperatureObservations(observations, now, checkpoint, true);
+    checkpoint=yield* this.learningReplayStep(checkpoint);this.checkpoint=checkpoint;
+    this.temperatureObservations(observations, now, checkpoint, true, source);
     if (this.cycles.active() && Number.isFinite(checkpoint.measurementEpochAt)
       && this.cycles.active().startedAt <= checkpoint.measurementEpochAt) {
       this.cycles.cancel(now, 'sensor-measurement-changed'); this.pendingPlan = null; this.lastSample = null;
@@ -1318,24 +1481,22 @@ export class Engine {
     const beforeWindows = checkpoint;
     let windowAt = Number.isSafeInteger(lastWindow) ? lastWindow + LEARNING_WINDOW_MS : completedWindow;
     for (let count = 0; windowAt <= completedWindow && count < 256; count++, windowAt += LEARNING_WINDOW_MS) {
-      const committed = committedLearningSample({ store: this.store, input, at: windowAt, config: this.control, context,
-        measurementEpochAt: checkpoint.measurementEpochAt });
+      const committed = yield { kind: 'sample', options: { at: windowAt, config: this.control,
+        measurementEpochAt: checkpoint.measurementEpochAt } };
       committed.provenance.modelVersion = checkpoint.model.trainedAt ?? 'prior-v1';
       appendLearningRecord(this.store, input, 'sample', committed, { config: this.control, seed: checkpoint });
       // Replay in the same order, but publish the replaceable checkpoint once
       // for this catch-up batch. Journaling every growing intermediate cache
       // can exceed the transaction limit after a long recording gap.
-      checkpoint = this.replayLearning(checkpoint, { persistCheckpoint: false });
+      checkpoint = yield* this.learningReplayStep(checkpoint, { persistCheckpoint: false });
       this.checkpoint = checkpoint;
     }
     if (checkpoint !== beforeWindows) this.persistLearningCheckpoint(checkpoint);
     if ((checkpoint.fireplaceRevision ?? 0) !== fireplaceContext.fireplaceRevision && fireplaceContext.fireplaceExcludedRanges.length) {
-      const corrected = checkpoint.samples.map(row => withFireplaceInputs(row, fireplaceContext));
-      this.fireplaceReserveOverride = evaluateThermalModel(checkpoint.model, corrected,
-        { rollout: false, observedOnly: false }).state?.reserveC ?? null;
+      this.fireplaceReserveOverride = yield { kind: 'reserve', options: { checkpoint, context: fireplaceContext } };
     }
-    this.temperatureObservations(observations, now, checkpoint, true);
-    const currentControl = controlObservations({ latest: this.latest, now, observations, outlook,
+    this.temperatureObservations(observations, now, checkpoint, true, source);
+    const currentControl = controlObservations({ latest: source.latest, now, observations, outlook,
       checkpoint, phase: currentPhase, roomBoostC: this.applied.roomBoostC ?? 0, config: this.control, h66 });
     for (const key of ['indoorC', 'indoorEstimated', 'indoorUncertaintyC', 'quality']) sample[key] = currentControl.sample[key];
     for (const key of ['indoorEstimated', 'indoorUncertaintyC', 'indoorUncertaintyGrowthCPerHour', 'indoorEstimateValidUntil'])
@@ -1345,11 +1506,11 @@ export class Engine {
       ? (sample.indoorC - prev.indoorC) * 3_600_000 / (now - prev.timestamp) : null;
     const controlStateKey = `indoor-control-state:${input}`, previousControlState = this.store.getState(controlStateKey);
     const observedStateAt = Date.parse(checkpoint.state?.observedAt);
-    const cycleSample = withFireplaceInputs(committedLearningSample({ store: this.store, input, at: now, config: this.control, context,
+    const cycleSample = withFireplaceInputs(yield { kind: 'sample', options: { at: now, config: this.control,
       measurementEpochAt: checkpoint.measurementEpochAt,
       windowMs: Math.min(LEARNING_WINDOW_MS, Math.max(60_000,
         now - (this.cycles.active()?.lastSample?.timestamp ?? now), now - (previousControlState?.at ?? now),
-        Number.isFinite(observedStateAt) ? now - observedStateAt : 0)) }), fireplaceContext);
+        Number.isFinite(observedStateAt) ? now - observedStateAt : 0)) } }, fireplaceContext);
     const price = outlook.prices.find(row => row.start <= now && row.end > now);
     Object.assign(cycleSample, { priceCents: price?.allInCentsPerKWh ?? null, priceStart: price?.start, priceEnd: price?.end });
     cycleSample.priceIntervals = outlook.prices.map(row => ({ start:row.start,end:row.end,price:row.allInCentsPerKWh }));
@@ -1368,9 +1529,10 @@ export class Engine {
     if (episode) {
       this.applied.phase = 'normal';
       if (this.plant) this.plant.state.phase = 'normal';
-      checkpoint = this.replayLearning(checkpoint);
+      checkpoint = yield* this.learningReplayStep(checkpoint);
       this.checkpoint = checkpoint;
     }
+    yield { kind: 'control-ready', now };
     this.lastSample = sample;
     equipment.comfortReferenceProvisional = this.settings.comfort.targetC == null && checkpoint.comfortReference?.provisional === true;
     const targetC = this.settings.comfort.targetC ?? checkpoint.baselineC ?? (this.plant ? 21 : null);
@@ -1699,14 +1861,16 @@ export class Engine {
       else {
         if (!this.statusRefreshPending) {
           this.statusRefreshPending = true;
-          this.statusRefresh = this.runWrite(() => {
+          this.statusRefresh = (this.workerLearning() ? this.update() : this.runWrite(() => {
             try { return this.tick(); } finally { this.statusRefreshPending = false; }
-          }).catch(error => { this.statusRefreshPending = false; this.store.writeHealth.failure(error); });
+          })).catch(error => { this.store.writeHealth.failure(error); })
+            .finally(() => { this.statusRefreshPending = false; });
         }
         if (!this.latestStatus) throw Object.assign(new Error('Waiting for the first controller update to commit.'), { statusCode: 503 });
       }
     }
     // Charging is refreshed below; never traverse the superseded large view.
+    if (!this.latestStatus) throw Object.assign(new Error('Waiting for the first controller update to commit.'), { statusCode: 503 });
     const result = copyOwnedValue(statusWithoutCharging(this.latestStatus));
     if (this.learningCheckpointCache) result.learning.checkpointCache = this.learningCheckpointCache.status();
     const now = this.clock();
@@ -1720,6 +1884,7 @@ export class Engine {
       .map(([key,rows])=>[key,rows.filter(row=>recordedParameters.has(row.streamId))
         .map(row=>({...recordedParameters.get(row.streamId),...row}))]))};
     result.automation = this.automationStatus();
+    result.settings = copyOwnedValue(this.settings);
     result.override = structuredClone(this.automation.features.home.pause);
     result.runtimeTiming = this.runtimeTiming?.() ?? null;
     result.heatingScenario = this.heatingExplorer.publicTrial();

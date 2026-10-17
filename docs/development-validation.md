@@ -47,6 +47,15 @@ complete reconstruction, shallow freezing cannot bless mutable data, and failed
 updates restore the previous checkpoint. The shared ownership helper lives in
 `src/domain/immutable.js`; mutable state still detaches and retains graph aliases.
 
+`test/live-learning.test.js` uses the real dedicated writer and read-only learning
+worker to check exact replay and canonical-window parity, unchanged immutable
+identity, urgent durable saves during an unfinished calculation, changed control
+instructions, joined demotion and input-commit failure. Engine correction,
+sensor-reversal, publication and restart tests retain the held interpretation
+until atomic correction publication. Learning inputs may commit before the final
+control stage; commands still depend on that final durable stage. Offline results
+do not establish installed event-loop or save-latency improvements.
+
 Charging copy ownership checks in `test/charging-copy-ownership.test.js`,
 `test/charging-runtime-storage-ownership.test.js` and
 `test/engine-charging-copy-ownership.test.js` exercise immutable calculations,

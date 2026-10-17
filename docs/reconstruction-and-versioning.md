@@ -63,8 +63,18 @@ source interpretation produces a new complete checkpoint, and transaction
 rollback restores the previous owned graph. This does not alter the numerical
 algorithm, stored representation, journal checks or reconstruction guarantee.
 
+File-backed live controller updates commit ordered learning inputs in short stages.
+A read-only worker constructs canonical samples and applies the same ordered
+learning function without retaining the writer reservation while it computes.
+Later ordinary journal entries do not invalidate an intact computed prefix;
+source selection, sensor boundaries, native instructions and dashboard changes
+fence the next control stage. A delayed update takes fresh control inputs before
+dispatch. Simulation and in-memory stores retain the same synchronous ordered function.
+No physical command depends on an uncommitted input or control stage. A failed
+later stage leaves earlier committed inputs available for exact replay.
+
 Ordinary controller updates retain one final model cache for their ordered
-learning work. Small caches can commit with the update; larger caches are saved
+learning work. Small caches can commit with the final stage; larger caches are saved
 in a worker only after the immutable learning inputs and control intent commit.
 The worker preserves the complete current checkpoint, validates its journal
 boundary and source selection, and never rewinds a valid cache of the same

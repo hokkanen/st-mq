@@ -31,7 +31,7 @@ function failCommit(store) {
 
 test('failed outer controller commit restores complete learning, observations and planning caches', async t => {
   const { store, engine, advance } = fixture(t);
-  await store.runWrite(() => engine.tick());
+  await engine.update();
   await engine.charging.planningFlight?.catch(() => {});
   const before = structuredClone({ checkpoint: engine.checkpoint, status: engine.latestStatus, plant: engine.plant.state,
     observations: engine.ingestionCheckpoint(), cycleContext: engine.cycles.fireplaceContext, explorer: engine.heatingExplorer.input });
@@ -50,7 +50,7 @@ test('failed outer controller commit restores complete learning, observations an
   assert.deepEqual(store.getState('adaptive:simulated'), checkpoint);
   assert.equal(store.learningJournal({ input: 'simulated' }).at(-1)?.id, cursor);
   assert.equal(engine.heatingPlanning.completed, null);
-  await store.runWrite(() => engine.tick());
+  await engine.update();
   assert.ok(engine.checkpoint.journalCursor > before.checkpoint.journalCursor);
 });
 
@@ -65,7 +65,7 @@ test('failed outer commit cannot dispatch startup restoration and preserves its 
   await engine.dispatchPending;
   assert.equal(commands, 0);
   assert.equal(engine.startupRestorationPending, true);
-  await store.runWrite(() => engine.tick());
+  await engine.update();
   await engine.dispatchPending;
   assert.equal(commands, 1);
   assert.equal(engine.startupRestorationPending, false);
@@ -96,7 +96,7 @@ test('execution records keep the completion receipt time while SQLite publicatio
   let complete;
   engine.automationEnabled = () => true;
   engine.executor.execute = () => new Promise(resolve => { complete = resolve; });
-  await store.runWrite(() => engine.tick());
+  await engine.update();
   assert.equal(typeof complete, 'function');
   writer.exec('BEGIN IMMEDIATE'); locked = true;
   complete({ status: 'mqtt', sent: true, phase: 'normal', expiresAt: START + 60_000 });
@@ -122,7 +122,7 @@ test('revocation cancels queued execution publication without waiting for a fore
   let complete;
   engine.automationEnabled = () => true;
   engine.executor.execute = () => new Promise(resolve => { complete = resolve; });
-  await store.runWrite(() => engine.tick());
+  await engine.update();
   const before = store.getState('applied:mqtt');
   writer.exec('BEGIN IMMEDIATE'); locked = true;
   complete({ status: 'mqtt', sent: true, phase: 'normal' });
@@ -146,7 +146,7 @@ test('failed execution publication rolls back provisional model and control pres
   let complete;
   engine.automationEnabled = () => true;
   engine.executor.execute = () => new Promise(resolve => { complete = resolve; });
-  await store.runWrite(() => engine.tick());
+  await engine.update();
   const before = structuredClone({ applied: engine.applied, checkpoint: engine.checkpoint,
     latestStatus: engine.latestStatus, explorer: engine.heatingExplorer.input });
   const restore = failCommit(store);

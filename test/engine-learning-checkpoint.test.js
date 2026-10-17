@@ -92,6 +92,7 @@ for (const correction of ['fireplace', 'sensor']) test(`incident-sized ${correct
     t.after(async () => { await closeEngine(engine); store.close(); rmSync(directory, { recursive: true, force: true }); });
     // Inspect the complete large candidate explicitly before publication.
     engine.fireplaceManager().onReady = null;
+    engine.requestUpdate = () => {};
     const source = correction === 'fireplace'
       ? engine.changeFireplace({ requestId: 'invented-large-load', kg: 4 }).entries[0]
       : addSensorChange(store, 'mqtt', { requestId: 'invented-large-sensor', signal: 'outdoor_temperature', reason: 'replacement' }, now);
@@ -140,6 +141,7 @@ for (const correction of ['fireplace', 'sensor']) test(`incident-sized ${correct
     // optional large restart cache must also avoid a main-thread publication.
     now++;
     await store.runWrite(() => engine.changeFireplace({ requestId: 'invented-large-future-load', kg: 2 }));
+    await engine.refreshLearning();
     await engine.learningCheckpointCache?.flush();
     assert.equal(manager.status().status, 'current');
     assert.deepEqual(store.getState('adaptive:mqtt'), engine.checkpoint);
@@ -204,8 +206,8 @@ test('the MQTT controller advances a rich learning cache beside durable charging
   const originalControls = controls(engine), journalBefore = store.learningJournal({ input: 'mqtt' }).length;
   await store.runWrite(() => {
     engine.charging.preserveWriteState(); setPlans(); engine.charging.persist();
-    engine.tick();
   });
+  await engine.update();
   await engine.learningCheckpointCache?.flush();
   assert(engine.learningCheckpointCache, 'a large cache uses background persistence');
   assert(engine.checkpoint.journalCursor > original.journalCursor);
@@ -230,7 +232,7 @@ test('the MQTT controller advances a rich learning cache beside durable charging
     await assert.rejects(store.runWrite(() => {
       engine.charging.preserveWriteState(); setPlans(); engine.charging.persist();
       engine.tick();
-      assert(engine.checkpoint.journalCursor > priorRam.journalCursor);
+      assert.equal(engine.checkpoint.journalCursor, priorRam.journalCursor, 'learning waits for the input commit');
     }), { errcode: 10 });
   } finally { store.db.exec = exec; }
   await engine.learningCheckpointCache.flush();
@@ -238,14 +240,14 @@ test('the MQTT controller advances a rich learning cache beside durable charging
   assert.deepEqual(store.getState('adaptive:mqtt'), saved);
   assert.deepEqual(store.learningJournal({ input: 'mqtt' }), priorJournal);
   assert.deepEqual(controls(engine), priorControls);
-  await store.runWrite(() => engine.tick());
+  await engine.update();
   await engine.learningCheckpointCache.flush();
   const committed = structuredClone(engine.checkpoint);
   assert.deepEqual(store.getState('adaptive:mqtt'), committed);
   assert.deepEqual(replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false }), committed);
 
   await closeEngine(engine); engine = null; store.close(); store = new Store(path); engine = create();
-  assert.deepEqual(engine.readAdaptive(now), committed, 'restart restores the exact committed model');
+  assert.deepEqual((await engine.refreshLearning()), committed, 'restart restores the exact committed model');
   assert.deepEqual(controls(engine), priorControls);
   assert.equal(commands, 0);
 
@@ -254,14 +256,14 @@ test('the MQTT controller advances a rich learning cache beside durable charging
   engine.pendingPlan = { id: 'invented-invalidated-plan' };
   await store.runWrite(() => engine.commitSensorChange({ requestId: 'invented-rich-sensor-change',
     signal: 'indoor_temperature', reason: 'replacement' }));
-  const changed = structuredClone(engine.checkpoint);
+  const changed = replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false });
   assert(changed.journalCursor > committed.journalCursor);
   assert.equal(engine.pendingPlan, null);
   assert.equal(store.getState('pending-plan:mqtt'), null);
   assert.deepEqual(store.getState('adaptive:mqtt'), committed, 'the model cache still precedes the sensor boundary');
   assert.deepEqual(replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false }), changed);
   await closeEngine(engine); engine = null; store.close(); store = new Store(path); engine = create();
-  assert.deepEqual(engine.readAdaptive(now), changed, 'restart recovers the sensor boundary from the journal and older cache');
+  assert.deepEqual((await engine.refreshLearning()), changed, 'restart recovers the sensor boundary from the journal and older cache');
   await engine.learningCheckpointCache?.flush();
   assert.deepEqual(store.getState('adaptive:mqtt'), changed);
   assert.deepEqual(controls(engine), priorControls);

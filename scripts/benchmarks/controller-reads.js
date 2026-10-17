@@ -57,18 +57,25 @@ const measure = (name, operation, count = 48) => {
   const used = process.cpuUsage(cpu);
   measurements.push({ name, count, wallMs: performance.now() - start, cpuMs: (used.user + used.system) / 1000 });
 };
+const measureAsync = async (name, operation, count = 24) => {
+  for (let n = 0; n < 4; n++) await operation(n);
+  const cpu = process.cpuUsage(), start = performance.now();
+  for (let n = 0; n < count; n++) await operation(n);
+  const used = process.cpuUsage(cpu);
+  measurements.push({ name, count, wallMs: performance.now() - start, cpuMs: (used.user + used.system) / 1000 });
+};
 try {
   store.transaction(() => {
     for (let n = 0; n < 48; n++) appendLearningRecord(store, 'mqtt', 'sample', richSample(START + n * WINDOW), { config: engine.control });
   });
-  engine.readAdaptive(now);
+  await engine.refreshLearning();
+  await engine.learningCheckpointCache?.flush();
   const checkpointDigest = engine.checkpoint.checkpointDigest;
-  measure('unchanged checkpoint validation', () => engine.readAdaptive(now));
+  measure('unchanged checkpoint view', () => engine.readAdaptive(now));
+  await measureAsync('unchanged checkpoint worker replay', () => engine.refreshLearning());
   const failure = new Error('Synthetic rollback');
   engine.automation.reconcileTargets = () => { throw failure; };
-  measure('tick rollback ownership', () => {
-    assert.throws(() => store.transaction(() => engine.tick()), error => error === failure);
-  }, 24);
+  await measureAsync('tick rollback ownership', () => assert.rejects(engine.update(), error => error === failure));
   assert.equal(engine.checkpoint.checkpointDigest, checkpointDigest);
   assert.deepEqual(engine.checkpoint, replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false }));
   store.transaction(() => {

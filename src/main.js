@@ -247,7 +247,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   }
   async function startBackground() {
     requireRunning();
-    await store.runWrite(() => engine.tick());
+    await engine.update();
     // Start UI and conservative control before bounded historical reconstruction.
     learning = config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;
     engine.onTemporaryChange = schedule;
@@ -257,7 +257,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   function tick() {
     if (tickPending) return tickPending;
     const current = engine;
-    tickPending = store.runWrite(() => current.tick(), {
+    tickPending = current.update({
       isCurrent: () => !closed && !reloadPending && runtimeUsable && current === engine && canControl(),
     }).finally(() => { tickPending = null; });
     return tickPending;

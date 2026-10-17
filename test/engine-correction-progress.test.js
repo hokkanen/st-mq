@@ -26,7 +26,7 @@ test('ordinary minute controller updates publish a correction after crossing a l
     const load = engine.changeFireplace({ requestId: 'synthetic-progress-load', kg: 4 }).entries[0];
     for (let index = 1; index <= 4; index++) sample(store, start + index * W);
     now = start + 4 * W;
-    await store.runWrite(() => engine.tick());
+    await engine.update();
     const old = structuredClone(engine.checkpoint);
     now++;
     const removed = await store.runWrite(() => engine.changeFireplace({ requestId: 'synthetic-progress-remove', id: load.id }, true));
@@ -43,7 +43,7 @@ test('ordinary minute controller updates publish a correction after crossing a l
     now = start + 5 * W;
     let ticks = 0;
     for (; ticks < 4; ticks++) {
-      await store.runWrite(() => engine.tick());
+      await engine.update();
       await manager.publication;
       if (manager.status().status === 'current') { ticks++; break; }
       if (manager.status().status !== 'current') await waitReady();
@@ -72,7 +72,7 @@ test('correction publication does not require a quiet controller update', { time
   const load = engine.changeFireplace({ requestId: 'synthetic-moving-context-load', kg: 4 }).entries[0];
   for (let index = 1; index <= 4; index++) sample(store, start + index * W);
   now = start + 4 * W;
-  await store.runWrite(() => engine.tick());
+  await engine.update();
   const old = structuredClone(engine.checkpoint);
   now++;
   const removed = await store.runWrite(() => engine.changeFireplace({ requestId: 'synthetic-moving-context-remove', id: load.id }, true));
@@ -85,8 +85,8 @@ test('correction publication does not require a quiet controller update', { time
     // a concurrency stress fixture, not a claim about normal household cadence.
     await store.runWrite(() => {
       engine.settings.comfort.targetC = updates % 2 ? 21 : 20;
-      engine.tick();
     });
+    await engine.update();
     if (store.learningJournalHead('mqtt') > before) advanced++;
     await manager.publication;
     assert.notEqual(manager.status().status, 'failed');
@@ -115,7 +115,8 @@ test('correction catches up a controller write admitted at the control-priority 
     });
     const load = engine.changeFireplace({ requestId: 'synthetic-fairness-load', kg: 4 }).entries[0];
     for (let index = 1; index <= 4; index++) sample(store, start + index * W);
-    now = start + 4 * W;engine.readAdaptive(now);
+    now = start + 4 * W;await engine.refreshLearning();
+    engine.requestUpdate = () => {};
     const old = structuredClone(engine.checkpoint), manager = engine.fireplaceManager();
     // Control READY delivery precisely while retaining the actual ordered
     // learning function and real storage publication worker.
