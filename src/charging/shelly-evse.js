@@ -29,6 +29,16 @@ const phaseReadingError = value => !value || !PHASE_KEYS.every(key => ['voltage'
   ? 'invalid-evse-electrical-units'
   : value.total_power > 90 || PHASE_KEYS.some(key => value[key].voltage > 300 || value[key].current > 100 || value[key].power > 30)
     ? 'invalid-evse-electrical-range' : null;
+function acquisitionMeaning(state) {
+  return { ...state, fields: Object.fromEntries(Object.entries(state.fields).map(([role, field]) => {
+    const { receivedAt, readback, ...native } = field;
+    if (readback) {
+      const { requestedAt, receivedAt, admittedAt, ...source } = readback;
+      native.readback = source;
+    }
+    return [role, native];
+  })) };
+}
 const validPermissionEvent = event => event && typeof event === 'object' && !Array.isArray(event)
   && Object.keys(event).filter(key => key !== 'admittedAt').length === 8
   && Object.keys(event).every(key => ['sequence', 'eventAt', 'receivedAt', 'valueUpdatedAt', 'value', 'commandSource', 'sessionId', 'connectedAt', 'admittedAt'].includes(key))
@@ -73,8 +83,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   try { store.writeHealth?.monitorCommands?.('charger2-command'); } catch { /* Passive monitoring. */ }
   const controlAttempt = () => createControlAttempt({ store, context: 'charger2-command' });
   const association = shellyAssociation(config, broker), key = `charging:shelly:${association}`;
-  let state = store.getState(key) ?? { version: 2, association, fields: {}, connection: null, counter: null, sessionSequence: 0 };
+  const loaded = store.getState(key);
+  let state = loaded ?? { version: 2, association, fields: {}, connection: null, counter: null, sessionSequence: 0 };
   validateShellyAcquisitionState(state, association);
+  let persistedMeaning = loaded ? acquisitionMeaning(loaded) : null;
   state = copy(state);
   let connected = false, admitted = false, online = false, closed = false, generation = 0, discovered = false, controlReady = false,
     readinessRevision = 0, verifiedReadinessRevision = null;
@@ -202,7 +214,17 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     && Number.isSafeInteger(state.fields.current_limit?.value)
     && state.fields.current_limit.value >= currentConfig.min
     && state.fields.current_limit.value <= Math.min(config.maximumCurrentA, currentConfig.max);
-  const persist = () => store.setState(key, copy(state));
+  const persist = () => {
+    // Live correlated receipts still pass through normal transaction admission
+    // and refresh in-memory readiness. Repeating the exact same source evidence
+    // does not need another durable copy of its acquisition checkpoint. Restart
+    // always requires fresh discovery/readback in the new transport generation.
+    if (isDeepStrictEqual(persistedMeaning, acquisitionMeaning(state))) return;
+    const snapshot = copy(state), previous = persistedMeaning;
+    store.setState(key, snapshot);
+    persistedMeaning = acquisitionMeaning(snapshot);
+    store.afterRollback?.(() => { persistedMeaning = previous; });
+  };
   function scheduleKind(job) {
     if (!Array.isArray(job?.calls) || !job.calls.length || job.calls.length > 5) return 'unsupported';
     const kinds = job.calls.map(call => {

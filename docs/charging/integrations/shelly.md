@@ -91,6 +91,12 @@ not establish a firmware cause or cure for the
 Basic start/stop requires fresh native state, start permission and current setting, working MQTT,
 a running service and no active errors or flags. It preserves native current
 settings, energy/time caps, automatic-start settings and `auto_balance`.
+Unchanged correlated polls refresh live receipt/readback evidence through the same
+transaction admission without saving another acquisition checkpoint. Changes to
+values, native source clocks, provenance, connection boundaries, counter state or
+permission events remain durable. Saved receipts retain their original clocks;
+restart requires new discovery and readback before observations or commands are
+ready. A transaction rollback also rolls back the duplicate comparison.
 An admitted packet awaiting storage withholds mutations and new minimum-current
 matches, but does not erase still-fresh committed observations or the existing
 identification attempt. Native notification readback keeps its separate command

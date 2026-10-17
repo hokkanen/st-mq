@@ -139,6 +139,31 @@ test('one periodic episode reuses its actual completed read without renewing ori
 });
 
 for (const writer of [false, true])
+test(`unchanged native polls refresh live evidence without rewriting durable acquisition state; writer ${writer}`, async t => {
+  const f = await fixture(t);
+  if (writer) await f.store.startWriter();
+  const key = `charging:shelly:${f.adapter.association}`;
+  const before = f.store.getState(key), clocksBefore = clocks(f.adapter);
+  const count = () => f.store.db.prepare("SELECT count(*) n FROM journal_changes WHERE table_name='state' AND record_key=?")
+    .get(JSON.stringify([key])).n;
+  const initial = count();
+  for (let index = 0; index < 12; index++) {
+    await periodic(t, f);
+    assert.equal(f.adapter.snapshot().controlReady, true);
+    assert.equal(f.adapter.snapshot().readAt, f.now());
+    assert.deepEqual(clocks(f.adapter), clocksBefore);
+  }
+  assert.equal(count(), initial, 'A minute of unchanged polls adds no copies of the same native state');
+  assert.deepEqual(f.store.getState(key), before, 'Stored source evidence keeps its original receipt clocks');
+  f.advance(); f.fields.current_limit = 12; f.measuredAt.current_limit = f.now();
+  await f.adapter.refresh({ force: true }); await f.store.runWrite(() => {});
+  assert.equal(f.store.getState(key).fields.current_limit.value, 12);
+  assert.equal(f.store.getState(key).fields.current_limit.measuredAt, f.now());
+  assert.equal(count(), initial + 1, 'A changed native setting remains durable immediately');
+  assert.equal(f.requests.some(row => row.method.endsWith('.Set')), false);
+});
+
+for (const writer of [false, true])
 test(`notification readback and its real reconciliation share one complete native round; writer ${writer}`, async t => {
   const f = await fixture(t), entered = gate(t);
   if (writer) await f.store.startWriter();
@@ -335,6 +360,52 @@ test('a failed real transaction cannot mint a completed read and old evidence ca
   assert.equal(f.adapter.snapshot().fields.current_limit.value, 16);
   fail = false; f.requests.length = 0; await f.adapter.refresh({ completedRead: old }); assertRound(f.requests);
   mock.mock.restore(); assert.equal(f.adapter.snapshot().fields.current_limit.value, 10);
+});
+
+test('a rolled-back acquisition change does not poison unchanged-read deduplication', async t => {
+  const f = await fixture(t); await f.store.startWriter();
+  const key = `charging:shelly:${f.adapter.association}`, save = f.store.setState.bind(f.store);
+  const request = f.store.writer.request.bind(f.store.writer);
+  let changed = false, failed = false;
+  const saving = t.mock.method(f.store, 'setState', (name, value) => {
+    const result = save(name, value);
+    if (name === key && value.fields.current_limit.value === 12) changed = true;
+    return result;
+  });
+  const committing = t.mock.method(f.store.writer, 'request', (operation, ...args) => {
+    if (operation === 'commit' && changed && !failed) {
+      failed = true;
+      throw Object.assign(new Error('Synthetic native evidence COMMIT rollback'), { code: 'ERR_SQLITE_ERROR', errcode: 10 });
+    }
+    return request(operation, ...args);
+  });
+  f.advance(); f.fields.current_limit = 12; f.measuredAt.current_limit = f.now();
+  await f.adapter.refresh(); await f.store.runWrite(() => {});
+  assert.equal(failed, true);
+  assert.equal(f.store.getState(key).fields.current_limit.value, 16);
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  saving.mock.restore(); committing.mock.restore();
+  await f.adapter.refresh({ force: true }); await f.store.runWrite(() => {});
+  assert.equal(f.store.getState(key).fields.current_limit.value, 12, 'The retry must save the previously rolled-back source evidence');
+  assert.equal(f.adapter.snapshot().controlReady, true);
+});
+
+test('deduplicated native state never restores live readiness before new discovery and readback', async t => {
+  const f = await fixture(t), key = `charging:shelly:${f.adapter.association}`;
+  await periodic(t, f); const saved = f.store.getState(key);
+  f.adapter.close();
+  const restarted = createShellyEvseAdapter({ config: f.runtime.configuration.chargers.charger2,
+    broker: { address: 'mqtt://synthetic.invalid', user: 'synthetic' }, client: f.client, store: f.store,
+    engine: { recorder: { recordEnergy() {}, energyGap() {}, flush() {} } }, clock: f.now, canControl: () => true });
+  t.after(() => restarted.close());
+  assert.equal(restarted.snapshot().controlReady, false);
+  assert.equal(restarted.snapshot().observationReady, false);
+  assert.equal(restarted.snapshot().readAt, null);
+  f.client.emit('connect'); f.client.emit('message', `${PREFIX}/online`, Buffer.from('true'), { retain: true });
+  await restarted.refresh(); await f.store.runWrite(() => {});
+  assert.equal(restarted.snapshot().controlReady, true);
+  assert.equal(restarted.snapshot().readAt, f.now());
+  assert.deepEqual(f.store.getState(key), saved, 'Live confirmation need not rewrite historical source evidence');
 });
 
 test('a pending native reply and source-time deferred input preserve original admission fences', async t => {

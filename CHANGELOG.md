@@ -9,6 +9,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Preserve explicit charging takeover after an uncertain native command expires;
   commands still in their active window keep takeover unavailable.
 
+- Stop saving duplicate Shelly acquisition checkpoints for unchanged polls while
+  retaining fresh live readback, native changes and restart safeguards.
+
 - Avoid repeated session-report events for idle input processing while preserving
   current readiness, actual device changes and meaningful allocation evidence.
 
