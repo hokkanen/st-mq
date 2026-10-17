@@ -347,7 +347,7 @@ test('Selected native garage ignores unselected MQTT topics and never creates an
   assert.equal(engine.latest.garage_temperature.value, 11);
   assert.equal(Object.keys(engine.latest).filter(signal => signal.startsWith('garage_temperature')).length, 1);
   assert.equal(store.observations({ signal: 'garage_temperature' }).length, 1);
-  assert.equal(engine.status().equipment.devices.length, 2);
+  assert.equal((await engine.update()).equipment.devices.length, 2);
   now += 30_000;
   client.emit('message', 'invented-ha/garage', Buffer.from('invalid-json'));
   assert.equal(engine.latest.garage_temperature.value, 11);

@@ -151,7 +151,7 @@ test('restart restores report coverage separately from temperature age and expir
   for (let minute = 0; minute <= 180; minute += 15) recorder.record(report(minute));
   store.close(); store = new Store(path); now = start + 181 * MINUTE;
   engine = new Engine({ store, config: { input: 'providers', settings: {  } }, clock: () => now });
-  const initial = engine.status().observations;
+  const initial = (await engine.update()).observations;
   assert.equal(initial.upstairs.observedAt, start);
   assert.equal(initial.upstairs.stale, false);
   assert.equal(initial.upstairs.needsAttention, undefined);
@@ -160,7 +160,7 @@ test('restart restores report coverage separately from temperature age and expir
   now = start + 197 * MINUTE + 1;
   engine.ingest({ source: 'fmi', device: 'invented-weather', signal: 'outdoor_temperature', value: 0, unit: 'degC',
     sourceTime: now, receivedAt: now, quality: [] });
-  const expired = engine.tick();
+  const expired = await engine.update();
   assert.equal(expired.observations.upstairs.value, 21, 'The last actual value remains available for display');
   assert.equal(expired.observations.indoor.value, null);
   assert(expired.observations.upstairs.attentionReasons.includes('missing-report'));

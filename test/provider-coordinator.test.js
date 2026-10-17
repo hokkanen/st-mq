@@ -170,7 +170,7 @@ test('independent polls stay nonblocking, do not overlap and preserve snapshot p
     assert.equal(f.store.getState('providers:health').market.status, 'ok');
     const second = providers.runDue();
     assert.equal(calls, 1);
-    const status = f.engine.tick();
+    const status = await f.engine.update();
     assert.equal(status.automation.home.enabled, false);
     assert.equal(status.decision.action, 'normal');
     assert.equal(status.priceStatus, 'configured');

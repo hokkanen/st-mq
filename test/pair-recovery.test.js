@@ -277,8 +277,8 @@ test('a fresh engine resumes the verified recovery epoch and appends later learn
   const before = f.master.db.prepare('SELECT * FROM learning_journal ORDER BY id').all();
   const engine = new Engine({ store: f.master, config: { input: 'mqtt', settings: {  } }, clock: () => start + 4 * W });
   t.after(() => engine.closeFireplace());
-  assert.deepEqual(engine.readAdaptive(start + 4 * W), result.checkpoint);
-  engine.tick();
+  assert.deepEqual(await engine.refreshLearning(), result.checkpoint);
+  await engine.update();
   assert.equal(engine.checkpoint.windowCursor, start + 4 * W);
   assert.deepEqual(f.master.db.prepare('SELECT * FROM learning_journal WHERE id<=? ORDER BY id').all(before.at(-1).id), before);
   assert.deepEqual(replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }), engine.checkpoint);

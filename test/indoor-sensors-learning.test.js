@@ -303,21 +303,21 @@ test('one expired room uses a separate weighted control estimate through restart
     ingest('outdoor_temperature', 0);
     if (equipment) for (const [signal, value] of [['compressor_active', 1], ['dhw_routing', 0], ['auxiliary_output', 0],
       ['alarm_active', 0], ['operating_mode', 1]]) ingest(signal, value);
-    return engine.tick();
+    return engine.update();
   }
-  for (let minute = 0; minute <= 60; minute += 5) report(minute);
+  for (let minute = 0; minute <= 60; minute += 5) await report(minute);
   assert.equal(engine.status().observations.indoor.value, 20);
   const reference = structuredClone(engine.checkpoint.comfortReference);
   assert(reference, 'Ordinary occupied Normal heating establishes an aggregate reference');
   const bedroomReports = store.observations({ signal: 'bedroom_temperature' }).length;
-  report(65, { bedroom: false });
+  await report(65, { bedroom: false });
   const measuredRuntime = store.getState('indoor-control-state:providers');
   assert.equal(measuredRuntime.estimated, false);
   assert.ok(measuredRuntime.state.reserveC > engine.checkpoint.state.reserveC,
     'Actual heating since the latest committed window advances the runtime reserve');
   assert.deepEqual(engine.heatingExplorer.input.thermalState, measuredRuntime.state,
     'The planner and explorer receive the caught-up reserve while the indoor average remains measured');
-  for (let minute = 70; minute <= 90; minute += 5) report(minute, { bedroom: false, warming: minute > 70 ? .4 : 0 });
+  for (let minute = 70; minute <= 90; minute += 5) await report(minute, { bedroom: false, warming: minute > 70 ? .4 : 0 });
   let status = engine.status();
   assert.equal(status.observations.indoor.value, null);
   assert.equal(status.observations.indoor.stale, true);
@@ -336,19 +336,19 @@ test('one expired room uses a separate weighted control estimate through restart
   assert(missing.every(row => row.payload.value.indoorC === null && row.payload.value.indoorSensors.bedroom_temperature.value === null));
   const model = structuredClone(engine.checkpoint.model), anchor = structuredClone(store.getState('indoor-control-anchor:providers'));
   await stop(engine); runtimes.splice(runtimes.indexOf(engine), 1); store.close(); store = new Store(path); engine = makeEngine();
-  status = engine.tick();
+  status = await engine.update();
   assert.equal(status.observations.indoor.value, null);
   assert.equal(status.observations.indoorControl.estimated, true);
   assert.equal(status.observations.indoorControl.value, 20.4);
   assert.deepEqual(store.getState('indoor-control-anchor:providers'), anchor, 'Restart preserves original baseline clocks');
   assert.deepEqual(engine.checkpoint.model, model);
   assert.deepEqual(engine.checkpoint.comfortReference, reference);
-  status = report(95, { bedroom: false, warming: .6 });
+  status = await report(95, { bedroom: false, warming: .6 });
   assert.equal(status.observations.indoorControl.value, 20.6);
-  status = report(100, { bedroom: true, warming: .6 });
+  status = await report(100, { bedroom: true, warming: .6 });
   assert.equal(status.observations.indoorControl.estimated, false);
   assert.equal(status.observations.indoor.value, 20.3, 'Returned actual Bedroom replaces its estimate immediately');
-  for (let minute = 105; minute <= 120; minute += 5) status = report(minute, { bedroom: false, warming: .6, equipment: false });
+  for (let minute = 105; minute <= 120; minute += 5) status = await report(minute, { bedroom: false, warming: .6, equipment: false });
   assert.equal(status.observations.indoorControl.estimated, true);
   assert(status.decision.reasons.includes('estimated-indoor-thermal-state-unavailable'), 'Missing heat-input coverage keeps the temperature estimate visible but selects Normal');
   assert.equal(status.decision.phase, 'normal');

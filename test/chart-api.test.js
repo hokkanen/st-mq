@@ -19,6 +19,7 @@ async function fixture(t, overrides = {}) {
   const engine = new Engine({ store, config, clock: () => now });
   const service = createChartService({ store });
   const token = 'synthetic-chart-api-access-token';
+  await engine.update(); await engine.initializeCommittedStatus();
   const server = createAppServer({ store, engine, chartService: service, token });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => {

@@ -60,6 +60,9 @@ view through the staged update, its actual COMMIT, rollback and joined shutdown.
 The history-viewer fixture remains outside live-learning worker execution.
 Live Automatic and Pause changes await a complete updated response; the same
 worker fixture checks saved intent and the returned view after both actions.
+With calculation deliberately held unfinished, status retains the previous
+complete model, exposes already committed control intent and permits urgent saves.
+The first startup view still waits for its own successful publication COMMIT.
 
 Charging copy ownership checks in `test/charging-copy-ownership.test.js`,
 `test/charging-runtime-storage-ownership.test.js` and

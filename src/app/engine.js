@@ -1876,12 +1876,13 @@ export class Engine {
           })).catch(error => { this.store.writeHealth.failure(error); })
             .finally(() => { this.statusRefreshPending = false; });
         }
-        if (!this.latestStatus) throw Object.assign(new Error('Waiting for the first controller update to commit.'), { statusCode: 503 });
+        if (!this.latestStatus && !this.committedStatus) throw Object.assign(new Error('Waiting for the first controller update to commit.'), { statusCode: 503 });
       }
     }
     // Charging is refreshed below; never traverse the superseded large view.
-    if (!this.latestStatus) throw Object.assign(new Error('Waiting for the first controller update to commit.'), { statusCode: 503 });
-    const result = copyOwnedValue(statusWithoutCharging(this.latestStatus));
+    const complete = this.latestStatus ?? this.committedStatus;
+    if (!complete) throw Object.assign(new Error('Waiting for the first controller update to commit.'), { statusCode: 503 });
+    const result = copyOwnedValue(statusWithoutCharging(complete));
     if (this.learningCheckpointCache) result.learning.checkpointCache = this.learningCheckpointCache.status();
     const now = this.clock();
     result.now = now;

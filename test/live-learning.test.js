@@ -43,6 +43,27 @@ test('Automatic and Pause return a complete view after a live control edit', asy
   }
 });
 
+test('status retains the last complete model and current saved intent during a live update', async t => {
+  const { store, engine } = await fixture(t);
+  await engine.update(); await engine.initializeCommittedStatus();
+  const previous = engine.committedStatus.learning.adaptive;
+  engine.executor.commandTransport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) },
+    async publish() { return { status: 'mqtt', sent: true }; }, async close() {} };
+  const entered = deferred(), release = deferred(), calculate = engine.liveLearning.calculate.bind(engine.liveLearning);
+  engine.liveLearning.calculate = async (...args) => { entered.resolve(); await release.promise; return calculate(...args); };
+  const change = engine.setAutomation({ feature: 'home', enabled: true });
+  change.catch(() => {});
+  await entered.promise;
+  try {
+    assert.equal(engine.latestStatus, null);
+    const view = engine.status();
+    assert.equal(view.automation.home.enabled, true, 'Saved control intent does not wait for model computation');
+    assert.deepEqual(view.learning.adaptive, previous, 'The previous complete model remains available');
+    await store.runWrite(() => store.setState('synthetic-priority-during-status', { accepted: true }), { priority: 'control' });
+    assert.equal(store.getState('synthetic-priority-during-status').accepted, true);
+  } finally { release.resolve(); await change; }
+});
+
 test('live worker replays the same ordered inputs, preserves prefixes and reads the same canonical window', async t => {
   const { store, engine } = await fixture(t);
   const worker = engine.liveLearning = new LiveLearning({ store, input: 'mqtt' });
