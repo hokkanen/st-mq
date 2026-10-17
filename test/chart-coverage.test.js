@@ -174,6 +174,7 @@ test('source coverage preserves silent gaps, immediate failures, source expiry a
   record(start);record(start+4*MINUTE);record(start+12*MINUTE);
   recorder.recordFailure({source:'husdata-h66',device:'synthetic-heatpump',signal:'compressor_active',unit:'state',at:start+13*MINUTE});
   record(start+14*MINUTE);
+  recorder.flush(start+22*MINUTE);
   const result=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+22*MINUTE,left:'compressor_active'});
   assert.deepEqual(result.shading.compressorHome,[
     {start,end:start+9*MINUTE,value:1},
@@ -203,7 +204,10 @@ test('unchanged equipment confirmation refreshes current short selections while 
   put('compressor_active',0,start);
   const before=recorder.status(start);
   put('compressor_active',0,start+MINUTE);
-  const after=recorder.status(start+MINUTE);
+  const pending=recorder.status(start+MINUTE);
+  assert.equal(pending.sourceReportRevision,before.sourceReportRevision,'Read-only status exposes committed coverage until the metadata flush');
+  recorder.flush(start+MINUTE+30_000);
+  const after=recorder.status(start+MINUTE+30_000);
   assert.equal(before.historyRevision,after.historyRevision);
   assert.notEqual(before.sourceReportRevision,after.sourceReportRevision);
   assert.equal(recordingChangedForSelection({...selection,startDate:date},date,before,after),true);

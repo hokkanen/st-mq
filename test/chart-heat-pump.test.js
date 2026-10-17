@@ -221,6 +221,8 @@ test('worker caches renew unchanged source coverage and growing pending energy w
   assert.equal(before.shading.compressorHome.at(-1).end,start+5*MINUTE);
   for(const signal of ['compressor_active','dhw_routing']) recorder.record(observation(signal,signal==='compressor_active'?1:0,start+4*MINUTE,{unit:'state'}));
   assert.equal(store.db.prepare('SELECT MAX(id) id FROM observations').get().id,revision);
+  assert.equal((await service.query(args)).meta.cacheHit,true,'Unflushed metadata cannot pretend to be committed source evidence');
+  recorder.flush(args.now);
   const after=await service.query(args);
   assert.equal(after.shading.compressorHome.at(-1).end,start+9*MINUTE);
   assert.notEqual(after.meta.cacheHit,true);
