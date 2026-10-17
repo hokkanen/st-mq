@@ -2,7 +2,7 @@ import { resolveChargingDeadline } from './settings.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { delayedScheduleFor, easeeScheduleTakeoverSupported, easeeSessionPauseSupported, easeeTakeoverFingerprint, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, scheduleFingerprint } from './easee.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { chargingPlanInputsUnavailable } from './plan-inputs.js';
+import { chargingPlanInputsUnavailable, chargingServiceRelease } from './plan-inputs.js';
 import { admittedChargingDeadlineRevision } from './flexibility.js';
 import { validateAdmittedSourceTime } from '../domain/time-evidence.js';
 import { createControlAttempt } from '../storage/control-attempt.js';
@@ -466,7 +466,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
     const prior = state.execution, revision = plan?.priceRevision, revised = executionFor(plan);
     if (!prior || !revision || !revised || !revised.planId || revised.planId === prior.planId
       || revision.previousPlanId !== prior.planId || !isTime(revision.at) || revision.at > now
-      || revision.at < prior.periods[0].startAt || plan.feasible !== true || plan.provisional === true
+      || revision.at < prior.periods[0].startAt
+      || !chargingServiceRelease(plan, now) && (plan.feasible !== true || plan.provisional === true)
       || !Number.isFinite(plan.requiredGridKwh) || plan.requiredGridKwh <= 0
       || !isTime(plan.deadlineAt) || plan.deadlineAt <= now
       || !admittedChargingDeadlineRevision(plan, prior.deadlineAt, desired.deadlineRequest, state.session?.connectedAt)

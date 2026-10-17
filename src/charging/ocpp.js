@@ -1,6 +1,6 @@
 import { createHash, randomInt } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { chargingPlanInputsUnavailable } from './plan-inputs.js';
+import { chargingPlanInputsUnavailable, chargingServiceRelease } from './plan-inputs.js';
 import { admittedChargingDeadlineRevision } from './flexibility.js';
 import { resolveChargingDeadline } from './settings.js';
 import { TIME_ZONE } from '../domain/prices.js';
@@ -320,7 +320,8 @@ function revisedExecution(plan, prior, now, deadlineRequest, connectedAt) {
   const revision = plan?.priceRevision, next = executionFor(plan);
   if (!prior || !revision || !next || !next.planId || next.planId === prior.planId
     || revision.previousPlanId !== prior.planId || !time(revision.at) || revision.at > now
-    || revision.at < prior.periods[0].startAt || plan.feasible !== true || plan.provisional === true
+    || revision.at < prior.periods[0].startAt
+    || !chargingServiceRelease(plan, now) && (plan.feasible !== true || plan.provisional === true)
     || !Number.isFinite(plan.requiredGridKwh) || plan.requiredGridKwh <= 0
     || !time(next.deadlineAt) || next.deadlineAt <= now
     || !admittedChargingDeadlineRevision(plan, prior.deadlineAt, deadlineRequest, connectedAt)

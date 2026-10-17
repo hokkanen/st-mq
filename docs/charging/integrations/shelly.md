@@ -248,7 +248,14 @@ When a native timestamp has whole-second precision, a matching correlated read
 requested after the command acknowledgement can confirm an update in that same
 second. It preserves the original timestamp; an older second or an unsolicited
 observation cannot supply that confirmation. Same-clock unsolicited notifications
-do not renew freshness.
+do not renew freshness. Distinct control deltas can share an identical event
+timestamp, including connected work-state transitions such as `charger_pause`
+followed by `charger_end`. Preserve their arrival order and require a fresh
+correlated query matching the final value. The later delta revokes queries
+started before it even if its value returns to an earlier value. An exact
+unchanged duplicate does not revoke an already confirmed reading. This ordering
+does not relax native value clocks, physical connection-boundary checks or
+measurement freshness.
 Ordinary numeric current commands have a separate ordered-observation recovery:
 an acknowledged write can be reconciled by a matching post-acknowledgement read
 whose native value and instruction clocks advance beyond the saved, different

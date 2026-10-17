@@ -425,6 +425,74 @@ test('unsolicited same-clock setting notifications cannot renew expired receipt 
   assert.equal(f.adapter.snapshot().controlReady, true, 'Only a new correlated read confirms the current settings');
 });
 
+for (const [role, first, last] of [['work_state', 'charger_pause', 'charger_end'],
+  ['start_charging', false, true], ['current_limit', 6, 14]])
+for (const matching of [true, false])
+test(`same-timestamp ${role} changes require readback of the final value; matching ${matching}`, async t => {
+  const f = fixture(t); await f.ready();
+  const session = f.adapter.snapshot().session;
+  f.advance(2000);
+  const eventAt = NOW + 1550, receivedAt = f.now();
+  const notify = value => f.client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE,
+    method: 'NotifyStatus', params: { ts: eventAt / 1000,
+      [`${TYPES[role].toLowerCase()}:${f.components[role].id}`]: { value, source: 'sys' } } })), {});
+  notify(first); notify(last);
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  const saved = [...f.saved.values()].find(value => value.notificationPending?.[role]);
+  assert.equal(saved.notificationPending[role].value, last, 'Equal source timestamps cannot discard a distinct later delta');
+  assert.equal(saved.notificationPending[role].eventAt, eventAt);
+  assert.equal(saved.notificationPending[role].receivedAt, receivedAt);
+  f.fields[role] = matching ? last : first;
+  f.measuredAt[role] = NOW + 1000; // Native last-change clocks have whole-second precision.
+  f.commandSources[role] = 'sys';
+  await f.adapter.refresh({ force: true });
+  const snapshot = f.adapter.snapshot();
+  assert.equal(snapshot.controlReady, matching, 'Only a post-event matching native query clears the guard');
+  assert.equal(snapshot.notificationPending.includes(role), !matching);
+  assert.equal(snapshot.fields[role].measuredAt, NOW + 1000);
+  assert.equal(snapshot.fields[role].readback.receivedAt, receivedAt);
+  assert.equal(snapshot.session.sessionId, session.sessionId);
+  assert.equal(f.mutations().length, 0);
+  if (matching) {
+    notify(last);
+    assert.equal(f.adapter.snapshot().controlReady, true, 'An exact duplicate cannot manufacture another change');
+  }
+});
+
+for (const [role, first, last] of [['work_state', 'charger_pause', 'charger_end'],
+  ['start_charging', false, true], ['current_limit', 6, 16]])
+test(`a query between same-timestamp ${role} changes cannot confirm the final value`, async t => {
+  const f = fixture(t); await f.ready();
+  for (const key of Object.keys(TYPES)) f.measuredAt[key] = NOW;
+  f.advance(2000);
+  const eventAt = NOW + 1550;
+  const notify = value => f.client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE,
+    method: 'NotifyStatus', params: { ts: eventAt / 1000,
+      [`${TYPES[role].toLowerCase()}:${f.components[role].id}`]: { value, source: 'sys' } } })), {});
+  const publish = f.client.publish;
+  let release, announced;
+  const requested = new Promise(resolve => { announced = resolve; });
+  f.client.publish = (topic, payload, options, done) => {
+    const frame = JSON.parse(payload);
+    if (frame.method !== 'Shelly.GetComponents' || !frame.params.keys.includes(`${TYPES[role].toLowerCase()}:${f.components[role].id}`))
+      return publish(topic, payload, options, done);
+    f.client.publish = publish; done?.();
+    const result = f.componentReply(frame, { [role]: { value: last, source: 'sys', last_update_ts: (NOW + 1000) / 1000 } });
+    release = () => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({ id: frame.id, src: DEVICE, dst: frame.src, result })), {});
+    announced();
+  };
+  notify(first);
+  const refresh = f.adapter.refresh({ force: true }); await requested;
+  notify(last);
+  release(); await refresh;
+  assert.equal(f.adapter.snapshot().controlReady, false, 'A matching value cannot rescue a query revoked by a later delta');
+  await assert.rejects(f.command('start_charging', true));
+  assert.equal(f.mutations().length, 0);
+  f.fields[role] = last; f.measuredAt[role] = NOW + 1000; f.commandSources[role] = 'sys';
+  await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().controlReady, true);
+});
+
 test('an older contradictory current reply blocks commands until a matching readback arrives', async t => {
   const f = fixture(t); await f.ready();
   f.notify('current_limit', 6);

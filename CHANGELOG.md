@@ -6,6 +6,20 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Recover charging opportunity when changed capacity or progress makes an
+  accepted economic pause threaten ready-by. Remove avoidable pauses even when
+  the full target is no longer recoverable, retaining the visible shortfall and
+  native control checks. Keep accepted charging periods visible during forecast
+  reassessment and target risk.
+- Preserve distinct Shelly charger changes that share one device timestamp,
+  preventing a stale pending change from blocking control indefinitely. Require
+  fresh native readback of the final value and retain original evidence clocks.
+- Allow BMW's own identification confirmation pause beside an identified Tesla
+  under a confirmed economic pause, preserving fresh zero-current evidence,
+  connection scope and independent BMW matching requirements.
+- Keep fractional simulated completion times out of native schedule boundaries
+  so both chargers can accept the jointly selected program.
+
 - Align Storage health with the shared storage queue and separate WAL checkpoints.
   Show the running writer's actual policy, current background turn, all three queue
   lanes, transaction-building time and independent checkpoint timings. Keep

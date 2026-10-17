@@ -259,6 +259,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const estimateOnly = Boolean(currentAssumption && (uncertain || identificationActive));
   const periods = ownedPeriods.length ? ownedPeriods : ownedStart != null ? [{ startAt: ownedStart, endAt: null }]
     : !yielded && (!uncertain || estimateOnly || transactionWaiting) ? (plan.periods ?? []).filter(period => validTime(period.startAt)) : [];
+  const scheduledPeriods = periods.length > 1 || periods.some(period => validTime(period.endAt));
   const currentPeriod = periods.find(period => Number(period.startAt) <= now && (!validTime(period.endAt) || Number(period.endAt) > now));
   const nextPeriod = periods.find(period => Number(period.startAt) > now);
   const betweenPeriods = !currentPeriod && nextPeriod && periods.some(period => Number(period.startAt) <= now);
@@ -328,7 +329,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     else if (!enabled && nativeStops && validTime(nativeEnd) && Number(nativeEnd) > now) event += ` · scheduled until ${time(nativeEnd)}`;
     else if (finite(requiredGridKwh) && requiredGridKwh <= 0) event += ' · target reached';
     else if (currentFinish) event += ` · ${number(minimum, '%')} estimated ${time(finishAt)}`;
-  } else if (ownedStart != null && nextPeriod && !currentPeriod && !released && !provisional) {
+  } else if (ownedStart != null && nextPeriod && !currentPeriod && !released) {
     // A planned gap and an idle vehicle do not confirm the charger's pause.
     pauseUnconfirmed = betweenPeriods && !uncertain && !chargingPauseConfirmedForPeriod(control, nextPeriod);
     state = pauseUnconfirmed ? 'Pause unconfirmed' : uncertain ? 'Update unconfirmed' : betweenPeriods ? 'Paused between periods' : 'Scheduled';
@@ -417,9 +418,10 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     rows.push(['Estimated cost to target', `€${(plan.costCents / 100).toFixed(2)}`]);
     if (periods.length > 1 && finite(plan.savingsCents) && plan.savingsCents > 0) rows.push(['Saving from pauses', `€${(plan.savingsCents / 100).toFixed(2)} compared with one continuous period`]);
   }
-  const periodRows = showPlan && !released && !provisional ? periods.map((period, index) => [`Period ${index + 1}`, validTime(period.endAt)
+  const showPeriods = showPlan && !released && (!provisional || scheduledPeriods);
+  const periodRows = showPeriods ? periods.map((period, index) => [`Period ${index + 1}`, validTime(period.endAt)
     ? window(period.startAt, period.endAt, true) : `${time(period.startAt)} onwards · vehicle finishes naturally`]) : [];
-  const periodCount = showPlan && !released && !provisional && periods.length > 1 ? `${periods.length} charging periods${ownedPeriods.length ? '' : ' proposed'}` : '';
+  const periodCount = showPeriods && periods.length > 1 ? `${periods.length} charging periods${ownedPeriods.length ? '' : ' proposed'}` : '';
   const fallbackNotice = /manual (?:fallback|battery percentage|minimum)|remembered manual|assumes? (?:0|20)%|phase count is known|preview assumes the vehicle/i;
   const shortfall = currentForecast.shortfallGridKwh;
   const shortfallNote = risk && finite(shortfall) && shortfall > 0 && finite(minimum) && deadline
@@ -464,7 +466,8 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const controlDetail = !supported ? 'This integration supports monitoring only.'
     : sessionPause ? `Automatic charging remains ${enabled ? 'on' : 'off'}. The pause applies until unplugging; changing this switch does not resume charging.`
     : activeManual ? `Automatic charging remains ${enabled ? 'on' : 'off'} while another charger instruction has priority.${resumption ? ` ${resumption}` : ''}`
-      : provisional ? 'Charging is allowed for now. The forecast is being updated; economical periods can still be scheduled when it improves.'
+      : provisional && scheduledPeriods ? `${ownedPeriods.length ? 'The accepted charging periods remain in effect.' : 'The charging periods are proposed.'} ${risk ? 'The target by ready-by is at risk.' : 'Completion is being reassessed.'}`
+        : provisional ? 'Charging is allowed for now. The forecast is being updated; economical periods can still be scheduled when it improves.'
       : 'Choose lower-cost charging periods to reach the target by the ready-by time. This choice stays in effect until changed.';
   const provider = charger.provider ?? charger.telemetry?.provider;
   const shelly = provider === 'shelly-evse', easee = provider === 'easee';

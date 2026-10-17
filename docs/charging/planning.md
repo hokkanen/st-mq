@@ -107,6 +107,22 @@ subject to its original connection, instruction and return-time boundaries.
 
 The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. Routine replacement compares complete remaining joint service under the same current inputs and excludes sunk cost. It needs more than 5 cents of decision-cost improvement when a participating accepted charging period is ongoing, or more than 1 cent while waiting. A temporary zero draw does not end an ongoing permitted period. Equality retains the accepted program; successive changes are always compared with that program. Necessary request, service and constraint corrections bypass the monetary hurdle. These are practical replacement thresholds, not a global one-cent optimization-error guarantee. Intermediate planned charging periods last at least 15 minutes; new economic pauses require 10 minutes. The final open release remains separate.
 
+Reassess accepted periods when progress, capacity or another planning input
+changes, including when their forecast is already provisional. If the accepted
+program now misses ready-by, a replacement that reduces the modeled shortfall
+without increasing another participating charger's shortfall bypasses the price
+improvement threshold. It may cost more to restore the requested service. When
+full recovery remains impossible, only an immediate open release may replace
+that infeasible program; it must not introduce another economic pause. Keep the
+remaining deficit visible. A proposed correction does not become accepted
+execution until the integration confirms it under the existing native guards.
+Accepted periods remain visible while their forecast is being reassessed or
+reports a target at risk.
+Internal simulated completion may have fractional milliseconds. Newly selected
+schedule boundaries use integer epoch milliseconds within their available
+windows, and the joint simulation checks the rounded candidate before selection.
+Fractional forecasts remain estimates; they are not native execution timestamps.
+
 For new Easee cloud programs, an intermediate gap must be strictly longer than
 10 minutes. The cloud adapter installs that next delayed start after the preceding
 period ends and needs at least 10 minutes still remaining at dispatch. An exact

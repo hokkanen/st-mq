@@ -720,7 +720,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         if (retained || !validateAdmittedSourceTime({ sourceTime: eventAt, receivedAt: at, admittedAt, now: clock() })
           || clock() - Math.min(at, eventAt) > config.maxAgeMs || !delta || typeof delta !== 'object' || Array.isArray(delta)) continue;
         const field = state.fields[role];
-        if (eventAt <= (state.notificationClocks?.[role] ?? 0) || eventAt < (field?.measuredAt ?? 0)) continue;
+        // Several distinct deltas can share one device event timestamp. Their
+        // arrival order still revokes earlier queries; only matching readback
+        // may confirm the final state. Unchanged duplicates stay non-events.
+        if (eventAt < (state.notificationClocks?.[role] ?? 0) || eventAt < (field?.measuredAt ?? 0)) continue;
         const baseline = notificationBaselines.get(role)
           ?? (fieldGenerations.get(role) === generation && field && !field.retained ? field : null);
         const value = Object.hasOwn(delta, 'value') ? delta.value : baseline?.value;

@@ -452,8 +452,18 @@ test('a received newer same-value current supersedes BMW restoration only after 
 });
 
 for (const delayed of [false, true])
-test(`new BMW connection obtains its own pause beside an already identified stopped Tesla${delayed ? ' across Charge now and restart' : ''}`, async t => {
+for (const peerPause of ['external Stop', 'accepted economic pause'])
+test(`new BMW connection obtains its own pause beside an identified Tesla with ${peerPause}${delayed ? ' across Charge now and restart' : ''}`, async t => {
   const f = await stoppedTeslaPeerFixture(t), before = f.writes.length;
+  if (peerPause === 'accepted economic pause') {
+    const controller = f.item('charger1').controller, status = controller.status.bind(controller);
+    t.mock.method(controller, 'status', () => ({ ...status(), manual: null, phase: 'paused',
+      pauseConfirmed: true, ownsInstruction: true,
+      execution: { periods: [{ startAt: START + 3600_000, endAt: null }] } }));
+    f.item('charger1').controls.enabled = true;
+    f.runtime.refreshSettings();
+    f.setFirstNative({ stopped: false });
+  }
   const test = structuredClone(f.item('charger2').controller.status().currentTest);
   const attempt = f.item('charger2').identification.id;
   f.advance(10_000); await f.adapter.refresh();
@@ -467,7 +477,7 @@ test(`new BMW connection obtains its own pause beside an already identified stop
   assert.equal(f.item('charger2').vehicleEvidence.teslaCurrentResolvedTestId, undefined,
     'A retained peer assignment does not manufacture a fresh Tesla current match');
   assert.equal(f.fields.start_charging.value, false);
-  assert.equal(f.item('charger1').controller.status().manual.kind, 'stop');
+  assert.equal(f.item('charger1').controller.status().manual?.kind ?? null, peerPause === 'external Stop' ? 'stop' : null);
   assert.equal(f.item('charger1').controller.status().snapshot.powerKw, 0);
   f.advance(5000); await f.update();
   const stopAt = f.now;
@@ -489,6 +499,22 @@ test(`new BMW connection obtains its own pause beside an already identified stop
   assert.equal(f.writes.slice(before).filter(row => row.role === 'current_limit' && row.value === 6).length, 0,
     'The handoff never begins another current comparison');
   assert.equal(f.writes.slice(before).filter(row => row.role === 'start_charging' && row.value === false).length, 1);
+});
+
+for (const boundary of ['unconfirmed pause', 'unowned pause', 'nearby restart'])
+test(`an economic Tesla pause cannot admit BMW confirmation with ${boundary}`, async t => {
+  const f = await stoppedTeslaPeerFixture(t), peer = f.item('charger1'), before = f.writes.length;
+  const status = peer.controller.status.bind(peer.controller);
+  t.mock.method(peer.controller, 'status', () => ({ ...status(), manual: null, phase: 'paused',
+    pauseConfirmed: boundary !== 'unconfirmed pause', ownsInstruction: boundary !== 'unowned pause',
+    execution: { periods: [{ startAt: boundary === 'nearby restart' ? f.now + 20_000 : START + 3600_000, endAt: null }] } }));
+  peer.controls.enabled = true; f.runtime.refreshSettings(); f.setFirstNative({ stopped: false });
+  f.advance(10_000); await f.adapter.refresh();
+  publishBmw(f, { atHome: true, pluggedIn: true, charging: true });
+  f.advance(1000); await f.update();
+  assert.equal(f.item('charger2').identification.pauseUntil, null);
+  assert.equal(f.item('charger2').vehicleMatch, null);
+  assert.equal(f.writes.slice(before).some(row => row.role === 'start_charging' && row.value === false), false);
 });
 
 for (const boundary of ['old BMW source', 'peer conflict', 'changed peer scope', 'peer readings unavailable', 'Tesla feed unavailable',

@@ -8,7 +8,7 @@ import { createChargingPlannerService } from './planner-service.js';
 import { chargingPlanValidUntil } from './planner-input.js';
 import { copyOwnedValue, immutableValue, isImmutableValue } from '../domain/immutable.js';
 import { createRecordedChargingEnergyReader } from './energy-reader.js';
-import { chargingPlanInputsUnavailable } from './plan-inputs.js';
+import { chargingPlanInputsUnavailable, chargingServiceRelease } from './plan-inputs.js';
 import { backgroundPlanDeadline, economicPlanningState, economicPlanningChange, economicProgressChange, IMMINENT_PLAN_MS } from './replanning.js';
 import { createChargingController, validateChargingOwnershipState } from './controller.js';
 import { validateOcppChargingOwnershipState, ocppLocalStopInSession, ocppLocalStopAfter } from './ocpp.js';
@@ -1847,7 +1847,9 @@ export class ChargingRuntime {
               || Object.entries(candidates).some(([other, choices]) => other !== peerId && choices.includes('tesla'))) return false;
             const peerControl = controls[peerId], peerPhysical = result[peerId], phases = peerPhysical?.phaseCurrentA;
             const clocks = phases?.inputs?.map(input => input.measuredAt) ?? [phases?.measuredAt];
-            return peerControl?.session?.connected === true && peerControl.manual?.kind === 'stop'
+            const confirmedStop = peerControl?.manual?.kind === 'stop'
+              || peerControl?.phase === 'paused' && peerControl.pauseConfirmed === true && peerControl.ownsInstruction === true;
+            return peerControl?.session?.connected === true && confirmedStop
               && peer.vehicleMatch.scope === `${peer.association}:${peerControl.session.connectedAt}`
               && peer.vehicleMatch.connectedAt === peerControl.session.connectedAt
               && peerPhysical.connected?.available === true && peerPhysical.connected.value === true
@@ -1861,8 +1863,9 @@ export class ChargingRuntime {
           });
         // A plausible BMW baseline must not interrupt an unresolved Tesla
         // response on a charging peer. A still-bound Tesla identity on a
-        // confirmed stopped peer can instead admit BMW's own independent pause
-        // after verified 6 A draw; this never creates a Tesla match or BMW identity.
+        // confirmed stopped peer, including an owned economic pause, can admit
+        // BMW's own independent pause after verified 6 A draw; this never creates
+        // a Tesla match or BMW identity.
         const unreachablePeer = Object.values(this.chargers).some(peer => peer !== item
           && peer.controller?.status()?.snapshot?.online === false);
         const unreachableComparisonReady = unreachablePeer && (!sameCurrentTest || currentTest.phase === 'active'
@@ -2512,6 +2515,19 @@ export class ChargingRuntime {
     const plans = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id, item.plan]));
     const progressChanged = economicProgressChange(this.lastEconomicProgress ?? this.lastEconomicSearch, economicState, plans, now);
     const routineReplan = economicChange !== 'hard' && (economicChange !== null || progressChanged);
+    const boundaryDue = Number.isFinite(this.economicValidUntil) && now >= this.economicValidUntil;
+    const assessmentDue = progressChanged || boundaryDue || economicChange !== null;
+    let retainedAssessment = null;
+    const assessRetained = () => retainedAssessment ??= forecastFixedPlans({ now, prices: planningPrices,
+      household: this.household, supply, priority: this.settings.priority,
+      chargers: views.map(view => withAllocationTarget(view, this.charger(view.id), now)),
+      periodsByCharger: Object.fromEntries(views.flatMap(view => {
+        const periods = confirmedPeriods(view, now);
+        return periods ? [[view.id, periods]] : [];
+      })) });
+    const serviceThreatened = assessmentDue && economicState.schedulable && assessRetained().feasible === false;
+    const serviceReplans = new Set(serviceThreatened ? views.filter(view =>
+      assessRetained().plans[view.id]?.reason === 'insufficient-time').map(view => view.id) : []);
     const priceRecheckDue = views.some(view => {
       const at = this.charger(view.id).priceRecheckAt;
       return Number.isFinite(at) && at <= now;
@@ -2519,14 +2535,14 @@ export class ChargingRuntime {
     const priceReplans = new Set(views.filter(view => {
       const item = this.charger(view.id), control = view.control;
       if (!this.pricesInitialized || !this.historyReady || !view.settings.enabled || !view.capabilities.scheduling
-        || view.request?.chargeNow || control?.manual || control?.provisional || !control?.execution?.planId
+        || view.request?.chargeNow || control?.manual || control?.provisional && !serviceReplans.has(view.id) || !control?.execution?.planId
         || item.newEpisode || !item.plan || item.replan
         || view.values.connected.value !== true || !(view.requiredGridKwh > 1e-7) || view.deadlineAt <= now) return false;
       // An edited request held through an active period is still owed at its
       // next gap. Fulfilling it is not an unsolicited monetary improvement.
       if (!activePeriod(control, now) && item.plan.deadlineAt !== view.deadlineAt && !item.request?.flexibility) return false;
       const priorPrices = item.plan.decisionPriceSnapshot ?? item.plan.priceSnapshot ?? priceSnapshot(item.plan.intervals ?? []);
-      return Boolean(item.request?.flexibility) && item.plan.deadlineAt !== view.deadlineAt
+      return serviceReplans.has(view.id) || Boolean(item.request?.flexibility) && item.plan.deadlineAt !== view.deadlineAt
         || routineReplan || Number.isFinite(item.priceRecheckAt) && item.priceRecheckAt <= now
         || economicChange !== null && priceWindow(priorPrices, now, view.deadlineAt) !== priceWindow(currentPrices, now, view.deadlineAt);
     }).map(view => view.id));
@@ -2543,20 +2559,9 @@ export class ChargingRuntime {
         ...['connected', 'soc', 'minimumSoc', 'capacityKwh', 'maximumCurrentA',
           'vehicleNotBefore', 'vehicleCurrentA', 'nativeCurrentA', 'vehicleCeilingSoc'].map(key =>
           key === 'vehicleCurrentA' ? vehicleCurrentConstraint(view.values[key]) : view.values[key]?.value ?? null)]) });
-    const boundaryDue = Number.isFinite(this.economicValidUntil) && now >= this.economicValidUntil;
-    const assessmentDue = progressChanged || boundaryDue;
-    let retainedAssessment = null;
-    const assessRetained = () => retainedAssessment ??= forecastFixedPlans({ now, prices: planningPrices,
-      household: this.household, supply, priority: this.settings.priority,
-      chargers: views.map(view => withAllocationTarget(view, this.charger(view.id), now)),
-      periodsByCharger: Object.fromEntries(views.flatMap(view => {
-        const periods = confirmedPeriods(view, now);
-        return periods ? [[view.id, periods]] : [];
-      })) });
     const imminent = views.some(view => [view.deadlineAt,
       ...(this.charger(view.id).plan?.periods ?? []).flatMap(row => [row.startAt, row.endAt])]
       .some(at => Number.isFinite(at) && at > now && at <= now + IMMINENT_PLAN_MS));
-    const serviceThreatened = assessmentDue && economicState.schedulable && assessRetained().feasible === false;
     const deferredRequestDue = views.some(view => {
       const item = this.charger(view.id);
       return item.plan && !activePeriod(view.control, now) && item.plan.deadlineAt !== view.deadlineAt;
@@ -2656,7 +2661,18 @@ export class ChargingRuntime {
       && economicIds.reduce((sum, id) => sum + result.plans[id].costCents, 0)
         <= accounting.reduce((sum, row) => sum + row.energyKwh * row.priceCtPerKwh, 0) + 1e-7
       && explicitAllowances.every(view => result.plans[view.id].costCents <= adopted.plans[view.id].costCents + 1e-7);
-    let priceRevisionWorthwhile = result.feasible === true && adopted.feasible === true && priced
+    // Service corrections bypass the price hurdle, but cannot worsen a peer's
+    // deadline deficit. If full recovery is impossible, only an immediate open
+    // release may replace an infeasible program; no new pause is authorized.
+    const serviceCorrection = serviceReplans.size > 0 && economicIds.length > 0
+      && economicIds.every(id => {
+        const next = result.plans[id], prior = adopted.plans[id];
+        return prior?.requiredGridKwh === next.requiredGridKwh
+          && Number.isFinite(prior.shortfallGridKwh) && Number.isFinite(next.shortfallGridKwh)
+          && next.shortfallGridKwh <= prior.shortfallGridKwh + 1e-7
+          && (next.feasible === true || chargingServiceRelease(next, now));
+      }) && economicIds.some(id => result.plans[id].shortfallGridKwh + 1e-7 < adopted.plans[id].shortfallGridKwh);
+    let priceRevisionWorthwhile = serviceCorrection || result.feasible === true && adopted.feasible === true && priced
       && comparableService && cashDoesNotIncrease
       && newCosts.length > 0 && newCosts.every(Number.isFinite)
       && oldCost - newCosts.reduce((sum, cost) => sum + cost, 0)
@@ -2665,7 +2681,7 @@ export class ChargingRuntime {
     // A newly connected peer may still be awaiting its first adopted program.
     // Revisit the price comparison after adoption instead of treating different
     // delivered service as an economic rejection and consuming the new prices.
-    let priceRevisionDeferred = priceReplans.size > 0 && !comparableService;
+    let priceRevisionDeferred = priceReplans.size > 0 && !comparableService && !serviceCorrection;
     if (priceRevisionWorthwhile) for (const view of views.filter(view => priceReplans.has(view.id))) {
       const next = result.plans[view.id], running = view.control.execution.periods.find(period => period.startAt <= now
         && (period.endAt === null || period.endAt > now));

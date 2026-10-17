@@ -691,8 +691,12 @@ function cheapestPeriods(job, intervals, maxPeriods = Infinity) {
           if (fromEnd) startAt = row.end - duration;
           else endAt = startAt + duration;
         }
-        selected.push({ startAt: Math.max(row.start, Math.floor(startAt / 1000) * 1000),
-          endAt: Math.min(row.end, Math.ceil(endAt / 1000) * 1000) });
+        // Simulated peer completion can split a window at a fractional
+        // millisecond. Native execution requires integer epoch milliseconds;
+        // keep the rounded period inside that available window, then let the
+        // joint simulator verify its delivery and electrical constraints.
+        selected.push({ startAt: Math.max(Math.ceil(row.start), Math.floor(startAt / 1000) * 1000),
+          endAt: Math.min(Math.floor(row.end), Math.ceil(endAt / 1000) * 1000) });
         remaining -= energy;
       }
     }

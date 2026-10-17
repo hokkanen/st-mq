@@ -848,6 +848,19 @@ const priceRevision = (plan, at, startAt, extra = {}) => ({
   priceRevision: { previousPlanId: plan.id, at }, ...extra,
 });
 
+test('a scoped service revision removes an economic gap without claiming an impossible deadline', async () => {
+  const h = harness(), plan = splitPlan(); await h.update({ plan });
+  h.now = plan.startAt; h.mode = 3; h.schedules.enabled = 'none'; await h.update({ plan });
+  h.now += 30 * 60_000;
+  const before = h.writes.length;
+  const revised = priceRevision(plan, h.now, h.now, { feasible: false, provisional: true, reason: 'insufficient-time' });
+  const result = await h.update({ plan: revised });
+  assert.equal(result.execution, null, 'The provisional open allowance makes no accepted economic-period promise');
+  assert.equal(result.phase, 'provisional');
+  assert.equal(result.provisional, true);
+  assert.equal(h.writes.length, before, 'Continuing an open period requires no economic Stop');
+});
+
 test('new prices can pause an active period and retain its elapsed history across restart', async () => {
   const h = harness(), plan = splitPlan(); await h.update({ plan });
   h.now = plan.periods[0].startAt; h.mode = 3; h.schedules.enabled = 'none'; await h.update({ plan });

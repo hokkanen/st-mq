@@ -415,6 +415,13 @@ Stop may remain stopped: fresh zero draw, native stop readback and absence of
 an active native schedule provide the quiet evidence. The pause never acquires
 control of that peer. A confirmed Shelly system permission hold follows the
 same quiet-peer rule without becoming a manual instruction or authorizing Start.
+When a still-identified Tesla peer is stopped by a confirmed application-owned
+economic pause, verified fresh zero draw after the 6 A test can also admit BMW's
+own confirmation pause. Require the same physical connection, retained Tesla
+assignment, settled minimum-current readback and quiet transition window. An
+unconfirmed or unowned pause cannot supply that proof. This neither creates a
+new Tesla current match nor identifies BMW by elimination; BMW still needs its
+own positively observed charging and matching stop episode.
 A car permitted to charge may also remain idle because it is full or waiting
 on a vehicle timer. Fresh zero draw and confirmed native charging permission,
 with no native schedule, pending action or nearby transition, allow the peer's

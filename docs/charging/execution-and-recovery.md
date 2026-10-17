@@ -357,7 +357,15 @@ provisional release only when no existing adopted instruction needs preserving.
 For the same confirmed physical connection, an adopted schedule retains its
 original pauses and release times while these inputs recover, including after
 restart. Missing evidence does not authorize an early start or renew a pause.
-A modeled deadline shortfall remains a separate release decision; an unknown charger current alone uses the
+A modeled deadline shortfall remains a separate release decision. A scoped
+revision of the current accepted program may remove its avoidable economic
+pause even if continuous charging cannot fully recover ready-by. Such an
+infeasible replacement must be a single immediate open release, with the same
+equipment, physical session, request and admitted deadline checks as an ordinary
+revision. It grants no permission over a native instruction, user Pause,
+readiness failure or electrical limit. Missing planning evidence cannot use this
+exception. Keep provisional release and its remaining target risk separate from
+a confirmed feasible program. An unknown charger current alone uses the
 [planning assumption](planning.md#maximum-available-current-assumption).
 An unreachable charger cannot receive a release, and an unavailable OCPP
 authorization server can block new charging. Shelly EVSE controller-loss behavior

@@ -777,6 +777,24 @@ and expected meter progress. Runtime checks cover prompt edits, published prices
 service failures, native boundaries and the 5-cent active/1-cent waiting hurdle.
 Unchanged reporting retains accepted native schedules without another search.
 
+`test/charging-service-replanning.test.js` uses the real runtime, joint planner,
+OCPP controller and Shelly controller with synthetic native transports. It checks
+that worsening household forecasts remove an accepted economic gap both when
+ready-by can be recovered and when only an immediate provisional release can
+reduce the deficit. `test/charging-plan-inputs.test.js` rejects other provisional
+shapes at that release boundary. Native cloud revision and UI tests separately
+check provisional release and visibility of accepted periods during target risk.
+`test/charging-shelly-readiness.test.js` covers distinct work-state, permission and
+current-limit deltas sharing a fractional event clock, whole-second native
+readback, mismatches, duplicates and queries interrupted by another delta.
+The joint service fixture also checks native acceptance of integer schedule
+boundaries under all three priorities. The minimum-current runtime suite checks
+BMW's own confirmation pause beside a still-identified Tesla under an accepted
+economic pause, including restart, and rejects unconfirmed/unowned pauses and
+nearby peer restarts.
+These are offline regressions, not qualification of the installed charger's
+firmware or the cause of an unexplained device-originated permission Stop.
+
 `test/energy-checks-worker.test.js` exercises 100,000 synthetic property counters
 through the actual HTTP route and history worker while independent timers,
 committed writes and unrelated HTTP requests continue. It also covers bounded

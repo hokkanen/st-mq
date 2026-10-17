@@ -936,6 +936,26 @@ test('a temporary immediate allowance is not presented as the unrestricted final
   assert.match(result.controlDetail, /for now.*economical periods can still be scheduled/);
 });
 
+test('accepted charging periods remain visible when their forecast is provisional and at risk', () => {
+  const item = active(), periods = [{ startAt: now - 3600_000, endAt: now + 1800_000 }, { startAt, endAt: null }];
+  const current = { ...item, plan: { ...item.plan, periods, feasible: false, provisional: true },
+    control: { phase: 'provisional', provisional: true, execution: { periods } },
+    forecast: { feasible: false, reason: 'insufficient-time', finishAt: deadlineAt + 60_000 },
+    values: { ...item.values, charging: reading(true), powerKw: reading(8.2) } };
+  const result = view(current);
+  assert.equal(result.event, '8.2 kW now · pauses 21:30');
+  assert.equal(result.risk, true);
+  assert.equal(result.periodCount, '2 charging periods');
+  assert.deepEqual(result.periodRows, [['Period 1', '20:00–21:30'], ['Period 2', '23:00 onwards · vehicle finishes naturally']]);
+  assert.match(result.controlDetail, /accepted charging periods.*remain in effect/i);
+  assert.doesNotMatch(result.controlDetail, /economical periods can still be scheduled/);
+  const waiting = chargerDisplay({ ...current, values: { ...current.values, charging: reading(false), powerKw: reading(0) } },
+    { now: periods[0].endAt + 60_000 });
+  assert.match(waiting.event, /Next period 23:00|Resumes 23:00/);
+  assert.equal(waiting.periodRows.length, 2);
+  assert.equal(waiting.risk, true);
+});
+
 test('an infeasible forecast quantifies the target shortfall and separates forecast power from current draw', () => {
   const item = active(), result = view({ ...item, plan: { ...item.plan, feasible: false, reason: 'insufficient-time',
     warnings: ['Predicted charging capacity cannot deliver this minimum by its ready-by time.'] },
