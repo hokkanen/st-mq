@@ -34,7 +34,7 @@ test('keep reset preserves an interrupted seed as evidence and starts a new peer
     clearTimeout(app.pair.timer); await app.pair.polling; clearTimeout(app.pair.timer);
   };
   await promote();
-  app.store.event('synthetic-kept-peer-evidence', { value: 1 }, Date.now());
+  await app.store.runWrite(() => app.store.event('synthetic-kept-peer-evidence', { value: 1 }, Date.now()));
   const previousSeed = await app.pair.exportPeerSeed();
   const previous = await peerOperation('anchor', { dbPath: app.store.path });
   const sourceBytes = await readFile(previous.pending.sourcePath), spoolBytes = await readFile(previous.pending.path);
