@@ -1274,7 +1274,10 @@ export class ChargingRuntime {
     const route = this.mqttRoutes().find(item => item.topic === topic);
     if (!route) return false;
     const item = this.vehicleFeeds[route.id];
-    const now = admission?.evaluatedAt ?? receivedAt;
+    // MQTT arrival may wait behind native readback or a worker COMMIT. Keep
+    // receivedAt as provenance, but assess current charger state at admission
+    // time so a newer readback cannot look future-dated against that arrival.
+    const now = this.clock();
     if (!admission && Buffer.byteLength(payload) <= 4096) {
       let value;
       try { value = JSON.parse(payload.toString()); } catch {}
@@ -1299,7 +1302,8 @@ export class ChargingRuntime {
     const connections = Object.values(this.chargers).map(charger => charger.controller?.status()?.session?.connectedAt
       ?? charger.identification?.connectedAt).filter(Number.isSafeInteger);
     const evidenceSince = connections.length ? Math.max(0, Math.min(...connections) - 90_000) : now;
-    const result = acceptVehicleReading(item.reading, payload, { now, receivedAt, deferred: admission !== null, association: item.association, evidenceSince,
+    const result = acceptVehicleReading(item.reading, payload, { now: admission?.evaluatedAt ?? now,
+      receivedAt, deferred: admission !== null, association: item.association, evidenceSince,
       retained: packet.retain === true, provider: item.provider });
     const valid = result.accepted || ['duplicate-reading', 'older-reading', 'unordered-reading'].includes(result.reason);
     item.mqtt.invalidReason = valid ? null : result.reason;

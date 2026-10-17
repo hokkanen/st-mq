@@ -55,6 +55,9 @@ sensor-reversal, publication and restart tests retain the held interpretation
 until atomic correction publication. Learning inputs may commit before the final
 control stage; commands still depend on that final durable stage. Offline results
 do not establish installed event-loop or save-latency improvements.
+The control-preparation regression holds actual writer admission after the
+preparation has completed, advances the injected evaluation clock beyond its
+existing age limit and requires a fresh control view with exact journal replay.
 `test/app-startup-status-commit.test.js` checks recovery of an invalidated startup
 view through the staged update, its actual COMMIT, rollback and joined shutdown.
 The history-viewer fixture remains outside live-learning worker execution.
@@ -63,6 +66,16 @@ worker fixture checks saved intent and the returned view after both actions.
 With calculation deliberately held unfinished, status retains the previous
 complete model, exposes already committed control intent and permits urgent saves.
 The first startup view still waits for its own successful publication COMMIT.
+
+`test/charging-shelly-system-permission.test.js` queues an older BMW report
+behind newer native readback through the real Store publication queue, both
+with and without the dedicated writer. The active identification must retain
+its attempt, probe deadline and native current-test expiry, preserve the report's
+source and receipt clocks, and send no interruption Stop on reconciliation.
+Native field receipts precede the queued report; the later readback-round
+completion reproduces the observed clock ordering. Global timers remain live.
+These checks do not establish physical charger behavior or resolve a native
+system-permission withdrawal after Start.
 
 Charging copy ownership checks in `test/charging-copy-ownership.test.js`,
 `test/charging-runtime-storage-ownership.test.js` and

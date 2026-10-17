@@ -14,6 +14,15 @@ a future allowance to every freshness comparison.
   acquisition where necessary. A historical query uses its explicit cutoff.
   Durations for bounded pending work use a monotonic clock.
 
+Queueing behind native acquisition or a storage transaction spends time without
+changing a report's source or receipt clock. When processing a queued vehicle
+report, evaluate current charger readiness against the processing clock: a newer
+admitted native readback must not appear future-dated against the older packet's
+receipt. Source-time admission still validates the original clocks independently.
+Heating's staged control preparation rechecks its five-second age limit inside
+writer admission, before continuing. A stale preparation restarts control from
+fresh observations without retiming committed learning inputs or checkpoints.
+
 ## Device report admission
 
 The shared policy in `src/domain/time-evidence.js` permits at most 1,000 ms of

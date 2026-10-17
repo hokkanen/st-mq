@@ -148,6 +148,42 @@ test('ordinary journal growth retains a completed prefix instead of restarting t
   assert.deepEqual(engine.checkpoint, replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false }));
 });
 
+test('control preparation rechecks its age after waiting for writer admission', async t => {
+  const { store, engine, advance } = await fixture(t);
+  await engine.update(); advance(1000);
+  const entered = deferred(), release = deferred();
+  t.after(() => release.resolve());
+  let controlReady = false, blocked = false;
+  const tickSteps = engine.tickSteps.bind(engine), runWrite = engine.runWrite.bind(engine);
+  t.mock.method(engine, 'tickSteps', function* () {
+    const steps = tickSteps();
+    let input;
+    try {
+      for (;;) {
+        const step = steps.next(input);
+        if (step.done) return step.value;
+        if (step.value.kind === 'control-ready') controlReady = true;
+        input = yield step.value;
+      }
+    } finally { steps.return?.(); }
+  });
+  t.mock.method(engine, 'runWrite', (operation, options) => {
+    if (controlReady && !blocked) {
+      blocked = true;
+      void store.runPublication(async () => { entered.resolve(); await release.promise; });
+    }
+    return runWrite(operation, options);
+  });
+  const update = engine.update();
+  await entered.promise;
+  try { advance(6000); }
+  finally { release.resolve(); }
+  await update;
+  assert.equal(engine.latestStatus.now, engine.clock(), 'Control must use a new view after the queued one exceeds its age limit');
+  assert.deepEqual(engine.checkpoint, replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false }),
+    'Already committed learning retains its original journal interpretation');
+});
+
 test('telemetry received during calculation stays live without becoming future evidence in the captured update', async t => {
   const { store, engine, advance } = await fixture(t);
   const reading = (value, at) => engine.ingest({ source: 'mqtt-temperature', device: 'synthetic-room',

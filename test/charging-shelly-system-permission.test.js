@@ -23,9 +23,9 @@ const COMPONENTS = { current_limit: ['Number', 200], start_charging: ['Boolean',
 // through the real MQTT parser, persistent queue, controller and runtime matcher.
 async function fixture(t, { initiallyPermitted = false, autoCharge = false, startOutcome = 'confirmed', startEcho = null,
   stopEcho = null, stopOutcome = 'confirmed', durableStorage = false,
-  automatic = true, vehicleFeed = true, limiterEnabled = false } = {}) {
+  automatic = true, vehicleFeed = true, limiterEnabled = false, bmwTopic = null } = {}) {
   let now = START, measuredCurrentA = 0, runtime, newerStartInjected = false, pendingStartEcho = null,
-    planStartAt = START, ownershipSaveFailure = false, delayedStart = false;
+    planStartAt = START, ownershipSaveFailure = false, delayedStart = false, roundTailDelayMs = 0;
   const data = new Map(), writes = [], echoTrace = [], client = new EventEmitter();
   const schedules = { rev: 1, jobs: [] }, serviceStatus = { state: 'running' };
   const service = { id: 0, auto_balance: { enable: false }, auto_charge: autoCharge };
@@ -36,7 +36,8 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
   const config = { input: 'mqtt', connections: {
     mqtt: { address: 'mqtt://synthetic-system.invalid', user: 'synthetic' },
     teslamate: { enabled: vehicleFeed, carId: '1', namespace: 'synthetic-system', homeGeofence: 'Home' },
-  }, charging: { chargers: { charger2: { enabled: true, deviceId: DEVICE, topicPrefix: PREFIX, limiterEnabled,
+  }, charging: { ...(bmwTopic ? { vehicles: { bmw: { mqttTopic: bmwTopic } } } : {}),
+    chargers: { charger2: { enabled: true, deviceId: DEVICE, topicPrefix: PREFIX, limiterEnabled,
     mainFuseA: [25, 25, 25], marginA: [1, 1, 1], fallbackCurrentA: 12 } } } };
   const directory = durableStorage ? mkdtempSync(join(tmpdir(), 'stmq-shelly-identification-')) : null;
   const store = durableStorage ? new Store(join(directory, 'fixture.sqlite')) : { getState: key => structuredClone(data.get(key)),
@@ -48,7 +49,7 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
   const writer = durableStorage ? new DatabaseSync(store.path) : null;
   if (writer) t.after(async () => {
     if (writer.isTransaction) writer.exec('ROLLBACK');
-    await runtime?.close(); adapter.close(); writer.close(); store.close();
+    await runtime?.close(); adapter.close(); writer.close(); await store.close();
     rmSync(directory, { recursive: true, force: true });
   });
   const meter = () => ({ total_power: measuredCurrentA * .69, total_act_energy: 0,
@@ -125,6 +126,7 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
       result = null;
     } else result = status(role);
     done?.(); queueMicrotask(() => {
+      if (frame.method === 'Schedule.List' && roundTailDelayMs) { now += roundTailDelayMs; roundTailDelayMs = 0; }
       if (role === 'start_charging' && frame.method.endsWith('.Set') && pendingStartEcho)
         pendingStartEcho.acknowledgedAt = now;
       client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({ id: frame.id, src: DEVICE, dst: frame.src, result })), {});
@@ -162,6 +164,7 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
     service, serviceStatus, currentCapability, publishTesla,
     get delayedStart() { return delayedStart; },
     setPlanStartAt(at) { planStartAt = at; },
+    delayRoundEnd(ms) { roundTailDelayMs = ms; },
     failOwnershipSave(value) { ownershipSaveFailure = value; },
     item: () => runtime.chargers.charger2,
     advance(ms) { now += ms; },
@@ -206,6 +209,60 @@ async function startedFixture(t, options) {
   assert.equal(f.fields.start_charging.value, true);
   return f;
 }
+
+for (const writer of [false, true])
+test(`queued BMW receipt cannot cancel a healthy identification after newer native admission; writer ${writer}`, async t => {
+  const topic = 'synthetic/system/queued-bmw';
+  const f = await fixture(t, { durableStorage: true, bmwTopic: topic });
+  if (writer) await f.store.startWriter();
+  f.setPlanStartAt(START + 3600_000);
+  await f.update(); await f.reconnect(); await f.update();
+  assert.equal(f.item().controller.status().currentTest.phase, 'active');
+  f.advance(5000); f.measure(6); await f.adapter.refresh();
+  await f.runtime.write(() => f.runtime.persist());
+  const before = structuredClone(f.item().identification);
+  const expiresAt = f.item().controller.status().currentTest.expiresAt;
+  assert.equal(before.phase, 'charging');
+  assert.equal(before.probe.endedAt, null);
+
+  const receivedAt = f.now, sourceTime = receivedAt - 1000;
+  f.delayRoundEnd(64); await f.update();
+  assert.ok(f.item().controller.status().snapshot.readAt > receivedAt);
+
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  t.after(() => release());
+  const held = f.store.runPublication(async () => { entered(); await gate; });
+  await started;
+  // The earlier vehicle arrival reaches admission after the controller has
+  // accepted newer native readback. Keep the real writer queue blocked until
+  // 349 ms after receipt; no global timers or native deadlines are frozen.
+  const queued = f.runtime.write(() => {
+    assert.ok(f.item().controller.status().snapshot.readAt > receivedAt,
+      'Newer controller readback must precede this older receipt');
+    assert.ok(f.item().controller.status().snapshot.fields.work_state.receivedAt <= receivedAt,
+      'The native field itself predates the report; only round completion is newer');
+    return f.runtime.receiveSoc(topic, JSON.stringify({
+      provider: 'bmw-cardata', soc: 50, measuredAt: sourceTime, readingId: 'synthetic-queued-bmw',
+    }), {}, receivedAt);
+  });
+  f.advance(285);
+  release(); await Promise.all([held, queued]);
+
+  const after = f.item().identification;
+  assert.equal(after.phase, 'charging', 'A fresh native read cannot look future-dated against an old receipt clock');
+  assert.equal(after.id, before.id);
+  assert.equal(after.probe.deadlineAt, before.probe.deadlineAt);
+  assert.equal(after.probe.endedAt, null);
+  assert.equal(f.item().controller.status().currentTest.expiresAt, expiresAt);
+  assert.equal(f.runtime.vehicleFeeds.bmw.reading.receivedAt, receivedAt);
+  assert.equal(f.runtime.vehicleFeeds.bmw.reading.measuredAt, sourceTime);
+  const stopped = f.writes.filter(row => row.role === 'start_charging' && row.value === false).length;
+  await f.update();
+  assert.equal(f.writes.filter(row => row.role === 'start_charging' && row.value === false).length, stopped,
+    'The next reconciliation must not Stop an otherwise healthy probe');
+});
 
 test('a value-only own Start echo with an earlier native clock waits for its acknowledged correlated readback', async t => {
   const f = await startedFixture(t, { startEcho: 'own Start' });

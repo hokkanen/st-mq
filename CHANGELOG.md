@@ -6,6 +6,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep an active charger identification attempt running when an older queued
+  vehicle report is processed after newer native readback. Evaluate current
+  charger readiness at processing time while preserving original report clocks,
+  energy allowances and probe deadlines.
+- Recheck heating control preparation age after writer admission so storage
+  contention cannot resume an expired preparation. Retain committed learning
+  progress and take a fresh control view before continuing.
+
 - Calculate live heating samples and learning in a worker between short storage
   transactions, allowing urgent saves to proceed during fitting. Recheck changed
   control inputs before dispatch and retain exact replay and correction publication.

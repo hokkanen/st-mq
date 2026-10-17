@@ -1238,6 +1238,11 @@ export class Engine {
         let step, fence, restart = false;
         const advance = value => this.runWrite(() => {
           if (fence && !this.sameUpdateFence(fence)) { restart = true; return; }
+          // Admission can wait after the model worker has completed. Recheck
+          // here, before resuming control, without changing journal/sample time.
+          if (step?.value?.kind === 'control-ready' && this.clock() - step.value.now > 5000) {
+            restart = true; return;
+          }
           this.preserveTickState();
           this.collectingLearningCheckpoint = true; this.pendingLearningCheckpoint = null;
           try {
@@ -1256,11 +1261,7 @@ export class Engine {
             fence = this.updateFence();
             const job = step.value;
             let value;
-            if (job.kind === 'control-ready') {
-              // A long catch-up can make the captured control view old. Keep
-              // committed model progress, then take fresh observations for control.
-              if (this.clock() - job.now > 5000) { restart = true; break; }
-            } else {
+            if (job.kind !== 'control-ready') {
               this.liveLearning ??= new LiveLearning({ store: this.store, input: this.config.input });
               try {
                 value = await this.liveLearning.calculate(job.kind === 'adaptive' ? 'replay' : job.kind,
