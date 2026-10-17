@@ -146,14 +146,14 @@ test('a failed worker source-time save preserves an independently started native
   assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-source-time-pending');
   f.setNow(f.now() + 25); await held;
   f.holdReplies((frame, respond) => { if (frame.method === 'Schedule.List') { reply = respond; return true; } return false; });
-  let completed = false;
-  const newer = f.adapter.rpc('Schedule.List').then(value => { completed = true; return value; });
+  const newer = f.adapter.rpc('Schedule.List');
   void newer.catch(() => {});
   await new Promise(resolve => setImmediate(resolve)); assert.equal(typeof reply, 'function');
   release(); await store.whenWritesSettled();
   reply(); await store.runWrite(() => {});
-  for (let attempt = 0; !completed && attempt < 40; attempt++) await new Promise(resolve => setTimeout(resolve, 5));
-  assert.equal(completed, true, 'An older rollback must retain the newer RPC owner so its correlated reply can complete');
+  // The RPC's own deadline bounds this receipt. A separate 200 ms polling
+  // window confuses slower persistence on constrained hosts with lost ownership.
+  // If rollback loses the newer owner, this still rejects at the native deadline.
   assert.deepEqual(await newer, f.schedules);
   await original;
 });
