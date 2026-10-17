@@ -53,6 +53,13 @@ Prepared cache bodies do not replace the immutable journal, configuration, seeds
 or recovery contribution/decision ledger. Reverting or restoring a recovery still
 selects preserved source history and rebuilds only genuinely affected learning.
 
+In memory, the Engine owns a detached recursively immutable checkpoint. Its
+canonical digest can be reused only for that exact owned graph; loaded, foreign
+or mutable checkpoints still receive complete validation. New journal input or
+source interpretation produces a new complete checkpoint, and transaction
+rollback restores the previous owned graph. This does not alter the numerical
+algorithm, stored representation, journal checks or reconstruction guarantee.
+
 Ordinary controller updates retain one final model cache for their ordered
 learning work. Small caches can commit with the update; larger caches are saved
 in a worker only after the immutable learning inputs and control intent commit.

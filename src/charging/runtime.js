@@ -6,7 +6,8 @@ import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
 import { forecastFixedPlans, currentChargingAllocation } from './planner.js';
 import { createChargingPlannerService } from './planner-service.js';
 import { chargingPlanValidUntil } from './planner-input.js';
-import { copyChargingValue, immutableChargingValue, isImmutableChargingValue } from './immutable.js';
+import { copyOwnedValue, immutableValue, isImmutableValue } from '../domain/immutable.js';
+import { createRecordedChargingEnergyReader } from './energy-reader.js';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
 import { backgroundPlanDeadline, economicPlanningState, economicPlanningChange, economicProgressChange, IMMINENT_PLAN_MS } from './replanning.js';
 import { createChargingController, validateChargingOwnershipState } from './controller.js';
@@ -17,7 +18,6 @@ import { updateTeslaCurrentRequest, vehicleCurrentConstraint } from './tesla-cur
 import { forecastHousehold, householdReferenceSummary } from './history.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createHouseholdForecastService } from './history-service.js';
-import { recordedChargingEnergy } from './energy.js';
 import { updateSupplyEstimate } from './supply.js';
 import { restoreChargingProgress, updateChargingProgress } from './progress.js';
 import { updateSessionCost } from './session-cost.js';
@@ -214,12 +214,12 @@ const nativeTakeoverNeeded = control => Boolean(control?.manual || control?.take
 const durablePlans = new WeakMap();
 const durablePlan = plan => {
   if (!plan) return plan;
-  if (isImmutableChargingValue(plan) && durablePlans.has(plan)) return durablePlans.get(plan);
+  if (isImmutableValue(plan) && durablePlans.has(plan)) return durablePlans.get(plan);
   const { decisionPriceSnapshot, ...result } = plan;
   if (Array.isArray(result.intervals)) result.intervals = result.intervals.filter(row => row.predicted !== true);
   if (Array.isArray(result.accounting)) result.accounting = result.accounting.filter(row => row.predicted !== true);
-  if (isImmutableChargingValue(plan)) {
-    const owned = immutableChargingValue(result);
+  if (isImmutableValue(plan)) {
+    const owned = immutableValue(result);
     durablePlans.set(plan, owned);
     return owned;
   }
@@ -391,7 +391,7 @@ export class ChargingRuntime {
       const streamMatches = previous.streamAssociation === this.streamAssociation;
       return [definition.id, { definition, association, ownershipAdmitted: saved.chargers?.[definition.id]?.association === association,
         controls: previous.controls ?? { enabled: initialAutomatic, revision: 0 }, replan: previous.replan === true,
-        request: previous.request ?? null, plan: immutableChargingValue(previous.plan ?? null),
+        request: previous.request ?? null, plan: immutableValue(previous.plan ?? null),
         sessionCost: previous.sessionCost ?? null,
         vehicleMatch: previous.vehicleMatch?.id === 'bmw' && !this.vehicleFeeds.bmw.reading
           ? null : previous.vehicleMatch ?? null,
@@ -412,7 +412,8 @@ export class ChargingRuntime {
       ? { ...saved.controls } : { association: this.controlAssociation, priority: 'balanced', revision: 0 };
     this.refreshSettings();
     this.weather = [];
-    this.readEnergy = query => recordedChargingEnergy(this.store, { ...query, device: query.id === 'charger1'
+    const readEnergy = createRecordedChargingEnergyReader(this.store);
+    this.readEnergy = query => readEnergy({ ...query, device: query.id === 'charger1'
       ? this.config.connections?.easee?.charger_id ?? null : this.chargers.charger2?.adapter?.association ?? null });
     this.prices = []; this.pricesInitialized = false;
     this.historyService = store.path && store.path !== ':memory:' ? createHouseholdForecastService({ store }) : null;
@@ -437,11 +438,11 @@ export class ChargingRuntime {
       'vehicleEvidence', 'vehicleConflict', 'identification', 'targetState', 'vehicleDisconnect', 'streamEvidence',
       'forecast', 'newEpisode', 'wasPluggedIn', 'limiterPlanBasis', 'commandBasis', 'priceRecheckAt'];
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
-      copyChargingValue(Object.fromEntries(fields.map(field => [field, item[field]])))]));
+      copyOwnedValue(Object.fromEntries(fields.map(field => [field, item[field]])))]));
     const feeds = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id,
       structuredClone({ reading: item.reading, mqtt: item.mqtt, consumedPlugId: item.consumedPlugId, consumedChargingId: item.consumedChargingId })]));
     const feedRevisions = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id, item.mqttStatusRevision ?? 0]));
-    const saved = copyChargingValue({ controls: this.controls, revision: this.revision, coordination: this.coordination,
+    const saved = copyOwnedValue({ controls: this.controls, revision: this.revision, coordination: this.coordination,
       allocationScope: this.allocationScope, consumedTeslaPower: this.consumedTeslaPower, consumedTeslaCurrent: this.consumedTeslaCurrent });
     this.store.afterRollback(() => {
       // These native events were already consumed outside writer admission.
@@ -599,10 +600,10 @@ export class ChargingRuntime {
     // Publishing takes an independent immutable snapshot once. Later telemetry,
     // views and rollback frames reuse that snapshot without copying scenarios.
     for (const item of Object.values(this.chargers)) {
-      item.plan = immutableChargingValue(item.plan);
-      item.forecast = immutableChargingValue(item.forecast);
+      item.plan = immutableValue(item.plan);
+      item.forecast = immutableValue(item.forecast);
     }
-    this.coordination = immutableChargingValue(this.coordination);
+    this.coordination = immutableValue(this.coordination);
   }
   persistAcceptedStateTransaction(now) {
     this.ownCalculations();
@@ -2186,7 +2187,7 @@ export class ChargingRuntime {
       if (this.charger(view.id).flexibilityPreview?.scope !== view.flexibility.comparisonScope)
         view.flexibility.preview = null;
     }
-    return copyChargingValue(views);
+    return copyOwnedValue(views);
   }
   flexibilityScope(views, id, now = this.clock()) {
     // A displayed comparison is an as-of estimate, not command authority. Live
@@ -2222,7 +2223,7 @@ export class ChargingRuntime {
   }
   async calculateFlexibilityPreview(id) {
     const now = this.clock(), views = this.views(now), view = views.find(charger => charger.id === id), item = this.charger(id);
-    const flexibility = copyChargingValue(view.flexibility), context = this.flexibilityContext, scope = this.flexibilityScope(views, id, now);
+    const flexibility = copyOwnedValue(view.flexibility), context = this.flexibilityContext, scope = this.flexibilityScope(views, id, now);
     const unavailable = (reason, blocker = null) => {
       const currentViews = this.views(), sameScope = scope === this.flexibilityScope(currentViews, id);
       const retained = sameScope ? currentViews.find(charger => charger.id === id).flexibility.preview : null;
@@ -2261,7 +2262,7 @@ export class ChargingRuntime {
       || this.clock() >= flexibility.normalReadyByAt || scope !== this.flexibilityScope(this.views(), id))
       return unavailable('comparison-changed');
     if (!comparison.available) return unavailable(comparison.reason, comparison);
-    item.flexibilityPreview = { scope, comparison: immutableChargingValue(comparison) };
+    item.flexibilityPreview = { scope, comparison: immutableValue(comparison) };
     return { flexibility: { ...flexibility, preview: comparison }, comparison, refreshReason: null };
   }
   async previewFlexibility(id, input) {
@@ -2503,7 +2504,7 @@ export class ChargingRuntime {
     }
     const planningPrices = this.getPlanningPrices(now);
     const currentPrices = priceSnapshot(planningPrices);
-    this.household = immutableChargingValue(this.household);
+    this.household = immutableValue(this.household);
     const economicState = economicPlanningState({ now, chargers: views, supply, household: this.household,
       prices: planningPrices, priority: this.settings.priority }, this.planningScope(views));
     const economicChange = economicPlanningChange(this.lastEconomicSearch, economicState, now);
@@ -2579,7 +2580,7 @@ export class ChargingRuntime {
       const meaningful = !pending?.model || economicPlanningChange(pending.model, economicState, now)
         || economicProgressChange(pending.model, economicState, plans, now);
       const settling = backgroundPlanDeadline({ now, pending, key: meaningful ? settlingKey : pending.key });
-      this.pendingEconomicChange = { ...settling.pending, model: meaningful ? immutableChargingValue(economicState) : pending.model };
+      this.pendingEconomicChange = { ...settling.pending, model: meaningful ? immutableValue(economicState) : pending.model };
       if (settling.until) {
         this.backgroundPlanDueAt = settling.until;
         this.scheduleWakeup(now);
@@ -2883,7 +2884,7 @@ export class ChargingRuntime {
     if (!published) return false;
     if (current() && this.historyReady) {
       const contextNow = this.clock(), contextViews = this.views(contextNow);
-      this.flexibilityContext = copyChargingValue({ now: contextNow, prices: this.getPlanningPrices(contextNow),
+      this.flexibilityContext = copyOwnedValue({ now: contextNow, prices: this.getPlanningPrices(contextNow),
         household: this.household, supply, priority: this.settings.priority, chargers: contextViews,
         scopes: Object.fromEntries(contextViews.map(view => [view.id, this.flexibilityScope(contextViews, view.id, contextNow)])) });
     }
@@ -3381,7 +3382,7 @@ export class ChargingRuntime {
     if (!view.identification.available) {
       throw new Error(identificationBlockerDetail(view.identification.availabilityReason));
     }
-    const previous = Object.fromEntries(Object.entries(this.chargers).map(([key, charger]) => [key, copyChargingValue({
+    const previous = Object.fromEntries(Object.entries(this.chargers).map(([key, charger]) => [key, copyOwnedValue({
       identification: charger.identification, vehicleMatch: charger.vehicleMatch, vehicleEvidence: charger.vehicleEvidence,
       vehicleConflict: charger.vehicleConflict, targetState: charger.targetState, plan: charger.plan, request: charger.request })]));
     const consumed = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([key, feed]) => [key,
@@ -3539,7 +3540,7 @@ export class ChargingRuntime {
         reception: this.teslaCapture.reception?.() ?? null,
         setup: teslaVehicleSetup(tesla, { now }), usedByChargerId: usedBy('tesla') });
     }
-    return { revision: this.revision, timezone: TIME_ZONE, controls: { priority: this.controls.priority, revision: this.controls.revision }, settings: structuredClone(this.settings), chargers, vehicleFeeds, coordination: copyChargingValue(this.coordinationView()), error: this.error ?? null,
+    return { revision: this.revision, timezone: TIME_ZONE, controls: { priority: this.controls.priority, revision: this.controls.revision }, settings: structuredClone(this.settings), chargers, vehicleFeeds, coordination: copyOwnedValue(this.coordinationView()), error: this.error ?? null,
       limiterHistoryError: this.limiterHistoryError ?? null,
       diagnostics: this.diagnosticsStatus(now), physicalTests: this.physicalTestsStatus() };
   }

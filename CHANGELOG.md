@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Reuse verified immutable heating checkpoints during unchanged controller updates,
+  avoiding repeated full-model hashing and rollback copies while preserving replay.
+
+- Reuse bounded recorded charging-energy cohorts between views and refresh the
+  affected tail when evidence changes, preserving gaps, corrections and source clocks.
+
 - Read Shelly's discovered control and physical components in two independent
   batches plus its schedules, reducing each ordinary round from eight requests
   to three while preserving source clocks and fresh command confirmation.

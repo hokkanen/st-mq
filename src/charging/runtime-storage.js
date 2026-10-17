@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { validateChargingRuntimeState } from './runtime-state.js';
 import { createChargingCalculationWriter } from './calculation-persistence.js';
-import { isImmutableChargingValue } from './immutable.js';
+import { isImmutableValue } from '../domain/immutable.js';
 
 // Charging owns this representation. The shared Store/journal still sees normal
 // state rows and publishes every changed field in one ordinary transaction.
@@ -174,7 +174,7 @@ function allowanceMeaning(value) {
 }
 function planMeaning(value) {
   if (!object(value)) return value;
-  const immutable = isImmutableChargingValue(value);
+  const immutable = isImmutableValue(value);
   if (immutable && planMeanings.has(value)) return planMeanings.get(value);
   // This token belongs only to the transient publication comparison. Its hash
   // uses the exact existing recursive clock normalization, while persisted plans
@@ -228,7 +228,7 @@ function projectionMeaning(saved) {
 }
 
 function encodePlan(value) {
-  const immutable = isImmutableChargingValue(value);
+  const immutable = isImmutableValue(value);
   if (immutable && encodedPlans.has(value)) return encodedPlans.get(value);
   // An owned calculation's descendants are immutable too. Only the interval
   // shells change representation; its large scenario/reference graphs can be

@@ -5,10 +5,10 @@ const native = Symbol('native structured clone required');
 const plain = value => Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype
   || Object.getPrototypeOf(value) === null;
 
-/** Detach mutable charging state while reusing owned immutable calculations.
+/** Detach mutable runtime state while reusing owned immutable calculations.
  * Built-in structured values keep native clone semantics, including aliases
  * across the whole graph; they are never admitted as shared calculations. */
-export function copyChargingValue(value) {
+export function copyOwnedValue(value) {
   const seen = new Map();
   const copy = value => {
     if (value === null || typeof value !== 'object') {
@@ -35,12 +35,12 @@ export function copyChargingValue(value) {
 /** Take an independent calculation snapshot once, then make its entire plain
  * record/array graph immutable. Existing owned subtrees retain their identity.
  * This is an in-memory ownership rule, never a persisted representation. */
-export function immutableChargingValue(value) {
+export function immutableValue(value) {
   if (value === null || typeof value !== 'object' || immutable.has(value)) return value;
-  const owned = copyChargingValue(value), pending = [], seen = new Set();
+  const owned = copyOwnedValue(value), pending = [], seen = new Set();
   const check = value => {
     if (value === null || typeof value !== 'object' || immutable.has(value) || seen.has(value)) return;
-    if (!plain(value)) throw new TypeError('Charging calculations require plain immutable data');
+    if (!plain(value)) throw new TypeError('Calculations require plain immutable data');
     seen.add(value); pending.push(value);
     for (const child of Object.values(value)) check(child);
   };
@@ -49,4 +49,4 @@ export function immutableChargingValue(value) {
   return owned;
 }
 
-export const isImmutableChargingValue = value => value !== null && typeof value === 'object' && immutable.has(value);
+export const isImmutableValue = value => value !== null && typeof value === 'object' && immutable.has(value);

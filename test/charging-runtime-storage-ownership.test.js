@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { Store } from '../src/storage/store.js';
-import { immutableChargingValue } from '../src/charging/immutable.js';
+import { immutableValue } from '../src/domain/immutable.js';
 import { readChargingRuntime, writeChargingRuntime } from '../src/charging/runtime-storage.js';
 
 const key = 'charging:simulated', at = 1_800_000_000_000;
@@ -38,7 +38,7 @@ function expectedContent(accepted) {
 
 test('owned plans reuse preparation across aliases and receipts without cloning or rehashing their large graph', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  const accepted = immutableChargingValue(plan()), saved = fixture(accepted);
+  const accepted = immutableValue(plan()), saved = fixture(accepted);
   const nativeClone = structuredClone, stringify = JSON.stringify;
   const calls = { clones: 0, context: 0, plan: 0, meaning: 0 };
   t.mock.method(globalThis, 'structuredClone', (...args) => {
@@ -68,11 +68,11 @@ test('owned and mutable plans produce exact prior content IDs, state bytes and j
   t.mock.method(Date, 'now', () => at);
   const mutable = new Store(':memory:'), owned = new Store(':memory:');
   t.after(() => { mutable.close(); owned.close(); });
-  let accepted = plan(), saved = fixture(accepted), frozen = fixture(immutableChargingValue(accepted));
+  let accepted = plan(), saved = fixture(accepted), frozen = fixture(immutableValue(accepted));
   for (let tick = 0; tick < 4; tick++) {
     if (tick === 2) {
       accepted = structuredClone(accepted); accepted.intervals[0].scenarios[0].weight = .5;
-      saved = fixture(accepted); frozen = fixture(immutableChargingValue(accepted));
+      saved = fixture(accepted); frozen = fixture(immutableValue(accepted));
     }
     saved.view.chargers[0].telemetry.readAt = frozen.view.chargers[0].telemetry.readAt = at + tick * 1000;
     writeChargingRuntime(mutable, key, saved, { at: at + tick * 1000 });
@@ -93,7 +93,7 @@ for (const immutable of [false, true]) {
     const store = new Store(':memory:');
     try {
       let accepted = plan();
-      const candidate = () => fixture(immutable ? immutableChargingValue(accepted) : accepted);
+      const candidate = () => fixture(immutable ? immutableValue(accepted) : accepted);
       writeChargingRuntime(store, key, candidate(), { at });
       accepted = structuredClone(accepted);
       accepted.intervals[0].scenarios[0].receivedAt += 1000;
@@ -118,7 +118,7 @@ test('changing only ownership cannot publish a view; missing, undefined and null
   try {
     const accepted = plan(), saved = fixture(accepted);
     writeChargingRuntime(store, key, saved, { at });
-    writeChargingRuntime(store, key, fixture(immutableChargingValue(accepted)), { at: at + 1000 });
+    writeChargingRuntime(store, key, fixture(immutableValue(accepted)), { at: at + 1000 });
     assert.equal(readChargingRuntime(store, key).view.recordedAt, at);
     const absent = fixture(accepted); delete absent.view.chargers[0].forecast;
     writeChargingRuntime(store, key, absent, { at: at + 2000 });
@@ -136,9 +136,9 @@ test('changing only ownership cannot publish a view; missing, undefined and null
 test('cached owned preparation survives rollback, collection and reuse in another Store without hiding missing content', t => {
   const store = new Store(':memory:'), other = new Store(':memory:');
   t.after(() => { store.close(); other.close(); });
-  const first = fixture(immutableChargingValue(plan()));
+  const first = fixture(immutableValue(plan()));
   const changed = plan(); changed.intervals[0].scenarios[0].weight = .5;
-  const next = fixture(immutableChargingValue(changed));
+  const next = fixture(immutableValue(changed));
   writeChargingRuntime(store, key, first, { at });
   const original = rows(store), checkpoint = store.checkpoint();
   assert.throws(() => store.transaction(() => {

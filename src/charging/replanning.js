@@ -1,4 +1,4 @@
-import { immutableChargingValue } from './immutable.js';
+import { immutableValue } from '../domain/immutable.js';
 import { chargingPlannerInput } from './planner-input.js';
 import { chargingElectrical } from './planner.js';
 
@@ -33,7 +33,7 @@ export function economicPlanningState(options, scope) {
         endKind: charger.telemetry.scheduledEndKind, manualStop: charger.telemetry.manualStop },
       quality: view.telemetry?.providerConnected !== false };
   });
-  const household = immutableChargingValue((options.household ?? []).map(row => ({ start: row.start, end: row.end,
+  const household = immutableValue((options.household ?? []).map(row => ({ start: row.start, end: row.end,
     phaseCurrentA: row.phaseCurrentA, scenarios: row.scenarios,
     basis: row.basis, noHistory: row.reference?.noHistory === true })));
   const prices = (options.prices ?? []).map(row => ({ start: row.start, end: row.end,

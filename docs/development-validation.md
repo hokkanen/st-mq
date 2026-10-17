@@ -9,7 +9,21 @@ a foundation, even when the requested implementation would require it.
 recorded phase energy to verify that one synchronous publication reads each
 charger's history once. Report and physical-assessment results remain current,
 the assessors leave their input unchanged, and the next publication sees newly
-recorded energy. This sharing lasts only for that synchronous publication.
+recorded energy. `test/charging-energy-reader.test.js` additionally compares the
+bounded session-energy projection against the uncached reader through late and
+overlapping cohorts, explicit gaps, future/admitted clocks, pending-tail flushes,
+selection changes, rollback with reused IDs, failed worker COMMIT and restart.
+The projection is disposable: new evidence rewinds the affected overlap cluster;
+clock reversal or history-selection changes rebuild it. Oversized scopes or
+change bursts use the uncached streaming reader, as do read-only and recovery
+overlay stores whose source rows can be replaced by another owner. Status reads create no saved
+cache, observation or event.
+
+`test/engine-learning-ownership.test.js` checks that a recursively owned immutable
+checkpoint reuses its verified digest, a new journal entry produces the same
+complete reconstruction, shallow freezing cannot bless mutable data, and failed
+updates restore the previous checkpoint. The shared ownership helper lives in
+`src/domain/immutable.js`; mutable state still detaches and retains graph aliases.
 
 Charging copy ownership checks in `test/charging-copy-ownership.test.js`,
 `test/charging-runtime-storage-ownership.test.js` and
@@ -23,6 +37,12 @@ adoption from repeated views, rollback snapshots, persistence and status; compar
 semantic output fingerprints; and labels GC heap occupancy separately from total
 allocations. These measurements do not establish live Pi savings or physical
 charging behavior.
+
+`node scripts/benchmarks/controller-reads.js [source-root]` compares unchanged
+checkpoint validation, tick rollback and recorded-energy reads against a selected
+checkout using synthetic current journal inputs and a real temporary writer.
+It verifies complete replay/energy parity and emits a semantic fingerprint before
+reporting timing. Synthetic timings do not establish installed performance.
 
 Storage health coverage uses the current transient version-3 health/history
 contract. `test/storage-control-coverage.test.js` and

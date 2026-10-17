@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { readChargingRuntime } from '../src/charging/runtime-storage.js';
-import { copyChargingValue, immutableChargingValue, isImmutableChargingValue } from '../src/charging/immutable.js';
+import { copyOwnedValue, immutableValue, isImmutableValue } from '../src/domain/immutable.js';
 
 const AT = Date.parse('2026-01-15T00:00:00Z');
 const calculation = label => ({ id: label, at: AT, state: 'waiting', feasible: true,
@@ -29,15 +29,15 @@ async function fixture(t) {
 }
 
 test('owned calculations detach their producer and remain shared only as deeply immutable snapshots', () => {
-  const source = calculation('source'), owned = immutableChargingValue(source);
+  const source = calculation('source'), owned = immutableValue(source);
   assert.notStrictEqual(owned, source);
   source.intervals[0].scenarios[0].phaseCurrentA[0] = 99;
   assert.equal(owned.intervals[0].scenarios[0].phaseCurrentA[0], 0);
-  assert.ok(isImmutableChargingValue(owned));
-  assert.ok(isImmutableChargingValue(owned.intervals[0].scenarios[0].phaseCurrentA));
-  assert.strictEqual(immutableChargingValue(owned), owned);
+  assert.ok(isImmutableValue(owned));
+  assert.ok(isImmutableValue(owned.intervals[0].scenarios[0].phaseCurrentA));
+  assert.strictEqual(immutableValue(owned), owned);
   const input = { plan: owned, duplicate: owned, request: { overrides: { minimumSoc: 80 } } };
-  const copy = copyChargingValue(input);
+  const copy = copyOwnedValue(input);
   assert.strictEqual(copy.plan, owned);
   assert.strictEqual(copy.duplicate, owned);
   copy.request.overrides.minimumSoc = 50;
@@ -47,8 +47,8 @@ test('owned calculations detach their producer and remain shared only as deeply 
 
 test('a caller shallow-freezing an object cannot grant sharing or freeze its producer descendants', () => {
   const source = Object.freeze({ nested: { value: 1 } });
-  assert.equal(isImmutableChargingValue(source), false);
-  const copied = copyChargingValue(source), owned = immutableChargingValue(source);
+  assert.equal(isImmutableValue(source), false);
+  const copied = copyOwnedValue(source), owned = immutableValue(source);
   copied.nested.value = 2; source.nested.value = 3;
   assert.equal(owned.nested.value, 1);
   assert.equal(copied.nested.value, 2);
@@ -59,30 +59,30 @@ test('selective snapshots preserve cycles, repeated aliases, sparse arrays and o
   const shared = { value: 1 }, source = { a: shared, b: shared, list: new Array(3) };
   source.self = source; source.list[2] = shared; source.list.extra = shared;
   Object.defineProperty(source, '__proto__', { value: { synthetic: true }, enumerable: true });
-  const result = copyChargingValue(source);
+  const result = copyOwnedValue(source);
   assert.deepEqual(result, structuredClone(source));
   assert.strictEqual(result.a, result.b);
   assert.strictEqual(result.a, result.list.extra);
   assert.strictEqual(result.self, result);
   assert.equal(0 in result.list, false);
   assert.equal(Object.getPrototypeOf(result), Object.prototype);
-  const owned = immutableChargingValue(source);
+  const owned = immutableValue(source);
   assert.strictEqual(owned.self, owned);
   assert.throws(() => { owned.list.extra.value = 2; }, TypeError);
 });
 
 test('mutable built-in graphs retain native clone aliases and cannot become owned immutable calculations', () => {
-  const owned = immutableChargingValue({ periods: [1, 2] }), date = new Date(AT);
+  const owned = immutableValue({ periods: [1, 2] }), date = new Date(AT);
   const source = { owned, date, duplicate: date, map: new Map() };
   source.map.set('parent', source); source.map.set('plan', owned);
-  const result = copyChargingValue(source);
+  const result = copyOwnedValue(source);
   assert.deepEqual(result, structuredClone(source));
   assert.strictEqual(result.date, result.duplicate);
   assert.strictEqual(result.map.get('parent'), result);
   assert.strictEqual(result.map.get('plan'), result.owned);
   assert.notStrictEqual(result.owned, owned);
-  assert.throws(() => immutableChargingValue({ date }), /plain immutable data/);
-  assert.equal(isImmutableChargingValue(date), false);
+  assert.throws(() => immutableValue({ date }), /plain immutable data/);
+  assert.equal(isImmutableValue(date), false);
   assert.equal(Object.isFrozen(date), false);
 });
 
@@ -107,12 +107,12 @@ test('nested and outer rollback retain immutable calculations but independently 
   assert.throws(() => store.transaction(() => {
     runtime.preserveWriteState();
     item.controls.enabled = true;
-    item.plan = immutableChargingValue(calculation('outer'));
+    item.plan = immutableValue(calculation('outer'));
     const outerPlan = item.plan;
     assert.throws(() => store.transaction(() => {
       runtime.preserveWriteState();
-      item.controls.enabled = false; item.plan = immutableChargingValue(calculation('inner'));
-      runtime.coordination = immutableChargingValue({ priority: 'charger1' });
+      item.controls.enabled = false; item.plan = immutableValue(calculation('inner'));
+      runtime.coordination = immutableValue({ priority: 'charger1' });
       throw new Error('inner rollback');
     }), /inner rollback/);
     assert.strictEqual(item.plan, outerPlan);

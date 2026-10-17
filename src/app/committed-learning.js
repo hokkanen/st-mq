@@ -1,3 +1,4 @@
+import { isImmutableValue } from '../domain/immutable.js';
 import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { createHash } from 'node:crypto';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint, updateAdaptiveLearning, updateAdaptiveEpisode } from '../control/adaptive-learning.js';
@@ -41,9 +42,14 @@ export function learningVersion(value) {
 /** Accidental-corruption detection, not authentication. Worker progress fields
  * are outside the model checkpoint; model/state, configuration and the applied
  * journal hash chain are covered. The digest never contains itself. */
+const immutableCheckpointDigests = new WeakMap();
 export function learningCheckpointDigest(checkpoint) {
+  if (isImmutableValue(checkpoint) && immutableCheckpointDigests.has(checkpoint))
+    return immutableCheckpointDigests.get(checkpoint);
   const { checkpointDigest, historyCursor, historyResampling, reconstruction, ...modelCheckpoint } = checkpoint;
-  return learningVersion(modelCheckpoint);
+  const digest = learningVersion(modelCheckpoint);
+  if (isImmutableValue(checkpoint)) immutableCheckpointDigests.set(checkpoint, digest);
+  return digest;
 }
 
 export function validLearningCheckpoint(checkpoint, lastEntry = null) {

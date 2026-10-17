@@ -1,3 +1,4 @@
+import { recordedEnergyGroups } from '../storage/energy-history.js';
 const finite = Number.isFinite;
 
 /** Read the same completed energy intervals as the chart, including the
@@ -10,6 +11,11 @@ export function recordedChargingEnergy(store, { id, start, end, device = null })
   const source = prefix === 'ev1' ? 'easee' : 'shelly-evse';
   const intervals = recordedEnergyGroups(store, { from: start, to: end, now: end,
     input: 'providers', prefix, source, device });
+  return summarizeRecordedChargingEnergy(intervals, { start, end });
+}
+
+/** Project already selected cohorts with the same coverage and overlap rules. */
+export function summarizeRecordedChargingEnergy(intervals, { start, end }) {
   const recordedIntervals = [];
   let gridKwh = 0, coveredMs = 0, cursor = start, continuousSince = null, lastMeasuredAt = null, incomplete = false;
   for (const row of intervals) {
@@ -26,4 +32,3 @@ export function recordedChargingEnergy(store, { id, start, end, device = null })
   return { gridKwh, coveredMs, lastMeasuredAt, continuousSince, intervals: recordedIntervals,
     incomplete: incomplete || end - cursor > 120_000, source: 'recorded-charger-energy' };
 }
-import { recordedEnergyGroups } from '../storage/energy-history.js';

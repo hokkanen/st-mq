@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
-import { copyChargingValue, immutableChargingValue } from '../src/charging/immutable.js';
+import { copyOwnedValue, immutableValue } from '../src/domain/immutable.js';
 
 const START = Date.parse('2026-10-16T12:00:00Z');
-const calculation = label => immutableChargingValue({ label, intervals: Array.from({ length: 64 }, (_, index) => ({
+const calculation = label => immutableValue({ label, intervals: Array.from({ length: 64 }, (_, index) => ({
   start: START + index * 900_000, scenarios: Array.from({ length: 32 }, (_, scenario) => ({ scenario, amps: 6 + index % 8 })),
 })) });
 
@@ -21,7 +21,7 @@ async function fixture(t) {
   });
   await store.runWrite(() => engine.tick());
   const current = { chargers: { charger2: { plan: calculation('committed'), control: { pause: false } } } };
-  t.mock.method(engine.charging, 'status', () => copyChargingValue(current));
+  t.mock.method(engine.charging, 'status', () => copyOwnedValue(current));
   return { store, engine, current };
 }
 
@@ -76,7 +76,7 @@ test('initial committed status detaches mutable charging controls while retainin
 
 test('failed tick restores detached charging controls and heating aliases without copying immutable plans', async t => {
   const { store, engine, current } = await fixture(t);
-  engine.latestStatus.charging = copyChargingValue(current);
+  engine.latestStatus.charging = copyOwnedValue(current);
   const previous = engine.latestStatus, plan = previous.charging.chargers.charger2.plan;
   const target = engine.settings.comfort.targetC;
   assert.strictEqual(previous.settings, engine.settings, 'the tick status aliases the current heating settings');
@@ -95,7 +95,7 @@ test('failed tick restores detached charging controls and heating aliases withou
 
 test('suspended tick returns detached status shells without duplicating immutable plans', async t => {
   const { engine, current } = await fixture(t);
-  engine.latestStatus.charging = copyChargingValue(current);
+  engine.latestStatus.charging = copyOwnedValue(current);
   engine.suspended = true;
   const view = engine.tick();
   assert.strictEqual(view.charging.chargers.charger2.plan, current.chargers.charger2.plan);
