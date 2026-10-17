@@ -885,6 +885,11 @@ the result is an informational **No recovery needed** result with a checkmark.
 It validates that slave snapshot, not whether every current master record has
 already been mirrored. Current synchronization and compatibility problems remain
 visible separately and take precedence over an earlier successful source check.
+Optional full verification retains its own observed checkpoint. The peer source
+is selected after its full check, and its read-only journal review precedes the
+master's full check, so ordinary mirroring can continue during the long scans.
+The result is published only after all requested checks succeed; it does not
+claim that the computers were at the same head throughout verification.
 For a shared configured-peer anchor, the check examines only consolidated
 changes since that checkpoint and their referenced evidence. Its counts and ranges describe that
 changed scope, not a full historical inventory. Category counts and first/last recorded dates in

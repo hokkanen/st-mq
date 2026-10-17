@@ -1018,11 +1018,13 @@ export class PairManager {
     const completedReceipt = previous?.report?.status === 'complete' ? previous : {};
     await this.state.update({ recovery: { ...completedReceipt, state: 'checking' } });
     try {
+      // Full verification pins its own observed boundary. Normal mirroring may
+      // advance meanwhile, so select the source checkpoint only after it ends.
+      if (verifyWithFullSnapshot) await this.peer.request('verify-checkpoint', {}, { timeoutMs: this.config.timeoutMs });
       const peerObservation = this.peerObservation;
       let metadata = validateSnapshot(await this.peer.request('checkpoint', {}, { timeoutMs: this.config.timeoutMs }));
       if (metadata.claim.role === 'master') throw pairError('authority_changed');
       if (peerObservation === this.peerObservation) this.recordPeerStatus(metadata.claim);
-      if (verifyWithFullSnapshot) await this.peer.request('verify-checkpoint', { checkpoint: metadata.checkpoint }, { timeoutMs: this.config.timeoutMs });
       const base = await this.commonPeerCheckpoint(metadata);
       let donorPath, donorJournalPath;
       if (base) donorJournalPath = await this.stageRecoveryJournal(metadata, base);

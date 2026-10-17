@@ -273,10 +273,13 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
   }
   function checkPath({ donorPath, donorJournalPath, source, requestId = randomUUID(), verifyWithFullSnapshot = false }) {
     return begin('check', requestId, source, async ({ signal, onProgress, isCurrent }) => {
-      await fullCheck(verifyWithFullSnapshot, [store.path, donorPath], { signal, onProgress });
       const module = await recoveryModule();
       const preview = await module.recoveryPreview({ masterPath: store.path, donorPath, donorJournalPath, input: input(),
         signal, onProgress });
+      // Read-only journal review depends on the current shared peer anchor.
+      // Review it before a long independent audit lets normal mirroring move
+      // that anchor. Nothing is published unless the requested audit succeeds.
+      await fullCheck(verifyWithFullSnapshot, [store.path, donorPath], { signal, onProgress });
       if (!isCurrent()) throw fail('recovery_authority_changed');
       state.review = { kind: 'recover', source, preview }; await persist();
       return preview;

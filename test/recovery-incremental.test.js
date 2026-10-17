@@ -7,9 +7,10 @@ import { recoveryPreview, recoverHistory, previewRecoveryRevision, reviseRecover
 import { Store } from '../src/storage/store.js';
 import { scopeIncrementalSource,openJournalSource } from '../src/recovery/incremental-source.js';
 import { commonCheckpoint, changedRecordKeys } from '../src/storage/journal.js';
-import { enrollJournalPeer } from '../src/storage/journal-peer.js';
+import { enrollJournalPeer, acceptPeerCheckpoint } from '../src/storage/journal-peer.js';
 import { PeerTransfers } from '../src/replication/coalesced.js';
 import { validRecoverySourceSummary } from '../src/recovery/coverage-report.js';
+import { createHistoryRecovery } from '../src/app/history-recovery.js';
 
 async function peerDonor(f){enrollJournalPeer(f.master.db);return f.donor();}
 
@@ -32,6 +33,28 @@ async function journalSource(f,donor,{truncate=false,corrupt=false,retired=false
   await writeFile(path,lines.join('\n')+'\n',{mode:0o600});
   return path;
 }
+
+test('a full source check keeps its reviewed journal boundary when mirroring advances during verification', async t => {
+  const f = fixture(t);
+  observation(f.master, start, 20);
+  const donor = await peerDonor(f), donorJournalPath = await journalSource(f, donor);
+  const engine = { config: { input: 'mqtt' } };
+  const coordinator = createHistoryRecovery({ store: f.master, getEngine: () => engine,
+    directory: join(f.directory, 'history-recovery'),
+    fullVerifier: async () => {
+      await f.master.runWrite(() => observation(f.master, start + 1000, 21));
+      await f.master.runStorageTask(() => acceptPeerCheckpoint(f.master.db));
+    } });
+  try {
+    await coordinator.initialize();
+    const preview = await coordinator.checkPath({ donorJournalPath,
+      source: { id: 'peer', kind: 'peer', label: 'Paired computer' }, verifyWithFullSnapshot: true });
+    assert.equal(preview.status, 'checked');
+    assert.equal(preview.incremental.records, 0);
+    assert.equal(f.master.observations().length, 2, 'Only the concurrent recording changed history');
+    assert.equal((await coordinator.view()).job.status, 'complete');
+  } finally { await coordinator.close(); }
+});
 
 test('populated shared history reports zero changed records even when the master has newer history',async t=>{
   const f=fixture(t);

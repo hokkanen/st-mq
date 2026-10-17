@@ -125,7 +125,7 @@ for (const outcome of ['success', 'failure', 'cancelled']) test(`recovery flushe
   }
 });
 
-test('full recovery verification is opt-in, runs before the operation and rejects invalid option types', async t => {
+test('full recovery verification is opt-in, required before publication and rejects invalid option types', async t => {
   const verified = [];
   const f = await fixture(t, { coordinator: { fullVerifier: async value => { verified.push(value.dbPath); } } });
   const source = await (await f.upload(await f.backup())).json();
@@ -145,6 +145,31 @@ test('full recovery verification is opt-in, runs before the operation and reject
   }
   assert.equal((await f.post(request('check', { sourceId: source.sourceId, installationConfirmed: true, verifyWithFullSnapshot: 'yes' }))).status, 400);
   assert.equal(verified.length, 8);
+});
+
+test('a reviewed source remains unpublished while its full verification is pending or fails', async t => {
+  const entered = deferred(), gate = deferred();
+  let reviewed = false;
+  const f = await fixture(t, { module: { recoveryPreview: async () => {
+    reviewed = true;
+    return { previewId: 'a'.repeat(64), status: 'checked', model: { status: 'not-assessed' } };
+  } }, coordinator: { fullVerifier: async () => {
+    assert(reviewed, 'The short source review precedes the independent full audit');
+    entered.resolve(); await gate.promise;
+    throw Object.assign(new Error('Synthetic full verification failure'), { code: 'database_integrity_failed' });
+  } } });
+  const done = f.coordinator.checkPath({ donorJournalPath: 'unused-synthetic-source',
+    source: { id: 'peer', kind: 'peer', label: 'Paired computer' }, verifyWithFullSnapshot: true });
+  const failed = assert.rejects(done, { code: 'database_integrity_failed' });
+  try {
+    await within(entered.promise);
+    let view = await f.coordinator.view();
+    assert.equal(view.job.status, 'running'); assert.equal(view.preview, null);
+    gate.resolve(); await failed;
+    view = await f.coordinator.view();
+    assert.equal(view.job.status, 'error'); assert.equal(view.preview, null);
+    assert.equal(view.job.errorCode, 'database_integrity_failed');
+  } finally { gate.resolve(); await failed; }
 });
 
 test('standalone upload, explicit source review, recovery publication and retry receipts share durable coordinator state', async t => {

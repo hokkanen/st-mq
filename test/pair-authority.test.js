@@ -9,6 +9,7 @@ import { Store } from '../src/storage/store.js';
 import { PairManager } from '../src/pairing/manager.js';
 import { readReplicaPublication, snapshotDigest } from '../src/replication/publication.js';
 import { acceptsLineage, compareAuthority, PairState } from '../src/pairing/state.js';
+import { recoveryPreview } from '../src/recovery/service.js';
 
 function createDatabase(path) {
   const db = new Store(path).db;
@@ -50,6 +51,34 @@ function connect(left, right) {
   left.peer.peerUrl = `http://127.0.0.1:${right.peer.server.address().port}`;
   right.peer.peerUrl = `http://127.0.0.1:${left.peer.server.address().port}`;
 }
+
+test('a full source check selects current peer metadata after verification while mirroring stays enabled', async t => {
+  const root = await fixture(t);
+  const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
+    recoveryPreview: ({ donorPath, donorJournalPath }) => recoveryPreview({
+      masterPath: primary.state.value.activeDbPath, donorPath, donorJournalPath, signal: t.signal }),
+  } });
+  const donor = await manager(t, root, 'donor', { role: 'slave' }); connect(primary, donor);
+  await donor.synchronize(primary.state.claim());
+  const verify = donor.fullVerification.bind(donor);
+  let verifiedCheckpoint;
+  donor.fullVerification = async (...args) => {
+    const result = await verify(...args); verifiedCheckpoint = result.checkpoint;
+    const store = new Store(primary.state.value.activeDbPath);
+    try { store.event('synthetic-recording-during-full-check', {}, 200); } finally { store.close(); }
+    await donor.synchronize(primary.state.claim());
+    assert.equal(donor.sync.state, 'ready', 'Source checks do not suspend normal mirroring');
+    return result;
+  };
+  await primary.action('check-recovery', { ...command(), verifyWithFullSnapshot: true });
+  const recovery = primary.state.value.recovery;
+  assert.equal(recovery.state, 'ready'); assert.equal(recovery.preview.status, 'checked');
+  assert(recovery.metadata.checkpoint.sequence > verifiedCheckpoint.sequence,
+    'Verification and the later source check retain their distinct observed boundaries');
+  assert.deepEqual(recovery.preview.incremental.checkpoint, recovery.metadata.checkpoint);
+  assert.equal(primary.canControl(), true); assert.equal(donor.canControl(), false);
+  assert.equal(donor.state.value.role, 'slave');
+});
 
 test('Hassio wins active claims regardless of promotion order; equal platforms agree by stable node ID', () => {
   const first = { nodeId: randomUUID(), epoch: randomUUID(), role: 'master', platform: 'hassio', sequence: 0 };
