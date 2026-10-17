@@ -60,6 +60,11 @@ semantic output fingerprints; and labels GC heap occupancy separately from total
 allocations. These measurements do not establish live Pi savings or physical
 charging behavior.
 
+The copy benchmark also measures status JSON serialization. Raw fingerprints
+describe complete representations and change when their shapes differ. Its
+retained calculation fingerprint compares schedules, published prices, costs,
+allocations and provenance independently of transient search vectors.
+
 `node scripts/benchmarks/controller-reads.js [source-root]` compares unchanged
 checkpoint validation, tick rollback and recorded-energy reads against a selected
 checkout using synthetic current journal inputs and a real temporary writer.

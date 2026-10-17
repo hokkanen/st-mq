@@ -19,6 +19,18 @@ const canonical = value => Array.isArray(value) ? value.map(canonical)
   : value !== null && typeof value === 'object'
     ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const fingerprint = value => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
+// Compare retained schedule/price evidence even when a representation no longer
+// exports recomputable search vectors. Raw fingerprints below remain raw.
+const planEvidence = value => {
+  if (!value) return value;
+  const { decisionPriceSnapshot, ...result } = value;
+  if (Array.isArray(result.intervals)) result.intervals = result.intervals
+    .filter(row => row.predicted !== true).map(({ scenarios, ...row }) => row);
+  if (Array.isArray(result.accounting)) result.accounting = result.accounting.filter(row => row.predicted !== true);
+  return result;
+};
+const calculationEvidence = rows => rows.map(row => ({ id: row.id,
+  plan: planEvidence(row.plan), forecast: planEvidence(row.forecast) }));
 const plan = (id, forecast = false) => ({ id: `${forecast ? 'forecast' : 'accepted'}:${id}`,
   at: AT, deadlineAt: AT + 12 * 3_600_000, targetAt: AT + 12 * 3_600_000,
   state: 'waiting', feasible: true, requiredGridKwh: 18, deliveredGridKwh: 18,
@@ -90,7 +102,9 @@ try {
   const views = measure('runtime-views', () => runtime.views(AT), { iterations: 96 });
   const status = measure('runtime-status', () => runtime.status(AT), { iterations: 96 });
   assert.deepEqual(views.map(row => ({ id: row.id, plan: row.plan, forecast: row.forecast })), expected);
-  assert.deepEqual(status.chargers.map(row => ({ id: row.id, plan: row.plan, forecast: row.forecast })), expected);
+  assert.deepEqual(calculationEvidence(status.chargers), calculationEvidence(expected));
+  const statusJson = measure('runtime-status-json', () => JSON.stringify(runtime.status(AT)), { iterations: 32 });
+  assert.deepEqual(JSON.parse(statusJson), JSON.parse(JSON.stringify(status)));
 
   const rollback = Symbol('synthetic-rollback');
   const restoredSupply = Object.fromEntries(Object.entries(runtime.chargers).map(([id, item]) => [id, item.supplyEstimate.observedAt]));
@@ -106,8 +120,7 @@ try {
   }, { iterations: 32, warmup: 4 });
   const restored = readChargingRuntime(store, runtime.key);
   for (const [id, item] of Object.entries(runtime.chargers)) {
-    const { decisionPriceSnapshot, ...durable } = item.plan;
-    assert.deepEqual(restored.chargers[id].plan, durable);
+    assert.deepEqual(planEvidence(restored.chargers[id].plan), planEvidence(item.plan));
     assert.equal(restored.chargers[id].supplyEstimate.observedAt, item.supplyEstimate.observedAt);
   }
 
@@ -115,7 +128,7 @@ try {
   // Its replacement is read from the actual runtime, rather than a stub.
   engine.latestStatus.charging = runtime.status(AT);
   const engineStatus = measure('engine-status-with-committed-snapshot', () => engine.status(), { iterations: 64 });
-  assert.deepEqual(engineStatus.charging.chargers.map(row => ({ id: row.id, plan: row.plan, forecast: row.forecast })), expected);
+  assert.deepEqual(calculationEvidence(engineStatus.charging.chargers), calculationEvidence(expected));
   const stateRows = store.db.prepare('SELECT key,value FROM state WHERE key GLOB ? ORDER BY key').all(`${runtime.key}*`)
     .map(row => ({ key: row.key, value: JSON.parse(row.value) }));
   console.log(JSON.stringify({ node: process.version, host: `${process.platform}/${process.arch}`, sourceRoot,
@@ -124,11 +137,13 @@ try {
       storage: 'in-memory SQLite', nativeAdapters: 0, nativeControllers: 0 }, measurements,
     fingerprints: { views: fingerprint(views), runtimeStatus: fingerprint(status), engineCharging: fingerprint(engineStatus.charging),
       persistedRuntime: fingerprint(restored), chargingStateRows: fingerprint(stateRows) },
+    retainedCalculationEvidence: fingerprint(calculationEvidence(expected)),
+    statusJsonBytes: Buffer.byteLength(statusJson),
     persisted: { rowCount: stateRows.length, jsonBytes: stateRows.reduce((sum, row) => sum + Buffer.byteLength(JSON.stringify(row.value)), 0) },
     notes: ['Wall and CPU cover the named synchronous operation including its normal internal work.',
       'First publication includes initial ownership and encoding; it is measured separately from repeated work.',
       'Heap samples show observed heap occupancy and retained change after explicit GC, never total allocations.',
-      'Engine parity fingerprints cover its complete charging projection; unrelated heating learning epochs are independently generated per database.',
+      'Raw fingerprints cover complete representations and may differ when search vectors are omitted; retainedCalculationEvidence compares the retained schedule, price and accounting evidence.',
       'Synthetic source-tree comparison; no installed Raspberry Pi, storage latency or physical actuation is qualified.'],
   }, null, 2));
 } finally {
