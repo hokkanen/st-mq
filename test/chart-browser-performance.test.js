@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chartLoadingLabel, readChartResponse } from '../chart/chart-stream.js';
 import { fetchChartResponse } from '../chart/chart-request.js';
-import { chartPrefetchSelection, createChartLoader, defaultPalette } from '../chart/history-model.js';
+import { createChartLoader, defaultPalette } from '../chart/history-model.js';
 import { selectedChartView } from '../chart/chart-views.js';
 import { chartGeometryKey, prepareChartGeometry, styleChartGeometry } from '../chart/chart-geometry.js';
 import { createChartGeometryCache } from '../chart/chart-geometry-cache.js';
@@ -48,7 +48,7 @@ test('chart stream survives split UTF8 and chunk boundaries and rejects unfinish
 test('chart requests keep authentication, timeout and abort ownership on the monitor side', async () => {
   const seen = [], progress = [];
   const result = await fetchChartResponse('http://fixture/api/chart', { headers: { Authorization: 'Bearer synthetic' } }, {
-    workerFactory: null, prefetch: true, onProgress: entry => progress.push(entry), fetchImpl: async (_url, options) => {
+    workerFactory: null, onProgress: entry => progress.push(entry), fetchImpl: async (_url, options) => {
       seen.push(options);
       return new Response(JSON.stringify({ type: 'progress', stage: 'queued' }) + '\n' + JSON.stringify({ type: 'result', data: data() }),
         { headers: { 'content-type': 'application/x-ndjson' } });
@@ -57,7 +57,7 @@ test('chart requests keep authentication, timeout and abort ownership on the mon
   assert.deepEqual(result.result, data());
   assert.equal(seen[0].headers.Authorization, 'Bearer synthetic');
   assert.equal(seen[0].headers.Accept, 'application/x-ndjson');
-  assert.equal(seen[0].headers['X-Chart-Prefetch'], '1');
+  assert.equal(seen[0].headers['X-Chart-Prefetch'], undefined);
   assert.equal(progress.length, 1);
   let signal;
   await assert.rejects(fetchChartResponse('http://fixture', {}, { workerFactory: null, timeoutMs: 10,
@@ -67,54 +67,25 @@ test('chart requests keep authentication, timeout and abort ownership on the mon
   assert.deepEqual(unauthorized, { response: { status: 401, ok: false }, result: {} });
 });
 
-test('fixed companion mapping is bounded to one inclusive week and never extends dates or explorer queries', () => {
-  assert.deepEqual(chartPrefetchSelection(selection), { ...selection, view: 'phases' });
-  assert.equal(chartPrefetchSelection({ ...selection, endDate: '2026-09-08' }), null);
-  assert.equal(chartPrefetchSelection({ ...selection, view: 'integral' }), null);
-  assert.equal(chartPrefetchSelection({ ...selection, viewFrom: 1 }), null);
-  assert.equal(chartPrefetchSelection({ ...selection, view: undefined, left: 'power' }), null);
-  assert.equal(chartPrefetchSelection({ ...selection, view: 'garage' }).view, 'garage_control');
-  assert.equal(chartPrefetchSelection({ ...selection, view: 'garage_control' }).view, 'garage');
-});
-
-test('selecting an in-flight companion reuses its request and later selections cancel it without publishing stale data', async () => {
+test('only selected charts are fetched, and changing selection cancels stale work', async () => {
   const requests = [];
-  const loader = createChartLoader({ api: (path, options) => new Promise(resolve => requests.push({ path, ...options, resolve })), prefetchDelay: 0 });
+  const loader = createChartLoader({ api: (path, options) => new Promise(resolve => requests.push({ path, ...options, resolve })) });
   const initial = loader.load(selection); await Promise.resolve(); requests[0].resolve(data()); await initial;
-  loader.prefetch(selection); await delay(5);
-  assert.equal(requests.length, 2); assert.equal(requests[1].prefetch, true);
-  const progress = [];
-  const companion = loader.load({ ...selection, view: 'phases' }, { onProgress: event => progress.push(event) });
-  await Promise.resolve();
-  assert.equal(requests.length, 2);
-  requests[1].onProgress({ stage: 'reading-energy' }); assert.equal(progress.length, 1);
-  const rejected = assert.rejects(companion, { name: 'AbortError' });
+  await delay(10); assert.equal(requests.length, 1, 'No companion or navigation prediction');
+  const obsolete = loader.load({ ...selection, view: 'phases' }); await Promise.resolve();
+  const rejected = assert.rejects(obsolete, { name: 'AbortError' });
   const chosen = loader.load({ ...selection, view: 'garage' }); await Promise.resolve();
-  assert.equal(requests[1].signal.aborted, true); assert.equal(requests[2].prefetch, false);
-  requests[2].resolve(data()); await chosen;
-  requests[1].resolve({ stale: true }); await rejected;
+  assert.equal(requests[1].signal.aborted, true);
+  requests[2].resolve(data()); await chosen; requests[1].resolve({ stale: true }); await rejected;
   loader.close();
 });
 
-test('unused prefetched charts are not polled again when their cache expires, and hidden pages do no speculation', async () => {
-  let time = Date.parse('2026-09-08T12:00:00Z'), hidden = false, calls = 0;
-  const loader = createChartLoader({ api: async () => { calls++; return data(); }, now: () => time,
-    canPrefetch: () => !hidden, prefetchDelay: 0, pastTtlMs: 10 });
-  await loader.load(selection); loader.prefetch(selection); await delay(5); assert.equal(calls, 2);
-  time += 20;
-  await loader.load(selection); loader.prefetch(selection); await delay(5); assert.equal(calls, 3, 'Only the selected chart refreshes');
-  const other = { ...selection, view: 'garage' }; hidden = true;
-  await loader.load(other); loader.prefetch(other); await delay(5); assert.equal(calls, 4);
-  loader.close();
-});
-
-test('response cache bounds retained vertices in addition to entry count and invalidation fences prefetch', async () => {
+test('response cache bounds retained vertices and invalidation reloads the selected chart', async () => {
   let calls = 0;
-  const loader = createChartLoader({ api: async () => { calls++; return data(); }, maxEntries: 6, maxRecords: 3, prefetchDelay: 0 });
+  const loader = createChartLoader({ api: async () => { calls++; return data(); }, maxEntries: 6, maxRecords: 3 });
   await loader.load(selection); await loader.load({ ...selection, view: 'garage' }); await loader.load(selection);
-  assert.equal(calls, 3, 'Two two-vertex responses cannot remain in a three-vertex cache');
-  loader.prefetch(selection); loader.invalidate(); await delay(5); assert.equal(calls, 3);
-  loader.close();
+  assert.equal(calls, 3);
+  loader.invalidate(); await loader.load(selection); assert.equal(calls, 4); loader.close();
 });
 
 test('response cache byte limit also bounds large metadata on charts with few vertices', async () => {
@@ -125,18 +96,6 @@ test('response cache byte limit also bounds large metadata on charts with few ve
   await loader.load(selection); await loader.load({ ...selection, view: 'garage' }); await loader.load(selection);
   assert.equal(calls, 3, 'Metadata bytes evict an entry even when its point count is small');
   loader.close();
-});
-
-test('returning to an unrelated cached chart cancels old speculation, while same-selection polls retain it', async () => {
-  const requests = [];
-  const loader = createChartLoader({ api: (path, options) => new Promise(resolve => requests.push({ path, ...options, resolve })), prefetchDelay: 0 });
-  const garage = { ...selection, view: 'garage' };
-  let loaded = loader.load(garage); await Promise.resolve(); requests[0].resolve(data()); await loaded;
-  loaded = loader.load(selection); await Promise.resolve(); requests[1].resolve(data()); await loaded;
-  loader.prefetch(selection); await delay(5);
-  await loader.load(selection); assert.equal(requests[2].signal.aborted, false);
-  await loader.load(garage); assert.equal(requests[2].signal.aborted, true);
-  requests[2].resolve(data()); await delay(0); loader.close();
 });
 
 test('semantic content revisions avoid traversing data and diagnostic-only changes do not redraw charts', () => {

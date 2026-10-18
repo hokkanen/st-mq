@@ -613,3 +613,24 @@ test('in-flight chart requests lease their generation across publication and old
   assert.equal(old.body.series.indoor_temperature[0].y, 21);
   assert.equal((await request(chartPath)).body.series.indoor_temperature[0].y, 25);
 });
+
+test('verified incremental publications retain an idle chart cache only across the exact journal prefix', async t => {
+  const directory = fixture(t), initial = journalSnapshot(directory, 'incremental-cache');
+  const fileGeneration = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
+  let publication = {...initial, fileGeneration}, created = 0;
+  const makeChartService = options => {created++; return createChartService(options);};
+  const {request} = await viewer(t,directory,()=>publication,{makeChartService});
+  const first = (await request(chartPath)).body;
+  const writer = new Store(initial.dbPath); t.after(()=>writer.close());
+  writer.setState('synthetic-incremental-publication-tick',{tick:1});
+  publication={...publication,generation:'synthetic-incremental-next',checkpoint:writer.checkpoint()};
+  const next=await request(chartPath);
+  assert.equal(next.status,200); assert.equal(created,1,'An intact idle cache transfers to the next verified publication');
+  assert.equal(next.body.meta.cacheHit,true); assert.deepEqual(next.body.series,first.series);
+  writer.observation({source:'test-fixture',device:'synthetic-sensor',signal:'indoor_temperature',value:25,unit:'degC',
+    sourceTime:at-30_000,receivedAt:at-30_000});
+  publication={...publication,generation:'synthetic-incremental-changed',checkpoint:writer.checkpoint()};
+  const changed=await request(chartPath);
+  assert.equal(changed.status,200); assert.equal(created,1);
+  assert(changed.body.series.indoor_temperature.some(point=>point.y===25));
+});

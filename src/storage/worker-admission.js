@@ -2,19 +2,56 @@ import { parentPort, workerData } from 'node:worker_threads';
 
 // Workers request a storage turn synchronously, without blocking the controller.
 // Release is acknowledged by the parent queue only after the native work ends.
-let sequence = 0, depth = 0;
+let sequence = 0, depth = 0, requestActive = false;
+const cancellation = workerData?.requestSignal ? new Int32Array(workerData.requestSignal) : null;
+export function setStorageRequestActive(value) { requestActive = value; }
+export function checkStorageRequest() {
+  if (requestActive && cancellation && Atomics.load(cancellation, 0))
+    throw Object.assign(new Error('Chart request aborted'), { name: 'AbortError' });
+}
 const signal = workerData?.storageSignal ? new Int32Array(workerData.storageSignal) : null;
+// A requested chart may share one short turn across small SQL calls.
+// Idle maintenance always releases after each operation.
+const storageLeaseMs = Number(workerData?.storageLeaseMs ?? 0);
+let held = null, releaseTimer = null, maintenance = false;
+export function releaseStorageLease() {
+  if (depth) return; // An enclosing native batch still owns this turn.
+  clearTimeout(releaseTimer); releaseTimer = null;
+  if (held) { const id = held.id; held = null; parentPort.postMessage({ storage: 'release', id }); }
+}
+export function setStorageMaintenance(value) {
+  if (maintenance !== Boolean(value)) releaseStorageLease();
+  maintenance = Boolean(value);
+}
+
 export function storageStep(operation) {
+  checkStorageRequest();
   if (!signal || depth) return operation();
-  const id = ++sequence;
-  Atomics.store(signal, 0, 0);
-  parentPort.postMessage({ storage: 'acquire', id });
-  while (Atomics.load(signal, 0) === 0) Atomics.wait(signal, 0, 0);
-  if (Atomics.load(signal, 0) !== 1)
-    throw Object.assign(new Error('Background storage admission was cancelled.'), { code: 'STORAGE_WRITE_CANCELLED' });
+  if (held && performance.now() >= held.deadline) releaseStorageLease();
+  if (!held) {
+    const id = ++sequence;
+    Atomics.store(signal, 0, 0); parentPort.postMessage({ storage: 'acquire', id, maintenance });
+    while (Atomics.load(signal, 0) === 0) Atomics.wait(signal, 0, 0);
+    if (Atomics.load(signal, 0) !== 1)
+      throw Object.assign(new Error('Background storage admission was cancelled.'), { code: 'STORAGE_WRITE_CANCELLED' });
+    held = { id, deadline: performance.now() + (maintenance ? 0 : storageLeaseMs) };
+  }
   depth++;
   try { return operation(); }
-  finally { depth--; parentPort.postMessage({ storage: 'release', id }); }
+  finally {
+    depth--;
+    if (maintenance || storageLeaseMs <= 0 || performance.now() >= held.deadline) releaseStorageLease();
+    else {
+      clearTimeout(releaseTimer);
+      releaseTimer = setTimeout(releaseStorageLease, Math.max(1, held.deadline - performance.now()));
+      releaseTimer.unref();
+    }
+  }
+}
+
+function storageCleanup(operation) {
+  const active = requestActive; requestActive = false;
+  try { return storageStep(operation); } finally { requestActive = active; }
 }
 
 /** A lease survives cancellation until the worker has actually exited. Never
@@ -33,7 +70,7 @@ export function attachStorageAdmission(worker, signal, run) {
       if (exited) return;
       Atomics.store(signal, 0, 1); Atomics.notify(signal, 0);
       await finished;
-    })).catch(() => {
+    }, { maintenance: message.maintenance === true })).catch(() => {
       if (!exited) { Atomics.store(signal, 0, -1); Atomics.notify(signal, 0); }
     }).finally(() => pending.delete(message.id));
   });
@@ -63,9 +100,10 @@ export function admittedReader(db) {
                 }
                 return batch;
               });
+              releaseStorageLease();
               yield* rows;
             }
-          } finally { if (!complete) storageStep(() => cursor.return?.()); }
+          } finally { if (!complete) storageCleanup(() => cursor.return?.()); }
         }
         return new Proxy(statement, {
           get(value, property) {

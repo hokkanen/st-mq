@@ -94,7 +94,7 @@ try {
     // Recreate the bounded-memory wire file from the durable private delivery
     // snapshot after an interrupted response or receiver restart.
     storageStep(()=>{try {unlinkSync(temporary);}catch(error){if(error.code!=='ENOENT')throw error;}});
-    const fd=storageStep(()=>openSync(temporary,'wx',0o600)),hash=createHash('sha256');let bytes=0,syncedBytes=0;
+    const fd=storageStep(()=>openSync(temporary,'wx',0o600)),hash=createHash('sha256');let bytes=0;
     const write=value=>{const chunk=Buffer.from(`${JSON.stringify(value)}\n`);writeAll(fd,chunk);hash.update(chunk);bytes+=chunk.length;};
     try {
       storageStep(()=>write({mode:'peer',...publicMetadata(metadata)}));
@@ -103,7 +103,8 @@ try {
         const rows=storageStep(()=>peerTransferRows(store.db,{id:metadata.id,afterOrdinal,limit:16,maxBytes:128*1024}));if(!rows.length)break;
         storageStep(()=>{
           for(const row of rows){write(row.change);afterOrdinal=row.ordinal;count++;}
-          if(bytes-syncedBytes>=128*1024){fsyncSync(fd);syncedBytes=bytes;}
+          // The durable spool can recreate this unpublished wire file.
+          // Publish only after the final file and directory sync below.
         });
       }
       if(count!==metadata.rows) invalid();

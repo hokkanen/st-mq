@@ -24,6 +24,8 @@ const effectiveFields = [
   ['controller.max_drop_c', c => c.settings?.comfort?.maxDropC],
   ['controller.h66_device', c => c.deviceId], ['controller.h66_verification_file', c => c.h66Verification],
   ['recording.backup_directory', c => c.recording?.backupDirectory],
+  ['charts.cache_days', c => c.charts?.cacheDays],
+  ['charts.cache_memory_mib', c => c.charts?.cacheBytes === undefined ? undefined : c.charts.cacheBytes / (1024 * 1024)],
   ...Object.entries({ directory: 'directory', ssh_host: 'sshHost', ssh_config: 'sshConfigPath', remote_directory: 'remoteDirectory',
     receiver_path: 'receiverPath', node_path: 'nodePath', rsync_path: 'rsyncPath', remote_rsync_path: 'remoteRsyncPath' })
     .map(([field, key]) => [`mirror.${field}`, c => c.mirror?.[key]]),

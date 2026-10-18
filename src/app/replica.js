@@ -20,7 +20,7 @@ import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
 import { CHARGER_DEFINITIONS } from '../charging/model.js';
 import { validateTargetState, validateTargetSelection } from '../charging/target.js';
 import { replicaReadModel, snapshotState } from './replica-read-model.js';
-import { matchingCheckpoint } from '../storage/journal.js';
+import { matchingCheckpoint, checkpointAt } from '../storage/journal.js';
 import { ReplicaCheckpointMismatchError, captureReplicaReadRefusalPhase } from './replica-errors.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
@@ -189,7 +189,7 @@ export async function startReplica({ config, clock = Date.now,
       // A publisher can advance twice between manifest read and worker startup.
       // Retry the latest manifest instead of opening an unverified fallback file.
       for (let attempt = 0; attempt < 3; attempt++) {
-        let store, chartService;
+        let store, chartService, borrowed = null;
         try {
           const publication = await readPublication(directory);
           if (!publication) {
@@ -203,19 +203,33 @@ export async function startReplica({ config, clock = Date.now,
             throw new Error('Replica checkpoint advanced during publication');
           store.expectedCheckpoint = publication.checkpoint;
           const recorded = recordedInput(store);
-          chartService = makeChartService({ store });
+          // Incremental publication keeps one physical file. Transfer its idle
+          // reader/cache owner only after proving that the new journal contains
+          // the exact previous boundary. Full replacements and leased readers
+          // retain independent lifetimes and the ordinary fresh-reader path.
+          const prior = current?.publication.checkpoint;
+          if (current && !current.references && publication.fileGeneration
+            && publication.fileGeneration === current.publication.fileGeneration
+            && publication.dbPath === current.publication.dbPath && prior
+            && matchingCheckpoint(checkpointAt(store.db, prior.sequence), prior)) {
+            borrowed = current; chartService = borrowed.chartService;
+            borrowed.store.expectedCheckpoint = publication.checkpoint;
+          } else chartService = makeChartService({ store, ...config.charts, clock });
           // Open the worker's file handle without computing a historical
           // overview. Existing requests can finish if a seeded file is retired.
           await chartService.pin?.();
           store.db.exec('ROLLBACK');
-          if (closed) { await chartService.close(); store.close(); return; }
+          if (borrowed) { store.close(); store = borrowed.store; }
+          if (closed) { if (!borrowed) { await chartService.close(); store.close(); } return; }
           const previous = current;
           current = { publication, store, chartService, ...recorded, references: 0, retired: false };
           lastError = null;
-          if (previous) { previous.retired = true; retire(previous); }
+          if (previous) { previous.retired = true; if (!borrowed) retire(previous); }
           return;
         } catch {
-          await chartService?.close(); store?.close();
+          if (borrowed) borrowed.store.expectedCheckpoint = borrowed.publication.checkpoint;
+          else await chartService?.close();
+          if (store && store !== borrowed?.store) store.close();
           lastError = 'The latest snapshot could not be opened. Check synchronization and matching application versions.';
         }
       }

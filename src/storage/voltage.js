@@ -1,3 +1,4 @@
+import { selectedHistoryPredicate } from './schema.js';
 import { voltageInput, validVoltageProvenance } from '../domain/voltage-provenance.js';
 import { observationTimeAdmitted, observationAvailableAt, validateAdmittedSourceTime } from '../domain/time-evidence.js';
 
@@ -336,7 +337,8 @@ function resultOf(phases) {
 
 /** Bounded point lookups within one immutable request. Source and receipt cutoffs
  * both apply, including to the explicit CSV retrospective fallback. */
-export function createVoltageReader(store, { input = 'live', now = Date.now() } = {}) {
+export function createVoltageReader(store, { input = 'live', now = Date.now(), pageRows = 0 } = {}) {
+  if (!Number.isInteger(pageRows) || pageRows < 0 || pageRows > 512) throw new RangeError('Invalid voltage read page size');
   const scope = input === 'simulated' ? "device='simulated'" : "device IN ('mqtt','providers','live')";
   const where = `source='voltage-estimate' AND ${scope} AND unit='V' AND received_at<=?`;
   const availableAt = 'MAX(source_time,received_at)';
@@ -359,6 +361,7 @@ export function createVoltageReader(store, { input = 'live', now = Date.now() } 
   // cross. Dense histories still fall back to the same indexed point lookups.
   const intervals = [[], [], []], cacheBytes = [0, 0, 0];
   const maxIntervals = 1024, maxCacheBytes = 512 * 1024;
+  let lookupAt = 0; const localCache = pageRows > 0;
   const position = (rows, at) => {
     let low = 0, high = rows.length;
     while (low < high) {
@@ -389,11 +392,72 @@ export function createVoltageReader(store, { input = 'live', now = Date.now() } 
     }
     else rows.splice(index, 0, row);
     cacheBytes[phase] += bytes;
-    while (rows.length > maxIntervals || cacheBytes[phase] > maxCacheBytes) cacheBytes[phase] -= rows.shift().bytes;
+    while (rows.length > maxIntervals || cacheBytes[phase] > maxCacheBytes) {
+      const distance = row => row.from > lookupAt ? row.from - lookupAt : row.to < lookupAt ? lookupAt - row.to : 0;
+      const evicted = localCache && distance(rows.at(-1)) > distance(rows[0]) ? rows.pop() : rows.shift();
+      cacheBytes[phase] -= evicted.bytes;
+    }
     return row;
+  };
+  // MAX(source_time, received_at) cannot seek the existing chronological
+  // indexes. Split its two disjoint cases, seek each original clock and merge
+  // a bounded page. This preserves late-publication ordering without repeatedly
+  // sorting the complete voltage history or adding a persisted index. Recovery
+  // TEMP overlays keep their existing point-reader semantics without index hints.
+  const page = pageRows > 0 && store.journalSource !== true ? ['source_time', 'received_at'].map(clock => {
+    const ordinary = clock === 'source_time';
+    const classification = ordinary ? 'received_at<=source_time' : 'received_at>source_time';
+    const selected = selectedHistoryPredicate('observations', 'observations');
+    const eligible = `${where} AND source_time<=? AND ${classification} AND ${selected}`;
+    return { firstAt: new Map(),
+      first: store.db.prepare(`SELECT MIN(${clock}) AS at FROM observations INDEXED BY observations_signal_time
+        WHERE ${eligible} AND signal=?`),
+      before: store.db.prepare(`SELECT *,${clock} AS available_at FROM observations
+        INDEXED BY ${ordinary ? 'observations_signal_time' : 'observations_receipt'}
+        WHERE ${eligible} AND signal=? AND ${clock}<=? ORDER BY ${clock} DESC,id DESC LIMIT 1`),
+      forward: store.db.prepare(`SELECT *,${clock} AS available_at FROM observations
+        INDEXED BY ${ordinary ? 'observations_time' : 'observations_receipt'} WHERE ${eligible}
+        AND signal IN ('voltage_estimate_l1','voltage_estimate_l2','voltage_estimate_l3')
+        AND ${clock}>? ORDER BY ${clock},id LIMIT ${pageRows}`),
+    };
+  }) : null;
+  const fillPage = at => {
+    const merged = []; let end = Infinity;
+    for (const stream of page) {
+      for (const signal of VOLTAGE_SIGNALS) if (!stream.firstAt.has(signal))
+        stream.firstAt.set(signal, stream.first.get(now, now, signal).at);
+      if (![...stream.firstAt.values()].some(value => value !== null)) continue;
+      let bytes = 0, count = 0;
+      for (const row of stream.forward.iterate(now, now, at)) {
+        merged.push(row); count++;
+        bytes += 512 + 2 * ((row.raw?.length ?? 0) + (row.quality?.length ?? 0));
+        if (bytes >= 128 * 1024 || count === pageRows) { end = Math.min(end, row.available_at); break; }
+      }
+    }
+    merged.sort((a, b) => a.available_at - b.available_at || a.id - b.id);
+    const rows = merged.slice(0, pageRows);
+    if (merged.length >= pageRows) end = Math.min(end, rows.at(-1).available_at);
+    for (const [phase, signal] of VOLTAGE_SIGNALS.entries()) {
+      let previous = null;
+      for (const stream of page) {
+        const first = stream.firstAt.get(signal);
+        const row = first !== null && first <= at ? stream.before.get(now, now, signal, at) : null;
+        if (row && (!previous || row.available_at > previous.available_at
+          || row.available_at === previous.available_at && row.id > previous.id)) previous = row;
+      }
+      for (const row of rows) {
+        if (row.signal !== signal || row.available_at >= end) continue;
+        if (previous?.available_at === row.available_at) { previous = row; continue; }
+        remember(phase, { from: previous?.available_at ?? 0, to: row.available_at, row: decoded(previous) });
+        previous = row;
+      }
+      remember(phase, { from: previous?.available_at ?? 0, to: end, row: decoded(previous) });
+    }
   };
   const lookup = (at, { allowFuture = false } = {}) => {
     if (!validTime(at) || at > now) return resultOf([null, null, null]);
+    lookupAt = at;
+    if (page && cached.some((_, phase) => !remembered(phase, at))) fillPage(at);
     const phases = VOLTAGE_SIGNALS.map((signal, phase) => {
       let cachedPhase = remembered(phase, at);
       if (!cachedPhase) {
@@ -410,19 +474,23 @@ export function createVoltageReader(store, { input = 'live', now = Date.now() } 
     });
     return resultOf(phases);
   };
-  lookup.boundaries = function* (from, to) {
-    if (cached.every((_, phase) => (remembered(phase, from)?.to ?? -Infinity) >= to)) return;
-    // Stream large exports in bounded pages. Most adjacent energy intervals
-    // stay inside the cached flat estimate and require no additional SQL.
-    const query = store.db.prepare(`SELECT DISTINCT ${availableAt} AS at FROM active_observations AS observations WHERE ${where}
+  const boundaryPages = [];
+  const boundaryQuery = store.db.prepare(`SELECT DISTINCT ${availableAt} AS at FROM active_observations AS observations WHERE ${where}
       AND signal IN ('voltage_estimate_l1','voltage_estimate_l2','voltage_estimate_l3')
       AND ${availableAt}>? AND ${availableAt}<? ORDER BY at LIMIT 1024`);
-    let cursor = from;
-    while (cursor < Math.min(to, now + 1)) {
-      const rows = query.all(now, cursor, Math.min(to, now + 1));
-      for (const row of rows) yield row.at;
-      if (rows.length < 1024) return;
-      cursor = rows.at(-1).at;
+  lookup.boundaries = function* (from, to) {
+    if (cached.every((_, phase) => (remembered(phase, from)?.to ?? -Infinity) >= to)) return;
+    const end = Math.min(to, now + 1); let cursor = from;
+    while (cursor < end) {
+      let page = boundaryPages.find(page => page.from <= cursor && page.to > cursor);
+      if (!page) {
+        const rows = boundaryQuery.all(now, cursor, now + 1).map(row => row.at);
+        page = { from: cursor, to: rows.length === 1024 ? rows.at(-1) : now + 1, rows };
+        boundaryPages.push(page); if (boundaryPages.length > 8) boundaryPages.shift();
+      }
+      for (const at of page.rows) if (at > cursor && at < end) yield at;
+      if (page.to >= end) return;
+      cursor = page.to;
     }
   };
   return lookup;

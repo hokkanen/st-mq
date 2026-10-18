@@ -1,26 +1,32 @@
+import { releaseStorageLease, checkStorageRequest } from '../storage/worker-admission.js';
 import { recordedEnergyGroups, recordedEnergyStart } from '../storage/energy-history.js';
 import { createVoltageReader } from '../storage/voltage.js';
 
 // Reuse source interpretation within one immutable chart request. This is not
 // a cross-request cache: recovery revisions, pending energy and receipt cutoffs
 // are read again for every request. Dense histories retain the streaming path.
-export function createChartQueryContext({ store, range, now, input, maxEnergyGroups = 16_384,
-  maxEnergyBytes = 8 * 1024 * 1024 }) {
+export function createChartQueryContext({ store, range, now, input, maxEnergyGroups = 65_536,
+  maxEnergyBytes = 32 * 1024 * 1024 }) {
   const starts = new Map();
   let energy = null, energyStats = null, attempted = false;
   const options = { from: range.from, to: range.to, now, input };
   return {
-    voltageReader: createVoltageReader(store, { input, now }),
+    voltageReader: createVoltageReader(store, { input, now, pageRows: 192 }),
     energyStart(prefix) {
       if (!starts.has(prefix)) starts.set(prefix, recordedEnergyStart(store, prefix, input, now));
       return starts.get(prefix);
     },
     *energyGroups(stats = { rows: 0 }, prefix) {
+      releaseStorageLease();
       if (energy) {
         // Drawing passes use the same full source-row accounting as the first
         // traversal. Extrema only need their selected logical prefix.
         Object.assign(stats, energyStats);
-        for (const group of energy) if (prefix === undefined || group.prefix === prefix) yield group;
+        let index = 0;
+        for (const group of energy) {
+          if ((index++ & 255) === 0) checkStorageRequest();
+          if (prefix === undefined || group.prefix === prefix) yield group;
+        }
         return;
       }
       if (attempted || prefix !== undefined) {

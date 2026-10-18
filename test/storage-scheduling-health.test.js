@@ -24,7 +24,7 @@ test('configuration comes from the owning connection and health reads never issu
   const [major, minor] = store.db.prepare('SELECT sqlite_version() AS version').get().version.split('.').map(Number);
   if (major > 3 || major === 3 && minor >= 51) {
     assert.equal(config.checkpoint.mode, 'queued-passive');
-    assert.equal(config.checkpoint.triggerFrames, 50); assert.equal(config.checkpoint.maxDirtyMs, 5000);
+    assert.equal(config.checkpoint.triggerFrames, 1000); assert.equal(config.checkpoint.maxDirtyMs, 5000);
     assert.equal(config.checkpoint.fallbackPollMs, null);
   } else {
     assert.equal(config.checkpoint.mode, 'periodic-passive');

@@ -75,7 +75,9 @@ For example, all callbacks can arrive while their storage admission is still
 pending. These counts describe the failure snapshot, not its hardware or network
 cause. Missing queue evidence stays null. Details contain no broker/device
 identifiers, topics, raw errors or payloads; successful startup emits no extra log.
-The ten-second wait, durable gate and protected recovery remain unchanged. Resolve
+Primary subscription readiness allows twenty seconds for native callbacks and
+their durable admission. Explicit admission failures fail promptly. The durable
+gate and protected recovery remain unchanged. Resolve
 the reported problem and review current roles before explicitly retrying promotion.
 
 If normal dashboard status fails while the paired application is in protected

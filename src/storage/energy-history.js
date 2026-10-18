@@ -29,6 +29,18 @@ const physicalWriter = "COALESCE(json_extract(CASE WHEN json_valid(raw) THEN raw
 const prefixOf = signal => signal.startsWith('ev1_') ? 'ev1'
   : signal.startsWith('ev2_energy_l') ? 'ev2' : signal==='caravan_energy' ? 'caravan' : 'property';
 const totalOnly = prefix => prefix === 'caravan';
+const decodedRows = new WeakMap();
+
+function energyRow(row) {
+  let value = decodedRows.get(row);
+  if (!value) {
+    const raw = JSON.parse(row.raw), flags = JSON.parse(row.quality);
+    value = { raw, flags, validQuality: validEnergyQuality(flags),
+      transport: recordedTransport({ ...row, raw, quality: flags }) };
+    decodedRows.set(row, value);
+  }
+  return value;
+}
 
 export function recordedEnergyStart(store, prefix, input, now) {
   if (!Number.isFinite(now)) throw new TypeError('Energy selection requires an explicit receipt cutoff');
@@ -77,7 +89,25 @@ function* rawRows(store, { from, to, now, input, prefix, source, device }) {
   // The geometry index streams complete cohorts in start order. JavaScript
   // retains one cohort, one overlap cluster and one gap per logical scope; no full-range
   // sort or source-row array is needed, including multi-year selections.
-  const iterator = store.db.prepare(`SELECT id,source,device,signal,value,unit,source_time,received_at,quality,raw
+  const resident = store.chartSource;
+  const cached = resident?.covers(from, now + 1, now, store.chartHead, store.chartRevision);
+  const residentRows = () => {
+    const rows = [];
+    for (const row of resident.iterate({ from, to: now + 1, now, input, signals, scope: 'energy' })) {
+      if (row.import_id !== null || row.source_time <= from
+        || source !== undefined && row.source !== source || device != null && row.device !== device) continue;
+      let raw; try { ({ raw } = energyRow(row)); } catch { continue; }
+      if (raw?.timeBasis === 'completed-hour' || !Number.isSafeInteger(raw?.intervalStart)
+        || raw.intervalStart >= to || raw.intervalEnd !== row.source_time || row.source_time <= raw.intervalStart) continue;
+      rows.push(row);
+    }
+    const text = (a, b) => a === b ? 0 : Buffer.compare(Buffer.from(a), Buffer.from(b));
+    rows.sort((a, b) => energyRow(a).raw.intervalStart - energyRow(b).raw.intervalStart
+      || a.source_time - b.source_time || text(a.source, b.source) || text(a.device, b.device)
+      || text(prefixOf(a.signal), prefixOf(b.signal)) || a.id - b.id);
+    return rows[Symbol.iterator]();
+  };
+  const iterator = cached ? residentRows() : store.db.prepare(`SELECT id,source,device,signal,value,unit,source_time,received_at,quality,raw
     FROM observations${indexHint}
     WHERE signal IN (${ENERGY_SIGNALS.map(signal => `'${signal}'`).join(',')}) AND import_id IS NULL
     AND ${selectedHistoryPredicate('observations', 'observations')}
@@ -164,8 +194,8 @@ function* rawGroups(rows, stats, now) {
   let key = null, group = null;
   for (const row of rows) {
     stats.rows++;
-    let raw, flags;
-    try { raw = JSON.parse(row.raw); flags = JSON.parse(row.quality); } catch { continue; }
+    let raw, flags, validQuality, transport;
+    try { ({ raw, flags, validQuality, transport } = energyRow(row)); } catch { continue; }
     if (!Number.isSafeInteger(raw?.intervalStart) || !Number.isSafeInteger(raw?.intervalEnd)
       || raw.intervalEnd <= raw.intervalStart || raw.intervalEnd !== row.source_time
       || !observationTimeAdmitted({ sourceTime: row.source_time, receivedAt: row.received_at, raw }, now)) continue;
@@ -176,18 +206,18 @@ function* rawGroups(rows, stats, now) {
       if (group) yield group;
       key = nextKey;
       group = { source: row.source, device: row.device, prefix, start: raw?.intervalStart, end: raw?.intervalEnd,
-        basis: raw?.basis, receivedAt: row.received_at, pending: raw?.pending === true, transport: recordedTransport(row),
+        basis: raw?.basis, receivedAt: row.received_at, pending: raw?.pending === true, transport,
         availabilityGap: true, observationIds: [], values: totalOnly(prefix)?[null]:[null, null, null] };
     }
     group.availabilityGap &&= availabilityGap;
     group.receivedAt = Math.max(group.receivedAt, row.received_at);
-    if (group.transport !== recordedTransport(row)) group.transport = null;
+    if (group.transport !== transport) group.transport = null;
     const index = totalOnly(prefix)?0:Number(row.signal.at(-1)) - 1;
     if (group.seen?.has(index)) group.conflict = true;
     (group.seen ??= new Set()).add(index);
     if (Number.isSafeInteger(row.id)) group.observationIds[index] = row.id;
     group.values[index] = !raw.auditOnly && !raw.acquisitionOnly && row.unit === 'kWh' && Number.isFinite(row.value) && row.value >= 0
-      && validEnergyQuality(flags) ? row.value : null;
+      && validQuality ? row.value : null;
   }
   if (group) yield group;
 }

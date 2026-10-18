@@ -6,6 +6,16 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep a configurable 0–14 day chart window in RAM, updated incrementally at idle
+  priority. Preserve it during long history requests, reuse energy reconstruction
+  between views, retain completed plots across unrelated new readings and compress
+  chart responses. Remove navigation-based companion fetching.
+- Reduce repeated voltage/energy reads on cold charts, use a 1000-frame managed
+  checkpoint trigger and avoid redundant durability barriers in private mirroring
+  scratch work. Preserve FULL source commits and final transfer publication.
+- Allow twenty seconds for MQTT startup subscription admission and report explicit
+  admission failure promptly.
+
 - Keep successfully identified vehicles and their battery planning references
   through inconclusive shared charging starts/stops in the same connection,
   including after restart. Continue to withdraw identities on clear contradictory

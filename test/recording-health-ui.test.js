@@ -509,6 +509,7 @@ test('storage scheduling renders actual policy, background ownership and separat
   const view = storageSchedulingView(value, { now });
   assert.match(view.checkpointPolicy, /37 outstanding frames.*7.2 s.*not a frame cap/);
   assert.doesNotMatch(view.checkpointPolicy, /50 outstanding frames/);
+  assert.match(view.policy, /Chart cache waits for all other work/);
   assert.equal(view.execution, 'Dedicated worker'); assert.equal(view.durability, 'WAL · synchronous FULL');
   assert.equal(view.active, 'WAL checkpoint · 1.2 s elapsed');
   assert.match(view.checkpointFrames, /12 outstanding of 82 WAL frames/);

@@ -25,6 +25,32 @@ changes when a configured sensor goes offline. The one learned reference, therma
 model and comfort limits use this same average. See the
 [temperature policy](temperature-sensors.md).
 
+## Chart memory
+
+`charts.cache_days` selects 0–14 recent days in RAM (default 7), plus the current
+calendar day and the reader's bounded context. Zero disables the resident window.
+All chart views share these committed inputs; no navigation prediction or companion
+prefetch runs. New committed observations update the window incrementally. Source
+and receipt cutoffs, completed imports and the selected recovery history still
+apply. Older and longer selections read SQLite through an independent archive
+worker without evicting recent history.
+
+`charts.cache_memory_mib` is the aggregate estimated retained-cache budget, 64–2048 MiB
+(default 1024). Recent source inputs, reusable energy reconstruction and prepared
+responses have separate bounded shares. This is not a process RSS cap: requested
+working data, SQLite, worker runtimes and browser memory are additional. Dense
+recording can shorten the resident window; increase the budget for a longer or
+denser window when the host has room. The cache never changes database retention.
+No chart summaries or extra observations are persisted.
+
+Apply configuration through the existing settings workflow to resize, disable or
+reenable the cache without restarting the application. Existing configuration
+application and device reconnection behavior is unchanged. Background warming
+reads short batches at the lowest storage priority; it may wait indefinitely for
+important work and never delays startup readiness. Each batch releases its SQLite
+snapshot. Requested charts remain available while warming and fall back to the
+ordinary reader whenever the resident head is not current.
+
 ## Where a setting belongs
 
 | Location | Purpose |

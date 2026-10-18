@@ -467,11 +467,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     }
     const finish = error => { clearTimeout(timer); primary.readinessWaiters.delete(finish); error ? reject(error) : resolve(); };
     const timer = setTimeout(() => finish(readinessFailure(new Error('MQTT primary subscription readiness timed out'),
-      'primary-subscriptions', 'timeout')), 10_000);
+      'primary-subscriptions', 'timeout')), 20_000);
     primary.readinessWaiters.add(finish);
   });
   const ready = async () => {
-    const deadline = Date.now() + 10_000;
+    const deadline = Date.now() + 20_000;
     await primaryReady();
     // Shelly owns its RPC subscriptions directly on the primary client. Wait
     // for their SUBACK as well, without waiting for a device to be online.
@@ -629,7 +629,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
               };
               if (store.afterCommit) store.afterCommit(finish); else finish();
             }
-          }, { isCurrent: currentSubscription, onFailure: () => countStartup(counts, 'admissionFailures') });
+          }, { isCurrent: currentSubscription, onFailure: () => {
+            countStartup(counts, 'admissionFailures');
+            if (currentSubscription()) finishReadiness(channel, true);
+          } });
         };
         try { client.subscribe(topic, options, done); }
         catch { done(new Error('MQTT subscription failed')); }

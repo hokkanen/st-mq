@@ -371,16 +371,6 @@ export function chartQuery(selection) {
   return `/api/chart?${params}`;
 }
 
-/** One explicit companion per group, only for an inclusive week or less. No
- * preference learning, adjacent-date multiplication or background polling. */
-export function chartPrefetchSelection(selection) {
-  const companion = { power: 'phases', phases: 'charging_currents', charging_currents: 'power',
-    garage: 'garage_control', garage_control: 'garage' }[selection.view];
-  const days = (Date.parse(selection.endDate) - Date.parse(selection.startDate)) / 86_400_000 + 1;
-  if (!companion || days < 1 || days > 7 || selection.viewFrom !== undefined) return null;
-  return { ...selection, view: companion };
-}
-
 export function chartResponseWeight(data) {
   // Count retained records without serializing payloads on the browser thread.
   // Strings/metadata are included in the transport byte bound when supplied.
@@ -389,22 +379,19 @@ export function chartResponseWeight(data) {
     + (data.operatingModes?.length ?? 0);
 }
 
-/** Bounded LRU plus last-request-wins cancellation. A selected prefetch keeps
- * its running request; unrelated speculation is aborted before foreground work. */
+/** Bounded display LRU with last-request-wins cancellation. Resident history
+ * warming belongs to the server and never predicts navigation. */
 export function createChartLoader({ api, now = Date.now, maxEntries = 6, maxRecords = 160_000,
-  maxBytes = 32 * 1024 * 1024, liveTtlMs = 60_000, pastTtlMs = 300_000, prefetchDelay = 350,
-  canPrefetch = () => typeof document === 'undefined' || !document.hidden }) {
+  maxBytes = 32 * 1024 * 1024, liveTtlMs = 60_000, pastTtlMs = 300_000 }) {
   const cache = new Map();
-  let pending, speculative, timer, wantedPath, prefetchedPath, generation = 0, cacheWeight = 0, cacheBytes = 0, closed = false;
+  let pending, generation = 0, cacheWeight = 0, cacheBytes = 0, closed = false;
   function forget(path) {
     const entry = cache.get(path);
     if (entry) { cacheWeight -= entry.weight; cacheBytes -= entry.bytes; }
     cache.delete(path);
   }
-  function clearTimer() { clearTimeout(timer); timer = undefined; }
-  function cancelPrefetch() { clearTimer(); speculative?.controller.abort(); speculative = undefined; }
   function cancel() { pending?.controller.abort(); pending = undefined; }
-  function invalidate() { generation++; cache.clear(); cacheWeight = cacheBytes = 0; prefetchedPath = undefined; cancel(); cancelPrefetch(); }
+  function invalidate() { generation++; cache.clear(); cacheWeight = cacheBytes = 0; cancel(); }
   function cached(selection, today) {
     const path = chartQuery(selection), entry = cache.get(path);
     const longRange = Date.parse(selection.endDate) - Date.parse(selection.startDate) >= 7 * 86400000;
@@ -423,58 +410,32 @@ export function createChartLoader({ api, now = Date.now, maxEntries = 6, maxReco
     cache.set(request.path, { data, at: now(), weight, bytes }); cacheWeight += weight; cacheBytes += bytes;
     while (cache.size > maxEntries || cacheWeight > maxRecords || cacheBytes > maxBytes) forget(cache.keys().next().value);
   }
-  function start(selection, prefetch, onProgress) {
+  function start(selection, onProgress) {
     const path = chartQuery(selection), sequence = generation, controller = new AbortController();
     const request = { path, controller, onProgress };
-    request.promise = Promise.resolve().then(() => api(path, { signal: controller.signal, prefetch,
+    request.promise = Promise.resolve().then(() => api(path, { signal: controller.signal,
       onProgress(progress) { request.progress = progress; request.onProgress?.(progress); } })).then(data => {
       if (closed || sequence !== generation || controller.signal.aborted)
         throw new DOMException('A newer chart selection is active.', 'AbortError');
       remember(request, data); return data;
     }).finally(() => {
       if (pending === request) pending = undefined;
-      if (speculative === request) speculative = undefined;
     });
     return request;
   }
   function load(selection, { force = false, today = finnishDate(now()), onProgress } = {}) {
     if (closed) return Promise.reject(new DOMException('Chart closed', 'AbortError'));
     const path = chartQuery(selection);
-    const changed = wantedPath !== path;
-    if (changed) { wantedPath = path; prefetchedPath = undefined; clearTimer(); }
     if (pending?.path === path) {
       pending.refreshRequested ||= force; pending.onProgress = onProgress;
       if (pending.progress) onProgress?.(pending.progress);
       return pending.promise;
     }
     cancel();
-    if (speculative?.path === path) {
-      pending = speculative; speculative = undefined;
-      pending.refreshRequested ||= force; pending.onProgress = onProgress;
-      if (pending.progress) onProgress?.(pending.progress);
-      return pending.promise;
-    }
-    if (changed) cancelPrefetch();
     const data = !force && cached(selection, today);
     if (data) return Promise.resolve(data);
-    cancelPrefetch();
-    pending = start(selection, false, onProgress);
+    pending = start(selection, onProgress);
     return pending.promise;
   }
-  function prefetch(selection, { today = finnishDate(now()) } = {}) {
-    const path = chartQuery(selection);
-    if (prefetchedPath === path) return;
-    const target = chartPrefetchSelection(selection);
-    if (closed || !target || !canPrefetch() || pending || speculative || cached(target, today)) return;
-    prefetchedPath = path;
-    clearTimer();
-    timer = setTimeout(() => {
-      timer = undefined;
-      if (closed || !canPrefetch() || pending || speculative || cached(target, today)) return;
-      speculative = start(target, true);
-      // Speculation never replaces the selected chart or displays errors.
-      void speculative.promise.catch(() => {});
-    }, Math.max(0, prefetchDelay));
-  }
-  return { load, prefetch, cancelPrefetch, invalidate, close() { invalidate(); closed = true; } };
+  return { load, invalidate, close() { invalidate(); closed = true; } };
 }

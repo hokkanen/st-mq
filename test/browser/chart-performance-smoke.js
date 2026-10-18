@@ -131,11 +131,11 @@ try {
   }
   await measure('garage/week', "chooseView('garage')", "document.getElementById('history').dataset.ready==='true'&&document.getElementById('history').dataset.view==='garage'");
   if (!baseline) {
-    for (let attempt = 0; attempt < 100 && !requests.some(row => row.prefetch && row.view === 'garage_control' && row.completed); attempt++) await pause(50);
-    assert(requests.some(row => row.prefetch && row.view === 'garage_control' && row.completed), 'Garage companion prefetched');
+    await pause(100);
+    assert(!requests.some(row => row.prefetch), 'No navigation prediction requests');
     const before = requests.length;
-    await measure('garage/cached-companion', "chooseView('garage_control')", "document.getElementById('history').dataset.ready==='true'&&document.getElementById('history').dataset.view==='garage_control'");
-    assert.equal(requests.slice(before).filter(row => !row.prefetch).length, 0, 'Companion switch reuses response without foreground fetch');
+    await measure('garage/other-view', "chooseView('garage_control')", "document.getElementById('history').dataset.ready==='true'&&document.getElementById('history').dataset.view==='garage_control'");
+    assert.equal(requests.length - before, 1, 'A different view is fetched only when selected');
     await evaluate("setDates('2025-01-01','2025-01-01')");
     await until("document.getElementById('chart-status').textContent.includes('1%')");
     assert.equal(await evaluate("document.getElementById('date-start').disabled||document.getElementById('range-today').disabled"), false);

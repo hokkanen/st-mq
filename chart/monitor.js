@@ -182,7 +182,7 @@ async function api(path, data, options = {}) {
     signal, method: data === undefined ? 'GET' : 'POST',
     headers: { ...headers, ...(data === undefined ? {} : { 'Content-Type': options.binary ? 'application/vnd.sqlite3' : 'application/json' }) },
     ...(data === undefined ? {} : { body: options.binary ? data : JSON.stringify(data) }),
-  }, chartRead ? { onProgress: options.onProgress, prefetch: options.prefetch } : undefined), options);
+  }, chartRead ? { onProgress: options.onProgress } : undefined), options);
   if (response.status === 401) {
     lockScreen({ authenticationFailed: true });
     const error = new Error(authenticationMessage(ingress)); error.status = response.status; throw error;

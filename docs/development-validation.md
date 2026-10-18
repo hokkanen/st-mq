@@ -562,9 +562,11 @@ their owned gates release before manager cleanup even if a fake SDK ignores abor
 `test/mqtt-startup-readiness-diagnostic.test.js` drives real MQTT.js protocol
 packets through an owned in-memory stream and holds a real synthetic SQLite writer.
 It distinguishes delivered SUBACK callbacks from Store commit admission using the
-unchanged ten-second wall timer, and covers close, transport loss, absent CONNACK,
+actual twenty-second wall timer, and covers close, transport loss, absent CONNACK,
 rejected grants, unknown queue evidence and stale callbacks after replacement.
-No household broker or equipment is contacted. `test/mqtt-startup-diagnostic.test.js`
+A progressing-admission fixture also completes after the former ten-second
+limit. Transport-loss and absent-CONNACK diagnostic tests accelerate only the
+readiness timer. No household broker or equipment is contacted. `test/mqtt-startup-diagnostic.test.js`
 checks bounded immutable provenance and private-value refusal; paired startup tests
 retain protected fallback even when the diagnostic sink fails. These diagnostic
 fixtures do not qualify native reconnect budgets or infer the cause of a live timeout.
@@ -723,7 +725,7 @@ unchanged refresh, theme changes and frame gaps; verifies companion-cache reuse,
 loading progress and aborting a stalled request by selecting Today; and checks
 320/390-pixel layouts and both themes. Screenshots remain in its printed temporary
 artifact directory. `--source /path/to/checkout --baseline` runs its comparable
-pre-optimization workload without requiring the new prefetch/progress behavior.
+pre-optimization workload without requiring the current progress behavior.
 These checks make no household connections and do not measure Raspberry Pi or
 phone hardware. The stalled browser stream is injected; the real-worker tests
 below separately cancel an active history scan.
@@ -738,7 +740,7 @@ estimated 512 KiB per phase; source interpretation and recorded rows are unchang
 `test/chart-worker-transport.test.js` covers active cancellation, independent
 speculation, worker retirement/failure, concurrent recording, response equality
 and authentication revocation during streaming. `test/chart-browser-performance.test.js`
-covers cache bounds, late responses, prefetch policy, stream parsing and geometry
+covers cache bounds, late responses, absence of navigation prediction, stream parsing and geometry
 reuse. Keep the existing chart provenance, gap, extrema, recovery, voltage,
 temperature-geometry and accounting tests alongside these checks.
 
@@ -1443,3 +1445,10 @@ The Executor process-death matrix repeats each retained restoration and authorit
 case with direct storage and the dedicated writer. The routine and extended
 recovery responsiveness workloads also use the dedicated runtime writer; their
 original latency, replay and historical-evidence assertions remain unchanged.
+
+`test/chart-source-cache.test.js` checks bounded catch-up, receipt/source scope,
+calendar movement, capacity convergence and disabling. Chart transport tests cover
+resident/archive isolation, current-head invalidation, live reconfiguration,
+released maintenance snapshots, gzip and cancellation. Storage-priority tests
+verify chart warming remains behind requested work with direct and worker writers.
+These are synthetic correctness checks, separate from measured host performance.

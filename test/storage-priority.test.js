@@ -143,8 +143,46 @@ test('managed checkpoint owns FULL synchronization and leaves ordinary saves out
   const policy=await store.runPublication(()=>({auto:store.writer.call('statement',{sql:'PRAGMA wal_autocheckpoint',method:'get'}).wal_autocheckpoint,
     synchronous:store.writer.call('statement',{sql:'PRAGMA synchronous',method:'get'}).synchronous}));
   assert.deepEqual(policy,{auto:0,synchronous:2});
-  await store.runWrite(()=>store.setState('large',{text:'x'.repeat(512*1024)}));
+  // Accumulate beyond the current trigger without relying on its old value.
+  for (let n=0;n<8;n++) await store.runWrite(()=>store.setState('large-'+n,{text:'x'.repeat(512*1024)}));
   const checkpoint=await store.runStorageTask(()=>store.writer.request('checkpoint'),{kind:'checkpoint'});
   assert.equal(checkpoint.ran,true);assert.equal(checkpoint.log,checkpoint.checkpointed);
-  assert.equal(store.getState('large').text.length,512*1024);verifyJournal(store.db);
+  assert.equal(store.getState('large-7').text.length,512*1024);verifyJournal(store.db);
+});
+
+for (const worker of [false, true]) test(`chart warming yields to every requested storage task (${worker ? 'worker' : 'direct'} writer)`, async t => {
+  const { store } = await fixture(t); if (worker) await store.startWriter(); store.walMaintenance?.close();
+  const order = []; let enter, release;
+  const started = new Promise(resolve => { enter = resolve; });
+  const held = store.runStorageTask(async () => { enter(); await new Promise(resolve => { release = resolve; }); });
+  await started;
+  const cache = store.runStorageTask(() => order.push('cache'), {kind: 'chart-cache'});
+  const history = store.runStorageTask(() => order.push('history'), {kind: 'history'});
+  const mirror = store.runStorageTask(() => order.push('mirror'), {kind: 'mirror'});
+  const writes = Array.from({length: 40}, () => store.runWrite(() => order.push('write')));
+  release(); await Promise.all([held, cache, history, mirror, ...writes]);
+  assert.equal(order.at(-1), 'cache'); assert(order.indexOf('history') < order.indexOf('mirror'));
+});
+
+test('an enclosing cache batch retains its turn through cursor yields and releases only after ROLLBACK', async t => {
+ const {store}=await fixture(t);await store.startWriter();store.walMaintenance.close();
+ const signal=new Int32Array(new SharedArrayBuffer(4)),gate=new Int32Array(new SharedArrayBuffer(4));
+ const url=new URL('../src/storage/worker-admission.js',import.meta.url).href;
+ const worker=new Worker(new URL('data:text/javascript,'+encodeURIComponent(`
+  import {parentPort,workerData} from 'node:worker_threads';import {DatabaseSync} from 'node:sqlite';
+  import {storageStep,admittedReader,setStorageMaintenance} from ${JSON.stringify(url)};
+  setStorageMaintenance(true);const db=admittedReader(storageStep(()=>new DatabaseSync(workerData.path,{readOnly:true})));
+  storageStep(()=>{db.exec('BEGIN');let n=0;
+   for(const row of db.prepare('WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<256) SELECT x FROM n').iterate())
+    if(++n===64){parentPort.postMessage({midpoint:true});Atomics.wait(new Int32Array(workerData.gate),0,0);}
+   db.exec('ROLLBACK');
+  });db.close();parentPort.close();
+ `)),{workerData:{storageSignal:signal.buffer,gate:gate.buffer,path:store.path}});
+ t.after(()=>{Atomics.store(gate,0,1);Atomics.notify(gate,0);return worker.terminate();});
+ attachStorageAdmission(worker,signal,(operation,{maintenance})=>store.runStorageTask(operation,{kind:maintenance?'chart-cache':'history'}));
+ await new Promise(resolve=>worker.on('message',message=>{if(message.midpoint)resolve();}));
+ let committed=false;const urgent=store.runWrite(()=>{committed=true;store.setState('after-cache-batch',1);},{priority:'control'});
+ await new Promise(resolve=>setTimeout(resolve,20));assert.equal(committed,false);
+ const exited=once(worker,'exit');Atomics.store(gate,0,1);Atomics.notify(gate,0);await urgent;await exited;
+ assert.equal(store.getState('after-cache-batch'),1);
 });

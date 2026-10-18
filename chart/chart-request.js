@@ -6,12 +6,12 @@ export const CHART_READ_TIMEOUT_MS = 15 * 60_000;
 
 /** Fetch and parse the large result away from the UI thread. The monitor still
  * owns authentication and cancellation; credentials never enter a URL or cache. */
-export function fetchChartResponse(url, options = {}, { onProgress, prefetch = false,
+export function fetchChartResponse(url, options = {}, { onProgress,
   timeoutMs = CHART_READ_TIMEOUT_MS, workerFactory = typeof Worker === 'function'
     ? () => new Worker(new URL('./chart-request-worker.js', import.meta.url), { type: 'module' }) : null,
   fetchImpl = fetch } = {}) {
   return withReadDeadline(signal => {
-    const headers = { ...options.headers, Accept: 'application/x-ndjson', ...(prefetch ? { 'X-Chart-Prefetch': '1' } : {}) };
+    const headers = { ...options.headers, Accept: 'application/x-ndjson' };
     if (!workerFactory) return fetchImpl(url, { ...options, headers, signal }).then(response => readChartResponse(response, onProgress));
     return new Promise((resolve, reject) => {
       const worker = workerFactory();

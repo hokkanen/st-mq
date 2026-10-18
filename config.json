@@ -504,6 +504,10 @@
       "timeout_seconds": 3600,
       "stale_seconds": 180,
       "ssh_config": ""
+    },
+    "charts": {
+      "cache_days": 7,
+      "cache_memory_mib": 1024
     }
   },
   "schema": {
@@ -826,6 +830,10 @@
       "timeout_seconds": "int(30,86400)",
       "stale_seconds": "int(30,604800)",
       "ssh_config": "str?"
+    },
+    "charts": {
+      "cache_days": "int(0,14)",
+      "cache_memory_mib": "int(64,2048)"
     }
   }
 }

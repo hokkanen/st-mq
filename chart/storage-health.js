@@ -201,7 +201,7 @@ function historySummary(writer, operations) {
 }
 
 const storageKinds = { checkpoint: 'WAL checkpoint', mirror: 'Mirroring or recovery', history: 'History read',
-  'live-learning': 'Learning input read', 'learning-cache': 'Learning cache', other: 'Background storage' };
+  'live-learning': 'Learning input read', 'learning-cache': 'Learning cache', 'chart-cache': 'Chart cache', other: 'Background storage' };
 const storagePhases = { acquiring: 'Acquiring the writer', building: 'Building the transaction',
   sealing: 'Sealing the journal', committing: 'Committing and confirming the save',
   confirming: 'Checking an uncertain save', 'follow-up': 'Finishing saved work' };
@@ -224,7 +224,8 @@ export function storageSchedulingView(health, { unavailable = false, now = Date.
       + (value.queued > 0 ? ` · oldest ${storageDuration(value.oldestPendingMs)}` : '');
   };
   const policy = queue?.policy;
-  const policyKnown = ['limit', 'byteLimit', 'controlBurst', 'foregroundBurst'].every(key => count(policy?.[key]) && policy[key] > 0);
+  const policyKnown = Array.isArray(policy?.idleKinds) && policy.idleKinds.every(kind => Object.hasOwn(storageKinds, kind))
+    && ['limit', 'byteLimit', 'controlBurst', 'foregroundBurst'].every(key => count(policy?.[key]) && policy[key] > 0);
   const modes = { 'queued-passive': 'Separate background checkpoints', 'periodic-passive': 'Separate background checkpoints',
     automatic: 'Checkpoints within commits', managed: 'Checkpoints managed by the owning process',
     'not-owned': 'Read-only connection', 'not-applicable': 'No WAL checkpoints' };
@@ -268,7 +269,7 @@ export function storageSchedulingView(health, { unavailable = false, now = Date.
       : ['wal', 'memory', 'delete', 'truncate', 'persist', 'off'].includes(config?.journalMode)
         && ['off', 'normal', 'full', 'extra'].includes(config?.synchronous)
         ? `${config.journalMode.toUpperCase()} · synchronous ${config.synchronous.toUpperCase()}` : 'Unknown',
-    policy: policyKnown ? `Control runs first, yielding to waiting ordinary saves after ${integer.format(policy.controlBurst)} consecutive turns. Background runs when no saves are waiting, or after ${integer.format(policy.foregroundBurst)} foreground turns if no control request is waiting. Active turns cannot be interrupted.` : 'Queue scheduling policy is unavailable.',
+    policy: policyKnown ? `Control runs first, yielding to waiting ordinary saves after ${integer.format(policy.controlBurst)} consecutive turns. Background runs when no saves are waiting, or after ${integer.format(policy.foregroundBurst)} foreground turns if no control request is waiting.${policy.idleKinds.length ? ` ${policy.idleKinds.map(kind => storageKinds[kind]).join(', ')} waits for all other work.` : ''} Active turns cannot be interrupted.` : 'Queue scheduling policy is unavailable.',
     capacity: policyKnown && count(queue.bytes) ? `${integer.format(policy.limit)} admitted operations · ${number.format(policy.byteLimit / 1048576)} MiB of declared queued payload; ${number.format(queue.bytes / 1048576)} MiB currently declared. This is not total process memory.` : 'Queue capacity is unavailable.',
     checkpointMode: modes[checkpoint?.mode] ?? 'Checkpoint mode unknown', checkpointPolicy,
     checkpointState: separate ? checkpointStates[maintenance?.state] ?? 'Checkpoint activity unknown' : modes[checkpoint?.mode] ?? 'Unknown',

@@ -1,3 +1,4 @@
+import { DEFAULT_CHART_CACHE } from '../domain/chart-cache.js';
 import { storageOperationHealth } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { getChartData, chartRequestRange } from './chart-data.js';
@@ -8,18 +9,23 @@ import { attachStorageAdmission } from '../storage/worker-admission.js';
 
 const aborted = () => Object.assign(new Error('Chart request aborted'), { name: 'AbortError' });
 
-/** At most two lazy read-only workers: requested work and one short speculative
- * view. Cancellation retires only its own worker; speculation cannot flush the
- * foreground cache or occupy its queue. Idle workers release SQLite and RAM. */
-export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}) {
+/** Recent charts share a resident source window. Archive work owns a separate
+ * bounded worker, so broad selections cannot evict that window. Maintenance
+ * reads short batches only when no requested chart is waiting. */
+export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cacheDays = DEFAULT_CHART_CACHE.cacheDays, cacheBytes = DEFAULT_CHART_CACHE.cacheBytes, clock = Date.now, warmCache = true } = {}) {
   if (!store?.db || !store.path) throw new TypeError('A history store is required');
   storageOperationHealth.register('history-query'); storageOperationHealth.register('storage-inventory');
-  let nextId = 1, closed = false;
-  const lanes = Object.fromEntries(['foreground', 'prefetch'].map(name => [name,
+  let nextId = 1, closed = false, maintenanceTimer, pinned = false, warming = warmCache;
+  let settings = { cacheDays, cacheBytes };
+  const validSettings = value => value && Number.isInteger(value.cacheDays) && value.cacheDays >= 0 && value.cacheDays <= 14
+    && Number.isSafeInteger(value.cacheBytes) && value.cacheBytes >= 64 * 1024 * 1024 && value.cacheBytes <= 2048 * 1024 * 1024;
+  if (!validSettings(settings)) throw new TypeError('Invalid chart cache settings');
+  const lanes = Object.fromEntries(['resident', 'archive'].map(name => [name,
     { name, worker: null, active: null, queue: [], retiring: null, timer: null, observations: new Map() }]));
   const overviewRequests = new Map();
   const cleanup = entry => entry.signal?.removeEventListener('abort', entry.abort);
   const settle = (entry, error, result) => {
+    if (entry.settled) return; entry.settled = true;
     cleanup(entry);
     if (!entry.started) entry.observation?.finish(error ? error.name === 'AbortError' || closed ? 'cancelled' : 'failed' : 'completed',
       { reason: error ? error.name === 'AbortError' || closed ? 'cancelled' : 'operation-failed' : null });
@@ -27,7 +33,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
   };
   function progress(entry, value) {
     // A presentation callback must never disrupt worker lifecycle cleanup.
-    try { entry.onProgress?.(value); } catch { /* Caller owns presentation failures. */ }
+    try { if (!entry.settled) entry.onProgress?.(value); } catch { /* Caller owns presentation failures. */ }
   }
   function reset(lane, outcome = 'failed', reason = 'worker-lost') {
     clearTimeout(lane.timer); lane.timer = null;
@@ -48,38 +54,44 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
   function run(lane) {
     if (closed || lane.active || lane.retiring) return;
     if (!lane.queue.length) {
-      if (lane.worker && !lane.timer) {
+      if (!pinned && lane.worker && !lane.timer && (lane.name === 'archive' || !settings.cacheDays)) {
         lane.timer = setTimeout(() => reset(lane), idleMs); lane.timer.unref();
       }
       return;
     }
-    if (lane.name === 'prefetch' && (lanes.foreground.active || lanes.foreground.queue.length)) return;
     clearTimeout(lane.timer); lane.timer = null;
     lane.active = lane.queue.shift();
     lane.active.started = true; lane.active.observation?.start(); lane.observations.set(lane.active.id, lane.active);
     try {
       if (!lane.worker) {
         const storageSignal = new Int32Array(new SharedArrayBuffer(4));
+        lane.requestSignal = new Int32Array(new SharedArrayBuffer(4));
         lane.worker = new Worker(new URL('./chart-worker.js', import.meta.url), {
-          workerData: { dbPath: store.path, cacheLimitBytes: (lane.name === 'prefetch' ? 8 : 24) * 1024 * 1024,
-            storageSignal: storageSignal.buffer },
+          workerData: { dbPath: store.path, resident: lane.name === 'resident', settings,
+            storageSignal: storageSignal.buffer, requestSignal: lane.requestSignal.buffer, storageLeaseMs: 25 },
         });
-        attachStorageAdmission(lane.worker, storageSignal, operation => store.runStorageTask(operation, { kind: 'history' }));
+        attachStorageAdmission(lane.worker, storageSignal, (operation, { maintenance }) => store.runStorageTask(operation, { kind: maintenance ? 'chart-cache' : 'history' }));
         const generation = lane.worker;
         lane.worker.on('message', message => {
           if (lane.worker !== generation) return;
           if (message.storage) return;
+          if (message.cacheStatus) { lane.cacheStatus = message.cacheStatus; return; }
           if (message.storageOperationComplete) {
             const observed = lane.observations.get(message.id); lane.observations.delete(message.id);
             if (message.cacheHit) observed?.observation?.discard();
-            else observed?.observation?.finish(message.failed ? 'failed' : 'completed', { reason: message.failed ? 'operation-failed' : null });
+            else observed?.observation?.finish(observed.aborted ? 'cancelled' : message.failed ? 'failed' : 'completed',
+              { reason: observed.aborted ? 'cancelled' : message.failed ? 'operation-failed' : null });
+            if (message.id === lane.active?.id) {
+              const entry = lane.active; lane.active = null;
+              const response = entry.response;
+              const error = response?.error ? Object.assign(new Error(response.error.message), { name: response.error.name }) : null;
+              settle(entry, error, response?.result); pump();
+            }
             return;
           }
           if (message.id !== lane.active?.id) return;
           if (message.progress) { progress(lane.active, message.progress); return; }
-          const entry = lane.active; lane.active = null;
-          const error = message.error ? Object.assign(new Error(message.error.message), { name: message.error.name }) : null;
-          settle(entry, error, message.result); pump();
+          lane.active.response = message;
         });
         const fail = reason => {
           if (lane.worker !== generation) return;
@@ -92,33 +104,43 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
       }
       const entry = lane.active;
       progress(entry, { stage: 'reading-history' });
-      if (lane.active === entry && lane.worker) lane.worker.postMessage({ id: entry.id, args: entry.args,
-        operation: entry.operation, wire: entry.wire, checkpoint: store.expectedCheckpoint });
+      if (lane.active === entry && lane.worker) { Atomics.store(lane.requestSignal, 0, 0); lane.worker.postMessage({ id: entry.id, args: entry.args,
+        operation: entry.operation, wire: entry.wire, checkpoint: store.expectedCheckpoint }); }
     } catch {
       const entry = lane.active; lane.active = null; reset(lane);
       if (entry) settle(entry, new Error('Chart history request could not start'));
       pump();
     }
   }
-  function pump() { run(lanes.foreground); run(lanes.prefetch); }
-  function query(args, { signal, operation = 'chart', priority = 'foreground', onProgress, wire } = {}) {
+  function pump() { run(lanes.resident); run(lanes.archive); }
+  function maintain() {
+    maintenanceTimer = null;
+    if (closed || !warming || !settings.cacheDays || store.path === ':memory:') return;
+    if (settings.cacheDays && !Object.values(lanes).some(lane => lane.active || lane.queue.length || lane.retiring)) {
+      void query({ now: clock() }, { operation: 'maintain' }).catch(() => {});
+    }
+    maintenanceTimer = setTimeout(maintain, lanes.resident.cacheStatus?.complete ? 1000 : 250); maintenanceTimer.unref();
+  }
+  function startWarming() {
+    warming = true;
+    if (!closed && settings.cacheDays && !maintenanceTimer) { maintenanceTimer = setTimeout(maintain, 250); maintenanceTimer.unref(); }
+  }
+  if (warming) startWarming();
+  function query(args, { signal, operation = 'chart', onProgress, wire } = {}) {
     if (closed) return Promise.reject(new Error('Chart service is closed'));
     if (signal?.aborted) return Promise.reject(aborted());
     args = { ...args, now: args?.now ?? Date.now() };
     try {
-      if (!Object.hasOwn(lanes, priority)) throw new TypeError('Invalid chart priority');
-      if (!['chart', 'overview', 'energy-checks', 'pin'].includes(operation)) throw new TypeError('Invalid history operation');
+      if (!['chart', 'overview', 'energy-checks', 'pin', 'pin-archive', 'maintain'].includes(operation)) throw new TypeError('Invalid history operation');
       if (operation === 'chart') {
-        const { selection } = chartRequestRange(args);
-        if (priority === 'prefetch' && Date.parse(selection.endDate) - Date.parse(selection.startDate) >= 7 * 86_400_000)
-          throw new RangeError('Chart prefetch is limited to seven calendar days');
+        chartRequestRange(args);
       }
       if (wire !== undefined && !['json', 'ndjson'].includes(wire)) throw new TypeError('Invalid chart response format');
     } catch (error) { return Promise.reject(error); }
     if (store.path === ':memory:') {
-      const observation = operation === 'pin' ? null : storageOperationHealth.begin(operation === 'overview' ? 'storage-inventory' : 'history-query', { scope: 'history' });
+      const observation = ['pin', 'pin-archive', 'maintain'].includes(operation) ? null : storageOperationHealth.begin(operation === 'overview' ? 'storage-inventory' : 'history-query', { scope: 'history' });
       try {
-        if (operation === 'pin') return Promise.resolve({ ready: true });
+        if (['pin', 'pin-archive'].includes(operation)) return Promise.resolve({ ready: true });
         const result = operation === 'overview' ? getDatabaseOverview({ ...args, store })
           : operation === 'energy-checks' ? energyCheckSummaries(store, args) : getChartData({ ...args, store, onProgress });
         const prepared = operation === 'chart' ? prepareChartResponse(result) : null;
@@ -126,17 +148,23 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
         observation?.finish('completed'); return Promise.resolve(response);
       } catch (error) { observation?.finish('failed', { reason: 'operation-failed' }); return Promise.reject(error); }
     }
-    const lane = lanes[priority];
-    const count = item => item.queue.length + Number(Boolean(item.active));
-    if (count(lane) >= (priority === 'prefetch' ? 1 : maxQueue)) {
+    const range = operation === 'chart' ? chartRequestRange(args).range : null;
+    const residentFrom = settings.cacheDays ? clock() - settings.cacheDays * 86_400_000 : Infinity;
+    const lane = operation === 'maintain' || operation === 'pin' || range && range.from >= residentFrom - 86_400_000
+      ? lanes.resident : lanes.archive;
+    const count = item => item.queue.length + Number(Boolean(item.active && !item.active.aborted));
+    if (count(lane) >= maxQueue) {
       storageOperationHealth.refuse(operation === 'overview' ? 'storage-inventory' : 'history-query');
       return Promise.reject(new RangeError('Too many pending chart requests'));
     }
     return new Promise((resolve, reject) => {
       const entry = { id: nextId++, args, operation, wire, signal, onProgress, resolve, reject, abort: null,
-        observation: operation === 'pin' ? null : storageOperationHealth.begin(operation === 'overview' ? 'storage-inventory' : 'history-query', { queued: true, scope: 'history' }) };
+        observation: ['pin', 'pin-archive', 'maintain'].includes(operation) ? null : storageOperationHealth.begin(operation === 'overview' ? 'storage-inventory' : 'history-query', { queued: true, scope: 'history' }) };
       entry.abort = () => {
-        if (lane.active === entry) { lane.active = null; reset(lane, 'cancelled', 'cancelled'); }
+        if (lane.active === entry) {
+          if (lane.name === 'resident') { entry.aborted = true; Atomics.store(lane.requestSignal, 0, 1); }
+          else { lane.active = null; reset(lane, 'cancelled', 'cancelled'); }
+        }
         else { const index = lane.queue.indexOf(entry); if (index < 0) return; lane.queue.splice(index, 1); }
         settle(entry, aborted()); pump();
       };
@@ -177,14 +205,30 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
     });
   }
   return {
-    pin(options = {}) { return query({}, { ...options, operation: 'pin' }); },
+    async pin(options = {}) {
+      // Replica leases may outlive a path's publication. Open both file handles
+      // before that path can be retired, and retain them until this lease owner closes.
+      pinned = true;
+      for (const lane of Object.values(lanes)) { clearTimeout(lane.timer); lane.timer = null; }
+      await Promise.all(['pin', 'pin-archive'].map(operation => query({}, { ...options, operation })));
+      return { ready: true };
+    },
     overview,
-    energyChecks(args = {}, options = {}) { return query(args, { ...options, operation: 'energy-checks', priority: 'foreground' }); },
+    energyChecks(args = {}, options = {}) { return query(args, { ...options, operation: 'energy-checks' }); },
     query,
+    startWarming,
+    configure(value = DEFAULT_CHART_CACHE) {
+      if (!validSettings(value)) throw new TypeError('Invalid chart cache settings');
+      if (value.cacheDays === settings.cacheDays && value.cacheBytes === settings.cacheBytes) return;
+      settings = { cacheDays: value.cacheDays, cacheBytes: value.cacheBytes };
+      clearTimeout(maintenanceTimer); maintenanceTimer = null; if (warming) startWarming();
+      for (const lane of Object.values(lanes)) { lane.cacheStatus = null; lane.worker?.postMessage({ configure: settings }); }
+    },
+    cacheStatus() { return { ...settings, resident: lanes.resident.cacheStatus ?? null }; },
     queryWire(args, options = {}) { return query(args, { ...options, wire: options.format ?? 'json' }); },
     async close() {
       if (closed) return;
-      closed = true;
+      closed = true; clearTimeout(maintenanceTimer);
       for (const lane of Object.values(lanes)) {
         for (const entry of lane.queue.splice(0)) settle(entry, new Error('Chart service is closed'));
         if (lane.active) { settle(lane.active, new Error('Chart service is closed')); lane.active = null; }

@@ -15,7 +15,7 @@ function fixture(t, options) {
   const store = new Store(join(directory, 'synthetic.sqlite'));
   store.observation({ source: 'synthetic-chart', device: 'invented-garage', signal: 'garage_native_indoor_temperature',
     sourceTime: now - 86_400_000, receivedAt: now - 86_400_000, value: 12, unit: 'degC' });
-  const service = createChartService({ store, ...options });
+  const service = createChartService({ store, clock: () => now, ...options });
   t.after(async () => { await service.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   return { store, service };
 }
@@ -40,11 +40,11 @@ test('prepared JSON and streamed result carry identical evidence and stable sema
   assert.equal(observed.week.completed, observationBefore + 1, 'the cached request is not another completed storage job');
 });
 
-test('canceling speculative work retains the independent foreground cache and queue capacity', async t => {
+test('canceling archive work retains the resident cache and queue capacity', async t => {
   const { service } = fixture(t, { maxQueue: 1 });
   await service.query(args);
   const cancellation = new AbortController();
-  const speculative = service.query({ ...args, view: 'power' }, { priority: 'prefetch', signal: cancellation.signal });
+  const speculative = service.query({ ...args, startDate: '2025-01-01', view: 'power' }, { signal: cancellation.signal });
   const foreground = service.query(args);
   cancellation.abort();
   await assert.rejects(speculative, { name: 'AbortError' });
@@ -75,21 +75,21 @@ test('new foreground selection starts after obsolete worker retirement and stale
   assert(fresh.series.garage_native_indoor_temperature.some(point => point.y === 12));
 });
 
-test('speculation waits for foreground completion, is bounded, and rejects broad ranges', async t => {
-  const { service } = fixture(t), phases = [];
-  const foreground = service.query(args, { onProgress: value => phases.push(`foreground:${value.stage}`) });
-  const speculative = service.query({ ...args, view: 'power' }, { priority: 'prefetch',
-    onProgress: value => phases.push(`prefetch:${value.stage}`) });
-  assert(!phases.includes('prefetch:reading-history'));
-  await assert.rejects(service.query(args, { priority: 'prefetch' }), /Too many pending/);
-  await assert.rejects(service.query({ ...args, endDate: '2026-09-13' }, { priority: 'prefetch' }), /seven calendar days/);
-  await foreground;
-  await speculative;
-  assert(phases.indexOf('prefetch:reading-history') > phases.indexOf('foreground:preparing-response'));
+test('archive work cannot evict resident results and cache configuration applies without restart', async t => {
+  const { service } = fixture(t);
+  const first = await service.query(args);
+  await service.query({ ...args, startDate: '2025-01-01' });
+  assert.equal((await service.query(args)).meta.cacheHit, true);
+  service.configure(service.cacheStatus());
+  assert.equal((await service.query(args)).meta.cacheHit, true, 'Unchanged cache settings retain prepared history');
+  service.configure({ cacheDays: 0, cacheBytes: 64 * 1024 * 1024 });
+  const fresh = await service.query(args);
+  assert.notEqual(fresh.meta.cacheHit, true); assert.deepEqual(fresh.series, first.series);
+  assert.equal(service.cacheStatus().cacheDays, 0);
 });
 
 test('idle workers release their cache and reopen without changing evidence', async t => {
-  const { service } = fixture(t, { idleMs: 10 });
+  const { service } = fixture(t, { idleMs: 10, cacheDays: 0 });
   const first = await service.query(args);
   await new Promise(resolve => setTimeout(resolve, 60));
   const reopened = await service.query(args);
@@ -107,7 +107,7 @@ async function serverFixture(t, options = {}) {
   return { service, server, base: `http://127.0.0.1:${server.address().port}` };
 }
 
-test('NDJSON HTTP sends stage progress then one current chart result and validates speculative bounds', async t => {
+test('NDJSON HTTP sends stage progress then one current chart result and rejects the retired prefetch header', async t => {
   const { base } = await serverFixture(t);
   const headers = { Accept: 'application/x-ndjson' };
   const response = await fetch(`${base}/api/chart?start=2026-09-06&view=garage`, { headers });
@@ -122,7 +122,7 @@ test('NDJSON HTTP sends stage progress then one current chart result and validat
     headers: { ...headers, 'X-Chart-Prefetch': '1' },
   });
   assert.equal(invalid.status, 400);
-  assert.match((await invalid.json()).error, /seven calendar days/);
+  assert.match((await invalid.json()).error, /Unsupported chart header/);
 });
 
 test('streamed chart cannot send prepared history after web access is revoked', async t => {
@@ -172,7 +172,7 @@ test('recording continues during concurrent chart snapshots and later queries se
       write();
     });
   }
-  const speculative = service.query(selection, { priority: 'prefetch', onProgress(value) {
+  const speculative = service.query({ ...selection, startDate: '2025-01-01' }, { onProgress(value) {
     if (foreground || value.stage !== 'reading-history' || !value.total) return;
     foreground = service.query(selection, { onProgress(progress) {
       if (!entered && progress.stage === 'reading-history' && progress.total) {
@@ -190,4 +190,104 @@ test('recording continues during concurrent chart snapshots and later queries se
   const refreshed = await service.query(selection);
   assert(refreshed.series.garage_native_indoor_temperature.some(point => point.y === 33),
     'The next chart invalidates its cache and admits newly committed evidence');
+});
+
+test('new observations outside the selected dates retain completed plots, late rows inside refresh them', async t => {
+  const { store, service } = fixture(t);
+  await service.query(args);
+  store.observation({ source: 'synthetic-chart', device: 'invented-garage', signal: 'garage_native_indoor_temperature',
+    sourceTime: now, receivedAt: now, value: 18, unit: 'degC' });
+  assert.equal((await service.query(args)).meta.cacheHit, true);
+  store.observation({ source: 'synthetic-chart', device: 'invented-garage', signal: 'garage_native_indoor_temperature',
+    sourceTime: now - 86400000 + 1000, receivedAt: now, value: 19, unit: 'degC' });
+  const changed = await service.query(args);
+  assert.notEqual(changed.meta.cacheHit, true);
+  assert(changed.series.garage_native_indoor_temperature.some(point => point.y === 19));
+});
+
+test('resident maintenance releases every read snapshot and configuration can disable and reenable it', async t => {
+  const { store, service } = fixture(t);
+  const until = Date.now() + 6000;
+  while (!service.cacheStatus().resident?.ready && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(service.cacheStatus().resident?.ready, true);
+  assert.equal(service.cacheStatus().resident.rows, 1);
+  store.db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
+  assert.equal(store.db.prepare('PRAGMA wal_checkpoint(PASSIVE)').get().busy, 0);
+  service.configure({cacheDays: 0, cacheBytes: 64 * 1024 * 1024});
+  await service.pin();
+  service.configure({cacheDays: 14, cacheBytes: 64 * 1024 * 1024});
+  assert.equal(service.cacheStatus().cacheDays, 14);
+});
+
+test('HTTP negotiates gzip for JSON and progress streams and respects explicit gzip refusal', async t => {
+  const { base } = await serverFixture(t);
+  for (const accept of ['application/json', 'application/x-ndjson']) {
+    const response = await fetch(`${base}/api/chart?start=2026-09-06&view=garage`, {
+      headers: {Accept: accept, 'Accept-Encoding': 'gzip'} });
+    assert.equal(response.headers.get('content-encoding'), 'gzip');
+    assert.equal(response.headers.get('vary'), 'Accept-Encoding');
+    const text = await response.text();
+    const result = accept === 'application/json' ? JSON.parse(text) : JSON.parse(text.trim().split('\n').at(-1)).data;
+    assert(result.series.garage_native_indoor_temperature.some(point => point.y === 12));
+  }
+  const response = await fetch(`${base}/api/chart?start=2026-09-06&view=garage`, {headers: {'Accept-Encoding':'gzip;q=0, identity'}});
+  assert.equal(response.headers.get('content-encoding'), null); assert((await response.json()).series);
+});
+
+test('cancelling a requested recent view preserves the resident worker and already prepared plots', async t => {
+  const { service } = fixture(t, {maxQueue:1});
+  await service.query(args);
+  const cancellation = new AbortController();
+  const old = service.query({...args,view:'power'}, {signal:cancellation.signal,onProgress(progress) {
+    if(progress.stage==='preparing-chart') cancellation.abort();
+  }});
+  await assert.rejects(old,{name:'AbortError'});
+  const returned = await service.query(args);
+  assert.equal(returned.meta.cacheHit,true);
+});
+
+test('revoking access during a compressed progress stream ends it once without a history payload', async t => {
+ let access={enabled:true,token:'',familyToken:'',tokenRequired:false};
+ const {base,service}=await serverFixture(t,{getAccess:()=>access});
+ const queryWire=service.queryWire.bind(service);
+ service.queryWire=(request,options)=>queryWire(request,{...options,onProgress(value){
+  if(value.stage==='preparing-chart')access={...access,enabled:false};
+  options.onProgress?.(value);
+ }});
+ const response=await fetch(`${base}/api/chart?start=2026-09-06&view=garage`,{headers:{Accept:'application/x-ndjson','Accept-Encoding':'gzip'}});
+ const messages=(await response.text()).trim().split('\n').map(line=>JSON.parse(line));
+ assert.equal(response.headers.get('content-encoding'),'gzip');
+ assert(!messages.some(value=>value.type==='result'));
+ assert.equal(messages.filter(value=>value.type==='error').length,1);
+ assert.equal(messages.at(-1).status,503);
+});
+
+test('cooperative cancellation closes a real SQL cursor before releasing its snapshot', async t => {
+ const {store,service}=fixture(t,{warmCache:false});
+ const from=now-26*3600000;
+ for(let offset=0;offset<20000;offset+=256)store.transaction(()=>{
+  for(let index=offset;index<Math.min(20000,offset+256);index++)store.observation({
+   source:'synthetic-chart',device:'invented-garage',signal:'garage_native_indoor_temperature',value:10+index%5,unit:'degC',
+   sourceTime:from+index*1000,receivedAt:from+index*1000});
+ });
+ const cancellation=new AbortController();let traversing=false;
+ const pending=service.query(args,{signal:cancellation.signal,onProgress(progress){
+  if(progress.stage==='reading-history'&&progress.completed>0&&progress.completed<progress.total){traversing=true;cancellation.abort();}
+ }});
+ await assert.rejects(pending,{name:'AbortError'});assert(traversing);
+ await service.pin();
+ assert.equal(store.db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get().busy,0);
+ const fresh=await service.query(args);
+ assert(fresh.series.garage_native_indoor_temperature.some(point=>point.y===14));
+});
+
+test('warming can wait for startup and a zero-day configuration schedules no resident work', async t => {
+ const {service}=fixture(t,{warmCache:false});
+ await new Promise(resolve=>setTimeout(resolve,300));assert.equal(service.cacheStatus().resident,null);
+ service.startWarming();
+ const until=Date.now()+6000;
+ while(!service.cacheStatus().resident?.ready&&Date.now()<until)await new Promise(resolve=>setTimeout(resolve,25));
+ assert(service.cacheStatus().resident?.ready);
+ service.configure({cacheDays:0,cacheBytes:64*1024*1024});
+ await new Promise(resolve=>setTimeout(resolve,300));assert.equal(service.cacheStatus().resident,null);
 });

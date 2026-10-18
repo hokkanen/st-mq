@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadConfig as readConfig, configurationSource, validateSettings, recordingConfiguration, acquisitionConfiguration, teslamateConfiguration, indoorSensorWeightsConfiguration, haMqttConfiguration } from '../src/app/config.js';
+import { loadConfig as readConfig, configurationSource, validateSettings, recordingConfiguration, acquisitionConfiguration, teslamateConfiguration, indoorSensorWeightsConfiguration, haMqttConfiguration, chartConfiguration } from '../src/app/config.js';
 import { chargingConfiguration } from '../src/charging/config.js';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -613,4 +613,12 @@ test('retired global mode settings fail before granting any feature permission',
     assert.throws(() => loadConfig({ STMQ_CONFIG: path, STMQ_ADDON: addon }, directory), /Retired configuration field: controller.mode/);
     assert.equal(readFileSync(path, 'utf8'), source);
   }
+});
+
+test('resident chart settings use configuration defaults, bounded days and memory, and reject retired or unknown fields', () => {
+ assert.deepEqual(chartConfiguration(), {cacheDays: 7, cacheBytes: 1024 * 1024 * 1024});
+ for(const cache_days of [0,7,14]) assert.equal(chartConfiguration({cache_days}).cacheDays,cache_days);
+ for(const cache_days of [-1,15,1.5,'7',null]) assert.throws(()=>chartConfiguration({cache_days}),/cache_days/);
+ for(const cache_memory_mib of [0,63,2049,'512',null]) assert.throws(()=>chartConfiguration({cache_memory_mib}),/cache_memory_mib/);
+ assert.throws(()=>chartConfiguration({prefetch:true}),/Unsupported chart setting/);
 });

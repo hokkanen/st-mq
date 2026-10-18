@@ -1,3 +1,4 @@
+import { createGzip, constants as zlibConstants } from 'node:zlib';
 import { createServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { timingSafeEqual } from 'node:crypto';
@@ -628,39 +629,48 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             points: numberParam(url, 'points', 800, 4096),
             viewFrom: optionalTimestampParam(url, 'viewFrom'), viewTo: optionalTimestampParam(url, 'viewTo') };
           const stream = req.headers.accept?.split(',').some(value => value.trim().split(';')[0] === 'application/x-ndjson');
-          const prefetch = req.headers['x-chart-prefetch'];
-          if (prefetch !== undefined && prefetch !== '1') throw new TypeError('Invalid chart prefetch header');
-          const { selection } = chartRequestRange(args);
-          if (prefetch && Date.parse(selection.endDate) - Date.parse(selection.startDate) >= 7 * 86_400_000)
-            throw new RangeError('Chart prefetch is limited to seven calendar days');
+          if (req.headers['x-chart-prefetch'] !== undefined) throw new TypeError('Unsupported chart header');
+          chartRequestRange(args);
           const cancellation = new AbortController();
-          const cancel = () => cancellation.abort();
+          const compressed = req.headers['accept-encoding']?.split(',').some(value => {
+            const [encoding, ...parameters] = value.trim().split(';');
+            return encoding.toLowerCase() === 'gzip' && !parameters.some(parameter => /^\s*q\s*=\s*0(?:\.0*)?\s*$/i.test(parameter));
+          });
+          let chartOutput = res;
+          const startOutput = type => {
+            if (res.headersSent) return;
+            res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store', vary: 'Accept-Encoding',
+              'x-accel-buffering': 'no', ...(compressed ? { 'content-encoding': 'gzip' } : {}) });
+            if (compressed) {
+              chartOutput = createGzip({ level: 1 }); chartOutput.on('error', () => { cancellation.abort(); res.destroy(); });
+              chartOutput.pipe(res);
+            }
+          };
+          const cancel = () => { cancellation.abort(); if (chartOutput !== res) chartOutput.destroy(); };
           res.once('close', cancel);
           // Recheck access after every asynchronous boundary, including streamed
           // progress. Revoked requests never receive a prepared history payload.
           const chartAuthorized = () => {
-            if (res.destroyed || res.writableEnded) return false;
+            if (res.destroyed || res.writableEnded || chartOutput.writableEnded) return false;
             const current = access();
             if (current.enabled && (ingress || current === acceptedAccess)) return true;
             const message = current.enabled ? 'Authentication required' : 'Direct web access is disabled';
-            if (res.headersSent) res.end(JSON.stringify({ type: 'error', message, status: current.enabled ? 401 : 503 }) + '\n');
+            if (res.headersSent) chartOutput.end(JSON.stringify({ type: 'error', message, status: current.enabled ? 401 : 503 }) + '\n');
             else json(current.enabled ? 401 : 503, { error: message });
             cancellation.abort();
             return false;
           };
-          const startStream = () => {
-            if (!res.headersSent) res.writeHead(200, { 'content-type': 'application/x-ndjson',
-              'cache-control': 'no-store', 'x-accel-buffering': 'no' });
-          };
+          const startStream = () => startOutput('application/x-ndjson');
           const onProgress = stream ? progress => {
-            if (!chartAuthorized() || res.writableNeedDrain) return;
+            if (!chartAuthorized() || chartOutput.writableNeedDrain) return;
             startStream();
-            res.write(JSON.stringify({ type: 'progress', ...progress }) + '\n');
+            chartOutput.write(JSON.stringify({ type: 'progress', ...progress }) + '\n');
+            if (compressed) chartOutput.flush(zlibConstants.Z_SYNC_FLUSH);
           } : undefined;
           try {
             const service = readerCharts ?? overviewService;
             const options = { signal: cancellation.signal, onProgress,
-              priority: prefetch ? 'prefetch' : 'foreground', format: stream ? 'ndjson' : 'json' };
+              format: stream ? 'ndjson' : 'json' };
             let bytes;
             if (service?.queryWire) bytes = await service.queryWire(args, options);
             else {
@@ -669,15 +679,15 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             }
             if (chartAuthorized()) {
               if (stream) startStream();
-              else res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-              res.end(bytes);
+              else startOutput('application/json');
+              chartOutput.end(bytes);
             }
           } catch (error) {
-            if (!res.destroyed && !res.writableEnded) {
-              if (res.headersSent) res.end(JSON.stringify({ type: 'error', message: error.message }) + '\n');
+            if (!res.destroyed && !res.writableEnded && !chartOutput.writableEnded) {
+              if (res.headersSent) chartOutput.end(JSON.stringify({ type: 'error', message: error.message }) + '\n');
               else throw error;
             }
-          } finally { res.removeListener('close', cancel); }
+          } finally { if (res.writableEnded) res.removeListener('close', cancel); }
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/contract') return json(200, engine.contract());

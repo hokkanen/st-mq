@@ -1123,18 +1123,28 @@ requests fall back to streaming. These are temporary read caches, not retained
 chart summaries, model snapshots or additional recording. Original observations,
 gaps, extrema, provenance and exact accounting remain unchanged.
 
-After a short selection of at most seven calendar days finishes drawing, the
-browser may prepare one fixed companion view: Electrical power → Phase loading
-→ Charging currents → Electrical power, or either Garage view → the other Garage
-view. This uses no learned preferences and does not multiply views by adjacent
-dates. A selected in-flight companion is reused; obsolete speculation is canceled.
-Hidden pages stop speculation, and unused views are not polled repeatedly.
-The browser keeps a bounded response cache with the existing freshness and
-source/correction invalidation rules.
+The configured recent window is shared by all chart views and updated from new
+committed observation IDs in bounded idle batches. `charts.cache_days` selects
+0–14 days, with 7 as the default; `charts.cache_memory_mib` bounds retained memory
+(default 1024 MiB). Source payloads irrelevant to scalar charts are omitted from
+this disposable cache; original database evidence remains intact. Each batch
+releases its read snapshot and waits behind control, recording, requested reads,
+checkpoints and mirroring. No chart navigation prediction or companion prefetch
+runs. Cancelling a recent selection cooperatively releases its read snapshot
+without destroying the resident window; obsolete archive work can retire its own
+independent worker. Finished historical responses survive new observations after their selected
+period; late overlapping energy, voltage, source coverage, imports and recovery
+changes still invalidate affected results.
 
-Requested and speculative queries have separate lazy read-only workers, at most
-two per chart service. Speculation starts only when requested work is idle and
-cannot occupy its queue. Workers retire after an idle minute. Result encoding
+At most two read-only chart workers separate resident recent history from archive
+requests. Long selections cannot evict the resident window. The recent worker
+stays alive while caching is enabled; the archive worker and nonresident workers
+retire after an idle minute. Replica generation leases pin both reader handles
+until their owner closes, so an in-flight chart remains readable after an old
+file is removed. An idle replica reader/cache can transfer across an incremental
+publication of the same file only when the exact earlier journal boundary is
+verified; full replacements and active leases keep independent lifetimes. Memory pressure can shorten the resident window;
+queries outside the retained range use the database. Result encoding
 runs on the server worker; browser request parsing and geometry preparation also
 run in workers. Unchanged content uses a semantic revision instead of serializing
 all chart points again. Theme and ordinary legend changes reuse prepared geometry;
@@ -1145,8 +1155,9 @@ on every history or device.
 
 `/api/chart` supports the same current chart data as JSON or, with
 `Accept: application/x-ndjson`, progress envelopes followed by one result envelope.
-Authentication and source selection apply to both representations. Speculative
-requests use `X-Chart-Prefetch: 1` and are limited to seven calendar days. A chart
+Authentication and source selection apply to both representations. Gzip is
+negotiated for both, with compression outside the control event loop. The retired
+`X-Chart-Prefetch` header is rejected. A chart
 read has a separate fifteen-minute upper deadline and can be canceled immediately;
 ordinary monitoring reads retain their short timeout.
 
@@ -1655,8 +1666,8 @@ gap. Ordinary raw polls and recorder checkpoints do not force a long history
 download. Short views react to new committed data, including the durable open
 energy interval. Chart queries use bounded worker queues and temporary caches;
 history reconstruction and response serialization run outside the control event
-loop. A separate speculative lane keeps companion fetching out of the requested
-chart's queue.
+loop. An independent archive worker preserves the configured recent cache during broad
+history requests.
 The **Energy cost comparisons** fold starts closed beneath the chart, alongside
 **Recording details**. Its **Comparison period** has independent start/end
 calendars with the same single-day and explicit end-selection behavior as the

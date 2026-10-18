@@ -479,3 +479,33 @@ test('checkpoint contributors must have bounded feed evidence and the latest con
     assert.equal(f.store.observations().length, rows);
   }
 });
+
+test('paged voltage reads match point reads across late publication, duplicate clocks and interleaved traversals', t => {
+ const store=new Store(':memory:');t.after(()=>store.close());
+ store.transaction(()=>{
+  for(let index=0;index<700;index++){
+   const at=START+index*MINUTE;
+   estimate(store,at,[221+index%9,232+index%5,241-index%7],{receivedAt:at+(index%13===0?30_000:0)});
+   if(index%47===0)estimate(store,at,[225,235,245]);
+  }
+  estimate(store,START+10*MINUTE,[201,202,203],{input:'simulated'});
+  estimate(store,START+20*MINUTE,[249,249,249],{receivedAt:START+900*MINUTE});
+ });
+ const now=START+701*MINUTE,plain=createVoltageReader(store,{input:'providers',now});
+ const paged=createVoltageReader(store,{input:'providers',now,pageRows:192});
+ const times=Array.from({length:400},(_,index)=>START+index*105_000);
+ for(const order of [times,[...times].reverse(),times.map((_,index)=>times[index*317%times.length])])
+  for(const at of order)assert.deepEqual(paged(at),plain(at));
+ for(const [from,to] of [[START-HOUR,START+701*MINUTE],[START+11*MINUTE,START+19*MINUTE],[START+600*MINUTE,now]])
+  assert.deepEqual([...paged.boundaries(from,to)],[...plain.boundaries(from,to)]);
+ assert.deepEqual(paged(START-HOUR,{allowFuture:true}),plain(START-HOUR,{allowFuture:true}));
+ assert.throws(()=>createVoltageReader(store,{pageRows:100000}),/page size/);
+});
+
+test('recovery TEMP observation overlays keep their supported reader without physical index hints', t => {
+ const store=new Store(':memory:');t.after(()=>store.close());
+ estimate(store,START,[221,232,243]);store.journalSource=true;
+ store.db.exec('CREATE TEMP VIEW observations AS SELECT * FROM main.observations');
+ const args={input:'providers',now:START+MINUTE};
+ assert.deepEqual(createVoltageReader(store,{...args,pageRows:192})(START+1000),createVoltageReader(store,args)(START+1000));
+});

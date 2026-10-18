@@ -413,6 +413,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
           }
         });
         config = next;
+        chartService?.configure(config.charts);
         configurationReviews.clear();
         await createRuntime();
         requireRunning();
@@ -440,6 +441,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         }
         await store.runWrite(() => { for (const [key, value] of previousState) store.setState(key, value); });
         config = previous;
+        chartService?.configure(config.charts);
         await webAccess.apply(previous);
         try {
           requireRunning();
@@ -495,7 +497,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     // Reserve HTTP before constructing a controller, connecting MQTT or ticking.
     // A duplicate launch must fail without touching equipment. API requests are
     // held by settingsReloadStatus().busy until startup has completed.
-    chartService = createChartService({ store });
+    chartService = createChartService({ store, ...config.charts, clock, warmCache: false });
     const backupCatalog = createBackupCatalog({ getConfig: () => config, clock });
     historyRecovery = createHistoryRecovery({ store, getEngine: () => engine, canControl,
       ready: () => !closed && !starting && !reloadPending && runtimeUsable,
@@ -539,6 +541,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     await engine.initializeCommittedStatus({ signal: shutdownSignal, isCurrent: () => !closed && canControl() });
     requireRunning();
     starting = false;
+    chartService.startWarming();
     authority?.start();
     engine.onTemporaryChange = schedule;
     schedule();

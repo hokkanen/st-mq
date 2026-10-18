@@ -168,13 +168,12 @@ function stagePeerTransfer(db,{after,sourcePath,sourceSnapshot,refresh,clock,ste
       return {target,contentHash,sourceAt};
       });
       let rows=0,projected=anchor.contentHash;
-      const put=step(()=>spool.prepare('INSERT INTO rows VALUES(?,?,?,?,?)'));
+      const put=step(()=>{spool.exec('BEGIN');return spool.prepare('INSERT INTO rows VALUES(?,?,?,?,?)');});
       const cursor=step(()=>reader.prepare('SELECT c.*,b.row AS before_row FROM journal_peer_changes c JOIN journal_peer_before b USING(table_name,record_key) ORDER BY table_name,record_key').iterate());
       let complete=false;
       try {
         while(!complete) step(()=>{
           const started=performance.now();let bytes=0,count=0;
-          spool.exec('BEGIN');
           try {
             do {
               const next=cursor.next();if(next.done){complete=true;break;}
@@ -185,16 +184,14 @@ function stagePeerTransfer(db,{after,sourcePath,sourceSnapshot,refresh,clock,ste
               put.run(rows++,saved.table_name,saved.record_key,encoded,afterRow);
               bytes+=Buffer.byteLength(encoded)+Buffer.byteLength(afterRow??'');count++;
             } while(count<16&&bytes<128*1024&&performance.now()-started<8);
-            spool.exec('COMMIT');
           } catch(error){spool.exec('ROLLBACK');throw error;}
         });
       } finally {if(!complete)step(()=>cursor.return?.());}
-      // The private spool may contain committed batches, but no receipt points
-      // to it until the complete frozen target and metadata are durable.
+      // The private transaction spans yielding batches, never the live source writer.
+      // Only the complete frozen target and metadata are committed and published.
       if(projected!==contentHash) fail();
       metadata={version:PEER_TRANSFER_VERSION,id,base:anchor.checkpoint,target,contentHash,rows,sourceStartedAt,sourceAt};
       step(()=>{
-        spool.exec('BEGIN');
         try {spool.prepare('INSERT INTO meta VALUES(?)').run(JSON.stringify(metadata));spool.exec('COMMIT');}
         catch(error){spool.exec('ROLLBACK');throw error;}
       });

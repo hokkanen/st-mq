@@ -129,13 +129,14 @@ test('historical worker cache follows assessment edits without telemetry and ign
   assert.equal((await service.query(args)).meta.cacheHit, true);
   store.cycle('providers', { ...cycle, assessment: { ...cycle.assessment, profitCents: -50 } });
   let result = await service.query(args);
-  assert.notEqual(result.meta.cacheHit, true);
+  assert.equal(result.meta.cacheHit, true, 'Updated comparison reuses unchanged chart geometry');
   assert.equal(result.heatingBenefit.valueEuro, -0.5);
+  assert.equal(result.heatingSavings.home.model.valueEuro, -0.5);
   assert.equal((await service.query(args)).meta.cacheHit, true);
   store.cycle('providers', { ...cycle, assessment: { ...cycle.assessment, profitCents: null,
     basis: 'unassessed-corrected-fireplace-history' } });
   result = await service.query(args);
-  assert.notEqual(result.meta.cacheHit, true);
+  assert.equal(result.meta.cacheHit, true, 'Updated comparison reuses unchanged chart geometry');
   assert.equal(result.heatingBenefit.valueEuro, null);
   assert.equal(result.heatingBenefit.counts.unassessed, 1);
 });

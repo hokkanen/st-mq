@@ -18,7 +18,8 @@ async function until(t,check){for(;;){t.signal.throwIfAborted();if(check())retur
 // Actual MQTT.js and native protocol packets stay on this owned in-memory
 // stream. The competing SQLite writer and all files are synthetic and owned.
 // Disable fixture reconnect/keepalive to isolate one attempt; production
-// budgets and the actual ten-second readiness timer remain unchanged.
+// budgets remain real. One test exercises the actual twenty-second deadline;
+// other timeout diagnostics accelerate that timer while retaining native packets.
 async function fixture(t,{locked=true,rejectAck=false,connack=true,manualClient=null}={}){
  t.signal.throwIfAborted();
  const directory=mkdtempSync(join(tmpdir(),'stmq-readiness-native-offline-'));
@@ -72,7 +73,7 @@ test('real MQTT.js SUBACKs remain unready until real Store admission commits',as
  const ready=f.reader.ready();f.unlock();await ready;
  assert.equal(f.reader.status().brokers.primary.ready,true);assert.equal(f.connectedEvents(),1);
 });
-test('confirmed SUBACKs held by SQLite can hit the actual unchanged ten-second readiness timer',async t=>{
+test('confirmed SUBACKs held by SQLite can hit the actual twenty-second readiness timer',async t=>{
  const f=await fixture(t);await until(t,()=>f.acked()&&f.store.writeQueueStatus().pending>0);
  const began=performance.now();const pending=f.reader.ready();
  let error;await assert.rejects(pending,value=>{error=value;return /MQTT primary subscription readiness timed out/.test(value.message);});
@@ -86,7 +87,7 @@ test('confirmed SUBACKs held by SQLite can hit the actual unchanged ten-second r
  assert.equal(Object.isFrozen(diagnostic),true);
  const elapsedMs=performance.now()-began;
  t.diagnostic(JSON.stringify({actualHeldWallMs:elapsedMs,actualSubscribeCallbacks:f.counters.subscriptionCallbacks}));
- assert.ok(elapsedMs>=9900);assert.equal(f.client().connected,true);assert.equal(f.acked(),true);assert.equal(f.reader.status().brokers.primary.ready,false);assert.ok(f.store.writeQueueStatus().pending>0);assert.equal(f.connectedEvents(),0);
+ assert.ok(elapsedMs>=19900);assert.equal(f.client().connected,true);assert.equal(f.acked(),true);assert.equal(f.reader.status().brokers.primary.ready,false);assert.ok(f.store.writeQueueStatus().pending>0);assert.equal(f.connectedEvents(),0);
  await f.close();f.unlock();await until(t,()=>f.store.writeQueueStatus().pending===0);
  assert.equal(f.connectedEvents(),0);assert.equal(f.counters.publishPackets,0);assert.equal(diagnostic.connected,true);assert.ok(diagnostic.queuePending>0);
 });
@@ -97,6 +98,7 @@ test('closing before admission rejects readiness and cancels held callbacks with
  f.unlock();await until(t,()=>f.store.writeQueueStatus().pending===0);assert.equal(f.connectedEvents(),0);assert.equal(f.counters.publishPackets,0);
 });
 test('transport loss uses the same timeout but leaves current connected false',async t=>{
+ const timer = globalThis.setTimeout; t.mock.method(globalThis,'setTimeout',(fn,ms,...args)=>timer(fn,ms===20_000?1000:ms,...args));
  const f=await fixture(t);await until(t,()=>f.acked()&&f.store.writeQueueStatus().pending>0);
  const pending=f.reader.ready();let error;const rejected=assert.rejects(pending,value=>{error=value;return /MQTT primary subscription readiness timed out/.test(value.message);});
  f.streams.at(-1).destroy();await until(t,()=>!f.client().connected);await rejected;
@@ -120,6 +122,7 @@ test('unsupported schema refuses before any MQTT producer can be constructed',as
 });
 
 test('no native CONNACK observed remains distinct from a later connection loss',async t=>{
+ const timer = globalThis.setTimeout; t.mock.method(globalThis,'setTimeout',(fn,ms,...args)=>timer(fn,ms===20_000?1000:ms,...args));
  const f=await fixture(t,{locked:false,connack:false});let error;
  await assert.rejects(f.reader.ready(),value=>{error=value;return /MQTT primary subscription readiness timed out/.test(value.message);});
  const diagnostic=startupFailureDiagnostic(error,'runtime_failed').acquisition;
@@ -174,4 +177,10 @@ test('whole fixture cancellation discards admission before releasing its owned w
 test('already cancelled fixture refuses before constructing its Store or protocol client',async()=>{
  const owner=new AbortController(),reason=new Error('synthetic cancelled before setup');owner.abort(reason);
  await assert.rejects(fixture({signal:owner.signal,after(){throw new Error('cleanup should not be registered');}}),error=>error===reason);
+});
+
+test('a progressing durable subscription queue can finish after the former ten-second limit', async t => {
+ const f = await fixture(t); await until(t,()=>f.acked()&&f.store.writeQueueStatus().pending>0);
+ const ready=f.reader.ready(); await new Promise(resolve=>setTimeout(resolve,10_500)); f.unlock(); await ready;
+ assert.equal(f.reader.status().brokers.primary.ready,true); assert.equal(f.connectedEvents(),1);
 });

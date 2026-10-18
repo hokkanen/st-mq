@@ -1,3 +1,4 @@
+import { DEFAULT_CHART_CACHE } from '../domain/chart-cache.js';
 import { equipmentConfiguration } from '../acquisition/equipment-config.js';
 import { heatingStrategy } from '../domain/heating-strategy.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
@@ -100,6 +101,18 @@ export function recordingConfiguration(input = {}, { databaseDir = '.' } = {}) {
       : directory.startsWith('~') ? resolve(`${homedir()}${directory.slice(1)}`) : resolve(directory),
     fullVerificationIntervalMs: Math.round(interval(input.full_verification_interval_hours, 0, 0, 8760, 'full_verification_interval_hours') * 3_600_000),
   };
+}
+
+export function chartConfiguration(input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Chart settings must be an object');
+  if (Object.keys(input).some(key => !['cache_days', 'cache_memory_mib'].includes(key)))
+    throw new Error('Unsupported chart setting. Use cache_days or cache_memory_mib.');
+  const days = input.cache_days === undefined ? DEFAULT_CHART_CACHE.cacheDays : input.cache_days,
+    memoryMiB = input.cache_memory_mib === undefined ? DEFAULT_CHART_CACHE.cacheBytes / (1024 * 1024) : input.cache_memory_mib;
+  if (!Number.isInteger(days) || days < 0 || days > 14) throw new Error('charts.cache_days must be an integer from 0 to 14.');
+  if (!Number.isInteger(memoryMiB) || memoryMiB < 64 || memoryMiB > 2048)
+    throw new Error('charts.cache_memory_mib must be an integer from 64 to 2048.');
+  return { cacheDays: days, cacheBytes: memoryMiB * 1024 * 1024 };
 }
 
 export function webConfiguration(input = {}) {
@@ -382,6 +395,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     control: { ...controlConfiguration(options.controller),
       indoorSensorWeights: indoorSensorWeightsConfiguration(options.controller?.indoor_sensor_weights, options) },
     recording: recordingConfiguration(options.recording, { databaseDir }),
+    charts: chartConfiguration(options.charts),
     acquisition: acquisitionConfiguration(options.acquisition),
     h66: { enabled: !mirrorSlave && Boolean(env.STMQ_H66_DEVICE ?? options.controller?.h66_device), writeEnabled: !mirrorSlave,
       maxAgeMs: H66_MAX_AGE_MS, readbackTimeoutMs: 10000, snapshotIntervalMs: 60000,

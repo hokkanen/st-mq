@@ -337,6 +337,24 @@ configuration:
       freshness. electricity_source_max_age_seconds limits held power
       estimates; electricity_max_gap_seconds limits integration across gaps;
       electricity_telemetry_max_age_seconds limits electrical telemetry age.
+  charts:
+    name: Chart memory
+    description: >-
+      Keep recent chart inputs in RAM for every view. Warming yields to recording,
+      control, requested history and mirroring. This adds no recorded history.
+    fields:
+      cache_days:
+        name: Recent days in memory
+        description: >-
+          Zero disables the resident window; 1–14 keeps those recent days plus
+          today's data. Default 7. Apply configuration to change without restarting
+          the application. Older dates remain available from the database.
+      cache_memory_mib:
+        name: Estimated chart cache budget in MiB
+        description: >-
+          Default 1024; range 64–2048. Includes recent inputs, reconstructed energy
+          and prepared responses. Dense history may fit fewer days. Working memory,
+          SQLite, other services and the browser use additional RAM.
   recording:
     name: Historical recording and exports
     description: >-

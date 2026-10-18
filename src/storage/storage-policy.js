@@ -1,12 +1,12 @@
 // Execution and diagnostics share these values. They are runtime policy, not
 // dashboard settings or a promise that a native storage call finishes on time.
 export const STORAGE_QUEUE_POLICY = Object.freeze({
-  limit: 2048, byteLimit: 8 * 1024 * 1024, controlBurst: 8, foregroundBurst: 32,
+  limit: 2048, byteLimit: 8 * 1024 * 1024, controlBurst: 8, foregroundBurst: 32, idleKinds: Object.freeze(['chart-cache']),
 });
 export const WAL_POLICY = Object.freeze({
-  triggerFrames: 50, maxDirtyMs: 5000, pollMs: 250, fallbackPollMs: 1000,
+  triggerFrames: 1000, maxDirtyMs: 5000, pollMs: 250, fallbackPollMs: 1000,
 });
-export const STORAGE_TASK_KINDS = Object.freeze(['checkpoint', 'mirror', 'history', 'live-learning', 'learning-cache']);
+export const STORAGE_TASK_KINDS = Object.freeze(['checkpoint', 'mirror', 'history', 'live-learning', 'learning-cache', 'chart-cache']);
 export const storageTaskKind = value => STORAGE_TASK_KINDS.includes(value) ? value : 'other';
 
 // Read once from the owning connection, never from a health request. A worker

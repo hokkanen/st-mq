@@ -88,7 +88,11 @@ export class WriteQueue {
         reject(failure('STORAGE_WRITE_CANCELLED', 'The pending save was cancelled.'));
         this.schedule(0);
       };
-      this.queues[priority].push(job); this.bytes += bytes;
+      const queue = this.queues[priority];
+      const idle = priority === 'background' && !STORAGE_QUEUE_POLICY.idleKinds.includes(job.kind)
+        ? queue.findIndex(value => STORAGE_QUEUE_POLICY.idleKinds.includes(value.kind) && !value.started && !value.admitting) : -1;
+      if (idle < 0) queue.push(job); else queue.splice(idle, 0, job);
+      this.bytes += bytes;
       this.pendingLength++;
       this.health({ type: 'accepted', priority });
       this.health({ type: 'pending', pending: this.pendingLength });
@@ -173,7 +177,8 @@ export class WriteQueue {
   nextPriority() {
     // Sustained ingestion must not indefinitely prevent WAL maintenance or
     // mirroring. An explicitly urgent control save still precedes this turn.
-    if(!this.queues.control.length&&this.queues.background.length&&this.foregroundStreak>=STORAGE_QUEUE_POLICY.foregroundBurst)return 'background';
+    const background = this.queues.background.some(job => !STORAGE_QUEUE_POLICY.idleKinds.includes(job.kind));
+    if (!this.queues.control.length && background && this.foregroundStreak >= STORAGE_QUEUE_POLICY.foregroundBurst) return 'background';
     if (this.queues.control.length && (this.controlStreak < STORAGE_QUEUE_POLICY.controlBurst || !this.queues.normal.length)) return 'control';
     return this.queues.normal.length ? 'normal' : 'background';
   }

@@ -498,7 +498,6 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       else renderStatus(graph?.data.datasets ?? []);
       if (generation !== selectionGeneration || closed || !sameSelection(requestedSelection, selection)) return;
       if (!navigation.moving) requestDetail();
-      loader.prefetch(requestedSelection, { today });
     } catch (error) {
       if (error.name === 'AbortError' || generation !== selectionGeneration || closed) return;
       $('chart-status').textContent = `Unable to load selected dates: ${error.message}`; canvas.dataset.ready = 'false';
@@ -544,7 +543,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   listen($('range-back'), 'click', () => shiftRange(-1));
   listen($('range-forward'), 'click', () => shiftRange(1));
   listen(mobilePointer, 'change', () => renderChart());
-  listen(document, 'visibilitychange', () => { if (document.hidden) loader.cancelPrefetch(); expirePriceForecast(); });
+  listen(document, 'visibilitychange', () => { expirePriceForecast(); });
   function updateTheme() { readPalette(); renderChart(); }
   readPalette(); updateControls();
   return { refresh(nextStatus, options) {

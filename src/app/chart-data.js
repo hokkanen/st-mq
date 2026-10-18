@@ -1,3 +1,4 @@
+import { NATIVE_CHART_RAW_SIGNALS } from './chart-observations.js';
 import { selectedHistoryPredicate } from '../storage/schema.js';
 import { DailyTimingBenchmark } from './daily-timing-benchmark.js';
 export { DailyTimingBenchmark } from './daily-timing-benchmark.js';
@@ -519,7 +520,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
     json_extract(o.raw,'$.reportIntervalMs') AS report_interval_ms,
     o.quality,o.import_id,o.row_number,CASE WHEN json_type(o.raw,'$.timeAdmission') IS NOT NULL
-      OR o.signal IN ('heat_pump_power','charger_power','solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${[...LEARNING, ...RECORDED_EVIDENCE_SIGNALS].map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
+      OR o.signal IN (${NATIVE_CHART_RAW_SIGNALS.map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
   const sourceScope = input === 'simulated' ? "(o.source='simulation' OR o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated')"
     : "(o.source<>'simulation' AND NOT(o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated'))";
   // Read only the selected signals from their index. A chronological full-table
@@ -527,6 +528,19 @@ export function getChartData({ store, input = 'offline', contract = null, market
   // scalar measurements. Recorded energy has its own bounded iterator below.
   // Merge bounded iterators instead of sorting a large intermediate SQL result.
   function* nativeHistoryRows() {
+    const resident = store.chartSource;
+    if (resident?.covers(range.from - 3 * HOUR, queryTo, now, store.chartHead, store.chartRevision)) {
+      const rawSignals = new Set(NATIVE_CHART_RAW_SIGNALS);
+      for (const row of resident.iterate({ from: range.from - 3 * HOUR, to: queryTo, now,
+        input, signals: requested })) {
+        if (compactImports && row.import_id !== null) continue;
+        const raw = resident.raw(row);
+        if ((raw?.recorder?.status ?? 'fresh') !== 'fresh') continue;
+        yield { ...row, report_interval_ms: raw?.reportIntervalMs ?? null,
+          raw: (raw && Object.hasOwn(raw, 'timeAdmission') || rawSignals.has(row.signal)) ? row.raw : null };
+      }
+      return;
+    }
     const heads=[],pending=new Set();
     try {
       for(const signal of requested) {
