@@ -790,6 +790,12 @@ and expected meter progress. Runtime checks cover prompt edits, published prices
 service failures, native boundaries and the 5-cent active/1-cent waiting hurdle.
 Unchanged reporting retains accepted native schedules without another search.
 
+`test/charging-flexibility-refresh.test.js` checks running comparisons and explicit
+approval through both real native controllers, preserving the original short-run
+clock and refreshing automatically when that commitment ends. The pure planner
+checks equal remaining energy/cost, peer service, native period limits and worker
+parity; these checks do not establish physical charging behavior.
+
 `test/charging-service-replanning.test.js` uses the real runtime, joint planner,
 OCPP controller and Shelly controller with synthetic native transports. It checks
 that worsening household forecasts remove an accepted economic gap both when

@@ -427,6 +427,13 @@ published-price cost with the selected forecast plan's remaining cash estimate;
 this display projection does not update accrual, its fallback unit price or the
 published-price ledger.
 
+A newly running period commits its original minimum run, bounded by an earlier
+accepted Stop. It does not freeze the rest of the installed schedule. Both
+alternatives and planning after approval preserve that uninterrupted prefix while
+searching later periods. The commitment's end is a comparison-cache boundary;
+starting a period or reaching that boundary triggers a fresh assessment without
+renewing the run's original clock.
+
 The [common uncertainty allowance](#published-and-forecast-prices) applies to
 both alternatives. Opening more time retains the entire feasible earlier plan
 as a candidate, including its earlier allocation target. A later candidate is

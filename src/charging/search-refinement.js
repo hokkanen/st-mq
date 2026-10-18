@@ -20,7 +20,10 @@ export function refinePeriods({ model, periods, simulate, compare, maxEvaluation
     // Already accepted native periods retain their exact physical meaning;
     // they may have started earlier or have a finite native stop.
     if (job.fixedPeriods) return JSON.stringify(p) === JSON.stringify(job.fixedPeriods);
-    return p.every((row, i) => Number.isFinite(row.startAt) && row.startAt >= model.now
+    if (job.committedPeriod && (p[0].startAt > model.now
+      || p[0].endAt !== null && p[0].endAt < job.committedPeriod.endAt)) return false;
+    return p.every((row, i) => Number.isFinite(row.startAt) && (row.startAt >= model.now
+      || i === 0 && row.startAt === job.committedPeriod?.startAt)
       && (i === p.length - 1 ? row.endAt === null : Number.isFinite(row.endAt)
         && row.endAt - row.startAt >= 900_000 && p[i + 1].startAt - row.endAt
           >= (job.charger.capabilities.localClockSchedule ? 600_001 : 600_000)));

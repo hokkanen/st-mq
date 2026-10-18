@@ -1,6 +1,6 @@
 import { immutableValue } from '../domain/immutable.js';
 import { chargingPlannerInput } from './planner-input.js';
-import { chargingElectrical } from './planner.js';
+import { chargingElectrical, committedChargingPeriods } from './planner.js';
 
 export const BACKGROUND_PLAN_SETTLING_MS = 10_000;
 export const BACKGROUND_PLAN_MAX_WAIT_MS = 60_000;
@@ -39,6 +39,7 @@ export function economicPlanningState(options, scope) {
   const prices = (options.prices ?? []).map(row => ({ start: row.start, end: row.end,
     price: price(row), predicted: row.predicted === true, uncertainty: row.predicted === true ? row.uncertaintyCtPerKwh ?? 2 : 0 }));
   return { at: options.now, hard: JSON.stringify({ scope, priority: options.priority, chargers,
+      committedPeriods: options.committedPeriods ?? committedChargingPeriods(options.chargers, options.now),
       budget: supply.configuredBudgetCurrentA ?? supply.estimate?.budgetCurrentA ?? supply.availableCurrentA,
       budgetQuality: supply.estimate?.quality,
       ...(!supply.configuredBudgetCurrentA && !supply.estimate?.budgetCurrentA

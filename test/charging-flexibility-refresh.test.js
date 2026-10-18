@@ -82,6 +82,52 @@ test('tomorrow-only price changes refresh both comparisons after normal settling
   await f.assess(); assert.equal(f.calls.length, before + 2);
 });
 
+for (const id of ['charger1', 'charger2'])
+test(`newly running ${id} compares and approves cheaper extra-day periods beyond its committed run`, async t => {
+  const f = await ready(t);
+  const execution = f.view(id).control.execution;
+  const startedAt = execution.periods[0].startAt;
+  f.advance(startedAt + 60_000 - f.now);
+  f.forecast(-5);
+  await f.settle(); await f.assess();
+  f.advance(10_000); await f.assess();
+  const before = f.commands.length;
+  const result = await f.runtime.calculateFlexibilityPreview(id);
+  assert.equal(result.comparison.available, true, JSON.stringify(result));
+  assert.ok(result.comparison.savingsCents > 0, 'future periods must remain eligible for extra-day savings after Start');
+  assert.notDeepEqual(result.comparison.deferredPeriods, result.comparison.normalPeriods);
+  const first = result.comparison.deferredPeriods[0];
+  assert.ok(first.startAt <= f.now);
+  assert.ok(first.endAt >= startedAt + 15 * 60_000, 'the current run keeps its original minimum duration');
+  assert.equal(f.commands.length, before, 'the comparison never commands the charger');
+  await f.runtime.setFlexibility(id, { ...f.scope(id), action: 'allow', actionId: 'synthetic-running-extra-day' });
+  await f.settle(); await f.drain();
+  assert.deepEqual(f.view(id).control.execution.periods, result.comparison.deferredPeriods,
+    'explicit approval installs the same future schedule without interrupting the committed run');
+  assert.equal(f.commands.slice(before).some(command => command.role === 'start_charging' && command.value === false), false);
+  f.advance(60_000); await f.settle();
+  assert.equal(f.view(id).control.execution.periods[0].startAt, startedAt,
+    'accepting the revision cannot restart the minimum-run clock');
+  assert.equal(f.view(id).control.execution.periods[0].endAt, first.endAt);
+});
+
+test('the automatic comparison drops the completed minimum run without a browser refresh or clock churn', async t => {
+  const f = await ready(t), id = 'charger2', startedAt = f.view(id).control.execution.periods[0].startAt;
+  f.advance(startedAt + 60_000 - f.now); f.forecast(-5);
+  await f.settle(); await f.assess(); f.advance(10_000); await f.assess();
+  const before = f.view(id).flexibility.preview;
+  assert.ok(before.savingsCents > 0);
+  const calls = f.calls.length, endAt = startedAt + 15 * 60_000;
+  f.advance(endAt - f.now); await f.settle(); await f.assess();
+  const after = f.view(id).flexibility.preview;
+  assert.ok(after.at >= endAt);
+  assert.ok(after.deferredCostCents < before.deferredCostCents);
+  assert.ok(after.deferredPeriods[0].startAt > f.now, 'a finished commitment cannot hold later charging in place');
+  assert.equal(f.calls.length, calls + 2, 'both cards reassess the shared commitment boundary once');
+  for (let i = 0; i < 3; i++) { f.advance(1000); await f.assess(); }
+  assert.equal(f.calls.length, calls + 2, 'elapsed time alone does not renew the comparison');
+});
+
 test('small household changes accumulate against the searched comparison until the normal threshold is crossed', async t => {
   const f = await ready(t), before = f.calls.length;
   for (let i = 0; i < 3; i++) {

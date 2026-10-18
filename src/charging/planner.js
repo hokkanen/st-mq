@@ -29,6 +29,30 @@ const released = charger => charger.control?.provisional !== true
 const shouldPlan = (charger, now) => charger.settings.enabled && charger.capabilities.scheduling
   && !charger.request?.pause && !charger.request?.chargeNow && !manualActive(charger, now) && (!released(charger) || charger.capabilities.currentControl) && charger.requiredGridKwh > EPS && value(charger, 'connected') === true;
 const hasPeriods = rows => Array.isArray(rows) && rows.length > 0;
+// An accepted short run commits only its uninterrupted prefix. Later periods
+// remain economic choices, including when extra time is being compared.
+export function committedChargingPeriods(chargers, now) {
+  return Object.fromEntries(chargers.flatMap(charger => {
+    if (!charger.settings.enabled || !charger.capabilities.scheduling || charger.control?.manual
+      || charger.request?.pause || charger.request?.chargeNow || value(charger, 'connected') !== true) return [];
+    const running = charger.control?.execution?.periods?.find(row => row.startAt <= now
+      && (row.endAt === null || row.endAt > now));
+    const endAt = running && Math.min(running.startAt + MIN_PERIOD_MS, running.endAt ?? Infinity);
+    return endAt > now ? [[charger.id, { startAt: running.startAt, endAt }]] : [];
+  }));
+}
+
+function committedCandidate(job, periods) {
+  if (!job.committedPeriod || job.fixedPeriods) return periods;
+  const result = [], minimumGap = MIN_PAUSE_MS + Number(job.charger.capabilities.localClockSchedule === true);
+  for (const row of [job.committedPeriod, ...periods].sort((a, b) => a.startAt - b.startAt)) {
+    const previous = result.at(-1);
+    if (previous && (previous.endAt === null || row.startAt - previous.endAt < minimumGap))
+      previous.endAt = previous.endAt === null || row.endAt === null ? null : Math.max(previous.endAt, row.endAt);
+    else result.push({ ...row });
+  }
+  return result;
+}
 const nativeStopped = charger => charger.control?.manual?.kind === 'stop' || charger.telemetry?.manualStop === true;
 const allocationTarget = (charger, now) => finite(charger.allocationTargetAt)
   && charger.allocationTargetAt > now && charger.allocationTargetAt <= charger.deadlineAt
@@ -44,6 +68,8 @@ const simulationBoundaries = new WeakMap();
 const nativeStarts = new WeakMap();
 
 function nativePeriodsAvailable(job, starts, periods) {
+  const limit = job.charger.capabilities.maxSchedulePeriods;
+  if (!job.fixedPeriods && Number.isInteger(limit) && limit > 0 && periods?.[job.charger.id]?.length > limit) return false;
   if (!job.charger.capabilities.localClockSchedule || job.fixedPeriods || job.preservePermission) return true;
   let cache = nativeStarts.get(job);
   if (!cache) { cache = new Map(); nativeStarts.set(job, cache); }
@@ -447,7 +473,9 @@ function simulate({ starts, periods, jobs, intervals, details = true }) {
   const changes = unique([...Object.values(starts), ...Object.values(periods ?? {}).flatMap(rows => rows.flatMap(row => [row.startAt, row.endAt]))]
     .filter(finite)).sort((a, b) => a - b);
   const nativeScheduleSupported = jobs.every(job => nativePeriodsAvailable(job, starts, periods));
-  let admissible = nativeScheduleSupported;
+  let admissible = nativeScheduleSupported && jobs.every(job => !job.committedPeriod || (periods?.[job.charger.id]
+    ?? [{ startAt: starts[job.charger.id], endAt: null }]).some(row => row.startAt <= job.now
+      && (row.endAt === null || row.endAt >= job.committedPeriod.endAt)));
   for (let intervalIndex = 0; intervalIndex < intervals.length; intervalIndex++) {
     const interval = intervals[intervalIndex];
     const extra = changes.filter(at => at > interval.start && at < interval.end);
@@ -768,11 +796,13 @@ function availablePeriodCandidate(jobs, intervals) {
     split ||= practical.length > 1;
   }
   if (!split) return null;
+  for (const job of jobs) periods[job.charger.id] = committedCandidate(job, periods[job.charger.id]);
   const starts = Object.fromEntries(Object.entries(periods).map(([id, rows]) => [id, rows[0].startAt]));
   return { ...simulate({ starts, periods, jobs, intervals }), starts, periods };
 }
 
 function periodCandidate(periods, jobs, intervals) {
+  periods = Object.fromEntries(jobs.map(job => [job.charger.id, committedCandidate(job, periods[job.charger.id])]));
   const starts = Object.fromEntries(Object.entries(periods).map(([id, rows]) => [id, rows[0].startAt]));
   let simulation = simulate({ starts, periods, jobs, intervals });
   let trimmed = false;
@@ -939,7 +969,7 @@ export function planChargers(options = {}) {
   return plan(options, choices);
 }
 
-function planChargersAtDeadlines({ now, chargers = [], prices = [], household = [], supply, fixedPeriods = {}, previousPeriods = {}, previousAllocations = [], forecastOnly = false, priority = 'balanced' } = {}) {
+function planChargersAtDeadlines({ now, chargers = [], prices = [], household = [], supply, fixedPeriods = {}, committedPeriods = {}, previousPeriods = {}, previousAllocations = [], forecastOnly = false, priority = 'balanced' } = {}) {
   if (!finite(now)) throw new Error('Charging planner requires numeric UTC time');
   if (!['balanced','charger1','charger2'].includes(priority)) throw new Error('Invalid charging priority');
   if (!Array.isArray(chargers) || new Set(chargers.map(charger => charger.id)).size !== chargers.length)
@@ -992,6 +1022,7 @@ function planChargersAtDeadlines({ now, chargers = [], prices = [], household = 
       ? [{ startAt: forecast.startAt, endAt: charger.telemetry?.scheduledEndKind === 'scheduled-stop' ? forecast.endAt : null }]
       : released(charger) || charger.deadlineAt <= now ? [{ startAt: now, endAt: null }] : null;
     return [{ charger, priority, electric, now, targetAt: plans[charger.id].targetAt, fixedPeriods: locked, allocationHold,
+      committedPeriod: locked ? null : committedPeriods[charger.id],
       preservePermission: !canSchedule, continuingLoad: charger.requiredGridKwh <= EPS && (forecast.charging === true || forecast.permitted === true) }];
   })
     .sort((a, b) => a.targetAt - b.targetAt || b.charger.requiredGridKwh - a.charger.requiredGridKwh || a.charger.id.localeCompare(b.charger.id));
@@ -1116,7 +1147,9 @@ function planChargersAtDeadlines({ now, chargers = [], prices = [], household = 
         .map(at => Math.max(earliest, Math.floor(at / 1000) * 1000)));
       const soloJobs = [job];
       const ranked = candidates.map(at => {
-        const starts = { [job.charger.id]: at }, simulation = simulate({ starts, jobs: soloJobs, intervals, details: false });
+        const periods = { [job.charger.id]: committedCandidate(job, [{ startAt: at, endAt: null }]) };
+        const starts = { [job.charger.id]: periods[job.charger.id][0].startAt };
+        const simulation = simulate({ starts, periods, jobs: soloJobs, intervals, details: false });
         return { ...simulation, starts, at, zeroEnergyPrice: job.charger.requiredGridKwh <= EPS
           ? intervals.find(row => row.start <= at && row.end > at)?.priceCtPerKwh ?? 0 : 0 };
       }).sort((a, b) => compare(a, b, [job]));
@@ -1127,7 +1160,8 @@ function planChargersAtDeadlines({ now, chargers = [], prices = [], household = 
     });
     const inspect = starts => {
       const periods = Object.fromEntries(jobs.map(job => [job.charger.id,
-        job.fixedPeriods ?? [{ startAt: starts[job.charger.id], endAt: null }]]));
+        job.fixedPeriods ?? committedCandidate(job, [{ startAt: starts[job.charger.id], endAt: null }])]));
+      starts = Object.fromEntries(jobs.map(job => [job.charger.id, periods[job.charger.id][0].startAt]));
       const candidate = { ...simulate({ starts, periods, jobs, intervals, details: false }), starts: { ...starts }, periods,
         zeroEnergyPrice: jobs.filter(job => job.charger.requiredGridKwh <= EPS).reduce((sum, job) => sum
           + (intervals.find(row => row.start <= starts[job.charger.id] && row.end > starts[job.charger.id])?.priceCtPerKwh ?? 0), 0) };
@@ -1181,7 +1215,8 @@ function planChargersAtDeadlines({ now, chargers = [], prices = [], household = 
     const model = { jobs, intervals, now };
     const flow = !partialPrices && jobs.length <= 2 ? relaxedChargingFlow(model) : null;
     const refined = refinePeriods({ model, periods: best.periods, simulate, compare,
-      maxEvaluations: 256, extraSeeds: flow?.solved ? [flow.periods] : [] });
+      maxEvaluations: 256, extraSeeds: flow?.solved
+        ? [Object.fromEntries(jobs.map(job => [job.charger.id, committedCandidate(job, flow.periods[job.charger.id])]))] : [] });
     if (refined.result?.feasible && refined.result.nativeScheduleSupported
       && decisionCost(refined.result) < decisionCost(best) - EPS) {
       best = { ...refined.result, ...simulate({ starts: refined.result.starts,

@@ -3,7 +3,7 @@ import { acceptVehicleReading, bmwConsumedChargingAt, bmwHomeContext, bmwIdentit
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
-import { forecastFixedPlans, currentChargingAllocation } from './planner.js';
+import { forecastFixedPlans, currentChargingAllocation, committedChargingPeriods } from './planner.js';
 import { createChargingPlannerService } from './planner-service.js';
 import { chargingPlanValidUntil } from './planner-input.js';
 import { copyOwnedValue, immutableValue, isImmutableValue } from '../domain/immutable.js';
@@ -754,6 +754,13 @@ export class ChargingRuntime {
     // A newly unavailable source invalidates the old plan's evidence. A fresh
     // calculation may still use explicitly labelled same-session references.
     if (this.vehicleAdmissionBasis(item) !== null && item.limiterPlanBasis !== this.currentPlanBasis(item)) plan = null;
+    // Easee revisions describe the future from the decision boundary. Its
+    // controller separately retains the already accepted elapsed history.
+    // Keep the planner's original run clock for commitments and comparisons.
+    if (item.definition.id === 'charger1' && Number.isSafeInteger(plan?.priceRevision?.at)
+      && plan.periods?.[0]?.startAt < plan.priceRevision.at)
+      plan = { ...plan, startAt: Math.max(plan.startAt, plan.priceRevision.at),
+        periods: remainingPeriods(plan.periods, plan.priceRevision.at) };
     const probe = this.probeReturn(item, now);
     if (!probe) return plan;
     const control = item.controller.status(), test = control.currentTest;
@@ -2339,7 +2346,8 @@ export class ChargingRuntime {
           return result;
         }
         state.model = model; state.plans = plans; state.reason = reason;
-        state.until = chargingPlanValidUntil({ now: this.clock(), chargers: this.flexibilityContext.chargers }, result.comparison);
+        state.until = chargingPlanValidUntil({ now: this.clock(), chargers: this.flexibilityContext.chargers,
+          committedPeriods: committedChargingPeriods(this.flexibilityContext.chargers, this.clock()) }, result.comparison);
         return result;
       }).catch(() => {
         state.model = model; state.plans = plans; state.until = Infinity;
@@ -2386,11 +2394,7 @@ export class ChargingRuntime {
         const periods = this.charger(view.id).plan?.periods;
         return periods?.length && !view.control?.manual ? [[view.id, periods]] : [];
       })),
-      fixedPeriods: Object.fromEntries(views.flatMap(view => {
-        const running = view.control?.execution?.periods?.find(period => period.startAt <= now
-          && (period.endAt === null || period.endAt > now));
-        return running && now - running.startAt < MIN_CHARGING_PERIOD_MS ? [[view.id, confirmedPeriods(view, now)]] : [];
-      })) };
+      committedPeriods: committedChargingPeriods(views, now) };
     const model = this.flexibilityModel(view, economicPlanningState(comparisonContext, this.planningScope(views)));
     const plans = Object.fromEntries(Object.entries(this.chargers).map(([key, value]) => [key, value.plan]));
     const comparison = await this.plannerService.compare(comparisonContext,
@@ -2801,7 +2805,8 @@ export class ChargingRuntime {
           return periods?.length && !view.control?.manual ? [[view.id, periods]] : [];
         })) })
       : economicState.schedulable
-        ? await this.plannerService.request({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods })
+        ? await this.plannerService.request({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods,
+          committedPeriods: committedChargingPeriods(views, now) })
         : forecastFixedPlans({ ...planning, chargers: planningViews, periodsByCharger: fixedPeriods });
     if (!acceptResult(result)) return false;
     const adoptedPeriods = Object.fromEntries(views.flatMap(view => {
@@ -2867,7 +2872,8 @@ export class ChargingRuntime {
       // The accepted programs were already jointly evaluated above. Rejecting
       // a tiny improvement does not need another serialized worker request.
       result = retainedComplete ? adopted
-        : await this.plannerService.request({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods });
+        : await this.plannerService.request({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods,
+          committedPeriods: committedChargingPeriods(views, now) });
       if (!acceptResult(result)) return false;
     }
     let published = false;

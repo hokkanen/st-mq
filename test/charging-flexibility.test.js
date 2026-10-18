@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chargingFlexibility, consumeChargingFlexibility, changeChargingFlexibility,
   nextLocalChargingDay, validateChargingFlexibility, admittedChargingDeadlineRevision } from '../src/charging/flexibility.js';
 import { compareChargingFlexibility } from '../src/charging/flexibility-comparison.js';
-import { planChargers, forecastFixedPlans, currentChargingAllocation } from '../src/charging/planner.js';
+import { planChargers, forecastFixedPlans, currentChargingAllocation, committedChargingPeriods } from '../src/charging/planner.js';
 import { chargingPlannerInput, chargingPlanValidUntil } from '../src/charging/planner-input.js';
 import { createChargingPlannerService } from '../src/charging/planner-service.js';
 import { delayedScheduleFor } from '../src/charging/easee.js';
@@ -190,6 +190,89 @@ test('one snapshot compares equal remaining service for both chargers and expose
   assert.equal(comparison.chargers.length, 2);
   assert.ok(Math.abs(comparison.chargers[1].normalCostCents - comparison.chargers[1].deferredCostCents) < 1e-6);
   assert.deepEqual(options, before, 'no delivered energy or session request is reset by a counterfactual');
+});
+
+test('a running Charger 2 keeps its minimum run while extra-day preview and approval move later delivery', async t => {
+  const options = planning(), selected = options.chargers[0];
+  selected.id = 'charger2';
+  selected.capabilities = { scheduling: true, currentControl: true, maxSchedulePeriods: 2 };
+  selected.values.charging = reading(true);
+  selected.control.execution = { periods: [{ startAt: options.now - 60_000, endAt: options.now + HOUR },
+    { startAt: options.now + 1.5 * HOUR, endAt: null }] };
+  options.committedPeriods = committedChargingPeriods(options.chargers, options.now);
+  const committed = options.committedPeriods.charger2, before = structuredClone(options);
+  assert.equal(committed.endAt, options.now + 14 * 60_000);
+  const choice = { chargerId: 'charger2', normalReadyByAt: selected.deadlineAt, deferredReadyByAt: options.now + 4 * HOUR };
+  const service = createChargingPlannerService(); t.after(() => service.close());
+  const result = await service.compare(options, choice);
+  assert.equal(result.available, true); assert.equal(result.recommended, true);
+  assert.ok(result.savingsCents > 0);
+  assert.equal(result.remainingGridKwh, selected.requiredGridKwh);
+  assert.equal(result.deferredPeriods.length, 2);
+  assert.deepEqual(result.deferredPeriods[0], committed);
+  assert.ok(result.deferredPeriods[1].startAt >= options.now + 2 * HOUR);
+  assert.equal(result.normalCostCents, 100);
+  const committedKwh = 11.04 * (committed.endAt - options.now) / HOUR;
+  assert.ok(Math.abs(result.deferredCostCents - (committedKwh * 20 + (5 - committedKwh))) < 1e-6,
+    'both plans include the identical committed delivery and cost, without resetting progress');
+  assert.equal(chargingPlanValidUntil(chargingPlannerInput(options), {}), committed.endAt);
+  const approved = structuredClone(options);
+  approved.chargers[0].deadlineAt = choice.deferredReadyByAt;
+  approved.chargers[0].request = { flexibility: { activeDefer: { approvedAt: options.now,
+    checkpointAt: choice.normalReadyByAt, deferredReadyByAt: choice.deferredReadyByAt } } };
+  const plan = (await service.request(approved)).plans.charger2;
+  assert.equal(plan.costCents, result.deferredCostCents);
+  assert.deepEqual(plan.periods, result.deferredPeriods);
+  assert.deepEqual(options, before);
+});
+
+test('joint running commitments retain peer service and native period limits in both alternatives', () => {
+  const options = planning(true);
+  for (const charger of options.chargers) {
+    charger.requiredGridKwh = 10;
+    charger.capabilities.maxSchedulePeriods = 2;
+    charger.control.execution = { periods: [{ startAt: options.now - 60_000, endAt: null }] };
+    charger.values.charging = reading(true);
+  }
+  options.committedPeriods = committedChargingPeriods(options.chargers, options.now);
+  const result = compareChargingFlexibility(options, { chargerId: 'charger2',
+    normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
+  assert.equal(result.available, true);
+  assert.ok(result.savingsCents > 0); assert.ok(result.householdSavingsCents > 0);
+  assert.equal(result.chargers.length, 2);
+  const approved = structuredClone(options);
+  approved.chargers[1].deadlineAt = options.now + 4 * HOUR;
+  approved.deadlineBaselines = { charger2: options.now + 2 * HOUR };
+  const plans = planChargers(approved).plans;
+  for (const charger of options.chargers) {
+    const plan = plans[charger.id];
+    assert.equal(plan.feasible, true);
+    assert.ok(Math.abs(plan.deliveredGridKwh - charger.requiredGridKwh) < 1e-6);
+    assert.ok(plan.periods.length <= 2);
+    assert.ok(plan.periods[0].startAt <= options.now);
+    assert.ok(plan.periods[0].endAt === null || plan.periods[0].endAt >= options.committedPeriods[charger.id].endAt);
+  }
+});
+
+test('short-run commitments end at their original boundary and never replace independent native instructions', () => {
+  const options = planning(), charger = options.chargers[0], startAt = options.now - 60_000;
+  charger.control.execution = { periods: [{ startAt, endAt: options.now + 2 * 60_000 }] };
+  assert.deepEqual(committedChargingPeriods(options.chargers, options.now),
+    { charger1: { startAt, endAt: options.now + 2 * 60_000 } });
+  assert.deepEqual(committedChargingPeriods(options.chargers, options.now + 2 * 60_000), {});
+  charger.control.execution.periods[0].endAt = null;
+  assert.deepEqual(committedChargingPeriods(options.chargers, startAt + 15 * 60_000), {});
+  for (const change of [{ control: { ...charger.control, manual: { kind: 'stop' } } },
+    { request: { pause: {} } }, { request: { chargeNow: true } }, { settings: { enabled: false } }])
+    assert.deepEqual(committedChargingPeriods([{ ...charger, ...change }], options.now), {});
+  const native = [{ startAt, endAt: null }];
+  options.fixedPeriods = { charger1: native };
+  options.committedPeriods = committedChargingPeriods(options.chargers, options.now);
+  const result = compareChargingFlexibility(options, { chargerId: 'charger1',
+    normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
+  assert.deepEqual(result.normalPeriods, native);
+  assert.deepEqual(result.deferredPeriods, native);
+  assert.equal(result.savingsCents, 0, 'an actual fixed native program remains fixed');
 });
 
 test('an independently stopped or idle peer does not turn its outstanding battery request into a scheduling obligation', () => {

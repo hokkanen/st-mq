@@ -349,9 +349,11 @@ test('allowing one day during an open native period waits its minimum run before
   assert.ok(chargerView(runtime).control.execution?.planId, JSON.stringify({ execution: chargerView(runtime).control.execution,
     planId: chargerView(runtime).plan.id, provisional: chargerView(runtime).control.provisional }));
   await runtime.setFlexibility('charger1', flexibilityInput(runtime));
-  assert.equal(chargerView(runtime).control.phase, 'released', 'permission does not bypass minimum run');
+  assert.equal(chargerView(runtime).control.phase, 'active', 'the revised program continues its committed first period');
   await runtime.planningFlight;
-  assert.equal(runtime.chargers.charger1.priceRecheckAt, initialNow + 15 * 60_000);
+  assert.equal(chargerView(runtime).control.execution.periods[0].startAt, initialNow);
+  assert.equal(chargerView(runtime).control.execution.periods[0].endAt, initialNow + 15 * 60_000);
+  assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 0, 'approval cannot pause the current run early');
   f.setNow(initialNow + 15 * 60_000); await runtime.tick({ prices: official }); await runtime.reconcile();
   assert.equal(chargerView(runtime).control.phase, 'paused');
   assert.ok(chargerView(runtime).control.owned.startAt >= initialNow + 4 * HOUR);
@@ -831,7 +833,9 @@ test('unchanged economics, dearer slots and missing coverage do not interrupt ac
 test('price-driven pauses wait for a minimum running period without losing the new outlook', async t => {
   const { runtime, adapter, setNow } = await activePriceFixture(t, [5, 5, 50, 50], 5);
   runtime.tick({ prices: priceOutlook([5, 5, 50, 1]) }); await runtime.reconcile();
-  assert.equal(chargerView(runtime).control.released, true);
+  assert.equal(chargerView(runtime).control.phase, 'active');
+  assert.equal(chargerView(runtime).control.execution.periods[0].startAt, initialNow);
+  assert.equal(chargerView(runtime).control.execution.periods[0].endAt, initialNow + 15 * 60_000);
   assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 0);
   assert.equal(runtime.boundaryAt, initialNow + 15 * 60_000);
   setNow(initialNow + 15 * 60_000); runtime.tick(); await runtime.reconcile();

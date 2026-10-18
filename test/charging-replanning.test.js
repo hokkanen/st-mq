@@ -53,6 +53,19 @@ test('elapsed intervals and refreshed but numerically unchanged household models
   assert.equal(economicPlanningChange(before,state(options),options.now),null);
 });
 
+test('starting a committed run and reaching its original end are material; intermediate receipts are not', () => {
+  const options = chargingPlannerWorkload(), charger = options.chargers[0], startAt = options.now;
+  charger.control.execution = { periods: [{ startAt: startAt + 60_000, endAt: null }] };
+  const waiting = state(options);
+  options.now = startAt + 60_000;
+  const running = state(options);
+  assert.equal(economicPlanningChange(waiting, running, options.now), 'hard');
+  options.now += 60_000;
+  assert.equal(economicPlanningChange(running, state(options), options.now), null);
+  options.now = startAt + 16 * 60_000;
+  assert.equal(economicPlanningChange(running, state(options), options.now), 'hard');
+});
+
 test('soft changes get ten quiet seconds with a fixed sixty second maximum and urgent bypass', () => {
   let result=backgroundPlanDeadline({now:1000,key:'first'});
   assert.equal(result.until,11000);

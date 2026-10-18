@@ -48,6 +48,7 @@ export function chargingPlanValidUntil(options, result) {
     result.normalReadyByAt, result.deferredReadyByAt,
     ...[...(result.normalPeriods ?? []), ...(result.deferredPeriods ?? [])]
       .flatMap(row => [row.startAt, row.endAt]),
+    ...Object.values(options.committedPeriods ?? {}).map(period => period.endAt),
     ...(options.chargers ?? []).flatMap(charger => [charger.control?.manual?.resumeAt,
       charger.request?.flexibility?.activeDefer?.checkpointAt]),
   ].filter(at => Number.isFinite(at) && at > options.now);

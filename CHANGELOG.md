@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Compare cheaper one-extra-day charging options after charging starts. Preserve
+  the current period's minimum run while optimizing later delivery, and use the
+  same commitment when an allowance is approved.
+
 - Prevent brief Charger 1 energy-recording gaps when slightly early local meter
   readings finish admission. Keep acquisition on the local connection through
   that save, preserving genuine outages, source clocks and charging safeguards.
