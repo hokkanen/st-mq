@@ -28,7 +28,7 @@ test('electricity batches cloud connection with existing reads and keeps device 
   const { rows, calls } = await read([connection(true)], { equalizerRows: [connection(false, now - 15_000)] });
   assert.equal(calls.length, 2);
   assert(calls.every(call => call.method === 'GET'));
-  assert.deepEqual(calls.map(call => new URL(call.url).searchParams.get('ids')), [
+  assert.deepEqual(calls.map(call => new URL(call.url).searchParams.get('ids')).sort(), [
     '183,184,185,194,195,196,120,250,130,132,136,150,129,223', '31,32,33,34,35,36,40,45,250',
   ]);
   assert.equal(rows.length, 15, 'Connection is metadata, not another electrical series');

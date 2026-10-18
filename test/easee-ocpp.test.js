@@ -151,7 +151,7 @@ test('authenticated OCPP boots, enforces tag authorization and expires readings 
 test('charger electricity prefers local OCPP and falls back to cloud without attributing property data to OCPP', async () => {
   let direct = true, requests = 0;
   const localRows = [...ocppMeterReadings(meter(), at), { id: 250, value: true, timestamp: new Date(at).toISOString() }];
-  const local = { start() {}, close() {}, snapshot: () => direct ? localRows : null, status: () => ({ configured: true, available: direct }) };
+  const local = { start() {}, close() {}, readSnapshot() { return this.snapshot(); }, snapshot: () => direct ? localRows : null, status: () => ({ configured: true, available: direct }) };
   const providers = createDeviceProviders({ connections: { easee: { charger_id: 'fixture-charger', access_token: 'fixture-token' } },
     clock: () => at, ocppFactory: () => local, http: { json: async () => { requests++; return localRows; } } });
   const rows = await providers.electricity({ now: at });
@@ -189,7 +189,7 @@ test('missing native voltage phases use bounded cloud-only supplements without c
   const payload = voltage => [...ocppMeterReadings(meter(samples.map(row => row.measurand === 'Voltage'
     ? { ...row, value: String(voltage) } : row), now), now), { id: 250, value: true, timestamp: new Date(now).toISOString() }];
   const local = { start() {}, close() {}, status: () => ({ configured: true }),
-    snapshot: () => payload(240).filter(row => complete || row.id !== 195) };
+    readSnapshot() { return this.snapshot(); }, snapshot: () => payload(240).filter(row => complete || row.id !== 195) };
   const devices = createDeviceProviders({ connections: { easee: { charger_id: 'fixture-charger', access_token: 'fixture-token',
     charger_voltage_ids: [194, 195, 196] } }, clock: () => now, ocppFactory: () => local,
     http: { json: async () => { requests++; return payload(220); } } });
@@ -214,7 +214,7 @@ test('missing native voltage phases use bounded cloud-only supplements without c
 
 test('voltage-only native observations coexist with cloud electrical readings', async t => {
   const cloudRows = [...ocppMeterReadings(meter(), at), { id: 250, value: true, timestamp: new Date(at).toISOString() }];
-  const local = { start() {}, close() {}, status: () => ({ configured: true }), snapshot: () => null,
+  const local = { start() {}, close() {}, status: () => ({ configured: true }), readSnapshot() { return this.snapshot(); }, snapshot: () => null,
     voltageSnapshot: () => cloudRows.filter(row => row.unit === 'V' || row.id === 250) };
   const devices = createDeviceProviders({ connections: { easee: { charger_id: 'fixture-charger', access_token: 'fixture-token' } },
     clock: () => at, ocppFactory: () => local, http: { json: async () => cloudRows } });

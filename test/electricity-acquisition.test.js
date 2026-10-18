@@ -271,8 +271,8 @@ test('batched provider reads power, phases and only the property audit counter w
     } } });
   const rows = await provider.electricity({ now: initial });
   assert.equal(calls.length, 2); assert.equal(rows.length, 15);
-  assert.deepEqual(new URL(calls[0]).searchParams.get('ids').split(',').map(Number), [183, 184, 185, 194, 195, 196, 120, 250, 130, 132, 136, 150, 129, 223]);
-  assert.deepEqual(new URL(calls[1]).searchParams.get('ids').split(',').map(Number), [31, 32, 33, 34, 35, 36, 40, 45, 250]);
+  assert.deepEqual(new URL(calls.find(url => url.includes('/invented-charger/'))).searchParams.get('ids').split(',').map(Number), [183, 184, 185, 194, 195, 196, 120, 250, 130, 132, 136, 150, 129, 223]);
+  assert.deepEqual(new URL(calls.find(url => url.includes('/invented-equalizer/'))).searchParams.get('ids').split(',').map(Number), [31, 32, 33, 34, 35, 36, 40, 45, 250]);
   assert(rows.every(row => row.raw.acquisitionOnly));
   assert.deepEqual(rows.filter(row => row.raw.auditOnly).map(row => row.signal), ['property_import_energy_counter']);
   assert(!rows.some(row => /^ev1_.*_energy_counter$/.test(row.signal)), 'Charger counters are ignored even if the API returns them unsolicited');

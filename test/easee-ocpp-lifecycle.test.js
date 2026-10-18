@@ -136,7 +136,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
           options, get closed() { return closed; }, get control() { return clone(control); }, set control(value) { control = clone(value); },
           async start() { events.push({ type: 'listener-start', enabled: options.config.enabled }); ready = options.config.enabled && options.canControl(); },
           status: () => ({ configured: options.config.enabled, ready: ready && !closed && options.canControl(), available: false, controlTransport: 'ocpp' }),
-          snapshot: () => null,
+          readSnapshot() { return this.snapshot(); }, snapshot: () => null,
           controlSnapshot: () => ready && !closed && options.canControl() && control.timestamp <= now ? clone(control) : null,
           currentSupplySnapshot: () => ready && !closed && options.canControl() ? {
             connectionId: control.connectionId, epoch: control.connectionId, readings: clone(control.readings),

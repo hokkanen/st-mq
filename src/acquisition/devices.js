@@ -976,7 +976,9 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       const results = await Promise.allSettled(electricalDevices.map(async definition => {
         const { id, prefix, fields, verified, ids, requiredIds } = definition;
         const epoch = electricityEpoch;
-        const direct = prefix === 'ev1' ? local.snapshot() : null;
+        const reading = prefix === 'ev1' ? local.readSnapshot({ signal: openSignal(signal) }) : null;
+        const direct = reading instanceof Promise ? await reading : reading;
+        if (epoch !== electricityEpoch) throw new ProviderError('provider-request-aborted');
         if (direct) {
           const snapshotAt = clock();
           transports.set(id, 'ocpp'); streamedElectricity.delete(id);

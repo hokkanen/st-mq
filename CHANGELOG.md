@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Prevent brief Charger 1 energy-recording gaps when slightly early local meter
+  readings finish admission. Keep acquisition on the local connection through
+  that save, preserving genuine outages, source clocks and charging safeguards.
+
 - Let both chargers start their bounded vehicle-identification test before an
   initial power reading arrives. Preserve the original energy/deadline limits,
   require measured evidence for identification, and retain native current

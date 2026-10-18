@@ -255,7 +255,7 @@ test('cloud voltage stream loss leaves independent OCPP integration and voltage 
   const localRows = observations(CHARGER);
   const f = providerFixture(t, { ...connections().easee, charger_voltage_ids: [194, 195, 196] }, {
     ocppFactory: options => { localOptions = options; return {
-      start() {}, close() {}, status: () => ({ configured: true }), snapshot: () => localRows,
+      start() {}, close() {}, status: () => ({ configured: true }), readSnapshot() { return this.snapshot(); }, snapshot: () => localRows,
     }; },
   });
   const interruptions = [], voltages = [];

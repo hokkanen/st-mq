@@ -56,6 +56,7 @@ for (const voltageOnly of [false, true]) test(`admitted OCPP ${voltageOnly ? 'vo
       return native.map(row => ({ ...row, timestamp: new Date(now).toISOString() }));
     } },
     ocppFactory: () => ({
+      readSnapshot() { return this.snapshot(); },
       snapshot() { if (voltageOnly) return null; current = now + 5; return native; },
       voltageSnapshot() { if (!voltageOnly) return null; current = now + 5; return native.filter(row => row.id !== 120); },
       async close() {},

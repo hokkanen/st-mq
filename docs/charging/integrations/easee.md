@@ -920,6 +920,16 @@ connection. Native command guards run after admission. Setup also awaits its
 durable intent, then rechecks authority and remote configuration before any
 charger-side mutation.
 
+Electrical acquisition joins an already queued admission of due meter readings
+before deciding whether local readings are unavailable. Concurrent readers share
+that save; ordinary reads add no writer turn. The wait has one one-second
+monotonic budget and responds to cancellation. After it finishes, acquisition
+rechecks the authenticated connection, controller authority and original source
+freshness. A boot, reconnect, expired reading or failed save cannot supply the old
+snapshot. Real source loss still permits cloud fallback. Synchronous command and
+transaction reads retain their existing admission checks; this recording read
+does not grant charging permission or change the meter reporting cadence.
+
 Some existing transactions reconnect without a `StartTransaction` exchange.
 The ledger can retain these separately as observed transactions after two
 distinct, advancing, fresh power `MeterValues` reports, at least one second apart,

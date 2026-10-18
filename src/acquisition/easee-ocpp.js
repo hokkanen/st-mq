@@ -10,6 +10,7 @@ import { createControlAttempt } from '../storage/control-attempt.js';
 const MAX_AGE_MS = 60_000;
 const MAX_FUTURE_MS = MAX_SOURCE_AHEAD_MS;
 const CALL_TIMEOUT_MS = 15_000;
+const SNAPSHOT_ADMISSION_MS = 1000;
 const FIRST_MESSAGE_TIMEOUT_MS = 30_000;
 const NO_TRANSACTION_STATUSES = new Set(['Available', 'Finishing']);
 const RECOVERABLE_STATUSES = new Set(['Charging', 'SuspendedEVSE', 'SuspendedEV']);
@@ -131,7 +132,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   const scope = digest({ chargerId, identity });
   let ledger = null, stateReady = false;
   let admitted = false;
-  const cancellation = new AbortController(), maintenance = new Set();
+  const cancellation = new AbortController(), maintenance = new Map();
   const diagnostics = createOcppStartupDiagnostics();
   let diagnosticFrame = null;
   function storageFailed(connection) {
@@ -157,15 +158,44 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     catch (error) { return Promise.reject(error); }
   }
   function scheduleState(name, operation) {
-    if (maintenance.has(name)) return;
-    maintenance.add(name);
+    if (maintenance.has(name)) return maintenance.get(name);
     const connection = socket;
     const waitingCall = name === 'send' && !pendingCalls.size ? callQueue[0] : null;
     waitingCall?.attempt?.storageWaiting(true);
-    void runState(operation, { connection }).catch(error => {
+    const pending = runState(operation, { connection }).catch(error => {
       waitingCall?.attempt?.fail(error);
       if (!['STORAGE_WRITE_STALE', 'STORAGE_WRITE_CANCELLED', 'ocpp-request-revoked'].includes(error?.code)) storageFailed(connection);
     }).finally(() => { waitingCall?.attempt?.storageWaiting(false); maintenance.delete(name); });
+    maintenance.set(name, pending);
+    return pending;
+  }
+  async function readAdmittedSnapshot(read, connection, generation, signal) {
+    let deadline;
+    for (;;) {
+      signal?.throwIfAborted(); cancellation.signal.throwIfAborted();
+      if (socket !== connection || connectionId !== generation || !refreshAuthority()) return null;
+      const snapshot = read(), pending = maintenance.get('future-readings');
+      if (!pending) return snapshot;
+      // A queued admission is not a lost source. Join its existing durable
+      // turn, then reread this connection with the original freshness clocks.
+      // One monotonic budget bounds repeated arrivals and a stalled writer.
+      deadline ??= performance.now() + SNAPSHOT_ADMISSION_MS;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) return null;
+      const ready = await new Promise(resolve => {
+        const stop = AbortSignal.any([cancellation.signal, ...(signal ? [signal] : [])]);
+        const finish = value => { clearTimeout(timer); stop.removeEventListener('abort', aborted); resolve(value); };
+        const aborted = () => finish(false);
+        const timer = setTimeout(() => finish(false), remaining); timer.unref?.();
+        stop.addEventListener('abort', aborted, { once: true });
+        pending.then(() => finish(true));
+        if (stop.aborted) aborted();
+      });
+      if (!ready) {
+        signal?.throwIfAborted(); cancellation.signal.throwIfAborted();
+        return null;
+      }
+    }
   }
   const configurationFailures = new Set();
   const validLedger = value => value && value.version === 4 && value.scope === scope
@@ -999,6 +1029,12 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         readings: [...values.values()].filter(row => [183, 184, 185].includes(row.id)
           && instant(row.timestamp) >= currentSupplyBoundaryAt && instant(row.timestamp) <= clock()
           && row.receivedAt >= currentSupplyBoundaryAt).map(row => ({ ...row })) };
+    },
+    readSnapshot({ signal } = {}) {
+      signal?.throwIfAborted(); cancellation.signal.throwIfAborted();
+      const connection = socket, generation = connectionId, snapshot = this.snapshot();
+      return maintenance.has('future-readings')
+        ? readAdmittedSnapshot(() => this.snapshot(), connection, generation, signal) : snapshot;
     },
     snapshot() {
       if (!refreshAuthority() || socket?.readyState !== 1 || lastMessageAt === null
