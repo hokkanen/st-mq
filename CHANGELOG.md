@@ -16,6 +16,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   scratch work. Preserve FULL source commits and final transfer publication.
 - Allow twenty seconds for MQTT startup subscription admission and report explicit
   admission failure promptly.
+- Release certificate-manager ownership automatically on process exit or crash,
+  preventing reused container PIDs from blocking HTTPS after a restart. Show
+  actionable lock errors while preserving saved certificates and helper identity.
 
 - Keep successfully identified vehicles and their battery planning references
   through inconclusive shared charging starts/stops in the same connection,

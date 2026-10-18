@@ -440,6 +440,8 @@ try {
     ['preparing', { ...originalFixture, enabled: true, phase: 'preparing', operation: { state: 'running' } }],
     ['startup-preparing', { ...originalFixture, enabled: true, phase: 'preparing', operation: { action: 'enable', state: 'completed' } }],
     ['retry-pending', { ...originalFixture, enabled: true, phase: 'degraded', error: 'helper_authorization_start_failed', operation: { state: 'running', action: 'retry', error: null } }],
+    ['manager-owned', { ...originalFixture, enabled: true, phase: 'degraded', error: 'https_manager_already_running' }],
+    ['manager-lock-repair', { ...originalFixture, enabled: true, phase: 'degraded', error: 'https_lock_recovery_required' }],
     ['recovered-receipt', { ...readyFixture, error: null, operation: { action: 'enable', state: 'failed', completedAt: Date.parse('2026-10-14T11:59:59Z'), error: 'helper_authorization_start_failed' } }],
     ['current-release', { ...readyFixture, helper: { ...readyFixture.helper, securityUpdate: null, runningLatest: true }, updates: { ...readyFixture.updates, installed: '1.104.1', latest: '1.104.1', candidate: '1.104.1', lastSuccessfulCheck: Date.parse('2026-10-14T11:59:30Z') } }],
     ['urgent-release', { ...readyFixture, helper: { ...readyFixture.helper, securityUpdate: true, securityObservedAt: Date.parse('2026-10-14T11:45:00Z') }, updates: { ...readyFixture.updates, installed: '1.104.1', latest: '1.104.2', candidate: '1.104.2' } }],

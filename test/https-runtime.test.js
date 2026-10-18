@@ -11,7 +11,7 @@ import { createServer } from 'node:http';
 import { createHttpsManager } from '../src/https/manager.js';
 import { verifySigningBundle, verifyArtifactHash, releaseCandidate, architecture } from '../src/https/distribution.js';
 import { validateCertificate, renewalMinimumValidity } from '../src/https/certificates.js';
-import { privateDirectory, atomicJson, lockDirectory, outsideCheckout } from '../src/https/storage.js';
+import { privateDirectory, atomicJson, outsideCheckout } from '../src/https/storage.js';
 import { CertificateHelper, effectiveRestrictions, restrictedEnvironment, helperLocations, installationBinding } from '../src/https/helper.js';
 import { runtimeTask } from '../src/https/worker.js';
 import { secureWebAccessView } from '../chart/secure-web-access.js';
@@ -1242,16 +1242,6 @@ test('checkout storage is refused before downloads, including an external symlin
   await assert.rejects(outsideCheckout(context.config.web.httpsDirectory), { code: 'helper_storage_outside_checkout_required' });
   await assert.rejects(context.manager.action({ action: 'enable' }), { code: 'helper_storage_outside_checkout_required' });
   assert.equal(context.calls.install, 0); await assert.rejects(lstat(resolve(repository, 'private')), { code: 'ENOENT' });
-});
-
-test('singleton stale lock reclamation has exactly one winner under concurrent starts', async t => {
-  const directory = await mkdtemp(resolve(tmpdir(), 'stmq-https-lock-')); t.after(() => rm(directory, { recursive: true, force: true }));
-  await atomicJson(resolve(directory, 'manager.lock'), { version: 1, pid: 2147483647, nonce: 'fixture-dead-process' });
-  const outcomes = await Promise.allSettled(Array.from({ length: 50 }, () => lockDirectory(directory)));
-  const accepted = outcomes.filter(outcome => outcome.status === 'fulfilled'); assert.equal(accepted.length, 1); await accepted[0].value();
-  await mkdir(resolve(directory, 'manager.claim'), { mode: 0o700 });
-  await atomicJson(resolve(directory, 'manager.claim', 'owner.json'), { version: 1, pid: 2147483647, nonce: 'interrupted' });
-  await assert.rejects(lockDirectory(directory), { code: 'https_lock_recovery_required' });
 });
 
 test('vendor distribution signature binds the root-signed signing bundle, exact BLAKE2s digest and little endian length', () => {

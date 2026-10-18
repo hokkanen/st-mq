@@ -197,6 +197,23 @@ test('a running Retry reports the current action and retains its last problem se
   assert.equal(secureWebAccessView(source).problemCode, '', 'Family cannot receive diagnostic codes');
 });
 
+test('certificate-manager lock failures explain recovery without exposing admin diagnostics to family', () => {
+  for (const [code, explanation] of [
+    ['https_manager_already_running', /Another running application instance.*Stop the duplicate/],
+    ['https_lock_recovery_required', /Obsolete.*stopped lock-recovery procedure/],
+    ['https_lock_unavailable', /Linux process lock.*Unix-socket support/],
+  ]) {
+    const source = { ...ready, phase: 'degraded', error: code };
+    const view = secureWebAccessView(source, { admin: true });
+    assert.match(view.error, explanation);
+    assert.doesNotMatch(view.error, /Review the reported problem code/);
+    assert.equal(view.problemCode, code);
+    assert.match(view.error, /[Rr]ecovery access|[Kk]eep the saved helper identity and certificates/);
+    assert.equal(secureWebAccessView(source).error, '');
+    assert.equal(secureWebAccessView(source).problemCode, '');
+  }
+});
+
 test('current recovery is independent of a recent failed action receipt and its original clock', () => {
   const now = Date.parse('2026-10-14T12:00:00Z');
   const operation = { action: 'enable', state: 'failed', completedAt: now - 1000, error: 'helper_authorization_start_failed' };

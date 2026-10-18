@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto';
-import { open, mkdir, lstat, readFile, rename, unlink, chmod, rmdir, realpath } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { open, mkdir, lstat, readFile, rename, unlink, chmod, realpath } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { dirname, resolve } from 'node:path';
 
 export function httpsError(code) { const error = new Error(code); error.code = code; return error; }
@@ -68,51 +69,30 @@ export async function readJson(path, { missing = null, limit = 512 * 1024 } = {}
 }
 
 export async function lockDirectory(directory) {
-  const path = resolve(directory, 'manager.lock');
-  const claim = resolve(directory, 'manager.claim');
-  const value = { version: 1, pid: process.pid, nonce: randomUUID() };
-  let heldClaim = false;
-  const deadline = Date.now() + 1500;
-  while (!heldClaim) {
-    try {
-      await mkdir(claim, { mode: 0o700 }); heldClaim = true;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const info = await lstat(claim).catch(() => null);
-      if (!info) continue;
-      if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid?.() || info.mode & 0o077) throw httpsError('https_lock_recovery_required');
-      const claimant = await readJson(resolve(claim, 'owner.json')).catch(() => null);
-      // An interrupted acquisition is preserved for explicit recovery instead
-      // of introducing a second unsafe recursive stale-lock reclamation race.
-      if (!claimant || typeof claimant !== 'object' || Array.isArray(claimant) || Object.keys(claimant).some(key => !['version', 'pid', 'nonce'].includes(key)) ||
-          claimant.version !== 1 || !Number.isSafeInteger(claimant.pid) || claimant.pid < 1 || typeof claimant.nonce !== 'string' || !claimant.nonce.length || claimant.nonce.length > 80) {
-        if (Date.now() >= deadline) throw httpsError('https_lock_recovery_required');
-      } else {
-        try { process.kill(claimant.pid, 0); } catch (probe) { if (probe.code === 'ESRCH') throw httpsError('https_lock_recovery_required'); }
-      }
-      if (Date.now() >= deadline) throw httpsError('https_manager_already_running');
-      await new Promise(resolveWait => setTimeout(resolveWait, 10));
-    }
+  if (process.platform !== 'linux') throw httpsError('https_lock_unavailable');
+  const canonical = await realpath(directory);
+  const identity = await lstat(canonical, { bigint: true });
+  if (!identity.isDirectory() || identity.uid !== BigInt(process.getuid())) throw httpsError('https_directory_unsafe');
+  // Retired ownership records cannot identify a current owner. Preserve them
+  // for explicit stopped repair, without decoding, converting or deleting them.
+  for (const name of ['manager.lock', 'manager.claim']) {
+    const info = await lstat(resolve(canonical, name)).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (info) throw httpsError('https_lock_recovery_required');
   }
-  try {
-    await atomicJson(resolve(claim, 'owner.json'), value);
-    const current = await readJson(path);
-    if (current) {
-      if (typeof current !== 'object' || Array.isArray(current) || Object.keys(current).some(key => !['version', 'pid', 'nonce'].includes(key)) ||
-          current.version !== 1 || !Number.isSafeInteger(current.pid) || current.pid < 1 || typeof current.nonce !== 'string' || !current.nonce.length || current.nonce.length > 80) throw httpsError('https_lock_invalid');
-      let alive = true;
-      try { process.kill(current.pid, 0); } catch (probe) { if (probe.code === 'ESRCH') alive = false; }
-      if (alive) throw httpsError('https_manager_already_running');
-      await unlink(path);
-    }
-    const file = await open(path, 'wx', 0o600);
-    try { await file.writeFile(JSON.stringify(value)); await file.sync(); } finally { await file.close(); }
-    return async () => {
-      const current = await readJson(path).catch(() => null);
-      if (current?.nonce === value.nonce) await unlink(path).catch(() => {});
-    };
-  } finally {
-    await unlink(resolve(claim, 'owner.json')).catch(() => {});
-    await rmdir(claim).catch(() => {});
-  }
+  // Linux owns this abstract socket for the process lifetime, including after
+  // SIGKILL. Nothing persists to confuse a reused container PID with its owner.
+  // Filesystem identity also covers bind mounts with different paths, while
+  // independent volumes mounted at identical paths keep independent ownership.
+  // The supported HA add-on uses host networking, sharing this kernel namespace.
+  const address = `\0stmq-https-${createHash('sha256').update(`${identity.dev}:${identity.ino}`).digest('hex')}`;
+  const server = createServer(socket => socket.destroy());
+  server.maxConnections = 1;
+  await new Promise((accept, reject) => {
+    server.on('error', error => reject(httpsError(error.code === 'EADDRINUSE'
+      ? 'https_manager_already_running' : 'https_lock_unavailable')));
+    server.listen(address, accept);
+  });
+  server.unref();
+  let released;
+  return () => released ??= new Promise(accept => server.close(accept));
 }

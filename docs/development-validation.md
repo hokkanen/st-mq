@@ -478,6 +478,17 @@ from remaining estimates and disclose inferred energy. Home heating and Caravan
 tests keep unconfirmed delivery separate from matching device readback. Recorded
 views cannot use saved progress to claim a worker or physical control is active.
 
+`test/https-storage-lock.test.js` checks one Linux kernel owner under concurrent
+acquisition, separate-process and canonical-path exclusion, repeated normal
+release and SIGKILL recovery without filesystem claims. Retired PID-only lock
+artifacts are rejected unchanged for explicit stopped repair. Existing HTTPS
+runtime and web-access checks retain certificate, identity and controller
+availability boundaries; these fixtures do not enroll or operate a live helper.
+`node test/container/https-lock.js IMAGE` additionally checks real bind aliases,
+independent volumes at identical container paths and repeated container PID 1
+crashes. It mounts only temporary synthetic directories and the HTTPS source;
+host networking shares the abstract-socket namespace without opening TCP ports.
+
 For changed UI surfaces, run their browser fixtures at narrow and wide widths in
 both themes. Preserve focus, quiet background refresh and compact normal states;
 put detailed causes and provenance in existing disclosures. These fixtures use

@@ -314,13 +314,25 @@ requires its parent to permit unprivileged traversal. Select an external
 `web.https_directory` if a custom location prevents that traversal; it does not
 change private ancestor permissions or move existing controller state.
 
-An interrupted lock acquisition can report `https_lock_recovery_required`.
-Stop the application and confirm that its previous helper and any restored copy
-are stopped before repairing this state. Preserve the managed directory first;
-remove only the stale `https/manager.claim` directory and its `owner.json`, then
-restart. Never remove a live manager's lock or delete identity/certificates to
-clear a lock warning. An ordinary dead manager lock is reclaimed automatically;
-an ambiguous interrupted claim requires this explicit repair.
+The certificate manager holds a Linux abstract Unix-socket lock for its process
+lifetime. Normal shutdown, process crashes, container restarts and host reboots
+release it automatically, without a persistent PID file or acquisition claim.
+Reused container PIDs cannot retain ownership. The lock uses the private directory's
+filesystem device and inode, including through symlinks and bind mounts. Different
+volumes at the same container path keep separate locks; duplicate managers for the
+same directory in the same network namespace are refused
+with `https_manager_already_running`. The supported Home Assistant add-on uses
+host networking, and standalone Linux shares the host namespace. Do not share a
+managed directory between installations in separate network namespaces.
+
+Obsolete `manager.lock` or `manager.claim` artifacts report
+`https_lock_recovery_required` before admission. They are preserved and never
+decoded, converted or automatically removed. For this explicit repair, stop the
+application and confirm that its previous helper and any restored copy are
+stopped. Preserve the managed directory first; then remove only the obsolete
+`https/manager.lock` file and/or `https/manager.claim` directory and its
+`owner.json`, and restart. Do not delete helper identity or certificates to clear
+a lock warning. Current normal operation creates neither artifact.
 
 ## Paired nodes and backups
 
