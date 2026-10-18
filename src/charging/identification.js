@@ -114,9 +114,9 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
     && (!identified || state.phase === 'completed')
     && (state.phase !== 'observing' || !state.probe || state.probe.endedAt !== null)) return state;
   const previousAt = state.lastAt;
+  const currentPower = physicalFresh && Number.isFinite(powerKw) && powerKw >= 0 ? powerKw : null;
   state.lastAt = now;
   if (state.probe && state.probe.endedAt === null && !['completed', 'inconclusive'].includes(state.phase)) {
-    const currentPower = Number.isFinite(powerKw) && powerKw >= 0 ? powerKw : null;
     const chargeUntil = validPause(pause) ? Math.min(now, pause.stoppedAt) : now;
     state.chargeUsedKwh += Math.max(state.chargePowerKw ?? 0, currentPower ?? 0)
       * Math.max(0, chargeUntil - previousAt) / 3_600_000;
@@ -161,13 +161,16 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
     state.probe.endedAt = now;
   }
   const probeDuration = Math.min(IDENTIFICATION_CHARGE_LIMIT_MS, Math.max(1000, Math.floor(probeDurationMs)));
-  if (!normalCharging && available && physicalFresh && probeAllowed && !state.probe && state.pauseUntil === null
+  // Native readiness authorizes this one bounded start before the first meter
+  // sample. Its hardware-ceiling deadline includes the unobserved startup;
+  // missing power is never a zero measurement or an identity observation.
+  if (!normalCharging && available && probeAllowed && !state.probe && state.pauseUntil === null
     && time(probeReturnAt) && probeReturnAt > now + probeDuration) {
     state.probe = { startedAt: now, deadlineAt: Math.floor((now + probeDuration) / 1000) * 1000,
       returnStartAt: Math.ceil(probeReturnAt / 1000) * 1000, endedAt: null };
     state.chargeDeadlineAt = state.probe.deadlineAt;
     state.chargeEnergyKwh = Number.isFinite(energyKwh) && energyKwh >= 0 ? energyKwh : null;
-    state.chargePowerKw = Number.isFinite(powerKw) && powerKw >= 0 ? powerKw : null;
+    state.chargePowerKw = currentPower;
   }
   if (state.phase === 'waiting' && charging && available) {
     state.phase = 'charging'; state.chargingStartedAt ??= now;
@@ -176,10 +179,13 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
   let stopReason = null;
   if (probing && state.phase !== 'pausing') {
     // Reserve ten seconds of the last observed draw for dispatch/stop latency.
-    const reserve = Math.max(state.chargePowerKw ?? 0, powerKw ?? 0) * 10 / 3600;
+    const reserve = Math.max(state.chargePowerKw ?? 0, currentPower ?? 0) * 10 / 3600;
     if (state.chargeUsedKwh + reserve >= IDENTIFICATION_ENERGY_LIMIT_KWH) stopReason = 'probe-energy-limit';
     else if (now >= state.probe.deadlineAt) stopReason = 'probe-time-limit';
-    else if (!physicalFresh || !available && !admissionPending) stopReason = 'telemetry-lost';
+    // A saved non-null power marks established metering, including measured
+    // zero. Loss after that point ends the probe; initial absence may wait only
+    // inside the original absolute deadline, including across restart.
+    else if ((!physicalFresh && state.chargePowerKw !== null) || (!available && !admissionPending)) stopReason = 'telemetry-lost';
   }
   const usable = state.phase === 'charging' && available && charging && validCandidate(candidate)
     && candidate.connectedAt === connectedAt && candidate.capturedAt >= state.startedAt

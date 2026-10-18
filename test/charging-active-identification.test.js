@@ -577,11 +577,50 @@ test('saved probe state rejects retired current overrides', () => {
     /fresh development database/);
 });
 
-test('an economic probe waits for fresh physical power before spending its allowance', () => {
-  let state = advanceIdentification(null, probeInput({ physicalFresh: false }));
+for (const powerKw of [null, 0, 11, 120]) test(`a bounded probe awaits its first fresh meter sample without inventing ${powerKw} kW`, () => {
+  const missing = { physicalFresh: false, powerKw, probeDurationMs: 34_000 };
+  let state = advanceIdentification(null, probeInput(missing));
+  assert.equal(state.action, 'allow'); assert.equal(state.phase, 'waiting');
+  assert.equal(state.chargePowerKw, null); assert.equal(state.chargeUsedKwh, 0);
+  assert.equal(state.chargingStartedAt, null); assert.equal(state.candidate, null);
+  const original = structuredClone(state);
+  state = advanceIdentification(JSON.parse(JSON.stringify(state)), probeInput({ ...missing, now: START + 20_000,
+    probeDurationMs: 108_000 }));
+  assert.deepEqual(state.probe, original.probe, 'Polling and restart cannot renew the startup allowance');
+  assert.equal(state.action, 'allow'); assert.equal(state.chargePowerKw, null);
+  state = advanceIdentification(state, probeInput({ ...missing, now: original.probe.deadlineAt }));
+  assert.equal(state.action, 'pause'); assert.equal(state.reason, 'probe-time-limit');
+  assert.equal(state.probe.deadlineAt, original.probe.deadlineAt);
+  state = advanceIdentification(state, probeInput({ ...missing, now: state.pauseUntil }));
+  assert.equal(state.phase, 'inconclusive'); assert.equal(state.action, null);
+  const ended = structuredClone(state);
+  state = advanceIdentification(state, probeInput({ now: state.lastAt + MINUTE, physicalFresh: true, powerKw: 4 }));
+  assert.deepEqual(state, ended, 'A late sample cannot rearm a finished test');
+});
+
+for (const powerKw of [0, 4]) test(`first fresh ${powerKw} kW establishes metering without renewing the deadline`, () => {
+  let state = advanceIdentification(null, probeInput({ physicalFresh: false, powerKw: null, probeDurationMs: 34_000 }));
+  state = advanceIdentification(state, probeInput({ now: START + 10_000, physicalFresh: true, powerKw,
+    charging: powerKw > 0, probeDurationMs: 108_000 }));
+  assert.equal(state.chargePowerKw, powerKw); assert.equal(state.probe.deadlineAt, START + 34_000);
+  assert.equal(state.phase, powerKw > 0 ? 'charging' : 'waiting'); assert.equal(state.action, 'allow');
+  state = advanceIdentification(JSON.parse(JSON.stringify(state)), probeInput({ now: START + 11_000,
+    physicalFresh: false, powerKw: null }));
+  assert.equal(state.phase, 'pausing'); assert.equal(state.action, 'pause');
+  assert.equal(state.reason, 'telemetry-lost');
+});
+
+for (const blocked of [{ available: false }, { probeAllowed: false }, { manualStop: true }])
+test(`missing initial metering cannot bypass readiness ${JSON.stringify(blocked)}`, () => {
+  const state = advanceIdentification(null, probeInput({ physicalFresh: false, powerKw: null, ...blocked }));
   assert.equal(state.probe, null); assert.equal(state.action, null);
-  state = advanceIdentification(state, probeInput({ now: START + 60_000, physicalFresh: true }));
-  assert.equal(state.probe.startedAt, START + 60_000); assert.equal(state.action, 'allow');
+});
+
+test('native readiness loss still ends a probe awaiting its first power sample', () => {
+  let state = advanceIdentification(null, probeInput({ physicalFresh: false, powerKw: null }));
+  state = advanceIdentification(state, probeInput({ now: START + 1000, physicalFresh: false, powerKw: null, available: false }));
+  assert.equal(state.phase, 'pausing'); assert.equal(state.reason, 'telemetry-lost');
+  assert.equal(state.action, 'pause');
 });
 
 test('interruption consumes active permission across restart and alternating economic choices', () => {

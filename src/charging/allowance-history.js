@@ -193,7 +193,34 @@ export class ChargingAllowanceHistory {
   }
 }
 
-export function readChargingAllowanceHistory({ store, range, now, input, maxSpans = 4000 }) {
+// One pending overlap cluster is enough: once a second record overlaps it,
+// the union is unknown. Earlier non-overlapping prefixes can be emitted now.
+function* allowanceSpans(rows, from, to, truncated) {
+  let pending = null, edge = from, any = false;
+  for (const row of rows) {
+    const start = Math.max(from, row.start_at), end = Math.min(to, row.end_at);
+    if (end <= start) continue;
+    any = true;
+    let value = row.chartAllowance;
+    if (!value) {
+      try { value = canonicalStatus(JSON.parse(row.raw).allowance); } catch { value = unknown('invalid-history'); }
+      row.chartAllowance = value;
+    }
+    if (pending && start < pending.end) {
+      if (start > pending.start) yield { ...pending, end: start };
+      pending = { start, end: Math.max(pending.end, end), ...unknown('overlapping-history'), equipment: null };
+      continue;
+    }
+    if (pending) { yield pending; edge = pending.end; }
+    if (start > edge) yield { start: edge, end: start,
+      ...unknown(truncated && edge === from ? 'history-detail-required' : 'unobserved'), equipment: null };
+    pending = { start, end, ...value, equipment: row.device };
+  }
+  if (pending) { yield pending; edge = pending.end; }
+  if (any && edge < to) yield { start: edge, end: to, ...unknown('unobserved'), equipment: null };
+}
+
+export function readChargingAllowanceHistory({ store, range, now, input, maxSpans = 4000, onSpan }) {
   const from = range.from, to = Math.min(range.to, now);
   if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || !Number.isInteger(maxSpans) || maxSpans < 2 || maxSpans > 10_000
     || !['providers', 'mqtt', 'offline', 'simulated'].includes(input))
@@ -201,35 +228,37 @@ export function readChargingAllowanceHistory({ store, range, now, input, maxSpan
   return Object.fromEntries(Object.entries(CHARGING_ALLOWANCE_SIGNALS).map(([chargerId, signal]) => {
     const result = { spans: [], truncated: false };
     if (to <= from) return [chargerId, result];
-    const rows = store.db.prepare(`SELECT c.id,c.device,c.start_at,c.end_at,o.raw FROM recorder_coverage c
+    const visit = onSpan?.[chargerId];
+    const query = store.db.prepare(`SELECT c.id,c.device,c.start_at,c.end_at,o.raw FROM recorder_coverage c
       JOIN observations o ON o.id=c.observation_id WHERE c.signal=? AND c.source=?
         AND c.end_at>? AND c.start_at<? AND o.received_at<=?
         AND json_extract(o.raw,'$.input') ${input === 'simulated' ? '=' : '<>'} 'simulated'
         AND ${selectedHistoryPredicate('recorder_coverage', 'c')} AND ${selectedHistoryPredicate('observations', 'o')}
-      ORDER BY c.end_at DESC,c.id DESC LIMIT ?`).all(signal, SOURCE, from, to, now, maxSpans + 1);
-    result.truncated = rows.length > maxSpans;
-    if (result.truncated) rows.length = maxSpans;
-    rows.sort((a, b) => a.start_at - b.start_at || a.id - b.id);
-    if (!rows.length) return [chargerId, result];
-    const append = (start, end, status, equipment = null) => { if (end > start) result.spans.push({ start, end, ...status, equipment }); };
-    let edge = from;
-    for (const row of rows) {
-      const start = Math.max(from, row.start_at), end = Math.min(to, row.end_at);
-      if (end <= start) continue;
-      if (start > edge) append(edge, start, unknown(result.truncated && edge === from ? 'history-detail-required' : 'unobserved'));
-      let value;
-      try { value = canonicalStatus(JSON.parse(row.raw).allowance); } catch { value = unknown('invalid-history'); }
-      if (start < edge) {
-        while (result.spans.length && result.spans.at(-1).end > start) {
-          const prior = result.spans.at(-1);
-          if (prior.start < start) { prior.end = start; break; }
-          result.spans.pop();
-        }
-        append(start, Math.max(edge, end), unknown('overlapping-history'));
-      } else append(start, end, value, row.device);
-      edge = Math.max(edge, end);
+      ORDER BY ${visit ? 'c.start_at,c.id' : 'c.end_at DESC,c.id DESC LIMIT ?'}`);
+    let rows;
+    if (visit) rows = query.iterate(signal, SOURCE, from, to, now);
+    else {
+      rows = query.all(signal, SOURCE, from, to, now, maxSpans + 1);
+      result.truncated = rows.length > maxSpans;
+      if (result.truncated) rows.length = maxSpans;
+      rows.sort((a, b) => a.start_at - b.start_at || a.id - b.id);
     }
-    append(edge, to, unknown('unobserved'));
+    if (!visit) result.spans = [...allowanceSpans(rows, from, to, result.truncated)];
+    else {
+      const ring = new Array(maxSpans); let count = 0, offset = 0;
+      function* retainedRows() {
+        for (const row of rows) {
+          if (count === maxSpans) { ring[offset] = row; offset = (offset + 1) % maxSpans; result.truncated = true; }
+          else ring[count++] = row;
+          yield row;
+        }
+      }
+      for (const span of allowanceSpans(retainedRows(), from, to, false)) visit(span);
+      const recent = Array.from({ length: count }, (_, index) => ring[(offset + index) % maxSpans]);
+      // Reuse the already validated statuses; numeric detail keeps the same
+      // recent-record budget, independently of full-period bar occupancy.
+      result.spans = [...allowanceSpans(recent, from, to, result.truncated)];
+    }
     return [chargerId, result];
   }));
 }

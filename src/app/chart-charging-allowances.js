@@ -1,4 +1,5 @@
 import { readChargingAllowanceHistory } from '../charging/allowance-history.js';
+import { ActivityEnvelope } from './chart-activity.js';
 
 export const CHARGING_ALLOWANCE_SERIES = Object.freeze(['ev1_current_allowance', 'ev2_current_allowance']);
 const numeric = span => ['unrestricted', 'limited', 'fallback'].includes(span.mode);
@@ -18,13 +19,14 @@ export function charger2AllowanceState(span) {
 /** The reader bounds exact decision spans. Keep their original boundaries
  * and fallback metadata while sharing one numeric allowance line per charger.
  * Equipment identifiers and native-setting diagnostics stay out of chart data. */
-export function addChargingAllowanceHistory({ store, range, now, input, envelopes, shading, maxSpans }) {
+export function addChargingAllowanceHistory({ store, range, now, input, envelopes, shading, maxSpans, points = 800 }) {
   if (!CHARGING_ALLOWANCE_SERIES.some(signal => envelopes[signal])) return null;
-  const history = readChargingAllowanceHistory({ store, range, now, input, maxSpans });
+  const activity = shading ? new ActivityEnvelope(range, points, now) : null;
+  const history = readChargingAllowanceHistory({ store, range, now, input, maxSpans,
+    ...(activity ? { onSpan: { charger2: span => activity.add(span.start, span.end, charger2AllowanceState(span),
+      { reason: span.reason, allowanceA: span.allowanceA }) } } : {}) });
   const metadata = {};
-  if (shading) shading.charger2Allowance = { values: () => history.charger2.spans.map(span => ({
-    start: span.start, end: span.end, value: charger2AllowanceState(span), reason: span.reason, allowanceA: span.allowanceA,
-  })) };
+  if (shading) shading.charger2Allowance = activity;
   for (const [id, signals] of [['charger1', ['ev1_current_allowance']], ['charger2', ['ev2_current_allowance']]]) {
     const record = history[id];
     metadata[id] = { records: record.spans.length, truncated: record.truncated };

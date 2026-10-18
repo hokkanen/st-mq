@@ -34,7 +34,7 @@ test('highest-phase spans follow original voltage segments, exact ties and missi
     span(start + MINUTE, start + 2 * MINUTE, [2, 3]), span(start + 4 * MINUTE, start + 5 * MINUTE, [3]),
   ]);
   assert.deepEqual(chart.series.property_current_max.find(point => point.x === start + MINUTE).phases, [2, 3]);
-  assert.deepEqual(chart.meta.propertyHighestPhase, { truncated: false });
+  assert.deepEqual(chart.meta.propertyHighestPhase, { aggregated: false });
   assert.deepEqual(store.observations({ limit: 100 }), before, 'Derived phase identity never writes more history');
   const detail = query(store, { viewFrom: start + 20_000, viewTo: start + 50_000 });
   assert.deepEqual(detail.shading.propertyHighestPhase, [span(start + 20_000, start + 30_000, [1]),
@@ -52,22 +52,22 @@ test('phase identity never fills absent voltages, conflicting scopes or unavaila
   assert.deepEqual(query(store).shading.propertyHighestPhase, [span(start + 2 * MINUTE, start + 3 * MINUTE, [2])]);
 });
 
-test('dense phase changes retain bounded exact recent spans with an explicit zoom warning', t => {
+test('dense phase changes summarize the whole period with exact per-phase occupied time', t => {
   const store = new Store(':memory:'); t.after(() => store.close()); seedVoltage(store, start);
   for (let index = 0; index < 500; index++) {
     const currents = [2, 3, 4]; currents[index % 3] = 12;
     energy(store, start + index * 1000, start + (index + 1) * 1000, currents);
   }
   const chart = query(store, { points: 100 }), rows = chart.shading.propertyHighestPhase;
-  assert.equal(rows.length, 200); assert.equal(rows[0].start, start + 300_000);
-  assert.equal(chart.meta.propertyHighestPhase.truncated, true);
-  assert(chart.meta.warnings.some(warning => /highest-phase detail.*Zoom in/.test(warning)));
-  for (const row of rows) {
-    const index = (row.start - start) / 1000;
-    assert.deepEqual(row, span(start + index * 1000, start + (index + 1) * 1000, [index % 3 + 1]));
+  assert(rows.length <= 300);
+  assert(rows[0].start <= start && rows[0].end > start, 'The summary retains the bucket containing the first known interval');
+  assert.equal(chart.meta.propertyHighestPhase.aggregated, true);
+  for (const phase of [1, 2, 3]) {
+    const duration = rows.filter(row => row.value === phase).reduce((sum, row) => sum + (row.end - row.start) * row.fraction, 0);
+    assert(Math.abs(duration - (phase === 3 ? 166 : 167) * 1000) < 1e-6);
   }
   const detail = query(store, { points: 100, viewFrom: start + 100_100, viewTo: start + 102_500 });
-  assert.equal(detail.meta.propertyHighestPhase.truncated, false);
+  assert.equal(detail.meta.propertyHighestPhase.aggregated, false);
   assert.deepEqual(detail.shading.propertyHighestPhase, [span(start + 100_100, start + 101_000, [2]),
     span(start + 101_000, start + 102_000, [3]), span(start + 102_000, start + 102_500, [1])]);
 });

@@ -5,8 +5,9 @@ const stateSignals = new Set(RECORDED_EVIDENCE_SIGNALS.filter(signal => !['garag
 /** Exact reported evidence with its original deadline. The application does
  * not turn an unqualified report into a command acknowledgement or water flow. */
 export class RecordedEvidenceLine {
-  constructor(envelope, range, now) {
+  constructor(envelope, range, now, activity = null) {
     this.envelope = envelope; this.range = range; this.now = now; this.previous = null;
+    this.activity = activity;
   }
 
   add(row, value) {
@@ -54,10 +55,11 @@ export class RecordedEvidenceLine {
     const start = Math.max(this.range.from, previous.at);
     const end = Math.min(until, previous.expiresAt, this.range.to, this.now);
     if (end > start && previous.value !== null) {
+      this.activity?.add(start, end, previous.value);
       const metadata = { ...previous.metadata, displayBoundary: true };
       this.envelope.add(start, previous.value, metadata);
       this.envelope.add(end - 1, previous.value, metadata);
-    }
+    } else if (!previous.metadata.displayBoundary) this.activity?.point(previous.at, previous.value);
     if (previous.expiresAt < until) this.envelope.add(Math.max(this.range.from, previous.expiresAt + (previous.expiresAt === previous.at ? 1 : 0)), null,
       { ...previous.metadata, displayBoundary: true, expired: true });
   }

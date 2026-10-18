@@ -118,7 +118,7 @@ try {
     const comparisonStates = await evaluate(() => {
       const charger = window.fixture.charging.chargers[0], original = charger.flexibility.preview;
       const results = [];
-      for (const [savingsCents, expected] of [[4, '€0.04 est. saving'], [0, '€0.00 est. saving'], [-35, '+€0.35 est. cost'], [null, 'Compare savings']]) {
+      for (const [savingsCents, expected] of [[4, '€0.04 est. saving'], [0, '€0.00 est. saving'], [-35, '+€0.35 est. cost'], [null, 'Unavailable']]) {
         charger.flexibility.preview = { ...original, savingsCents, recommended: false };
         window.panel.update(window.fixture);
         const button = document.getElementById('charger1-flexibility'), label = button.querySelector('.charging-flexibility-entry-value');

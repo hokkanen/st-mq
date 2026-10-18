@@ -6,6 +6,21 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Let both chargers start their bounded vehicle-identification test before an
+  initial power reading arrives. Preserve the original energy/deadline limits,
+  require measured evidence for identification, and retain native current
+  preparation and stopping/restoration checks.
+
+- Calculate one-extra-day charging savings automatically, using the normal
+  planner's material-change thresholds and bounded worker. Refresh meaningful
+  tomorrow-price changes, reuse completed estimates across browsers and retain
+  dated estimates through temporary refresh failures. Match circulation-pump
+  availability text and tariff-control links to the shared equipment styles.
+
+- Keep history indicator bars filled according to their recorded coverage at
+  every zoom. Preserve continuous Normal, Garage power and Caravan states,
+  summarize dense changes across the full period, and retain genuine gaps.
+
 - Open chart details only after a touchscreen tap, without popups during dragging
   or pinching. Match Garage rear/front labels on the read-only computer, order
   Home equipment consistently, and keep dehumidifier humidity beside its status.

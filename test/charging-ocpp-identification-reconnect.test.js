@@ -170,9 +170,12 @@ async function fixture(t) {
   return f;
 }
 
-test('BMW reconnect starts a bounded probe before a transaction, identifies from its stop, and returns to the economic wait', async t => {
+for (const initialPower of ['fresh zero', 'missing', 'stale zero'])
+test(`BMW reconnect with ${initialPower} power starts a bounded probe before a transaction and identifies from its stop`, async t => {
   const f = await fixture(t);
   f.reconnect();
+  if (initialPower === 'missing') f.source({ powerKw: null, powerAt: null });
+  if (initialPower === 'stale zero') f.source({ powerKw: 0, powerAt: f.now - 61_000 });
   f.publishBmw({ atHome: true, pluggedIn: true, charging: false, soc: 78 });
   const initial = await f.update();
   assert.equal(initial.session.transactionId, null);
@@ -214,9 +217,10 @@ test('BMW reconnect starts a bounded probe before a transaction, identifies from
   assert.equal(f.startAllowed, false, 'Identifying BMW returns to the original economic wait');
 });
 
-test('same physical connection restart preserves the one probe and its original startup deadline', async t => {
+for (const initialPower of [0, null])
+test(`same physical connection restart preserves the one probe and its startup deadline with ${initialPower} kW`, async t => {
   const f = await fixture(t);
-  f.reconnect(); f.publishBmw({ atHome: true, pluggedIn: true, charging: false });
+  f.reconnect(); f.source({ powerKw: initialPower, powerAt: initialPower === null ? null : f.now }); f.publishBmw({ atHome: true, pluggedIn: true, charging: false });
   await f.update();
   assert.equal(f.startAllowed, true);
   const attempt = structuredClone(f.item.identification), sessionId = f.item.request.sessionId;
@@ -236,6 +240,22 @@ test('same physical connection restart preserves the one probe and its original 
   assert.equal(f.item.identification.probe.deadlineAt, attempt.probe.deadlineAt);
   assert.equal(f.startAllowed, false);
   assert.equal(f.commands.length, 0);
+});
+
+test('OCPP loses start permission when metering disappears after its first actual sample', async t => {
+  const f = await fixture(t);
+  f.reconnect(); f.source({ powerKw: null, powerAt: null });
+  f.publishBmw({ atHome: true, pluggedIn: true, charging: false });
+  await f.update(); assert.equal(f.startAllowed, true);
+  const attempt = structuredClone(f.item.identification);
+  f.beginTransaction(); await f.update();
+  assert.equal(f.item.identification.phase, 'charging');
+  f.advance(1000); f.source({ powerKw: null, powerAt: null }); await f.update();
+  assert.equal(f.startAllowed, false);
+  assert.equal(f.item.identification.reason, 'telemetry-lost');
+  assert.equal(f.item.identification.probe.deadlineAt, attempt.probe.deadlineAt);
+  assert.ok(f.commands.some(command => command.action === 'SetChargingProfile'),
+    'The confirmed transaction receives the economic stop despite missing metering');
 });
 
 test('an already observed stalled physical connection recovers after restart without another unplug or a new session', async t => {

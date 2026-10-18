@@ -8,6 +8,7 @@ import { Store } from '../src/storage/store.js';
 import { createChartService } from '../src/app/chart-service.js';
 import { createAppServer } from '../src/app/server.js';
 import { getChartData } from '../src/app/chart-data.js';
+import { seedChartActivityFixture, ACTIVITY_FIXTURE_TO } from '../scripts/lib/chart-activity-fixture.js';
 
 const now = Date.parse('2026-09-07T09:00:00Z');
 const args = { input: 'providers', now, startDate: '2026-09-06', endDate: '2026-09-06', view: 'garage', points: 100 };
@@ -374,4 +375,37 @@ test('a pinned archive cancellation retains the open reader after its published 
  await assert.rejects(pending,{name:'AbortError'});unlinkSync(path);
  const next=await service.query(selection);
  assert(next.series.garage_native_indoor_temperature.some(point=>point.y===12));
+});
+
+test('dense bar projection yields storage admission to the real committing writer', async t => {
+  const { store, service } = fixture(t, { warmCache: false });
+  seedChartActivityFixture(store);
+  await store.startWriter(); store.walMaintenance.close();
+  const saves = [], latencies = []; let writing = false, reading = true, commitsDuringRead = 0, ticks = 0, timer;
+  const heartbeat = setInterval(() => ticks++, 5);
+  t.after(() => { clearInterval(heartbeat); clearInterval(timer); });
+  const selection = { input: 'providers', now: ACTIVITY_FIXTURE_TO + 12 * 3600_000,
+    startDate: '2026-10-05', endDate: '2026-10-06', left: 'garage_native_power', points: 100 };
+  const started = performance.now();
+  const pending = service.query(selection, { onProgress(progress) {
+    if (writing || progress.stage !== 'reading-history') return;
+    writing = true;
+    let sequence = 0;
+    const save = () => {
+      const at = performance.now();
+      saves.push(store.runWrite(() => store.setState(`synthetic-chart-control-${++sequence}`, true), { priority: 'control' })
+        .then(() => { latencies.push(performance.now() - at); if (reading) commitsDuringRead++; }));
+    };
+    save(); timer = setInterval(save, 20);
+  } });
+  const result = await pending;
+  reading = false;
+  clearInterval(timer); await Promise.all(saves);
+  assert(writing && commitsDuringRead > 0 && ticks > 0, 'Actual control commits and timers advance during the chart read');
+  t.diagnostic(`Chart read ${Math.round(performance.now() - started)} ms; ${commitsDuringRead} control commits during reading; maximum commit latency ${Math.round(Math.max(...latencies))} ms`);
+  const spans = result.shading.garage_native_power;
+  const known = spans.reduce((sum, row) => sum + (row.end - row.start) * (row.aggregated ? row.fraction : 1), 0);
+  assert(Math.abs(known - 2880 * 59_999) < 1e-5);
+  assert.equal(store.getState('synthetic-chart-control-1'), true);
+  assert.equal(store.writeQueueStatus().pending, 0);
 });

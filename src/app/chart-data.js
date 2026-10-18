@@ -37,6 +37,7 @@ import { currentPowerKw, voltageMetadata, voltageSegments } from './chart-voltag
 import { recordedTransport } from '../domain/recording-source.js';
 import { observationTimeAdmitted } from '../domain/time-evidence.js';
 import { addChargingAllowanceHistory, CHARGING_ALLOWANCE_SERIES } from './chart-charging-allowances.js';
+import { ActivityEnvelope } from './chart-activity.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
@@ -156,15 +157,23 @@ class TemperatureEnvelope extends Envelope {
 }
 
 class HistoryLine {
-  constructor(envelope, gap, boundedHold = false, clipEdges = false, stepped = false, observationsOnly = false) {
+  constructor(envelope, gap, boundedHold = false, clipEdges = false, stepped = false, observationsOnly = false, activity = null) {
     this.envelope = envelope; this.gap = gap; this.previous = null;
     this.boundedHold = boundedHold; this.clipEdges = clipEdges; this.stepped = stepped; this.observationsOnly = observationsOnly;
+    this.activity = activity;
   }
-  add(x, y, metadata) {
+  add(x, y, metadata, activityScope) {
     const previous = this.previous;
     const covered = (metadata?.periodicCoverage || metadata?.sourceCoverage)
       && (previous?.periodicCoverage || previous?.sourceCoverage)
       && metadata.coverageId === previous.coverageId;
+    if (previous && this.activity) {
+      const sameSource = activityScope === this.activityScope;
+      const end = Math.min(x, previous.reportExpiresAt ?? (covered || sameSource && x - previous.x <= this.gap ? x
+        : sameSource && this.boundedHold ? previous.x + this.gap : previous.x));
+      if (end > previous.x) this.activity.add(previous.x, end, previous.y);
+      else if (!previous.displayBoundary) this.activity.point(previous.x, previous.y);
+    }
     if (previous && !covered && x - previous.x > this.gap && x > this.envelope.from) {
       if (this.boundedHold) {
         const expires = previous.x + this.gap;
@@ -194,7 +203,15 @@ class HistoryLine {
     } else if (!this.observationsOnly && !this.clipEdges && x >= this.envelope.from && previous?.x < this.envelope.from && (covered || x - previous.x <= this.gap))
       this.envelope.add(this.envelope.from, previous.y, previous);
     this.envelope.add(x, y, metadata); this.previous = { ...metadata, x, y };
+    if (this.activity) this.activityScope = activityScope;
   }
+}
+
+// A query row is private to this traversal. Admission and interpretation share
+// its decoded provenance instead of reparsing it for every consumer.
+function chartRaw(row) {
+  if (!Object.hasOwn(row, 'chartRaw')) row.chartRaw = JSON.parse(row.raw);
+  return row.chartRaw;
 }
 
 function qualityReader() {
@@ -229,43 +246,6 @@ function valueOf(row, flags) {
   return row.value;
 }
 
-
-class ShadeEnvelope {
-  constructor(range, points) { this.range = range; this.points = points; this.rows = []; this.fractions = null; this.lastEnd = -Infinity; }
-  raster(start, end) {
-    if (end <= start) return;
-    const { range, points } = this, width = (range.to - range.from) / points;
-    const first = Math.max(0, Math.floor((start - range.from) / width));
-    const last = Math.min(points - 1, Math.floor((end - range.from - 1) / width));
-    for (let bucket = first; bucket <= last; bucket++) {
-      const from = range.from + bucket * width;
-      this.fractions[bucket] += (Math.min(end, from + width) - Math.max(start, from)) / width;
-    }
-  }
-  add(start, end) {
-    const { range } = this;
-    start = Math.max(range.from, start); end = Math.min(range.to, end);
-    if (end <= start) return;
-    if (this.fractions) this.raster(Math.max(start, this.lastEnd), end);
-    else {
-      const previous = this.rows.at(-1);
-      if (previous && start <= previous.end) previous.end = Math.max(previous.end, end);
-      else this.rows.push({ start, end });
-      if (this.rows.length > this.points * 4) {
-        this.fractions = new Float64Array(this.points);
-        for (const row of this.rows) this.raster(row.start, row.end);
-        this.rows = [];
-      }
-    }
-    this.lastEnd = Math.max(this.lastEnd, end);
-  }
-  values() {
-    if (!this.fractions) return this.rows;
-    const { range, points } = this, width = (range.to - range.from) / points;
-    return Array.from(this.fractions, (fraction, index) => ({ start: range.from + index * width,
-      end: range.from + (index + 1) * width, fraction: Math.min(1, fraction), aggregated: true })).filter(row => row.fraction > 0);
-  }
-}
 
 export function knownIntervals(market, store, range, now) {
   // Stored market snapshots preserve historical intervals after the rolling
@@ -477,16 +457,18 @@ export function getChartData({ store, input = 'offline', contract = null, market
       ? new TemperatureEnvelope(range.from, range.to, points, Math.max(selection.from, range.from - 3 * HOUR), Math.min(selection.to, range.to + 3 * HOUR))
       : new Envelope(range.from, range.to, points)]));
   if (_priceProjection) for (const envelope of Object.values(envelopes)) envelope.mask = _priceProjection.marketIntervals;
+  const activities = Object.fromEntries(names.filter(name => !projecting && ['state', 'code'].includes(HISTORY_AXIS_BY_KEY[name]?.unit))
+    .map(name => [name, new ActivityEnvelope(range, points, now)]));
   const lines = Object.fromEntries(names.map(name => [name, new HistoryLine(envelopes[name], LEARNING.includes(name) || DOOR_SIGNALS.includes(name) ? Infinity : name === 'auxiliary_power' ? H66_MAX_AGE_MS : /power|current|integral|solar/.test(name) ? 30 * 60_000 : 3 * HOUR, ['auxiliary_power', 'solar_radiation', ...DOOR_SIGNALS].includes(name), detail,
-    name.endsWith('_price') || leftNames.includes(name) && name !== 'heating_integral' && !isInterpolatedTemperature(name) && !ENERGY_SIGNALS.includes(name), COUNTER_SIGNALS.includes(name))]));
+    name.endsWith('_price') || leftNames.includes(name) && name !== 'heating_integral' && !isInterpolatedTemperature(name) && !ENERGY_SIGNALS.includes(name), COUNTER_SIGNALS.includes(name), activities[name])]));
   const evidenceLines = Object.fromEntries(names.filter(name => RECORDED_EVIDENCE_SIGNALS.includes(name))
-    .map(name => [name, new RecordedEvidenceLine(envelopes[name], range, now)]));
+    .map(name => [name, new RecordedEvidenceLine(envelopes[name], range, now, activities[name])]));
   // Following samples close clipped scalar segments, including a viewport
   // narrower than their source cadence. Context never crosses selected dates.
   const queryTo = Math.min(detail ? Math.min(selection.to, range.to + 3 * HOUR) : range.to, now + 1);
-  const shading = Object.fromEntries(['heatOff', 'compressorGarage', 'dhwr', 'fireplace'].map(key => [key, new ShadeEnvelope(range, points)])), warnings = [];
+  const shading = { ...Object.fromEntries(['heatOff', 'compressorGarage', 'dhwr', 'fireplace'].map(key => [key, new ActivityEnvelope(range, points, now)])), ...activities }, warnings = [];
   const propertyHighestPhase = maximumPropertyCurrent && !projecting
-    ? new PropertyHighestPhaseHistory(range, now, Math.min(4000, points * 2)) : null;
+    ? new PropertyHighestPhaseHistory(range, now, points) : null;
   if (propertyHighestPhase) shading.propertyHighestPhase = propertyHighestPhase;
   // Daily outcomes retain their selected calendar-day meaning at every zoom.
   // Only their selected series needs this calculation on detail requests.
@@ -506,8 +488,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const energyStarts = Object.fromEntries(['property','ev1'].map(prefix=>[prefix,queryContext.energyStart(prefix)]));
   const voltageReader = queryContext.voltageReader;
   if (!drawingOnly) addHistoricalChargerTiming(store, timing, range, now, input, energyStarts.ev1, voltageReader);
-  const modeEnvelopes = Object.fromEntries([0, 1, 2, 3, 4].map(mode => [mode, new ShadeEnvelope(range, points)]));
-  const compressorHomeEnvelopes = Object.fromEntries([0, 1, 2, 3].map(value => [value, new ShadeEnvelope(range, points)]));
+  const modeHistory = new ActivityEnvelope(range, points, now);
+  const compressorHomeHistory = new ActivityEnvelope(range, points, now);
   let telemetry = new Map(), previousTelemetryAt = null;
   const currentPowerHistory = new Map();
   const learningMetadata = {};
@@ -537,7 +519,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
         const raw = resident.raw(row);
         if ((raw?.recorder?.status ?? 'fresh') !== 'fresh') continue;
         yield { ...row, report_interval_ms: raw?.reportIntervalMs ?? null,
-          raw: (raw && Object.hasOwn(raw, 'timeAdmission') || rawSignals.has(row.signal)) ? row.raw : null };
+          raw: (raw && Object.hasOwn(raw, 'timeAdmission') || rawSignals.has(row.signal)) ? row.raw : null,
+          ...(rawSignals.has(row.signal) ? { chartRaw: raw } : {}) };
       }
       return;
     }
@@ -577,6 +560,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     const { start, end, value } = pendingPhase;
     const a = Math.max(start, range.from), b = Math.min(end, until, now, range.to);
     if (envelopes.controller_phase && b > a) {
+      activities.controller_phase?.add(a, b, value);
       const metadata = { source: 'controller', requested: true, basis: 'recorded-request',
         observedAt: start, intervalStart: start, intervalEnd: b };
       envelopes.controller_phase.add(a, value, metadata);
@@ -590,6 +574,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     const { start, end } = pendingPulse, until = Math.min(end, now, range.to);
     shading.dhwr.add(start, until);
     if (envelopes.dhwr_request && until > Math.max(start, range.from)) {
+      activities.dhwr_request?.add(start, until, 1);
       const metadata = { source: 'controller', requested: true, basis: 'recorded-request',
         observedAt: start, intervalStart: start, intervalEnd: until };
       envelopes.dhwr_request.add(Math.max(start, range.from), 1, metadata);
@@ -600,13 +585,13 @@ export function getChartData({ store, input = 'offline', contract = null, market
   };
   const verified = row => {
     if (input === 'simulated' && row.source === 'simulation') return true;
-    try { const raw = JSON.parse(row.raw); return row.source === 'husdata-h66' && Boolean(raw?.verified) && raw?.usableForControl !== false; } catch { return false; }
+    try { const raw = chartRaw(row); return row.source === 'husdata-h66' && Boolean(raw?.verified) && raw?.usableForControl !== false; } catch { return false; }
   };
   const verifiedState = row => {
     if (!verified(row) || row.unit !== 'state'
       || !(row.flags ?? flagsOf(row.quality)).every(flag => ['good', 'simulated'].includes(flag))) return false;
     try {
-      const raw = JSON.parse(row.raw);
+      const raw = chartRaw(row);
       return raw?.retained !== true && raw?.cached !== true && !raw?.acquisitionOnly && !raw?.auditOnly;
     } catch { return false; }
   };
@@ -614,16 +599,16 @@ export function getChartData({ store, input = 'offline', contract = null, market
     if (previousTelemetryAt === null || until <= previousTelemetryAt) return;
     const compressor = telemetry.get('compressor_active'), route = telemetry.get('dhw_routing'), mode = telemetry.get('operating_mode');
     const compressorEnd = Math.min(until, now, compressor?.until ?? compressor?.at + H66_MAX_AGE_MS);
-    if (compressor?.value === 0) compressorHomeEnvelopes[0].add(previousTelemetryAt, compressorEnd);
+    if (compressor?.value === 0) compressorHomeHistory.add(previousTelemetryAt, compressorEnd, 0);
     else if (compressor?.value === 1) {
       // Routing has its own deadline. A fresh running compressor remains known
       // after routing expires, but cannot be assigned to either heating circuit.
       const routeEnd = [0, 1].includes(route?.value)
         ? Math.min(compressorEnd, route.until ?? route.at + H66_MAX_AGE_MS) : previousTelemetryAt;
-      if (routeEnd > previousTelemetryAt) compressorHomeEnvelopes[route.value === 1 ? 2 : 1].add(previousTelemetryAt, routeEnd);
-      compressorHomeEnvelopes[3].add(Math.max(previousTelemetryAt, routeEnd), compressorEnd);
+      if (routeEnd > previousTelemetryAt) compressorHomeHistory.add(previousTelemetryAt, routeEnd, route.value === 1 ? 2 : 1);
+      compressorHomeHistory.add(Math.max(previousTelemetryAt, routeEnd), compressorEnd, 3);
     }
-    if (modeEnvelopes[mode?.value]) modeEnvelopes[mode.value].add(previousTelemetryAt, Math.min(until, mode.until ?? mode.at + H66_MAX_AGE_MS));
+    if ([0, 1, 2, 3, 4].includes(mode?.value)) modeHistory.add(previousTelemetryAt, Math.min(until, mode.until ?? mode.at + H66_MAX_AGE_MS), mode.value);
     const phase = telemetry.get('controller_phase');
     if (phase?.value === 2) shading.heatOff.add(previousTelemetryAt, Math.min(until, phase.until));
   };
@@ -671,7 +656,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
       }
       else if (signal === 'dhwr_request' && row.source === 'controller' && row.device === input && value === 1) {
         let end = null;
-        try { const raw = JSON.parse(row.raw); if (Number.isFinite(raw?.expiresAt)) end = Math.min(time + 60 * 60_000, raw.expiresAt); } catch { /* Unsupported native request. */ }
+        try { const raw = chartRaw(row); if (Number.isFinite(raw?.expiresAt)) end = Math.min(time + 60 * 60_000, raw.expiresAt); } catch { /* Unsupported native request. */ }
         if (end > time) {
           if (pendingPulse && time > pendingPulse.end) flushPulse();
           pendingPulse = pendingPulse ? { start: pendingPulse.start, end: Math.max(end, pendingPulse.end) } : { start: time, end };
@@ -680,7 +665,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
       else if (signal === 'controller_phase' && row.source === 'controller' && row.device === input) {
         flushPhase(time);
         let until = time;
-        try { const raw = JSON.parse(row.raw); if (Number.isFinite(raw?.expiresAt) && raw.expiresAt > time) until = raw.expiresAt; } catch { /* Unsupported native request. */ }
+        try { const raw = chartRaw(row); if (Number.isFinite(raw?.expiresAt) && raw.expiresAt > time) until = raw.expiresAt; } catch { /* Unsupported native request. */ }
         const current = until > time ? value : null;
         // Request duration comes from its own expiry, not a scalar sample gap.
         envelopes[signal]?.add(time, current);
@@ -688,14 +673,14 @@ export function getChartData({ store, input = 'offline', contract = null, market
         telemetry.set(signal, { at: time, value: current, until });
       }
       else if (['compressor_active', 'dhw_routing', 'operating_mode'].includes(signal)) {
-        lines[signal]?.add(time, value, coverageMetadata);
+        lines[signal]?.add(time, value, coverageMetadata, activities[signal] ? `${row.source}\0${row.device}` : undefined);
         telemetry.set(signal, { at: time, value: verifiedState(row) ? value : null,
           ...(row.sourceCoverage ? {until:row.reportExpiresAt} : {}) });
       } else if (signal === 'auxiliary_output') {
         lines[signal]?.add(time, value, coverageMetadata);
         if (!atRows.has('auxiliary_power') && lines.auxiliary_power) {
           let kw = null;
-          try { const raw = JSON.parse(row.raw), capacity = raw?.ratedPowerKw;
+          try { const raw = chartRaw(row), capacity = raw?.ratedPowerKw;
             if (verified(row) && Number.isFinite(capacity) && capacity > 0) kw = auxiliaryPowerFromOutput(value, capacity)?.kw ?? null;
           } catch { /* Never assume installed heater capacity. */ }
           lines.auxiliary_power.add(time, kw, coverageMetadata);
@@ -703,7 +688,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
       } else {
         let metadata = row.source === 'easee' ? { source: row.source, transport: recordedTransport(row) } : undefined;
         if (DOOR_SIGNALS.includes(signal)) {
-          let raw; try { raw = JSON.parse(row.raw); } catch { /* Optional telemetry basis. */ }
+          let raw; try { raw = chartRaw(row); } catch { /* Optional telemetry basis. */ }
           metadata = { source: row.source, estimated: raw?.estimated === true, basis: raw?.basis, learningRole: 'history-only' };
           if (DOOR_SIGNALS.includes(signal)) Object.assign(metadata, { basis: 'last-reported-state', lastReported: true,
             observedAt: raw?.recorder?.originalSourceTime ?? row.source_time });
@@ -711,13 +696,13 @@ export function getChartData({ store, input = 'offline', contract = null, market
         if (signal === 'outdoor_temperature') metadata = weatherPointMetadata(row);
         if (signal === 'solar_radiation') {
           let raw;
-          try { raw = JSON.parse(row.raw); } catch { /* Missing current provenance remains unavailable. */ }
+          try { raw = chartRaw(row); } catch { /* Missing current provenance remains unavailable. */ }
           metadata = weatherPointMetadata({ source: row.source, solar: raw && typeof raw === 'object' ? raw : {} }, true);
         }
         if (coverageMetadata) metadata = { ...metadata, ...coverageMetadata };
-        if (signal !== 'charger_power') lines[signal]?.add(time, value, metadata);
+        if (signal !== 'charger_power') lines[signal]?.add(time, value, metadata, activities[signal] ? `${row.source}\0${row.device}` : undefined);
         if (LEARNING.includes(signal)) {
-          try { const raw = JSON.parse(row.raw); learningMetadata[signal] = { at: time, count: raw?.count ?? null, basis: raw?.basis ?? null, modelVersion: raw?.modelVersion ?? null }; } catch { /* Optional metadata. */ }
+          try { const raw = chartRaw(row); learningMetadata[signal] = { at: time, count: raw?.count ?? null, basis: raw?.basis ?? null, modelVersion: raw?.modelVersion ?? null }; } catch { /* Optional metadata. */ }
         }
         if (signal === 'outdoor_temperature' && value !== null) latestOutdoor = time;
         if (signal === 'spot_price' && rates) {
@@ -827,7 +812,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
       // evaluated before synthetic coverage/phase projection rewrites clocks.
       if (!row.imported && row.import_id == null && row.signal !== 'spot_price') {
         let raw;
-        try { raw = row.raw ? JSON.parse(row.raw) : null; } catch { continue; }
+        try { raw = row.raw ? chartRaw(row) : null; } catch { continue; }
         if (!observationTimeAdmitted({ sourceTime: row.source_time, receivedAt: row.received_at, raw }, now)) continue;
       }
       yield row;
@@ -910,11 +895,9 @@ export function getChartData({ store, input = 'offline', contract = null, market
   onProgress?.({ stage: 'preparing-chart' });
   const chargingAllowances = addChargingAllowanceHistory({ store, range, now, input, envelopes,
     ...(envelopes.ev2_current_allowance ? { shading } : {}),
-    maxSpans: Math.min(4000, points * 2) });
+    maxSpans: Math.min(4000, points * 2), points });
   if (chargingAllowances && Object.values(chargingAllowances).some(row => row.truncated))
     warnings.push('Earlier charging allowance detail is omitted in this dense selection. Zoom in to inspect its exact changes.');
-  if (propertyHighestPhase?.truncated)
-    warnings.push('Earlier highest-phase detail is omitted in this dense selection. Zoom in to inspect its exact changes.');
   if (names.some(name => VOLTAGE_SIGNALS.includes(name)))
     for (const segment of voltageSegments(voltageReader, range.from, Math.min(range.to, now)))
       for (const [phase, signal] of VOLTAGE_SIGNALS.entries()) {
@@ -951,7 +934,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   }
   const chargingSessions = addChargingSessionChecks({ store, range, now, envelopes });
   const modelInputs = addModelInputs({ store, range, now, input, envelopes,
-    indoorLine: detail ? lines.model_indoor_temperature : undefined });
+    indoorLine: detail ? lines.model_indoor_temperature : undefined, activities });
   const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes });
   const fireplaceInputs = addFireplaceInputs({ store, range, now, input, envelopes, shading });
   const needsFirewood = !detail || selectedHas(FIREWOOD_OUTCOME_NAMES);
@@ -1042,10 +1025,14 @@ export function getChartData({ store, input = 'offline', contract = null, market
     relatedSampling.sourceRows += projected.rawRows + projected.energyRows;
   }
   priceAssumptions.used ||= series.all_in_price.some(point => Number.isFinite(point.y) && point.assumedPrice);
+  for (const line of Object.values(lines)) if (line.activity && line.previous) {
+    const previous = line.previous;
+    const end = Math.min(range.to, now, previous.reportExpiresAt ?? (previous.lastReported ? Infinity : previous.x));
+    if (end > previous.x) line.activity.add(previous.x, end, previous.y);
+    else if (!previous.displayBoundary) line.activity.point(previous.x, previous.y);
+  }
   for (const key of Object.keys(shading)) shading[key] = shading[key].values();
-  shading.compressorHome = Object.entries(compressorHomeEnvelopes)
-    .flatMap(([value, envelope]) => envelope.values().map(row => ({ ...row, value: Number(value) })))
-    .sort((a, b) => a.start - b.start || a.value - b.value);
+  shading.compressorHome = compressorHomeHistory.values();
   if (Object.values(shading).some(rows => rows.some(row => row.aggregated))) warnings.push('Dense shading shows the occupied fraction of each display interval.');
   // These are original source timestamps, even when outside the visible range.
   // Only the browser draws carry-forward tails; no synthetic readings are stored.
@@ -1053,7 +1040,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     ...leftNames]
     .filter(name => lines[name]?.previous).map(name => [name, { ...lines[name].previous }]));
   if (selectedHas(LEARNING)) warnings.push('Learning history records estimates when assessed. Gaps mean no recorded estimate; auxiliary recovery metrics exclude cycles whose auxiliary state was unknown.');
-  const operatingModes = Object.entries(modeEnvelopes).flatMap(([value, envelope]) => envelope.values().map(row => ({ ...row, value: Number(value) }))).sort((a, b) => a.start - b.start);
+  const operatingModes = modeHistory.values();
   onProgress?.({ stage: 'preparing-summary' });
   const timingBenefit = detail ? null : timing.result();
   const heatingBenefit = detail ? null : getHeatingBenefit({ store, input, range, now });
@@ -1063,7 +1050,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   return { range, now, input, ...(view === undefined ? { left } : { view }), series, shading, operatingModes,
     ...(detail ? { selection } : { timingBenefit, heatingBenefit, heatingSavings, firewoodBenefit: firewood.summary }),
     meta: { ...(detail ? { detail: true } : {}), ...(relatedSampling ? { relatedSampling } : {}), ...(chargingAllowances ? { chargingAllowances } : {}),
-    ...(propertyHighestPhase ? { propertyHighestPhase: { truncated: propertyHighestPhase.truncated } } : {}),
+    ...(propertyHighestPhase ? { propertyHighestPhase: { aggregated: propertyHighestPhase.buckets !== null } } : {}),
     warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),
     elapsedMs: Math.round((performance.now() - started) * 100) / 100,

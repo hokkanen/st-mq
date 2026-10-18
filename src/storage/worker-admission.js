@@ -80,7 +80,7 @@ export function attachStorageAdmission(worker, signal, run) {
 /** Read-only SQL retains its original snapshot, but yields storage admission
  * between statements and small cursor batches. CPU processing holds no lease.
  * A single native query step (e.g. an aggregate) is still uninterruptible. */
-export function admittedReader(db) {
+export function admittedReader(db, { batchRows = 64 } = {}) {
   if (!signal) return db;
   return new Proxy(db, {
     get(target, key) {
@@ -93,7 +93,7 @@ export function admittedReader(db) {
             while (!complete) {
               const rows = storageStep(() => {
                 const batch = [], started = performance.now();
-                while (batch.length < 64 && performance.now() - started < 8) {
+                while (batch.length < batchRows && performance.now() - started < 8) {
                   const next = cursor.next();
                   if (next.done) { complete = true; break; }
                   batch.push(next.value);

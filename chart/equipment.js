@@ -701,7 +701,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     return paragraph;
   };
   const tariffControlLink = () => {
-    const paragraph = make('p', 'Test or control this switch from ', 'muted');
+    const paragraph = make('p', 'Test or control this switch from ', 'muted equipment-control-link');
     const link = make('a', 'Manual heating override');
     link.href = '#home-manual-override-details';
     link.addEventListener('click', event => {

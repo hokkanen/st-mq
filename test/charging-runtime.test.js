@@ -548,40 +548,51 @@ test('an old in-flight comparison cannot borrow a replacement connection estimat
     'rejecting the old request preserves the new connection cache');
 });
 
-test('one-day comparisons run on request without hidden minute refreshes', async t => {
+async function settleComparisons(runtime) {
+  for (let i = 0; i < 10; i++) {
+    await runtime.planningFlight;
+    await new Promise(resolve => setImmediate(resolve));
+    await runtime.flexibilityFlight;
+    if (!runtime.flexibilityScheduled && !runtime.flexibilityFlight) return;
+  }
+  assert.fail('Automatic cost comparisons did not settle');
+}
+
+test('automatic one-day comparisons reuse meaningful inputs without hidden minute refreshes', async t => {
   const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
-  const runtime=f.create(),adapter=fakeAdapter(f.clock);t.after(()=>runtime.close());
-  await runtime.setAdapter('charger1',adapter);await runtime.tick({prices});await runtime.reconcile();
-  const compare=runtime.plannerService.compare.bind(runtime.plannerService);let calls=0;
-  runtime.plannerService.compare=(...args)=>{calls++;return compare(...args);};
-  for(const minutes of [1,2,6]) {f.setNow(initialNow+minutes*60_000);await runtime.tick();await runtime.reconcile();}
-  assert.equal(calls,0,'Closed comparisons create no numerical work');
-  const first=await runtime.previewFlexibility('charger1',requestScope(chargerView(runtime)));
-  assert.equal(first.comparison.available,true);assert.equal(calls,1);
-  f.setNow(f.clock()+60_000);await runtime.tick();await runtime.reconcile();assert.equal(calls,1);
-  const next=await runtime.previewFlexibility('charger1',requestScope(chargerView(runtime)));
-  assert.equal(next.comparison.available,true);assert.equal(calls,2);
+  const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  const compare = runtime.plannerService.compare.bind(runtime.plannerService); let calls = 0;
+  runtime.plannerService.compare = (...args) => { calls++; return compare(...args); };
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
+  await settleComparisons(runtime);
+  assert.equal(chargerView(runtime).flexibility.preview?.available, true);
+  const initialCalls = calls;
+  for (const minutes of [1, 2, 6]) {
+    f.setNow(initialNow + minutes * 60_000); await runtime.tick(); await runtime.reconcile(); await settleComparisons(runtime);
+  }
+  assert.equal(calls, initialCalls, 'Unchanged numerical inputs and age alone create no work');
+  const first = await runtime.previewFlexibility('charger1', requestScope(chargerView(runtime)));
+  assert.equal(first.comparison.available, true); assert.equal(calls, initialCalls);
+  f.setNow(f.clock() + 60_000); await runtime.tick(); await runtime.reconcile();
+  const next = await runtime.previewFlexibility('charger1', requestScope(chargerView(runtime)));
+  assert.equal(next.comparison.available, true); assert.equal(calls, initialCalls);
 });
 
-test('the selected one-day comparison survives allow and cancel and an explicit refresh shows its actual approved plan', async t => {
+test('one-day comparisons update automatically after allow and cancel and show the actual approved plan', async t => {
   const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
-  const original = (await runtime.calculateFlexibilityPreview('charger1')).comparison;
-  assert.equal(original.available, true);
+  await settleComparisons(runtime);
+  assert.equal(chargerView(runtime).flexibility.preview.available, true);
   await runtime.setFlexibility('charger1', flexibilityInput(runtime));
+  await settleComparisons(runtime);
   assert.equal(chargerView(runtime).flexibility.active, true);
-  assert.deepEqual(chargerView(runtime).flexibility.preview, original);
-  let refreshed = 0;
-  const calculate = runtime.calculateFlexibilityPreview.bind(runtime);
-  runtime.calculateFlexibilityPreview = async id => { refreshed++; return calculate(id); };
-  await runtime.calculateFlexibilityPreview('charger1');
-  assert.equal(refreshed, 1, 'An active allowance refreshes only when requested');
   const active = chargerView(runtime).flexibility.preview;
   assert.equal(active.available, true);
   assert.deepEqual(active.deferredPeriods, chargerView(runtime).plan.periods, 'The approved comparison is the actual retained program');
   await runtime.setFlexibility('charger1', flexibilityInput(runtime, 'cancel', 'cancel-same-comparison'));
-  assert.deepEqual(chargerView(runtime).flexibility.preview, active);
+  await settleComparisons(runtime);
+  assert.equal(chargerView(runtime).flexibility.preview.available, true);
   await editSession(runtime, 'charger1', { minimumSoc: 85 });
   assert.equal(chargerView(runtime).flexibility.preview, null, 'a different charging request cannot inherit the comparison');
 });
@@ -1882,9 +1893,14 @@ test('a matched BMW quick unplug ends the old schedule even when every Easee pol
   fact('pluggedIn', true, replugAt); await runtime.reconcile();
   const replugged = chargerView(runtime);
   assert.equal(replugged.control.session.connectedAt, replugAt);
-  assert.equal(replugged.control.phase, 'waiting');
+  assert.equal(replugged.control.phase, 'identifying');
   assert.equal(replugged.identification.reason, 'waiting-for-charging');
-  assert.ok(replugged.control.owned, 'The probe waits for fresh physical power telemetry before releasing the economic delay');
+  const replugAttempt = structuredClone(runtime.chargers.charger1.identification);
+  assert.ok(replugAttempt.probe, 'Fresh native connection evidence admits one bounded start before metering');
+  assert.equal(replugAttempt.action, 'allow'); assert.equal(replugAttempt.chargePowerKw, null);
+  assert.equal(replugAttempt.probe.startedAt, replugAt);
+  assert.equal(adapter.calls.filter(call => call.kind === 'clear').length, clearCount + 2,
+    "The bounded probe releases only the new connection's economic delay");
   assert.equal(replugged.vehicle.id, null, 'A new connection must still identify its vehicle');
   assert.equal(runtime.chargers.charger1.targetState, null);
 
@@ -1894,6 +1910,8 @@ test('a matched BMW quick unplug ends the old schedule even when every Easee pol
   assert.equal(chargerView(runtime).vehicle.state, 'identifying');
   f.setNow(startAt + 1000); await runtime.reconcile();
   const identification = chargerView(runtime);
+  assert.equal(runtime.chargers.charger1.identification.probe.deadlineAt, replugAttempt.probe.deadlineAt,
+    'The first measured draw cannot renew the startup allowance');
   assert.equal(identification.control.phase, 'identifying');
   assert.equal(identification.control.owned.purpose, 'identification');
   assert.equal(identification.control.owned.identificationConnectedAt, replugAt);

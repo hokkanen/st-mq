@@ -482,14 +482,29 @@ planner applies the existing native date/DST guard while evaluating candidates;
 it may choose an earlier supported period and report less saving. A later approved
 deadline remains binding, but it never authorizes an unrepresentable native timer.
 
-All comparisons share the existing CPU worker. One active calculation, one latest
-queued control calculation and one latest optional preview bound work; control
-has queue priority. Opening or explicitly refreshing a comparison requests it.
-A visible dialog can refresh after a changed accepted model, at most once a minute.
-Closed cards do not start hidden periodic comparisons. Inputs are assessed at
-request time; renewed source clocks and elapsed calculation age alone do not
-invalidate a retained estimate. Equipment, physical session, vehicle, request,
-priority and peer-deadline changes still fence incompatible work.
+Eligible cards calculate savings automatically on the controlling computer, using
+the existing bounded joint search and CPU worker. Control calculations retain
+priority and can interrupt a comparison. Only the latest pending inputs for each
+charger are retained; the two comparisons run in turn. Concurrent browser requests
+join that work or reuse its completed result. Opening a cached comparison starts
+no calculation. Explicit refresh remains available after an unavailable result.
+
+Comparison admission uses the normal planner's material-change checks and its
+ten-second quiet period with a sixty-second maximum, applied through the extended
+deadline. Meaningful tomorrow-only forecast changes therefore refresh savings
+even when the ordinary plan needs no search. Subthreshold changes accumulate
+against the searched model. Renewed source clocks, unchanged forecasts, expected
+metered progress and elapsed estimate age alone start no search. Changes outside
+both alternatives' horizons also start no search. Proposed period/deadline
+boundaries require a fresh assessment. Equipment, physical session, vehicle,
+request values, priority and peer-deadline changes still fence incompatible work;
+bare command revisions grant no estimate or action authority.
+
+The existing saved charger-card publication includes completed comparisons and
+their original estimate times so the read-only computer can display them without
+running searches. Numerical admission models and pending work stay in RAM. An
+unavailable result waits for changed inputs, a future boundary or explicit refresh
+rather than retrying continuously.
 
 An active allowance's approved alternative is the actual current joint program,
 including retained periods and allocation targets. Its earlier alternative asks
@@ -500,8 +515,8 @@ or cancelling the selected day keeps the same comparison scope until its earlier
 checkpoint. Temporarily missing live presentation retains that dated scope but
 grants no actuator authority.
 
-Opening the dialog requests a comparison, retaining the last successful same-scope
-estimate while it loads or fails, including across closing and reopening. Once open,
+The dialog retains the last successful same-scope estimate while it updates or
+fails, including across closing and reopening. Once open,
 the dialog adopts completed background comparisons only when their displayed
 costs, finish times, charging durations or other comparison values change. Timestamp
 churn, elapsed age and changes below displayed precision do not refresh it or cause

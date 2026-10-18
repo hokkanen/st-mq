@@ -46,7 +46,6 @@ export function createChargingFlexibility({ document, request, save, formatTime 
   const entries = new Map(), comparisons = new Map(), incomingComparisons = new Map(), listeners = [];
   let status, receivedAt = Date.now(), writable = false, busy = false, timer, disposed = false;
   let dialog, title, description, comparisonRows, savingValue, combined, uncertainty, priceDetails, riskAllowances, snapshotTime, note, message, refresh, back, apply;
-  let loadedModelAt, lastPreviewAttempt = 0;
   let selected, invoker, openedScope, openedComparisonScope, preview, previewScope, snapshot, renderedPlans, loading = false, saving = false, generation = 0;
   const make = (tag, text = '', className = '', id) => {
     const node = document.createElement(tag); node.textContent = text;
@@ -183,6 +182,7 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     const sameComparison = Boolean(openedComparisonScope) && openedComparisonScope === comparisonScope(charger);
     const currentScope = sameSession && sameComparison && previewCurrent(charger) && !view.awaitingCheckpoint;
     const comparison = preview, available = validComparison(comparison);
+    const comparing = loading || state?.comparisonPending === true;
     const active = view.active;
     const displayedActive = snapshot?.active;
     title.textContent = `${snapshot?.label ?? 'Charging'} · ${displayedActive ? 'One day allowed' : 'One extra day'}`;
@@ -213,7 +213,7 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     savingValue.textContent = displayedActive && available && comparison.sharedPlanChanged ? 'Shared plan changed' : displayedSaving !== null
       ? displayedSaving > 0 ? `Estimated saving ${money(displayedSaving)}`
         : displayedSaving < 0 ? `Estimated extra cost ${money(-displayedSaving)}` : 'No estimated saving'
-      : loading ? 'Comparing charging plans…' : '';
+      : comparing ? 'Comparing charging plans…' : '';
     savingValue.hidden = !savingValue.textContent;
     savingValue.dataset.tone = available && comparison.recommended === true ? 'saving' : 'neutral';
     const peerEffects = available ? (comparison.chargers ?? []).filter(peer => peer.id !== selected
@@ -243,7 +243,9 @@ export function createChargingFlexibility({ document, request, save, formatTime 
       : readonly ? 'View only. Changes are available on the controlling computer.'
       : active ? `The +1 day marker ends at ${formatTime(displayedState.checkpointAt, snapshot.timezone, snapshot.now)}; the approved deadline then remains binding. Cancel restores the earlier deadline, with best-effort charging if it can no longer be met.`
       : !state?.eligible ? reasonText(state?.reason)
-      : !available && !loading ? reasonText(comparison?.reason, comparison)
+      : comparing ? available ? 'Updating the comparison. Showing the previous estimate.' : 'Calculating the cost comparison…'
+      : state?.refreshReason ? `${reasonText(state.refreshReason)}${available ? ' Showing the previous estimate.' : ''}`
+      : !available ? reasonText(comparison?.reason, comparison)
       : '';
     note.hidden = !note.textContent;
     refresh.hidden = readonly;
@@ -253,16 +255,14 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     apply.classList.toggle('secondary-button', active);
     apply.disabled = busy || saving || !sameSession || !sameComparison || !view.visible || readonly || !active && (loading || !currentScope || !view.eligible);
     back.disabled = saving;
-    dialog.setAttribute('aria-busy', String(loading || saving));
+    dialog.setAttribute('aria-busy', String(comparing || saving));
     if (document.activeElement === apply && (apply.disabled || apply.hidden)) back.focus({ preventScroll: true });
   }
 
   async function loadPreview() {
     const charger = chargerFor(selected);
     if (!charger?.request || loading || saving) return;
-    lastPreviewAttempt = Date.now();
     const requestScope = scope(charger), requestGeneration = ++generation, requestedSnapshot = captureSnapshot(charger);
-    loadedModelAt = status?.charging?.coordination?.at;
     if (previewScope !== requestScope || openedComparisonScope !== comparisonScope(charger)) {
       preview = retainComparison(charger) ?? structuredClone(charger.flexibility?.preview ?? null); previewScope = requestScope; snapshot = requestedSnapshot;
     }
@@ -310,6 +310,11 @@ export function createChargingFlexibility({ document, request, save, formatTime 
         selected = id; invoker = button; openedScope = scope(chargerFor(id)); openedComparisonScope = comparisonScope(chargerFor(id)); preview = null; previewScope = null;
         snapshot = captureSnapshot(chargerFor(id));
         dialog.showModal(); button.setAttribute('aria-expanded', 'true'); back.focus({ preventScroll: true });
+        const charger = chargerFor(id);
+        if (charger.flexibility?.preview || charger.flexibility?.comparisonPending) {
+          preview = retainComparison(charger); previewScope = scope(charger);
+          refreshDialog(); return;
+        }
         refreshDialog(); return loadPreview();
       });
       return button;
@@ -329,9 +334,6 @@ export function createChargingFlexibility({ document, request, save, formatTime 
         message.textContent = ''; message.classList.remove('form-error');
       }
       refreshDialog();
-      if (dialog?.open && !loading && !saving && charger && openedScope === scope(charger)
-        && status?.charging?.coordination?.at !== loadedModelAt && Date.now() - lastPreviewAttempt >= 60_000)
-        void loadPreview();
     },
     removeEntry(id) { entries.delete(id); comparisons.delete(id); incomingComparisons.delete(id); if (selected === id) close(); },
     close() { disposed = true; clearTimeout(timer); generation++; if (dialog?.open) dialog.close(); dialog?.remove(); for (const remove of listeners) remove(); },

@@ -9,6 +9,7 @@ const nativeForecast = forecast => ['forecast', 'uncertain'].includes(forecast?.
 /** A price opportunity is an estimate; only an unconsumed grant marks the deadline. */
 export function chargingFlexibility(charger, { now = Date.now(), comparison = charger.flexibility?.preview, loading = false } = {}) {
   const state = charger.flexibility;
+  loading ||= state?.comparisonPending === true;
   const connected = charger.values?.connected?.value === true && Boolean(charger.request);
   const checkpoint = timestamp(state?.checkpointAt);
   const active = connected && state?.active === true && checkpoint !== null && now < checkpoint;
@@ -22,7 +23,8 @@ export function chargingFlexibility(charger, { now = Date.now(), comparison = ch
   // tick or the browser clock can precede the HTTP response that produced it.
   const available = comparison?.available === true && finite(comparison.at);
   const savings = available && finite(comparison.savingsCents) ? comparison.savingsCents : null;
-  const recommended = !active && !awaitingCheckpoint && state?.eligible === true && comparison?.recommended === true && savings > 0;
+  const recommended = !active && !awaitingCheckpoint && !loading && !state?.refreshReason
+    && state?.eligible === true && comparison?.recommended === true && savings > 0;
   // Recommendation controls emphasis, never whether a valid comparison is shown.
   // Round before choosing the label so sub-cent differences do not show +€0.00.
   const cents = savings === null ? null : Math.round(Math.abs(savings));
@@ -30,11 +32,11 @@ export function chargingFlexibility(charger, { now = Date.now(), comparison = ch
   const extraCost = savings < 0 && cents > 0;
   const sharedPlanChanged = active && available && comparison.sharedPlanChanged === true;
   const label = sharedPlanChanged ? 'Shared plan changed' : amount !== null ? extraCost ? `+${amount} est. cost` : `${amount} est. saving`
-    : loading ? 'Calculating…' : 'Compare savings';
+    : loading ? 'Calculating…' : 'Unavailable';
   const detail = [active ? 'Review the approved one-day allowance.' : awaitingCheckpoint ? 'Waiting for the updated charging request.' : '',
     sharedPlanChanged ? 'Compare the current shared plan with canceling this allowance; later peer choices remain in effect.'
       : amount !== null ? extraCost ? `${amount} estimated extra cost.` : `${amount} estimated saving.`
-      : loading ? 'Calculating estimated savings.' : 'Compare the estimated charging costs.'].filter(Boolean).join(' ');
+      : loading ? 'Calculating estimated savings.' : 'A cost estimate is not currently available.'].filter(Boolean).join(' ');
   return { visible, active, awaitingCheckpoint, complete, eligible: state?.eligible === true && !active && !awaitingCheckpoint && !complete,
     effectiveReadyByAt: timestamp(state?.effectiveReadyByAt ?? (state?.active ? state.deferredReadyByAt : state?.normalReadyByAt)),
     title: active ? 'One day allowed' : 'One extra day',

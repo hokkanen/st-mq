@@ -18,10 +18,12 @@ const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-performance-'));
 const store = new Store(join(directory, 'synthetic.sqlite'));
 const median = values => { const sorted = [...values].sort((a, b) => a - b), m = Math.floor(sorted.length / 2);
   return Math.round((sorted.length % 2 ? sorted[m] : (sorted[m - 1] + sorted[m]) / 2) * 100) / 100; };
-// Equality covers every returned field except deliberately non-semantic timing,
-// cache and scan diagnostics. Arrays retain their order and complete provenance.
+// Compare unchanged numeric history, provenance and accounting. Categorical
+// interval projections intentionally change independently of scalar reduction.
 function digest(result) {
   const copy = structuredClone(result);
+  delete copy.shading; delete copy.operatingModes; delete copy.meta.propertyHighestPhase;
+  copy.meta.warnings = copy.meta.warnings.filter(warning => !/Dense shading|highest-phase detail/.test(warning));
   for (const key of ['elapsedMs', 'cacheHit', 'contentRevision', 'queryMetrics', 'progress', 'cacheAgeMs', 'queueMs']) delete copy.meta[key];
   return createHash('sha256').update(JSON.stringify(copy)).digest('hex');
 }
@@ -60,7 +62,7 @@ try {
           const hash = digest(result);
           if (sourceIndex === 0 && !expected.has(selection.name)) expected.set(selection.name, hash);
           equality &&= expected.get(selection.name) === hash;
-          assert.equal(hash, expected.get(selection.name), `${selection.name} full response changed`);
+          assert.equal(hash, expected.get(selection.name), `${selection.name} numeric history or accounting changed`);
         } finally { clearInterval(heartbeat); await service.close(); }
       }
       const row = { source: roots.length > 1 ? sourceIndex === 0 ? 'baseline' : 'candidate' : 'current',

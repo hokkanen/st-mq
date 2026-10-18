@@ -22,6 +22,7 @@ function fixture(t) {
   const values = { charger1: status(), charger2: status() };
   Object.assign(runtime, { store, clock: () => now, canControl: () => authority, closed: false,
     writeAbort: new AbortController(), limiterHistoryPending: 0, limiterHistorySequence: 0, vehicleFeeds: {},
+    flexibilityQueue: new Set(),
     config: { input: 'mqtt', connections: { easee: { charger_id: 'synthetic-easee' } } },
     configuration: { chargers: { charger2: { enabled: true } } },
     chargers: { charger1: { association: 'a'.repeat(64) }, charger2: { association: 'b'.repeat(64) } },

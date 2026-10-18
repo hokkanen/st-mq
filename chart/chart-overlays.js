@@ -85,53 +85,22 @@ export const activityTracks = Object.freeze([
     ] },
 ]);
 
-/** Scalar display envelopes are not occupancy summaries. Retain missing breaks
- * and explicit interval evidence, and label ordinary steps as displayed samples
- * instead of claiming that decimation preserved every categorical transition. */
+/** Bars consume original interval evidence, independently of scalar reduction. */
 export function activityIntervals(descriptor, payload) {
   if (!payload) return [];
   if (descriptor.key === 'operatingMode') return payload.operatingModes ?? [];
-  if (!descriptor.signal) return payload.shading?.[descriptor.key] ?? [];
-  const points = payload.series?.[descriptor.signal] ?? [], intervals = [], seen = new Set();
-  for (let index = 0; index < points.length; index++) {
-    const point = points[index];
-    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
-    const explicit = Number.isFinite(point.intervalStart) && Number.isFinite(point.intervalEnd) && point.intervalEnd > point.intervalStart;
-    const start = explicit ? point.intervalStart : point.x;
-    const next = points[index + 1];
-    // A tagged gap boundary one millisecond after a source sample closes its
-    // drawing path; it supplies no evidence for a one-millisecond state span.
-    const isolated = next?.sampleBoundary === true && next.displayBoundary === true
-      && next.y === null && next.x === point.x + 1;
-    // Do not infer freshness for a last sample. Existing server-provided tails
-    // and missing markers define coverage; a view change cannot extend it.
-    const end = Math.min(explicit ? point.intervalEnd : isolated ? point.x : next?.x ?? point.x,
-      payload.range.to, Number.isFinite(payload.now) ? payload.now : payload.range.to);
-    if (!(end > start)) {
-      // A genuine isolated state report is still evidence. Show its instant
-      // without assigning freshness or manufacturing a duration after it.
-      if (!explicit && !point.displayBoundary && !point.carriedForward
-        && point.x >= payload.range.from && point.x <= Math.min(payload.range.to, payload.now ?? payload.range.to))
-        intervals.push({ ...point, start: point.x, end: point.x, value: point.y, pointOnly: true });
-      continue;
-    }
-    const identity = `${start}:${end}:${point.y}`;
-    if (seen.has(identity)) continue;
-    seen.add(identity);
-    intervals.push({ ...point, start, end, value: point.y, sampled: !explicit });
-  }
-  return intervals;
+  return payload.shading?.[descriptor.signal ?? descriptor.key] ?? [];
 }
 
 export function activityIntervalLabel(descriptor, interval) {
-  const value = descriptor.valueLabel?.(interval) ?? descriptor.values?.[interval.value];
+  const value = interval.mixed ? 'Mixed recorded codes' : descriptor.valueLabel?.(interval) ?? descriptor.values?.[interval.value];
   const detail = descriptor.intervalDetail?.(interval);
-  const state = (Number.isFinite(interval.value) ? value
+  const state = (interval.mixed ? value : Number.isFinite(interval.value) ? value
     ? `${value}${descriptor.showValueCode === false || descriptor.valueLabel ? '' : ` (${interval.value})`}`
     : `Value ${interval.value}` : descriptor.label) + (detail ? ` · ${detail}` : '');
   if (interval.pointOnly) return `${state} · ${dateTime.format(interval.start)} · recorded sample; duration unknown`;
   const occupancy = interval.aggregated ? ` · ${Math.round(Math.min(1, Math.max(0, interval.fraction ?? 0)) * 100)}% of this display interval` : '';
-  const sample = interval.sampled ? ' · between displayed samples; intermediate changes may be omitted' : '';
+  const sample = interval.sampled ? ' · between recorded reports' : '';
   return `${state} · ${dateTime.format(interval.start)} – ${dateTime.format(interval.end)}${occupancy}${sample}`;
 }
 
@@ -320,7 +289,7 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
       const track = document.createElement('div'); track.className = 'mode-track';
       const intervals = activityIntervals(descriptor, payload).filter(interval => interval.pointOnly
         ? interval.start >= view.from && interval.start <= view.to : interval.end > view.from && interval.start < view.to);
-      const values = Object.keys(descriptor.values ?? {});
+      const occupied = new Map();
       for (const interval of root.hidden ? [] : intervals) {
         const from = Math.max(interval.start, view.from), to = Math.min(interval.end, view.to);
         if (!Number.isFinite(from) || !Number.isFinite(to) || !interval.pointOnly && from >= to) continue;
@@ -328,12 +297,15 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
         item.style.left = `${100 * (from - view.from) / (view.to - view.from)}%`;
         item.style.width = interval.pointOnly ? '2px' : `${100 * (to - from) / (view.to - view.from)}%`;
         if (interval.pointOnly) { item.dataset.kind = 'point'; item.style.transform = 'translateX(-1px)'; item.style.borderRight = '0'; }
-        item.style.opacity = String((interval.aggregated ? Math.min(1, Math.max(0, interval.fraction ?? 0)) : 1)
-          * (descriptor.opacities?.[interval.value] ?? .75));
+        item.style.opacity = String(descriptor.opacities?.[interval.value] ?? .75);
         if (descriptor.patterns?.[interval.value]) item.dataset.pattern = descriptor.patterns[interval.value];
         if (Number.isFinite(interval.value)) item.dataset.value = String(interval.value);
-        const lane = values.indexOf(String(interval.value));
-        if (interval.aggregated && lane >= 0) { item.style.top = `${lane * 100 / values.length}%`; item.style.height = `${100 / values.length}%`; }
+        if (interval.aggregated) {
+          const bucket = `${interval.start}:${interval.end}`, top = occupied.get(bucket) ?? 0;
+          const fraction = Math.max(0, Math.min(1 - top, interval.fraction ?? 0));
+          item.style.top = `${top * 100}%`; item.style.height = `${fraction * 100}%`;
+          occupied.set(bucket, top + fraction);
+        }
         item.style.backgroundColor = descriptor.colors?.[interval.value] ? palette[descriptor.colors[interval.value]]
           : Number.isFinite(interval.value) && interval.value === 0 ? palette.muted : palette[descriptor.color ?? descriptor.key] ?? palette.muted;
         item.title = `${activityIntervalLabel(descriptor, interval)}\n${descriptor.detail}`;

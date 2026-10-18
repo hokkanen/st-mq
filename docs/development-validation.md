@@ -1467,3 +1467,28 @@ Replica tests cover real coalesced catch-up after journal-prefix pruning, an
 archive response spanning publication, per-request checkpoint capture, rejected
 replacement/rewind continuity and pinned-reader cancellation after file removal.
 These are synthetic correctness checks, separate from measured host performance.
+
+### Chart indicator coverage and performance
+
+`test/chart-activity.test.js` checks every state/code catalogue entry, repeated
+Normal requests, dense short interruptions, valid zero, source expiry, isolated
+observations, phase ties and bounded code summaries. It verifies original
+occupied durations independently of scalar reduction and confirms chart reads
+perform no writes. The chart worker/transport and storage-priority suites retain
+coverage for concurrent recording, control priority, cancellation and snapshots.
+
+Run `node test/browser/chart-performance-smoke.js --indicators-only` for actual
+Chart.js/indicator rendering through the production HTTP/history worker route.
+It checks desktop/mobile and light/dark overviews and zoomed views, captures
+screenshots outside the checkout, and reports load/draw/frame timings.
+`--source /path/to/untouched/source --record-broken-indicators` records a baseline
+without asserting the known broken fill. Use the same fixtures and runtime for
+comparisons; generic day/week/month performance remains covered by
+`node scripts/benchmarks/chart-interaction.js --days 35 --runs 3` and the browser
+performance suite without the indicator-only flag. Run `--catalogue-only` to
+check all 26 state/code entries and eight built-in tracks, including painted
+screenshot pixels. `node scripts/benchmarks/chart-activity.js --baseline /path/to/untouched/source --runs 3`
+compares dense indicators while asserting numeric-series equality. Chart cursor
+batches use at most 192 rows and retain the same eight-millisecond native-work
+limit and release storage admission between batches. These synthetic local checks
+do not establish Raspberry Pi or live installation performance.

@@ -354,6 +354,16 @@ probe before a charging transaction exists. The previous connection's disconnect
 cannot keep the probe waiting for the transaction it is intended to start.
 Transaction-specific pause commands still require confirmation of the new
 transaction; reconnecting never supplies that confirmation or vehicle identity.
+For both chargers, fresh native connection and command readiness can authorize
+the bounded start before the first usable power sample. Missing or stale initial
+power remains unknown, never measured zero or identity evidence. The original
+hardware-ceiling deadline includes this startup interval and is not renewed when
+metering begins. Charger 2 still confirms its scoped minimum-current setting
+before Start when that comparison is used, and retains its native current,
+permission and restoration checks. Once the probe has a fresh power measurement,
+including zero, subsequent loss of current power evidence ends active probing.
+If none arrives, the original deadline ends the probe and requests the economic
+stop; native acknowledgement alone cannot confirm physical stopping.
 For a stopped Charger 2, the same plausible context permits preparation before
 Tesla reports positive current. The controller confirms the scoped 6 A setting
 before granting an identification start. Failed or uncertain current readback
@@ -466,8 +476,9 @@ returns to the current charging choice. A usable BMW baseline triggers its
 correlation pause; Tesla's qualified baseline can do so under the unreachable-peer
 exception. Absent a match, the shared 0.30 kWh extra-energy allowance
 ends probing for either vehicle.
-An independent five-minute maximum and loss of current power evidence also end
-probing. These limits do not expire the saved identification evidence. Metering
+An independent five-minute maximum and loss of established current power evidence
+also end probing; initial metering absence uses only the bounded startup described
+above. These limits do not expire the saved identification evidence. Metering
 and actuator delay require conservative stopping allowance; a software limit is
 not a guarantee of an exact physical energy cutoff. Native electrical limits and
 Equalizer authority remain in effect. The controller monitors energy and its

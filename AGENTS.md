@@ -609,6 +609,12 @@ Details: [recording and provenance](docs/recording.md),
   source checks, hardware-ceiling deadline calculation, ten-second stopping
   reserve, five-minute maximum and current-test restoration deadlines. This
   amendment adds no startup-energy exemption, new metering API or polling change.
+  Fresh native connection and command readiness may start the bounded probe
+  before its first usable power sample on either charger. The original
+  hardware-ceiling deadline includes that unobserved startup; no reading is
+  fabricated. Once fresh power is established, including measured zero, its
+  loss ends probing. Missing initial metering cannot renew the deadline or
+  relax native current preparation, Stop/Pause or restoration requirements.
 - Ordinary application stop, restart and paired handover preserve the charger's
   OCPP configuration and current instructions. Only explicit native-control
   deactivation or connection reconfiguration owns return to cloud control.

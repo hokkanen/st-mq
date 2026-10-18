@@ -68,6 +68,28 @@ function flexibleCharger(patch = {}) {
 const active = () => { const item = charger(); return { ...item, settings: { ...item.settings, enabled: true },
   values: { ...item.values, connected: reading(true) }, plan: { startAt, finishAt: deadlineAt, deadlineAt } }; };
 
+test('automatic comparison updates reach the card and open dialog without browser searches', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const item = flexibleCharger({ preview: null, comparisonPending: true });
+  const panel = createChargingPanel({ document, request: async () => { assert.fail('Automatic estimates need no browser request'); } });
+  panel.update(status(item));
+  assert.match($('charger1-flexibility').textContent, /Calculating/);
+  await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+  assert.equal($('charging-flexibility-dialog').getAttribute('aria-busy'), 'true');
+  assert.match($('charging-flexibility-note').textContent, /Calculating/);
+  item.flexibility.comparisonPending = false;
+  item.flexibility.preview = structuredClone(flexibilityComparison);
+  panel.update(status(item));
+  assert.match($('charger1-flexibility').textContent, /€1.60 est. saving/);
+  assert.equal($('charging-flexibility-dialog').getAttribute('aria-busy'), 'false');
+  item.flexibility.comparisonPending = true; panel.update(status(item));
+  assert.match($('charging-flexibility-note').textContent, /Updating.*previous estimate/);
+  assert.equal($('charging-flexibility-saving').textContent, 'Estimated saving €1.60');
+  item.flexibility.comparisonPending = false; item.flexibility.refreshReason = 'planning-unavailable'; panel.update(status(item));
+  assert.match($('charging-flexibility-note').textContent, /previous estimate/);
+  panel.close();
+});
+
 test('partial price coverage keeps comparison available and refreshes its notice when coverage changes', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const comparison = { ...flexibilityComparison, priceCoverage: 'partial' };
@@ -137,7 +159,7 @@ test('one-day flexibility opens a comparison and requires a separate fenced affi
   assert.match(trigger.textContent, /€1.60 est\. saving/); assert.equal(trigger.dataset.tone, 'saving');
   const opening = trigger.dispatch('click'); assert.equal(opening.defaultPrevented, true);
   await Promise.resolve(); await Promise.resolve();
-  assert.equal(calls.length, 1); assert.match(calls[0][0], /flexibility-preview$/);
+  assert.equal(calls.length, 0, 'Opening reuses the automatic comparison');
   assert.equal($('charging-flexibility-dialog').open, true);
   assert.equal(document.activeElement, $('charging-flexibility-close'), 'Opening never focuses the affirmative action');
   assert.match($('charging-flexibility-plans').textContent, /Remaining cost €4.70.*Remaining cost €3.10/);
@@ -155,9 +177,9 @@ test('one-day flexibility opens a comparison and requires a separate fenced affi
   assert.match($('charging-flexibility-price-details').textContent, /2 c\/kWh.*not an electricity charge/);
   assert.equal($('charging-flexibility-apply').disabled, false);
   await $('charging-flexibility-apply').listeners.get('click')();
-  assert.equal(calls.length, 2); assert.match(calls[1][0], /\/flexibility$/);
-  assert.equal(calls[1][1].action, 'allow'); assert.equal(calls[1][1].revision, 1);
-  assert.equal(calls[1][1].sessionId, 'session:charger1'); assert.match(calls[1][1].actionId, /^[\da-f-]{36}$/i);
+  assert.equal(calls.length, 1); assert.match(calls[0][0], /\/flexibility$/);
+  assert.equal(calls[0][1].action, 'allow'); assert.equal(calls[0][1].revision, 1);
+  assert.equal(calls[0][1].sessionId, 'session:charger1'); assert.match(calls[0][1].actionId, /^[\da-f-]{36}$/i);
   assert.equal($('charging-flexibility-dialog').open, false); assert.equal(document.activeElement, trigger);
   assert.equal($('charger1-defer-badge').hidden, false);
   assert.equal(trigger.children[0].textContent, 'One day allowed');
@@ -235,13 +257,15 @@ test('checkpoint promotion returns to normal formatting and a fresh dialog can a
   await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
   assert.equal($('charging-flexibility-apply').textContent, 'Allow one more day');
   assert.equal($('charging-flexibility-apply').disabled, false);
+  assert.equal(calls.length, 0);
+  await $('charging-flexibility-apply').listeners.get('click')();
   assert.equal(calls[0][1].revision, 3);
   panel.close();
 });
 
 test('a stale comparison cannot approve a revised request or a replacement physical connection', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
-  const item = flexibleCharger(); let resolve;
+  const item = flexibleCharger({ preview: null }); let resolve;
   const panel = createChargingPanel({ document, request: (...args) => { calls.push(args); return new Promise(done => { resolve = done; }); } });
   panel.update(status(item));
   const opening = $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
@@ -280,7 +304,7 @@ test('both compact one-day buttons show every available cost comparison without 
     [0, false, '€0.00 est. saving', 'neutral', '€0.00 estimated saving'],
     [-35, false, '+€0.35 est. cost', 'neutral', '€0.35 estimated extra cost'],
     [-0.001, false, '€0.00 est. saving', 'neutral', '€0.00 estimated saving'],
-    [null, false, 'Compare savings', 'neutral', 'Compare the estimated charging costs'],
+    [null, false, 'Unavailable', 'neutral', 'A cost estimate is not currently available'],
   ]) {
     const item = flexibleCharger({ preview: { ...flexibilityComparison, savingsCents, recommended } });
     panel.update(status(item, { ...item, id: 'charger2', label: 'Charger 2' }));
@@ -308,7 +332,8 @@ test('temporary missing savings and an HTTP calculation ahead of the status tick
     assert.equal($('charger1-flexibility').children[1].textContent, '€1.60 est. saving');
     assert.equal($('charger1-flexibility').dataset.tone, 'saving');
   }
-  const opening = $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+  await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+  const opening = $('charging-flexibility-refresh').listeners.get('click')();
   assert.equal($('charger1-flexibility').children[1].textContent, '€1.60 est. saving');
   resolve({ comparison: { available: false, reason: 'forecast-unavailable' } }); await opening;
   assert.equal($('charger1-flexibility').children[1].textContent, '€1.60 est. saving');
@@ -322,7 +347,7 @@ test('losing write authority while the flexibility dialog is open removes the ap
   panel.update(status(item)); await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
   $('charging-flexibility-apply').focus(); panel.update({ ...status(item), readOnly: true });
   assert.equal($('charging-flexibility-apply').hidden, true); assert.equal(document.activeElement, $('charging-flexibility-close'));
-  await $('charging-flexibility-apply').listeners.get('click')(); assert.equal(calls.length, 1);
+  await $('charging-flexibility-apply').listeners.get('click')(); assert.equal(calls.length, 0);
   assert.match($('charging-flexibility-note').textContent, /View only/);
   panel.close();
 });
@@ -337,6 +362,7 @@ test('forecast comparison failure cannot prevent canceling the currently active 
       active: false, checkpointAt: null, effectiveReadyByAt: deadlineAt } });
   } });
   panel.update(status(item)); await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+  await $('charging-flexibility-refresh').listeners.get('click')();
   assert.equal($('charging-flexibility-apply').disabled, false);
   assert.equal($('charging-flexibility-apply').textContent, 'Cancel flexibility');
   await $('charging-flexibility-apply').listeners.get('click')();
@@ -374,7 +400,7 @@ test('an open comparison updates only when displayed values change, without anot
       assert.equal($('charging-flexibility-plans').textContent, original);
       assert.equal($('charging-flexibility-as-of').textContent, asOf);
     }
-    assert.equal(calls.length, 1, 'Completed background comparisons require no duplicate HTTP calculation');
+    assert.equal(calls.length, 0, 'Completed background comparisons require no duplicate HTTP calculation');
     panel.close();
   }
 });
@@ -389,6 +415,7 @@ test('reopening preserves the last estimate during refresh failure and scope cha
   } });
   panel.update(status(item));
   await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+  await $('charging-flexibility-refresh').listeners.get('click')();
   assert.equal($('charging-flexibility-saving').textContent, 'Estimated saving €2.00');
   panel.update(status(item));
   assert.equal($('charging-flexibility-saving').textContent, 'Estimated saving €2.00', 'An older status response cannot replace the completed HTTP result');
@@ -400,7 +427,7 @@ test('reopening preserves the last estimate during refresh failure and scope cha
   assert.equal($('charging-flexibility-saving').textContent, 'Estimated saving €2.00');
   assert.match($('charging-flexibility-message').textContent, /Connection interrupted/);
   panel.update(status({ ...unavailable, flexibility: { ...unavailable.flexibility, comparisonScope: 'peer-deadline-changed' } }));
-  assert.equal($('charger1-flexibility').children[1].textContent, 'Compare savings');
+  assert.equal($('charger1-flexibility').children[1].textContent, 'Unavailable');
   assert.equal($('charging-flexibility-apply').disabled, true);
   assert.match($('charging-flexibility-note').textContent, /request changed/);
   panel.close();
@@ -467,7 +494,7 @@ test('explicit refresh retains the successful snapshot during work and failure, 
   assert.equal($('charging-flexibility-saving').textContent, 'Estimated saving €2.00');
   assert.match($('charging-flexibility-plans').textContent, /Remaining cost €2.70/);
   assert.equal($('charging-flexibility-message').textContent, '');
-  assert.equal(calls, 4);
+  assert.equal(calls, 3);
   panel.close();
 });
 
@@ -487,7 +514,7 @@ test('a changed session preserves the displayed snapshot while fencing the deadl
     assert.equal($('charging-flexibility-plans').textContent, original);
     assert.equal($('charging-flexibility-saving').textContent, 'Estimated saving €1.60');
     assert.equal($('charging-flexibility-apply').disabled, true);
-    await $('charging-flexibility-apply').listeners.get('click')(); assert.equal(calls.length, 1);
+    await $('charging-flexibility-apply').listeners.get('click')(); assert.equal(calls.length, 0);
     panel.close();
   }
 });
@@ -495,7 +522,7 @@ test('a changed session preserves the displayed snapshot while fencing the deadl
 test('a single-charger comparison or an unchanged peer cost does not repeat a shared saving', async () => {
   for (const chargers of [[flexibilityComparison.chargers[0]],
     [flexibilityComparison.chargers[0], { id: 'charger2', normalCostCents: 200, deferredCostCents: 200 }]]) {
-    const document = documentFixture(), $ = id => document.getElementById(id), item = flexibleCharger();
+    const document = documentFixture(), $ = id => document.getElementById(id), item = flexibleCharger({ preview: { ...flexibilityComparison, chargers, householdSavingsCents: 160 } });
     const panel = createChargingPanel({ document, request: async () => ({ comparison: { ...flexibilityComparison, chargers, householdSavingsCents: 160 } }) });
     panel.update(status(item)); await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
     assert.equal($('charging-flexibility-household').hidden, true);
@@ -1572,6 +1599,7 @@ test('one-day comparison errors and rejected actions explain their cause without
     } });
     panel.update(status(item));
     await $(`${id}-flexibility`).listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+    await $('charging-flexibility-refresh').listeners.get('click')();
     assert.match($('charging-flexibility-message').textContent, /Check the charger controls/);
     assert.doesNotMatch($('charging-flexibility-message').textContent, /unsupported/);
     await $('charging-flexibility-apply').listeners.get('click')();

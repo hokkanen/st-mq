@@ -33,7 +33,7 @@ function indoorEndpointMetadata(sample, usable) {
  * Correction replay may restore preserved measurements behind these gaps; its
  * changed assessments belong in the coefficient chart. Do not rerun today's
  * learner, read mutable configuration or expose private source identifiers. */
-export function addModelInputs({ store, range, now, input, envelopes, indoorLine }) {
+export function addModelInputs({ store, range, now, input, envelopes, indoorLine, activities }) {
   const selected = Object.keys(MODEL_INPUT_INFO).filter(key => envelopes[key] && !FIREPLACE_INPUT_NAMES.includes(key));
   const stats = { records: 0, rejectedIntervals: 0, basis: 'immutable-learning-journal' };
   if (!selected.length) return stats;
@@ -62,6 +62,7 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
     // side; clipping a saved interval first would turn its cubic into a hold.
     const a = Math.max(start, line.contextFrom ?? range.from), b = Math.min(end, line.contextTo ?? range.to, now);
     if (b <= a) return;
+    activities?.[key]?.add(a, b, value);
     if (lastEnd.has(key) && a > lastEnd.get(key)) line.add(lastEnd.get(key), null);
     line.add(a, value, metadata); line.add(b - 1, value, metadata);
     lastEnd.set(key, b);

@@ -460,9 +460,12 @@ temporarily bias calculated headroom; source clocks retain their original meanin
 No previously unobserved periods are backfilled.
 
 Queries are bounded by the requested period and a finite decision budget. Missing
-coverage, invalid records and conflicting overlaps remain unknown. Omitted detail
+coverage, invalid records and conflicting overlaps remain unknown. Omitted numeric line detail
 in dense selections remains a gap with an explanation to zoom in; modes and
 fallback boundaries are never averaged into a misleading continuous allowance.
+The allowance-basis bar streams the same selected history once and summarizes
+the entire period by state occupancy when exact intervals exceed its display
+budget; the numeric line keeps its separate bounded exact-decision budget.
 The two allowance histories do not expire with unsaved charging-session reports.
 They participate in ordinary current-format backup, recovery and inventory.
 
@@ -481,7 +484,8 @@ basis. All three phases are required. This derived maximum adds no property
 recording stream. A matching bar identifies the highest phase using the existing
 L1/L2/L3 colours. It uses original phase groups before display reduction, retains
 voltage-change boundaries, and shows the lowest phase number for ties with all
-tied phases in its details. Missing evidence and omitted detail remain gaps.
+tied phases in its details. Missing evidence remains unknown; dense phase changes
+retain each phase and tie's occupied duration across the entire selected period.
 Temperature context keeps its existing right axis.
 
 Both charger cards show the same compact allowance beside their footer status.
@@ -1088,6 +1092,20 @@ neighboring step edges, missing-data breaks and tooltip provenance. It does not
 apply another drawing reduction or lower precision when a redraw is slow.
 Refinement keeps the initial 800-bucket target and requests an overlapping window
 when its buckets improve on the finest cached covering response by about 20%.
+Activity bars use original state intervals projected during the existing history
+passes, independently of scalar first/last/min/max reduction. `/api/chart`
+provides those intervals in `shading[signal]` for every requested state/code
+series. The browser never reconstructs them from reduced numeric points.
+Adjacent equal states coalesce; more than twice the requested bucket count
+switches to bounded per-state duration summaries. Open-ended alarm codes retain
+at most 32 individual summary categories plus an explicitly mixed-code category.
+A summary's vertical colour shares represent the fraction of its display interval
+occupied by each state; uncovered time remains unfilled. Uniform known states
+fill the whole strip. Tooltip times on summaries identify display intervals, not
+exact transitions; zoom requests original intervals again. Isolated observations
+remain points with unknown duration. Segment borders do not consume narrow fills.
+This projection adds no recording, migrations, device reads or per-bar queries.
+
 All series and activity tracks use one complete response at that resolution;
 late coarser responses cannot replace finer covering data. Expired detail stays
 visible while it refreshes. Aligned stepped load and phase fills are drawn in one

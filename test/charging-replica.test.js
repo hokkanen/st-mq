@@ -68,6 +68,9 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   view.chargers[0].requiredGridKwh -= 2;
   view.chargers[0].progress = { creditedGridKwh: 2, remainingGridKwh: view.chargers[0].requiredGridKwh,
     basis: { source: 'integrated-measured-power', lastMeasuredAt: snapshotAt - 10_000 } };
+  view.chargers[0].flexibility = { comparisonPending: false, refreshReason: null,
+    preview: { available: true, at: snapshotAt - 10_000, estimated: true,
+      normalCostCents: 300, deferredCostCents: 200, savingsCents: 100 } };
   const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 7, chargers: {
     charger1: { association: 'synthetic-association', plan }, charger2: { association: 'synthetic-second-association', plan: null },
   }, view }, ownership);
@@ -91,6 +94,7 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   assert.equal(charger1.configuration.efficiency, .925, 'The current viewer must not replace a recorded primary energy assumption');
   assert.equal(charger1.requiredGridKwh, view.chargers[0].requiredGridKwh);
   assert.deepEqual(charger1.progress, view.chargers[0].progress, 'Measured energy credit stays frozen at publication');
+  assert.deepEqual(charger1.flexibility, view.chargers[0].flexibility, 'The completed comparison retains its original estimate time');
   assert.deepEqual(charger1.automaticSoc, automaticSoc);
   assert.equal(charger2.plan, null);
   assert.equal(charger2.values.soc.value, 67, 'The common charger view retains actual recorded provider telemetry');

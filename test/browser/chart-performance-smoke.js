@@ -9,19 +9,23 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer as createViteServer } from 'vite';
 import { Store } from '../../src/storage/store.js';
+import { seedChartActivityFixture, seedChartActivityCatalogueFixture, ACTIVITY_FIXTURE_SIGNALS } from '../../scripts/lib/chart-activity-fixture.js';
 import { seedChartPerformanceFixture, CHART_PERFORMANCE_NOW as now } from '../../scripts/lib/chart-performance-fixture.js';
 
 const argv = process.argv.slice(2), option = (name, fallback) => argv.includes(name) ? argv[argv.indexOf(name) + 1] : fallback;
 const source = resolve(option('--source', '.')), baseline = argv.includes('--baseline');
+const indicatorsOnly = argv.includes('--indicators-only'), catalogueOnly = argv.includes('--catalogue-only'), recordBroken = argv.includes('--record-broken-indicators');
 const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-browser-performance-'));
 const profile = join(directory, 'profile'), artifacts = mkdtempSync(join(tmpdir(), 'stmq-chart-performance-shots-'));
 const load = path => import(pathToFileURL(join(source, path)));
 const [{ Engine }, { loadConfig }, { createAppServer }, { createChartService }] = await Promise.all([
   load('src/app/engine.js'), load('src/app/config.js'), load('src/app/server.js'), load('src/app/chart-service.js')]);
 const store = new Store(join(directory, 'fixture.sqlite'));
-const fixture = seedChartPerformanceFixture(store, { days: 35 });
+const fixture = catalogueOnly ? seedChartActivityCatalogueFixture(store) : indicatorsOnly ? { days: 2, basis: 'dense-state-boundaries' } : seedChartPerformanceFixture(store, { days: 35 });
+if (indicatorsOnly) seedChartActivityFixture(store);
 const config = { ...loadConfig({ XDG_CONFIG_HOME: directory }, directory), input: 'providers', connections: {} };
-const engine = new Engine({ store, config, clock: () => now });
+const fixtureNow = catalogueOnly ? fixture.to : now;
+const engine = new Engine({ store, config, clock: () => fixtureNow });
 const service = createChartService({ store });
 const server = createAppServer({ store, engine, chartService: service });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -34,6 +38,8 @@ const html = readFileSync(join(source, 'chart/index.html'), 'utf8')
 const moduleSource = `import {createHistoryChart} from '/history-chart.js';
 import Chart from 'chart.js/auto';
 import * as network from '/network.js';
+import {activityTracks,createChartOverlays} from '/chart-overlays.js';
+import {defaultPalette} from '/history-model.js';
 ${baseline ? '' : "import {fetchChartResponse} from '/chart-request.js';"}
 document.body.dataset.authenticated='true';
 for(const panel of document.querySelectorAll('main > section')) if(!panel.classList.contains('history-panel')) panel.hidden=true;
@@ -44,12 +50,26 @@ const api=async(path,options={})=>{
   const {response,result}=await receive(path,{signal:options.signal},{...options,onProgress:p=>{progress.push(p);options.onProgress?.(p);}});
   if(!response.ok) throw new Error(result.error??'Fixture request failed'); return result;
 };
-window.fixtureStatus={now:${now},input:'providers',contract:null,recording:{historyRevision:1}};
+window.fixtureStatus={now:${fixtureNow},input:'providers',contract:null,recording:{historyRevision:1}};
 window.chart=createHistoryChart({api});
 window.fixtureGraph=()=>Chart.getChart(document.getElementById('history'));
 window.frames=[];let last=performance.now();function frame(at){frames.push(at-last);last=at;requestAnimationFrame(frame);}requestAnimationFrame(frame);
 window.setDates=(start,end)=>{const a=document.getElementById('date-start'),b=document.getElementById('date-end');a.value=start;a.dispatchEvent(new Event('change'));if(end!==start){b.value=end;b.dispatchEvent(new Event('change'));}};
 window.chooseView=key=>{document.getElementById('chart-series-toggle').click();document.querySelector('[data-view-key="'+key+'"]').click();};
+window.auditBuiltIn=async key=>{
+  if(!window.auditPayload){
+    const canvas=document.getElementById('history'),v=canvas.dataset;
+    const query='start=2026-10-05&end=2026-10-05&points=100&viewFrom='+v.viewFrom+'&viewTo='+v.viewTo;
+    const [control,garage,charging]=await Promise.all(['control','garage','charging_currents'].map(view=>api('/api/chart?'+query+'&view='+view)));
+    window.auditPayload={...control,shading:{...control.shading,...garage.shading,...charging.shading}};
+  }
+  window.auditOverlay?.close();
+  const canvas=document.getElementById('history'),track=activityTracks.find(row=>row.key===key);
+  window.auditOverlay=createChartOverlays({canvas,getChart:fixtureGraph,getPayload:()=>auditPayload,
+    getView:()=>({from:Number(canvas.dataset.viewFrom),to:Number(canvas.dataset.viewTo)}),getPalette:()=>defaultPalette,getTracks:()=>[track]});
+  document.getElementById('chart-series-selected').textContent=track.label;
+  auditOverlay.render();
+};
 window.ready=chart.refresh(fixtureStatus).catch(error=>{errors.push(error.message);throw error;});`;
 try {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -124,6 +144,86 @@ try {
     measurements.push({ name, elapsedMs: Math.round(performance.now() - started),
       ...(await evaluate('({maxFrameGapMs:Math.round(Math.max(0,...frames)),framesOver50ms:frames.filter(ms=>ms>50).length,drawMs:Number(document.getElementById("history").dataset.drawMs)})')) });
   };
+  if (indicatorsOnly || catalogueOnly) {
+    await evaluate(catalogueOnly?"setDates('2026-10-05','2026-10-05')":"setDates('2026-10-05','2026-10-06')");
+    await until(`document.getElementById('history').dataset.ready==='true'&&document.getElementById('history').dataset.rangeStart==='2026-10-05'&&document.getElementById('history').dataset.rangeEnd==='${catalogueOnly ? '2026-10-05' : '2026-10-06'}'`);
+    const coverage = key => evaluate(`(() => {
+      const row=document.querySelector('[data-activity-key="${key}"]'), track=row.querySelector('.mode-track');
+      const segments=[...track.querySelectorAll('.mode-segment')];
+      return {segments:segments.length,coveragePercent:segments.reduce((total,node)=>total+parseFloat(node.style.width)*(node.style.height?parseFloat(node.style.height)/100:1),0),
+        border:segments[0]?getComputedStyle(segments[0]).borderRightWidth:null,trackWidth:track.getBoundingClientRect().width};
+    })()`);
+    const paintedColumns = async key => {
+      const bounds=await evaluate(`(() => {const row=document.querySelector('[data-activity-key="${key}"] .mode-track'),r=row.getBoundingClientRect();
+        return {x:r.left+1,y:r.top+1,width:Math.floor(r.width-2),height:Math.floor(r.height-2),background:getComputedStyle(row).backgroundColor};})()`);
+      const {background,...clip}=bounds;
+      const shot=await send('Page.captureScreenshot',{format:'png',clip:{...clip,scale:1}});
+      return evaluate(`(async()=>{const bitmap=await createImageBitmap(await(await fetch('data:image/png;base64,${shot.data}')).blob());
+        const canvas=document.createElement('canvas');canvas.width=bitmap.width;canvas.height=bitmap.height;const ctx=canvas.getContext('2d');
+        ctx.fillStyle=${JSON.stringify(background)};ctx.fillRect(0,0,1,1);const bg=ctx.getImageData(0,0,1,1).data;
+        ctx.drawImage(bitmap,0,0);const pixels=ctx.getImageData(0,0,canvas.width,canvas.height).data;let painted=0;
+        for(let x=0;x<canvas.width;x++){if([.25,.5,.75].some(f=>{const i=(Math.floor((canvas.height-1)*f)*canvas.width+x)*4;
+          return Math.max(...[0,1,2].map(k=>Math.abs(pixels[i+k]-bg[k])))>8;}))painted++;}
+        bitmap.close();return painted/canvas.width;})()`);
+    };
+    if (catalogueOnly) {
+      const { EXPLORER_SERIES }=await import('../../chart/series-explorer.js');
+      const { activityTracks }=await import('../../chart/chart-overlays.js');
+      await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+      await evaluate("document.documentElement.dataset.theme='dark';chart.updateTheme();true");
+      for (const row of EXPLORER_SERIES.filter(row=>['state','code'].includes(row.unit))) {
+        await measure(`catalogue/${row.key}`, `document.getElementById('chart-series-toggle').click();document.getElementById('chart-series-mode-series').click();document.querySelector('[data-series-key="${row.key}"]').click();true`,
+          `document.getElementById('history').dataset.ready==='true'&&document.getElementById('history').dataset.series==='${row.key}'`);
+        if(!await evaluate("document.querySelector('.history-panel').dataset.fullscreen==='true'"))await evaluate("document.getElementById('chart-fullscreen').click();true");
+        await evaluate("document.getElementById('history').focus();document.getElementById('history').dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));for(let i=0;i<10;i++)document.getElementById('history').dispatchEvent(new KeyboardEvent('keydown',{key:'+',bubbles:true}));true");
+        await until("Number(document.getElementById('history').dataset.zoom)>100&&document.getElementById('chart-detail-status').dataset.state==='idle'&&!document.querySelector('.chart-gesture-preview')");
+        await evaluate("document.getElementById('chart-navigator').value='0';document.getElementById('chart-navigator').dispatchEvent(new Event('input',{bubbles:true}));true");
+        await until(`Number(document.getElementById('history').dataset.viewFrom)<${fixture.from + 10000}&&document.getElementById('chart-detail-status').dataset.state==='idle'&&!document.querySelector('.chart-gesture-preview')`);
+        const state=await coverage(row.signal),painted=await paintedColumns(row.signal);
+        measurements.at(-1).bar={...state,paintedColumnFraction:painted};
+        assert(state.coveragePercent>99.8,`${row.key}: all original coverage renders`);assert(painted>.98,`${row.key}: screenshot colour remains visible`);
+        const shot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(join(artifacts,`catalogue-${row.key}.png`),Buffer.from(shot.data,'base64'));
+      }
+      for(const track of activityTracks){
+        await evaluate(`auditBuiltIn('${track.key}')`);await pause(100);
+        const state=await coverage(track.key),painted=await paintedColumns(track.key);
+        measurements.push({name:`built-in/${track.key}`,bar:{...state,paintedColumnFraction:painted}});
+        assert(state.coveragePercent>99.8,`${track.key}: complete built-in coverage`);assert(painted>.98,`${track.key}: built-in screenshot colour`);
+        const shot=await send('Page.captureScreenshot',{format:'png'});writeFileSync(join(artifacts,`built-in-${track.key}.png`),Buffer.from(shot.data,'base64'));
+      }
+      await evaluate('auditOverlay.close();true');
+    } else {
+    for (const [width,height] of [[1440,1000],[390,844]]) for (const theme of ['dark','light']) {
+      await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
+      await evaluate(`document.documentElement.dataset.theme='${theme}';chart.updateTheme();true`);
+      for (const key of ACTIVITY_FIXTURE_SIGNALS) {
+        await measure(`${width}/${theme}/${key}`, `(() => {
+          document.getElementById('chart-series-toggle').click();document.getElementById('chart-series-mode-series').click();
+          document.querySelector('[data-series-key="${key}"]').click();return true;
+        })()`, `document.getElementById('history').dataset.ready==='true'&&document.getElementById('history').dataset.series==='${key}'`);
+        await evaluate("document.getElementById('history').focus();document.getElementById('history').dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));true");
+        await until("Number(document.getElementById('history').dataset.zoom)===1&&!document.querySelector('.chart-gesture-preview')");
+        const initial=await coverage(key);measurements.at(-1).bar=initial;
+        if (!recordBroken) {assert(initial.coveragePercent>99.99,`${key}: recorded coverage survives the overview`);assert.equal(initial.border,'0px');}
+        await evaluate("document.getElementById('chart-fullscreen').click();true");
+        await until("document.querySelector('.history-panel').dataset.fullscreen==='true'&&!document.querySelector('.chart-gesture-preview')");
+        const overview=await send('Page.captureScreenshot',{format:'png'});
+        writeFileSync(join(artifacts,`${key}-${width}-${theme}-overview.png`),Buffer.from(overview.data,'base64'));
+        const before=await coverage(key);
+        measurements.at(-1).bar.paintedColumnFraction=await paintedColumns(key);
+        if(!recordBroken)assert(measurements.at(-1).bar.paintedColumnFraction>.98,`${key}: real screenshot pixels show continuous recorded colour`);
+        await measure(`${width}/${theme}/${key}/zoom`, "document.getElementById('history').focus();for(let i=0;i<8;i++)document.getElementById('history').dispatchEvent(new KeyboardEvent('keydown',{key:'+',bubbles:true}));true",
+          "Number(document.getElementById('history').dataset.zoom)>2&&document.getElementById('chart-detail-status').dataset.state==='idle'&&!document.querySelector('.chart-gesture-preview')");
+        const zoomed=await coverage(key);measurements.at(-1).bar=zoomed;
+        if (!recordBroken) {assert(zoomed.coveragePercent>99.99,`${key}: zoom preserves coverage`);assert(Math.abs(before.coveragePercent-zoomed.coveragePercent)<.01);}
+        const shot=await send('Page.captureScreenshot',{format:'png'});
+        writeFileSync(join(artifacts,`${key}-${width}-${theme}-zoomed.png`),Buffer.from(shot.data,'base64'));
+        await evaluate("document.getElementById('chart-fullscreen').click();true");
+        await until("document.querySelector('.history-panel').dataset.fullscreen==='false'");
+      }
+    }    }
+
+  } else {
   for (const [name, start, end] of [['day', '2026-10-06', '2026-10-06'], ['week', '2026-09-30', '2026-10-06']]) {
     await measure(name, `setDates('${start}','${end}')`, `document.getElementById('history').dataset.ready==='true'&&document.getElementById('history').dataset.rangeStart==='${start}'&&document.getElementById('history').dataset.rangeEnd==='${end}'`);
     await measure(`${name}/unchanged`, 'chart.refresh(fixtureStatus)', "document.getElementById('history').dataset.ready==='true'");
@@ -158,6 +258,7 @@ try {
     assert(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'), `${width}px layout fits`);
     const shot = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(join(artifacts, `${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
+  }
   }
   assert.deepEqual(errors, [], 'No browser exceptions'); assert.deepEqual(await evaluate('errors'), []);
   console.log(JSON.stringify({ result: 'chart-performance-browser-passed', source, baseline, fixture, measurements,

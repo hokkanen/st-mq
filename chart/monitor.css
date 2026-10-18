@@ -476,7 +476,7 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 .mode-history { font-size: 10px; color: var(--muted); margin: 6px 0; }
 .mode-history p { font-size: 10px; margin: 3px 0; }
 .mode-track { height: 22px; position: relative; background: var(--surface-soft); border: 1px solid var(--border); overflow: hidden; touch-action: none; cursor: crosshair; user-select: none; }
-.mode-segment { position: absolute; height: 100%; background: var(--chart-outdoor); border-right: 1px solid var(--surface); }
+.mode-segment { position: absolute; height: 100%; background: var(--chart-outdoor); }
 .chart-legend-swatch[data-kind="strip"], .mode-segment { background-image: repeating-linear-gradient(0deg, transparent 0 3px, var(--surface) 3px 4px); }
 /* The comparison panel uses an ordinary button and hidden wrapper: reopening
    it must not depend on an appliance browser's native nested-details painting. */
@@ -1252,7 +1252,6 @@ details.energy-check-details { margin: 8px 0 0; border: 0; font-size: 12px; line
 .equipment-device .equipment-source[data-state="pending"]::before { background: var(--muted); }
 .equipment-device .equipment-source[data-state="attention"] { color: var(--stale); }
 .equipment-device-status { font-size: 11px; margin: 8px 0 12px; color: var(--muted); }
-.equipment-device-status[data-state="available"] { color: var(--chart-indoor); }
 .equipment-device-status[data-state="attention"] { color: var(--stale); }
 .equipment-readings { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; margin: 12px 0 0; font-size: 11px; align-items: baseline; }
 .equipment-readings dt { color: var(--muted); overflow-wrap: anywhere; }
@@ -1628,7 +1627,7 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .floor-preheat-panel .equipment-fold > summary small { color: var(--muted); font-size: 10px; font-weight: 400; text-align: right; }
 .floor-preheat-downloads { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 16px 0; }
 .floor-preheat-downloads button { margin: 0; max-width: 100%; font-size: 12px; }
-.floor-preheat-panel a, .floor-setup-link a { color: var(--accent); text-underline-offset: 3px; }
+.floor-preheat-panel a, .floor-setup-link a, .equipment-control-link a { color: var(--accent); text-underline-offset: 3px; }
 .floor-setup-link { margin: 12px 0; font-size: 11px; line-height: 1.6; }
 .floor-commissioning-steps { margin: 16px 0 0; padding-left: 22px; }
 .floor-commissioning-steps > li { padding-left: 4px; margin: 0 0 20px; }

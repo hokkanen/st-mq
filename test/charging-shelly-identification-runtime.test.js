@@ -14,8 +14,8 @@ const START = 1_800_000_000_000, MINUTE = 60_000, FUTURE = START + 60 * MINUTE;
 
 // Exercise the real MQTT RPC adapter, controller, vehicle ingestion and runtime.
 // Only the broker/device and economic price result are synthetic.
-async function fixture(t, { charging = true, retainedOnly = false, enabled = true, inserted = false, durable = false } = {}) {
-  let now = START, runtime, failSave = false, vehicleAllows = charging || inserted, planOverride = null;
+async function fixture(t, { charging = true, retainedOnly = false, enabled = true, inserted = false, durable = false, initialMeterFresh = true } = {}) {
+  let now = START, runtime, failSave = false, vehicleAllows = charging || inserted, planOverride = null, meterFresh = initialMeterFresh;
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: { mqtt: { address: 'mqtt://synthetic.invalid', user: 'synthetic-user' } },
     charging: { vehicles: { bmw: { mqttTopic: 'synthetic/identification/bmw' } }, chargers: { charger2: {
@@ -46,7 +46,7 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
   const schedules = { rev: 1, jobs: [] }, serviceStatus = { state: 'running' };
   const service = { id: 0, auto_balance: { enable: false }, auto_charge: !inserted };
   const components = Object.fromEntries(Object.keys(roles).map(role => [role, { id: ids[role], owner: 'service:0', access: 'crw', options: ['charger_free', 'charger_insert', 'charger_charging', 'charger_pause', 'charger_wait', 'charger_end'], min: 6, max: 16, meta: { ui: { step: 1 } } }]));
-  const status = role => ({ value: structuredClone(fields[role].value), last_update_ts: (role === 'phase_info' ? now : fields[role].at) / 1000 });
+  const status = role => ({ value: structuredClone(fields[role].value), last_update_ts: (role === 'phase_info' ? meterFresh ? now : START - 61_000 : fields[role].at) / 1000 });
   client.subscribe = (topics, options, cb) => cb(null, topics.map(topic => ({ topic, qos: 0 })));
   client.publish = (topic, payload, options, cb) => {
     const frame = JSON.parse(payload), role = frame.params.role;
@@ -106,7 +106,7 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
   const item = () => runtime.chargers.charger2;
   const card = () => runtime.status().chargers.find(row => row.id === 'charger2');
   return { get runtime() { return runtime; }, get now() { return now; }, adapter, store, fields, writes, schedules, serviceStatus,
-    item, card, publish, setNow: value => { now = value; }, setFail: value => { failSave = value; },
+    item, card, publish, meter() { meterFresh = true; }, setNow: value => { now = value; }, setFail: value => { failSave = value; },
     setPlan: value => { planOverride = structuredClone(value); },
     async update() { await runtime.reconcile('charger2'); return item().controller.status(); },
     async restart() { runtime.persist(); await runtime.close(); await create(); },
@@ -124,10 +124,7 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
 const stops = f => f.writes.filter(row => row.params.role === 'start_charging' && row.params.value === false);
 const starts = f => f.writes.filter(row => row.params.role === 'start_charging' && row.params.value === true);
 
-for (const boundary of ['healthy burst', 'pending native work', 'queued departure', 'failed save', 'original deadline', 'independent Charge now'])
-test(`Tesla MQTT admission preserves the original native minimum-current attempt at ${boundary}`, async t => {
-  const f = await fixture(t, { charging: false, retainedOnly: true, durable: true });
-  await f.update();
+async function teslaReader(t, f) {
   const runtime = f.runtime, client = new EventEmitter();
   client.subscribe = (topic, _options, done) => done(null, [{ topic, qos: 0 }]);
   client.publish = (_topic, _payload, _options, done) => done?.();
@@ -142,6 +139,76 @@ test(`Tesla MQTT admission preserves the original native minimum-current attempt
   t.after(() => reader.close({ restore: false }));
   client.emit('connect'); await reader.ready();
   const send = (field, value) => client.emit('message', `teslamate/cars/1/${field}`, Buffer.from(String(value)), {});
+  return send;
+}
+
+test('Shelly starts its bounded probe with an old idle meter and identifies only after new physical readings', async t => {
+  const f = await fixture(t, { charging: false, initialMeterFresh: false });
+  await f.update();
+  const original = structuredClone(f.item().identification);
+  assert.equal(original.action, 'allow'); assert.ok(original.probe);
+  assert.equal(original.chargePowerKw, null, 'An old zero sample cannot become a fresh zero measurement');
+  assert.equal(f.card().vehicle.id, null);
+  f.setNow(f.now + 1000); await f.update();
+  assert.deepEqual(f.item().identification.probe, original.probe);
+  assert.equal(f.item().identification.action, 'allow');
+  assert.equal(f.item().identification.chargePowerKw, null);
+  f.meter(); f.start(); await f.update();
+  f.setNow(f.now + 1000); await f.update();
+  assert.equal(f.item().identification.probe.deadlineAt, original.probe.deadlineAt);
+  assert.equal(f.item().identification.phase, 'pausing'); assert.ok(stops(f).length);
+  await f.confirm();
+  assert.equal(f.card().vehicle.id, 'bmw'); assert.equal(f.item().identification.phase, 'completed');
+  assert.equal(f.fields.start_charging.value, false, 'Identification returns to the economic wait');
+});
+
+test('Shelly awaiting its first fresh meter stops at the original deadline without claiming a physical stop', async t => {
+  const f = await fixture(t, { charging: false, initialMeterFresh: false });
+  await f.update(); const original = structuredClone(f.item().identification);
+  assert.equal(original.action, 'allow'); assert.equal(original.chargePowerKw, null);
+  f.setNow(original.probe.deadlineAt); await f.update();
+  assert.equal(f.item().identification.reason, 'probe-time-limit');
+  assert.equal(f.item().identification.action, 'pause'); assert.ok(stops(f).length);
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.item().identification.pause, null, 'Native Stop with old power cannot supply measured stop proof');
+  assert.equal(f.card().vehicle.id, null);
+  const startsBefore = starts(f).length;
+  f.setNow(f.item().identification.pauseUntil); await f.update(); await f.update();
+  assert.equal(f.item().identification.phase, 'inconclusive');
+  assert.equal(f.item().identification.probe.deadlineAt, original.probe.deadlineAt);
+  assert.equal(starts(f).length, startsBefore);
+  await f.restart(); await f.update();
+  assert.equal(f.item().identification.phase, 'inconclusive');
+  assert.equal(f.item().identification.probe.deadlineAt, original.probe.deadlineAt);
+  assert.equal(starts(f).length, startsBefore, 'Restart cannot renew a meterless probe');
+});
+
+test('Shelly confirms its 6 A preparation before a probe with no fresh meter, retaining restoration until measured stop', async t => {
+  const f = await fixture(t, { charging: false, retainedOnly: true, durable: true, initialMeterFresh: false });
+  await f.update();
+  const send = await teslaReader(t, f);
+  f.setNow(f.now + 1000);
+  for (const [field, value] of Object.entries({ geofence: 'Home', plugged_in: true, healthy: true,
+    state: 'online', charging_state: 'Stopped', charger_actual_current: 0, charger_power: 0 })) send(field, value);
+  await f.store.runWrite(() => {}); await f.update();
+  const original = structuredClone(f.item().identification), currentTest = f.item().controller.status().currentTest;
+  assert.equal(currentTest?.phase, 'active'); assert.equal(f.fields.current_limit.value, 6);
+  assert.ok(currentTest.confirmedAt <= original.probe.startedAt);
+  assert.equal(original.action, 'allow'); assert.equal(original.chargePowerKw, null);
+  f.setNow(original.probe.deadlineAt); await f.update();
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.fields.current_limit.value, 6, 'No fresh zero means the higher native setting cannot be restored');
+  assert.equal(f.card().vehicle.id, null);
+  f.meter(); f.setNow(f.now + 1000); await f.update(); await f.update();
+  assert.equal(f.fields.current_limit.value, 12);
+  assert.equal(f.item().identification.probe.deadlineAt, original.probe.deadlineAt);
+});
+
+for (const boundary of ['healthy burst', 'pending native work', 'queued departure', 'failed save', 'original deadline', 'independent Charge now'])
+test(`Tesla MQTT admission preserves the original native minimum-current attempt at ${boundary}`, async t => {
+  const f = await fixture(t, { charging: false, retainedOnly: true, durable: true });
+  await f.update();
+  const runtime = f.runtime, send = await teslaReader(t, f);
   f.setNow(f.now + 1000);
   for (const [field, value] of Object.entries({ geofence: 'Home', plugged_in: true, healthy: true,
     state: 'online', charging_state: 'Stopped', charger_actual_current: 0, charger_power: 0 })) send(field, value);

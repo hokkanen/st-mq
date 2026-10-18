@@ -22,7 +22,9 @@ import { storageStep, admittedReader, setStorageMaintenance, releaseStorageLease
 // A separate read-only SQLite connection keeps reconstruction off the control
 // loop. HTTP callers also transfer worker-encoded bytes instead of cloning and
 // serializing the chart object on the main thread.
-const db = admittedReader(storageStep(() => new DatabaseSync(workerData.dbPath, { readOnly: true })));
+// Small chart rows amortize admission messages across a larger batch. The
+// existing eight-millisecond native-work bound and per-batch release stay intact.
+const db = admittedReader(storageStep(() => new DatabaseSync(workerData.dbPath, { readOnly: true })), { batchRows: 192 });
 db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE;');
 const store = { db, path: workerData.dbPath };
 const contexts = new Map();

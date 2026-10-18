@@ -405,6 +405,7 @@ export class ChargingRuntime {
     this.historyGeneration = 0; this.historyReady = false; this.historyFlights = new Set();
     this.household = []; this.historyAt = null; this.coordination = null; this.closed = false;
     this.plannerService = createChargingPlannerService();
+    this.flexibilityQueue = new Set();
   }
   refreshSettings() {
     this.settings = chargingSettingsFromConfiguration(this.configuration, { priority: this.controls.priority,
@@ -421,7 +422,7 @@ export class ChargingRuntime {
     const streamRevision = this.streamEvidenceRevision;
     const fields = ['controls', 'replan', 'request', 'plan', 'progress', 'supplyEstimate', 'sessionCost', 'vehicleMatch',
       'vehicleEvidence', 'vehicleConflict', 'identification', 'targetState', 'vehicleDisconnect', 'streamEvidence',
-      'forecast', 'newEpisode', 'wasPluggedIn', 'limiterPlanBasis', 'commandBasis', 'priceRecheckAt'];
+      'forecast', 'newEpisode', 'wasPluggedIn', 'limiterPlanBasis', 'commandBasis', 'priceRecheckAt', 'flexibilityPreview'];
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
       copyOwnedValue(Object.fromEntries(fields.map(field => [field, item[field]])))]));
     const feeds = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id,
@@ -616,7 +617,7 @@ export class ChargingRuntime {
     catch { this.physicalTestsError = 'The charging assessment could not be saved.'; }
     view.physicalTests = this.physicalTestsStatus();
     view.chargers = view.chargers.map(charger => ({ ...charger, plan: durablePlan(charger.plan),
-      forecast: durablePlan(charger.forecast), flexibility: { ...charger.flexibility, preview: null } }));
+      forecast: durablePlan(charger.forecast), flexibility: { ...charger.flexibility, comparisonPending: false } }));
     this.recordLimiterHistory(now);
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
       { association: item.association, controls: item.controls, replan: item.replan, request: item.request, plan: durablePlan(item.plan), progress: item.progress, supplyEstimate: item.supplyEstimate,
@@ -2219,6 +2220,8 @@ export class ChargingRuntime {
       const preview = item.flexibilityPreview;
       view.flexibility = { ...flexibility, enabled: forecastEnabled || Boolean(view.request?.flexibility?.activeDefer),
         eligible: reason === null && !this.closed && this.canControl(), reason,
+        comparisonPending: Boolean(item.flexibilityRefresh?.running || item.flexibilityRefresh?.dirty || item.flexibilityRefresh?.dueAt),
+        refreshReason: item.flexibilityRefresh?.reason ?? null,
         preview: preview?.comparison ?? null };
       return view;
     });
@@ -2252,14 +2255,106 @@ export class ChargingRuntime {
           ...(view.id === id ? {} : { deadlineAt: request?.deadlineAt }) };
       }) });
   }
-  flexibilityMarket(now = this.clock()) {
-    const forecast = this.engine.electricityForecast?.snapshot({ now });
-    return digest([priceSnapshot(this.getPlanningPrices(now)), forecast?.enabled, forecast?.available]);
-  }
   getPlanningPrices(now = this.clock()) {
     const forecast = this.engine.electricityForecast?.snapshot({ now });
     if (!forecast?.available) return this.prices;
     return forecastPriceOutlook({ official: this.prices, forecast, contract: this.engine.contract(), now });
+  }
+  refreshFlexibilityComparisons(context, model) {
+    // Reuse normal planning's economic admission, with the comparison's longer
+    // horizon. Do not queue work for raw telemetry or provenance-clock changes.
+    const { now, chargers } = context;
+    this.flexibilityContext = { ...context,
+      scopes: Object.fromEntries(chargers.map(view => [view.id, view.flexibility.comparisonScope])) };
+    const plans = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id, item.plan]));
+    for (const view of chargers) {
+      const item = this.charger(view.id), state = item.flexibilityRefresh ??= {};
+      if (!this.canControl() || !this.historyReady || (!view.flexibility.eligible && !view.flexibility.active)
+        || view.values.connected.value !== true || !(view.requiredGridKwh > 1e-7)) {
+        state.dirty = false; state.dueAt = null; state.pending = null; state.next = null;
+        if (!this.historyReady && !state.model) state.reason = 'planning-unavailable';
+        this.flexibilityQueue.delete(view.id);
+        for (const resolve of state.waiters?.splice(0) ?? []) resolve();
+        continue;
+      }
+      const next = this.flexibilityModel(view, model);
+      state.next = next;
+      const previous = state.running?.model ?? state.model;
+      const change = economicPlanningChange(previous, next, now);
+      const progress = economicProgressChange(previous, next, state.running?.plans ?? state.plans ?? plans, now);
+      const boundary = !state.running && Number.isFinite(state.until) && now >= state.until;
+      const requested = !state.running && state.waiters?.length > 0;
+      if (!change && !progress && !boundary && !requested) {
+        state.dirty = false; state.pending = null; state.dueAt = null;
+        this.flexibilityQueue.delete(view.id);
+        continue;
+      }
+      const imminent = [view.deadlineAt, ...(item.plan?.periods ?? []).flatMap(row => [row.startAt, row.endAt])]
+        .some(at => Number.isFinite(at) && at > now && at <= now + IMMINENT_PLAN_MS);
+      if (!requested && (change === 'soft' || !change && progress)) {
+        const pending = state.pending;
+        const meaningful = !pending?.model || economicPlanningChange(pending.model, next, now)
+          || economicProgressChange(pending.model, next, state.plans ?? plans, now);
+        const key = meaningful ? (state.sequence = (state.sequence ?? 0) + 1) : pending.key;
+        const settling = backgroundPlanDeadline({ now, pending, key, urgent: imminent || boundary });
+        state.pending = settling.pending && { ...settling.pending, model: meaningful ? next : pending.model };
+        state.dueAt = settling.until;
+      } else { state.pending = null; state.dueAt = null; }
+      state.dirty = !state.dueAt;
+      if (state.dirty) this.flexibilityQueue.add(view.id);
+      else this.flexibilityQueue.delete(view.id);
+    }
+  }
+  flexibilityModel(view, model) {
+    // An estimate has session/request-value scope, not command authority. Bare
+    // request revisions and native instruction bookkeeping cannot starve it.
+    const hard = JSON.parse(model.hard);
+    hard.scope = view.flexibility.comparisonScope;
+    return { ...model, end: Math.max(model.end, view.flexibility.deferredReadyByAt ?? model.end),
+      hard: JSON.stringify([hard,
+        view.flexibility.active ? Object.values(this.chargers).map(item =>
+          [item.plan?.periods, item.plan?.allocationTargetAt]) : null]) };
+  }
+  scheduleFlexibilityComparisons() {
+    if (this.closed || this.flexibilityScheduled || this.flexibilityFlight || !this.flexibilityQueue.size) return;
+    this.flexibilityScheduled = setImmediate(() => {
+      this.flexibilityScheduled = null;
+      if (this.closed || !this.canControl() || this.planningFlight || this.backgroundPlanDueAt
+        || this.planningVehicleInputsPending()) return;
+      const id = this.flexibilityQueue.values().next().value;
+      if (!id) return;
+      this.flexibilityQueue.delete(id);
+      const state = this.charger(id).flexibilityRefresh;
+      if (!state?.dirty) { this.scheduleFlexibilityComparisons(); return; }
+      const model = state.next, plans = Object.fromEntries(Object.entries(this.chargers).map(([key, item]) => [key, item.plan]));
+      state.running = { model, plans }; state.dirty = false; state.dueAt = null;
+      const admittedContext = this.flexibilityContext;
+      let interrupted = false;
+      const flight = this.calculateFlexibilityPreview(id).then(result => {
+        const reason = result.refreshReason ?? (result.comparison.available ? null : result.comparison.reason);
+        interrupted = reason === 'comparison-changed';
+        if (interrupted) {
+          state.dirty = Boolean(state.next) && !state.dueAt;
+          if (state.dirty) this.flexibilityQueue.add(id);
+          return result;
+        }
+        state.model = model; state.plans = plans; state.reason = reason;
+        state.until = chargingPlanValidUntil({ now: this.clock(), chargers: this.flexibilityContext.chargers }, result.comparison);
+        return result;
+      }).catch(() => {
+        state.model = model; state.plans = plans; state.until = Infinity;
+        state.reason = 'planning-unavailable';
+      }).finally(() => {
+        state.running = null;
+        if (this.flexibilityFlight === flight) this.flexibilityFlight = null;
+        this.scheduleWakeup();
+        // Control preemption resumes from its next admitted planning pass,
+        // never an immediate retry loop against the occupied worker.
+        if (!interrupted || this.flexibilityContext !== admittedContext) this.scheduleFlexibilityComparisons();
+      });
+      state.flight = flight; this.flexibilityFlight = flight;
+      void flight.then(result => { for (const resolve of state.waiters?.splice(0) ?? []) resolve(result); });
+    });
   }
   async calculateFlexibilityPreview(id) {
     const now = this.clock(), views = this.views(now), view = views.find(charger => charger.id === id), item = this.charger(id);
@@ -2283,8 +2378,8 @@ export class ChargingRuntime {
     const selected = context.chargers.find(charger => charger.id === id);
     if (selected?.association !== view.association || selected.request?.sessionId !== view.request?.sessionId)
       return unavailable('connection-changed');
-    const market = this.flexibilityMarket(now);
-    const comparisonContext = { ...context, now, chargers: views, prices: this.getPlanningPrices(now),
+    const comparisonContext = { now, chargers: views, prices: this.getPlanningPrices(now),
+      household: context.household, supply: context.supply, priority: context.priority,
       approvedTargets: Object.fromEntries(views.map(view => [view.id,
         withAllocationTarget(view, this.charger(view.id), now, true).allocationTargetAt])),
       approvedPeriods: Object.fromEntries(views.flatMap(view => {
@@ -2296,13 +2391,35 @@ export class ChargingRuntime {
           && (period.endAt === null || period.endAt > now));
         return running && now - running.startAt < MIN_CHARGING_PERIOD_MS ? [[view.id, confirmedPeriods(view, now)]] : [];
       })) };
+    const model = this.flexibilityModel(view, economicPlanningState(comparisonContext, this.planningScope(views)));
+    const plans = Object.fromEntries(Object.entries(this.chargers).map(([key, value]) => [key, value.plan]));
     const comparison = await this.plannerService.compare(comparisonContext,
       { chargerId: id, normalReadyByAt: flexibility.normalReadyByAt, deferredReadyByAt: flexibility.deferredReadyByAt });
-    if (!comparison || this.closed || !this.canControl() || market !== this.flexibilityMarket()
-      || this.clock() >= flexibility.normalReadyByAt || scope !== this.flexibilityScope(this.views(), id))
+    const current = () => {
+      if (this.closed || !this.canControl() || !this.historyReady || this.clock() >= flexibility.normalReadyByAt) return false;
+      const at = this.clock(), currentViews = this.views(at), currentView = currentViews.find(charger => charger.id === id);
+      if (scope !== currentView.flexibility.comparisonScope) return false;
+      const currentContext = { ...this.flexibilityContext, now: at, chargers: currentViews, prices: this.getPlanningPrices(at) };
+      const currentModel = this.flexibilityModel(currentView, economicPlanningState(currentContext, this.planningScope(currentViews)));
+      return !economicPlanningChange(model, currentModel, at) && !economicProgressChange(model, currentModel, plans, at)
+        && at < chargingPlanValidUntil(comparisonContext, comparison);
+    };
+    if (!comparison || !current())
       return unavailable('comparison-changed');
     if (!comparison.available) return unavailable(comparison.reason, comparison);
-    item.flexibilityPreview = { scope, comparison: immutableValue(comparison) };
+    let published = false;
+    await this.write(() => {
+      if (!current()) return;
+      item.flexibilityPreview = { scope, comparison: immutableValue(comparison) };
+      const refresh = item.flexibilityRefresh, previousReason = refresh?.reason;
+      if (refresh) {
+        refresh.reason = null;
+        this.store.afterRollback(() => { refresh.reason = previousReason; });
+      }
+      this.persist();
+      this.store.afterCommit(() => { published = true; });
+    }, { priority: 'background' });
+    if (!published) return unavailable('comparison-changed');
     return { flexibility: { ...flexibility, preview: comparison }, comparison, refreshReason: null };
   }
   async previewFlexibility(id, input) {
@@ -2312,7 +2429,19 @@ export class ChargingRuntime {
     this.checkedSession(id, input);
     await this.updatePlanForControl();
     this.checkedSession(id, input);
-    return this.calculateFlexibilityPreview(id);
+    const item = this.charger(id), view = this.views().find(charger => charger.id === id), state = item.flexibilityRefresh;
+    if (!state || !this.historyReady || !view.flexibility.active && !view.flexibility.eligible)
+      return this.calculateFlexibilityPreview(id);
+    const unavailable = { flexibility: view.flexibility, comparison: { available: false, reason: 'planning-unavailable' },
+      refreshReason: 'planning-unavailable' };
+    if (state.running) return state.flight.then(result => result ?? unavailable);
+    if (!state.dirty && !state.dueAt && view.flexibility.preview && !state.reason)
+      return { flexibility: view.flexibility, comparison: view.flexibility.preview, refreshReason: null };
+    state.dirty = true; state.dueAt = null;
+    this.flexibilityQueue.add(id);
+    const pending = new Promise(resolve => (state.waiters ??= []).push(resolve));
+    this.scheduleFlexibilityComparisons();
+    return pending.then(result => result ?? unavailable);
   }
   async setFlexibility(id, input) {
     const changed = await this.write(() => {
@@ -2377,6 +2506,7 @@ export class ChargingRuntime {
         if (this.planningFlight === flight) this.planningFlight = null;
         if (this.closed) for (const waiter of this.planningWaiters.values()) waiter.resolve();
         else if (this.planningRequest) void this.updatePlan(this.clock(), this.planningRequest).catch(() => {});
+        else this.scheduleFlexibilityComparisons();
       });
     }
     return completion;
@@ -2547,6 +2677,8 @@ export class ChargingRuntime {
     this.household = immutableValue(this.household);
     const economicState = economicPlanningState({ now, chargers: views, supply, household: this.household,
       prices: planningPrices, priority: this.settings.priority }, this.planningScope(views));
+    this.refreshFlexibilityComparisons({ now, chargers: views, supply, household: this.household,
+      prices: planningPrices, priority: this.settings.priority }, economicState);
     const economicChange = economicPlanningChange(this.lastEconomicSearch, economicState, now);
     const plans = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id, item.plan]));
     const progressChanged = economicProgressChange(this.lastEconomicProgress ?? this.lastEconomicSearch, economicState, plans, now);
@@ -2937,9 +3069,9 @@ export class ChargingRuntime {
     if (!published) return false;
     if (current() && this.historyReady) {
       const contextNow = this.clock(), contextViews = this.views(contextNow);
-      this.flexibilityContext = copyOwnedValue({ now: contextNow, prices: this.getPlanningPrices(contextNow),
-        household: this.household, supply, priority: this.settings.priority, chargers: contextViews,
-        scopes: Object.fromEntries(contextViews.map(view => [view.id, this.flexibilityScope(contextViews, view.id, contextNow)])) });
+      const context = { now: contextNow, prices: this.getPlanningPrices(contextNow),
+        household: this.household, supply, priority: this.settings.priority, chargers: contextViews };
+      this.refreshFlexibilityComparisons(context, economicPlanningState(context, this.planningScope(contextViews)));
     }
     return true;
   }
@@ -2990,7 +3122,8 @@ export class ChargingRuntime {
   }
   scheduleWakeup(now = this.clock()) {
     if (this.closed) return;
-    const boundaries = [this.backgroundPlanDueAt, ...(this.coordination?.allocations ?? []).flatMap(row => [row.start, row.end])
+    const boundaries = [this.backgroundPlanDueAt, ...Object.values(this.chargers).flatMap(item =>
+      [item.flexibilityRefresh?.dueAt, item.flexibilityRefresh?.until]), ...(this.coordination?.allocations ?? []).flatMap(row => [row.start, row.end])
       .filter(Number.isFinite).map(Math.ceil),
       ...Object.values(this.chargers).flatMap(item => {
         const control = item.controller?.status();
@@ -3610,12 +3743,16 @@ export class ChargingRuntime {
     for (const feed of Object.values(this.vehicleFeeds)) feed.sourcePending.clear();
     this.closed = true; this.writeAbort.abort(); clearInterval(this.timer); clearTimeout(this.boundaryTimer); clearTimeout(this.streamTimer);
     clearImmediate(this.planningAdmissionScheduled);
+    clearImmediate(this.flexibilityScheduled);
+    this.flexibilityQueue.clear();
+    for (const item of Object.values(this.chargers)) for (const resolve of item.flexibilityRefresh?.waiters?.splice(0) ?? []) resolve();
     for (const waiter of this.planningWaiters?.values() ?? []) waiter.resolve();
     this.planningWaiters?.clear();
   }
   async close() {
     this.beginShutdown();
     await this.plannerService.close();
+    await this.flexibilityFlight;
     await this.planningFlight?.catch(() => {});
     await this.stateRefreshFlight?.catch(() => {});
     await this.streamFlight?.catch(() => {});

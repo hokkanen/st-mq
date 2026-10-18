@@ -13,62 +13,22 @@ test('state rows preserve exact occupancy summaries instead of converting fracti
   assert.equal(activityIntervals(compressor, { shading: { compressorGarage: intervals } }), intervals);
 });
 
-test('arbitrary state rows retain zero, missing breaks and explicit intervals without inventing a final tail', () => {
+test('state rows use authoritative interval evidence and ignore reduced scalar samples', () => {
   const descriptor = { key: 'door', signal: 'garage_door1_open', values: { 0: 'Closed', 1: 'Open' } };
-  const payload = { range, now: 950, series: { garage_door1_open: [
-    { x: 0, y: 0 }, { x: 100, y: 1 }, { x: 150, y: null },
-    { x: 200, y: 0 }, { x: 250, y: null }, { x: 900, y: 1 },
-  ] } };
-  assert.deepEqual(activityIntervals(descriptor, payload).map(({ start, end, value, sampled, pointOnly }) => ({ start, end, value, sampled, pointOnly })), [
-    { start: 0, end: 100, value: 0, sampled: true, pointOnly: undefined },
-    { start: 100, end: 150, value: 1, sampled: true, pointOnly: undefined },
-    { start: 200, end: 250, value: 0, sampled: true, pointOnly: undefined },
-    { start: 900, end: 900, value: 1, sampled: undefined, pointOnly: true },
-  ]);
-  assert.match(activityIntervalLabel(descriptor, activityIntervals(descriptor, payload)[0]), /Closed \(0\).*intermediate changes may be omitted/);
-  payload.series.garage_door1_open = [
-    { x: 400, y: 0, intervalStart: 400, intervalEnd: 500 },
-    { x: 500, y: 0, intervalStart: 400, intervalEnd: 500 },
-    { x: 900, y: 1, intervalStart: 900, intervalEnd: 1000 },
-  ];
-  const exact = activityIntervals(descriptor, payload);
-  assert.deepEqual(exact.map(({ start, end, sampled }) => ({ start, end, sampled })), [
-    { start: 400, end: 500, sampled: false }, { start: 900, end: 950, sampled: false },
-  ]);
-  assert.doesNotMatch(activityIntervalLabel(descriptor, exact[0]), /intermediate changes/);
+  const intervals = [{ start: 0, end: 100, value: 0 }, { start: 200, end: 250, value: 1 }];
+  const payload = { range, now: 950, shading: { garage_door1_open: intervals },
+    series: { garage_door1_open: [{ x: 0, y: 1 }, { x: 950, y: 1 }] } };
+  assert.equal(activityIntervals(descriptor, payload), intervals);
+  delete payload.shading.garage_door1_open;
+  assert.deepEqual(activityIntervals(descriptor, payload), [], 'Missing interval evidence never falls back to scalar inference');
 });
 
-test('an isolated zero state remains an inspectable point without an invented interval', () => {
+test('isolated zero states remain inspectable without an invented duration or final tail', () => {
   const descriptor = { key: 'contact', signal: 'contact', values: { 0: 'Closed', 1: 'Open' } };
-  const payload = { range, now: 900, series: { contact: [{ x: 500, y: 0 }] } };
-  const intervals = activityIntervals(descriptor, payload);
-  assert.deepEqual(intervals, [{ x: 500, y: 0, start: 500, end: 500, value: 0, pointOnly: true }]);
-  assert.match(activityIntervalLabel(descriptor, intervals[0]), /Closed \(0\).*recorded sample; duration unknown/);
-  for (const excluded of [{ x: 901, y: 1 }, { x: 500, y: null }, { x: 500, y: 1, carriedForward: true },
-    { x: 500, y: 1, displayBoundary: true }]) {
-    payload.series.contact = [excluded];
-    assert.deepEqual(activityIntervals(descriptor, payload), []);
-  }
-});
-
-test('tagged sample-gap boundaries leave inspectable points without changing real short intervals', () => {
-  const descriptor = { key: 'pause', signal: 'pause', values: { 0: 'Normal', 1: 'Paused' } };
-  const gap = { x: 501, y: null, displayBoundary: true, sampleBoundary: true };
-  const payload = { range, now: 900, series: { pause: [{ x: 500, y: 1 }, gap] } };
-  const [point] = activityIntervals(descriptor, payload);
-  assert.deepEqual(point, { x: 500, y: 1, start: 500, end: 500, value: 1, pointOnly: true });
-  assert.match(activityIntervalLabel(descriptor, point), /Paused \(1\).*recorded sample; duration unknown/);
-  payload.series.pause[1] = { x: 501, y: null };
-  assert.deepEqual(activityIntervals(descriptor, payload), [
-    { x: 500, y: 1, start: 500, end: 501, value: 1, sampled: true },
-  ], 'An untagged one-millisecond state interval retains its original duration');
-  payload.series.pause = [{ x: 500, y: 1, intervalStart: 500, intervalEnd: 501 }, gap];
-  assert.equal(activityIntervals(descriptor, payload)[0].end, 501, 'Explicit interval evidence takes precedence');
-  assert.equal(activityIntervals(descriptor, payload)[0].pointOnly, undefined);
-  for (const marker of [{ displayBoundary: true }, { carriedForward: true }]) {
-    payload.series.pause = [{ x: 500, y: 1, ...marker }, gap];
-    assert.deepEqual(activityIntervals(descriptor, payload), [], 'Synthetic display points never become observations');
-  }
+  const point = { start: 500, end: 500, value: 0, pointOnly: true };
+  const payload = { range, now: 900, shading: { contact: [point] } };
+  assert.deepEqual(activityIntervals(descriptor, payload), [point]);
+  assert.match(activityIntervalLabel(descriptor, point), /Closed \(0\).*recorded sample; duration unknown/);
 });
 
 test('cursor geometry scales CSS pixels and only activates on visible bands', () => {
@@ -196,7 +156,7 @@ test('row gutters use actual container offsets and CSS scaling independently of 
 
 test('isolated state ticks paint and expose their actual value and unknown duration on inspection', t => {
   const f = fixture(t);
-  f.payload.series = { contact: [{ x: 500, y: 0 }] };
+  f.payload.shading.contact = [{ start: 500, end: 500, value: 0, pointOnly: true }];
   f.setTracks([{ key: 'contact', signal: 'contact', label: 'Contact', detail: 'Reported state', values: { 0: 'Closed', 1: 'Open' } }]);
   const segment = f.container.children[0].children[1].children[0].children[0];
   assert.equal(segment.dataset.kind, 'point');
@@ -226,7 +186,8 @@ test('one home compressor row distinguishes heating, hot water, stopped and unkn
   assert.equal(segments[0].style.opacity, '0.28'); assert.equal(segments[1].style.opacity, '0.75');
   assert.equal(segments[3].dataset.pattern, 'unknown');
   assert.match(segments[3].title, /Running · routing unknown/);
-  assert.equal(segments[4].style.top, '25%'); assert.equal(segments[5].style.top, '50%');
+  assert.equal(segments[4].style.top, '0%'); assert.equal(segments[4].style.height, '60%');
+  assert.equal(segments[5].style.top, '60%'); assert.equal(segments[5].style.height, '40%');
   assert.match(segments[4].title, /60% of this display interval/);
   f.pointer('pointermove', { clientX: 185, clientY: 550 });
   assert.match(f.readout.textContent, /Stopped \(0\)/);

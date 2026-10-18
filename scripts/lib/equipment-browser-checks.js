@@ -20,6 +20,7 @@ async function checkEquipmentReadbackBrowser({ evaluate, command, context, refre
     assert.match(await evaluate("document.getElementById('dhwr-feedback-time').textContent"), /^Reported /);
     assert.equal(await evaluate("getComputedStyle(document.getElementById('dhwr-feedback-status'),'::before').width"), '5px');
     assert.equal(await evaluate("getComputedStyle(document.getElementById('dhwr-feedback-status')).color===getComputedStyle(document.querySelector('#equipment-connections [data-state=available] .equipment-device-status')).color"), true);
+    assert.equal(await evaluate("getComputedStyle(document.getElementById('dhwr-feedback-status')).color===getComputedStyle(document.getElementById('dhwr-feedback-time')).color"), true, 'Healthy circulation availability uses neutral equipment text');
     assert.equal(await evaluate(`document.querySelector('${sender} .equipment-device-status').textContent`), 'Available');
     assert.match(await evaluate(`document.querySelector('${sender} .equipment-connection-recent').textContent`), /^Reported /);
     await evaluate('window.equipmentUiFixture.senderReport.available=false;true'); await refresh();
@@ -91,6 +92,7 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
     assert.equal(await evaluate(`document.querySelector('${tariff}').tagName`), 'DETAILS');
     const callsBeforeLink = await evaluate('window.equipmentUiFixture.calls.length');
     await evaluate(`document.querySelector('${tariff}').open=true;document.querySelector('${tariff} a').click();true`);
+    assert.equal(await evaluate(`getComputedStyle(document.querySelector('${tariff} a')).color===getComputedStyle(document.querySelector('.floor-setup-link a')).color`), true, 'Tariff navigation uses the shared equipment link color');
     assert.equal(await evaluate("document.getElementById('home-manual-override-details').open"), true);
     assert.equal(await evaluate("document.activeElement===document.querySelector('#home-manual-override-details > summary')"), true);
     assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), callsBeforeLink, 'The manual override link sends no commands');
