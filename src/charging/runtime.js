@@ -1791,7 +1791,9 @@ export class ChargingRuntime {
           ...(controlledBmwMatches.has(key) ? ['bmw'] : []),
         ])]));
         const episodes = new Map();
-        const unknownPeer = Object.keys(this.chargers).some(key => !bmwPassiveOptions[key]
+        const unknownPeer = Object.entries(this.chargers).some(([key, peer]) => !bmwPassiveOptions[key]
+          && (peer.controller || peer.adapter || this.configuration.chargers[key]?.enabled === true
+            || key === 'charger1' && Boolean(this.config.connections?.easee?.charger_id))
           && result[key].connected?.value !== false);
         for (const [key, options] of Object.entries(bmwPassiveOptions)) if (options)
           for (const episode of bmwSessionMatches(bmw.reading, options)) {
