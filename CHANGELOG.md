@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep successfully identified vehicles and their battery planning references
+  through inconclusive shared charging starts/stops in the same connection,
+  including after restart. Continue to withdraw identities on clear contradictory
+  evidence, without identifying an unknown peer from an existing label.
+
 - Recover charging opportunity when changed capacity or progress makes an
   accepted economic pause threaten ready-by. Remove avoidable pauses even when
   the full target is no longer recoverable, retaining the visible shortfall and

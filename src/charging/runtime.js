@@ -1,5 +1,5 @@
 import { chargingDefaults, mergeChargingSettings, chargingSettingsFromConfiguration, resolveChargingDeadline } from './settings.js';
-import { acceptVehicleReading, bmwConsumedChargingAt, bmwHomeContext, bmwIdentityContextValid, connectionEvidenceStart, matchTeslaCurrent, teslaCurrentMeasurements, measuredChargingCurrent, bmwSessionMatchDetails, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
+import { acceptVehicleReading, bmwConsumedChargingAt, bmwHomeContext, bmwIdentityContextValid, connectionEvidenceStart, matchTeslaCurrent, teslaCurrentMeasurements, measuredChargingCurrent, bmwSessionMatchDetails, bmwSessionMatches, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
@@ -1446,7 +1446,7 @@ export class ChargingRuntime {
   // write. Polling telemetry, cards or diagnostics cannot advance this state.
   advanceTelemetry(now = this.clock()) {
     const { result, controls, tesla, teslaDepartedSince, bmwAvailable, homeContext, vehicleAssociations } = this.telemetryContext(now);
-    const candidates = {}, freshCandidates = {}, currentMatches = {}, teslaPauseMatches = {}, independentTeslaMatches = new Set(), bmwMatches = {}, bmwPassiveOptions = {}, awaitingConnection = new Set(), bmw = this.vehicleFeeds.bmw;
+    const candidates = {}, freshCandidates = {}, currentMatches = {}, teslaPauseMatches = {}, independentTeslaMatches = new Set(), bmwMatches = {}, bmwPassiveOptions = {}, controlledBmwMatches = new Set(), awaitingConnection = new Set(), bmw = this.vehicleFeeds.bmw;
     for (const [id, item] of Object.entries(this.chargers)) {
       const snapshot = controls[id]?.snapshot;
       if (item.definition.provider === 'easee' && snapshot) {
@@ -1575,6 +1575,7 @@ export class ChargingRuntime {
             consumedChargingId: retainedBmw ? null : bmw.consumedChargingId });
         if (activeBmw) { candidates[id].push('bmw'); evidence.bmwReason = 'matched-identification-pause';
           evidence.bmwChargingReadingId = activeBmw.chargingReadingId; evidence.bmwPlugReadingId = null; }
+        if (bmwPause || activeBmw) controlledBmwMatches.add(id);
         const teslaPauseUncontested = !Number.isSafeInteger(pauseRequestedAt)
           || evidence.teslaContestedPauseRequestedAt !== pauseRequestedAt;
         const activeTesla = teslaPauseUncontested && !evidence.historyOverflow
@@ -1774,6 +1775,37 @@ export class ChargingRuntime {
         }
       }
     }
+    // A shared physical episode is ambiguous evidence, not a mismatch of an
+    // already established identity. Classify every retained source episode only
+    // when continuity is at stake, so an older shared pair cannot hide a later
+    // distinguishing contradiction. This never assigns an unidentified peer.
+    const establishedMatches = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id, item.vehicleMatch]));
+    let distinguishingClaims;
+    const retainEstablishedMatch = id => {
+      const match = establishedMatches[id];
+      if (!match || this.chargers[id].vehicleConflict || !candidates[id].includes(match.id)
+        || Object.entries(establishedMatches).some(([other, prior]) => other !== id && prior?.id === match.id)) return null;
+      if (!distinguishingClaims) {
+        distinguishingClaims = Object.fromEntries(Object.keys(this.chargers).map(key => [key, new Set([
+          ...(freshCandidates[key]?.includes('tesla') || jointQualified.has(key) ? ['tesla'] : []),
+          ...(controlledBmwMatches.has(key) ? ['bmw'] : []),
+        ])]));
+        const episodes = new Map();
+        const unknownPeer = Object.keys(this.chargers).some(key => !bmwPassiveOptions[key]
+          && result[key].connected?.value !== false);
+        for (const [key, options] of Object.entries(bmwPassiveOptions)) if (options)
+          for (const episode of bmwSessionMatches(bmw.reading, options)) {
+            const source = JSON.stringify([episode.chargingReadingId, episode.stopReadingId]);
+            if (!episodes.has(source)) episodes.set(source, new Set());
+            episodes.get(source).add(key);
+          }
+        for (const targets of episodes.values()) if (targets.size === 1 && !unknownPeer)
+          distinguishingClaims[[...targets][0]].add('bmw');
+      }
+      const contrary = [...distinguishingClaims[id]].some(vehicle => vehicle !== match.id)
+        || Object.entries(distinguishingClaims).some(([other, claims]) => other !== id && claims.has(match.id));
+      return contrary ? null : match;
+    };
     // Both chargers and all consumers use one simultaneous, revisioned assignment.
     for (const [id, item] of Object.entries(this.chargers)) {
       if (awaitingConnection.has(id)) {
@@ -1781,10 +1813,12 @@ export class ChargingRuntime {
         continue;
       }
       const options = candidates[id], connected = result[id].connected?.value;
-      const conflict = options.length > 1 || options.some(vehicle => Object.entries(candidates).some(([other, choices]) => other !== id && choices.includes(vehicle)));
+      const contested = options.length > 1 || options.some(vehicle => Object.entries(candidates).some(([other, choices]) => other !== id && choices.includes(vehicle)));
+      const retained = contested ? retainEstablishedMatch(id) : null;
+      const conflict = contested && !retained;
       if (conflict) item.vehicleConflict = { scope: item.request?.scope, ids: options, vehicleAssociations: { ...vehicleAssociations }, at: now };
       else item.vehicleConflict = null;
-      const vehicleId = !conflict && options.length === 1 ? options[0] : null;
+      const vehicleId = retained?.id ?? (!conflict && options.length === 1 ? options[0] : null);
       const reidentifying = item.identification?.attempt > 1 && item.identification.phase !== 'completed';
       const freshIdentity = Boolean(vehicleId && (freshCandidates[id]?.includes(vehicleId) || jointQualified.has(id)));
       if (vehicleId === 'tesla' && jointQualified.has(id) && item.vehicleMatch) delete item.vehicleMatch.pauseRequestedAt;

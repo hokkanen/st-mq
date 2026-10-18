@@ -14,6 +14,22 @@ The observer evaluates both charging points together, including while automatic 
 
 Assignments carry the physical association, plug epoch and vehicle-feed identity. Changing the configured Tesla car, broker, topic namespace or home-zone configuration cannot lend a replacement source’s readings to a saved match. Genuine disconnect/reconnect events are retained even between planner ticks or MQTT subscription admission and invalidate the old scope. Pause/resume within a connected work state remains one session. Explicit conflicting evidence withdraws certainty. A remembered identity alone cannot authorize a new connection, and current vehicle fields are withdrawn when the upstream feed is unhealthy.
 
+After positive identification, inconclusive later observations preserve the
+established assignment and its battery references, target and progress within
+that same physical connection, including across restart. In particular, a BMW
+start/stop episode matching both chargers after shared schedule transitions is
+ambiguous timing, not a distinguishing contradiction of either established
+identity. An independently qualifying BMW episode that matches only the other
+connection, a conclusive unique Tesla comparison or a qualified controlled
+response can still establish a clear mismatch. Source, equipment and physical
+connection changes retain their existing invalidation rules.
+
+This continuity applies to ordinary identification as well as the minimum-current
+comparison. It preserves an already successful assignment; it cannot identify
+an unknown peer by elimination or resolve an existing conflict without positive
+evidence. It does not provide joint 6 A proof, renew a source clock or authorize
+a device command. The owner approved this distinction on 2026-10-18.
+
 A conclusive unique Tesla current test can replace an older mistaken assignment
 and clear the corresponding saved conflict. The displaced connection resumes
 observation for independent BMW evidence without renewing its test budget. Fresh

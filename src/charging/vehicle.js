@@ -469,17 +469,21 @@ function bmwSessionEpisodes(reading, options) {
  * Delivery delay and elapsed charging time do not invalidate those timestamps.
  * A fresh vehicle plug edge permits the bounded pre-poll start window; an
  * unchanged inlet instead requires both charging starts inside the connection. */
-export function bmwSessionMatchDetails(reading, options = {}) {
+export function* bmwSessionMatches(reading, options = {}) {
   const session = bmwSessionEpisodes(reading, options);
-  if (!session) return null;
-  const episode = session.episodes.find(value => (!options.matchingEpisode
-    || options.matchingEpisode.chargingReadingId === value.start.readingId
-      && options.matchingEpisode.stopReadingId === value.stop?.readingId)
-    && !(options.excludeEpisode?.chargingReadingId === value.start.readingId
-      && options.excludeEpisode?.stopReadingId === value.stop?.readingId)
-    && matchingEpisodeStop(session.evidence, value));
-  return episode ? { chargingReadingId: episode.start.readingId, stopReadingId: episode.stop.readingId,
-    plugReadingId: session.plug?.readingId ?? null } : null;
+  if (!session) return;
+  for (const episode of session.episodes) if ((!options.matchingEpisode
+    || options.matchingEpisode.chargingReadingId === episode.start.readingId
+      && options.matchingEpisode.stopReadingId === episode.stop?.readingId)
+    && !(options.excludeEpisode?.chargingReadingId === episode.start.readingId
+      && options.excludeEpisode?.stopReadingId === episode.stop?.readingId)
+    && matchingEpisodeStop(session.evidence, episode))
+    yield { chargingReadingId: episode.start.readingId, stopReadingId: episode.stop.readingId,
+      plugReadingId: session.plug?.readingId ?? null };
+}
+
+export function bmwSessionMatchDetails(reading, options = {}) {
+  return bmwSessionMatches(reading, options).next().value ?? null;
 }
 
 export function matchBmwSession(reading, options = {}) {

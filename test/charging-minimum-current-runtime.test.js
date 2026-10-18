@@ -184,6 +184,7 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     },
     advance(ms) { now += ms; meterAt = now; },
     setFirst(value, available = true) { firstCurrentA = value; firstAvailable = available; meterAt = now; },
+    startFirst(value = 16) { firstStopped = false; firstCurrentA = value; firstStatusAt = meterAt = now; },
     stopFirst() { firstStopped = true; firstCurrentA = 0; firstStatusAt = meterAt = now; },
     setFirstSourceTime(value) { firstSourceAt = value; },
     setFirstNative(value) { firstNative = value; },
@@ -1184,6 +1185,102 @@ async function sharedBmwEpisodeFixture(t, options = {}) {
   assert.ok(Object.values(f.runtime.chargers).every(item => item.vehicleConflict?.ids.includes('bmw')));
   return { f, publish, chargingId, stopId };
 }
+
+async function establishedOrdinaryIdentityFixture(t, { identifyBmw = true } = {}) {
+  const f = await fixture(t, { currentWritable: false }); f.observe();
+  f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  const publish = values => f.runtime.receiveSoc('synthetic/minimum-current/bmw', JSON.stringify({
+    provider: 'bmw-cardata', ...values, fields: Object.fromEntries(Object.keys(values).map(key => [key,
+      { measuredAt: key === 'pluggedIn' ? START - 120_000 : f.now, readingId: `synthetic-continuity-${key}-${f.now}` }])) }), { retain: false }, f.now);
+  const secondCharging = async value => {
+    f.fields.start_charging = { value, at: f.now };
+    f.fields.work_state = { value: value ? 'charger_charging' : 'charger_pause', at: f.now };
+    await f.adapter.refresh(); f.observe();
+  };
+  await secondCharging(false);
+  f.advance(90_000); publish({ atHome: true, pluggedIn: true, charging: false });
+  f.advance(1000);
+  if (identifyBmw) {
+    await secondCharging(true); publish({ charging: true });
+    f.advance(20_000); await secondCharging(false); publish({ charging: false });
+    assert.equal(f.item('charger2').vehicleMatch?.id, 'bmw', 'BMW has its own distinguishing physical episode');
+  }
+  f.advance(1000); await f.sampleTesla(16);
+  f.advance(5000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger1').vehicleEvidence.teslaCurrentMatch, undefined, 'Ordinary identification supplies no joint 6 A proof');
+  f.publishTesla({ battery_level: 70, charge_limit_soc: 90 });
+  f.runtime.readEnergy = () => ({ gridKwh: 1, coveredMs: 1000 });
+  f.runtime.refreshPlanningState(f.now);
+  f.stopFirst(); f.publishTesla({ charging_state: 'Stopped', charger_actual_current: 0, charger_power: 0 }); f.observe();
+  const episode = async (participants = ['charger1', 'charger2'], { restart = false, readback = true } = {}) => {
+    f.advance(90_000);
+    f.publishTesla({ healthy: true });
+    if (participants.includes('charger1')) f.startFirst();
+    if (participants.includes('charger2')) await secondCharging(true);
+    f.observe(); publish({ charging: true });
+    f.advance(15 * 60_000);
+    f.publishTesla({ healthy: true });
+    if (participants.includes('charger1')) f.stopFirst();
+    if (participants.includes('charger2')) await secondCharging(false);
+    f.observe();
+    if (restart) { await f.restart(); f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw'); }
+    f.advance(17_000);
+    if (readback) await f.adapter.refresh();
+    publish({ charging: false }); f.observe();
+    f.runtime.refreshPlanningState(f.now);
+  };
+  return { f, episode };
+}
+
+for (const restart of [false, true])
+test(`ordinary identified cars retain their identities and battery references after a shared scheduled stop${restart ? ' across restart' : ''}`, async t => {
+  const { f, episode } = await establishedOrdinaryIdentityFixture(t);
+  const matches = Object.fromEntries(Object.entries(f.runtime.chargers).map(([id, item]) => [id, structuredClone(item.vehicleMatch)]));
+  const progress = Object.fromEntries(Object.entries(f.runtime.chargers).map(([id, item]) => [id, structuredClone(item.progress)]));
+  const requests = Object.fromEntries(Object.entries(f.runtime.chargers).map(([id, item]) => [id, structuredClone(item.request)]));
+  const writes = structuredClone(f.writes);
+  await episode(undefined, { restart });
+  for (const id of ['charger1', 'charger2']) {
+    assert.deepEqual(f.item(id).vehicleMatch, matches[id], 'Shared timing is inconclusive rather than a mismatch');
+    assert.equal(f.item(id).vehicleConflict, null);
+    assert.deepEqual(f.item(id).progress, progress[id], 'The existing battery anchor and delivered energy survive');
+    assert.deepEqual(f.item(id).request, requests[id]);
+  }
+  await f.restart(); f.observe();
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'bmw');
+  assert.deepEqual(f.writes, writes, 'Continuity observation issues no current or permission command');
+});
+
+test('inconclusive shared timing preserves Tesla but cannot identify an unknown peer by elimination', async t => {
+  const { f, episode } = await establishedOrdinaryIdentityFixture(t, { identifyBmw: false });
+  await episode();
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger1').vehicleConflict, null);
+  assert.equal(f.item('charger2').vehicleMatch, null, 'The unknown peer still needs independent distinguishing evidence');
+});
+
+test('a temporarily unavailable peer cannot turn shared timing into a clear mismatch', async t => {
+  const { f, episode } = await establishedOrdinaryIdentityFixture(t);
+  await episode(undefined, { readback: false });
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'bmw');
+  await f.adapter.refresh(); f.observe();
+  assert.equal(f.runtime.telemetry().charger1.vehicle.id, 'tesla');
+  assert.equal(f.runtime.telemetry().charger2.vehicle.id, 'bmw');
+});
+
+test('a clear BMW mismatch still withdraws established identities after multiple inconclusive shared episodes', async t => {
+  const { f, episode } = await establishedOrdinaryIdentityFixture(t);
+  await episode(); await episode();
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'bmw');
+  await episode(['charger1']);
+  assert.equal(f.item('charger1').vehicleMatch, null, 'BMW timing unique to the Tesla connection is a genuine contradiction');
+  assert.ok(f.item('charger1').vehicleConflict?.ids.includes('bmw'));
+  assert.equal(f.item('charger2').vehicleMatch, null, 'The contrary positive BMW claim also withdraws its previous assignment');
+});
 
 async function settleTeslaCurrent(f, winner, secondCurrentA = null) {
   await f.update();

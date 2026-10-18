@@ -551,6 +551,17 @@ permission to act. See [the configuration guide](docs/configuration.md).
   their original receipt clocks while fresh physical measurements establish the
   later comparison. This grants no Start permission, additional charging budget
   or extension of a bounded probe, and does not change restoration duties.
+- Once positive identification succeeds, inconclusive later evidence preserves
+  that assignment within the same physical connection, including across restart.
+  A vehicle start/stop episode matching both chargers is not a clear mismatch
+  of their established identities. Preserve their scoped battery references,
+  targets and progress. Clear distinguishing contradictory evidence still
+  withdraws certainty; actual connection, equipment and vehicle-feed identity
+  boundaries retain their existing fences. This continuity rule applies to
+  ordinary identification as well as a minimum-current comparison. It cannot
+  identify an unknown peer by elimination, supply missing joint proof, renew
+  source clocks or grant control permission. The owner explicitly approved this
+  clarification on 2026-10-18.
 - On 2026-10-09 the owner approved identification on either reachable charger
   while its peer is explicitly unreachable. Missing peer observations remain
   unknown; they cannot supply disconnection, zero draw or an identity. BMW keeps
