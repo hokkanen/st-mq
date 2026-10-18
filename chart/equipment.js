@@ -12,6 +12,10 @@ import { createFloorControls, floorChannels, floorManualAllowed, floorCommandErr
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
 const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Energy meter', dehumidifier: 'Dehumidifier', heat_pump: 'Heat pump', vehicle: 'Vehicle', charger: 'Charger', sender: 'Sender', floor_override: 'Floor preheating' };
+const equipmentMetadata = device => device.kind === 'floor_override' ? 'Quad switch · Sonoff'
+  : [labels[device.kind] ?? pretty(device.kind || 'device'), equipmentSource(device)].join(' · ');
+const tariffControl = device => device.controls?.tariff || device.controlsHeat || device.role === 'heat_savings'
+  || device.id === 'connection:heating:home';
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
 const recentResult = actionReceiptRecent;
 function equipmentStateReading(device, now) {
@@ -594,16 +598,26 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
     connectionDetail: 'Recorded device reports from the master. Live monitoring and device commands remain on the master.',
   });
   // Stable sorting keeps room temperatures in their configured order.
-  const order = row => row.area === 'garage' ? garageEquipmentOrder(row) : row.kind === 'floor_override' ? 6 : row.area !== 'home' ? 4 : row.source === 'H66' ? 0 : row.kind === 'temperature' ? 1
-    : row.id === status.dhwr?.feedback?.deviceId || row.id === 'connection:dhwr:home' ? 2
-      : row.controls?.tariff || row.controlsHeat || row.role === 'heat_savings' || row.id === 'connection:heating:home' ? 3 : 4;
-  return rows.sort((a, b) => order(a) - order(b)).map(row => {
+  const order = row => row.area === 'garage' ? garageEquipmentOrder(row) : row.kind === 'floor_override' ? 6
+    : row.area !== 'home' ? 4 : row.source === 'H66' ? 0 : row.kind === 'temperature' ? 1
+      : row.id === status.dhwr?.feedback?.deviceId || row.id === 'connection:dhwr:home' ? 2 : tariffControl(row) ? 3 : 4;
+  rows.sort((a, b) => order(a) - order(b));
+  // Reorder Home within its existing positions; other areas retain their order.
+  const home = rows.filter(row => row.area === 'home').sort((a, b) => homeEquipmentOrder(a, status) - homeEquipmentOrder(b, status));
+  let homeIndex = 0;
+  return rows.map(row => row.area === 'home' ? home[homeIndex++] : row).map(row => {
     if (!(status.readOnly === true || status.readView?.source === 'verified-snapshot')) return row;
     return { ...row, recorded: true, readOnly: true, available: false,
       ...(row.id === status.dhwr?.feedback?.deviceId ? { lastReportAt: status.dhwr.feedback.state?.observedAt } : {}),
       connectionDetail: 'Recorded device reports from the master. Live monitoring and device commands remain on the master.',
       packetDetail: 'Packet times belong to the recorded master reports; this computer has no live device subscription.' };
   });
+}
+
+function homeEquipmentOrder(device, status) {
+  return device.source === 'H66' ? 0 : device.kind === 'temperature' ? 1 : device.kind === 'floor_override' ? 2
+    : device.id === status.dhwr?.feedback?.deviceId || device.id === 'connection:dhwr:home' ? 3
+      : tariffControl(device) ? 4 : 5;
 }
 
 function garageEquipmentOrder(device) {
@@ -686,6 +700,19 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     paragraph.append(link);
     return paragraph;
   };
+  const tariffControlLink = () => {
+    const paragraph = make('p', 'Test or control this switch from ', 'muted');
+    const link = make('a', 'Manual heating override');
+    link.href = '#home-manual-override-details';
+    link.addEventListener('click', event => {
+      if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      document.defaultView?.history?.pushState(null, '', link.href);
+      openSetup('home-manual-override-details');
+    });
+    paragraph.append(link, make('span', '.'));
+    return paragraph;
+  };
   function openSetup(id) {
     const target = $(id);
     if (!target) { pendingSetupId = id; return; }
@@ -696,7 +723,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   }
   const openSetupHash = () => {
     const id = document.defaultView?.location?.hash?.slice(1);
-    if (['floor-preheat-details', 'home-floor-device', 'garage-protection-details', 'garage-protection-settings-details',
+    if (['floor-preheat-details', 'home-floor-device', 'home-manual-override-details', 'garage-protection-details', 'garage-protection-settings-details',
       'garage-protection-configuration-details'].includes(id)) openSetup(id);
     else pendingSetupId = null;
   };
@@ -708,8 +735,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   function renderReadingList(root, devices, snapshot) {
     const { status, busy, message, error, actionKind, actionDeviceId } = snapshot;
     for (const [index, device] of devices.entries()) {
-      const staticReadings = (device.kind === 'temperature' && !device.controls?.switch
-        || device.controls?.tariff === true) && !Object.values(device.controls?.cover ?? {}).some(Boolean);
+      const staticReadings = device.kind === 'temperature' && !device.controls?.switch
+        && !Object.values(device.controls?.cover ?? {}).some(Boolean);
       let node = readingNodes.get(device.id);
       if (node && node.staticReadings !== staticReadings) {
         node.section.remove(); readingNodes.delete(device.id); node = null;
@@ -761,6 +788,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
           summary.append(heading, preview, health);
           if (caravan) body.append(caravan.air, energyTitle);
           body.append(list, empty, controls, coverControls);
+          if (tariffControl(device)) body.append(tariffControlLink());
           if (floor) body.append(floor.root, floorSetupLink());
           if (caravan) body.append(caravan.dehumidifier);
           section.append(summary, body);
@@ -768,15 +796,16 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         node = { section, staticReadings, title, metadata, preview, source, recent, list, empty, controls, buttons, on, off, help, result,
           coverControls, coverButtons, coverActions, coverHelp, coverResult, coverAccess, caravan, floor, energyTitle, rows: new Map() }; readingNodes.set(device.id, node);
       }
-      if (root.children[index] !== node.section) {
+      const siblings = [...root.children].filter(child => child.id !== 'dhwr-device');
+      if (siblings[index] !== node.section) {
         // Moving a details element preserves its open state. Keep keyboard focus
         // on its current control too when a status update changes device order.
         const focused = node.section.contains(document.activeElement) ? document.activeElement : null;
-        root.insertBefore(node.section, root.children[index] ?? null);
+        root.insertBefore(node.section, siblings[index] ?? null);
         focused?.focus({ preventScroll: true });
       }
       node.title.textContent = device.label ?? labels[device.kind] ?? 'Device';
-      node.metadata.textContent = [labels[device.kind] ?? pretty(device.kind || 'device'), equipmentSource(device)].join(' · ');
+      node.metadata.textContent = equipmentMetadata(device);
       const connection = equipmentConnectionSummary(device);
       node.source.textContent = connection.label;
       node.source.dataset.state = connection.state;
@@ -875,7 +904,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       node.coverResult.hidden = !node.coverResult.textContent;
       node.coverResult.classList.toggle('form-error', Boolean(coverScoped && error || coverReceipt && !coverReceipt.confirmed && !coverReceipt.superseded && ['failed', 'unconfirmed'].includes(coverReceipt.status)));
     }
-    for (const child of [...root.children]) if (!devices.some(device => device.id === child.dataset.deviceId)) child.remove();
+    for (const child of [...root.children]) if (child.id !== 'dhwr-device'
+      && !devices.some(device => device.id === child.dataset.deviceId)) child.remove();
   }
   function renderTopics(root, topics) {
     const signature = JSON.stringify(topics);
@@ -904,8 +934,11 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     const readOnly = isReadOnlyReplica(status), locked = busy || blocked();
     for (const area of ['home', 'garage']) {
       const members = inventory.filter(device => device.area === area);
-      renderReadingList($(`${area}-equipment-readings`), members.filter(device => device.id !== status.dhwr?.feedback?.deviceId && !isCaravanMember(device))
-        .sort((a, b) => area === 'garage' ? garageEquipmentOrder(a) - garageEquipmentOrder(b) : 0), snapshot);
+      const visible = members.filter(device => device.id !== status.dhwr?.feedback?.deviceId && !isCaravanMember(device))
+        .sort((a, b) => area === 'garage' ? garageEquipmentOrder(a) - garageEquipmentOrder(b)
+          : homeEquipmentOrder(a, status) - homeEquipmentOrder(b, status));
+      const root = $(`${area}-equipment-readings`);
+      renderReadingList(root, visible, snapshot);
       if (!members.length && area === 'garage') $(`${area}-equipment-readings`).append(make('p', 'No garage devices enabled.', 'muted equipment-empty'));
       const overview = $(`${area}-equipment-status`), unavailable = members.filter(device => !device.available || device.needsAttention).length;
       if (overview) {
@@ -967,8 +1000,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       }
       if (group.list.children[index] !== node.row) group.list.insertBefore(node.row, group.list.children[index] ?? null);
       node.name.textContent = device.label ?? labels[device.kind] ?? 'MQTT connection';
-      node.metadata.textContent = [labels[device.kind] ?? pretty(device.kind || 'connection'),
-        device.kind === 'floor_override' ? device.model : equipmentSource(device)].join(' · ');
+      node.metadata.textContent = equipmentMetadata(device);
       renderTopics(node.topics, device.topics); node.topics.hidden = !device.topics.length;
       const mqtt = device.mqttStatus;
       node.packets.textContent = device.recorded === true || device.readOnly === true
@@ -995,7 +1027,14 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     const dhwrDevice = devices.find(device => device.id === status.dhwr?.feedback?.deviceId);
     const dhwrArea = dhwrDevice?.area === 'garage' ? 'garage' : 'home';
     const dhwrNode = $('dhwr-device'), dhwrAnchor = $(`${dhwrArea}-test-notice`);
-    if (dhwrNode.parentElement !== dhwrAnchor.parentElement) dhwrAnchor.parentElement.insertBefore(dhwrNode, dhwrAnchor);
+    const homeAfterCirculation = inventory.filter(device => device.area === 'home' && device.id !== dhwrDevice?.id
+      && homeEquipmentOrder(device, status) > 3).sort((a, b) => homeEquipmentOrder(a, status) - homeEquipmentOrder(b, status))[0];
+    const dhwrParent = dhwrArea === 'home' ? $('home-equipment-readings') : dhwrAnchor.parentElement;
+    const dhwrNext = dhwrArea === 'home' ? readingNodes.get(homeAfterCirculation?.id)?.section ?? null : dhwrAnchor;
+    if (dhwrNode.parentElement !== dhwrParent || dhwrNode.nextSibling !== dhwrNext) {
+      const focused = dhwrNode.contains(document.activeElement) ? document.activeElement : null;
+      dhwrParent.insertBefore(dhwrNode, dhwrNext); focused?.focus({ preventScroll: true });
+    }
     $('dhwr-title').textContent = dhwrDevice?.label ?? 'Hot-water circulation';
     $('dhwr-source').textContent = `Circulation pump · ${dhwrDevice ? equipmentSource(dhwrDevice) : 'Shelly'}`;
     const dhwr = dhwrReadingSummary(status);

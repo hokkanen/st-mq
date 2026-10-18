@@ -372,6 +372,10 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
   listen(panel, 'pointermove', event => {
     if (dragging) {
       if (event.pointerId !== dragging.pointerId) return;
+      if (dragging.touch) {
+        if (Math.hypot(event.clientX - dragging.x, event.clientY - dragging.y) >= 4) clear();
+        return;
+      }
       event.preventDefault(); inspect(event, true); return;
     }
     if (event.pointerType === 'touch') return;
@@ -383,15 +387,16 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
     const bounds = geometry({ clientX: event.clientX, clientY: event.clientY }), row = bounds && rowAt(event.clientY);
     if (!row || isMoving()) return clear();
     event.preventDefault();
-    // A second finger on a band cannot start chart navigation or replace the
-    // finger already scrubbing. The originating band keeps its row readout.
-    if (dragging) return;
-    dragging = { pointerId: event.pointerId, key: row.descriptor.key };
+    // An additional finger cancels touch inspection without starting navigation.
+    if (dragging) { if (event.pointerType === 'touch') clear(); return; }
+    dragging = { pointerId: event.pointerId, key: row.descriptor.key,
+      touch: event.pointerType === 'touch', x: event.clientX, y: event.clientY };
     try { panel.setPointerCapture(event.pointerId); } catch { /* Synthetic events may not own a native pointer. */ }
-    inspect(event, true);
+    if (!dragging.touch) inspect(event, true);
   }, { passive: false });
   listen(panel, 'pointerup', event => {
     if (event.pointerId !== dragging?.pointerId) return;
+    if (dragging.touch && Math.hypot(event.clientX - dragging.x, event.clientY - dragging.y) >= 4) return clear();
     inspect(event, true); releaseDrag();
   }, { passive: true });
   for (const name of ['pointercancel', 'lostpointercapture']) listen(panel, name, event => {

@@ -8,6 +8,9 @@ pooled preheating, recording and durable restoration.
 
 **Home → Sensors & Equipment → Ground-floor circuits** shows current control
 readiness, each circuit's reported GPIO output and individual timed controls.
+Its compact device label is **Quad switch · Sonoff**. Floor circuits precede
+hot-water circulation and tariff control in both Home and connection details.
+The tariff fold links to **Manual heating override** for testing and control.
 The device header shows connection availability independently of commissioning,
 active overrides or pending release. **Overrides & release** explains operation;
 **Device details** contains commissioning, automatic enablement, firmware and

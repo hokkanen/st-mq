@@ -954,6 +954,7 @@ each value. An original sensor observation time or model-update time is a
 different event and keeps its explicit provenance label. Text wraps to the
 available chart width. Desktop popups work in both views; touch devices show
 them only in fullscreen, in portrait and landscape, and clear them on exit.
+Touch details open after a completed tap, never on touch-down, dragging or pinching.
 Click or tap the popup itself to hide it. Selecting another data point moves
 the popup to that point.
 
@@ -1047,8 +1048,9 @@ compressor with unknown routing, while missing, stale or unverified compressor
 data stays blank. Off is shown only when reported, never inferred from silence.
 Every row title expands to explain its evidence and all colour and pattern
 meanings, including missing intervals. Wide layouts also show a compact key
-beside the title; phones keep the colours inside the fold. Hovering or dragging
-a strip moves the shared time cursor, including by touch. Its separate segments
+beside the title; phones keep the colours inside the fold. Mouse hovering or dragging
+a strip moves the shared time cursor; touch inspection requires a completed tap.
+Touch dragging and additional fingers do not open details. Its separate segments
 appear only in the plot and visible strips, leaving titles and gaps clear.
 Scrolling the activity rows or opening their explanations preserves their exact
 alignment with the plot at both time-axis endpoints. The **Shelly load balancing**

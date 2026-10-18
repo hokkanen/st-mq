@@ -36,6 +36,21 @@ const observation = (source, device, signal, value, extra = {}) => ({ source, de
   unit: 'state', sourceTime: at - 20_000, receivedAt: at - 10_000,
   quality: ['good'], raw: { supported: true, timeBasis: 'source-measured' }, ...extra });
 
+test('replica garage temperatures keep rear/front names and primary-first order without live authority', t => {
+  const snapshot = fixture(t, store => {
+    store.observation(observation('shelly-mqtt', 'garage', 'garage_temperature', 12.1, { unit: 'degC' }));
+    store.observation(observation('shelly-mqtt', 'garage', 'garage_temperature_2', 12.6, { unit: 'degC' }));
+  });
+  const settings = { ...config, connections: { equipment: { devices: [{ id: 'garage', label: 'Garage temperatures',
+    area: 'garage', kind: 'temperature', protocol: 'shelly', source: 'Shelly', enabled: true,
+    temperatureSignal: 'garage_temperature', readings: [{ signal: 'garage_temperature_2', label: 'Garage front' }] }] } } };
+  const device = replicaReadModel(snapshot, settings).equipment.devices[0];
+  assert.deepEqual(Object.entries(device.readings).map(([signal, row]) => [signal, row.label, row.value]),
+    [['garage_temperature', 'Garage rear', 12.1], ['garage_temperature_2', 'Garage front', 12.6]]);
+  assert(Object.values(device.readings).every(row => row.recorded && !row.usableForControl));
+  assert.equal(hash(snapshot.path), snapshot.digest);
+});
+
 const mode = { version: 1, mode: 'normal', normalTargetC: 10, awayTargetC: 5,
   changedAt: at - 5000, warmingWarning: null, adapterKey: 'a'.repeat(64), targetIdentity: 'b'.repeat(64) };
 const adapter = (native, observedAt = at - 5000, receivedAt = observedAt) => ({ version: 2,

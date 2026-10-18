@@ -20,7 +20,7 @@ test('primary and HA broker diagnostics preserve independent health and selected
   assert.equal(rows.find(row => row.kind === 'vehicle').mqttStatus.broker, 'ha');
 });
 
-test('home connections show pump, temperatures in configured order, circulation and tariff while preserving MQTT routes', () => {
+test('home connections show pump, temperatures, floor circuits, circulation and tariff while preserving MQTT routes', () => {
   const temperatures = ['Upstairs', 'Downstairs', 'Bedroom'].map(label => ({ id: `fixture-${label.toLowerCase()}`,
     label, area: 'home', kind: 'temperature', source: 'MQTT',
     topics: [topic(label, `fixture/${label.toLowerCase()}`)], readings: {} }));
@@ -31,7 +31,7 @@ test('home connections show pump, temperatures in configured order, circulation 
     topics: [topic('State', 'fixture/tariff/state')] }, circulation, ...temperatures], topicGroups: groups },
     shelly: { topicGroups: groups }, dhwr: { feedback: { deviceId: circulation.id }, commandTopic: 'fixture/circulation/set' },
     h66: { available: true, brokerConnected: true, lastPublicationAt: NOW } });
-  assert.deepEqual(rows.map(row => row.id), ['connection:h66:home', ...temperatures.map(device => device.id), circulation.id, 'fixture-tariff', 'floor-override:groundfloor']);
+  assert.deepEqual(rows.map(row => row.id), ['connection:h66:home', ...temperatures.map(device => device.id), 'floor-override:groundfloor', circulation.id, 'fixture-tariff']);
   const device = rows.find(row => row.id === circulation.id);
   const deviceTopics = equipmentTopicGroups(device.topics).flatMap(group => group.topics);
   assert.deepEqual(deviceTopics.map(row => row.topic), ['fixture/circulation/state', 'fixture/circulation/set']);
@@ -67,8 +67,9 @@ test('connection health distinguishes quiet healthy devices, retained values and
   assert.equal(equipmentConnectionSummary(retained).state, 'attention');
   const commands = equipmentConnections({ now: NOW, dhwr: { commandTopic: 'fixture/circulation/set' } });
   assert.equal(commands.length, 2);
-  assert.equal(equipmentConnectionSummary(commands[0]).label, 'Commands configured');
-  assert.equal(equipmentConnectionSummary(commands[0]).state, 'pending');
+  const route = commands.find(row => row.id === 'connection:dhwr:home');
+  assert.equal(equipmentConnectionSummary(route).label, 'Commands configured');
+  assert.equal(equipmentConnectionSummary(route).state, 'pending');
 });
 
 test('topic groups keep shared RPC requests and commands honest and deduplicate repeated topic labels', () => {

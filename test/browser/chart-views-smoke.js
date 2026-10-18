@@ -63,8 +63,8 @@ try {
     signal: 'compressor_hours', value: 800 + index, unit: 'h', source: 'simulation', device: 'invented-chart-runtime',
     sourceTime: now - (6 - index) * 3600_000, receivedAt: now - (6 - index) * 3600_000, quality: ['simulated'], raw: {},
   });
-  app.store.transaction(() => {
-    for (let index = 0; index < 180; index++) {
+  // Each frame is a bounded current-journal transaction.
+  for (let index = 0; index < 180; index++) app.store.transaction(() => {
       const at = now - (180 - index) * 60_000;
       for (const [signal, value, unit] of [
         ['garage_temperature_2', 12 + Math.sin(index / 16) * .6, 'degC'],
@@ -93,7 +93,8 @@ try {
         ['caravan_dehumidifier_state', Math.floor(index / 15) % 4, 'state'],
       ]) app.engine.recorder.record({ signal, value, unit, source: 'simulation', device: 'invented-chart-views-probe',
         sourceTime: at, receivedAt: at, quality: ['simulated'], raw: { reportIntervalMs: 60_000 } });
-    }
+  });
+  app.store.transaction(() => {
     // Independent, overlapping phase-energy evidence exercises charger fills at
     // unequal currents. These are allocated phase estimates, never total energy.
     for (const prefix of ['ev1', 'ev2']) for (let index = 0; index < 12; index++) {
@@ -1255,7 +1256,7 @@ try {
     await send('Input.dispatchTouchEvent', {type:'touchStart',touchPoints:[{...dashboardStart,id:1}]});
     await send('Input.dispatchTouchEvent', {type:'touchMove',touchPoints:[{...dashboardEnd,id:1}]});
     await send('Input.dispatchTouchEvent', {type:'touchEnd',touchPoints:[]}); await settle();
-    await checkCursorSegments(dashboardEnd.x, `${width}px dashboard touch drag`);
+    assert.equal(await cursorHidden(), true, `${width}px: dashboard touch dragging does not open details`);
     assert.deepEqual(await viewportState(), dashboardView, `${width}px: dashboard band inspection keeps the whole selected interval`);
     await evaluate("document.getElementById('chart-fullscreen').click(); true");
     await until("document.querySelector('.history-panel').dataset.fullscreen === 'true'"); await settle();
@@ -1273,15 +1274,27 @@ try {
     await capture(`mobile-${width}-activity-explanation-dark`);
     await evaluate("document.querySelector('#operating-modes .activity-summary').click(); true"); await settle();
     const point = await evaluate("(() => { const r = document.getElementById('history').getBoundingClientRect(); return {x:r.left+r.width*.48,y:r.top+r.height*.45}; })()");
+    const popupPainted = () => evaluate('window.chartLabels.some(line => /^(Property|Charger [12]|Average indoor|Outdoor|All-in price|Spot price):/.test(line))');
+    await evaluate("document.getElementById('history').dispatchEvent(new MouseEvent('mouseout',{bubbles:true})); window.chartLabels=[]; true");
+    await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...point, id: 1 }] }); await settle();
+    assert.equal(await popupPainted(), false, `${width}px: touch-down does not paint a chart popup`);
+    await send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: point.x, y: point.y + 35, id: 1 }] }); await settle();
+    assert.equal(await popupPainted(), false, `${width}px: vertical dragging does not paint a chart popup`);
+    await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await settle();
+    assert.equal(await popupPainted(), false, `${width}px: releasing a drag does not paint a chart popup`);
     await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...point, id: 1 }] });
     await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await settle();
+    assert.equal(await popupPainted(), true, `${width}px: a completed tap still opens chart details`);
     assert.equal(await cursorHidden(), true, `${width}px: tapping the main plot does not show a time cursor`);
     const touchBand = await bandPoint(.35), touchEnd = await bandPoint(.65), beforeTouch = await viewportState();
     await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...touchBand, id: 1 }] });
     await send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x:touchEnd.x,y:touchEnd.y-20,id:1 }] }); await settle();
-    await checkCursorSegments(touchEnd.x, `${width}px touch drag outside the originating band`);
+    assert.equal(await cursorHidden(), true, `${width}px: touch dragging a band does not open details`);
     await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await settle();
-    await checkCursorSegments(touchEnd.x, `${width}px touch release retains the inspected time`);
+    assert.equal(await cursorHidden(), true, `${width}px: releasing a band drag does not open details`);
+    await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...touchBand, id: 1 }] });
+    await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await settle();
+    await checkCursorSegments(touchBand.x, `${width}px: a completed band tap inspects the selected time`);
     assert.deepEqual(await viewportState(), beforeTouch, `${width}px: a band drag changes neither magnification nor time range`);
     const pinchLeft = await bandPoint(.3), pinchRight = await bandPoint(.7);
     await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{...touchBand,id:1},{...touchEnd,id:2}] });

@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Open chart details only after a touchscreen tap, without popups during dragging
+  or pinching. Match Garage rear/front labels on the read-only computer, order
+  Home equipment consistently, and keep dehumidifier humidity beside its status.
+
 - Keep a configurable 0–14 day chart window in RAM, updated incrementally at idle
   priority. Preserve it during long history requests, reuse energy reconstruction
   between views, retain completed plots across unrelated new readings and compress

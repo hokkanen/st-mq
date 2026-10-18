@@ -319,34 +319,24 @@ test('band mouse dragging follows the pointer beyond its band, clamps to time bo
   assert.equal(f.extension.hidden, true, 'Dragging from the main plot into a band never turns chart panning into inspection');
 });
 
-test('touch scrubbing works in ordinary page view and extra band fingers cannot navigate or replace it', t => {
+test('touch bands inspect only after a tap, never during dragging, pinching or cancellation', t => {
   const f = fixture(t), touch = { pointerType: 'touch', pointerId: 4 };
   const pageTouch = f.pointer('pointerdown', { ...touch, clientY: 250 });
-  assert.equal(pageTouch.defaultPrevented, false, 'Ordinary page scrolling outside bands remains native');
-  assert.equal(f.extension, undefined);
+  assert.equal(pageTouch.defaultPrevented, false, 'Page scrolling outside bands stays native');
   f.pointer('pointerdown', touch);
-  assert.equal(f.extension.hidden, false);
-  assert.equal(f.panel.captured.has(4), true);
-  f.pointer('pointermove', { ...touch, clientX: 500, clientY: 200 });
-  assert.equal(f.extension.children[0].style.left, '419px');
-  f.pointer('pointerdown', { ...touch, pointerId: 5 });
-  f.pointer('pointermove', { ...touch, pointerId: 5, clientX: 700 });
-  assert.equal(f.extension.children[0].style.left, '419px', 'Only the first finger controls the cursor');
-  f.pointer('pointerup', { ...touch, pointerId: 5 });
-  assert.equal(f.panel.captured.has(4), true);
-  f.pointer('pointerup', { ...touch, clientX: 600 });
-  f.pointer('pointerleave', touch);
-  assert.equal(f.extension.hidden, false, 'The selected time remains after a touch scrub');
-  assert.equal(f.extension.children[0].style.left, '519px');
-  assert.equal(f.panel.captured.size, 0);
+  assert.equal(f.extension, undefined, 'Touch-down does not show details');
+  f.pointer('pointermove', { ...touch, clientX: 500 });
+  f.pointer('pointerup', { ...touch, clientX: 500 });
+  assert.equal(f.extension, undefined, 'Dragging never opens details');
+  f.pointer('pointerdown', touch); f.pointer('pointerup', touch);
+  assert.equal(f.extension.hidden, false, 'A completed tap shows details');
+  f.overlays.clear();
+  f.pointer('pointerdown', touch); f.pointer('pointerdown', { ...touch, pointerId: 5 });
+  f.pointer('pointerup', { ...touch, pointerId: 5 }); f.pointer('pointerup', touch);
+  assert.equal(f.extension.hidden, true, 'A second finger cancels tap inspection');
   f.pointer('pointerdown', touch); f.pointer('pointercancel', touch);
   assert.equal(f.extension.hidden, true);
   assert.equal(f.panel.captured.size, 0);
-  f.pointer('pointermove'); f.setMoving(true); f.pointer('pointermove');
-  assert.equal(f.extension.hidden, true);
-  assert.equal(f.overlays.plugin.beforeEvent(), false);
-  f.setMoving(false); f.pointer('pointermove'); f.overlays.clear();
-  assert.equal(f.extension.hidden, true);
 });
 
 test('fullscreen activity scrolling clips each cursor segment and inspection to visible band portions', t => {

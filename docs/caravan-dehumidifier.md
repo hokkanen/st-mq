@@ -52,7 +52,9 @@ controls. **Automatic power** shows the saved enabled state and thresholds;
 expand it to edit the switch and thresholds, then use **Save changes** or
 **Discard**. Unsaved edits do not change the active policy. Recording status
 stays visible, and **Power check** expands the observed rise/fall and test
-criteria. Humidity readings remain optional live information. Native settings
+criteria. The appliance's measured humidity appears beside its fan and report time;
+the air sensor keeps its own reading above, without a duplicate in Power check.
+Humidity readings remain optional live information. Native settings
 and policy edits are locked while the test or its restoration is active. Family
 and replica views keep their read-only restrictions.
 

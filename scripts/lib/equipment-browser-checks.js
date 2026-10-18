@@ -51,6 +51,7 @@ async function checkEquipmentReadbackBrowser({ evaluate, command, context, refre
 async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh, settle }) {
   await evaluate(`(() => {const f=window.equipmentUiFixture;f.savedFloorUi={
     present:Object.hasOwn(f.status,'preheatValves'),status:f.status.preheatValves,
+    devices:f.devices,
     theme:document.documentElement.dataset.theme,hash:location.hash,focus:document.activeElement,
     folds:[...document.querySelectorAll('.controller-panels details')].map(node=>[node,node.open])};
     f.status.preheatValves=null;return true;})()`);
@@ -79,6 +80,20 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
     const floorCards = '#equipment-connections [data-device-id^="floor-override:"]';
     assert.equal(await evaluate(`document.querySelectorAll('${floorCards}').length`), 1);
     assert.equal(await evaluate(`document.querySelectorAll('${floorCards} [data-open-floor-setup]').length`), 1);
+    assert.equal(await evaluate(`document.querySelector('${floorCards} .equipment-connection-meta').textContent`), 'Quad switch · Sonoff');
+    await evaluate(`(() => {const f=window.equipmentUiFixture;f.devices=[...f.devices,{id:'fixture-tariff',label:'Tariff control',
+      area:'home',kind:'switch',source:'Shelly',available:true,controls:{switch:true,tariff:true},
+      readings:{fixture_tariff:{label:'Switch',value:0,unit:'state',observedAt:f.now,stale:false}}}];return true;})()`);
+    await refresh();
+    assert.deepEqual(await evaluate("[...document.querySelector('#home-equipment-readings').children].filter(node=>node.id==='home-floor-device'||node.id==='dhwr-device'||node.dataset.deviceId==='fixture-tariff').map(node=>node.id||node.dataset.deviceId)"),
+      ['home-floor-device','dhwr-device','fixture-tariff']);
+    const tariff = '#home-equipment-readings [data-device-id="fixture-tariff"]';
+    assert.equal(await evaluate(`document.querySelector('${tariff}').tagName`), 'DETAILS');
+    const callsBeforeLink = await evaluate('window.equipmentUiFixture.calls.length');
+    await evaluate(`document.querySelector('${tariff}').open=true;document.querySelector('${tariff} a').click();true`);
+    assert.equal(await evaluate("document.getElementById('home-manual-override-details').open"), true);
+    assert.equal(await evaluate("document.activeElement===document.querySelector('#home-manual-override-details > summary')"), true);
+    assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), callsBeforeLink, 'The manual override link sends no commands');
     assert.equal(await evaluate("document.querySelectorAll('#home-equipment-readings [data-device-id^=\"floor-override:\"]').length"), 1,
       'Floor controls remain discoverable while commissioning is incomplete');
     assert.equal(await evaluate("document.querySelectorAll('#home-equipment-readings [data-floor-action]:not(:disabled)').length"), 0,
@@ -127,7 +142,7 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
     assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), calls, 'Reviewing setup never sends equipment commands');
   } finally {
     await evaluate(`(() => {const f=window.equipmentUiFixture,s=f.savedFloorUi;
-      if(s.present)f.status.preheatValves=s.status;else delete f.status.preheatValves;
+      if(s.present)f.status.preheatValves=s.status;else delete f.status.preheatValves;f.devices=s.devices;
       document.documentElement.dataset.theme=s.theme;history.replaceState(null,'',location.pathname+location.search+s.hash);
       for(const [node,open]of s.folds)node.open=open;s.focus?.focus({preventScroll:true});delete f.savedFloorUi;return true;})()`);
     await refresh();
@@ -592,7 +607,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     await evaluate(`(() => {const d=window.equipmentUiFixture.devices.find(d=>d.id==='caravan_dehumidifier');d.available=true;
       d.observedAt=window.equipmentUiFixture.now;
       d.mqttStatus={subscriptionStatus:'subscribed',lastLiveAt:window.equipmentUiFixture.now};
-      Object.assign(d.dehumidifier,{available:true,powerOnAvailable:true,powerOffAvailable:true,observedAt:window.equipmentUiFixture.now,state:{power:'off',targetHumidity:55,fanSpeed:'low'},runningState:'off'});
+      Object.assign(d.dehumidifier,{available:true,powerOnAvailable:true,powerOffAvailable:true,observedAt:window.equipmentUiFixture.now,measurements:{humidity:40},state:{power:'off',targetHumidity:55,fanSpeed:'low'},runningState:'off'});
       Object.assign(d.dehumidifier.temperatureControl,{canEdit:true,applianceHumidity:40,reason:'power-test-failed',
         locationTest:{status:'failed',phase:null,reason:'power-test-failed',minimumPowerChangeW:3,powerRiseW:0,powerFallW:0}});return true;})()`);
     await refresh();
@@ -607,7 +622,8 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     await toggleDisclosure(recordingDetails);
     assert.equal(await evaluate(`document.querySelector('${recordingDetails}').open`), true, 'Enter opens power-check evidence');
     assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-comparison').checkVisibility()`), true);
-    assert.match(await evaluate(`document.querySelector('${appliance} .caravan-comparison').textContent`), /40\s*%.*63\s*%/);
+    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-humidity-label')`), null);
+    assert.match(await evaluate(`document.querySelector('${appliance} .caravan-appliance-state').textContent`), /40% RH/);
     assert.match(await evaluate(`document.querySelector('${appliance} .caravan-power-changes').textContent`), /Rise after On0 WFall after Off0 W/);
     await refresh();
     assert.equal(await evaluate(`document.activeElement===document.querySelector('${recordingDetails} > summary')&&document.querySelector('${recordingDetails}').open`), true, 'Polling keeps recording disclosure and keyboard focus');

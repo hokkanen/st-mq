@@ -176,6 +176,7 @@ export function createChartNavigation({ canvas, getChart, onSettle, onMove }) {
   function pointerBasis() {
     const points = [...pointers.values()];
     return { view: view && { ...view }, x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+      y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
       distance: points.length > 1 ? Math.max(10, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y)) : 0, moved: false };
   }
   listen($('chart-fullscreen'), 'click', enter);
@@ -192,19 +193,25 @@ export function createChartNavigation({ canvas, getChart, onSettle, onMove }) {
     zoomBy(Math.exp(-Math.max(-160, Math.min(160, event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1))) * 0.004), Math.max(0, Math.min(1, (x - area.left) / area.width)));
   }, { passive: false });
   listen(canvas, 'pointerdown', event => {
-    if (!view || !fullscreen || event.pointerType === 'mouse' && event.button !== 0) return;
+    canvas.dataset.pointerType = event.pointerType;
+    if (!view || event.pointerType === 'mouse' && (!fullscreen || event.button !== 0)) return;
     const area = getChart()?.chartArea, rect = canvas.getBoundingClientRect(), x = event.clientX - rect.left, y = event.clientY - rect.top;
     if (!area || x < area.left || x > area.right || y < area.top || y > area.bottom) return;
-    suppressClick = false; pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    try { canvas.setPointerCapture(event.pointerId); } catch { /* Synthetic tests may not own a native pointer. */ }
+    if (!pointers.size) suppressClick = false;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.size > 1) suppressClick = true;
+    if (fullscreen) try { canvas.setPointerCapture(event.pointerId); } catch { /* Synthetic tests may not own a native pointer. */ }
     gesture = pointerBasis();
   });
   listen(canvas, 'pointermove', event => {
+    if (!pointers.size && event.pointerType === 'mouse') canvas.dataset.pointerType = 'mouse';
     if (!pointers.has(event.pointerId) || !gesture?.view) return;
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     const current = pointerBasis(), delta = current.x - gesture.x;
-    if (!gesture.moved && Math.abs(delta) < 4 && Math.abs(current.distance - gesture.distance) < 4) return;
-    gesture.moved = true; event.preventDefault();
+    if (!gesture.moved && Math.hypot(delta, current.y - gesture.y) < 4 && Math.abs(current.distance - gesture.distance) < 4) return;
+    gesture.moved = true; suppressClick = true;
+    if (!fullscreen) return;
+    event.preventDefault();
     const area = getChart().chartArea, rect = canvas.getBoundingClientRect();
     const anchor = Math.max(0, Math.min(1, (gesture.x - rect.left - area.left) / area.width));
     const factor = gesture.distance && current.distance ? current.distance / gesture.distance : 1;
@@ -216,7 +223,7 @@ export function createChartNavigation({ canvas, getChart, onSettle, onMove }) {
     if (!pointers.has(event.pointerId)) return;
     const moved = gesture?.moved; if (moved) suppressClick = true;
     pointers.delete(event.pointerId);
-    if (pointers.size) gesture = pointerBasis(); else { gesture = undefined; if (moved || moving) settle(); }
+    if (pointers.size) gesture = pointerBasis(); else { gesture = undefined; if (fullscreen && (moved || moving)) settle(); }
   }
   for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) listen(canvas, name, release);
   listen(canvas, 'click', event => { if (suppressClick) { event.preventDefault(); event.stopImmediatePropagation(); suppressClick = false; } }, true);

@@ -958,6 +958,7 @@ node test/browser/mitsubishi-smoke.js
 node test/browser/fullscreen-smoke.js
 node test/browser/chart-views-smoke.js
 node test/browser/chart-views-smoke.js --voltage-only
+node test/browser/chart-touch-smoke.js
 node test/browser/selectors-smoke.js
 node test/browser/timing-compat-smoke.js
 ```

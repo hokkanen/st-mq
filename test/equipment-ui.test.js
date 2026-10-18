@@ -408,7 +408,7 @@ function equipmentDocument() {
 const descendants = node => node.children.flatMap(child => [child, ...descendants(child)]);
 const deviceNode = (document, rootId, id) => document.getElementById(rootId).children.find(node => node.dataset.deviceId === id);
 
-test('temperature and tariff equipment expose readings without an empty fold and update existing rows in place', () => {
+test('temperature readings stay compact and tariff controls have a fold with the manual heating link', () => {
   const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
   const upstairs = { id: 'upstairs', label: 'Upstairs', area: 'home', kind: 'temperature', source: 'MQTT', available: false,
     readings: { indoor_temperature: { label: 'Temperature', unit: 'degC', value: null, stale: true } } };
@@ -417,9 +417,16 @@ test('temperature and tariff equipment expose readings without an empty fold and
     readings: { tariff_active: { label: 'Switch', unit: 'state', value: 0, stale: false, observedAt: now } } };
   const initial = status({ equipment: { devices: [upstairs, plug, tariff] } }); panel.update(initial);
   const tariffRow = deviceNode(document, 'home-equipment-readings', 'tariff');
-  assert.equal(tariffRow.tagName, 'SECTION'); assert.equal(tariffRow.querySelector('summary'), null);
+  assert.equal(tariffRow.tagName, 'DETAILS'); assert(tariffRow.querySelector('summary'));
+  assert.equal(tariffRow.querySelector('a').href, '#home-manual-override-details');
+  assert.match(tariffRow.textContent, /Test or control this switch from Manual heating override/);
+  const home = document.getElementById('home-equipment-readings');
+  assert.deepEqual(home.children.slice(-3).map(node => node.id ?? node.dataset.deviceId),
+    ['home-floor-device', 'dhwr-device', 'tariff']);
+  assert.equal(home.children.at(-3).querySelector('.equipment-device-meta').textContent, 'Quad switch · Sonoff');
+  tariffRow.open = true;
   assert.equal(tariffRow.querySelector('.status-detail-label').textContent, 'Off');
-  assert.equal(tariffRow.querySelector('.equipment-inline-controls'), null);
+  assert.equal(tariffRow.querySelector('.equipment-inline-controls').hidden, true);
   const row = deviceNode(document, 'home-equipment-readings', 'upstairs');
   assert.equal(row.tagName, 'SECTION'); assert(row.classList.contains('equipment-device-static'));
   assert.equal(row.children[0].tagName, 'DIV');
@@ -437,6 +444,7 @@ test('temperature and tariff equipment expose readings without an empty fold and
   assert.equal(deviceNode(document, 'home-equipment-readings', 'upstairs'), row);
   assert.equal(row.querySelector('.equipment-readings'), readings); assert.equal(readings.querySelector('.status-detail-label'), value);
   assert.equal(value.textContent, '21.4 °C');
+  assert.equal(tariffRow.open, true, 'The tariff fold stays open across updates');
   const caravan = deviceNode(document, 'garage-equipment-readings', 'caravan');
   assert.equal(caravan.tagName, 'DETAILS'); assert.equal(caravan.children[0].tagName, 'SUMMARY');
   assert(caravan.querySelector('.equipment-inline-controls'), 'Equipment with controls remains expandable');
@@ -728,6 +736,7 @@ test('Caravan On availability separates a confirmed restart wait from unknown ti
 
 test('recording explains the power check, modest loads and missing evidence independently of humidity', () => {
   const device = dehumidifier(true), document = equipmentDocument();
+  device.dehumidifier.measurements = { humidity: 25 };
   device.dehumidifier.temperatureControl = { configured: true, enabled: true, canEdit: true, offAtC: 1, onAtC: 2,
     temperatureC: 14, humidity: 60, applianceTemperatureC: null, applianceHumidity: 25,
     recording: false, qualified: false, reason: 'checking-power',
@@ -739,7 +748,9 @@ test('recording explains the power check, modest loads and missing evidence inde
   assert.equal(appliance.querySelector('.caravan-recording-details').children[0].textContent, 'Power check');
   const evidence = appliance.querySelector('.caravan-power-check');
   assert.equal(evidence.querySelector('.caravan-power-changes').textContent, 'Rise after On5.2 WFall after OffUnavailable');
-  assert.match(evidence.textContent, /Dehumidifier25 %Air sensor60 %/);
+  assert.equal(evidence.querySelector('.caravan-humidity-label'), null);
+  assert.doesNotMatch(evidence.textContent, /25 %|60 %/);
+  assert.match(appliance.querySelector('.caravan-appliance-state').textContent, /25% RH/);
   assert.match(evidence.querySelector('.caravan-comparison-rule').textContent, /at least 3 W.*small fan load.*Humidity is not a recording requirement/);
   assert.equal(evidence.querySelector('.caravan-temperature-label').hidden, true, 'Absent appliance temperature has no visible placeholder');
   for (const [reason, expected] of [['appliance-unavailable', /fresh dehumidifier reports/],
@@ -755,7 +766,7 @@ test('recording explains the power check, modest loads and missing evidence inde
     humidity: null, applianceHumidity: null,
     locationTest: { status: 'passed', phase: null, reason: null, minimumPowerChangeW: 3, powerRiseW: 5.2, powerFallW: 5 } }); panel.update(current);
   assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording active.*power followed native On and Off/);
-  assert.equal(evidence.querySelector('.caravan-humidity-label').hidden, true, 'Missing humidity does not qualify or block recording');
+  assert.equal(evidence.querySelector('.caravan-humidity-label'), null, 'Humidity is independent of the power check');
   assert.equal(evidence.querySelector('.caravan-power-changes').textContent, 'Rise after On5.2 WFall after Off5 W');
   Object.assign(device.dehumidifier.temperatureControl, { reason: 'cold', enabled: true }); panel.update(current);
   assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording active.*power followed native On and Off/);

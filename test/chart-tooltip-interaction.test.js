@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Chart from 'chart.js/auto';
-import { historyTooltipInteraction } from '../chart/history-tooltips.js';
+import { historyTooltipInteraction, historyTooltipDismissPlugin } from '../chart/history-tooltips.js';
 
 function fixture(t, extra = []) {
   const canvas = { width: 1000, height: 500 };
   const ctx = new Proxy({ canvas, measureText: value => ({ width: String(value).length * 7 }) },
     { get: (target, key) => target[key] ?? (() => {}) });
   canvas.getContext = () => ctx;
-  const chart = new Chart(canvas, { type: 'line', data: { datasets: [
+  const chart = new Chart(canvas, { type: 'line', plugins: [historyTooltipDismissPlugin], data: { datasets: [
     { key: 'runtime', showLine: false, pointRadius: 5, pointHitRadius: 12, data: [{ x: 20, y: 80 }] },
     { key: 'price', pointRadius: 1, pointHitRadius: 8, data: [{ x: 20.2, y: 80.2 }, { x: 50, y: 10 }] },
     ...extra,
@@ -20,6 +20,24 @@ function fixture(t, extra = []) {
   const inspect = (x, y) => historyTooltipInteraction(chart, { native: {}, x, y }, { axis: 'x', intersect: false }, false);
   return { chart, inspect, marker: chart.getDatasetMeta(0).data[0] };
 }
+
+test('touch inspection waits for a click while desktop hover remains available', t => {
+  const { chart, marker } = fixture(t);
+  chart.canvas.dataset = { pointerType: 'touch' };
+  chart.options.plugins.tooltip.enabled = true; chart.update();
+  for (const [type, native] of [['mousedown', { type: 'touchstart' }], ['mousemove', { type: 'touchmove' }],
+    ['mousemove', { type: 'mousemove', sourceCapabilities: { firesTouchEvents: true } }],
+    ['mousemove', { type: 'mousemove' }]]) {
+    chart._eventHandler({ type, native, x: marker.x, y: marker.y });
+    assert.equal(chart.tooltip.opacity, 0, `${native.type} cannot open touch details`);
+  }
+  chart._eventHandler({ type: 'click', native: { type: 'click', sourceCapabilities: { firesTouchEvents: true } }, x: marker.x, y: marker.y });
+  assert.equal(chart.tooltip.opacity, 1, 'A completed touch click can inspect a point');
+  chart._eventHandler({ type: 'mouseout', native: { type: 'mouseout' }, x: 0, y: 0 });
+  chart.canvas.dataset.pointerType = 'mouse';
+  chart._eventHandler({ type: 'mousemove', native: { type: 'mousemove' }, x: marker.x, y: marker.y });
+  assert.equal(chart.tooltip.opacity, 1, 'Mouse hover keeps its existing behaviour');
+});
 
 test('a sparse circle keeps its hit target when a smaller price point is closer in time and space', t => {
   const { chart, inspect, marker } = fixture(t);

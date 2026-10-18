@@ -81,15 +81,12 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     const cell = make('div'), value = make('dd');
     cell.append(make('dt', label), value); powerChanges.append(cell); powerValues.set(field, value);
   }
-  const humidityComparison = make('dl', '', 'caravan-comparison-values');
   const temperatureComparison = make('dl', '', 'caravan-comparison-values');
   const comparisonValues = new Map();
-  for (const [group, fields] of [[humidityComparison, ['applianceHumidity', 'humidity']],
-    [temperatureComparison, ['applianceTemperatureC', 'temperatureC']]]) {
-    for (const [index, field] of fields.entries()) {
-      const cell = make('div'), value = make('dd');
-      cell.append(make('dt', index === 0 ? 'Dehumidifier' : 'Air sensor'), value); group.append(cell); comparisonValues.set(field, value);
-    }
+  for (const [index, field] of ['applianceTemperatureC', 'temperatureC'].entries()) {
+    const cell = make('div'), value = make('dd');
+    cell.append(make('dt', index === 0 ? 'Dehumidifier' : 'Air sensor'), value);
+    temperatureComparison.append(cell); comparisonValues.set(field, value);
   }
   const comparisonRule = make('p', '', 'caravan-comparison-rule muted');
   const recheckLocation = make('button', 'Recheck appliance location', 'secondary caravan-location-recheck');
@@ -99,9 +96,8 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
   recheckLocation.addEventListener('click', () => {
     if (!recheckLocation.disabled) void actions.recheckDehumidifierLocation('caravan_dehumidifier');
   });
-  const humidityLabel = make('p', 'Humidity · live only', 'caravan-comparison-label caravan-humidity-label muted');
   const temperatureLabel = make('p', 'Temperature · live only', 'caravan-comparison-label caravan-temperature-label muted');
-  comparison.append(powerChanges, comparisonRule, recheckLocation, recheckHelp, humidityLabel, humidityComparison, temperatureLabel, temperatureComparison);
+  comparison.append(powerChanges, comparisonRule, recheckLocation, recheckHelp, temperatureLabel, temperatureComparison);
   recordingDetails.append(make('summary', 'Power check'), comparison);
   recordingPanel.append(recording, recordingDetails);
 
@@ -267,11 +263,14 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     // includes command authority, so a replica can still show healthy reports.
     const connection = summaryFor(appliance), live = appliance.available === true;
     const fan = DEHUMIDIFIER_OPTIONS.fanSpeed.find(option => option[0] === reported.fanSpeed);
-    const fanLabel = fan ? `${fan[1]} fan · ` : '';
+    const fanLabel = fan ? `${fan[1]} fan` : '';
+    const humidity = device.measurements?.humidity;
+    const liveSummary = [Number.isFinite(humidity) ? `${humidity}% RH` : '',
+      device.runningState === 'on' ? fanLabel : '', connection.recent].filter(Boolean).join(' · ');
     const running = device.runningState === 'off' ? 'Off' : device.runningState === 'on' ? 'On' : 'Power unknown';
     stateValue.textContent = live ? running : device.powerOffAvailable && reported.power === 'on' ? 'On'
       : Number.isFinite(device.observedAt ?? appliance.observedAt ?? appliance.lastReportAt) ? 'Unavailable' : 'Awaiting first device report';
-    stateRecent.textContent = live ? `${device.runningState === 'on' ? fanLabel : ''}${connection.recent}`
+    stateRecent.textContent = live ? liveSummary
       : device.powerOffAvailable && reported.power === 'on' ? `Fan setting unavailable · ${connection.recent}`
         : Number.isFinite(device.observedAt ?? appliance.observedAt ?? appliance.lastReportAt) ? connection.recent : '';
     stateRecent.hidden = !stateRecent.textContent;
@@ -326,9 +325,8 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
         : ['waiting-restart', 'waiting-native-power'].includes(test?.reason) ? explanation[test.reason] : explanation[guard.reason] ?? explanation[test?.reason]
           ?? (test?.status === 'passed' ? 'Waiting for a fresh dehumidifier state report.' : 'Waiting to check Caravan power.'));
       const value = (number, unit) => Number.isFinite(number) ? `${Math.round(number * 10) / 10} ${unit}` : 'Unavailable';
-      for (const [field, node] of comparisonValues) setText(node, value(guard[field], field.endsWith('C') ? '°C' : '%'));
+      for (const [field, node] of comparisonValues) setText(node, value(guard[field], '°C'));
       for (const [field, node] of powerValues) setText(node, value(test?.[field], 'W'));
-      humidityLabel.hidden = humidityComparison.hidden = !Number.isFinite(guard.applianceHumidity) && !Number.isFinite(guard.humidity);
       temperatureLabel.hidden = temperatureComparison.hidden = !Number.isFinite(guard.applianceTemperatureC);
       recheckLocation.disabled = !temperatureControlAllowed(status, appliance, busy || blocked()) || guard.qualification?.canRecheck !== true;
       comparisonRule.textContent = `A required power check needs at least ${test?.minimumPowerChangeW ?? 3} W of rise with native On and fall with Off.`

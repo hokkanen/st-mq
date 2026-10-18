@@ -10,6 +10,7 @@ import { validateGarageModeState } from '../garage/room-temperature.js';
 import { garageSettings } from '../garage/settings.js';
 import { validateGarageSenderSnapshot } from '../garage/sender.js';
 import { validateGarageAdapterSnapshot } from '../garage/contract.js';
+import { TEMPERATURE_SENSORS } from '../domain/indoor-sensors.js';
 
 const reason = 'Read-only view. Recorded values are available; live equipment state and controls are unavailable.';
 const copy = value => structuredClone(value);
@@ -48,7 +49,8 @@ function equipmentSnapshot(config, read, snapshot) {
   const devices = (config.connections?.equipment?.devices ?? []).map(device => {
     const mappings = [...(device.readings ?? [])];
     const signal = device.stateSignal ?? device.temperatureSignal ?? device.powerSignal;
-    if (signal && !mappings.some(row => row.signal === signal)) mappings.push({ signal, label: device.label });
+    if (signal && !mappings.some(row => row.signal === signal)) mappings.unshift({ signal,
+      label: device.kind === 'temperature' ? TEMPERATURE_SENSORS[signal] ?? device.label : device.label });
     const readings = Object.fromEntries(mappings.flatMap(mapping => {
       const temperature = ['temperature'].includes(device.kind);
       const source = device.protocol === 'shelly' ? 'shelly-mqtt' : temperature ? 'mqtt-temperature' : 'mqtt-equipment';

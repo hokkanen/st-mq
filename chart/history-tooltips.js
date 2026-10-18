@@ -170,6 +170,12 @@ export function historyTooltipsEnabled({ fullscreen, coarsePointer }) {
 export const historyTooltipDismissPlugin = {
   id: 'historyTooltipDismiss',
   beforeEvent(chart, { event }) {
+    // A touch is only an inspection after its click. Touch-down/move and the
+    // compatibility mouse move emitted on release must not open a popup.
+    const native = event.native;
+    if (['touchstart', 'touchmove'].includes(native?.type)
+      || event.type === 'mousemove' && chart.canvas?.dataset?.pointerType === 'touch'
+      || native?.sourceCapabilities?.firesTouchEvents && event.type !== 'click') return false;
     const tooltip = chart.tooltip;
     if (!tooltip?.options.enabled || !tooltip.opacity
       || !['click', 'mousemove', 'mousedown'].includes(event.type)
