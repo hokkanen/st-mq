@@ -384,3 +384,22 @@ test('reload serializes against API mutations and source-less injected configura
   } finally { await second.close(); }
   assert.equal(app.engine.config, config);
 });
+
+test('chart cache days and memory apply through the existing settings API without restarting the process or listener', async t => {
+ const now=Date.parse('2026-10-18T09:00:00+03:00');
+ const {app,write,preview,base,headers}=await setup(t,{charts:{cache_days:0,cache_memory_mib:64}},{clock:()=>now});
+ const listener=app.server,port=listener.address().port,pid=process.pid;
+ for(const [days,memory] of [[7,1024],[14,2048],[0,64]]){
+  write({charts:{cache_days:days,cache_memory_mib:memory}});
+  const reviewed=await preview();assert.equal(reviewed.status,200);const review=await reviewed.json();
+  assert.equal(review.canApply,true);assert.deepEqual(review.restartRequired,[]);
+  const applied=await fetch(`${base}/api/settings/reload`,{method:'POST',headers,body:JSON.stringify({reviewId:review.reviewId})});
+  assert.equal(applied.status,200);await applied.json();
+  assert.deepEqual(app.engine.config.charts,{cacheDays:days,cacheBytes:memory*1024*1024});
+  assert.equal(process.pid,pid);assert.equal(app.server,listener);assert.equal(app.server.address().port,port);
+  const chart=await fetch(`${base}/api/chart?start=2026-10-18&view=phases`,{headers});
+  assert.equal(chart.status,200);assert.equal((await chart.json()).input,'simulated');
+ }
+ write({charts:{cache_days:15,cache_memory_mib:1024}});
+ assert.equal((await preview()).status,400);assert.equal(app.engine.config.charts.cacheDays,0);
+});
