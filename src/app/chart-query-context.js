@@ -2,9 +2,9 @@ import { releaseStorageLease, checkStorageRequest } from '../storage/worker-admi
 import { recordedEnergyGroups, recordedEnergyStart } from '../storage/energy-history.js';
 import { createVoltageReader } from '../storage/voltage.js';
 
-// Reuse source interpretation within one immutable chart request. This is not
-// a cross-request cache: recovery revisions, pending energy and receipt cutoffs
-// are read again for every request. Dense histories retain the streaming path.
+// Reuse source interpretation within an immutable chart request. The worker may
+// retain a bounded context only while selection/import revisions, pending energy
+// and receipt cutoffs still match. Dense histories retain the streaming path.
 export function createChartQueryContext({ store, range, now, input, maxEnergyGroups = 65_536,
   maxEnergyBytes = 32 * 1024 * 1024 }) {
   const starts = new Map();

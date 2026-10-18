@@ -13,7 +13,7 @@ import { CHART_VIEW_BY_KEY } from '../domain/chart-views.js';
 import { CHARGING_ALLOWANCE_SIGNALS } from '../charging/allowance-history.js';
 import { CHARGING_ALLOWANCE_SERIES } from './chart-charging-allowances.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
-import { ENERGY_SIGNALS } from '../domain/history-series.js';
+import { ENERGY_SIGNALS, HISTORY_AXIS_BY_KEY } from '../domain/history-series.js';
 import { createChartQueryContext } from './chart-query-context.js';
 import { buildHeatingSavings } from './garage-reporting.js';
 import { ChartSourceCache } from './chart-source-cache.js';
@@ -26,7 +26,7 @@ const db = admittedReader(storageStep(() => new DatabaseSync(workerData.dbPath, 
 db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE;');
 const store = { db, path: workerData.dbPath };
 const contexts = new Map();
-const cache = new Map(); let cacheBytes = 0, version = null;
+const cache = new Map(); let cacheBytes = 0;
 let settings = workerData.settings ?? DEFAULT_CHART_CACHE;
 let cacheLimitBytes;
 const sourceCache = workerData.resident ? new ChartSourceCache(db) : null;
@@ -54,6 +54,16 @@ const pendingReceipts = db.prepare(`SELECT MIN(received_at) AS next FROM active_
       AND json_extract(raw,'$.intervalStart')<?)`);
 const receiptFingerprint = (args, range, detail) => pendingReceipts.get(args.now,
   range.to + (detail ? 3 * 3_600_000 : 0), range.to).next;
+const providerRevisions = db.prepare(`SELECT COUNT(*) AS fetches FROM active_provider_snapshot_fetches
+  WHERE kind='market' AND fetched_at>=? AND fetched_at<=?
+    OR ? AND kind='weather' AND fetched_at>=? AND fetched_at<?`);
+function providerFingerprint(args, range) {
+  const view = CHART_VIEW_BY_KEY[args.view];
+  const signals = view ? [...view.leftSignals, ...view.rightSignals]
+    : HISTORY_AXIS_BY_KEY[args.left ?? 'power']?.signals ?? [];
+  return providerRevisions.get(range.from - 7 * 86_400_000, Math.min(args.now, range.to + 7 * 86_400_000),
+    Number(signals.includes('solar_radiation')), range.from - 6 * 3_600_000, Math.min(args.now, range.to)).fetches;
+}
 function invalidateChangedRanges() {
   const current = heads.get(); store.chartHead = current.observations ?? 0;
   store.chartRevision = JSON.stringify([current.selection, current.imports]);
@@ -170,11 +180,9 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
     // an otherwise complete resident week for a few just-committed readings.
     if (sourceCache?.ready && sourceCache.head !== store.chartHead
       && store.chartHead - sourceCache.head <= 256) sourceCache.maintain(args.now, 256);
-    const currentVersion = JSON.stringify(db.prepare(`SELECT
+    const {range,detail}=chartRequestRange(args);
+    const currentVersion = JSON.stringify({ providers: providerFingerprint(args, range), state: db.prepare(`SELECT
       (SELECT generation FROM history_selection WHERE id=1) recoverySelection,
-      (SELECT MIN(completed_at) FROM active_imports AS imports WHERE status='complete' AND completed_at>?) nextImportPublication,
-      (SELECT MIN(fetched_at) FROM active_provider_snapshot_fetches AS provider_snapshot_fetches WHERE fetched_at>?) nextProviderReceipt,
-      (SELECT MAX(id) FROM active_provider_snapshot_fetches AS provider_snapshot_fetches) snapshots,
       (SELECT MAX(id) FROM active_fireplace_events AS fireplace_events) fireplaceRevision,
       (SELECT group_concat(CASE WHEN json_valid(value) THEN json_extract(value,'$.checkpointDigest') ELSE 'invalid' END)
         FROM state WHERE key IN ('adaptive:mqtt','adaptive:providers','adaptive:simulated')) adaptiveModels,
@@ -182,11 +190,9 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       (SELECT MAX(id) FROM active_events AS events WHERE type='heat-pump-power-config') heatPowerConfig,
       (SELECT MAX(id) FROM active_energy_audits AS energy_audits) energyAudits,
       (SELECT MAX(id) FROM active_events AS events WHERE type='charging-session-check') chargingSessionChecks,
-      (SELECT COUNT(*) FROM active_imports AS imports WHERE status='complete') imports`).get(args.now,args.now));
-    if (currentVersion !== version) { cache.clear(); contexts.clear(); cacheBytes = 0; version = currentVersion; }
+      (SELECT COUNT(*) FROM active_imports AS imports WHERE status='complete' AND completed_at<=?) imports`).get(args.now) });
     // Historical views survive second-by-second clock movement. Current/future
     // views renew within fifteen seconds, preserving acquisition timestamps.
-    const {range,detail}=chartRequestRange(args);
     // A queued request's clock can precede newly committed telemetry. Only
     // receipts that could affect this selection may expire its cached result;
     // admitting today's reading cannot invalidate a completed earlier week.
@@ -194,12 +200,15 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
     const bucket = range.to <= args.now ? 0 : Math.floor(args.now / 15_000);
     // One version per selection: rolling clock buckets replace their earlier
     // response instead of filling RAM with obsolete copies of the same view.
-    const key = JSON.stringify({ ...args, now: 0 });
+    // Weather supplied by the live provider only draws forecasts from now.
+    // Historical radiation uses its own archived, receipt-bounded snapshots.
+    // A new live forecast must not change a completed selection's cache key.
+    const key = JSON.stringify({ ...args, now: 0, ...(range.to <= args.now ? { weather: null } : {}) });
     let entry = cache.get(key), result, prepared;
     // Constant readings extend bounded energy tails and confirmation spans.
     // Renew only affected plots, preserving unrelated historical caches and the
     // live clock bucket when source evidence itself has not changed.
-    if(entry&&(entry.bucket !== bucket || entry.receiptFingerprint !== receipts || entry.pendingEnergyFingerprint!==pendingEnergyFingerprint(args,range)
+    if(entry&&(entry.version !== currentVersion || entry.bucket !== bucket || entry.receiptFingerprint !== receipts || entry.pendingEnergyFingerprint!==pendingEnergyFingerprint(args,range)
       ||entry.sourceCoverageFingerprint!==sourceCoverageFingerprint(args,range))) {
       cache.delete(key);cacheBytes-=entry.bytes;entry=null;
     }
@@ -231,12 +240,12 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       const contextKey = JSON.stringify([args.input, range.from, range.to, bucket]);
       let context = contexts.get(contextKey);
       const pendingFingerprint = pendingEnergyFingerprint(args, range);
-      if (context && (context.pending !== pendingFingerprint || context.receipts !== receipts)) {
+      if (context && (context.revision !== store.chartRevision || context.pending !== pendingFingerprint || context.receipts !== receipts)) {
         contexts.delete(contextKey); context = null;
       }
       if (!context) {
         const contextBytes = Math.min(64 * 1024 * 1024, Math.floor(settings.cacheBytes * 0.065));
-        context = { range, pending: pendingFingerprint, receipts,
+        context = { range, revision: store.chartRevision, pending: pendingFingerprint, receipts,
           value: createChartQueryContext({ store, range, now: args.now, input: args.input, maxEnergyBytes: contextBytes, maxEnergyGroups: Math.ceil(contextBytes / 512) }) };
         if (workerData.resident && settings.cacheDays) {
           while (contexts.size >= 2) contexts.delete(contexts.keys().next().value);
@@ -253,7 +262,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       while (cache.size && (cache.size >= 128 || cacheBytes + bytes > cacheLimitBytes)) {
         const first = cache.keys().next().value; cacheBytes -= cache.get(first).bytes; cache.delete(first);
       }
-      if (bytes <= cacheLimitBytes) { entry = { result, prepared, bytes, range, bucket, detail: result.meta.detail, receiptFingerprint: receipts, pendingEnergyFingerprint:pendingFingerprint,
+      if (bytes <= cacheLimitBytes) { entry = { result, prepared, bytes, range, bucket, version: currentVersion, detail: result.meta.detail, receiptFingerprint: receipts, pendingEnergyFingerprint:pendingFingerprint,
         sourceCoverageFingerprint:sourceFingerprint }; cache.set(key, entry); cacheBytes += bytes; }
     }
     releaseStorageLease();

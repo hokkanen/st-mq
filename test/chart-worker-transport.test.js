@@ -237,6 +237,24 @@ test('admitting delayed energy refreshes shared reconstruction contexts at the s
  assert.deepEqual(after.series,getChartData({...selection,now:now+5000,store}).series);
 });
 
+test('live weather refreshes cannot evict completed plots or another view with different provider dependencies', async t => {
+ const {store,service}=fixture(t,{warmCache:false});
+ const first=await service.query(args);
+ const weather={source:'fmi',fetchedAt:now,issuedAt:now,forecast:[{start:now,end:now+3600000,outdoorC:10,solarRadiationWm2:100}]};
+ store.snapshot({kind:'weather',source:'fmi',fetchedAt:now,issuedAt:now,payload:weather});
+ const next=await service.query({...args,weather});assert.equal(next.meta.cacheHit,true);assert.deepEqual(next.series,first.series);
+ const other={...args,weather,view:'weather'};
+ await service.query(other);
+ assert.equal((await service.query({...args,weather})).meta.cacheHit,true,'A weather selection cannot discard another retained view');
+ assert.equal((await service.query(other)).meta.cacheHit,true);
+ const recordedAt=now-86400000;
+ const historical={source:'fmi',fetchedAt:recordedAt,issuedAt:recordedAt,forecast:[{start:recordedAt,end:recordedAt+3600000,solarRadiationWm2:200}]};
+ store.snapshot({kind:'weather',source:'fmi',fetchedAt:recordedAt,issuedAt:recordedAt,payload:historical});
+ const updated=await service.query(other);assert.notEqual(updated.meta.cacheHit,true);
+ assert(updated.series.solar_radiation.some(point=>point.y===200),'An eligible historical weather revision still appears');
+ assert.equal((await service.query({...args,weather})).meta.cacheHit,true,'Historical solar does not change garage geometry');
+});
+
 test('resident maintenance releases every read snapshot and configuration can disable and reenable it', async t => {
   const { store, service } = fixture(t);
   const until = Date.now() + 6000;

@@ -1138,6 +1138,9 @@ period; late overlapping energy, voltage, source coverage, imports and recovery
 changes still invalidate affected results. Receipt-clock checks follow the selected
 period: readings arriving during a queued request do not discard unrelated finished
 dates, while delayed evidence inside that period becomes visible at its actual receipt.
+Each cached selection owns its dependency revision. Opening another view cannot
+discard it, and live weather forecasts do not expire completed dates. Historical
+solar still follows the archived weather receipts eligible for its selected period.
 
 At most two read-only chart workers separate resident recent history from archive
 requests. Long selections cannot evict the resident window. The recent worker
