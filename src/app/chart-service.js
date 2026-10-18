@@ -105,7 +105,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
       const entry = lane.active;
       progress(entry, { stage: 'reading-history' });
       if (lane.active === entry && lane.worker) { Atomics.store(lane.requestSignal, 0, 0); lane.worker.postMessage({ id: entry.id, args: entry.args,
-        operation: entry.operation, wire: entry.wire, checkpoint: store.expectedCheckpoint }); }
+        operation: entry.operation, wire: entry.wire, checkpoint: entry.checkpoint }); }
     } catch {
       const entry = lane.active; lane.active = null; reset(lane);
       if (entry) settle(entry, new Error('Chart history request could not start'));
@@ -126,7 +126,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
     if (!closed && settings.cacheDays && !maintenanceTimer) { maintenanceTimer = setTimeout(maintain, 250); maintenanceTimer.unref(); }
   }
   if (warming) startWarming();
-  function query(args, { signal, operation = 'chart', onProgress, wire } = {}) {
+  function query(args, { signal, operation = 'chart', onProgress, wire, checkpoint = store.expectedCheckpoint } = {}) {
     if (closed) return Promise.reject(new Error('Chart service is closed'));
     if (signal?.aborted) return Promise.reject(aborted());
     args = { ...args, now: args?.now ?? Date.now() };
@@ -158,11 +158,11 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
       return Promise.reject(new RangeError('Too many pending chart requests'));
     }
     return new Promise((resolve, reject) => {
-      const entry = { id: nextId++, args, operation, wire, signal, onProgress, resolve, reject, abort: null,
+      const entry = { id: nextId++, args, operation, wire, checkpoint, signal, onProgress, resolve, reject, abort: null,
         observation: ['pin', 'pin-archive', 'maintain'].includes(operation) ? null : storageOperationHealth.begin(operation === 'overview' ? 'storage-inventory' : 'history-query', { queued: true, scope: 'history' }) };
       entry.abort = () => {
         if (lane.active === entry) {
-          if (lane.name === 'resident') { entry.aborted = true; Atomics.store(lane.requestSignal, 0, 1); }
+          if (lane.name === 'resident' || pinned) { entry.aborted = true; Atomics.store(lane.requestSignal, 0, 1); }
           else { lane.active = null; reset(lane, 'cancelled', 'cancelled'); }
         }
         else { const index = lane.queue.indexOf(entry); if (index < 0) return; lane.queue.splice(index, 1); }
@@ -174,14 +174,14 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
   }
   // Concurrent inventory readers share one bounded worker scan. Each caller
   // owns its cancellation; leaving the view never aborts another reader.
-  function overview({force=false,signal,...options}={}) {
+  function overview({force=false,signal,checkpoint=store.expectedCheckpoint,...options}={}) {
     if(typeof force!=='boolean')return Promise.reject(new TypeError('Invalid inventory refresh option'));
     if(signal?.aborted)return Promise.reject(aborted());
-    const key=JSON.stringify([force,store.expectedCheckpoint??null]);
+    const key=JSON.stringify([force,checkpoint??null]);
     let entry=overviewRequests.get(key);
     if(!entry) {
       const controller=new AbortController();entry={controller,readers:0,promise:null};
-      entry.promise=query({force},{...options,signal:controller.signal,operation:'overview'}).finally(()=>{
+      entry.promise=query({force},{...options,checkpoint,signal:controller.signal,operation:'overview'}).finally(()=>{
         if(overviewRequests.get(key)===entry)overviewRequests.delete(key);
       });
       overviewRequests.set(key,entry);

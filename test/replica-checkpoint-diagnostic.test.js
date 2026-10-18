@@ -14,6 +14,7 @@ import { ownedDirectory, publishSnapshot, readReplicaPublication } from '../src/
 import { acceptPeerPublication, applyPeerPublication } from '../src/replication/journal-publication.js';
 import { peerOperation, PeerTransfers, receivePeerTransfer } from '../src/replication/coalesced.js';
 import { databaseCheckpoint, sameCheckpoint } from '../src/replication/incremental.js';
+import { checkpointAt } from '../src/storage/journal.js';
 
 const generic = { error: 'Request could not be confirmed. Retry shortly.' };
 const mismatch = { code: 'replica_checkpoint_mismatch',
@@ -78,8 +79,28 @@ function phaseDiagnostics(f) {
 
 function chartBoundaries(t) {
   const pending = [], all = [];
-  let created = 0;
-  t.after(() => { for (const boundary of all) boundary.released.resolve(); });
+  let created = 0, candidate;
+  const checkpoint = Store.prototype.checkpoint, originalStat = filesystem.stat;
+  t.mock.method(Store.prototype, 'checkpoint', function (...args) {
+    if (this.readOnly) candidate = this;
+    return checkpoint.apply(this, args);
+  });
+  // Continuing publications no longer create/pin another chart worker. Hold
+  // the real refresh after its native snapshot check instead, exercising the
+  // same publication/lease race without requiring the obsolete worker churn.
+  filesystem.stat = async (...args) => {
+    const result = await originalStat(...args);
+    if (pending.length && candidate?.path === args[0]) {
+      const boundary = pending.shift(); boundary.store = candidate;
+      boundary.entered.resolve(); await boundary.released.promise;
+    }
+    return result;
+  };
+  syncBuiltinESMExports();
+  t.after(() => {
+    for (const boundary of all) boundary.released.resolve();
+    filesystem.stat = originalStat; syncBuiltinESMExports();
+  });
   return {
     get created() { return created; },
     arm() {
@@ -88,17 +109,7 @@ function chartBoundaries(t) {
     },
     makeChartService({ store }) {
       created++;
-      const service = createChartService({ store }), pin = service.pin.bind(service);
-      const boundary = pending.shift();
-      service.pin = async (...args) => {
-        await pin(...args);
-        if (boundary) {
-          boundary.store = store;
-          boundary.entered.resolve();
-          await boundary.released.promise;
-        }
-      };
-      return service;
+      return createChartService({ store });
     },
   };
 }
@@ -119,7 +130,21 @@ function publicationUpdates(f) {
   };
 }
 
-test('a completed newer publication is verified after an older chart-worker refresh loses its checkpoint', async t => {
+test('real coalesced catch-up retains completed charts after pruning the previous journal boundary', async t => {
+  let created = 0;
+  const f = await fixture(t, { makeChartService: options => { created++; return createChartService(options); } });
+  const path = '/api/chart?start=2026-01-15&end=2026-01-15&view=garage';
+  const first = await f.request(path); assert.equal(first.status, 200);
+  const previous = f.publication.checkpoint;
+  const publication = await publicationUpdates(f)('synthetic-cache-continuation');
+  assert.equal(checkpointAt(f.app.store.db, previous.sequence), null, 'Normal coalescing removed the old prefix');
+  const next = await f.request(path);
+  assert.equal(next.status, 200); assert.equal(next.body.meta.cacheHit, true);
+  assert.equal(created, 1); assert.deepEqual(next.body.series, first.body.series);
+  assert.ok(sameCheckpoint(f.app.store.checkpoint(), publication.checkpoint));
+});
+
+test('a completed newer publication is verified after an older refresh loses its checkpoint', async t => {
   const charts = chartBoundaries(t), f = await fixture(t, charts), update = publicationUpdates(f);
   const inode = (await stat(f.publication.dbPath)).ino;
   const first = await update('synthetic-first-published-event');
@@ -136,7 +161,7 @@ test('a completed newer publication is verified after an older chart-worker refr
   assert.equal(f.publicationReads.length - reads, 2, 'Only the original manifest check and verified retry refresh run');
   assert.deepEqual(f.diagnostics, [], 'A completed different generation adds no refusal diagnostic');
   assert.ok(sameCheckpoint(f.app.store.checkpoint(), second.checkpoint));
-  assert.equal(charts.created, 3, 'Only one new verified generation is opened for this request');
+  assert.equal(charts.created, 1, 'Verified generations share the physical file cache');
   assert.equal((await stat(f.publication.dbPath)).ino, inode);
   const status = await f.request('/api/status');
   assert.equal(status.status, 200);
@@ -160,7 +185,7 @@ test('a second completed publication race still refuses after the one verified r
   assert.deepEqual(await waiting, { status: 503, body: mismatch });
   assert.equal(f.publicationReads.length, reads, 'A second mismatch adds no manifest check');
   assert.deepEqual(phaseDiagnostics(f), [phaseDiagnostic('not-checked', { attempt: 2 })]);
-  assert.equal(charts.created, 3, 'This request cannot chase successive publications');
+  assert.equal(charts.created, 1, 'This request cannot churn chart workers across publications');
   assert.equal((await f.request('/api/recording-health')).status, 200);
   assert.ok(sameCheckpoint(f.app.store.checkpoint(), third.checkpoint));
 });
@@ -183,7 +208,7 @@ test('a failed rollback does not admit a newer publication or expose its cleanup
   assert.deepEqual(await waiting, { status: 503, body: mismatch });
   assert.equal(f.publicationReads.length, reads, 'Failed cleanup cannot read or admit another manifest');
   assert.deepEqual(phaseDiagnostics(f), [phaseDiagnostic('not-checked', { rollbackConfirmed: false })]);
-  assert.equal(charts.created, 2, 'Cleanup failure cannot open the next generation');
+  assert.equal(charts.created, 1, 'Cleanup failure cannot open another cache owner');
   mocked.mock.restore();
   exec('ROLLBACK');
   assert.ok(sameCheckpoint(await databaseCheckpoint({ dbPath: f.publication.dbPath }), second.checkpoint));
@@ -204,7 +229,7 @@ test('an unreadable current manifest retains the original verified checkpoint re
   assert.deepEqual(await waiting, { status: 503, body: mismatch });
   assert.equal(f.publicationReads.length - reads, 1, 'The original manifest check runs once');
   assert.deepEqual(phaseDiagnostics(f), [phaseDiagnostic('unreadable')]);
-  assert.equal(charts.created, 2);
+  assert.equal(charts.created, 1);
   unreadable = false;
   assert.equal((await f.request('/api/recording-health')).status, 200);
   assert.ok(sameCheckpoint(f.app.store.checkpoint(), second.checkpoint));
@@ -223,7 +248,7 @@ test('a missing current manifest cannot make the advanced database a readable fa
   assert.deepEqual(await waiting, { status: 503, body: mismatch });
   assert.equal(f.publicationReads.length - reads, 1, 'Missing manifest adds no fallback or retry');
   assert.deepEqual(phaseDiagnostics(f), [phaseDiagnostic('missing')]);
-  assert.equal(charts.created, 2);
+  assert.equal(charts.created, 1);
   assert.ok(sameCheckpoint(await databaseCheckpoint({ dbPath: f.publication.dbPath }), second.checkpoint));
   await rename(held, manifest);
   assert.equal((await f.request('/api/recording-health')).status, 200);
@@ -254,7 +279,7 @@ test('closing the viewer during the fresh-manifest check cannot acquire a new re
   assert.equal(f.publicationReads.length, reads, 'Close adds no manifest check or new lease');
   assert.deepEqual(f.diagnostics, [], 'The unchanged close/transport failure is not classified as a served typed refusal');
   assert.ok(result.transportLost || result.response.status !== 200);
-  assert.equal(charts.created, 2, 'A closed viewer cannot open the next generation');
+  assert.equal(charts.created, 1, 'A closed viewer cannot open another cache owner');
   assert.throws(() => f.app.store.checkpoint(), 'The original reader is closed too');
 });
 

@@ -1132,7 +1132,8 @@ releases its read snapshot and waits behind control, recording, requested reads,
 checkpoints and mirroring. No chart navigation prediction or companion prefetch
 runs. Cancelling a recent selection cooperatively releases its read snapshot
 without destroying the resident window; obsolete archive work can retire its own
-independent worker. Finished historical responses survive new observations after their selected
+independent worker. Pinned replica readers also cancel cooperatively to retain
+their file handles. Finished historical responses survive new observations after their selected
 period; late overlapping energy, voltage, source coverage, imports and recovery
 changes still invalidate affected results.
 
@@ -1141,9 +1142,10 @@ requests. Long selections cannot evict the resident window. The recent worker
 stays alive while caching is enabled; the archive worker and nonresident workers
 retire after an idle minute. Replica generation leases pin both reader handles
 until their owner closes, so an in-flight chart remains readable after an old
-file is removed. An idle replica reader/cache can transfer across an incremental
-publication of the same file only when the exact earlier journal boundary is
-verified; full replacements and active leases keep independent lifetimes. Memory pressure can shorten the resident window;
+file is removed. Verified incremental publications of the same physical database
+share that cache even while older responses finish. Each request retains its own
+checkpoint and native read transaction. File replacements, database identity
+changes and journal rewinds create independent cache owners. Memory pressure can shorten the resident window;
 queries outside the retained range use the database. Result encoding
 runs on the server worker; browser request parsing and geometry preparation also
 run in workers. Unchanged content uses a semantic revision instead of serializing

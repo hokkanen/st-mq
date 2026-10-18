@@ -614,7 +614,7 @@ test('in-flight chart requests lease their generation across publication and old
   assert.equal((await request(chartPath)).body.series.indoor_temperature[0].y, 25);
 });
 
-test('verified incremental publications retain an idle chart cache only across the exact journal prefix', async t => {
+test('verified incremental publications retain an idle chart cache and admit overlapping new inputs', async t => {
   const directory = fixture(t), initial = journalSnapshot(directory, 'incremental-cache');
   const fileGeneration = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
   let publication = {...initial, fileGeneration}, created = 0;
@@ -633,4 +633,40 @@ test('verified incremental publications retain an idle chart cache only across t
   const changed=await request(chartPath);
   assert.equal(changed.status,200); assert.equal(created,1);
   assert(changed.body.series.indoor_temperature.some(point=>point.y===25));
+});
+
+test('an archive response can retain its old publication while the next publication keeps the recent cache', async t => {
+  const directory = fixture(t), initial = journalSnapshot(directory, 'active-archive-cache');
+  let publication = { ...initial, fileGeneration: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa' }, created = 0;
+  const entered = deferred(), proceed = deferred(); t.after(() => proceed.resolve());
+  const makeChartService = options => {
+    created++;
+    const service = createChartService(options);
+    for (const method of ['query', 'queryWire']) {
+      const query = service[method].bind(service);
+      service[method] = async (args, options) => {
+        const result = await query(args, options);
+        if (args.startDate === '2026-01-01') { entered.resolve(); await proceed.promise; }
+        return result;
+      };
+    }
+    return service;
+  };
+  const { app, request } = await viewer(t, directory, () => publication, { makeChartService });
+  const writer = new Store(initial.dbPath); t.after(() => writer.close());
+  const first = (await request(chartPath)).body, oldStore = app.store;
+  const archive = request(chartPath.replace('start=2026-01-15', 'start=2026-01-01'));
+  await entered.promise;
+  writer.setState('synthetic-next-archive-publication', { tick: 1 });
+  publication = { ...publication, generation: 'active-archive-next', checkpoint: writer.checkpoint() };
+  assert.equal((await request('/api/status')).body.sync.generation, publication.generation);
+  assert.notEqual(app.store, oldStore, 'Native publication read transactions remain independent');
+  assert.equal(oldStore.db.isOpen, true, 'The archive still owns its old native snapshot');
+  const recent = await request(chartPath);
+  assert.equal(recent.status, 200); assert.equal(recent.body.meta.cacheHit, true);
+  assert.deepEqual(recent.body.series, first.series); assert.equal(created, 1);
+  proceed.resolve(); assert.equal((await archive).status, 200);
+  await app.close();
+  assert.equal(oldStore.db.isOpen, false, 'The cache owner joins and closes its backing connection');
+  assert.equal(app.store.db.isOpen, false);
 });

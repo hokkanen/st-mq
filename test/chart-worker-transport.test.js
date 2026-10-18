@@ -1,7 +1,7 @@
 import { storageOperationHealth } from '../src/storage/operation-health.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
@@ -290,4 +290,38 @@ test('warming can wait for startup and a zero-day configuration schedules no res
  assert(service.cacheStatus().resident?.ready);
  service.configure({cacheDays:0,cacheBytes:64*1024*1024});
  await new Promise(resolve=>setTimeout(resolve,300));assert.equal(service.cacheStatus().resident,null);
+});
+
+test('queued chart requests retain their own checkpoint after the service default advances', async t => {
+ const {store,service}=fixture(t,{warmCache:false});
+ let release,entered;const waiting=new Promise(resolve=>{release=resolve}),started=new Promise(resolve=>{entered=resolve});
+ const run=store.runStorageTask.bind(store);let held=false;
+ store.runStorageTask=(operation,options)=>{
+  if(!held){held=true;entered();return waiting.then(()=>run(operation,options));}
+  return run(operation,options);
+ };
+ t.after(()=>release());
+ store.expectedCheckpoint=store.checkpoint();
+ const first=service.query(args);await started;
+ const queued=service.query(args);
+ store.expectedCheckpoint={...store.expectedCheckpoint,hash:'0'.repeat(64)};
+ release();await first;assert.equal((await queued).meta.cacheHit,true);
+ await assert.rejects(service.query(args),/checkpoint advanced/);
+});
+
+test('a pinned archive cancellation retains the open reader after its published file is removed', async t => {
+ const directory=mkdtempSync(join(tmpdir(),'stmq-pinned-archive-')),path=join(directory,'synthetic.sqlite');
+ const writer=new Store(path);
+ writer.observation({source:'synthetic-chart',device:'invented-garage',signal:'garage_native_indoor_temperature',
+  sourceTime:now-86400000,receivedAt:now-86400000,value:12,unit:'degC'});writer.close();
+ const store=new Store(path,{readOnly:true}),service=createChartService({store,warmCache:false,clock:()=>now});
+ t.after(async()=>{await service.close();await store.close();rmSync(directory,{recursive:true,force:true});});
+ await service.pin();
+ const selection={...args,startDate:'2026-01-01'},controller=new AbortController();
+ const pending=service.query(selection,{signal:controller.signal,onProgress(progress){
+  if(progress.stage==='preparing-chart')controller.abort();
+ }});
+ await assert.rejects(pending,{name:'AbortError'});unlinkSync(path);
+ const next=await service.query(selection);
+ assert(next.series.garage_native_indoor_temperature.some(point=>point.y===12));
 });

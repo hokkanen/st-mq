@@ -1,10 +1,12 @@
 import { TIME_ZONE } from '../domain/prices.js';
 import { resolve, dirname } from 'node:path';
+import { stat } from 'node:fs/promises';
 import { backupDirectory } from '../storage/backup-directory.js';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../storage/store.js';
 import { readReplicaPublication, configurePublicationRoots } from '../replication/publication.js';
 import { createChartService } from './chart-service.js';
+import { createReplicaChartOwner, leaseReplicaCharts, continuesReplicaCharts } from './replica-chart-owner.js';
 import { createWebAccess } from './web-access.js';
 import { fireplaceView } from './fireplace.js';
 import { sensorChangesView } from './sensor-changes.js';
@@ -20,7 +22,7 @@ import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
 import { CHARGER_DEFINITIONS } from '../charging/model.js';
 import { validateTargetState, validateTargetSelection } from '../charging/target.js';
 import { replicaReadModel, snapshotState } from './replica-read-model.js';
-import { matchingCheckpoint, checkpointAt } from '../storage/journal.js';
+import { matchingCheckpoint } from '../storage/journal.js';
 import { ReplicaCheckpointMismatchError, captureReplicaReadRefusalPhase } from './replica-errors.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
@@ -158,7 +160,7 @@ function observed(snapshot, signal, now) {
 }
 
 /** A viewer never constructs an Engine. Each request leases one immutable,
- * verified generation, including its chart worker, until the response ends. */
+ * verified generation until the response ends. Chart caches belong to its file. */
 export async function startReplica({ config, clock = Date.now,
   readPublication = readReplicaPublication, makeChartService = createChartService,
   installSignalHandlers = true, pairContext = null, controlAuthority = null, snapshotDirectory } = {}) {
@@ -176,8 +178,9 @@ export async function startReplica({ config, clock = Date.now,
   function retire(snapshot) {
     if (!snapshot || snapshot.retiring || snapshot.references > 0 || !snapshot.retired) return;
     snapshot.retiring = true;
-    const done = snapshot.chartService.close().catch(() => {}).finally(() => {
-      snapshot.store.close(); retiring.delete(done);
+    const done = snapshot.chartService.close().catch(() => {}).finally(async () => {
+      try { if (snapshot.store !== snapshot.chartOwner.store) await snapshot.store.close(); }
+      finally { retiring.delete(done); }
     });
     retiring.add(done);
   }
@@ -189,7 +192,7 @@ export async function startReplica({ config, clock = Date.now,
       // A publisher can advance twice between manifest read and worker startup.
       // Retry the latest manifest instead of opening an unverified fallback file.
       for (let attempt = 0; attempt < 3; attempt++) {
-        let store, chartService, borrowed = null;
+        let store, chartService;
         try {
           const publication = await readPublication(directory);
           if (!publication) {
@@ -203,33 +206,25 @@ export async function startReplica({ config, clock = Date.now,
             throw new Error('Replica checkpoint advanced during publication');
           store.expectedCheckpoint = publication.checkpoint;
           const recorded = recordedInput(store);
-          // Incremental publication keeps one physical file. Transfer its idle
-          // reader/cache owner only after proving that the new journal contains
-          // the exact previous boundary. Full replacements and leased readers
-          // retain independent lifetimes and the ordinary fresh-reader path.
-          const prior = current?.publication.checkpoint;
-          if (current && !current.references && publication.fileGeneration
-            && publication.fileGeneration === current.publication.fileGeneration
-            && publication.dbPath === current.publication.dbPath && prior
-            && matchingCheckpoint(checkpointAt(store.db, prior.sequence), prior)) {
-            borrowed = current; chartService = borrowed.chartService;
-            borrowed.store.expectedCheckpoint = publication.checkpoint;
-          } else chartService = makeChartService({ store, ...config.charts, clock });
+          const physical = await stat(publication.dbPath), fileIdentity = `${physical.dev}:${physical.ino}`;
+          const continuing = continuesReplicaCharts(current, publication, fileIdentity);
+          const chartOwner = continuing ? current.chartOwner
+            : createReplicaChartOwner(store, makeChartService, { ...config.charts, clock });
+          chartService = leaseReplicaCharts(chartOwner, store, publication.checkpoint);
           // Open the worker's file handle without computing a historical
           // overview. Existing requests can finish if a seeded file is retired.
-          await chartService.pin?.();
+          if (!continuing) await chartService.pin?.();
           store.db.exec('ROLLBACK');
-          if (borrowed) { store.close(); store = borrowed.store; }
-          if (closed) { if (!borrowed) { await chartService.close(); store.close(); } return; }
+          if (closed) { await chartService.close(); await store.close(); return; }
           const previous = current;
-          current = { publication, store, chartService, ...recorded, references: 0, retired: false };
+          chartOwner.admission.expectedCheckpoint = publication.checkpoint;
+          current = { publication, store, chartService, chartOwner, fileIdentity, ...recorded, references: 0, retired: false };
           lastError = null;
-          if (previous) { previous.retired = true; if (!borrowed) retire(previous); }
+          if (previous) { previous.retired = true; retire(previous); }
           return;
         } catch {
-          if (borrowed) borrowed.store.expectedCheckpoint = borrowed.publication.checkpoint;
-          else await chartService?.close();
-          if (store && store !== borrowed?.store) store.close();
+          await chartService?.close();
+          await store?.close();
           lastError = 'The latest snapshot could not be opened. Check synchronization and matching application versions.';
         }
       }

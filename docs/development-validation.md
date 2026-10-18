@@ -1451,4 +1451,7 @@ calendar movement, capacity convergence and disabling. Chart transport tests cov
 resident/archive isolation, current-head invalidation, live reconfiguration,
 released maintenance snapshots, gzip and cancellation. Storage-priority tests
 verify chart warming remains behind requested work with direct and worker writers.
+Replica tests cover real coalesced catch-up after journal-prefix pruning, an
+archive response spanning publication, per-request checkpoint capture, rejected
+replacement/rewind continuity and pinned-reader cancellation after file removal.
 These are synthetic correctness checks, separate from measured host performance.
