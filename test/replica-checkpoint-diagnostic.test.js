@@ -50,7 +50,10 @@ async function fixture(t, { makeChartService, readPublication, sinkFailure = nul
     }, clock: () => now, installSignalHandlers: false });
   const request = async path => {
     const startedAt = Date.now(), startedMonotonicMs = performance.now();
-    const response = await fetch(`http://127.0.0.1:${app.server.address().port}${path}`, { signal: AbortSignal.timeout(5000) });
+    // These requests deliberately wait while the test transfers and syncs a
+    // newer publication behind a held gate. Bound fixture cleanup without
+    // treating the speed of that unrelated forced I/O as a response deadline.
+    const response = await fetch(`http://127.0.0.1:${app.server.address().port}${path}`, { signal: AbortSignal.timeout(30000) });
     const bytes = await response.text(), body = JSON.parse(bytes);
     requestClocks.push({ route: path.slice('/api/'.length), status: response.status,
       startedAt, startedMonotonicMs, finishedAt: Date.now(), finishedMonotonicMs: performance.now() });

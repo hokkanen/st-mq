@@ -1135,7 +1135,9 @@ without destroying the resident window; obsolete archive work can retire its own
 independent worker. Pinned replica readers also cancel cooperatively to retain
 their file handles. Finished historical responses survive new observations after their selected
 period; late overlapping energy, voltage, source coverage, imports and recovery
-changes still invalidate affected results.
+changes still invalidate affected results. Receipt-clock checks follow the selected
+period: readings arriving during a queued request do not discard unrelated finished
+dates, while delayed evidence inside that period becomes visible at its actual receipt.
 
 At most two read-only chart workers separate resident recent history from archive
 requests. Long selections cannot evict the resident window. The recent worker

@@ -655,6 +655,7 @@ test('an archive response can retain its old publication while the next publicat
   const { app, request } = await viewer(t, directory, () => publication, { makeChartService });
   const writer = new Store(initial.dbPath); t.after(() => writer.close());
   const first = (await request(chartPath)).body, oldStore = app.store;
+  assert.equal((await request(chartPath)).body.meta.cacheHit, true, 'Establish a retained recent response before the archive');
   const archive = request(chartPath.replace('start=2026-01-15', 'start=2026-01-01'));
   await entered.promise;
   writer.setState('synthetic-next-archive-publication', { tick: 1 });
@@ -662,6 +663,7 @@ test('an archive response can retain its old publication while the next publicat
   assert.equal((await request('/api/status')).body.sync.generation, publication.generation);
   assert.notEqual(app.store, oldStore, 'Native publication read transactions remain independent');
   assert.equal(oldStore.db.isOpen, true, 'The archive still owns its old native snapshot');
+  assert.equal(created, 1, 'An active publication lease must not create another cache owner');
   const recent = await request(chartPath);
   assert.equal(recent.status, 200); assert.equal(recent.body.meta.cacheHit, true);
   assert.deepEqual(recent.body.series, first.series); assert.equal(created, 1);

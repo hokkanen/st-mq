@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { createChartService } from '../src/app/chart-service.js';
 import { createAppServer } from '../src/app/server.js';
+import { getChartData } from '../src/app/chart-data.js';
 
 const now = Date.parse('2026-09-07T09:00:00Z');
 const args = { input: 'providers', now, startDate: '2026-09-06', endDate: '2026-09-06', view: 'garage', points: 100 };
@@ -203,6 +204,37 @@ test('new observations outside the selected dates retain completed plots, late r
   const changed = await service.query(args);
   assert.notEqual(changed.meta.cacheHit, true);
   assert(changed.series.garage_native_indoor_temperature.some(point => point.y === 19));
+});
+
+test('receipt clock movement outside completed dates retains plots while delayed in-range evidence becomes visible', async t => {
+ const {store,service}=fixture(t,{warmCache:false});
+ await service.query(args);
+ store.observation({source:'synthetic-chart',device:'invented-garage',signal:'garage_native_indoor_temperature',
+  sourceTime:now+1000,receivedAt:now+1000,value:18,unit:'degC'});
+ assert.equal((await service.query(args)).meta.cacheHit,true,'A future receipt outside the selected dates is irrelevant');
+ assert.equal((await service.query({...args,now:now+2000})).meta.cacheHit,true,'Admitting that unrelated receipt is irrelevant');
+ store.observation({source:'synthetic-chart',device:'invented-garage',signal:'garage_native_indoor_temperature',
+  sourceTime:now-86400000+2000,receivedAt:now+4000,value:19,unit:'degC'});
+ assert(!(await service.query({...args,now:now+2000})).series.garage_native_indoor_temperature.some(point=>point.y===19));
+ assert((await service.query({...args,now:now+5000})).series.garage_native_indoor_temperature.some(point=>point.y===19),
+  'A delayed receipt inside the selection invalidates when it becomes admissible');
+});
+
+test('admitting delayed energy refreshes shared reconstruction contexts at the same committed head', async t => {
+ const {store,service}=fixture(t,{warmCache:false}),from=now-86400000;
+ const selection={...args,view:undefined,left:'phase_energy'};
+ const record=(start,end,value,receivedAt)=>store.transaction(()=>{
+  for(let phase=1;phase<=3;phase++)store.observation({source:'easee',device:'invented-charger',
+   signal:`ev1_energy_l${phase}`,value,unit:'kWh',sourceTime:end,receivedAt,quality:['estimated'],
+   raw:{intervalStart:start,intervalEnd:end,durationMs:end-start,basis:'integrated-power-phase-allocation'}});
+ });
+ record(from,from+3600000,1,now);await service.query(selection);
+ record(from+3600000,from+7200000,2,now+4000);
+ const before=await service.query({...selection,now:now+2000}),head=store.db.prepare('SELECT MAX(id) n FROM observations').get().n;
+ const after=await service.query({...selection,now:now+5000});
+ assert.equal(store.db.prepare('SELECT MAX(id) n FROM observations').get().n,head);
+ assert.notDeepEqual(after.series.ev1_energy_l1,before.series.ev1_energy_l1);
+ assert.deepEqual(after.series,getChartData({...selection,now:now+5000,store}).series);
 });
 
 test('resident maintenance releases every read snapshot and configuration can disable and reenable it', async t => {

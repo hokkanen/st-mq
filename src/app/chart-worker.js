@@ -47,6 +47,13 @@ const changes = db.prepare(`SELECT id,source_time,received_at,signal,
     'ev1_energy_l1','ev1_energy_l2','ev1_energy_l3','ev2_energy_l1','ev2_energy_l2','ev2_energy_l3','caravan_energy')
     THEN json_extract(raw,'$.intervalStart') END AS interval_start FROM observations WHERE id>? ORDER BY id LIMIT 4097`);
 const journalChanges = db.prepare('SELECT id,at FROM learning_journal_entries WHERE id>? ORDER BY id LIMIT 4097');
+const pendingReceipts = db.prepare(`SELECT MIN(received_at) AS next FROM active_observations
+  WHERE received_at>? AND (source_time<? OR signal GLOB 'voltage_estimate_*'
+    OR signal IN ('property_energy_l1','property_energy_l2','property_energy_l3',
+      'ev1_energy_l1','ev1_energy_l2','ev1_energy_l3','ev2_energy_l1','ev2_energy_l2','ev2_energy_l3','caravan_energy')
+      AND json_extract(raw,'$.intervalStart')<?)`);
+const receiptFingerprint = (args, range, detail) => pendingReceipts.get(args.now,
+  range.to + (detail ? 3 * 3_600_000 : 0), range.to).next;
 function invalidateChangedRanges() {
   const current = heads.get(); store.chartHead = current.observations ?? 0;
   store.chartRevision = JSON.stringify([current.selection, current.imports]);
@@ -165,7 +172,6 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       && store.chartHead - sourceCache.head <= 256) sourceCache.maintain(args.now, 256);
     const currentVersion = JSON.stringify(db.prepare(`SELECT
       (SELECT generation FROM history_selection WHERE id=1) recoverySelection,
-      (SELECT MIN(received_at) FROM active_observations AS observations WHERE received_at>?) nextReceipt,
       (SELECT MIN(completed_at) FROM active_imports AS imports WHERE status='complete' AND completed_at>?) nextImportPublication,
       (SELECT MIN(fetched_at) FROM active_provider_snapshot_fetches AS provider_snapshot_fetches WHERE fetched_at>?) nextProviderReceipt,
       (SELECT MAX(id) FROM active_provider_snapshot_fetches AS provider_snapshot_fetches) snapshots,
@@ -176,11 +182,15 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       (SELECT MAX(id) FROM active_events AS events WHERE type='heat-pump-power-config') heatPowerConfig,
       (SELECT MAX(id) FROM active_energy_audits AS energy_audits) energyAudits,
       (SELECT MAX(id) FROM active_events AS events WHERE type='charging-session-check') chargingSessionChecks,
-      (SELECT COUNT(*) FROM active_imports AS imports WHERE status='complete') imports`).get(args.now,args.now,args.now));
+      (SELECT COUNT(*) FROM active_imports AS imports WHERE status='complete') imports`).get(args.now,args.now));
     if (currentVersion !== version) { cache.clear(); contexts.clear(); cacheBytes = 0; version = currentVersion; }
     // Historical views survive second-by-second clock movement. Current/future
     // views renew within fifteen seconds, preserving acquisition timestamps.
-    const {range}=chartRequestRange(args);
+    const {range,detail}=chartRequestRange(args);
+    // A queued request's clock can precede newly committed telemetry. Only
+    // receipts that could affect this selection may expire its cached result;
+    // admitting today's reading cannot invalidate a completed earlier week.
+    const receipts = receiptFingerprint(args, range, detail);
     const bucket = range.to <= args.now ? 0 : Math.floor(args.now / 15_000);
     // One version per selection: rolling clock buckets replace their earlier
     // response instead of filling RAM with obsolete copies of the same view.
@@ -189,7 +199,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
     // Constant readings extend bounded energy tails and confirmation spans.
     // Renew only affected plots, preserving unrelated historical caches and the
     // live clock bucket when source evidence itself has not changed.
-    if(entry&&(entry.bucket !== bucket || entry.pendingEnergyFingerprint!==pendingEnergyFingerprint(args,range)
+    if(entry&&(entry.bucket !== bucket || entry.receiptFingerprint !== receipts || entry.pendingEnergyFingerprint!==pendingEnergyFingerprint(args,range)
       ||entry.sourceCoverageFingerprint!==sourceCoverageFingerprint(args,range))) {
       cache.delete(key);cacheBytes-=entry.bytes;entry=null;
     }
@@ -221,10 +231,12 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       const contextKey = JSON.stringify([args.input, range.from, range.to, bucket]);
       let context = contexts.get(contextKey);
       const pendingFingerprint = pendingEnergyFingerprint(args, range);
-      if (context?.pending !== pendingFingerprint) { contexts.delete(contextKey); context = null; }
+      if (context && (context.pending !== pendingFingerprint || context.receipts !== receipts)) {
+        contexts.delete(contextKey); context = null;
+      }
       if (!context) {
         const contextBytes = Math.min(64 * 1024 * 1024, Math.floor(settings.cacheBytes * 0.065));
-        context = { range, pending: pendingFingerprint,
+        context = { range, pending: pendingFingerprint, receipts,
           value: createChartQueryContext({ store, range, now: args.now, input: args.input, maxEnergyBytes: contextBytes, maxEnergyGroups: Math.ceil(contextBytes / 512) }) };
         if (workerData.resident && settings.cacheDays) {
           while (contexts.size >= 2) contexts.delete(contexts.keys().next().value);
@@ -241,7 +253,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       while (cache.size && (cache.size >= 128 || cacheBytes + bytes > cacheLimitBytes)) {
         const first = cache.keys().next().value; cacheBytes -= cache.get(first).bytes; cache.delete(first);
       }
-      if (bytes <= cacheLimitBytes) { entry = { result, prepared, bytes, range, bucket, detail: result.meta.detail, pendingEnergyFingerprint:pendingFingerprint,
+      if (bytes <= cacheLimitBytes) { entry = { result, prepared, bytes, range, bucket, detail: result.meta.detail, receiptFingerprint: receipts, pendingEnergyFingerprint:pendingFingerprint,
         sourceCoverageFingerprint:sourceFingerprint }; cache.set(key, entry); cacheBytes += bytes; }
     }
     releaseStorageLease();
