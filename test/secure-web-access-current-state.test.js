@@ -57,7 +57,7 @@ async function fixture(t, createHelper) {
       inspectCertificate: () => structuredClone(certificate),
       createHelper: ({ locations }) => ({
         start: async () => writeFile(join(locations.identity, 'tailscaled.state'), '{}', { mode: 0o600 }),
-        stop: async () => {}, restrictions: async () => {}, status: async () => observation(), authorize: async () => observation(),
+        remoteAccess: async () => {}, stop: async () => {}, restrictions: async () => {}, status: async () => observation(), authorize: async () => observation(),
         certificate: async () => ({ cert: 'synthetic-certificate', key: 'synthetic-key' }),
         ...createHelper?.(observation),
       }),
@@ -103,7 +103,7 @@ test('actual background certificate recovery separates current readiness from th
   const current = manager.status();
   assert.equal(current.error, null); assert.equal(current.operation.id, failed.id); assert.equal(current.operation.state, 'failed');
   const view = secureWebAccessView({ ...current, transport: { https: { enabled: true, listening: true } } }, { admin: true, now: now() });
-  assert.equal(view.next.title, 'Review the local-only destination'); assert.equal(view.error, '');
+  assert.equal(view.next.title, 'Local network access'); assert.equal(view.error, '');
   assert.match(view.receipt.text, /Last action · Set up HTTPS request failed/);
   assert.equal(view.receipt.at, failed.completedAt, 'Background recovery never renews the old receipt clock');
 });

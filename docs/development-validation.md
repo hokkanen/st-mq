@@ -509,6 +509,15 @@ independent volumes at identical container paths and repeated container PID 1
 crashes. It mounts only temporary synthetic directories and the HTTPS source;
 host networking shares the abstract-socket namespace without opening TCP ports.
 
+`test/https-remote-access.test.js` checks exact foreground TCP-only admission,
+Funnel/Web/service/extra-handler rejection, observed shields, stable refresh,
+owned-process removal, crash recovery and return to certificate-only scope.
+The HTTPS manager suite covers the paired VIP and current port, restart without
+reenrollment, remote failure with local TLS retained, stale exit fencing, expiry
+and enabled-peer retention. Vendor runtime preflight now requires TCP Serve and
+foreground/background CLI capabilities in addition to certificate operations.
+These fixtures do not prove an external phone's DNS, tailnet policy or reachability.
+
 For changed UI surfaces, run their browser fixtures at narrow and wide widths in
 both themes. Preserve focus, quiet background refresh and compact normal states;
 put detailed causes and provenance in existing disclosures. These fixtures use

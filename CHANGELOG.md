@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Use the same HTTPS address for an installed phone web app at home and through
+  Tailscale, without host subnet or exit-node changes. Show remote forwarding
+  status separately and retain a status subtitle on the Web access fold.
 - Show **Needs attention** for an enabled price forecast that is unavailable or
   out of date, consistently with other data sources and the prices overview.
 - Give each new manual Normal or Reduced selection in Automatic its own

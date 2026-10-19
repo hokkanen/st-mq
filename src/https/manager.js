@@ -7,7 +7,7 @@ import { httpsError, errorCode, privateDirectory, atomicJson, readJson, lockDire
 import { BOOTSTRAP_VERSION } from './official-roots.js';
 import { runtimeTask } from './worker.js';
 import { releaseCandidate, compareVersions, architecture, stableVersion } from './distribution.js';
-import { CertificateHelper, helperLocations, preflightRuntime } from './helper.js';
+import { CertificateHelper, helperLocations, preflightRuntime, validRemoteTarget } from './helper.js';
 import { helperAuthorizationUrl } from './authorization-url.js';
 import { validateCertificate, inspectCertificate, certificateHostname, renewalMinimumValidity } from './certificates.js';
 
@@ -115,6 +115,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   let certificateError = null;
   let phase = 'disabled'; let lastError = null; let helperStatus = { state: 'stopped', version: null }; let dns = { state: 'not_configured', a: [], aaaa: [], checkedAt: null };
   let peerStatus = null; let restartAfter = 0; let restartFailures = 0;
+  let remoteAccess = { state: 'disabled' };
   const config = () => getConfig();
   let ownedDirectory = null;
   const configuredDirectory = () => resolve(config().web?.httpsDirectory ?? resolve(config().dataDir, 'https'));
@@ -126,6 +127,30 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     (isIPv4(config().web?.httpsHost) && config().web.httpsHost !== '0.0.0.0' ? config().web.httpsHost : null);
   const localOwner = () => state.pairId ? state.ownerId === pairConfiguration()?.localId : config().topology !== 'pair';
   const responsible = () => localOwner() && (state.enabled || state.peerRenewalRequired);
+  async function syncRemoteAccess() {
+    assertOpen(); validatePairBinding();
+    if (!helper) { remoteAccess = { state: responsible() ? 'unavailable' : 'disabled' }; return; }
+    const instance = helper;
+    const active = responsible() && helperStatus.state === 'running' && certificate && state.certificate?.expiresAt > clock();
+    if (!active && remoteAccess.state === 'disabled') return;
+    const address = state.pairId ? pairConfiguration()?.vipAddress
+      : config().web?.httpsHost === '0.0.0.0' || config().web?.httpsHost === '::' ? '127.0.0.1' : config().web?.httpsHost;
+    const remote = active ? { address, port: config().web?.httpsPort ?? 8443 } : null;
+    remoteAccess = { state: active ? 'configuring' : 'disabled' };
+    try {
+      if (remote) validRemoteTarget(remote);
+      await instance.remoteAccess(remote); assertOpen(); validatePairBinding();
+      if (helper !== instance) throw httpsError('https_certificate_owner_mismatch');
+      if (remote && (!responsible() || state.certificate?.expiresAt <= clock() || helperStatus.state !== 'running')) {
+        await instance.remoteAccess(null); remoteAccess = { state: 'disabled' }; return;
+      }
+      remoteAccess = remote ? { state: 'configured', ...remote, checkedAt: clock() } : { state: 'disabled' };
+    } catch (error) {
+      remoteAccess = { state: 'unavailable', error: errorCode(error) };
+      await instance.stop(); if (helper === instance) helper = null;
+      throw error;
+    }
+  }
   function assertOpen() { if (closed) throw httpsError('https_manager_closed'); if (ownedDirectory && configuredDirectory() !== ownedDirectory) throw httpsError('https_directory_restart_required'); }
   function background(operation) {
     busy = Promise.resolve().then(operation).catch(error => { lastError = errorCode(error); if (!closed) phase = 'degraded'; }).finally(() => { busy = null; schedule(); });
@@ -192,10 +217,14 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   function expiryCheck() {
     clearTimeout(expiryTimer);
     const expiresAt = state.certificate?.expiresAt;
-    if (!expiresAt || !state.enabled) return;
+    if (!expiresAt || !state.enabled && !responsible()) return;
     const wait = Math.min(Math.max(expiresAt - clock(), 1), 2147483647);
     expiryTimer = setTimeout(async () => {
-      if (state.certificate?.expiresAt <= clock()) { await onDisable().catch(() => {}); phase = 'degraded'; lastError = 'certificate_not_current'; }
+      if (state.certificate?.expiresAt <= clock()) {
+        await onDisable().catch(() => {});
+        await syncRemoteAccess().catch(() => {});
+        phase = 'degraded'; lastError = 'certificate_not_current';
+      }
       else expiryCheck();
     }, wait); expiryTimer.unref();
   }
@@ -333,7 +362,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       state.transaction.stage = 'prepared'; await persist();
       assertOpen();
       const previous = state.runtime;
-      if (helper) { await helper.stop(); helper = null; }
+      if (helper) { await helper.stop(); helper = null; remoteAccess = { state: 'unavailable' }; }
       if (previous) await snapshotIdentity();
       state.previousRuntime = previous; state.runtime = record;
       state.transaction.stage = 'production_state_opened'; await persist();
@@ -370,11 +399,16 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   }
   async function startHelper() {
     assertOpen();
+    remoteAccess = { state: 'disabled' };
     await integrity(); if (!locations) await resolveLocations();
     assertOpen();
     if (state.hostname && !(await lstat(resolve(locations.identity, 'tailscaled.state')).catch(() => null))) throw httpsError('helper_identity_missing');
     const instance = createHelper({ directory: runtimeDirectory(state.runtime), locations, processRecordPath: resolve(directory(), 'helper-process.json'),
-      onExit: () => { helperStatus.state = 'stopped'; helperStatus.version = null; restartFailures++; restartAfter = clock() + Math.min(HOUR, 1000 * 2 ** Math.min(restartFailures, 12)); lastError = 'helper_process_exited'; } });
+      onExit: () => {
+        if (helper !== instance) return;
+        remoteAccess = { state: 'unavailable', error: 'helper_process_exited' }; helperStatus.state = 'stopped'; helperStatus.version = null;
+        restartFailures++; restartAfter = clock() + Math.min(HOUR, 1000 * 2 ** Math.min(restartFailures, 12)); lastError = 'helper_process_exited'; schedule();
+      } });
     helper = instance;
     try {
       await instance.start(); await instance.restrictions(); assertOpen();
@@ -390,10 +424,12 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       await instance.stop();
       if (helper === instance) helper = null;
       helperStatus = { state: 'stopped', version: null };
+      remoteAccess = { state: 'unavailable', error: errorCode(error) };
       throw error;
     }
   }
   async function observeHelper({ authorize = false, adoptHostname = false } = {}) {
+    if (helper && helperStatus.state === 'stopped') { await helper.stop(); helper = null; }
     if (!helper) await startHelper();
     const instance = helper;
     const requestedAuthorization = authorize;
@@ -479,11 +515,12 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   }
   async function renew({ authorize = false, adoptHostname = false } = {}) {
     if (!responsible()) return;
+    if (state.certificate?.expiresAt <= clock()) await syncRemoteAccess();
     await checkOwnerChoice();
     if (state.transaction?.stage === 'production_state_opened' && helperStatus.state === 'repair_required') throw httpsError('helper_stateful_update_requires_repair');
     await ensureRuntime();
     const hostname = await observeHelper({ authorize, adoptHostname });
-    if (!hostname) return;
+    if (!hostname) { await syncRemoteAccess(); return; }
     const due = !certificate || hostname !== state.hostname || state.certificate.expiresAt - clock() <= certificate.metadata.renewalWindowMs;
     if (due) {
       if (!certificate) phase = 'renewal_pending';
@@ -491,6 +528,8 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       await installCertificate(material, { hostname });
     } else if (state.enabled) await activate(certificate, state.certificate.generation);
     await deliverPeer();
+    await syncRemoteAccess();
+    expiryCheck();
   }
   async function peerRequest(operation, body) {
     if (!pair?.request) throw httpsError('https_peer_unavailable');
@@ -579,6 +618,8 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     if (action === 'disable') {
       state.enabled = false; await persist(); clearTimeout(expiryTimer); await onDisable(); phase = 'disabled';
       await deliverPeer(); if (!responsible() && helper) { await helper.stop(); helper = null; helperStatus.state = 'stopped'; }
+      await syncRemoteAccess();
+      expiryCheck();
       return;
     }
     if (action === 'set-update-policy') { state.updates.policy = input.policy; await persist(); return; }
@@ -635,14 +676,14 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     if (closed || invalid) return;
     try {
       validatePairBinding();
-      if (state.certificate?.expiresAt <= clock()) { await onDisable(); phase = 'degraded'; lastError = 'certificate_not_current'; }
+      if (state.certificate?.expiresAt <= clock()) { await onDisable(); await syncRemoteAccess(); phase = 'degraded'; lastError = 'certificate_not_current'; }
       if (state.enabled && !localOwner()) await pullPeer();
       else if (responsible() && clock() >= restartAfter) await renew();
       await checkDns();
       if (responsible() && clock() - (state.updates.lastAttempt ?? 0) > DAY + (parseInt(state.machineName.slice(-4), 16) % HOUR)) {
         const candidate = await checkUpdates();
         if (state.updates.policy === 'automatic' && candidate.eligible && (!state.runtime || compareVersions(candidate.version, state.runtime.evidence.runtimeVersion) > 0))
-          await installRuntime(candidate);
+          { await installRuntime(candidate); await renew(); }
       }
     } catch (error) { lastError = errorCode(error); if (phase !== 'ready' && phase !== 'repair_required') phase = 'degraded'; }
   }
@@ -654,6 +695,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       setup: { credentialsReady: typeof config().token === 'string' && config().token.length >= 24 &&
         (!config().familyToken || typeof config().familyToken === 'string' && config().familyToken.length >= 24 && config().familyToken !== config().token) },
       hostname: state.hostname, url: state.hostname ? `https://${state.hostname}:${config().web?.httpsPort ?? 8443}` : null,
+      remoteAccess: clone(remoteAccess),
       certificate: clone(publishedCertificate?.record ?? null), helper: { ...clone(helperStatus), securityUpdate: state.updates.securitySignal?.urgent === true ? true : helperStatus.securityUpdate ?? null,
         securityObservedAt: state.updates.securitySignal?.observedAt ?? null },
       updates: { policy: state.updates.policy, installed: state.runtime?.evidence.runtimeVersion ?? null, latest: state.updates.latest,
@@ -740,7 +782,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   async function configure() {
     if (closed) return;
     if (busy || admission) { schedule(); return; }
-    try { validatePairBinding(); } catch (error) { lastError = errorCode(error); phase = 'degraded'; await onDisable().catch(() => {}); if (helper) await helper.stop(); helper = null; return; }
+    try { validatePairBinding(); } catch (error) { lastError = errorCode(error); phase = 'degraded'; await onDisable().catch(() => {}); if (helper) await helper.stop(); helper = null; remoteAccess = { state: 'unavailable', error: lastError }; return; }
     if (state.enabled && certificate) { try { await activate(certificate, state.certificate.generation); } catch (error) { lastError = errorCode(error); phase = 'degraded'; } }
     if (!busy && (state.enabled || state.peerRenewalRequired)) background(tick);
     else schedule();
@@ -750,6 +792,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     if (helper) await helper.stop(); helper = null;
     await admission?.catch(() => {}); await busy?.catch(() => {});
     if (helper) await helper.stop(); helper = null; helperStatus.state = 'stopped'; await onDisable().catch(() => {});
+    remoteAccess = { state: 'disabled' };
     await releaseLock?.(); releaseLock = null;
   }
   return { start, configure, status, action, close, acceptCertificate, exportCertificate, pairStatus };

@@ -303,7 +303,7 @@ try {
   assert.equal(await evaluate("document.getElementById('secure-web-access-https').textContent"), 'Listening · port 8443');
   assert.equal(await evaluate("document.getElementById('secure-web-access-hosts-entry').textContent"), `192.0.2.50 ${hostname}`);
   assert.equal(await evaluate("document.getElementById('secure-web-access-curl-command').textContent"), `curl --resolve '${hostname}:8443:192.0.2.50' 'https://${hostname}:8443/'`);
-  assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'Connect household browsers');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'One address at home and away');
   assert.equal(await evaluate('location.href'), `${base}/`, 'Local HTTPS readiness never leaves the recovery page automatically');
   assert.match(await evaluate("document.getElementById('secure-web-access-expiry').textContent"), /Dec 2026/);
   assert.match(await evaluate("document.getElementById('secure-web-access-key-expiry').textContent"), /16 Oct 2026.*2d 2h left/);
@@ -433,6 +433,8 @@ try {
   const readyFixture = structuredClone(fixture);
   const installFixture = next => { for (const key of Object.keys(fixture)) delete fixture[key]; Object.assign(fixture, structuredClone(next)); };
   for (const [name, changes] of [
+    ['remote-configured', { ...readyFixture, remoteAccess: { state: 'configured' } }],
+    ['remote-unavailable', { ...readyFixture, phase: 'degraded', error: 'helper_remote_forwarding_unavailable', remoteAccess: { state: 'unavailable' } }],
     ['disabled-pair', originalFixture],
     ['disabled-peer-owner', { ...readyFixture, enabled: false, phase: 'disabled', pair: { paired: true, ownerId: 'synthetic-peer', localOwner: false }, transport: { ...readyFixture.transport, https: { enabled: false, listening: false } } }],
     ['disabled-local-owner', { ...readyFixture, enabled: false, phase: 'disabled', pair: { paired: true, ownerId: 'synthetic-owner', localOwner: true }, transport: { ...readyFixture.transport, https: { enabled: false, listening: false } } }],
@@ -464,6 +466,17 @@ try {
     ['identity-repair', { ...readyFixture, phase: 'degraded', error: 'identity_restore_required' }],
   ]) {
     installFixture(changes); await evaluate('webBrowser.panel.refresh({force:true})');
+    assert.equal(await evaluate("document.getElementById('secure-web-access-fold-summary').textContent"),
+      await evaluate("document.getElementById('secure-web-access-state').textContent"), 'Fold status stays aligned with the expanded body');
+    if (name === 'remote-configured') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-remote').textContent"), 'Forwarding configured');
+      assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'One address at home and away');
+    }
+    if (name === 'remote-unavailable') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-remote').textContent"), 'Unavailable');
+      assert.match(await evaluate("document.getElementById('secure-web-access-message').textContent"), /Tailscale connection could not be configured/);
+      assert.match(await evaluate("document.getElementById('secure-web-access-https').textContent"), /Listening/);
+    }
     if(name==='startup-preparing') {
       assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'Setting up HTTPS');
       for(const action of ['enable','recheck','retry','disable','check-updates','update-now'])
@@ -471,7 +484,7 @@ try {
       assert.equal(await evaluate("document.getElementById('secure-web-access-authorize').hasAttribute('href')"), false);
     }
     if(name==='retry-pending')assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Setting up HTTPS');
-    if(name==='recovered-receipt'){assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Connect household browsers');assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"),/Last action · Set up HTTPS request failed/);}
+    if(name==='recovered-receipt'){assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'One address at home and away');assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"),/Last action · Set up HTTPS request failed/);}
     if(name==='current-release') {
       assert.equal(await evaluate("document.getElementById('secure-web-access-update-now').hidden"), true);
       assert.equal(await evaluate("document.getElementById('secure-web-access-update-now').disabled"), true);
@@ -494,7 +507,7 @@ try {
       for(const id of ['hosts','curl']) assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}-help').hidden`),true);
       for(const id of ['hosts-entry','curl-command']) assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').textContent`),'');
       assert.match(await evaluate("document.getElementById('secure-web-access-browser-instructions').textContent"),name==='loopback-destination'?/reaches only this computer/:/LAN destination is not reported/);
-      if(name==='loopback-destination') assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Review the local-only destination');
+      if(name==='loopback-destination') assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Local network access');
       if(name==='unknown-destination') assert.doesNotMatch(await evaluate("document.getElementById('secure-web-access-recovery-help').textContent"),/http:\/\/0\.0\.0\.0/);
     }
     if(name==='custom-ports') {
@@ -546,7 +559,7 @@ try {
   }
   await evaluate("document.getElementById('secure-web-access-disable').focus();true"); await key('Enter');
   await until("document.querySelector('.confirmation-dialog[open]')");
-  assert.match(await evaluate("document.querySelector('.confirmation-dialog').textContent"), /retains renewal.*helper continues running/);
+  assert.match(await evaluate("document.querySelector('.confirmation-dialog').textContent"), /Certificate renewal and Tailscale forwarding.*remain/);
   const beforeCancel = requests.filter(item => item.action === 'disable').length;
   await key('Escape'); await until("!document.querySelector('.confirmation-dialog')");
   assert.equal(requests.filter(item => item.action === 'disable').length, beforeCancel, 'Escape sends no disable');

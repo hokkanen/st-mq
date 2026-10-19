@@ -10,7 +10,7 @@ const phases = {
   approval_or_connection_pending: ['Approval or connection pending', 'Tailscale has not confirmed the helper connection. Check device approval or Tailnet Lock in Tailscale, then recheck.'],
   certificate_settings_required: ['Tailscale setup required', 'Enable MagicDNS and HTTPS certificates in Tailscale DNS settings, then retry certificate issuance.'],
   renewal_pending: ['Certificate pending', 'Waiting for a certificate.'],
-  ready: ['HTTPS ready locally', 'A valid certificate is available. Household devices still need the exact hostname to resolve to the installation’s LAN address.'],
+  ready: ['HTTPS ready locally', 'The local HTTPS listener is ready. Use the same address at home and through Tailscale; remote access is managed on the certificate-owner computer.'],
   degraded: ['Needs attention', 'HTTPS needs attention. Review the reported problem and retry.'],
   repair_required: ['Repair required', 'Saved HTTPS state could not be admitted. Recovery access has separate readiness; review this computer’s HTTPS state before retrying.'],
   peer_certificate_pending: ['Peer certificate pending', 'Waiting for the paired certificate owner to provide a valid certificate.'],
@@ -33,6 +33,8 @@ const failures = {
   https_certificate_owner_fixed: 'This HTTPS state already has a fixed certificate owner. Re-enable it using that owner. Changing the owner requires preserving the current state and explicitly setting up fresh HTTPS state.',
   https_peer_owner_conflict: 'The paired computer reports a different certificate owner. Review Web access on both computers and agree on one owner before retrying setup.',
   helper_authorization_start_failed: 'The certificate helper could not start Tailscale authorization. No sign-in link was received. Choose Retry setup; the installed helper and saved identity are preserved.',
+  helper_remote_target_invalid: 'The private HTTPS destination is unavailable. Review the configured HTTPS listener and shared pair address, then select Recheck.',
+  helper_remote_forwarding_unavailable: 'The private Tailscale connection could not be configured. Select Recheck on the certificate-owner computer. Local HTTPS has separate readiness.',
   helper_hostname_changed: 'The certificate name changed in Tailscale. Select Recheck to issue a matching certificate and update the HTTPS address. The saved address changes only after successful publication; update household DNS afterward.',
   helper_tailnet_changed: 'The certificate helper reports a different Tailscale network. Restore its original account and network before selecting Recheck; this action cannot adopt a different network or reset the saved identity.',
   https_peer_hostname_changed: 'The paired certificate owner supplied a changed name without an eligible newer certificate for the same Tailscale network. Recheck the certificate owner; the saved address and certificate remain in place.',
@@ -137,12 +139,12 @@ function nextStep(state, { tlsReady, certificateValid, certificateExpired, uncon
     help: 'Tailscale has not confirmed this helper’s connection. Check Machines for device approval or Tailnet Lock requirements, then select Recheck.' };
   if (state.phase === 'certificate_settings_required') return { title: 'Enable certificates in Tailscale',
     help: 'Open Tailscale DNS settings below, enable MagicDNS and HTTPS certificates, then select Retry setup. Certificate issuance is independent of household DNS.' };
-  if (tlsReady && localDestination) return { title: 'Review the local-only destination',
-    help: 'The reported loopback destination reaches only this computer. Household access is not confirmed; review the destination and listener scope in Household DNS & recovery.' };
-  if (tlsReady) return { title: state.dns?.state === 'ready' ? 'Check access on each device' : 'Connect household browsers',
-    help: 'Open the exact HTTPS address below on each intended device. If its hostname does not resolve, use the household DNS or temporary hosts-file instructions. A check on this computer does not verify other devices.' };
-  if (!state.enabled && retainedRenewal) return { title: 'Certificate renewal remains assigned to this computer',
-    help: 'This computer still renews the paired computer’s certificate. Its local HTTPS is disabled; review the helper’s renewal status below.' };
+  if (tlsReady && localDestination) return { title: 'Local network access',
+    help: 'The local listener is bound to loopback. Direct household access needs a LAN listener and matching DNS; Tailscale forwarding has separate status above.' };
+  if (tlsReady) return { title: 'One address at home and away',
+    help: 'At home, household DNS points this address to the LAN destination. Away, connect your phone to the same Tailscale network. No exit node or advertised subnet route is needed.' };
+  if (!state.enabled && retainedRenewal) return { title: 'Paired access remains enabled',
+    help: 'Local HTTPS is disabled here. This computer remains responsible for the pair’s certificate renewal and Tailscale entrance until the peer confirms HTTPS is disabled. Current forwarding status is shown above.' };
   if (unconfirmed) return { title: 'Confirm HTTPS readiness', help: 'Current certificate or listener evidence is missing. Select Recheck to refresh it; recovery access has separate readiness.' };
   return { title: 'Finish certificate setup', help: 'Complete Tailscale sign-in and certificate settings, then select Recheck. Certificate issuance does not require household router DNS.' };
 }
@@ -216,6 +218,10 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
       : dnsPending ? dns.state === 'mismatch' ? 'HTTPS is running, but the checked DNS address does not match the expected LAN address. Review household DNS below.'
         : 'This computer has a valid certificate and its HTTPS listener is running. Household DNS has not been verified.' : phase[1],
     https: state.enabled === true && tls?.listening === false ? 'Not listening' : listener(tls), expiry: date(certificate?.expiresAt),
+    remote: !admin ? '' : peerOwner ? 'Managed on the paired computer'
+      : state.remoteAccess?.state === 'configured' ? 'Forwarding configured'
+      : state.remoteAccess?.state === 'unavailable' ? 'Unavailable'
+      : state.remoteAccess?.state === 'configuring' ? 'Configuring' : state.remoteAccess?.state === 'disabled' ? 'Disabled' : 'Not checked',
     hasCertificate: certificate?.expiresAt !== undefined && certificate?.expiresAt !== null,
     http: transport.lanHttp?.enabled === true ? `${listener(transport.lanHttp)} · unencrypted` : listener(transport.lanHttp),
     recovery: listener(transport.recovery), ingress: listener(transport.ingress),
@@ -223,8 +229,8 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     enableLabel: savedSetup ? 'Enable HTTPS' : 'Set up HTTPS',
     pairSetup: admin && state.pair?.paired === true && !state.pair.ownerId,
     owner: admin && state.pair?.paired === true && state.pair.ownerId
-      ? `Certificate renewal · ${state.pair.localOwner === true ? 'This computer' : 'Paired computer'} · independent of the master/standby role.` : '',
-    peerRenewal: retainedRenewal ? 'This computer retains certificate renewal for the paired computer. Disabling this HTTPS entrance does not stop the helper while that duty remains; the peer must confirm that its HTTPS is disabled.' : '',
+      ? `Certificate and remote access · ${state.pair.localOwner === true ? 'This computer' : 'Paired computer'}` : '',
+    peerRenewal: retainedRenewal && !state.enabled ? 'This computer retains responsibility for certificate renewal and the Tailscale entrance until the peer confirms HTTPS is disabled. Forwarding uses the shared address, independently of controller roles.' : '',
     authorizationUrl,
     next: admin && Object.hasOwn(phases, state.phase) ? nextStep(state, { tlsReady, certificateValid, certificateExpired, unconfirmed, peerOwner, retainedRenewal, savedSetup, authorizationUrl, errorCode, localDestination }) : null,
     setupAvailable: Object.hasOwn(phases, state.phase) && state.setup?.credentialsReady !== false,
@@ -302,6 +308,9 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     const admin = getAccess()?.role === 'admin';
     const view = secureWebAccessView(state, { admin, now: now() });
     setText('secure-web-access-state', view.label); $('secure-web-access-state').dataset.state = view.tone;
+    setText('secure-web-access-fold-summary', view.label);
+    setText('secure-web-access-remote', view.remote);
+    $('secure-web-access-remote-row').hidden = !admin;
     setText('secure-web-access-summary', view.summary);
     for (const field of ['https', 'expiry', 'http', 'recovery', 'ingress']) setText(`secure-web-access-${field}`, view[field]);
     $('secure-web-access-expiry-row').hidden = !view.hasCertificate;
@@ -410,8 +419,9 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     try {
       if (action === 'disable' && !await confirm({ document, title: 'Disable HTTPS on this computer?',
         message: 'The HTTPS entrance closes. The certificate helper identity and valid certificate stay saved for re-enabling. Loopback recovery, Home Assistant ingress and any explicitly configured LAN HTTP backup remain available.'
-          + (state.pair?.localOwner === true && state.pair.peerRenewalRequired === true
-            ? ' This computer retains renewal for the enabled paired computer, so its certificate helper continues running until the peer confirms that its HTTPS is disabled.' : ''),
+          + (state.pair?.localOwner === true
+            ? ' Certificate renewal and Tailscale forwarding to the shared address remain on this computer if the peer needs HTTPS. They close after the peer confirms that its HTTPS is disabled.'
+            : state.pair?.localOwner === false ? ' The paired certificate owner manages remote access separately.' : ' Its private Tailscale forwarding also closes.'),
         action: 'Disable HTTPS' })) return false;
       if (action === 'restore-identity' && !await confirm({ document, title: 'Restore the saved certificate identity here?',
         message: 'Continue only after the previous certificate-owner process is stopped and fenced from restarting. This rebinds the saved certificate helper identity to this computer. Running the old owner at the same time could allow two computers to use the same identity. Confirm that the previous owner is fenced before restoring.',

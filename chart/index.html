@@ -520,11 +520,12 @@
                     </div>
                   </details>
                   <details id="secure-web-access-details" class="section-fold controller-fold">
-                    <summary>Web access</summary>
+                    <summary><span>Web access</span><small id="secure-web-access-fold-summary">Status unavailable</small></summary>
                     <div class="section-fold-body secure-web-access-body">
                       <p id="secure-web-access-summary" class="muted">Loading this computer’s web access status…</p>
                       <dl class="secure-web-access-facts">
                         <div><dt>Status</dt><dd id="secure-web-access-state" class="equipment-device-status" data-state="pending">Status unavailable</dd></div>
+                        <div id="secure-web-access-remote-row"><dt>Tailscale access</dt><dd id="secure-web-access-remote">Not checked</dd></div>
                         <div><dt>HTTPS listener</dt><dd id="secure-web-access-https">Unknown</dd></div>
                         <div id="secure-web-access-expiry-row" hidden><dt>Certificate expires</dt><dd id="secure-web-access-expiry">Unknown</dd></div>
                         <div><dt>LAN HTTP backup</dt><dd id="secure-web-access-http">Unknown</dd></div>
@@ -541,8 +542,8 @@
                           <a href="https://tailscale.com/security-bulletins" target="_blank" rel="noopener noreferrer">Review Tailscale security bulletins ↗</a>
                         </div>
                         <div id="secure-web-access-owner-choice" class="secure-web-access-owner-choice" hidden>
-                          <label for="secure-web-access-owner-select">Issue and renew the certificate on<select id="secure-web-access-owner-select" aria-describedby="secure-web-access-owner-help" disabled><option value="local">This computer</option><option value="peer">Paired computer</option></select></label>
-                          <p id="secure-web-access-owner-help" class="muted">Use one certificate owner for the pair. Choose Paired computer only after setting it up there. Changing the master does not change this choice.</p>
+                          <label for="secure-web-access-owner-select">Certificate and remote access owner<select id="secure-web-access-owner-select" aria-describedby="secure-web-access-owner-help" disabled><option value="local">This computer</option><option value="peer">Paired computer</option></select></label>
+                          <p id="secure-web-access-owner-help" class="muted">One computer renews the certificate and provides Tailscale access for the pair. Choose Paired computer only after setting it up there. Changing the master does not change this choice.</p>
                         </div>
                         <div id="secure-web-access-next" class="secure-web-access-next" hidden>
                           <h3 id="secure-web-access-next-title"></h3>
@@ -563,14 +564,14 @@
                         <p id="secure-web-access-request-receipt" class="muted" role="status" aria-live="polite" hidden></p>
                         <details id="secure-web-access-setup-details" class="equipment-fold">
                           <summary>How HTTPS setup works</summary>
-                          <p class="muted">This application installs a dedicated Tailscale helper to obtain and renew its certificate. HTTPS uses the normal application sign-in. Existing Home Assistant or host Tailscale installations remain separate.</p>
+                          <p class="muted">This application manages its certificate and private remote access through a dedicated Tailscale connection. The same HTTPS address and normal sign-in work at home and away. Existing Home Assistant or host Tailscale installations remain separate.</p>
                           <ol class="secure-web-access-steps">
                             <li><strong>Set up and authorize.</strong> Select Set up HTTPS, then use the displayed authorization link to sign in to Tailscale. Complete device approval or Tailnet Lock requirements in Tailscale Machines, then select Recheck.</li>
                             <li><strong>Enable certificates.</strong> Enable MagicDNS and HTTPS certificates in Tailscale DNS settings. Choose a non-sensitive node name before issuance; certificate names enter public transparency records. Review or disable this dedicated node’s key expiry in Machines so renewal can continue unattended. A valid certificate does not verify that policy.</li>
                             <li><strong>Connect browsers.</strong> <span id="secure-web-access-browser-instructions">The HTTPS address and LAN destination require current status.</span> Open the full HTTPS address on each intended device and sign in normally; a new address has its own browser session.</li>
                           </ol>
                           <p class="secure-web-access-setup-links"><a href="https://console.tailscale.com/admin/dns" target="_blank" rel="noopener noreferrer">Tailscale DNS settings ↗</a><a href="https://console.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">Tailscale Machines ↗</a><a href="https://tailscale.com/docs/how-to/set-up-https-certificates" target="_blank" rel="noopener noreferrer">Certificate guide ↗</a></p>
-                          <p class="muted">Certificate issuance is independent of household DNS. Disabling HTTPS preserves the saved helper identity and certificate. A paired computer can use its valid saved certificate while the owner is offline; renewal requires the owner. Recovery access and Home Assistant ingress have separate readiness.</p>
+                          <p class="muted">A paired computer can keep serving local HTTPS with its valid saved certificate while the owner is offline. Remote access and renewal require the certificate owner to be running. Disabling HTTPS preserves the saved identity and certificate. Recovery access and Home Assistant ingress have separate readiness.</p>
                         </details>
                         <details id="secure-web-access-network-details" class="equipment-fold">
                           <summary>Household DNS &amp; recovery</summary>

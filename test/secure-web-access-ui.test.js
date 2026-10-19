@@ -45,8 +45,8 @@ test('network guidance uses the reported destination and exact HTTPS port, with 
     assert.equal(local.hostsEntry, ''); assert.equal(local.curlCommand, '');
     assert.match(local.browserInstructions, /reaches only this computer/);
     assert.match(local.dnsInstructions, /loopback destination cannot provide household access/);
-    assert.equal(local.next.title, 'Review the local-only destination');
-    assert.match(local.next.help, /Household access is not confirmed.*Household DNS & recovery/);
+    assert.equal(local.next.title, 'Local network access');
+    assert.match(local.next.help, /Direct household access needs a LAN listener.*Tailscale forwarding has separate status/);
   }
   const standard = secureWebAccessView({ ...source, url: `https://${ready.hostname}`, dns: { expectedAddress: '192.0.2.74' } }, { admin: true });
   assert.equal(standard.curlCommand, `curl --resolve '${ready.hostname}:443:192.0.2.74' 'https://${ready.hostname}/'`);
@@ -83,6 +83,18 @@ test('a valid certificate is distinct from listener and household DNS readiness'
   assert.equal(familyView.updateAvailable, false);
 });
 
+test('remote forwarding is reported from current configuration without asking for client-test flags', () => {
+  const configured = secureWebAccessView({ ...ready, remoteAccess: { state: 'configured' } }, { admin: true });
+  assert.equal(configured.remote, 'Forwarding configured');
+  assert.match(configured.next.help, /same Tailscale network/);
+  assert.doesNotMatch(configured.remote, /reachable|connected|tested|verified/i);
+  for (const [state, label] of [['unavailable', 'Unavailable'], ['disabled', 'Disabled'], ['configuring', 'Configuring']])
+    assert.equal(secureWebAccessView({ ...ready, remoteAccess: { state } }, { admin: true }).remote, label);
+  assert.equal(secureWebAccessView({ ...ready, remoteAccess: { state: 'configured' },
+    pair: { ownerId: 'synthetic-peer', localOwner: false } }, { admin: true }).remote, 'Managed on the paired computer');
+  assert.equal(secureWebAccessView(ready).remote, '');
+});
+
 test('ready wording requires current certificate and listener evidence, including the certificate clock', () => {
   const now = Date.parse('2026-10-14T12:00:00Z');
   const expired = secureWebAccessView({ ...ready, certificate: { expiresAt: now - 1 } }, { admin: true, now });
@@ -103,7 +115,7 @@ test('setup without router DNS reaches local HTTPS and gives temporary certifica
   assert.equal(view.label, 'HTTPS ready · DNS not verified');
   assert.equal(view.dnsText, 'Check not configured');
   assert.match(view.summary, /listener is running.*DNS has not been verified/);
-  assert.match(view.next.help, /each intended device.*does not verify other devices/);
+  assert.match(view.next.help, /same Tailscale network.*No exit node or advertised subnet route/);
   assert.equal(view.hostsEntry, `192.0.2.1 ${ready.hostname}`);
   assert.equal(view.curlCommand, `curl --resolve '${ready.hostname}:8443:192.0.2.1' '${ready.url}/'`);
   assert.doesNotMatch(view.curlCommand, /(?:^|\s)-k(?:\s|$)|--insecure/);
@@ -117,7 +129,7 @@ test('current next action distinguishes local setup, authorization and paired ce
   const now = Date.parse('2026-10-14T12:00:00Z');
   const view = secureWebAccessView(ready, { admin: true, now });
   assert.equal(view.authorizationUrl, null, 'A stale AuthURL on a running helper is withheld');
-  assert.equal(view.next.title, 'Check access on each device');
+  assert.equal(view.next.title, 'One address at home and away');
   const pairedSetup = secureWebAccessView({ ...ready, enabled: false, phase: 'disabled', pair: { paired: true } }, { admin: true, now });
   assert.equal(pairedSetup.pairSetup, true);
   assert.match(pairedSetup.next.help, /Choose which computer.*separate from the master/);
@@ -219,7 +231,7 @@ test('current recovery is independent of a recent failed action receipt and its 
   const operation = { action: 'enable', state: 'failed', completedAt: now - 1000, error: 'helper_authorization_start_failed' };
   const recovered = { ...ready, error: null, operation };
   const view = secureWebAccessView(recovered, { admin: true, now });
-  assert.equal(view.next.title, 'Check access on each device');
+  assert.equal(view.next.title, 'One address at home and away');
   assert.equal(view.error, ''); assert.equal(view.historicalProblem, true);
   assert.match(view.receipt.text, /Last action · Set up HTTPS request failed/);
   assert.equal(view.receipt.at, operation.completedAt, 'Receipt keeps the actual operation clock');
@@ -394,7 +406,7 @@ test('an uncertain request reply and a durable completed operation remain distin
   await panel.refresh({ force: true }); await panel.run('recheck'); await panel.refresh({ force: true });
   assert.match(nodes.get('secure-web-access-request-receipt').textContent, /request reply was lost/);
   assert.match(nodes.get('secure-web-access-receipt').textContent, /Last action · Recheck request processed/);
-  assert.equal(nodes.get('secure-web-access-next-title').textContent, 'Check access on each device');
+  assert.equal(nodes.get('secure-web-access-next-title').textContent, 'One address at home and away');
   now += 86_399_999; await panel.refresh({ force: true });
   assert.equal(nodes.get('secure-web-access-request-receipt').hidden, false);
   now += 1; await panel.refresh({ force: true });
@@ -473,11 +485,11 @@ test('disabled certificate owner shows retained peer renewal and confirms that d
   const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, confirm: async details => { confirmation = details; return false; },
     request: async () => structuredClone(source) });
   await panel.refresh({ force: true }); await panel.run('disable');
-  assert.match(confirmation.message, /retains renewal.*helper continues running/);
-  assert.equal(nodes.get('secure-web-access-peer-renewal').hidden, false);
+  assert.match(confirmation.message, /Certificate renewal and Tailscale forwarding.*remain/);
+  assert.equal(nodes.get('secure-web-access-peer-renewal').hidden, true, 'Enabled normal scope does not repeat a retained-duty notice');
   const disabled = secureWebAccessView({ ...source, enabled: false, phase: 'disabled' }, { admin: true });
   assert.equal(disabled.label, 'Disabled · peer renewal retained');
-  assert.match(disabled.peerRenewal, /peer must confirm/);
+  assert.match(disabled.peerRenewal, /until the peer confirms HTTPS is disabled/);
   assert.equal(secureWebAccessView(source).peerRenewal, '', 'Family gets no owner details');
 });
 
