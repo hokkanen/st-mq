@@ -1583,6 +1583,8 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .equipment-device-health > .equipment-device-status { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: 11px; }
 .equipment-connection-health > .equipment-device-status::before,
 .equipment-device-health > .equipment-device-status::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.equipment-connection-health > .equipment-device-status[data-state="available"]::before,
+.equipment-device-health > .equipment-device-status[data-state="available"]::before { background: var(--chart-indoor); }
 #mqtt-devices-details .equipment-connection-body { padding-bottom: 14px; }
 #mqtt-devices-details .equipment-connection-intro { margin: 0 0 12px; font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
 #mqtt-devices-details .equipment-connection-check { display: grid; gap: 5px; margin: 0 0 14px; }

@@ -48,7 +48,10 @@ export function chargingFlexibility(charger, { now = Date.now(), comparison = ch
 export function chargingNotice(charger, view, summary) {
   const notice = chargingNoticeContent(charger, view, summary);
   const paragraphs = [notice.detail, chargingRecordedDetail(charger)].filter(Boolean).flatMap(value => value.split('\n\n'));
-  return { ...notice, detail: [...new Set(paragraphs)].join('\n\n') };
+  const normalize = value => String(value ?? '').trim().replace(/[.!]$/, '').toLowerCase();
+  const hidden = [summary.roleLabel, summary.activity].some(value =>
+    String(value ?? '').split(' · ').some(part => normalize(part) === normalize(notice.label)));
+  return { ...notice, hidden, detail: [...new Set(paragraphs)].join('\n\n') };
 }
 
 function chargingNoticeContent(charger, view, summary) {

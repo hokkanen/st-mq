@@ -308,6 +308,7 @@ try {
       for (const id of ['charger1', 'charger2']) {
         const result = await evaluate(`(() => ({
           notice: document.getElementById('${id}-notice').textContent,
+          noticeHidden: document.getElementById('${id}-notice').hidden,
           activity: document.getElementById('${id}-event-value').textContent,
           completion: document.getElementById('${id}-completion').textContent,
           problem: document.getElementById('${id}-problem').textContent,
@@ -318,8 +319,10 @@ try {
         assert.equal(result.completion, state === 'target-estimated' ? 'Estimated reached' : 'Reached');
         if (state === 'target-charging') assert.match(result.activity, /Charging.*7.2 kW/);
         else if (state !== 'target-fault') assert.equal(result.activity, result.notice);
+        assert.equal(result.noticeHidden, !['target-charging', 'target-fault'].includes(state),
+          'Repeated notices disappear while distinct charging and fault messages remain');
         assert(result.noOverflow);
-        await evaluate(`document.querySelector('#${id}-notice button').click()`);
+        await evaluate(`document.querySelector('#${id}-${result.noticeHidden ? 'event-value' : 'notice'} button').click()`);
         const detail = await evaluate("document.getElementById('status-detail-popover').textContent");
         assert.match(detail, state === 'target-fault' ? /reports a fault/ : /Energy measurements have gaps/);
         if (state === 'target-reached') assert.doesNotMatch(detail, /Waiting for it to restore|needs attention/);

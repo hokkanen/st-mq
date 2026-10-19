@@ -1078,8 +1078,9 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.eventLabel.hidden = !device.eventLabel.textContent;
       device.event.dataset.timing = view.activityTiming ? 'approval-pending' : 'ordinary';
       const activity = view.showMetrics ? presentation.activity : charger.values?.connected?.value === false ? 'Not connected' : 'Connection unknown';
+      const notice = chargingNotice(charger, view, presentation);
       metricDetail(device.eventValue, { label: view.activityTiming?.value ?? (timedEvent ? timedEvent[2].replace(' · update awaiting confirmation', '') : activity),
-        title: 'Charging activity', detail: [...new Set([presentation.activity, view.controlReason, view.identification?.detail, view.controlDetail].filter(Boolean))].join('\n\n'), key: `${charger.id}:activity` });
+        title: 'Charging activity', detail: [...new Set([presentation.activity, view.controlReason, view.identification?.detail, view.controlDetail, notice.hidden ? notice.detail : ''].filter(Boolean))].join('\n\n'), key: `${charger.id}:activity` });
       device.event.dataset.state = view.risk ? 'attention' : 'normal';
       device.overview.hidden = false;
       const defaultsPreview = view.defaultsPreview;
@@ -1122,7 +1123,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       metricDetail(device.costLabel, { label: cost.scope === 'remaining' ? 'Est. remaining' : 'Est. cost',
         title: cost.scope === 'remaining' ? 'Estimated remaining charging cost' : 'Estimated total session cost',
         detail: cost.detail, key: `${charger.id}:cost` });
-      const notice = chargingNotice(charger, view, presentation);
+      device.notice.hidden = notice.hidden;
       device.notice.dataset.state = notice.state;
       metricDetail(device.notice, { label: notice.label, title: 'Charging status', detail: notice.detail, key: `${charger.id}:notice` });
       const allowance = chargingAllowanceDisplay(charger.allowance, { limiter: charger.limiter,

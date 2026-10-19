@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Restore green availability dots with neutral labels in MQTT and equipment
+  status, use content descriptions consistently in connection setup subtitles,
+  and omit repeated charger notices while keeping their explanations available.
+
 - Recover native OCPP power, current and voltage while an idle charger supplies
   only clock-aligned reports. Request bounded fresh native samples without
   treating interval values or acknowledgements as instantaneous evidence, and
@@ -13,7 +17,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 - Use the same HTTPS address for an installed phone web app at home and through
   Tailscale, without host subnet or exit-node changes. Show remote forwarding
-  status separately and retain a status subtitle on the Web access fold.
+  status separately in Web access.
 - Show **Needs attention** for an enabled price forecast that is unavailable or
   out of date, consistently with other data sources and the prices overview.
 - Give each new manual Normal or Reduced selection in Automatic its own

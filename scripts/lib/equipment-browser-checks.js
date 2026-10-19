@@ -545,6 +545,19 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     await evaluate("window.equipmentUiFixture.devices.find(device=>device.id==='door2').cover.available=false;true"); await refresh();
     assert.equal(await evaluate(`document.querySelector('${door2} [data-cover-action=open]').disabled`), true);
     await evaluate("window.equipmentUiFixture.devices.find(device=>device.id==='door2').cover.available=true;true"); await refresh();
+    const setupSubtitles = await evaluate("[...document.querySelectorAll('#connections-details > details > summary > small')].map(node=>node.textContent)");
+    assert.deepEqual(setupSubtitles, ['Devices & topics', 'Devices, setup & guides', 'Installation & setup',
+      'Installation & setup', 'Contracts & prices', 'HTTPS & remote access', 'File & settings']);
+    for (const theme of ['dark', 'light']) {
+      await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
+      const colors = await evaluate(`(() => {
+        const probe = document.createElement('span'); probe.style.color = 'var(--chart-indoor)'; document.body.append(probe);
+        const green = getComputedStyle(probe).color; probe.style.color = 'var(--muted)'; const neutral = getComputedStyle(probe).color; probe.remove();
+        const rows = [...document.querySelectorAll(':is(.equipment-connection-health, .equipment-device-health) > .equipment-device-status[data-state="available"]')];
+        return { count: rows.length, correct: rows.every(node => getComputedStyle(node, '::before').backgroundColor === green && getComputedStyle(node).color === neutral) };
+      })()`);
+      assert(colors.count > 0 && colors.correct, `Healthy MQTT and equipment dots are green with neutral labels in ${theme}`);
+    }
     // Popup triggers keep the reading's line-height and baseline without an icon or button margin.
     const trigger = '#garage-equipment-readings [data-device-id=door1] .status-detail-trigger';
     for (const [width,height] of [[1440,1100],[900,900],[320,640],[390,844],[844,390]]) {

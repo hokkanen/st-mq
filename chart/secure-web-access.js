@@ -311,7 +311,6 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     const admin = getAccess()?.role === 'admin';
     const view = secureWebAccessView(state, { admin, now: now() });
     setText('secure-web-access-state', view.label); $('secure-web-access-state').dataset.state = view.tone;
-    setText('secure-web-access-fold-summary', view.label);
     setText('secure-web-access-remote', view.remote);
     $('secure-web-access-remote-row').hidden = !admin;
     setText('secure-web-access-summary', view.summary);

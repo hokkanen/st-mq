@@ -466,14 +466,14 @@ try {
     ['identity-repair', { ...readyFixture, phase: 'degraded', error: 'identity_restore_required' }],
   ]) {
     installFixture(changes); await evaluate('webBrowser.panel.refresh({force:true})');
-    assert.equal(await evaluate("document.getElementById('secure-web-access-fold-summary').textContent"),
-      await evaluate("document.getElementById('secure-web-access-state').textContent"), 'Fold status stays aligned with the expanded body');
+    assert.equal(await evaluate("document.querySelector('#secure-web-access-details > summary > small').textContent"),
+      'HTTPS & remote access', 'The setup subtitle describes contents in every status');
     if (name === 'remote-configured') {
       assert.equal(await evaluate("document.getElementById('secure-web-access-remote').textContent"), 'Forwarding configured');
       assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'One address at home and away');
     }
     if (name === 'remote-unavailable') {
-      assert.equal(await evaluate("document.getElementById('secure-web-access-fold-summary').textContent"), 'Needs attention');
+      assert.equal(await evaluate("document.getElementById('secure-web-access-state').textContent"), 'Needs attention');
       assert.match(await evaluate("document.getElementById('secure-web-access-summary').textContent"), /Local HTTPS is ready.*Tailscale access needs attention/);
       assert.equal(await evaluate("document.getElementById('secure-web-access-remote').textContent"), 'Unavailable');
       assert.match(await evaluate("document.getElementById('secure-web-access-message').textContent"), /Tailscale connection could not be configured/);
