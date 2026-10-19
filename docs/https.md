@@ -117,9 +117,55 @@ application handles its helper installation, certificate issuance, listener and
 renewal. Router access is not required to complete the first four steps.
 
 Tailscale handles the public DNS challenge for certificate issuance. There is no
-public inbound port forwarding, purchased domain, client-installed CA, Serve or
-Funnel requirement. The dedicated helper uses userspace networking and does not
-take over host DNS, routes, SSH or general-purpose Tailscale access.
+public inbound port forwarding, purchased domain or client-installed CA. The
+dedicated helper uses userspace networking and does not take over host DNS,
+routes, SSH or general-purpose Tailscale access. The application manages one
+foreground Tailscale Serve TCP forwarder; there is no manual Serve setup or Funnel.
+
+## One phone address at home and away
+
+Use the exact HTTPS URL shown in Web access, including its port, for the phone's
+installed web app. Home DNS maps that hostname to the server's reserved LAN address
+or shared pair VIP. Away, the phone's Tailscale connection and MagicDNS reach the
+dedicated node instead. The node forwards encrypted TCP to the same HTTPS port at
+the pair VIP, or the configured local listener in standalone use. A wildcard
+standalone listener uses loopback for that internal connection. Browser TLS still
+terminates at the native application listener, preserving the certificate,
+hostname, normal password authentication and permissions. No HTTP proxy identity
+headers, TLS termination or unencrypted recovery listener are used.
+
+No subnet advertisement, exit-node selection or changes to existing Ubuntu/HA
+Tailscale installations are required. The phone must belong to the same tailnet,
+use its MagicDNS settings, and have policy permission to reach the dedicated node's
+HTTPS port. Browser-specific DNS overrides can bypass MagicDNS. Tailscale access
+is private to authorized tailnet clients; Funnel is never enabled.
+
+**Tailscale access · Forwarding configured** means that the current helper's
+effective restrictions and exact TCP configuration were read back. It is not proof
+that a particular phone's DNS, VPN, access policy or browser connection succeeds.
+The application reports these observations automatically and stores no client
+test acknowledgement or completion flag.
+
+In a pair, the selected certificate owner also owns the remote entrance,
+independently of master/standby roles. Forwarding targets the shared VIP so ordinary
+controller handovers keep the address. The certificate-owner computer must remain
+running for remote access; its outage is separate from LAN VIP/controller failover.
+Disabling local HTTPS on the owner retains renewal and forwarding while the paired
+computer is known enabled. Once neither computer needs HTTPS, the helper stops.
+Unknown peer state preserves the existing renewal duty. A recipient reports remote
+access as managed on the owner, rather than claiming a local forwarding check.
+
+Only one foreground raw TCP handler to the configured destination is admitted.
+Extra listeners, Web handlers, services, Funnel, TLS termination and PROXY headers
+are refused. The helper also disables the vendor's Taildrop and Wake-on-LAN
+features; this connection does not provide file transfer or unrelated LAN commands.
+Foreground configuration ends with its supervised CLI session and is
+not restored as an unattended saved listener. During enrollment and runtime
+preflight, incoming traffic stays blocked. A valid current certificate and enabled
+local or paired scope are required before opening forwarding. Restart reuses the
+saved identity and reconstructs the current route; expiry, disabled scope or
+shutdown removes it. Helper/forwarder failure affects remote access without
+closing a healthy LAN HTTPS listener or changing controller authority.
 
 Certificate names appear in public Certificate Transparency records. Choose a
 non-sensitive node name before issuance. Background renewal detects an account-side

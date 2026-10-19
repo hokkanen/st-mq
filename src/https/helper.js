@@ -6,6 +6,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { httpsError, privateDirectory, atomicJson, readJson, outsideCheckout } from './storage.js';
 import { helperAuthorizationUrl } from './authorization-url.js';
+import { isIPv4 } from 'node:net';
 
 const UID = 65534; const GID = 65534;
 export const RESTRICTION_FLAGS = Object.freeze(['--accept-dns=false', '--accept-routes=false', '--shields-up=true', '--exit-node=',
@@ -13,15 +14,34 @@ export const RESTRICTION_FLAGS = Object.freeze(['--accept-dns=false', '--accept-
   '--ssh=false', '--webclient=false', '--auto-update=false', '--update-check=true']);
 
 export function restrictedEnvironment(directory) {
-  return { PATH: '/usr/bin:/bin', HOME: directory, TMPDIR: directory, LANG: 'C', LC_ALL: 'C', GOMAXPROCS: '1', GOMEMLIMIT: '128MiB' };
+  return { PATH: '/usr/bin:/bin', HOME: directory, TMPDIR: directory, LANG: 'C', LC_ALL: 'C', GOMAXPROCS: '1', GOMEMLIMIT: '128MiB',
+    TS_DISABLE_FEATURE: 'taildrop,wakeonlan' };
 }
 
-export function effectiveRestrictions(prefs, serve) {
-  return prefs?.CorpDNS === false && prefs.RouteAll === false && prefs.ShieldsUp === true && prefs.RunSSH === false && prefs.RunWebClient === false &&
+export function validRemoteTarget(remote) {
+  if (!remote || typeof remote !== 'object' || Array.isArray(remote) || Object.keys(remote).some(key => !['address', 'port'].includes(key)) || !isIPv4(remote.address) || remote.address === '0.0.0.0' ||
+      !Number.isInteger(remote.port) || remote.port < 1 || remote.port > 65535) throw httpsError('helper_remote_target_invalid');
+  return `${remote.address}:${remote.port}`;
+}
+
+export function expectedRemoteServe(serve, remote) {
+  if (!remote) return serve === null || typeof serve === 'object' && !Array.isArray(serve) && Object.keys(serve).length === 0;
+  const target = validRemoteTarget(remote);
+  // Only one owned foreground TCP forwarder. No persisted listeners, Web,
+  // Funnel, services, TLS termination, PROXY headers or arbitrary destinations.
+  if (!serve || Object.keys(serve).length !== 1 || !serve.Foreground || Object.keys(serve.Foreground).length !== 1) return false;
+  const entry = Object.values(serve.Foreground)[0];
+  const handler = entry?.TCP?.[remote.port];
+  return Boolean(entry && Object.keys(entry).length === 1 && entry.TCP && Object.keys(entry.TCP).length === 1 &&
+    handler && Object.keys(handler).length === 1 && handler.TCPForward === target);
+}
+
+export function effectiveRestrictions(prefs, serve, remote = null) {
+  return prefs?.CorpDNS === false && prefs.RouteAll === false && prefs.ShieldsUp === !remote && prefs.RunSSH === false && prefs.RunWebClient === false &&
     !prefs.ExitNodeID && (!prefs.ExitNodeIP || prefs.ExitNodeIP === '0.0.0.0' || prefs.ExitNodeIP === '::') && prefs.ExitNodeAllowLANAccess === false &&
     (prefs.AdvertiseRoutes === null || Array.isArray(prefs.AdvertiseRoutes) && prefs.AdvertiseRoutes.length === 0) && (prefs.AdvertiseTags === null || Array.isArray(prefs.AdvertiseTags) && prefs.AdvertiseTags.length === 0) &&
     prefs.AppConnector?.Advertise === false && prefs.AutoUpdate?.Apply === false && prefs.AutoUpdate?.Check === true &&
-    prefs.RemoteConfig === false && (serve === null || typeof serve === 'object' && !Array.isArray(serve) && Object.keys(serve).length === 0);
+    prefs.RemoteConfig === false && Boolean(expectedRemoteServe(serve, remote));
 }
 
 export function localApi(socket, path, { timeout = 5000 } = {}) {
@@ -198,7 +218,7 @@ export async function stopOwned(processRecord) {
 }
 
 export class CertificateHelper {
-  constructor({ directory, locations, onExit, processRecordPath }) { this.directory = directory; this.locations = locations; this.onExit = onExit; this.process = null; this.expectedStop = false; this.commands = new Set(); this.processRecordPath = processRecordPath; this.processToken = null; }
+  constructor({ directory, locations, onExit, processRecordPath }) { this.directory = directory; this.locations = locations; this.onExit = onExit; this.process = null; this.expectedStop = false; this.commands = new Set(); this.processRecordPath = processRecordPath; this.processToken = null; this.forwarder = null; this.remote = null; }
   cli(args, options) {
     return launchRestricted(resolve(this.directory, 'tailscale'), [`--socket=${this.locations.socket}`, ...args], { locations: this.locations, ...options,
       onProcess: record => { this.commands.add(record); record.completion.finally(() => this.commands.delete(record)).catch(() => {}); } });
@@ -246,12 +266,45 @@ export class CertificateHelper {
     }
     await this.stop(); throw httpsError('helper_userspace_start_timeout');
   }
-  async restrictions() {
-    await this.cli(['set', ...RESTRICTION_FLAGS.filter(flag => !flag.startsWith('--advertise-tags=')), '--remote-config=false', '--relay-server-port=', '--relay-server-static-endpoints=']);
+  async restrictions(remote = this.remote) {
+    // Verify the only admitted listener before dropping shields. During setup,
+    // enrollment and preflight shields remain up and there is no listener.
+    if (remote && !expectedRemoteServe(await localApi(this.locations.socket, '/localapi/v0/serve-config'), remote)) {
+      await this.stop(); throw httpsError('helper_restrictions_not_confirmed');
+    }
+    await this.cli(['set', ...RESTRICTION_FLAGS.filter(flag => !flag.startsWith('--advertise-tags='))
+      .map(flag => flag.startsWith('--shields-up=') ? `--shields-up=${!remote}` : flag), '--remote-config=false', '--relay-server-port=', '--relay-server-static-endpoints=']);
     let serve = await localApi(this.locations.socket, '/localapi/v0/serve-config');
-    if (serve && Object.keys(serve).length) { await this.cli(['serve', 'reset']); serve = await localApi(this.locations.socket, '/localapi/v0/serve-config'); }
+    if (!remote && serve && Object.keys(serve).length) { await this.cli(['serve', 'reset']); serve = await localApi(this.locations.socket, '/localapi/v0/serve-config'); }
     const prefs = await localApi(this.locations.socket, '/localapi/v0/prefs');
-    if (!effectiveRestrictions(prefs, serve)) { await this.stop(); throw httpsError('helper_restrictions_not_confirmed'); }
+    if (!effectiveRestrictions(prefs, serve, remote)) { await this.stop(); throw httpsError('helper_restrictions_not_confirmed'); }
+  }
+  async remoteAccess(remote) {
+    if (remote) validRemoteTarget(remote);
+    if (remote && this.forwarder && this.forwarder.child.exitCode === null && this.forwarder.child.signalCode === null &&
+        this.remote?.address === remote.address && this.remote?.port === remote.port) {
+      await this.restrictions(remote); return;
+    }
+    const previous = this.forwarder; this.forwarder = null; this.remote = null;
+    await stopOwned(previous);
+    await this.restrictions(null);
+    if (!remote) return;
+    try {
+      // No --bg: the vendor removes this listener when this owned CLI session
+      // ends, including application crashes. Only the daemon identity persists.
+      const record = await this.cli(['serve', `--tcp=${remote.port}`, `tcp://${validRemoteTarget(remote)}`], { foreground: true });
+      this.forwarder = record;
+      record.completion.finally(() => {
+        if (this.forwarder === record) { this.forwarder = null; this.remote = null; if (!this.expectedStop) this.onExit?.(); }
+      }).catch(() => {});
+      const deadline = Date.now() + 5000;
+      while (!expectedRemoteServe(await localApi(this.locations.socket, '/localapi/v0/serve-config'), remote)) {
+        if (record.child.exitCode !== null || record.child.signalCode !== null || Date.now() >= deadline) throw httpsError('helper_remote_forwarding_unavailable');
+        await new Promise(ready => setTimeout(ready, 50));
+      }
+      await this.restrictions(remote);
+      this.remote = { ...remote };
+    } catch (error) { await this.stop(); throw error; }
   }
   async authorize(machineName) {
     // The pinned vendor's up interface excludes these newer set-only flags.
@@ -283,7 +336,7 @@ export class CertificateHelper {
     }
   }
   async stop() {
-    this.expectedStop = true; await Promise.all([...this.commands, this.process].filter(Boolean).map(stopOwned)); this.process = null;
+    this.expectedStop = true; this.forwarder = null; this.remote = null; await Promise.all([...this.commands, this.process].filter(Boolean).map(stopOwned)); this.process = null;
     if (this.processRecordPath && this.processToken) {
       const saved = await readJson(this.processRecordPath).catch(() => null);
       if (saved?.token === this.processToken) await rm(this.processRecordPath, { force: true });
@@ -313,6 +366,8 @@ export async function preflightRuntime(directory, version, locations) {
     // never uses a copied production identity or asks for a certificate.
     const help = await helper.cli(['cert', '--help'], { includeStderr: true });
     if (!help.includes('--min-validity') || !help.includes('--cert-file') || !help.includes('--key-file')) throw httpsError('helper_certificate_capability_missing');
-    return { testedVersion: version, restrictionsVerified: true, certificateCapabilityVerified: true };
+    const serveHelp = await helper.cli(['serve', '--help'], { includeStderr: true });
+    if (!serveHelp.includes('--tcp') || !serveHelp.includes('--bg')) throw httpsError('helper_remote_capability_missing');
+    return { testedVersion: version, restrictionsVerified: true, certificateCapabilityVerified: true, foregroundTcpCapabilityVerified: true };
   } finally { await helper.stop(); await rm(preflightDirectory, { recursive: true, force: true }); }
 }

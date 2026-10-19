@@ -79,7 +79,7 @@ async function setup(t, changes = {}) {
   const directory = await mkdtemp(resolve(tmpdir(), 'stmq-https-manager-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const config = { dataDir: directory, token: 'synthetic-admin-password-long-enough', topology: 'standalone', web: { httpsHost: '127.0.0.1', httpsPort: 8443, lanResolver: '' } };
-  const calls = { install: 0, discover: 0, helperStart: 0, helperStop: 0, certificate: 0, certificateNames: [], activations: [], activationNames: [], disabled: 0, preflight: 0 };
+  const calls = { install: 0, discover: 0, helperStart: 0, helperStop: 0, certificate: 0, certificateNames: [], activations: [], activationNames: [], remoteAccess: [], disabled: 0, preflight: 0 };
   let installNotify; const installStarted = new Promise(ready => { installNotify = ready; });
   let running = true; let certificateId = 1; let reportedHostname = hostname;
   const metadataByCertificate = new Map();
@@ -111,6 +111,7 @@ async function setup(t, changes = {}) {
     inspectCertificate: (material, expectedHostname) => metadata(material, expectedHostname),
     createHelper: ({ locations }) => ({
       start: async () => { calls.helperStart++; await writeFile(resolve(locations.identity, 'tailscaled.state'), '{}', { mode: 0o600 }); },
+      remoteAccess: async remote => { calls.remoteAccess.push(remote); },
       restrictions: async () => {}, status: async () => ({ Version: '1.104.1-fixture', BackendState: running ? 'Running' : 'NeedsLogin', CertDomains: running ? [reportedHostname] : [], AuthURL: running ? '' : 'https://login.tailscale.com/a/synthetic' }),
       authorize: async () => ({ Version: '1.104.1-fixture', BackendState: running ? 'Running' : 'NeedsLogin', CertDomains: running ? [reportedHostname] : [], AuthURL: running ? '' : 'https://login.tailscale.com/a/synthetic' }),
       certificate: async name => { calls.certificate++; calls.certificateNames.push(name); return { cert: `fixture-cert-${certificateId}`, key: `fixture-key-${certificateId}` }; },
@@ -131,6 +132,92 @@ test('optional HTTPS starts with no files, downloads, network checks or helper w
   await assert.rejects(lstat(resolve(directory, 'https')), { code: 'ENOENT' });
   const record = await manager.action({ action: 'update-now' }); assert.ok(record.id); await settled(t, manager);
   assert.equal(manager.status().operation.error, 'https_setup_required'); assert.equal(calls.install, 0);
+});
+
+test('remote HTTPS follows the configured pair VIP, retains the origin and closes with its enabled scope', async t => {
+  const context = await setup(t); await context.manager.close();
+  context.config.topology = 'pair'; context.config.web.httpsPort = 9443;
+  let peerEnabled = false;
+  const pair = { configuration: () => ({ pairId: 'remote-pair', localId: 'local-node', peerId: 'peer-node', vipAddress: '192.0.2.100' }),
+    request: async () => ({ nodeId: 'peer-node', pairId: 'remote-pair', ownerId: 'local-node', enabled: peerEnabled, generation: 1 }) };
+  let manager = restart(t, context, { pair });
+  await manager.action({ action: 'enable', owner: 'local' }); await settled(t, manager);
+  assert.deepEqual(context.calls.remoteAccess.at(-1), { address: '192.0.2.100', port: 9443 });
+  assert.equal(manager.status().remoteAccess.state, 'configured');
+  assert.equal(manager.status().url, `https://${hostname}:9443`);
+  assert.equal('remoteAccess' in manager.status({ admin: false }), false);
+  await manager.close();
+  manager = restart(t, context, { pair });
+  await manager.action({ action: 'recheck' }); await settled(t, manager);
+  assert.equal(manager.status().remoteAccess.state, 'configured', 'Current restart reuses the same identity and route');
+  peerEnabled = true;
+  await manager.action({ action: 'disable' }); await settled(t, manager);
+  assert.equal(manager.status().remoteAccess.state, 'configured', 'An enabled peer retains the pair remote entrance and renewal duty');
+  peerEnabled = false;
+  await manager.action({ action: 'disable' }); await settled(t, manager);
+  assert.equal(manager.status().remoteAccess.state, 'disabled');
+});
+
+test('remote forwarding failure leaves validated local TLS available and Retry recovers without reenrollment', async t => {
+  const context = await setup(t); await context.manager.close();
+  let fail = true;
+  const disabledBefore = context.calls.disabled;
+  const base = context.dependencies.createHelper;
+  const manager = restart(t, context, { dependencies: { createHelper: options => ({ ...base(options),
+    remoteAccess: async remote => { if (remote && fail) throw Object.assign(Error(), { code: 'helper_remote_forwarding_unavailable' }); },
+  }) } });
+  await manager.action({ action: 'enable' }); await settled(t, manager);
+  assert.equal(manager.status().remoteAccess.state, 'unavailable');
+  assert.equal(manager.status().error, 'helper_remote_forwarding_unavailable');
+  assert.ok(manager.status().certificate);
+  assert.equal(context.calls.disabled, disabledBefore, 'Remote failure cannot close the local TLS listener');
+  fail = false;
+  await manager.action({ action: 'retry' }); await settled(t, manager);
+  assert.equal(manager.status().remoteAccess.state, 'configured');
+  assert.equal(context.calls.install, 1); assert.equal(context.calls.certificate, 1);
+});
+
+test('a dead helper is replaced without losing identity and an earlier exit cannot invalidate its replacement', async t => {
+  const context = await setup(t); await context.manager.close();
+  const exits = [], base = context.dependencies.createHelper;
+  const manager = restart(t, context, { dependencies: { createHelper: options => { exits.push(options.onExit); return base(options); } } });
+  await manager.action({ action: 'enable' }); await settled(t, manager);
+  exits[0](); assert.equal(manager.status().remoteAccess.state, 'unavailable');
+  await manager.action({ action: 'recheck' }); await settled(t, manager);
+  assert.equal(exits.length, 2); assert.equal(context.calls.install, 1); assert.equal(context.calls.certificate, 1);
+  assert.equal(manager.status().remoteAccess.state, 'configured');
+  exits[0](); assert.equal(manager.status().remoteAccess.state, 'configured');
+});
+
+test('expired certificate scope removes forwarding even when renewal cannot recover it', async t => {
+  const context = await setup(t); await context.manager.close();
+  let now = Date.now();
+  const manager = restart(t, context, { dependencies: { now: () => now } });
+  await manager.action({ action: 'enable' }); await settled(t, manager);
+  now = manager.status().certificate.expiresAt + 1;
+  context.setRunning(false);
+  await manager.action({ action: 'recheck' }); await settled(t, manager);
+  assert.equal(context.calls.remoteAccess.at(-1), null);
+  assert.equal(manager.status().remoteAccess.state, 'disabled');
+});
+
+test('retained peer forwarding closes at certificate expiry before a failed renewal', async t => {
+  const context = await setup(t); await context.manager.close(); context.config.topology = 'pair';
+  let now = Date.now(), fail = false;
+  const base = context.dependencies.createHelper;
+  const pair = { configuration: () => ({ pairId: 'expiry-pair', localId: 'local-node', peerId: 'peer-node', vipAddress: '192.0.2.100' }),
+    request: async () => ({ nodeId: 'peer-node', pairId: 'expiry-pair', ownerId: 'local-node', enabled: true, generation: 1 }) };
+  const manager = restart(t, context, { pair, dependencies: { now: () => now, createHelper: options => ({ ...base(options),
+    certificate: async name => { if (fail) throw Object.assign(Error(), { code: 'helper_command_failed' }); return base(options).certificate(name); },
+  }) } });
+  await manager.action({ action: 'enable', owner: 'local' }); await settled(t, manager);
+  await manager.action({ action: 'disable' }); await settled(t, manager);
+  assert.equal(manager.status().remoteAccess.state, 'configured');
+  now = manager.status().certificate.expiresAt + 1; fail = true;
+  await manager.action({ action: 'recheck' }); await settled(t, manager);
+  assert.equal(manager.status().operation.error, 'helper_command_failed');
+  assert.equal(context.calls.remoteAccess.at(-1), null);
+  assert.equal(manager.status().remoteAccess.state, 'disabled');
 });
 
 test('explicit setup installs only its helper, activates validated certificate, redacts family state and is resumable', async t => {
@@ -379,7 +466,7 @@ for (const action of ['recheck', 'enable']) test(`an explicit ${action} adopts a
 
 for (const failure of ['validation', 'activation', 'durable-write', 'pair-binding']) test(`a renamed certificate ${failure} failure keeps the old durable address and published peer generation`, async t => {
   let peerGeneration = 0; let currentPairId = 'rename-publication'; const delivered = [];
-  const pair = { configuration: () => ({ pairId: currentPairId, localId: 'local-node', peerId: 'peer-node' }),
+  const pair = { configuration: () => ({ vipAddress: '192.0.2.100', pairId: currentPairId, localId: 'local-node', peerId: 'peer-node' }),
     request: async (operation, envelope) => {
       if (operation === 'status') return { nodeId: 'peer-node', pairId: 'rename-publication', ownerId: 'local-node', enabled: true, generation: peerGeneration };
       assert.equal(operation, 'receive'); delivered.push(structuredClone(envelope)); peerGeneration = envelope.generation;
@@ -426,7 +513,7 @@ for (const failure of ['validation', 'activation', 'durable-write', 'pair-bindin
 });
 
 test('an authenticated bound certificate owner can deliver a strictly newer same-tailnet renamed certificate', async t => {
-  const pair = { configuration: () => ({ pairId: 'rename-pair', localId: 'local-node', peerId: 'peer-node' }),
+  const pair = { configuration: () => ({ vipAddress: '192.0.2.100', pairId: 'rename-pair', localId: 'local-node', peerId: 'peer-node' }),
     request: async operation => operation === 'status'
       ? { nodeId: 'peer-node', ownerId: 'peer-node', pairId: 'rename-pair', enabled: true }
       : { pairId: 'rename-pair', ownerId: 'peer-node', hostname, generation: 1, certificate: { cert: 'fixture-peer-original', key: 'fixture-key-original' } } };
@@ -481,6 +568,7 @@ test('explicit rename requires a fresh successful effective restriction readback
   t.after(() => new Promise(done => server.close(done)));
   const context = await setup(t, { dependencies: { createHelper: options => {
     const helper = new CertificateHelper(options);
+    helper.remoteAccess = async () => {};
     helper.start = async () => {
       activeHelper = helper; helper.expectedStop = false;
       await writeFile(resolve(options.locations.identity, 'tailscaled.state'), '{}', { mode: 0o600 });
@@ -495,6 +583,7 @@ test('explicit rename requires a fresh successful effective restriction readback
   await context.manager.action({ action: 'recheck' }); const refused = await settled(t, context.manager);
   assert.equal(refused.operation.error, 'helper_restrictions_not_confirmed'); assert.equal(activeHelper.expectedStop, true);
   assert.equal(refused.helper.state, 'stopped'); assert.equal(refused.hostname, hostname); assert.equal(refused.certificate.generation, 1);
+  assert.equal(refused.remoteAccess.state, 'unavailable', 'Stopped helper cannot retain a configured remote-access claim');
   await assert.rejects(lstat(resolve(context.directory, 'https', 'certificates', '2.json')), { code: 'ENOENT' });
   await context.manager.close();
 });
@@ -516,6 +605,7 @@ for (const scenario of ['enable', 'retry', 'stale-pending-recheck', 'restriction
   t.after(() => new Promise(done => server.close(done)));
   const context = await setup(t, { dependencies: { createHelper: options => {
     const helper = new CertificateHelper(options);
+    helper.remoteAccess = async () => {};
     helper.start = async () => {
       activeHelper = helper; helper.expectedStop = false;
       await writeFile(resolve(options.locations.identity, 'tailscaled.state'), '{}', { mode: 0o600 });
@@ -561,7 +651,7 @@ for (const scenario of ['enable', 'retry', 'stale-pending-recheck', 'restriction
 for (const boundary of ['closed', 'changed-pair', 'wrong-version']) test(`a current Running refresh respects the ${boundary} fence before native writes`, async t => {
   let currentPairId = 'authentication-pair', hold = false, upCalls = 0, restrictions = 0, notify, release;
   const entered = new Promise(done => { notify = done; }), held = new Promise(done => { release = done; });
-  const pair = { configuration: () => ({ pairId: currentPairId, localId: 'local-node', peerId: 'peer-node' }),
+  const pair = { configuration: () => ({ vipAddress: '192.0.2.100', pairId: currentPairId, localId: 'local-node', peerId: 'peer-node' }),
     request: async () => ({ nodeId: 'peer-node', pairId: 'authentication-pair', ownerId: 'local-node', enabled: false }) };
   const context = await setup(t); await context.manager.close(); context.config.topology = 'pair';
   const baseHelper = context.dependencies.createHelper;
@@ -775,6 +865,7 @@ test('restart resumes previously requested HTTPS enrollment when the helper lost
   t.after(() => new Promise(done => server.close(done)));
   const context = await setup(t, { dependencies: { createHelper: options => {
     const helper = new CertificateHelper(options);
+    helper.remoteAccess = async () => {};
     helper.start = async () => {
       starts++; identities.push(options.locations.identity); activeHelper = helper; helper.expectedStop = false;
       AuthURL = '';
@@ -885,6 +976,7 @@ test('resumed startup authorization still stops a helper whose effective restric
   t.after(() => new Promise(done => server.close(done)));
   const context = await setup(t, { dependencies: { createHelper: options => {
     const helper = new CertificateHelper(options);
+    helper.remoteAccess = async () => {};
     helper.start = async () => {
       starts++; currentUrl = ''; invalidRestrictions = false; activeHelper = helper; helper.expectedStop = false;
       if (!server.listening) await new Promise(done => server.listen(options.locations.socket, done));
@@ -1045,6 +1137,7 @@ test('Retry restarts a helper stopped by a failed post-enrollment restriction re
   t.after(() => new Promise(done => server.close(done)));
   const { manager, calls } = await setup(t, { dependencies: { createHelper: options => {
     const helper = new CertificateHelper(options);
+    helper.remoteAccess = async () => {};
     helper.start = async () => {
       starts++; identities.push(options.locations.identity); activeHelper = helper; helper.expectedStop = false; invalidRestrictions = false;
       if (!server.listening) await new Promise(done => server.listen(options.locations.socket, done));
@@ -1074,7 +1167,7 @@ test('Retry restarts a helper stopped by a failed post-enrollment restriction re
 
 test('a peer certificate recipient never installs or starts a certificate helper and rejects replay', async t => {
   const envelope = { pairId: 'fixture-pair', ownerId: 'peer-node', hostname, generation: 5, certificate: { cert: 'fixture-peer', key: 'fixture-key' } };
-  const pair = { configuration: () => ({ pairId: 'fixture-pair', localId: 'local-node', peerId: 'peer-node' }), request: async operation => operation === 'status' ?
+  const pair = { configuration: () => ({ vipAddress: '192.0.2.100', pairId: 'fixture-pair', localId: 'local-node', peerId: 'peer-node' }), request: async operation => operation === 'status' ?
     { nodeId: 'peer-node', ownerId: 'peer-node', pairId: 'fixture-pair', enabled: true } : envelope };
   const { manager, config, calls } = await setup(t, { pair, dependencies: {
     helperLocations: async () => assert.fail('Certificate recipients cannot look up or admit a helper identity'),
@@ -1089,7 +1182,7 @@ test('a peer certificate recipient never installs or starts a certificate helper
 
 test('local owner retains renewal responsibility while its enabled peer is offline after local disable', async t => {
   let offline = false; let delivered = 0;
-  const pair = { configuration: () => ({ pairId: 'fixture-pair', localId: 'local-node', peerId: 'peer-node' }), request: async operation => {
+  const pair = { configuration: () => ({ vipAddress: '192.0.2.100', pairId: 'fixture-pair', localId: 'local-node', peerId: 'peer-node' }), request: async operation => {
     if (offline) throw Object.assign(Error(), { code: 'https_peer_unavailable' });
     if (operation === 'status') return { nodeId: 'peer-node', pairId: 'fixture-pair', ownerId: 'local-node', enabled: true, generation: 0 };
     delivered++; return {};
@@ -1112,8 +1205,8 @@ test('simultaneous conflicting pair-owner choices cannot both install and failed
     if (operation === 'get') return other().exportCertificate();
     return other().acceptCertificate(body);
   };
-  const pairA = { configuration: () => ({ pairId: 'race-pair', localId: 'a', peerId: 'b' }), request: request('a', () => b, 'b') };
-  const pairB = { configuration: () => ({ pairId: 'race-pair', localId: 'b', peerId: 'a' }), request: request('b', () => a, 'a') };
+  const pairA = { configuration: () => ({ vipAddress: '192.0.2.100', pairId: 'race-pair', localId: 'a', peerId: 'b' }), request: request('a', () => b, 'b') };
+  const pairB = { configuration: () => ({ vipAddress: '192.0.2.100', pairId: 'race-pair', localId: 'b', peerId: 'a' }), request: request('b', () => a, 'a') };
   const aa = await setup(t, { pair: pairA }); const bb = await setup(t, { pair: pairB }); a = aa.manager; b = bb.manager; aa.config.topology = bb.config.topology = 'pair';
   await Promise.all([a.action({ action: 'enable', owner: 'local' }), b.action({ action: 'enable', owner: 'local' })]);
   await Promise.all([settled(t, a), settled(t, b)]);
@@ -1127,7 +1220,7 @@ test('simultaneous conflicting pair-owner choices cannot both install and failed
 
 test('a stored valid peer certificate restarts offline without depending on the renewal owner', async t => {
   let peerId = 'peer-node';
-  const pair = { configuration: () => ({ pairId: 'offline-pair', localId: 'local-node', peerId }), request: async operation => operation === 'status' ?
+  const pair = { configuration: () => ({ vipAddress: '192.0.2.100', pairId: 'offline-pair', localId: 'local-node', peerId }), request: async operation => operation === 'status' ?
     { nodeId: 'peer-node', pairId: 'offline-pair', ownerId: 'peer-node', enabled: true } :
     { pairId: 'offline-pair', ownerId: 'peer-node', hostname, generation: 3, certificate: { cert: 'peer-stored', key: 'peer-key' } } };
   const context = await setup(t, { pair }); context.config.topology = 'pair';
@@ -1139,7 +1232,7 @@ test('a stored valid peer certificate restarts offline without depending on the 
   assert.equal(activations, 1); assert.equal(resumed.status().certificate.generation, 3); assert.equal(context.calls.helperStart, 0);
   await resumed.close();
   const before = await readFile(resolve(context.directory, 'https', 'state.json'), 'utf8');
-  const changed = restart(t, context, { pair: { ...offlinePair, configuration: () => ({ pairId: 'offline-pair', localId: 'new-local-node', peerId: null }) },
+  const changed = restart(t, context, { pair: { ...offlinePair, configuration: () => ({ vipAddress: '192.0.2.100', pairId: 'offline-pair', localId: 'new-local-node', peerId: null }) },
     onCertificate: async () => { throw Error('A changed node cannot activate the old identity'); } });
   changed.start(); assert.equal((await diagnosed(t, changed)).error, 'https_pair_identity_changed');
   assert.equal(await readFile(resolve(context.directory, 'https', 'state.json'), 'utf8'), before);
@@ -1199,7 +1292,7 @@ test('null-like and retired nested records fail closed without rewriting current
 test('failed certificate activation never exports an uncommitted generation to a peer', async t => {
   let currentTime = Date.now(); let ready; let release;
   const entered = new Promise(notify => { ready = notify; }); const held = new Promise(done => { release = done; });
-  const pair = { configuration: () => ({ pairId: 'publication-pair', localId: 'local-node', peerId: 'peer-node' }), request: async () =>
+  const pair = { configuration: () => ({ vipAddress: '192.0.2.100', pairId: 'publication-pair', localId: 'local-node', peerId: 'peer-node' }), request: async () =>
     ({ nodeId: 'peer-node', pairId: 'publication-pair', ownerId: 'local-node', enabled: true, generation: 1 }) };
   const context = await setup(t, { pair, dependencies: { now: () => currentTime } }); context.config.topology = 'pair';
   await context.manager.action({ action: 'enable', owner: 'local' }); await settled(t, context.manager); await context.manager.close();
@@ -1273,6 +1366,7 @@ test('effective helper restrictions follow observed current nil slices and omit 
   assert.equal(effectiveRestrictions(prefs, { TCP: { '443': {} } }), false);
   assert.equal('SUPERVISOR_TOKEN' in restrictedEnvironment('/fixture'), false);
   assert.equal('STMQ_API_TOKEN' in restrictedEnvironment('/fixture'), false);
+  assert.equal(restrictedEnvironment('/fixture').TS_DISABLE_FEATURE, 'taildrop,wakeonlan');
 });
 
 test('runtime workers honor cancellation and finish before returning cancelled staging ownership', async () => {
