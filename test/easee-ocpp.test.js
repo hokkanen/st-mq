@@ -24,16 +24,16 @@ async function freePort() {
   const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve)); return port;
 }
 
-async function fixture(t, overrides = {}, virtualTag = '', initialState) {
+async function fixture(t, overrides = {}, virtualTag = '', initialState, stateHooks = {}) {
   const port = await freePort();
-  let saved = structuredClone(initialState), now = at, permitted = true, startPermitted = true, broken = false, writes = 0, sequence = 0;
+  let saved = structuredClone(initialState), now = at, elapsed = 0, permitted = true, startPermitted = true, broken = false, writes = 0, sequence = 0;
   const clients = [];
   const local = createEaseeOcpp({ config: { ...config, port, ...overrides }, chargerId: 'fixture-charger',
-    clock: () => now, canControl: () => permitted, canStart: () => startPermitted, virtualTag,
-    state: { get: () => saved, set: value => { if (broken) throw new Error('Synthetic storage failure'); saved = structuredClone(value); writes++; } } });
+    clock: () => now, monotonicClock: () => elapsed, canControl: () => permitted, canStart: () => startPermitted, virtualTag,
+    state: { get: () => saved, set: value => { if (broken) throw new Error('Synthetic storage failure'); saved = structuredClone(value); writes++; }, ...stateHooks } });
   t.after(async () => { for (const client of clients) client.terminate(); await local.close(); });
   await local.start();
-  return { local, port, get saved() { return structuredClone(saved); }, get writes() { return writes; }, get now() { return now; }, set now(value) { now = value; }, set permitted(value) { permitted = value; }, set startPermitted(value) { startPermitted = value; }, set broken(value) { broken = value; },
+  return { local, port, get saved() { return structuredClone(saved); }, get writes() { return writes; }, get now() { return now; }, set now(value) { now = value; }, set elapsed(value) { elapsed = value; }, set permitted(value) { permitted = value; }, set startPermitted(value) { startPermitted = value; }, set broken(value) { broken = value; },
     async connect({ autoReply = true } = {}) {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ocpp/fixture-charger`, 'ocpp1.6', {
         headers: { Authorization: `Basic ${Buffer.from(`fixture-charger:${config.password}`).toString('base64')}` },
@@ -1549,6 +1549,136 @@ test('bounded native meter request ACK cannot renew measurements and real +2ms s
   for (const payload of [{ requestedMessage: 'StatusNotification', connectorId: 1 },
     { requestedMessage: 'MeterValues', connectorId: 0 }, { requestedMessage: 'MeterValues', connectorId: 1, extra: true }])
     await assert.rejects(f.local.request('TriggerMessage', payload), { code: 'ocpp-invalid-payload' });
+});
+
+const meterRequests = client => client.calls.filter(call => call[2] === 'TriggerMessage' && call[3].requestedMessage === 'MeterValues');
+
+test('background native sampling recovers clock-aligned-only idle telemetry without manufacturing evidence', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Available')); await flushCalls(client);
+  const initial = meterRequests(client).length;
+  f.now = at + 30_000; f.elapsed = 30_000;
+  await client.call('MeterValues', meter(samples.map(row => ({ ...row, context: 'Sample.Clock' })), f.now));
+  assert.equal(f.local.snapshot(), null);
+  t.mock.timers.tick(1000); await flushCalls(client);
+  assert.equal(meterRequests(client).length, initial + 1);
+  assert.equal(f.local.snapshot(), null, 'An accepted sample request supplies no measurement');
+  await client.call('MeterValues', meter(samples.map(row => ({ ...row, value: row.unit === 'W' ? '0' : row.value, context: 'Trigger' })), f.now));
+  const original = f.local.snapshot();
+  assert.equal(original.find(row => row.id === 120).value, 0);
+  assert(original.filter(row => row.id !== 250).every(row => row.context === 'Trigger' && row.receivedAt === f.now));
+  for (let i = 0; i < 20; i++) { f.local.status(); f.local.readSnapshot(); }
+  assert.equal(meterRequests(client).length, initial + 1, 'Status and acquisition snapshots do not initiate queries');
+  f.now = at + 59_999; f.elapsed = 59_999;
+  t.mock.timers.tick(1000); await flushCalls(client);
+  assert.equal(meterRequests(client).length, initial + 1);
+  f.now = at + 60_000; f.elapsed = 60_000;
+  await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
+  assert.equal(meterRequests(client).length, initial + 2);
+  assert.deepEqual(f.local.snapshot().filter(row => row.id !== 250), original.filter(row => row.id !== 250));
+});
+
+test('healthy periodic native reports avoid background sampling and wall jumps cannot accelerate it', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Available')); await flushCalls(client);
+  const initial = meterRequests(client).length;
+  for (let step = 1; step <= 3; step++) {
+    f.now = at + step * 30_000; f.elapsed = step * 30_000;
+    await client.call('MeterValues', meter(samples, f.now));
+    t.mock.timers.tick(1000); await flushCalls(client);
+  }
+  assert.equal(meterRequests(client).length, initial);
+  f.now = at + 150_000; f.elapsed = 120_000;
+  await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
+  assert.equal(meterRequests(client).length, initial + 1);
+  f.now = at + 600_000; f.elapsed = 120_001;
+  await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
+  assert.equal(meterRequests(client).length, initial + 1, 'Forward wall correction cannot consume the monotonic cooldown');
+});
+
+test('native controls preempt a silent background meter read and its late reply grants nothing', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = await fixture(t); let hold = false;
+  const client = await f.connect({ autoReply: () => hold ? null : 'Accepted' });
+  await client.call('StatusNotification', connector('Available')); await flushCalls(client); hold = true;
+  f.now = at + 30_000; f.elapsed = 30_000;
+  await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
+  const background = meterRequests(client).at(-1);
+  const received = once(client.ws, 'message');
+  const pause = f.local.request('SetChargingProfile', { connectorId: 1 });
+  await received;
+  const command = client.calls.at(-1); assert.equal(command[2], 'SetChargingProfile');
+  respond(client, background, { status: 'Accepted' }); await client.call('Heartbeat', {});
+  assert.equal(f.local.snapshot(), null);
+  respond(client, command, { status: 'Accepted' }); assert.deepEqual(await pause, { status: 'Accepted' });
+});
+
+test('unsupported background sampling stays suppressed until a new authenticated native connection', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = await fixture(t); let reject = false;
+  const client = await f.connect({ autoReply: call => reject && call[2] === 'TriggerMessage' ? 'NotImplemented' : 'Accepted' });
+  await client.call('StatusNotification', connector('Available')); await flushCalls(client); reject = true;
+  f.now = at + 30_000; f.elapsed = 30_000;
+  await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
+  const count = meterRequests(client).length;
+  f.now = at + 90_000; f.elapsed = 90_000;
+  await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
+  assert.equal(meterRequests(client).length, count);
+  f.permitted = false; t.mock.timers.tick(1000); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(meterRequests(client).length, count);
+  f.permitted = true;
+  const replacement = await f.connect(); await replacement.call('StatusNotification', connector('Available')); await flushCalls(replacement);
+  f.now = at + 120_000; f.elapsed = 120_000;
+  await replacement.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(replacement);
+  assert.equal(meterRequests(replacement).length, 2);
+  assert.equal(f.local.snapshot(), null, 'Reconnect and accepted requests do not recover old measurements');
+});
+
+test('silent native background reads time out without replenishing evidence or retrying faster than their cooldown', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = await fixture(t); let hold = false;
+  const client = await f.connect({ autoReply: () => hold ? null : 'Accepted' });
+  await client.call('StatusNotification', connector('Available')); await flushCalls(client); hold = true;
+  f.now = at + 30_000; f.elapsed = 30_000;
+  await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
+  const count = meterRequests(client).length;
+  f.now = at + 45_000; f.elapsed = 45_000;
+  await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
+  assert.equal(meterRequests(client).length, count);
+  f.now = at + 60_000; f.elapsed = 60_000;
+  await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
+  assert.equal(meterRequests(client).length, count + 1);
+  assert.equal(f.local.snapshot(), null);
+  f.permitted = false;
+  t.mock.timers.tick(1000); await new Promise(resolve => setImmediate(resolve));
+  f.now = at + 90_000; f.elapsed = 90_000;
+  t.mock.timers.tick(1000);
+  assert.equal(meterRequests(client).length, count + 1, 'Demotion cannot keep a background read alive');
+});
+
+test('background meter dispatch rechecks fresh native evidence and authority after deferred publication', async t => {
+  for (const boundary of ['fresh-report', 'demotion']) await t.test(boundary, async t => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const held = []; let defer = false;
+    const f = await fixture(t, {}, '', undefined, { afterCommit: effect => defer ? held.push(effect) : effect() });
+    const client = await f.connect();
+    await client.call('StatusNotification', connector('Available')); await flushCalls(client);
+    const before = meterRequests(client).length;
+    f.now = at + 30_000; f.elapsed = 30_000;
+    defer = true; t.mock.timers.tick(1000);
+    for (let i = 0; i < 4; i++) await new Promise(resolve => setImmediate(resolve));
+    assert(held.length > 0);
+    defer = false;
+    if (boundary === 'fresh-report') await client.call('MeterValues', meter(samples, f.now));
+    else f.permitted = false;
+    for (const effect of held.splice(0)) effect();
+    for (let i = 0; i < 4; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(meterRequests(client).length, before);
+    if (boundary === 'fresh-report') assert(f.local.snapshot());
+    else assert.equal(f.local.snapshot(), null);
+  });
 });
 
 test('cancelled read-only meter request releases the wire for a native pause while its late reply grants nothing', async t => {

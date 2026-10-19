@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Recover native OCPP power, current and voltage while an idle charger supplies
+  only clock-aligned reports. Request bounded fresh native samples without
+  treating interval values or acknowledgements as instantaneous evidence, and
+  let charging commands preempt a delayed background sample request.
+
 - Use the same HTTPS address for an installed phone web app at home and through
   Tailscale, without host subnet or exit-node changes. Show remote forwarding
   status separately and retain a status subtitle on the Web access fold.

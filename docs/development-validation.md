@@ -476,6 +476,14 @@ See `test/charging-search.test.js` and `test/charging-replanning.test.js`.
 
 ## Automated tests and build
 
+The native OCPP background-read cases in `test/easee-ocpp.test.js` exercise an
+idle charger that supplies only clock-aligned data, actual triggered zero power,
+healthy periodic reporting, monotonic throttling across wall-clock changes,
+silent and unsupported sampling, command preemption, late acknowledgements,
+deferred-publication revalidation, demotion and reconnect. They preserve interval
+exclusion, original measurement clocks and unknown readings until a genuine
+native report arrives.
+
 ### UI messages and evidence
 
 Check the complete path from the producing condition through the public response

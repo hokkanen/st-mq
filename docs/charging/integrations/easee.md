@@ -651,7 +651,8 @@ Only actual meter reports provide evidence; the acknowledgement cannot renew
 measurement clocks. The next controller action cancels the read-only request so
 its missing reply cannot delay a pause or restoration. Known rejected or
 unsupported sampling is suppressed until the next native connection. Ordinary
-economic operation does not use this sampling loop.
+operation uses the separate bounded recovery described below, rather than this
+two-second probe sampling loop.
 
 ### Qualification scope
 
@@ -879,7 +880,22 @@ preserves each report's context, with absent context taking OCPP's
 interval data cannot supply, overwrite or renew instantaneous measurements, even
 when both contexts share a timestamp. Its transaction identifier can still
 establish a conflict, but its values cannot establish or renew positive
-transaction confirmation. Reporting requests and cadence are unchanged.
+transaction confirmation.
+
+An idle native charger may send only those clock-aligned intervals. The existing
+one-second connection maintenance requests a native `TriggerMessage` for
+connector 1's `MeterValues` when required instantaneous power, phase current or
+voltage has not advanced for 30 seconds. A background request waits at least
+30 monotonic seconds after any actual dispatched sample request, including setup
+and the independently bounded, more frequent probe reads. Fresh
+complete periodic reports prevent background requests. Only actual received
+instantaneous values restore measurements; accepted requests, aligned intervals
+and heartbeats do not. One background read uses the existing ordered command
+transport and 15-second acknowledgement timeout. Any queued control or explicit
+read preempts that background read, so a silent acknowledgement cannot hold
+Pause, Start or restoration. Rejected/unsupported sampling is suppressed for the
+current native connection; reconnect discards all earlier measurement evidence.
+Status and acquisition snapshot reads do not initiate these background queries.
 Both the socket and the measured fields must remain current;
 heartbeats do not renew an old power/current sample. Missing or unsupported phases
 stay missing, and a local/cloud transition breaks energy integration rather than

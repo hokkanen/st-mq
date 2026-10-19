@@ -11,6 +11,7 @@ const MAX_AGE_MS = 60_000;
 const MAX_FUTURE_MS = MAX_SOURCE_AHEAD_MS;
 const CALL_TIMEOUT_MS = 15_000;
 const SNAPSHOT_ADMISSION_MS = 1000;
+const METER_REFRESH_MS = 30_000;
 const FIRST_MESSAGE_TIMEOUT_MS = 30_000;
 const NO_TRANSACTION_STATUSES = new Set(['Available', 'Finishing']);
 const RECOVERABLE_STATUSES = new Set(['Charging', 'SuspendedEVSE', 'SuspendedEV']);
@@ -105,7 +106,7 @@ export function ocppMeterReadings(payload, now) {
  * charging-profile support or silently convert an existing cloud schedule. */
 export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, canControl = () => false,
   canStart = () => false, onDisconnect = () => {}, state, virtualTag = '',
-  controlAttempt = () => createControlAttempt() } = {}) {
+  controlAttempt = () => createControlAttempt(), monotonicClock = () => performance.now() } = {}) {
   const config = localOcppConfiguration(input);
   if (typeof virtualTag !== 'string' || virtualTag.length > 20) throw new TypeError('Invalid private OCPP virtual tag');
   const plugAndCharge = config.authorization_mode === 'plug-and-charge';
@@ -115,6 +116,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   let server, sockets, socket, timer, startPromise, booted = false, lastMessageAt = null, connectedAt = null, error = null, closed = false;
   const transportSockets = new Set();
   let ownsConnection = false, telemetryConfigured = false, meterTriggerUnsupported = false;
+  let meterRequestedAt = null;
   let connectorStatus = null, connectorStatusAt = null, connectorReceivedAt = null, connectorStatusExplicit = false;
   let preparingAttempted = false, remoteStartStatus = 'idle';
   let device = null;
@@ -344,6 +346,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     rejectRequests('ocpp-disconnected');
     booted = false; values.clear(); futureReadings.length = 0; replies.clear();
     configurationFailures.clear(); lastMessageAt = null; connectedAt = null; telemetryConfigured = false; meterTriggerUnsupported = false;
+    meterRequestedAt = null;
     connectorStatus = null; connectorStatusAt = null; connectorReceivedAt = null; connectorStatusExplicit = false;
     observedTransaction = null; connectionId = null; authenticatedConnectionId = null; transactionEvidence = null;
     recoveryCandidate = null; recoveryConflict = false; evidenceBoundaryAt = null;
@@ -387,6 +390,11 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   }
   function sendNextCall() {
     if (state?.runWrite && !admitted) { scheduleState('send', sendNextCall); return; }
+    // Background sampling has no physical effect. A missing acknowledgement
+    // must never keep a control action or an explicitly scoped read waiting.
+    if (callQueue.some(call => !call.meterRefresh)) for (const [id, call] of pendingCalls) {
+      if (call.meterRefresh) { pendingCalls.delete(id); finishRequest(call, 'ocpp-request-revoked'); }
+    }
     if (pendingCalls.size || !callQueue.length || socket?.readyState !== 1 || !canControl()) return;
     const call = callQueue.shift(), { action, payload, transition } = call, id = `stmq-${++callId}`;
     const dispatchReceiptSequence = receivedFrameSequence;
@@ -411,6 +419,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       // Worker durability can take longer than a native command's original
       // deadline. Revalidate at actual dispatch, after the intent committed.
       const revoked = pendingCalls.get(id) !== call
+        || call.meterRefresh && (call.connection !== socket || !transportFresh() || meterTriggerUnsupported
+          || !needsMeterReadback())
         || (call.resolve && !['TriggerMessage', 'GetConfiguration'].includes(action) || action === 'RemoteStartTransaction')
           && dispatchReceiptSequence !== receivedFrameSequence
         || call.resolve && (call.settled
@@ -424,6 +434,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         finishRequest(call, 'ocpp-request-revoked'); sendNextCall(); return false;
       }
       call.sentAt = clock();
+      if (action === 'TriggerMessage' && payload.requestedMessage === 'MeterValues') meterRequestedAt = monotonicClock();
       return true;
     }, () => call.attempt?.dispatched());
   }
@@ -445,6 +456,24 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       ['ClockAlignedDataInterval', '30']]) callQueue.push({ action: 'ChangeConfiguration', payload: { key, value }, attempt: controlAttempt() });
     callQueue.push({ action: 'TriggerMessage', payload: { requestedMessage: 'MeterValues', connectorId: 1 } });
     callQueue.push({ action: 'TriggerMessage', payload: { requestedMessage: 'StatusNotification', connectorId: 1 } });
+    sendNextCall();
+  }
+  function needsMeterReadback() {
+    const now = clock();
+    return [120, 183, 184, 185, 194, 195, 196].some(id => {
+      const row = values.get(id), at = instant(row?.timestamp);
+      return row?.value == null || !Number.isFinite(at) || at > now || now - at >= METER_REFRESH_MS;
+    });
+  }
+  function refreshMeterReadback() {
+    // Some native chargers publish only clock-aligned intervals while idle.
+    // Obtain actual instantaneous reports instead of relabelling those values
+    // or waiting for the next charging transaction. Reuse the existing wire,
+    // admission and timeout paths; ordinary status/snapshot reads stay pure.
+    if (!telemetryConfigured || meterTriggerUnsupported || !transportFresh() || pendingCalls.size || callQueue.length
+      || meterRequestedAt !== null && monotonicClock() - meterRequestedAt < METER_REFRESH_MS || !needsMeterReadback()) return;
+    callQueue.push({ action: 'TriggerMessage', payload: { requestedMessage: 'MeterValues', connectorId: 1 },
+      meterRefresh: true, connection: socket, attempt: createControlAttempt({ kind: 'query' }) });
     sendNextCall();
   }
   function recoverTransaction({ at, conflicting, identityOnly = false }, transactionId, receivedAt, messageId) {
@@ -921,7 +950,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
                 callQueue.splice(index, 1); finishRequest(call, 'ocpp-request-timeout');
               }
             }
-            scheduleState('maintenance', () => { releaseFutureReadings(); requestRemoteStart(); sendNextCall(); });
+            scheduleState('maintenance', () => { releaseFutureReadings(); requestRemoteStart(); sendNextCall(); refreshMeterReadback(); });
           }, 1000); timer.unref();
         } catch {
           error = 'listener-unavailable'; sockets.close(); sockets = null; server = null;
