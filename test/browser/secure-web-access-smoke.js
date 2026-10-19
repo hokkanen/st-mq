@@ -434,7 +434,7 @@ try {
   const installFixture = next => { for (const key of Object.keys(fixture)) delete fixture[key]; Object.assign(fixture, structuredClone(next)); };
   for (const [name, changes] of [
     ['remote-configured', { ...readyFixture, remoteAccess: { state: 'configured' } }],
-    ['remote-unavailable', { ...readyFixture, phase: 'degraded', error: 'helper_remote_forwarding_unavailable', remoteAccess: { state: 'unavailable' } }],
+    ['remote-unavailable', { ...readyFixture, phase: 'ready', error: 'helper_remote_forwarding_unavailable', remoteAccess: { state: 'unavailable' } }],
     ['disabled-pair', originalFixture],
     ['disabled-peer-owner', { ...readyFixture, enabled: false, phase: 'disabled', pair: { paired: true, ownerId: 'synthetic-peer', localOwner: false }, transport: { ...readyFixture.transport, https: { enabled: false, listening: false } } }],
     ['disabled-local-owner', { ...readyFixture, enabled: false, phase: 'disabled', pair: { paired: true, ownerId: 'synthetic-owner', localOwner: true }, transport: { ...readyFixture.transport, https: { enabled: false, listening: false } } }],
@@ -473,6 +473,8 @@ try {
       assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'One address at home and away');
     }
     if (name === 'remote-unavailable') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-fold-summary').textContent"), 'Needs attention');
+      assert.match(await evaluate("document.getElementById('secure-web-access-summary').textContent"), /Local HTTPS is ready.*Tailscale access needs attention/);
       assert.equal(await evaluate("document.getElementById('secure-web-access-remote').textContent"), 'Unavailable');
       assert.match(await evaluate("document.getElementById('secure-web-access-message').textContent"), /Tailscale connection could not be configured/);
       assert.match(await evaluate("document.getElementById('secure-web-access-https').textContent"), /Listening/);

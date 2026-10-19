@@ -187,6 +187,7 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     unavailable: 'Check unavailable', address_confirmation_required: 'Address needs confirmation' }[dns.state] ?? 'Not checked';
   const retainedRenewal = admin && state.pair?.localOwner === true && state.pair.peerRenewalRequired === true;
   const peerOwner = state.pair?.ownerId && state.pair.localOwner === false;
+  const remoteUnavailable = admin && !peerOwner && state.remoteAccess?.state === 'unavailable' && (state.enabled === true || retainedRenewal);
   const savedSetup = Boolean(state.pair?.ownerId || state.updates?.installed || state.certificate)
     && !(state.pair?.paired === true && !state.pair.ownerId);
   const errorCode = state.error ?? state.managementError ?? tls?.error ?? state.updates?.error ?? '';
@@ -207,14 +208,16 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
   const listener = value => value?.listening === true ? `Listening${port(value.address?.port) ? ` · port ${value.address.port}` : ''}`
     : value?.enabled === false ? 'Disabled' : value?.listening === false ? 'Unavailable' : 'Unknown';
   return {
-    label: unavailable ? 'HTTPS unavailable' : unconfirmed ? 'HTTPS not confirmed' : retainedRenewal && !state.enabled ? 'Disabled · peer renewal retained'
+    label: unavailable ? 'HTTPS unavailable' : unconfirmed ? 'HTTPS not confirmed' : remoteUnavailable ? 'Needs attention' : retainedRenewal && !state.enabled ? 'Disabled · peer renewal retained'
       : dnsPending ? dns.state === 'mismatch' ? 'HTTPS ready · DNS mismatch' : 'HTTPS ready · DNS not verified' : phase[0],
-    tone: unavailable || ['degraded', 'repair_required', 'authorization_required', 'certificate_settings_required'].includes(state.phase)
+    tone: unavailable || remoteUnavailable || ['degraded', 'repair_required', 'authorization_required', 'certificate_settings_required'].includes(state.phase)
       ? 'attention' : state.phase === 'ready' && !unconfirmed ? 'available' : 'pending',
     summary: unavailable ? Number.isFinite(expiresAt) && expiresAt <= now
       ? 'The certificate has expired. HTTPS is unavailable; recovery access remains separate. Review certificate renewal below.'
       : 'The HTTPS listener is unavailable. Recovery access remains separate; review the reported problem and retry.'
       : unconfirmed ? 'Current listener or certificate evidence is missing. Recheck to confirm HTTPS readiness; recovery access has separate readiness.'
+      : remoteUnavailable ? tlsReady ? 'Local HTTPS is ready. Tailscale access needs attention; review the connection problem below.'
+        : 'Tailscale access needs attention. Local HTTPS is shown separately; review the connection problem below.'
       : dnsPending ? dns.state === 'mismatch' ? 'HTTPS is running, but the checked DNS address does not match the expected LAN address. Review household DNS below.'
         : 'This computer has a valid certificate and its HTTPS listener is running. Household DNS has not been verified.' : phase[1],
     https: state.enabled === true && tls?.listening === false ? 'Not listening' : listener(tls), expiry: date(certificate?.expiresAt),

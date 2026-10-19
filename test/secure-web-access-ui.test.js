@@ -88,6 +88,10 @@ test('remote forwarding is reported from current configuration without asking fo
   assert.equal(configured.remote, 'Forwarding configured');
   assert.match(configured.next.help, /same Tailscale network/);
   assert.doesNotMatch(configured.remote, /reachable|connected|tested|verified/i);
+  const failed = secureWebAccessView({ ...ready, remoteAccess: { state: 'unavailable' } }, { admin: true });
+  assert.equal(failed.label, 'Needs attention'); assert.equal(failed.tone, 'attention');
+  assert.match(failed.summary, /Local HTTPS is ready.*Tailscale access needs attention/);
+  assert.equal(failed.https, 'Listening · port 8443');
   for (const [state, label] of [['unavailable', 'Unavailable'], ['disabled', 'Disabled'], ['configuring', 'Configuring']])
     assert.equal(secureWebAccessView({ ...ready, remoteAccess: { state } }, { admin: true }).remote, label);
   assert.equal(secureWebAccessView({ ...ready, remoteAccess: { state: 'configured' },
