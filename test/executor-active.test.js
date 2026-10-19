@@ -26,7 +26,7 @@ test('unreadable executor state cannot erase outstanding tariff or circulation r
   assert.equal(mutations, 0);
 });
 
-function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, floorOverride = null, config = {} } = {}) {
+function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, floorOverride = null, config = {}, nativeStepMs = 0 } = {}) {
   let now = Date.parse('2026-09-07T12:00Z'), elapsed = 0;
   const log = [], observations = [], snapshots = [], values = { '0203': 19, '0212': 47, '0208': 62, '2201': 1 };
   const store = { getState: key => structuredClone(saved.get(key) ?? null),
@@ -42,12 +42,13 @@ function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, 
   const h66 = native ? createH66Controller({ deviceId: 'synthetic', store, clock: () => now,
     tariffFeedback: () => ({ mode: tariffMode, verified: true, identity: 'a'.repeat(64) }),
     requestSnapshot: async () => { for (const [index, value] of Object.entries(values)) receive(index, value); },
-    config: { writeEnabled: true, preheatPreparationMs: config.preheatPreparationMs ?? 150, readbackTimeoutMs: 30, confirmationTimeoutMs: 30 }, publish: async (topic, payload, options) => {
+    config: { writeEnabled: true, preheatPreparationMs: config.preheatPreparationMs ?? 150, readbackTimeoutMs: 30,
+      confirmationTimeoutMs: nativeStepMs ? nativeStepMs + 100 : 30 }, publish: async (topic, payload, options) => {
       options.beforePublish(); options.onFirstWrite?.();
       const index = topic.split('/').at(-1);
       assert.ok(saved.get('h66:control:synthetic').obligations[index], 'native restoration saved before publishing');
       log.push({ native: index, value: Number(payload), now }); values[index] = Number(payload);
-      queueMicrotask(() => receive(index, values[index]));
+      queueMicrotask(() => { now += nativeStepMs; receive(index, values[index]); });
     } }) : null;
   if (h66) { h66.setConnected(true); for (const [index, value] of Object.entries(values)) receive(index, value); }
   const transport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publish: async commands => {
@@ -538,6 +539,37 @@ test('elapsed expiry with unavailable OFF delivery retains the original stop obl
   assert.deepEqual(r.executor.status().targetBindings.dhwr, binding);
   assert.equal(r.executor.status().restorationPending, true);
 });
+
+test('a new Automatic manual selection gets its own minute for native confirmation', async t => {
+  const r = rig(t, { nativeStepMs: 6000 });
+  await r.executor.execute({ commands: ['normal'] }, { manualTest: true, now: r.now });
+  const previousEnd = r.executor.status().manualRequested.expiresAt;
+  r.advance(49_000);
+  const requestedAt = r.now;
+  const result = await r.executor.execute({ commands: ['reduction'] }, { manualTest: true, now: requestedAt });
+  assert(r.now > previousEnd, 'Native confirmation finishes after the preceding selection expired');
+  assert.equal(result.native.status, 'confirmed');
+  assert.equal(result.holdUntil, requestedAt + 60_000);
+  assert.deepEqual(r.values, { '0203': 19, '0212': 40, '0208': 50, '2201': 2 });
+});
+
+for (const scope of ['automatic', 'indefinite-pause', 'scheduled-pause'])
+  test(`Preheat to Reduced uses fresh post-restoration settings during ${scope}`, async t => {
+    const r = rig(t, { nativeStepMs: 100 });
+    const pause = scope === 'automatic' ? null : { id: 'synthetic-transition-pause',
+      expiresAt: scope === 'scheduled-pause' ? r.now + 3_600_000 : null };
+    await r.executor.execute({ phase: 'preheat', commands: ['normal'], roomBoostC: 5 },
+      { manualTest: true, now: r.now, pause });
+    assert.equal(r.values['0203'], 24);
+    const requestedAt = r.now;
+    const result = await r.executor.execute({ commands: ['reduction'] }, { manualTest: true, now: requestedAt, pause });
+    assert(r.now > requestedAt, 'ROOM restoration advances the readback clock');
+    assert.equal(result.native?.status, 'confirmed', 'Available native restrictions cannot silently fall back to tariff-only');
+    assert.deepEqual(r.values, { '0203': 19, '0212': 40, '0208': 50, '2201': 2 });
+    assert.equal(result.holdUntil, pause ? pause.expiresAt : requestedAt + 60_000);
+    await r.executor.execute({ commands: ['normal'] }, { manualTest: true, now: r.now, pause });
+    assert.deepEqual(r.values, { '0203': 19, '0212': 47, '0208': 62, '2201': 1 });
+  });
 
 test('manual Reduced applies automatic DHW and AUX settings and remains through an indefinite pause', async t => {
   const r = rig(t), pause = { id: 'synthetic-indefinite-pause', expiresAt: null };

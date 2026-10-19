@@ -528,20 +528,23 @@ function withPriceForecast(group, status, options) {
   if (!forecast) return { ...group, sections };
   const now = options?.now ?? status.now ?? Date.now();
   const available = forecast.enabled && forecast.available && now < forecast.expiresAt && !recordedView(status);
+  const attention = forecast.enabled && !recordedView(status) && !available && forecast.status !== 'running';
   const state = !forecast.enabled ? 'Not enabled' : recordedView(status) ? 'Unavailable on this replica'
-    : available ? 'Available' : forecast.status === 'stale' ? 'Out of date' : forecast.status === 'running' ? 'Updating' : 'Unavailable';
+    : available ? 'Available' : attention ? 'Needs attention' : 'Updating';
   const description = 'Hourly estimates extend the price chart up to 48 hours and support charging schedules and the one-extra-day comparison. Recorded costs and heating use published prices.';
   const detail = !forecast.enabled ? 'Enable Electricity price forecast in configuration for private, non-commercial use.'
     : recordedView(status) ? 'Forecasts are temporary and are not copied into recorded history. A new master downloads a fresh forecast.'
       : available ? 'Published prices always take precedence. Predictions are uncertain and are not billed rates.'
         : 'Published prices remain available independently. Existing charging deadlines still apply.';
   const row = { signals: ['electricity_price_forecast'], label: '48-hour price forecast', unit: 'c/kWh',
-    source: 'Energy Price Forecast EU', state, tone: available ? 'available' : 'pending', detail,
+    source: 'Energy Price Forecast EU', state, tone: available ? 'available' : attention ? 'attention' : 'pending', detail,
     reported: recordedView(status) || !forecast.enabled ? null : [
       forecastClock('Fetched', [forecast.fetchedAt], { ...options, now }) ?? 'Fetch time unavailable',
       forecastClock('Model updated', [forecast.modelUpdatedAt], { ...options, now }),
     ].filter(Boolean).join(' · ') };
   return { ...group, datasets: [...group.datasets, row],
+    display: attention ? { ...group.display, state: 'Needs attention', attention: true,
+      detail: `${group.display.detail} ${row.label}: ${state}. ${detail}` } : group.display,
     sections: [...sections, { key: 'forecast', title: 'Price forecast', description, datasets: [row] }],
     sourceStates: [...group.sourceStates, ...(forecast.enabled ? [{ label: row.source, state, tone: row.tone }] : [])] };
 }

@@ -149,6 +149,20 @@ try {
   await until("!document.getElementById('chart-notes').textContent.includes('Sparse dots')");
   assert.equal(await evaluate("window.priceStrokes.some(row=>JSON.stringify(row.dash)==='[1,8]')"), false,
     'Background return expires forecast without a successful status refresh');
+  for (const theme of ['dark', 'light']) for (const width of [320, 1280]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`window.homeEnergyTheme.setTheme('${theme}'); true`);
+    for (const status of ['error', 'stale', 'unavailable']) {
+      Object.assign(forecast, { available: false, status });
+      await app.engine.tick();
+      await send('Page.reload');
+      await until("document.querySelector('[data-series=electricity_price_forecast] .provider-series-value')?.textContent==='Needs attention'");
+      assert.equal(await evaluate("document.querySelector('[data-series=electricity_price_forecast]').dataset.state"), 'attention');
+      assert.equal(await evaluate("document.querySelector('[data-provider=market] .provider-category-state').textContent"), 'Needs attention');
+      assert.equal(await evaluate("document.querySelector('[data-series=spot_price] .provider-series-value').textContent"), 'Available');
+      assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'), true);
+    }
+  }
   assert.deepEqual(errors, []);
   console.log(`Forecast browser checks passed: no cars, existing date controls, real sparse canvas strokes and shared price colors/toggles, price sections and plain attribution, original weather/solar acquisition ages, offline/background expiry, 280/320/390/1280px in both themes. Screenshots: ${artifacts}`);
 } finally {

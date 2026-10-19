@@ -34,6 +34,9 @@ retaining device readiness, native limits and restoration checks. Automatic phas
 selection is situation dependent; a phase's equipment actions share one path.
 
 In Automatic, Normal and Reduced are reassessed on the next controller update.
+Each explicit new selection gets its own one-minute reassessment window rather
+than inheriting the preceding button's deadline. Native readiness is checked
+against the current time after any awaited restoration.
 During Pause, they remain until another selection, Automatic, or the scheduled
 resume time. An indefinite Pause gives them no application end time. Native
 parameter edits remain separate persistent device commands.

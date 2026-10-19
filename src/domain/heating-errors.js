@@ -10,6 +10,12 @@ const MESSAGES = {
   H66_NORMAL_ROOM_UNCONFIRMED: 'Waiting for normal ROOM setting before Preheat.',
   H66_TARIFF_UNCONFIRMED: 'Preheat needs current confirmed Normal tariff relay readback.',
   H66_PREHEAT_PLAN_CHANGED: 'Heating conditions changed during preparation. Preheat needs a new plan.',
+  H66_READBACK_TIMEOUT: 'The heat pump did not confirm its setting before the timeout. Check its reported settings; temporary changes still require restoration.',
+  H66_WRITE_FAILED: 'The heat-pump setting write could not be confirmed. Check its reported settings before trying again.',
+  H66_EXPIRED: 'The heating override expired during its native setting changes. Temporary settings are being restored.',
+  H66_UNAVAILABLE: 'Fresh heat-pump settings are unavailable. Wait for current native readback before trying again.',
+  H66_RESTORATION_PENDING: 'Wait for the previous heat-pump settings to be restored.',
+  H66_BUSY: 'A heat-pump setting transition is already in progress. Wait for its result.',
   EXECUTOR_BUSY: 'A heating request is already in progress. Wait for its result.',
   EXECUTOR_UNCONFIRMED: 'The heating request could not be confirmed. Check the reported equipment state.',
 

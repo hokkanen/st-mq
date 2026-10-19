@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Show **Needs attention** for an enabled price forecast that is unavailable or
+  out of date, consistently with other data sources and the prices overview.
+- Give each new manual Normal or Reduced selection in Automatic its own
+  reassessment window. Use fresh native settings after Preheat restoration and
+  explain native confirmation failures without hiding their cause.
+
 - Use consistent charging activity, target completion and status explanations on
   both charger cards and recorded standby views. Distinguish reported and estimated
   completion, show a normal completed charge ahead of its native permission hold,

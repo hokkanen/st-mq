@@ -1027,7 +1027,7 @@ export class Engine {
       const message = heatingErrorMessage(error?.code);
       const code = message === heatingErrorMessage(undefined) ? 'EXECUTOR_UNCONFIRMED' : error.code;
       const unconfirmed = ['SHELLY_READBACK_TIMEOUT', 'SHELLY_READBACK_UNAVAILABLE', 'SHELLY_COMMAND_UNCONFIRMED',
-        'MQTT_UNAVAILABLE', 'MQTT_CLOSED', 'EXECUTOR_UNCONFIRMED'].includes(code);
+        'H66_READBACK_TIMEOUT', 'H66_WRITE_FAILED', 'H66_EXPIRED', 'MQTT_UNAVAILABLE', 'MQTT_CLOSED', 'EXECUTOR_UNCONFIRMED'].includes(code);
       const result = { command, status: unconfirmed ? 'unconfirmed' : 'failed', sent: unconfirmed ? null : false,
         code, actual: null, requestedAt, at: this.clock(), error: message };
       await this.runWrite(() => {

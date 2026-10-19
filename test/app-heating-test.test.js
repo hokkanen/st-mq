@@ -226,3 +226,17 @@ test('manual request time precedes a qualifying report even when delivery finish
   assert.equal(store.getState('heating-test:providers').requestedAt, requestedAt);
   assert.equal(store.events().find(event => event.type === 'heating-test-sent').payload.requestedAt, requestedAt);
 });
+
+for (const code of ['H66_READBACK_TIMEOUT', 'H66_WRITE_FAILED', 'H66_EXPIRED'])
+  test(`manual heating retains a safe specific ${code} cause and uncertain delivery`, async t => {
+    const commandTransport = { publish: async () => {
+      throw Object.assign(new Error('synthetic-private-native-detail'), { code });
+    } };
+    const { engine, store } = setup(t, { commandTransport });
+    await assert.rejects(engine.testHeating({ command: 'reduction' }), /heat.pump|heat pump|heating override expired/);
+    const result = engine.heatingTests().lastResult;
+    assert.equal(result.status, 'unconfirmed');
+    assert.equal(result.sent, null);
+    assert.equal(result.code, code);
+    assert.equal(JSON.stringify(store.events()).includes('synthetic-private-native-detail'), false);
+  });

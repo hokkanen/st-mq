@@ -109,12 +109,42 @@ test('Electricity prices lists the independent feed without confusing official a
     `Fetched ${options.formatTime(now)} (just now) · Model updated ${options.formatTime(now - HOUR)} (1 h ago)`);
   status.providers.electricityForecast.available = false;
   group = dashboardProviders(status, options).find(row => row.key === 'market');
-  assert.equal(group.display.state, 'Available');
-  assert.equal(group.datasets.at(-1).state, 'Unavailable');
+  assert.equal(group.display.state, 'Needs attention');
+  assert.equal(group.datasets.at(-1).state, 'Needs attention');
+  assert.equal(group.datasets.at(-1).tone, 'attention');
+  assert.ok(group.datasets.slice(0, -1).every(row => row.state === 'Available'));
   status.readOnly = true;
   group = dashboardProviders(status, options).find(row => row.key === 'market');
   assert.equal(group.datasets.at(-1).state, 'Unavailable on this replica');
   assert.equal(group.datasets.at(-1).reported, null, 'Transient forecast clocks are not evidence on a replica');
+  assert.equal(group.datasets.at(-1).tone, 'pending');
+});
+
+test('enabled forecast failures need attention while disabled, updating and replica states stay neutral', () => {
+  const options = { now, formatTime: value => new Date(value).toISOString() };
+  for (const health of [
+    { enabled: true, available: false, status: 'error' },
+    { enabled: true, available: false, status: 'stale' },
+    { enabled: true, available: false, status: 'unavailable' },
+    { ...snapshot(), expiresAt: now },
+  ]) {
+    const status = { now, providers: { market: { status: 'ok', source: 'entsoe' }, electricityForecast: health } };
+    const group = dashboardProviders(status, options).find(row => row.key === 'market');
+    assert.equal(group.datasets.at(-1).state, 'Needs attention');
+    assert.equal(group.sourceStates.at(-1).tone, 'attention');
+    assert.equal(group.display.attention, true);
+    assert.ok(group.datasets.slice(0, -1).every(row => row.state === 'Available'));
+    for (const [forecast, state] of [
+      [{ enabled: false }, 'Not enabled'],
+      [{ enabled: true, available: false, status: 'running' }, 'Updating'],
+    ]) {
+      status.providers.electricityForecast = forecast;
+      const neutral = dashboardProviders(status, options).find(row => row.key === 'market');
+      assert.equal(neutral.datasets.at(-1).state, state);
+      assert.equal(neutral.datasets.at(-1).tone, 'pending');
+      assert.equal(neutral.display.attention, false);
+    }
+  }
 });
 
 test('disabled forecast fences late responses even when transport ignores cancellation', async () => {

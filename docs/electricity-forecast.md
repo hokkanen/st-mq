@@ -110,6 +110,9 @@ own availability and plain-text provider attribution. Forecast metadata shows
 when supplied. Weather forecasts use the same clock presentation, retaining
 separate issue times and backup solar provenance. A status refresh never renews
 these clocks. A forecast outage does not change published-price availability.
+An enabled feed that is unavailable or out of date shows **Needs attention**,
+including in the Electricity prices overview. Disabled feeds, a download in
+progress and forecasts unavailable on a replica retain their neutral states.
 
 Each eligible connected charger shares its existing footer with a compact
 **One extra day** comparison button. Its two-line label shows the available

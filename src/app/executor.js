@@ -343,8 +343,12 @@ export class Executor {
       this.state.manualBaseline = { phase: 'normal', expiresAt: null, legacyOutstanding: false, at: now };
       this.state.manualRequested = null;
       this.state.manualPause = pause ? { id: pause.id, expiresAt: pause.expiresAt } : null;
-      this.state.manualTemporary = pause ? null : { expiresAt: now + 60_000 };
     }
+    // A new explicit selection owns its own reassessment window. Reusing the
+    // preceding button's deadline can expire Reduced while native writes are
+    // still being confirmed. Pause and an already active Preheat keep their
+    // original scope; repeated Preheat returns before entering this method.
+    this.state.manualTemporary = pause ? null : { expiresAt: now + 60_000 };
     await this.persistAsync();
     return this.state.manualPause ? this.state.manualPause.expiresAt : this.state.manualTemporary.expiresAt;
   }
@@ -388,10 +392,10 @@ export class Executor {
         reason: 'Waiting for the configured DHWR run to end.', resumeAt: this.state.pulseUntil, holdUntil: end });
     }
     if (phase === 'preheat') {
-      const status = this.h66?.status(now);
+      const status = this.h66?.status(this.clock());
       if (!status?.controlsReady || status.writesEnabled !== true)
         throw failure('H66_UNAVAILABLE', 'Preheating requires fresh writable native heat-pump settings.');
-      native = await this.h66.restore({ now, reason: 'manual-preheat-baseline' });
+      native = await this.h66.restore({ now: this.clock(), reason: 'manual-preheat-baseline' });
       if (native.restorationPending) throw failure('H66_RESTORATION_PENDING', 'Restore native settings before preheating.');
       try {
         const validatePreheat = () => {
@@ -424,14 +428,14 @@ export class Executor {
         throw error;
       }
     } else if (phase === 'reduction') {
-      const nativeStatus = this.h66?.status(now);
+      const nativeStatus = this.h66?.status(this.clock());
       if (nativeStatus?.controlsReady && nativeStatus.writesEnabled === true)
-        native = await this.h66.setPhase({ phase, ...nativeOptions });
+        native = await this.h66.setPhase({ phase, ...nativeOptions, now: this.clock() });
       this.target('tariff', { acquire: true });
       this.state.legacyOutstanding = true; await this.persistAsync();
       await this.publish(['reduction'], this.clock(), { validUntil: end ?? Infinity });
     } else {
-      native = this.h66 ? await this.h66.setPhase({ phase: 'normal', now }) : null;
+      native = this.h66 ? await this.h66.setPhase({ phase: 'normal', now: this.clock() }) : null;
       if (native?.restorationPending) throw failure('H66_RESTORATION_PENDING', 'Native settings are still being restored.');
       await this.publish(['normal'], now);
     }
