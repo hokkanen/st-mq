@@ -10,11 +10,14 @@ const h66Value = (index, value) => Object.hasOwn(H66_SETTING_LIMITS, index) && N
 const h66Map = value => record(value) && Object.entries(value).every(([index, setting]) => h66Value(index, setting));
 const h66Obligation = (index, value, saved) => record(value)
   && Object.keys(value).every(key => ['baseline', 'expected', 'previousValue', 'originalAt', 'requestedAt',
-    'requestedRevision', 'confirmed', 'restoring', 'confirmedAt'].includes(key))
+    'requestedRevision', 'confirmed', 'restoring', 'confirmedAt', 'dispatchedAt', 'dispatchedRevision'].includes(key))
   && ['baseline', 'expected', 'previousValue'].every(key => h66Value(index, value[key]))
   && saved.baseline[index] === value.baseline && saved.requested[index] === value.expected
   && Number.isFinite(value.originalAt) && Number.isFinite(value.requestedAt)
   && Number.isSafeInteger(value.requestedRevision) && value.requestedRevision >= -1
+  && (Object.hasOwn(value, 'dispatchedAt') === Object.hasOwn(value, 'dispatchedRevision'))
+  && (!Object.hasOwn(value, 'dispatchedAt') || Number.isFinite(value.dispatchedAt)
+    && Number.isSafeInteger(value.dispatchedRevision) && value.dispatchedRevision >= -1)
   && typeof value.confirmed === 'boolean' && typeof value.restoring === 'boolean'
   && (!Object.hasOwn(value, 'confirmedAt') || Number.isFinite(value.confirmedAt))
   && (!value.confirmed || Number.isFinite(value.confirmedAt));

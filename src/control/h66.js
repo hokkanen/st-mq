@@ -55,7 +55,10 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   const pausedReduction = state.manualMode === 'reduction' && typeof state.pauseId === 'string' && state.pauseId
     && (state.expiresAt === null || timestamp(state.expiresAt) > clock());
   let restoreRequired = !pausedReduction && (Object.keys(state.obligations).length > 0 || Boolean(state.manualMode));
-  for (const obligation of Object.values(state.obligations)) obligation.requestedRevision = -1;
+  for (const obligation of Object.values(state.obligations)) {
+    obligation.requestedRevision = -1;
+    if (Object.hasOwn(obligation, 'dispatchedRevision')) obligation.dispatchedRevision = -1;
+  }
   let connected = false, closed = false, closing = false, active = false, expiryTimer = null, reconcileQueued = false;
   let reconcileAfterActive = false, activeGeneration = null;
   let revision = 0, connectionGeneration = 0, elapsedExpiry = null;
@@ -90,6 +93,10 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   };
   const available = (now = clock()) => connected && !closed && config.enabled !== false
     && Number.isFinite(lastPublicationAt) && now >= lastPublicationAt && now - lastPublicationAt <= maxAgeMs;
+  const baselineRestorationConfirmed = (index, reading, obligation) => equal(reading.value, obligation.baseline)
+    && reading.revision <= (committedRevisions.get(index) ?? -1)
+    && (obligation.confirmed || obligation.restoring && Number.isFinite(obligation.dispatchedAt)
+      && reading.revision > obligation.dispatchedRevision && reading.receivedAt >= obligation.dispatchedAt);
   function liveTariff() {
     let value;
     try { value = tariffFeedback(); } catch { return null; }
@@ -418,15 +425,21 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
           if (!state.obligations[index]) state.baseline[index] = reading.value;
           state.expiresAt = end;
         }
-        if (equal(reading.value, value)) {
+        if (equal(reading.value, value) && (!restoring || baselineRestorationConfirmed(index, reading, tokens[index]))) {
           if (restoring) delete state.obligations[index];
           if (restoring && index === '0203') state.manualPreheat = null;
           state.requested[index] = value;
           return null;
         }
         const obligation = state.obligations[index] ?? { baseline: state.baseline[index], originalAt: now };
-        const written = { ...obligation, expected: value, previousValue: reading.value,
+        // Baseline reports received while dispatch was still queued cannot
+        // discharge an uncertain write. Reassert the baseline and retain the
+        // preceding owned value through retries and delayed gateway reports.
+        const previousValue = restoring && equal(reading.value, value)
+          ? equal(obligation.expected, value) ? obligation.previousValue : obligation.expected : reading.value;
+        const written = { ...obligation, expected: value, previousValue,
           requestedAt: clock(), requestedRevision: reading.revision, confirmed: false, restoring };
+        delete written.dispatchedAt; delete written.dispatchedRevision; delete written.confirmedAt;
         state.obligations[index] = written;
         state.requested[index] = value;
         attempt = createControlAttempt({ store, context: 'heat-pump-command' });
@@ -466,7 +479,19 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       });
       changes.push(index);
       if (!restoring && (clock() >= Math.min(state.expiresAt ?? Infinity, activationExpiresAt ?? Infinity) || monotonicClock() >= activationElapsedEnd)) throw failure('H66_EXPIRED', 'The H66 override expired during activation.');
-      } catch (error) { attempt?.fail(error); throw error; }
+      } catch (error) {
+        attempt?.fail(error);
+        // A timed-out write can still receive its matching readback later.
+        // Persist its actual dispatch boundary before releasing the transition;
+        // intent queued before the bytes were sent supplies no such proof.
+        if (Number.isFinite(error.dispatchedAt) && Number.isSafeInteger(error.dispatchedRevision))
+          await writeState(() => {
+            if (state.obligations[index] === writtenObligation)
+              state.obligations[index] = { ...writtenObligation,
+                dispatchedAt: error.dispatchedAt, dispatchedRevision: error.dispatchedRevision };
+          });
+        throw error;
+      }
       finally { attempt?.finish(); }
     }
     await writeState(() => event('h66-settings-confirmed', { registers: changes, reason, phase: state.phase }));
@@ -482,8 +507,9 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         const observed = current(index, clock()), obligation = state.obligations[index];
         if (!observed) continue; // Restore independently available fields; retain the other obligations.
         if (!obligation.confirmed && observed.revision <= obligation.requestedRevision) continue;
-        if (equal(observed.value, obligation.baseline)) { delete state.obligations[index]; continue; }
-        if (!equal(observed.value, obligation.expected) && !equal(observed.value, obligation.previousValue)) {
+        if (baselineRestorationConfirmed(index, observed, obligation)) { delete state.obligations[index]; continue; }
+        if (!equal(observed.value, obligation.baseline)
+          && !equal(observed.value, obligation.expected) && !equal(observed.value, obligation.previousValue)) {
           // An external/manual setting supersedes our ownership. Never overwrite it.
           delete state.obligations[index];
           event('h66-external-setting-preserved', { register: index });

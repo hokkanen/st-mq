@@ -111,7 +111,11 @@ baseline includes any permanent parameter edit made before the adjustment.
 Broker delivery is separate from matching native readback. A permanent native
 edit is never replayed or rolled back after uncertain delivery; fresh pump
 readings establish its actual result. Temporary overrides retain their persisted
-restoration duty after reconnect or restart. Restoration requires the application
+restoration duty after reconnect or restart. An uncertain temporary write requires
+an explicit baseline write and matching new readback before that duty is cleared;
+an earlier baseline report is insufficient. Matching late readback after an
+actual restoration dispatch clears the duty without resending the same setting.
+Restoration requires the application
 and gateway connection; H66 has no documented device-side expiry.
 Resolve failed readback or pending restoration before enabling automatic control.
 The supported controls and their roles are documented in

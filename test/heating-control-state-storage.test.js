@@ -81,6 +81,10 @@ test('retired Home control formats and malformed ownership maps reject before wr
       obligations: { '0203': Object.fromEntries(Object.entries(native.obligations['0203']).filter(([field]) => field !== key)) } }]),
     ...[{ expected: '25' }, { previousValue: null }, { confirmed: true }, { confirmed: 1 }, { restoring: 'false' },
       { requestedRevision: 1.5 }, { requestedRevision: -2 }, { requestedAt: null }, { originalAt: null },
+      { dispatchedAt: 1_799_999_000_001 }, { dispatchedRevision: 2 },
+      { dispatchedAt: null, dispatchedRevision: 2 },
+      { dispatchedAt: 1_799_999_000_001, dispatchedRevision: -2 },
+      { dispatchedAt: 1_799_999_000_001, dispatchedRevision: 2.5 },
       { confirmedAt: 'yesterday' }].map(patch => ['h66:control:synthetic-device', { ...native,
       obligations: { '0203': { ...native.obligations['0203'], ...patch } } }]),
   ];
@@ -104,12 +108,16 @@ test('absent and current same-version Home obligations remain readable without t
   store.setState('executor:simulated', { version: 2, targetBindings: {}, phase: 'normal', legacyOutstanding: false,
     pulseUntil: 0, expiresAt: null });
   store.setState('h66:control:synthetic-device', native);
+  const dispatched = { ...native, obligations: { '0203': { ...native.obligations['0203'],
+    dispatchedAt: 1_799_999_000_001, dispatchedRevision: 2 } } };
+  store.setState('h66:control:dispatched-device', dispatched);
   store.setState('h66:control:absent-device', null);
   store.close();
   for (const readOnly of [true, false]) {
     store = new Store(path, { readOnly });
     assert.deepEqual(store.getState('executor:home'), executor);
     assert.deepEqual(store.getState('h66:control:synthetic-device'), native);
+    assert.deepEqual(store.getState('h66:control:dispatched-device'), dispatched);
     assert.equal(store.getState('h66:control:absent-device'), null);
     store.close();
   }

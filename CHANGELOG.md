@@ -20,6 +20,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   contains an older failed request.
 - Wait for actual Normal tariff relay feedback when switching from Reduced to
   Preheat, before verifying ROOM and applying its temporary increase.
+- Reassert and confirm the native baseline after an uncertain temporary write;
+  an earlier baseline reading can no longer clear its restoration duty.
 
 - Use consistent charging activity, target completion and status explanations on
   both charger cards and recorded standby views. Distinguish reported and estimated

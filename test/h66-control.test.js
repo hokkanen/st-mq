@@ -648,6 +648,21 @@ test('restart restores outstanding overrides instead of resuming preheat', async
   assert.equal(second.controller.status().phase, 'normal');
 });
 
+for (const dispatched of [false, true])
+  test(`restart ${dispatched ? 'accepts fresh late restoration feedback' : 'reasserts an uncertain restoration without dispatch proof'}`, async t => {
+    const obligation = { baseline: 20, expected: 20, previousValue: 21,
+      originalAt: initialTime - 2000, requestedAt: initialTime - 1000, requestedRevision: 100,
+      confirmed: false, restoring: true,
+      ...(dispatched ? { dispatchedAt: initialTime - 900, dispatchedRevision: 101 } : {}) };
+    const store = memoryStore({ [`h66:control:${deviceId}`]: { version: 1, phase: 'restoration-pending',
+      baseline: { '0203': 20 }, requested: { '0203': 20 }, obligations: { '0203': obligation }, expiresAt: null } });
+    const r = rig({ store }); t.after(() => r.controller.close());
+    await nextTurn(); await nextTurn();
+    assert.deepEqual(r.sent.map(row => row.payload), dispatched ? [] : ['20']);
+    assert.deepEqual(r.controller.status().obligations, {});
+    assert.equal(r.controller.status().restorationPending, false);
+  });
+
 test('restart preserves the preceding override value after an uncertain second native write', async t => {
   let first;
   first = rig({ behavior: ({ index, payload }) => {

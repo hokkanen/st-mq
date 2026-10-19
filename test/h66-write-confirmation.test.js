@@ -6,7 +6,8 @@ import { h66RequestResult } from '../chart/manual-control-status.js';
 
 const values = { '0203': 20, '0212': 44, '0208': 60, '2201': 1 };
 const changes = { '0203': 21, '0212': 45, '0208': 61, '2201': 2 };
-function rig(t, { confirmationMs = 80, dispatch = true, delay = null, retained = false } = {}) {
+function rig(t, { confirmationMs = 80, dispatch = true, delay = null, retained = false,
+  beforeDispatch = () => {}, onWrite = () => {} } = {}) {
   let controller;
   const saved = new Map(), commands = [], events = [];
   const store = { getState: key => structuredClone(saved.get(key) ?? null),
@@ -19,8 +20,11 @@ function rig(t, { confirmationMs = 80, dispatch = true, delay = null, retained =
     config: { writeEnabled: true, readbackTimeoutMs: 20, confirmationTimeoutMs: confirmationMs },
     publish: async (topic, value, options) => {
       options.beforePublish();
+      const register = topic.split('/').at(-1);
+      beforeDispatch({ register, value: Number(value), feed });
       if (dispatch) options.onFirstWrite();
-      commands.push({ register: topic.split('/').at(-1), value: Number(value) });
+      commands.push({ register, value: Number(value) });
+      onWrite({ register, value: Number(value), feed });
       if (delay !== null) setTimeout(() => feed(topic.split('/').at(-1), Number(value), { retained }), delay);
     } });
   controller.setConnected(true);
@@ -28,6 +32,34 @@ function rig(t, { confirmationMs = 80, dispatch = true, delay = null, retained =
   t.after(() => controller.close());
   return { controller, commands, events, feed };
 }
+
+for (const register of Object.keys(values)) for (const recovery of ['confirmed', 'delayed-owned', 'late-baseline'])
+  test(`${register}: uncertain temporary write reasserts its baseline after queued evidence (${recovery})`, async t => {
+    let restored = 0;
+    const r = rig(t, { confirmationMs: 20,
+      beforeDispatch({ value, feed }) {
+        if (value === changes[register]) feed(register, values[register]);
+      },
+      onWrite({ value, feed }) {
+        if (value !== values[register]) return;
+        restored++;
+        if (recovery === 'late-baseline') {
+          setTimeout(() => feed(register, values[register]), 35);
+          return;
+        }
+        queueMicrotask(() => {
+          if (recovery === 'delayed-owned' && restored === 1) feed(register, changes[register]);
+          else feed(register, values[register]);
+        });
+      } });
+    await assert.rejects(r.controller.writeSettings({ [register]: changes[register] },
+      { expiresAt: Date.now() + 60_000 }), { code: 'H66_READBACK_TIMEOUT' });
+    for (let i = 0; i < 100 && r.controller.status().restorationPending; i++)
+      await new Promise(resolve => setTimeout(resolve, 5));
+    assert.deepEqual(r.commands.map(row => row.value), [changes[register], values[register], ...(recovery === 'delayed-owned' ? [values[register]] : [])]);
+    assert.deepEqual(r.controller.status().obligations, {});
+    assert.equal(r.controller.status().restorationPending, false);
+  });
 
 for (const register of Object.keys(values)) {
   test(`${register}: confirmation may arrive after the dispatch budget without resending`, async t => {
