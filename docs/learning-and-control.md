@@ -444,8 +444,11 @@ request, clears its timeout and preserves its original request and dispatch cloc
 Known unsent requests cannot be confirmed by an unrelated matching report.
 
 **Manual heating override** actions share the automatic phase equipment behavior.
-Starting Pause selects Normal; subsequent Normal and Reduced stay until another
-selection, Automatic, or the optional resume time. In Automatic they are
+Starting Pause releases automatic heating and Normal/Reduced reassessment windows.
+An explicit Preheat lease started in Automatic keeps its original deadline when
+Automatic is paused; Normal or Reduced can end it sooner. Preheat selected during
+a Pause also ends when that Pause ends. Normal and Reduced selected during Pause
+stay until another selection, Automatic, or the optional resume time. In Automatic they are
 reassessed on the next update. Manual buttons stay disabled while a heating
 transition is running, including follow-up work after an accepted action.
 Preheat always has a fixed original deadline from
