@@ -117,6 +117,7 @@ try {
       const response = await nativeFetch(input, options);
       if (!new URL(typeof input === 'string' ? input : input.url, location.href).pathname.endsWith('/api/status')) return response;
       const status = await response.json();
+      if (homeFixture.staleReceipt && !homeFixture.currentStatusClock) status.now = ${now} - 1000;
       homeFixture.reads++;
       status.automation = { home: { enabled: homeFixture.automatic && !homeFixture.paused, available: true, activity: homeFixture.automatic && !homeFixture.paused ? 'automatic' : 'paused' } };
       status.decision.reasons = homeFixture.paused ? ['heating-paused'] : ['flat-prices-preserve-normal-warmth'];
@@ -133,7 +134,7 @@ try {
       status.decision.manualHold = homeFixture.paused
         ? { until: homeFixture.manualPhase === 'preheat' ? status.now + 900000 : status.override.expiresAt, phase: homeFixture.manualPhase ?? 'preheat', changed: true } : null;
       status.heatingTests = { ...status.heatingTests, available: true, busy: homeFixture.transitionBusy === true, preheatAvailable: true,
-        preheatTargetC: 25, preheatRoomBoostC: 5, lastResult: homeFixture.receipt };
+        preheatTargetC: 25, preheatRoomBoostC: 5, lastResult: homeFixture.staleReceipt ?? homeFixture.receipt };
       status.observations.actual = { ...status.observations.actual, source: 'simulation', verified: homeFixture.confirmed !== false, observedAt: status.now,
         stale: false, mode: 'normal', phase: homeFixture.manualPhase ?? (homeFixture.paused ? 'preheat' : 'normal'),
         requestedPhase: homeFixture.manualPhase ?? (homeFixture.paused ? 'preheat' : 'normal') };
@@ -412,14 +413,23 @@ try {
     { command: 'normal' }, { pauseUntilLocal: '2026-09-21T17:00' }, { pauseUntilLocal: null },
     { feature: 'home', enabled: true }, { feature: 'home', enabled: false }, { feature: 'home', enabled: true },
   ], 'Primary mode and all three manual buttons send their intended request');
-  await evaluate(`homeFixture.holdTransition = true; document.getElementById('test-normal').click()`);
+  await evaluate(`homeFixture.holdTransition = true;
+    homeFixture.staleReceipt = { command: 'preheat', at: ${now} - 5000, requestedAt: ${now} - 5000,
+      status: 'failed', sent: false, error: 'Synthetic older Preheat failure' };
+    document.getElementById('test-normal').click()`);
   await until(`homeFixture.transitionBusy && !document.getElementById('heating-test-buttons').hasAttribute('aria-busy')`);
   assert.equal(await evaluate(`['test-normal','test-preheat','test-reduction'].every(id => document.getElementById(id).disabled)`), true,
     'A completed request keeps all three buttons disabled while its background transition continues');
+  assert.equal(await evaluate(`document.getElementById('heating-test-message').classList.contains('form-error')`), false,
+    'An older status failure cannot replace the newer successful command response');
+  assert.match(await evaluate(`document.getElementById('heating-test-message').textContent`), /Normal heating/);
+  await evaluate(`homeFixture.currentStatusClock = true; await homeFixture.poll()`);
+  assert.match(await evaluate(`document.getElementById('heating-test-message').textContent`), /Normal heating/,
+    'An older receipt also stays ignored once the status clock catches up');
   const beforeBusyClick = await evaluate('homeFixture.mutations.length');
   await evaluate(`document.getElementById('test-reduction').click()`);
   assert.equal(await evaluate('homeFixture.mutations.length'), beforeBusyClick, 'Busy buttons send no rejected follow-up request');
-  await evaluate(`homeFixture.holdTransition = false; homeFixture.transitionBusy = false`);
+  await evaluate(`homeFixture.holdTransition = false; homeFixture.transitionBusy = false; homeFixture.staleReceipt = null`);
   await until(`!document.getElementById('test-reduction').disabled`);
   await evaluate(`document.getElementById('dashboard-reset').click()`);
   assert.equal(await evaluate(`document.querySelectorAll('details[open]').length`), 0,

@@ -465,12 +465,19 @@ function renderHeatingTests(s) {
       ? 'Requests are sent over MQTT. The reported state updates when device feedback arrives.'
       : capability?.reason || 'Manual heating control is unavailable in this installation.' });
   if (!heatingTestBusy) {
-    if (capability?.lastResult) heatingResults.set(capability.lastResult.command === 'circulation'
-      ? 'dhwr-message' : 'heating-test-message', capability.lastResult);
+    if (capability?.lastResult) {
+      const id = capability.lastResult.command === 'circulation' ? 'dhwr-message' : 'heating-test-message';
+      const previous = heatingResults.get(id);
+      if (!previous || capability.lastResult.at >= previous.at) heatingResults.set(id, capability.lastResult);
+    }
     for (const id of ['heating-test-message', 'dhwr-message']) {
       clearControlMessage(id);
       const raw = heatingResults.get(id);
-      const result = heatingReceipts.get(id)(raw && `${raw.at}:${raw.command}`, heatingRequestResult(s, raw), s.now);
+      // The committed status view can precede a just-acknowledged command.
+      // Retain its response without interpreting older feedback or expiring it
+      // against that earlier view's clock.
+      if (raw?.at > s.now) { showHeatingTestResult(raw); continue; }
+      const result = heatingReceipts.get(id)(raw && `${raw.at}:${raw.command}`, heatingRequestResult(s, raw ?? null), s.now);
       const attempt = heatingErrorRequests.get(id);
       if (result && attempt && result.command === attempt.command && result.at > attempt.previousResultAt
         ) {

@@ -13,6 +13,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   explain native confirmation failures without hiding their cause.
 - Keep manual heating buttons disabled until the controller's current transition
   finishes, including the status refresh after a successful selection.
+- Keep the latest manual heating result visible when a status refresh still
+  contains an older failed request.
 - Wait for actual Normal tariff relay feedback when switching from Reduced to
   Preheat, before verifying ROOM and applying its temporary increase.
 
