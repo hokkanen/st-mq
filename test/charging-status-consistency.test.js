@@ -37,6 +37,23 @@ test('normal completion has identical activity, role and completion on both inte
   }
 });
 
+test('a recorded completion needs no invented live native health and retains its dated scope', () => {
+  const item = connected('charger2');
+  Object.assign(item, { readOnly: true, recorded: true, snapshotAt: now }); item.control.snapshot = null;
+  const { view, summary, notice } = present(item);
+  assert.equal(view.problem, ''); assert.equal(summary.activity, 'Target reached');
+  assert.equal(notice.label, 'Target reached');
+  assert.match(notice.detail, /Recorded master status.*live charger health is unavailable/);
+  assert.equal(item.control.confirmed, false); assert.equal(item.control.snapshot, null);
+  for (const patch of [{ readOnly: false }, { recorded: false }, { snapshotAt: null }])
+    assert.equal(present({ ...item, ...patch }).notice.state, 'attention');
+  item.control.snapshot = { online: false };
+  assert.equal(present(item).notice.state, 'attention');
+  item.control.snapshot = null;
+  item.control.pending = { stage: 'dispatched', role: 'start_charging', value: true };
+  assert.equal(present(item).notice.state, 'attention');
+});
+
 test('completion stays visible with Automatic off or Charge now still selected', () => {
   for (const id of ['charger1', 'charger2']) for (const chargeNow of [false, true]) {
     const item = connected(id); item.settings.enabled = false; item.request.chargeNow = chargeNow;

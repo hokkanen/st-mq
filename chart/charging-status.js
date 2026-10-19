@@ -104,8 +104,14 @@ export function chargingConfirmationMissing(charger) {
  * presentation: the saved hold and confirmed:false retain their control meaning. */
 export function chargingDeviceHoldOnly(charger) {
   const control = charger.control ?? {}, values = charger.values ?? {};
+  // A verified standby projection describes the saved master's observation,
+  // with its dated caveat. Omitted live native health is not a recorded fault.
+  const recorded = charger.readOnly === true && charger.recorded === true
+    && Number.isSafeInteger(charger.snapshotAt) && charger.snapshotAt > 0
+    && Number.isFinite(new Date(charger.snapshotAt).getTime());
   return control.reason === 'device-permission-held' && control.devicePermissionHeld === true
-    && control.phase === 'waiting' && control.snapshot?.online === true && control.snapshot.controlReady !== false
+    && control.phase === 'waiting' && (recorded && control.snapshot == null
+      || control.snapshot?.online === true && control.snapshot.controlReady !== false)
     && values.connected?.value === true && values.connected.available !== false
     && values.charging?.value === false && values.charging.available !== false
     && !charger.error && !control.errorCode && !control.pending && !control.currentAdjustment?.pending

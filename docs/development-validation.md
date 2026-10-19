@@ -19,8 +19,9 @@ check reported and estimated target attainment, native device holds, zero draw,
 missing activity, Automatic/Charge now and retained fault/recovery obligations
 on both integrations without changing controller state. The charging-controls
 browser fixture exercises the same completed, estimated, still-charging and fault
-states at 320/390/1440px in both themes. The learning browser fixture checks the
-visible CSS disclosure arrows and Enter/Space behavior rather than retired text
+states at 320/390/1440px in both themes, including recorded master projections
+with live native health omitted and the dated caveat retained. The learning browser
+fixture checks visible CSS disclosure arrows and Enter/Space behavior rather than retired text
 glyphs, awaits chart painting after legend changes and publishes synthetic provider
 status before navigation. These checks do not establish physical charger behavior.
 

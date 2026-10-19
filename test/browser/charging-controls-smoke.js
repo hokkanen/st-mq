@@ -197,6 +197,10 @@ fixture.setCase = name => {
       }
       if (name === 'target-fault') item.control = { phase: 'unavailable', confirmed: false,
         errorCode: 'charger-fault', reason: 'charger-fault' };
+      if (name === 'target-recorded') {
+        item.readOnly = true; item.recorded = true; item.snapshotAt = now;
+        item.control.snapshot = null;
+      }
     }
     if (name === 'unknown-connection') item.values.connected = { value: null, available: false };
     if (name === 'missing-token') item.control.takeover.token = null;
@@ -299,7 +303,7 @@ try {
   for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
-    for (const state of ['target-reached', 'target-estimated', 'target-charging', 'target-fault']) {
+    for (const state of ['target-reached', 'target-estimated', 'target-charging', 'target-fault', 'target-recorded']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       for (const id of ['charger1', 'charger2']) {
         const result = await evaluate(`(() => ({
@@ -319,6 +323,7 @@ try {
         const detail = await evaluate("document.getElementById('status-detail-popover').textContent");
         assert.match(detail, state === 'target-fault' ? /reports a fault/ : /Energy measurements have gaps/);
         if (state === 'target-reached') assert.doesNotMatch(detail, /Waiting for it to restore|needs attention/);
+        if (state === 'target-recorded') assert.match(detail, /Recorded master status.*live charger health is unavailable/);
         await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
       }
     }

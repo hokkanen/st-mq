@@ -7,9 +7,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 ## Unreleased
 
 - Use consistent charging activity, target completion and status explanations on
-  both charger cards. Distinguish reported and estimated completion, show a normal
-  completed charge ahead of its native permission hold, and keep faults, uncertain
-  instructions and temporary-setting recovery visible.
+  both charger cards and recorded standby views. Distinguish reported and estimated
+  completion, show a normal completed charge ahead of its native permission hold,
+  and keep faults, uncertain instructions and temporary-setting recovery visible.
 
 - Confirm Normal tariff control and a new normal ROOM report before Preheat,
   preserving user changes and the correct restoration baseline through reduction
