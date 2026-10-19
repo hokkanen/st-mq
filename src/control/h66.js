@@ -96,6 +96,9 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     return value?.verified === true && !value.stale && ['normal', 'reduction'].includes(value.mode)
       && /^[a-f0-9]{64}$/.test(value.identity ?? '') ? value : null;
   }
+  function tariffIdentity() {
+    try { return tariffFeedback()?.identity; } catch { return null; }
+  }
   // This reference describes a physical tariff period, not a configured default
   // or permission to write ROOM. Absence starts unknown; no history is backfilled.
   function observeTariff() {
@@ -168,18 +171,34 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     const generation = connectionGeneration, startedAt = clock(), identity = liveTariff()?.identity;
     const end = Math.min(startedAt + preparationMs, expiresAt);
     const elapsedEnd = monotonicClock() + Math.max(0, end - startedAt);
+    let waitingForNormal = true;
     const check = () => {
       requireConnection(clock()); validate();
       if (closing || !canControl()) throw failure('H66_CLOSED', 'Heating control is no longer available.');
       if (generation !== connectionGeneration) throw failure('H66_DISCONNECTED', 'H66 reconnected during Preheat preparation.');
-      if (!identity || liveTariff()?.identity !== identity) throw failure('H66_TARIFF_UNCONFIRMED', 'The tariff relay identity or readback changed.');
+      if (!identity || tariffIdentity() !== identity) throw failure('H66_TARIFF_UNCONFIRMED', 'The tariff relay identity changed.');
       if (clock() >= end || monotonicClock() >= elapsedEnd)
-        throw failure('H66_NORMAL_ROOM_TIMEOUT', 'Waiting for normal ROOM setting timed out. Preheat was cancelled.');
+        throw failure(waitingForNormal ? 'H66_TARIFF_UNCONFIRMED' : 'H66_NORMAL_ROOM_TIMEOUT',
+          waitingForNormal ? 'Normal tariff relay readback timed out. Preheat was cancelled.'
+            : 'Waiting for normal ROOM setting timed out. Preheat was cancelled.');
     };
-    preparation = { startedAt, expiresAt: end, reason: 'Waiting for normal ROOM setting.' };
+    const wait = () => new Promise(resolve => {
+      const finish = () => { clearTimeout(timer); wakePreparation = null; resolve(); };
+      const timer = setTimeout(finish, Math.min(50, Math.max(1, end - clock())));
+      wakePreparation = finish;
+    });
+    preparation = { startedAt, expiresAt: end, reason: 'Waiting for Normal tariff relay confirmation.' };
     try {
       check();
       await releaseTariff();
+      // A broker acknowledgement precedes physical relay feedback. Retain the
+      // original identity and preparation deadline while awaiting our Normal
+      // request; no ROOM increase or floor lease is authorized in this stage.
+      while (true) {
+        check();
+        if (liveTariff()?.mode === 'normal') break;
+        await wait();
+      }
       check();
       await writeState(() => {
         const context = observeTariff();
@@ -189,16 +208,14 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         normalBoundary = { at: clock(), revision, generation };
         state.tariffRoom = { ...context, normalAfter: normalBoundary.at };
       });
+      waitingForNormal = false;
+      preparation.reason = 'Waiting for normal ROOM setting.';
       void Promise.resolve().then(requestSnapshot).catch(() => {});
       while (true) {
         check();
         if (liveTariff()?.mode !== 'normal') throw failure('H66_TARIFF_UNCONFIRMED', 'Normal tariff relay readback was lost.');
         if (normalRoomReady()) return { roomSettingC: current('0203').value };
-        await new Promise(resolve => {
-          const finish = () => { clearTimeout(timer); wakePreparation = null; resolve(); };
-          const timer = setTimeout(finish, Math.min(50, Math.max(1, end - clock())));
-          wakePreparation = finish;
-        });
+        await wait();
       }
     } finally { preparation = null; }
   }

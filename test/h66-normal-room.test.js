@@ -56,6 +56,50 @@ test('Preheat rejects the reduction ROOM, accepts a changed normal baseline and 
   await r.controller.restore(); assert.equal(r.values['0203'], 22);
 });
 
+test('Preheat waits for delayed Normal relay feedback before its new ROOM boundary', async t => {
+  const r = rig(t, { preparationMs: 1000 }); await r.reduce();
+  const operation = r.controller.preparePreheat({ expiresAt: START + 60_000,
+    releaseTariff: async () => r.verified(false) });
+  operation.catch(() => {});
+  await turn();
+  assert.equal(r.controller.status().preheatPreparation.reason, 'Waiting for Normal tariff relay confirmation.');
+  const deadline = r.controller.status().preheatPreparation.expiresAt;
+  r.advance(); r.feed('0203', 11);
+  assert.deepEqual(r.sent, [], 'Pending relay feedback cannot authorize native changes.');
+  r.mode('normal'); r.verified(true); r.advance();
+  for (let i = 0; i < 50 && r.controller.status().preheatPreparation.reason !== 'Waiting for normal ROOM setting.'; i++)
+    await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(r.controller.status().preheatPreparation.reason, 'Waiting for normal ROOM setting.');
+  assert.equal(r.controller.status().preheatPreparation.expiresAt, deadline, 'Relay confirmation cannot renew preparation.');
+  assert.equal(r.controller.status().normalRoomReady, false, 'The earlier ROOM report cannot cross relay confirmation.');
+  r.advance(); r.feed('0203', 22);
+  assert.equal((await operation).roomSettingC, 22);
+});
+
+test('Normal relay waiting retains the original preparation budget and never writes on timeout', async t => {
+  const r = rig(t); await r.reduce();
+  const operation = r.controller.preparePreheat({ expiresAt: START + 60_000, releaseTariff: async () => {} });
+  const rejected = assert.rejects(operation, { code: 'H66_TARIFF_UNCONFIRMED' });
+  await turn();
+  const preparation = r.controller.status().preheatPreparation;
+  assert.equal(preparation.expiresAt - preparation.startedAt, 80);
+  assert.equal(r.controller.status().preheatPreparation.reason, 'Waiting for Normal tariff relay confirmation.');
+  await rejected;
+  assert.equal(r.controller.status().preheatPreparation, null);
+  assert.deepEqual(r.sent, []);
+});
+
+test('a changed relay identity cancels while Normal feedback is pending', async t => {
+  const r = rig(t, { preparationMs: 1000 }); await r.reduce();
+  const operation = r.controller.preparePreheat({ expiresAt: START + 60_000,
+    releaseTariff: async () => r.verified(false) });
+  const rejected = assert.rejects(operation, { code: 'H66_TARIFF_UNCONFIRMED' });
+  await turn();
+  assert.equal(r.controller.status().preheatPreparation.reason, 'Waiting for Normal tariff relay confirmation.');
+  r.identity('b'.repeat(64));
+  await rejected; assert.deepEqual(r.sent, []);
+});
+
 for (const invalid of ['retained', 'earlier-receipt', 'earlier-measurement', 'uncommitted', 'missing-reduction'])
   test(`Preheat cannot accept ${invalid} ROOM evidence`, async t => {
     const r = rig(t); await r.reduce({ report: invalid !== 'missing-reduction' });

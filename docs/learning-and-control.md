@@ -457,7 +457,9 @@ configured, enabled and commissioned, the floor adapter adds its pooled treatmen
 under the [floor lease contract](floor-preheat.md). Otherwise the action is ROOM-only.
 Before starting a new manual or automatic Preheat, ST-MQ confirms Normal from the
 tariff relay and requires a new, committed ROOM publication received after that
-confirmation. It retains the preceding normal and observed reduced ROOM values
+confirmation. Broker acknowledgement alone does not finish the relay transition;
+waiting for relay feedback and ROOM shares the original ninety-second preparation
+budget and Preheat deadline. It retains the preceding normal and observed reduced ROOM values
 through tariff release and restart. If they differed, a report still equal to
 the reduced value cannot become the new normal baseline, including a delayed
 report arriving after an accepted normal report. When the two recorded values
