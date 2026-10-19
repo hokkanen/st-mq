@@ -807,7 +807,9 @@ export class Engine {
     const preheatAvailable = available && native?.controlsReady === true && native.writesEnabled === true
       && Number.isFinite(room) && Number.isFinite(roomBoostC)
       && (roomBoostC > 0 || this.floorOverride?.status(this.clock()).available === true);
-    return { available, reason: available ? 'Sends a real command to the configured MQTT broker.'
+    return { available, busy: Boolean(this.heatingTestBusy || this.automationChangePending
+      || this.dispatchPending || this.executor.status().busy),
+    reason: available ? 'Sends a real command to the configured MQTT broker.'
       : !this.canControl() ? 'This computer is read-only.'
       : ['simulated', 'offline'].includes(this.config.input) ? 'Real MQTT tests are unavailable in simulation and offline mode.'
         : 'Configure an MQTT broker to enable real device tests.',

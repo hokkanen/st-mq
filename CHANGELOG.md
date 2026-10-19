@@ -11,6 +11,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Give each new manual Normal or Reduced selection in Automatic its own
   reassessment window. Use fresh native settings after Preheat restoration and
   explain native confirmation failures without hiding their cause.
+- Keep manual heating buttons disabled until the controller's current transition
+  finishes, including the status refresh after a successful selection.
 
 - Use consistent charging activity, target completion and status explanations on
   both charger cards and recorded standby views. Distinguish reported and estimated

@@ -280,7 +280,7 @@ const automationControls = createAutomationControls({ document, request: api,
   beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
   onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
   afterRequest: () => refresh(),
-  blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy });
+  blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || lastStatus?.heatingTests?.busy === true });
 const garageControls = createGarageControls({ document, request: api,
   beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
   onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
@@ -348,7 +348,7 @@ function renderContract(s) {
   list.append(heading, table, tariff);
 }
 function updateTemporaryButtons(updateEquipment = true) {
-  const busy = !lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || Boolean(lastStatus?.equipmentTests?.active || lastStatus?.equipmentTests?.busy || lastStatus?.equipmentControls?.busy);
+  const busy = !lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || Boolean(lastStatus?.heatingTests?.busy || lastStatus?.equipmentTests?.active || lastStatus?.equipmentTests?.busy || lastStatus?.equipmentControls?.busy);
   $('temporary-submit').disabled = busy || dirtyTemporary.size === 0;
   const saved = lastStatus ? temporaryValues(lastStatus) : {};
   $('home-now').disabled = busy || !($('away-until').value || saved.awayUntilLocal);
@@ -1163,7 +1163,7 @@ $('temporary-form').addEventListener('submit', event => {
 $('home-now').addEventListener('click', () => applyTemporary({ awayUntilLocal: null }));
 $('resume-now').addEventListener('click', () => applyTemporary({}, true));
 async function testHeating(command) {
-  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || !lastStatus?.heatingTests?.available) return;
+  if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || lastStatus?.heatingTests?.busy || !lastStatus?.heatingTests?.available) return;
   if (command === 'preheat' && lastStatus.heatingTests.preheatAvailable !== true) return;
   if (temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy || isReadOnlyReplica(lastStatus)) return;
   heatingTestBusy = true;
@@ -1187,10 +1187,10 @@ async function testHeating(command) {
     showControlError(message.id, error.message);
   } finally {
     heatingTestBusy = false;
+    await refresh();
     $('heating-test-buttons').removeAttribute('aria-busy');
     updateTemporaryButtons();
   }
-  await refresh();
 }
 for (const button of heatingTestButtons) button.addEventListener('click', () => testHeating(button.dataset.heatingCommand));
 $('dhwr-stop').addEventListener('click', async () => {
@@ -1322,7 +1322,14 @@ historyChart = createHistoryChart({ api: (path, options) => api(path, undefined,
 document.addEventListener('themechange', event => historyChart.updateTheme(event.detail.theme));
 setInterval(() => refresh({ background: true }), 15_000);
 setInterval(refreshPairing, 3_000);
-setInterval(() => { checkCommunication(); if (!session.locked) { fireplacePanel.tick(); heatingExplorer.tick(); databaseExport.tick(); } }, 1000);
+setInterval(() => {
+  checkCommunication();
+  if (!session.locked) {
+    fireplacePanel.tick(); heatingExplorer.tick(); databaseExport.tick();
+    if (lastStatus?.heatingTests?.busy && !heatingTestBusy && !equipmentBusy && !temporaryBusy && !h66TestBusy && !settingsReloadBusy)
+      void refresh({ background: true });
+  }
+}, 1000);
 setInterval(() => { if (!session.locked) historyRecovery.tick(); }, 2000);
 window.addEventListener('online', () => void refresh());
 document.addEventListener('visibilitychange', () => {

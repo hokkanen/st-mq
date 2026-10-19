@@ -106,6 +106,7 @@ try {
           }
         } else if (path === '/api/heating-test') {
           homeFixture.manualPhase = body.command;
+          if (homeFixture.holdTransition) homeFixture.transitionBusy = true;
           homeFixture.receipt = { command: body.command, status: 'mqtt', sent: true,
             at: ${now}, requestedAt: ${now}, holdUntil: null,
             expiresAt: body.command === 'preheat' ? ${now} + 900000 : null };
@@ -131,7 +132,7 @@ try {
       status.override = homeFixture.paused ? { expiresAt: homeFixture.pauseEnd === undefined ? status.now + 3_600_000 : homeFixture.pauseEnd } : null;
       status.decision.manualHold = homeFixture.paused
         ? { until: homeFixture.manualPhase === 'preheat' ? status.now + 900000 : status.override.expiresAt, phase: homeFixture.manualPhase ?? 'preheat', changed: true } : null;
-      status.heatingTests = { ...status.heatingTests, available: true, preheatAvailable: true,
+      status.heatingTests = { ...status.heatingTests, available: true, busy: homeFixture.transitionBusy === true, preheatAvailable: true,
         preheatTargetC: 25, preheatRoomBoostC: 5, lastResult: homeFixture.receipt };
       status.observations.actual = { ...status.observations.actual, source: 'simulation', verified: homeFixture.confirmed !== false, observedAt: status.now,
         stale: false, mode: 'normal', phase: homeFixture.manualPhase ?? (homeFixture.paused ? 'preheat' : 'normal'),
@@ -411,6 +412,15 @@ try {
     { command: 'normal' }, { pauseUntilLocal: '2026-09-21T17:00' }, { pauseUntilLocal: null },
     { feature: 'home', enabled: true }, { feature: 'home', enabled: false }, { feature: 'home', enabled: true },
   ], 'Primary mode and all three manual buttons send their intended request');
+  await evaluate(`homeFixture.holdTransition = true; document.getElementById('test-normal').click()`);
+  await until(`homeFixture.transitionBusy && !document.getElementById('heating-test-buttons').hasAttribute('aria-busy')`);
+  assert.equal(await evaluate(`['test-normal','test-preheat','test-reduction'].every(id => document.getElementById(id).disabled)`), true,
+    'A completed request keeps all three buttons disabled while its background transition continues');
+  const beforeBusyClick = await evaluate('homeFixture.mutations.length');
+  await evaluate(`document.getElementById('test-reduction').click()`);
+  assert.equal(await evaluate('homeFixture.mutations.length'), beforeBusyClick, 'Busy buttons send no rejected follow-up request');
+  await evaluate(`homeFixture.holdTransition = false; homeFixture.transitionBusy = false`);
+  await until(`!document.getElementById('test-reduction').disabled`);
   await evaluate(`document.getElementById('dashboard-reset').click()`);
   assert.equal(await evaluate(`document.querySelectorAll('details[open]').length`), 0,
     'Dashboard reset closes controls, strategies and models after cross-link navigation');

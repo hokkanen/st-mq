@@ -89,6 +89,7 @@ test('pending tests cannot overlap and failed tests are recorded without exposin
   const { engine, store } = setup(t, { commandTransport });
   engine.tick(); await engine.dispatchPending;
   const pending = engine.testHeating({ command: 'reduction' });
+  assert.equal(engine.heatingTests().busy, true, 'The dashboard sees the in-flight manual request.');
   await assert.rejects(engine.testHeating({ command: 'normal' }), /already in progress/);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(typeof rejectPublish, 'function');
@@ -115,6 +116,22 @@ test('pending tests cannot overlap and failed tests are recorded without exposin
   await engine.executor.restore();
   assert.equal(engine.executor.status().restorationPending, false);
   assert.equal((await engine.testHeating({ command: 'normal' })).sent, true);
+  assert.equal(engine.heatingTests().busy, false);
+});
+
+test('manual readiness reports an automatic transition until it finishes', async t => {
+  let release;
+  const commandTransport = { publish: async () => ({ status: 'mqtt', sent: true, actual: null }) };
+  const { engine } = setup(t, { commandTransport, automationEnabled: true });
+  engine.executor.execute = () => new Promise(resolve => { release = resolve; });
+  engine.tick();
+  assert.equal(engine.heatingTests().available, true);
+  assert.equal(engine.heatingTests().busy, true);
+  await assert.rejects(engine.testHeating({ command: 'reduction' }), /current heating transition/);
+  await new Promise(resolve => setImmediate(resolve));
+  release({ status: 'mqtt', sent: true, actual: null });
+  await engine.dispatchPending;
+  assert.equal(engine.heatingTests().busy, false);
 });
 
 test('automatic physical writes require Home automation permission', async t => {

@@ -446,7 +446,9 @@ Known unsent requests cannot be confirmed by an unrelated matching report.
 **Manual heating override** actions share the automatic phase equipment behavior.
 Starting Pause selects Normal; subsequent Normal and Reduced stay until another
 selection, Automatic, or the optional resume time. In Automatic they are
-reassessed on the next update. Preheat always has a fixed original deadline from
+reassessed on the next update. Manual buttons stay disabled while a heating
+transition is running, including follow-up work after an accepted action.
+Preheat always has a fixed original deadline from
 `controller.floor_preheat.lease_seconds` (900 seconds by default), and restores
 ROOM at that deadline even if floor release needs retries. Preheat requests the
 configured increase
