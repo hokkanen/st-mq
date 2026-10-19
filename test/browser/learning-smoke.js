@@ -145,20 +145,23 @@ try {
     const isOpen = section === 'timing-details'
       ? "document.getElementById('comparison-toggle').getAttribute('aria-expanded') === 'true'"
       : `document.getElementById('${section}').open`;
-    const marker = section === 'timing-details'
-      ? `getComputedStyle(document.querySelector('${selector}'), '::before').content`
-      : `getComputedStyle(document.querySelector('${selector}')).listStyleType`;
-    const closedMarker = section === 'timing-details' ? '"▶"' : 'disclosure-closed';
-    const openMarker = section === 'timing-details' ? '"▼"' : 'disclosure-open';
+    const marker = `(() => {
+      const style = getComputedStyle(document.querySelector('${selector}'), '::before');
+      const matrix = new DOMMatrixReadOnly(style.transform === 'none' ? undefined : style.transform);
+      return { visible: style.content !== 'none' && parseFloat(style.width) > 0 && parseFloat(style.height) > 0
+        && style.clipPath !== 'none' && style.backgroundColor !== 'rgba(0, 0, 0, 0)',
+        rotation: Math.round(Math.atan2(matrix.b, matrix.a) * 180 / Math.PI) };
+    })()`;
+    const closedMarker = { visible: true, rotation: 0 }, openMarker = { visible: true, rotation: 90 };
     assert.equal(await evaluate(isOpen), false);
-    assert.equal(await evaluate(marker), closedMarker, `${section} shows a leading arrow when closed`);
+    assert.deepEqual(await evaluate(marker), closedMarker, `${section} shows a leading arrow when closed`);
     assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), false, `${section} hides its content when closed`);
     await evaluate(`document.querySelector('${selector}').focus()`);
     assert.equal(await evaluate(`document.activeElement === document.querySelector('${selector}')`), true, `${section} accepts keyboard focus`);
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
     assert.equal(await evaluate(isOpen), true, `${section} opens with Enter`);
-    assert.equal(await evaluate(marker), openMarker, `${section} points its open arrow down`);
+    assert.deepEqual(await evaluate(marker), openMarker, `${section} points its open arrow down`);
     assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), true, `${section} reveals its content when open`);
     assert.equal(await evaluate(`document.activeElement === document.querySelector('${selector}')`), true,
       `${section} preserves focus while opening`);
@@ -169,7 +172,7 @@ try {
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
     assert.equal(await evaluate(isOpen), false, `${section} closes with Space`);
-    assert.equal(await evaluate(marker), closedMarker);
+    assert.deepEqual(await evaluate(marker), closedMarker);
     assert.equal(await evaluate(`document.getElementById('${content}').checkVisibility()`), false);
   }
   assert.equal(await evaluate("document.querySelectorAll('#model-coefficients-content > .learning-entry').length >= 6"), true);
@@ -190,7 +193,7 @@ try {
   assert.ok(configurationInstructions.includes(actualStatus.settingsReload.configuration.privatePath), 'Configuration instructions show the actual isolated private file');
   assert.ok(configurationInstructions.includes(actualStatus.settingsReload.configuration.defaultsPath), 'Configuration instructions show the actual defaults file');
   assert.match(configurationInstructions, /stays in place/);
-  assert.match(await evaluate("document.getElementById('settings-access').textContent"), /Loopback access works without a password/);
+  assert.match(await evaluate("document.getElementById('settings-access').textContent"), /Loopback recovery.*works without a password/);
   assert.equal(await evaluate("document.getElementById('settings-import-warning').hidden"), true);
   assert.equal(await evaluate("document.getElementById('settings-reload').textContent"), 'Check & review configuration');
   assert.match(await evaluate("document.getElementById('settings-reload-scope').textContent"), /Applies without restart.*Electricity rates.*Requires restart.*Input mode.*Environment variables/s);
@@ -212,11 +215,24 @@ try {
   for (const key of ['auxiliary_power', 'charger_power']) {
     assert(await evaluate(`(async () => {
       const canvas = document.getElementById('history'), ctx = canvas.getContext('2d');
-      const button = document.querySelector('[data-chart-key="${key}"]');
+      const selector = '[data-chart-key="${key}"]';
+      const selected = () => document.querySelector(selector).getAttribute('aria-pressed');
+      const initial = selected();
+      const changed = async reference => {
+        for (let attempt = 0; attempt < 200; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 30));
+          if (ctx.getImageData(0, 0, canvas.width, canvas.height).data.some((value, index) => value !== reference[index])) return true;
+        }
+        return false;
+      };
       const first = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      button.click(); await new Promise(resolve => requestAnimationFrame(resolve));
+      document.querySelector(selector).click();
+      if (!await changed(first) || selected() === initial) return false;
       const second = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      const changed = first.some((value, index) => value !== second[index]); button.click(); return changed;
+      // Rendering replaces legend buttons and may finish in a worker after the
+      // next animation frame. Restore through the current button and await draw.
+      document.querySelector(selector).click();
+      return await changed(second) && selected() === initial;
     })()`), `${key} changes rendered pixels`);
   }
   assert(await evaluate("document.querySelectorAll('.mode-segment').length > 0"));
@@ -300,7 +316,11 @@ try {
     publish: async (topic, value, options) => { options.beforePublish(); options.onFirstWrite?.(); publications.push({ topic, value }); readback(topic.slice(-4), Number(value)); } });
   h66.setConnected(true);
   for (const [register, value] of [['0203', 20], ['0212', 40], ['0208', 55], ['2201', 1], ['3104', 0], ['1A01', 1], ['1A07', 0], ['1A06', 1], ['0005', 4.5], ['0006', 1.2], ['3110', 80]]) readback(register, value);
-  app.engine.setH66(h66); app.engine.tick();
+  app.engine.setH66(h66);
+  // Providers can still have a worker update/save in flight. Publish the injected
+  // synthetic readings before navigation rather than relying on the next poll.
+  await app.engine.update();
+  await app.engine.initializeCommittedStatus();
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
   await until("document.getElementById('home-pump-health')?.textContent === 'Available'");
   await until("document.getElementById('h66-test-submit')?.disabled === false");
@@ -395,7 +415,8 @@ try {
   assert.equal(await evaluate("window.savedH66Trigger.textContent"), '50 °C');
   assert.doesNotMatch(settingDetails, /Requested by this controller|Original setting/i);
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
-  now += 61_000; await h66.reconcile({ now }); app.engine.tick();
+  now += 61_000; await h66.reconcile({ now }); await app.engine.update();
+  await app.engine.initializeCommittedStatus();
   assert.deepEqual(publications.map(item => item.value), ['50'], 'An ordinary pump setting remains after Pause expires');
   await send('Page.reload');
   await until("document.getElementById('history')?.dataset.ready === 'true'");

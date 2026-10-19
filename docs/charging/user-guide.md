@@ -154,10 +154,15 @@ is identified as such and does not imply a live vehicle connection.
 | What you see | Meaning |
 | --- | --- |
 | Ready for the next connection | The charger reports no vehicle plugged in. No session charging permission needs confirmation; the saved Automatic choice remains in effect. |
+| Charging | The charger reports charging. Measured power is shown when available; permission alone cannot establish this state. |
+| Target reached | Reported vehicle charge meets the selected planning target. The activity line still says Charging if charging continues; the vehicle decides when to stop at its own limit. |
+| Estimated target reached | Calculated remaining energy is zero, without a matching vehicle charge report confirming the target. Gaps and other estimate limitations remain in its explanation. |
+| Connected · not charging | A vehicle is connected and reports no charging. Zero draw alone does not establish completion or identify a vehicle timer or Stop. |
+| Charging status unavailable | Current physical charging activity is unknown. A permitted or scheduled instruction cannot fill the missing observation. |
+| Stopped by charger | An evidenced device permission hold prevents further charging while energy is still needed. Native permission must return before another Start can be considered. |
 | Charger needs attention | Open the status popup for the actual connection, instruction or recovery problem and next check. Unplugging does not confirm that an earlier command or temporary setting was restored. |
 | Proposed charging periods | The current economic plan; they may still be awaiting native acceptance. |
 | Forecast prices in the plan | Estimated all-in prices selected with the same uncertainty allowance used by One extra day. They can change and are replaced by published prices. |
-| Charging is allowed | The applicable instruction permits charging. A car timer, target or other restriction can still prevent draw. |
 | Paused between periods | The controller has confirmed the applicable pause. A pending instruction is shown separately. |
 | Identification pending | The attempt is waiting for the evidence or readiness it needs. Ordinary scheduling can use configured/session inputs. |
 | Identification inconclusive | The active attempt ended unresolved. Passive evidence can still complete the match within this connection. |
@@ -169,6 +174,15 @@ vehicle being plugged in. A healthy unplugged charger needs no attention warning
 Connection loss, faults and unresolved instructions or restoration remain visible
 on either card, including after unplugging. An unconfirmed command may still have
 taken effect; check the actual charger state before retrying it.
+
+Both cards use the same completion rules in their activity, target and status
+popups. A confirmed device permission-off stop after reaching the target is
+explained as completion rather than an unresolved charging request. Its native
+permission restriction remains in force, including after restart; presentation
+does not confirm a command or authorize a replacement Start. Faults, uncertain
+commands, native instructions and unfinished restoration remain visible even
+when the target is reached. Automatic on/off and Charge now remain separate
+saved control choices.
 
 Normal automatic scheduling combines published prices with fresh forecast prices
 when the optional feed is enabled. It selects economical periods before the

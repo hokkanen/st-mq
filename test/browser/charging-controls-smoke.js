@@ -179,6 +179,25 @@ fixture.setCase = name => {
       item.control = { phase: 'off', reason: 'disconnected', confirmed: false, handoverConfirmed: true,
         snapshot: { online: true, pluggedIn: false } };
     }
+    if (name.startsWith('target-')) {
+      item.requiredGridKwh = 0;
+      item.progress = { remainingGridKwh: 0, basis: { energyCoverageIncomplete: true } };
+      item.values.soc = reading(90.2, 'bmw-cardata'); item.values.minimumSoc = reading(90, 'bmw-target-filter');
+      item.control = item.id === 'charger2'
+        ? { phase: 'waiting', reason: 'device-permission-held', devicePermissionHeld: true,
+          confirmed: false, snapshot: { online: true } }
+        : { phase: 'released', reason: 'within-limit', confirmed: true };
+      if (name === 'target-estimated') {
+        item.values.soc = reading(40, 'manual-fallback');
+        Object.assign(item.progress, { estimatedSoc: 90.2, hasEnergyEstimate: true });
+      }
+      if (name === 'target-charging') {
+        item.control = { phase: 'released', confirmed: true };
+        item.values.charging = reading(true); item.values.powerKw = reading(7.2);
+      }
+      if (name === 'target-fault') item.control = { phase: 'unavailable', confirmed: false,
+        errorCode: 'charger-fault', reason: 'charger-fault' };
+    }
     if (name === 'unknown-connection') item.values.connected = { value: null, available: false };
     if (name === 'missing-token') item.control.takeover.token = null;
     if (name === 'monitoring') item.capabilities.scheduling = false;
@@ -280,6 +299,29 @@ try {
   for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
+    for (const state of ['target-reached', 'target-estimated', 'target-charging', 'target-fault']) {
+      await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
+      for (const id of ['charger1', 'charger2']) {
+        const result = await evaluate(`(() => ({
+          notice: document.getElementById('${id}-notice').textContent,
+          activity: document.getElementById('${id}-event-value').textContent,
+          completion: document.getElementById('${id}-completion').textContent,
+          problem: document.getElementById('${id}-problem').textContent,
+          noOverflow: document.documentElement.scrollWidth <= innerWidth
+        }))()`);
+        assert.equal(result.notice, state === 'target-estimated' ? 'Estimated target reached'
+          : state === 'target-fault' ? 'Charger needs attention' : 'Target reached', `${id}: ${width}px ${theme} ${state}`);
+        assert.equal(result.completion, state === 'target-estimated' ? 'Estimated reached' : 'Reached');
+        if (state === 'target-charging') assert.match(result.activity, /Charging.*7.2 kW/);
+        else if (state !== 'target-fault') assert.equal(result.activity, result.notice);
+        assert(result.noOverflow);
+        await evaluate(`document.querySelector('#${id}-notice button').click()`);
+        const detail = await evaluate("document.getElementById('status-detail-popover').textContent");
+        assert.match(detail, state === 'target-fault' ? /reports a fault/ : /Energy measurements have gaps/);
+        if (state === 'target-reached') assert.doesNotMatch(detail, /Waiting for it to restore|needs attention/);
+        await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+      }
+    }
     for (const state of ['session-pause-pending', 'session-pause-confirmed', 'session-pause-unconfirmed']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       for (const id of ['charger1', 'charger2']) {

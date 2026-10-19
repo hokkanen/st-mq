@@ -724,7 +724,8 @@ test('an idle vehicle stays allowed throughout each confirmed charging period, i
         soc: reading(45, 'mqtt', { measuredAt: Date.parse('2026-09-25T19:43:00+03:00') }) },
       forecast: { feasible: false, reason: 'insufficient-time', finishAt: null } }, { now: at(clock) });
     assert.equal(result.state, state, `${clock}, charging=${charging}`);
-    assert.equal(result.event, event, `${clock}, charging=${charging}`);
+    assert.equal(result.event, event === 'Charging is allowed'
+      ? charging === false ? 'Connected · not charging' : 'Charging status unavailable' : event, `${clock}, charging=${charging}`);
     assert.deepEqual(result.periodRows, expectedPeriods);
     assert.equal(result.readiness, '100 % by ready-by is at risk');
     assert.equal(result.readingTime, 'Charge measured 25 Sept 2026, 19:43');
@@ -958,7 +959,7 @@ test('a temporary immediate allowance is not presented as the unrestricted final
     periods: [{ startAt: now, endAt: null }], provisional: true, feasible: false, reason: 'electrical-telemetry-unavailable' },
     forecast: { feasible: false, finishAt: null, reason: 'electrical-telemetry-unavailable' },
     control: { phase: 'provisional' } });
-  assert.equal(result.event, 'Charging is allowed'); assert.equal(result.readiness, 'Readiness being checked');
+  assert.equal(result.event, 'Charging status unavailable'); assert.equal(result.readiness, 'Readiness being checked');
   assert.equal(result.periodRows.length, 0); assert.equal(result.risk, false);
   assert.match(result.controlDetail, /for now.*economical periods can still be scheduled/);
 });
@@ -1024,7 +1025,7 @@ test('estimated current charge progresses beyond the requested target and identi
   assert.equal(result.soc, '≈91 %'); assert.equal(result.minimum, '80 %'); assert.equal(result.gridEnergy, '0 kWh');
   assert.equal(result.sources, 'Estimated from configured starting charge and measured energy');
   assert.equal(result.minimumSource, 'Requested target');
-  assert.equal(result.readiness, 'Target reached'); assert.match(result.event, /target reached$/);
+  assert.equal(result.readiness, 'Estimated target reached'); assert.match(result.event, /estimated target reached$/);
   assert.match(result.notes.join(' '), /Energy measurements have gaps/);
   assert(!result.sources.includes('fallback'));
 });
@@ -1582,9 +1583,35 @@ test('recorded charger popups keep status codes readable and live availability e
     assert.equal(refreshedPopup.hidden, false, 'An open explanation refreshes with its charger status');
     assert.match(refreshedPopup.textContent, /Recorded master status.*live charger health is unavailable/s);
     panel.update({ ...status({ ...complete, progress: { ...complete.progress, basis: { energyCoverageIncomplete: true } } }), role: 'slave', readOnly: true });
-    assert.equal($(`${id}-notice`).textContent, 'Estimate has limitations');
+    assert.equal($(`${id}-notice`).textContent, 'Target reached');
     assert.match(refreshedPopup.textContent, /Energy measurements have gaps/);
     assert.match(refreshedPopup.textContent, /Recorded master status.*live charger health is unavailable/s);
+  }
+  panel.close();
+});
+
+test('both charger cards and every completion popup agree after a normal vehicle stop', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => { throw new Error('Reading status sends no command'); } });
+  for (const id of ['charger1', 'charger2']) {
+    const item = connected(id); item.settings.enabled = true;
+    item.values = { ...item.values, soc: reading(90.2, 'bmw-cardata'), minimumSoc: reading(90, 'bmw-target-filter'),
+      charging: reading(false), powerKw: reading(0) };
+    item.progress = { remainingGridKwh: 0 };
+    item.control = id === 'charger2' ? { phase: 'waiting', confirmed: false, reason: 'device-permission-held',
+      devicePermissionHeld: true, snapshot: { online: true } } : { phase: 'released', confirmed: true };
+    panel.update(status(item));
+    assert.equal($(`${id}-notice`).textContent, 'Target reached');
+    assert.equal($(`${id}-event-value`).textContent, 'Target reached');
+    assert.equal($(`${id}-completion`).textContent, 'Reached');
+    assert.equal($(`${id}-problem`).hidden, true);
+    assert.equal($(`${id}-state`).textContent, 'Controlled');
+    for (const key of ['notice', 'event-value', 'completion-label']) {
+      const detail = openDetail($(`${id}-${key}`)).textContent;
+      assert.match(detail, /reported vehicle charge.*charging has stopped/);
+      assert.doesNotMatch(detail, /Waiting for it to restore/);
+    }
+    if (id === 'charger2') assert.equal(item.control.confirmed, false);
   }
   panel.close();
 });

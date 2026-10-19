@@ -58,6 +58,10 @@ function chargingNoticeContent(charger, view, summary) {
   if (view.problem || summary.roleState === 'uncertain') return { label: 'Charger needs attention',
     detail: [...new Set([view.problem, view.risk === true ? view.readiness : '',
       summary.roleDetail, view.priority, ...view.notes].filter(Boolean))].join('\n\n'), state: 'attention' };
+  if (view.target.reached) return { label: view.target.label,
+    detail: [view.target.detail, ...view.notes].filter(Boolean).join('\n\n'),
+    state: !view.target.reported && view.notes.length ? 'attention' : 'good' };
+  if (view.deviceHoldOnly) return { label: 'Stopped by charger', detail: view.controlReason, state: 'attention' };
   if ((charger.identification?.active || charger.identification?.phase === 'observing') && view.showMetrics) return { label: view.identification?.label ?? view.vehicle.label,
     detail: view.vehicle.detail, state: 'quiet' };
   if (charger.identification?.phase === 'inconclusive' && view.showMetrics) return { label: 'Identification inconclusive',
@@ -72,12 +76,9 @@ function chargingNoticeContent(charger, view, summary) {
       detail: [...new Set([priority, detail || summary.roleDetail].filter(Boolean))].join('\n\n'), state: 'manual' };
   }
   if (view.notes.length) return { label: 'Estimate has limitations', detail, state: 'attention' };
-  if (!view.showMetrics) return { label: view.supported && charger.settings?.enabled !== true ? 'Automatic charging is off'
-    : charger.values?.connected?.value === false ? 'Ready for the next connection' : 'Waiting for a connection reading',
+  if (!view.showMetrics) return { label: charger.values?.connected?.value === false ? 'Ready for the next connection' : 'Waiting for a connection reading',
     detail: view.defaultsPreview ? 'Configured defaults are shown for a new connection. Live charge, progress and cost need a confirmed vehicle connection.'
       : 'Charge, progress and cost will appear when a vehicle is confirmed connected. Saved settings remain available below.', state: 'quiet' };
-  if (summary.completion.value === 'Reached') return { label: 'Target reached · vehicle decides when to stop',
-    detail: 'No more energy is needed for the displayed target. The vehicle may continue to its own charge limit.', state: 'good' };
   if (summary.completion.detail === 'Expected on time') return { label: ['Expected on time', view.periodCount].filter(Boolean).join(' · '),
     detail: 'The current forecast reaches the target by the ready-by time. Estimates change with available power and vehicle readings.', state: 'good' };
   if (view.deadline) return { label: 'Checking target readiness', detail: summary.completion.detail, state: 'quiet' };
@@ -127,20 +128,21 @@ export function chargingCost(charger, view, summary, { now = Date.now(), prices 
 export function chargerSummary(charger, view, { now = Date.now(), formatTime = value => new Date(value).toISOString() } = {}) {
   const values = charger.values ?? {}, control = charger.control ?? {}, plan = charger.plan ?? {}, forecast = charger.forecast;
   const supported = charger.capabilities?.scheduling === true, enabled = supported && charger.settings?.enabled === true;
-  const connected = values.connected?.value === true, charging = connected && values.charging?.value === true;
+  const connected = values.connected?.available !== false && values.connected?.value === true;
+  const charging = connected && values.charging?.available !== false && values.charging?.value === true;
   const chargeNow = connected && charger.request?.chargeNow === true;
   const identificationActive = connected && charger.identification?.active === true;
   const identificationInProgress = connected && chargingIdentificationInProgress(charger);
-  const phase = control.phase ?? '', manual = enabled || chargeNow || identificationActive ? control.manual ?? control.manualOverride : null;
+  const phase = control.phase ?? '', manual = enabled || chargeNow || identificationActive ? control.manual : null;
   const unknownInstruction = ['unknown', 'takeover-unconfirmed'].includes(manual?.kind);
   const takeoverUnconfirmed = manual?.kind === 'takeover-unconfirmed';
   const yielded = (enabled || chargeNow || identificationActive) && (['yielded', 'manual'].includes(phase) || Boolean(manual));
   const resumeAt = timestamp(manual?.resumeAt ?? manual?.expiresAt ?? manual?.windowEndAt ?? manual?.endsAt ?? manual?.endAt);
   const handoverPending = yielded && !unknownInstruction && resumeAt !== null && resumeAt <= now;
-  const handoverUnconfirmed = supported && !enabled && control.handoverConfirmed === false;
+  const handoverUnconfirmed = supported && control.handoverConfirmed === false;
   const currentAdjustmentOnly = control.scheduleConfirmed === true && control.currentAdjustment?.pending === true;
   const uncertain = (enabled || chargeNow || identificationActive) && ((!currentAdjustmentOnly && ['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed', 'unconfirmed'].includes(phase))
-    || chargingConfirmationMissing(charger) || !currentAdjustmentOnly && Boolean(control.errorCode) || unknownInstruction
+    || chargingConfirmationMissing(charger) || !currentAdjustmentOnly && Boolean(control.errorCode) || unknownInstruction || Boolean(view.problem)
     || view.state === 'Pause unconfirmed' || /update awaiting confirmation/.test(view.event ?? ''));
   let roleLabel = enabled ? 'Controlled' : 'Observed', roleState = enabled ? 'controlled' : 'observed';
   let roleDetail = enabled ? 'Automatic charging chooses charging periods for the ready-by time.'
@@ -174,13 +176,11 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
     roleDetail = view.priority || 'An external charger change has priority over automatic charging.';
   }
 
-  const remaining = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh ?? forecast?.requiredGridKwh
-    ?? plan.requiredGridKwh ?? forecast?.gridEnergyKwh;
-  const reached = connected && finite(remaining) && remaining <= 0;
+  const reached = view.target.reached;
   const unavailable = detail => ({ value: enabled && !yielded ? 'Checking' : 'No estimate', detail, at: null });
   let completion;
   if (!connected) completion = { value: 'No estimate', detail: values.connected?.value === false ? 'Not connected' : 'Waiting for readings', at: null };
-  else if (reached) completion = { value: 'Reached', detail: view.energyNote || 'Target reached', at: null };
+  else if (reached) completion = { value: view.target.value, detail: view.target.detail, at: null };
   else if (view.sessionPause) completion = { value: 'No estimate', detail: 'Paused for this connection', at: null };
   else if (roleState === 'uncertain') completion = { value: 'Checking', detail: roleLabel, at: null };
   else if (identificationInProgress) completion = { value: 'Checking', detail: 'Waiting for identification', at: null };
@@ -221,13 +221,13 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   // The completion column owns the ETA. Status, pauses and manual windows remain
   // in the activity line, including when the old event carried a stale ETA.
   let activity = (view.event ?? '').replace(/ · (?:[\d.]+\s*%|Unknown) estimated .+$/, '');
-  if (reached) activity = activity.replace(/ · target reached$/, '');
+  if (reached) activity = activity.replace(/ · (?:estimated )?target reached$/, '');
   if (charging && !/^Charging\b/i.test(activity)) activity = `Charging${activity ? ` · ${activity}` : ''}`;
   else if (view.state === 'Paused between periods') activity = `Paused between periods${activity ? ` · ${activity}` : ''}`;
   else if (!connected && !activity.startsWith(view.state ?? '')) activity = `${view.state}${activity ? ` · ${activity}` : ''}`;
   if (['Monitoring', 'Automatic charging OFF'].includes(activity)) activity = view.state || 'Waiting for readings';
   activity ||= view.state || 'Waiting for readings';
   roleDetail = [roleDetail, chargingRecordedDetail(charger)].filter(Boolean).join('\n\n');
-  const compactSummary = [roleLabel, activity, reached && !/target (?:already )?(?:met|reached)/i.test(activity) ? 'Target reached' : ''].filter(Boolean).join(' · ');
+  const compactSummary = [roleLabel, activity, reached && !/target (?:already )?(?:met|reached)/i.test(activity) ? view.target.label : ''].filter(Boolean).join(' · ');
   return { roleLabel, roleDetail, roleState, activity, completion, compactSummary };
 }

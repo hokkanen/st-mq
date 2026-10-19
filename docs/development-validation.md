@@ -14,6 +14,16 @@ unchanged lease deadlines and durable feedback. Equipment browser checks cover
 the preparation message and late native receipt. These synthetic checks establish
 application behavior, not a new native pump measurement or physical heat delivery.
 
+`test/charging-status-consistency.test.js` and the shared card/UI regressions
+check reported and estimated target attainment, native device holds, zero draw,
+missing activity, Automatic/Charge now and retained fault/recovery obligations
+on both integrations without changing controller state. The charging-controls
+browser fixture exercises the same completed, estimated, still-charging and fault
+states at 320/390/1440px in both themes. The learning browser fixture checks the
+visible CSS disclosure arrows and Enter/Space behavior rather than retired text
+glyphs, awaits chart painting after legend changes and publishes synthetic provider
+status before navigation. These checks do not establish physical charger behavior.
+
 `test/recorder-metadata-batching.test.js` verifies unchanged-stream transaction
 coalescing, exact coverage endpoints/counts, immediate value/quality/gap boundaries,
 rollback, failed worker COMMIT, exact retry and restart. Recording status remains

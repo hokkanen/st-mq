@@ -292,7 +292,7 @@ function observation(view, now) {
     && view.vehicleMqtt?.available !== false && view.vehicleMqtt?.reason !== 'vehicle-feed-stale';
   const activeId = view.identification?.active === true;
   const controlled = view.settings?.enabled === true || view.request?.chargeNow === true || Boolean(view.request?.pause);
-  const manual = Boolean(control.manual || control.manualOverride || ['yielded', 'manual'].includes(control.phase));
+  const manual = Boolean(control.manual || ['yielded', 'manual'].includes(control.phase));
   const installed = periods(control.execution?.periods);
   const proposed = periods(view.plan?.periods);
   const applicable = installed.length ? installed : proposed;

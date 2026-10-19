@@ -88,15 +88,67 @@ export function chargingSessionPause(charger) {
 export function chargingConfirmationMissing(charger) {
   const control = charger.control ?? {}, connection = charger.values?.connected;
   if (control.confirmed !== false) return false;
+  if (chargingDeviceHoldOnly(charger)) return false;
   const currentTests = [control.currentTest, charger.identification?.currentTest];
   const idle = connection?.value === false && connection.available !== false && control.phase === 'off'
     && control.snapshot?.online !== false && !charger.error && !control.errorCode
     && !control.pending && !control.owned && !control.ownedPause && !control.execution
     && control.handoverConfirmed !== false && !['pending', 'blocked'].includes(control.takeover?.state)
-    && !['unknown', 'takeover-unconfirmed'].includes((control.manual ?? control.manualOverride)?.kind)
+    && !['unknown', 'takeover-unconfirmed'].includes(control.manual?.kind)
     && !charger.identification?.active && !charger.identification?.pauseOutstanding
     && !currentTests.some(test => ['proposed', 'applying', 'active', 'restoring', 'uncertain'].includes(test?.phase));
   return !idle;
+}
+
+/** A known native Stop is a restriction, not an uncertain command. This is only
+ * presentation: the saved hold and confirmed:false retain their control meaning. */
+export function chargingDeviceHoldOnly(charger) {
+  const control = charger.control ?? {}, values = charger.values ?? {};
+  return control.reason === 'device-permission-held' && control.devicePermissionHeld === true
+    && control.phase === 'waiting' && control.snapshot?.online === true && control.snapshot.controlReady !== false
+    && values.connected?.value === true && values.connected.available !== false
+    && values.charging?.value === false && values.charging.available !== false
+    && !charger.error && !control.errorCode && !control.pending && !control.currentAdjustment?.pending
+    && !control.manual
+    && control.handoverConfirmed !== false && !['pending', 'blocked'].includes(control.takeover?.state)
+    && !charger.identification?.pauseOutstanding
+    && ![control.currentTest, charger.identification?.currentTest].some(test =>
+      ['proposed', 'applying', 'active', 'restoring', 'uncertain'].includes(test?.phase));
+}
+
+/** Both cards use the same completion evidence. Zero calculated energy never
+ * becomes a vehicle charge report, and zero power alone never proves completion. */
+export function chargingTargetStatus(charger) {
+  const values = charger.values ?? {}, soc = values.soc, target = values.minimumSoc;
+  const currentRemaining = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh;
+  const remaining = currentRemaining
+    ?? charger.forecast?.requiredGridKwh ?? charger.plan?.requiredGridKwh ?? charger.forecast?.gridEnergyKwh;
+  const reached = values.connected?.value === true && values.connected.available !== false
+    && target?.available !== false && Number.isFinite(target?.value)
+    && Number.isFinite(currentRemaining) && currentRemaining <= 0;
+  const reported = reached && soc?.available === true && !soc.assumed && !soc.retained && !soc.retainedForSession
+    && ['teslamate', 'bmw-cardata', 'mqtt'].includes(soc.source)
+    && Number.isFinite(soc.value) && target?.available !== false && Number.isFinite(target?.value)
+    && soc.value >= target.value;
+  const label = reported ? 'Target reached' : 'Estimated target reached';
+  const activity = values.charging?.available === false ? null : values.charging?.value;
+  const detail = !reached ? '' : [reported
+    ? 'The reported vehicle charge has reached the selected planning target.'
+    : 'The calculated remaining energy is zero. Reaching the target is estimated from the charge reference and energy measurements, rather than confirmed by a vehicle charge report.',
+  activity === true ? 'The vehicle is still charging and decides when to stop at its own charge limit.'
+    : activity === false ? 'The charger reports that charging has stopped.' : 'Current charging activity is unavailable.',
+  chargingDeviceHoldOnly(charger) ? 'Native charging permission is off. No replacement Start is sent.' : '',
+  'The planning target does not change the vehicle’s own charge limit; the vehicle may continue beyond it.'].filter(Boolean).join(' ');
+  return { reached, reported, label, value: reported ? 'Reached' : 'Estimated reached', remaining, detail };
+}
+
+export function chargingStatusReason(charger) {
+  const target = chargingTargetStatus(charger), control = charger.control ?? {};
+  return target.reached && !chargingConfirmationMissing(charger) && !charger.error && !control.errorCode
+    && !control.pending && !control.manual && control.handoverConfirmed !== false
+    && !['uncertain', 'unavailable', 'ownership-uncertain', 'pause-unconfirmed'].includes(control.phase)
+    ? target.detail
+    : chargingControlReason(charger.control?.manual?.reason || charger.control?.reason);
 }
 
 export function chargingRecordedDetail(charger) {
@@ -246,7 +298,8 @@ export function chargingUnconfirmedDetail(charger) {
     if (control.snapshot?.online === false) return chargingControlReason('offline');
     return 'Current vehicle connection and charging permission cannot be confirmed. Waiting for fresh charger readings; check the charger connection in Charging setup.';
   }
-  return chargingControlReason(control.reason || control.errorCode);
+  return chargingControlReason(control.reason === 'device-permission-held' && control.errorCode ? control.errorCode
+    : control.pending && !control.errorCode ? 'evse-command-unconfirmed' : control.reason || control.errorCode);
 }
 
 /** Feed loss affects battery evidence, separately from charger communication. */

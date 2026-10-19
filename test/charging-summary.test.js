@@ -26,7 +26,8 @@ test('healthy unplugged chargers need no session permission confirmation', () =>
     assert.notEqual(summary(item).roleState, 'uncertain');
     assert.equal(notice(item).label, 'Ready for the next connection');
     assert.equal(notice(item).state, 'quiet');
-    assert.equal(notice({ ...item, settings: { enabled: false } }).label, 'Automatic charging is off');
+    assert.equal(notice({ ...item, settings: { enabled: false } }).label, 'Ready for the next connection');
+    assert.equal(summary({ ...item, settings: { enabled: false } }).roleLabel, 'Observed');
     assert.equal(item.control.confirmed, false, 'Presentation never grants charger permission');
   }
 });
@@ -42,7 +43,7 @@ test('unplugged vehicles never hide faults, uncertain instructions or physical r
       [{ pending: { stage: 'dispatched' } }, /instruction still needs reconciliation/],
       [{ owned: { startAt } }, /still needs recovery/],
       [{ handoverConfirmed: false }, /handover is still unconfirmed/],
-      [{ currentTest: { phase: 'restoring' } }, /still needs recovery/],
+      [{ currentTest: { phase: 'restoring' } }, /temporary identification current limit.*awaiting restoration/],
       [{ takeover: { state: 'blocked', reason: 'evse-native-schedule-unconfirmed' } }, /previous schedule was disabled/],
       [{ snapshot: { online: false } }, /connection.*unavailable/],
     ]) {
@@ -194,12 +195,13 @@ test('manual resumption remains daily information while disconnected and OFF is 
     startsAt: startAt, resumeAt: deadlineAt, windowEndAt: deadlineAt + hour } } });
   assert.equal(result.label, 'Automatic resumes tomorrow 06:00');
   assert.match(result.detail, /ready-by boundary/);
-  assert.equal(notice({ ...disconnected, settings: { enabled: false } }).label, 'Automatic charging is off');
+  assert.equal(notice({ ...disconnected, settings: { enabled: false } }).label, 'Ready for the next connection');
 });
 
 test('target reached is equally visible for observed and automatically controlled charging', () => {
   for (const scheduling of [true, false]) {
-    const result = notice(charger({ requiredGridKwh: 0, capabilities: { scheduling } }));
+    const result = notice(charger({ requiredGridKwh: 0, capabilities: { scheduling },
+      values: { connected: reading(true), charging: reading(false), soc: { ...reading(85), source: 'teslamate' }, minimumSoc: reading(85) } }));
     assert.match(result.label, /^Target reached/); assert.match(result.detail, /vehicle may continue/);
   }
   assert.equal(notice(charger({ plan: {}, forecast: null })).label, 'Automatic charging is on');
@@ -279,8 +281,8 @@ test('an idle vehicle in an active period keeps permission separate from its tar
     plan: { id: 'accepted', periods, deadlineAt: at('06:00') },
     forecast: { finishAt: null, feasible: false, reason: 'insufficient-time' } });
   const display = chargerDisplay(item, { now: currentTime }), result = chargerSummary(item, display, { now: currentTime });
-  assert.equal(result.activity, 'Charging is allowed');
-  assert.equal(result.compactSummary, 'Controlled · Charging is allowed');
+  assert.equal(result.activity, 'Connected · not charging');
+  assert.equal(result.compactSummary, 'Controlled · Connected · not charging');
   assert.equal(result.completion.detail, 'Target at risk');
   assert.equal(chargingNotice(item, display, result).label, 'Target may be late');
 });
@@ -442,9 +444,9 @@ test('native stop times are not target estimates and an early stop invalidates t
 test('zero remaining energy wins over missing forecasts and preserves live charging status', () => {
   const item = charger(), result = summary({ ...item, forecast: { finishAt: null }, progress: { remainingGridKwh: 0 },
     values: { ...item.values, charging: reading(true), powerKw: reading(8) } });
-  assert.equal(result.completion.value, 'Reached'); assert.equal(result.completion.at, null);
+  assert.equal(result.completion.value, 'Estimated reached'); assert.equal(result.completion.at, null);
   assert.equal(result.activity, 'Charging · 8 kW now');
-  assert.equal(result.compactSummary, 'Controlled · Charging · 8 kW now · Target reached');
+  assert.equal(result.compactSummary, 'Controlled · Charging · 8 kW now · Estimated target reached');
 });
 
 test('reached target takes priority over an earlier late or infeasible forecast throughout the charger card', () => {
@@ -456,11 +458,11 @@ test('reached target takes priority over an earlier late or infeasible forecast 
     const current = { ...item, plan: { ...item.plan, warnings }, forecast: { ...forecast, warnings },
       progress: { remainingGridKwh: 0 } };
     const display = chargerDisplay(current, { now });
-    assert.equal(display.readiness, 'Target reached');
+    assert.equal(display.readiness, 'Estimated target reached');
     assert.equal(display.risk, false);
     assert.deepEqual(display.notes, []);
-    assert.equal(summary(current).completion.value, 'Reached');
-    assert.equal(notice(current).label, 'Target reached · vehicle decides when to stop');
+    assert.equal(summary(current).completion.value, 'Estimated reached');
+    assert.equal(notice(current).label, 'Estimated target reached');
     assert.equal(notice(current).state, 'good');
   }
 });
