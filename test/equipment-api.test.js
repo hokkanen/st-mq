@@ -165,7 +165,7 @@ test('native H66 HTTP changes confirm readback and remain permanent across the f
     payload: String(value), receivedAt: f.engine.clock() }));
   h66 = createH66Controller({ deviceId, store: f.store, clock: f.engine.clock,
     config: { writeEnabled: true, readbackTimeoutMs: 30 }, publish: async (topic, payload, options) => {
-      options.beforePublish();
+      options.beforePublish(); options.onFirstWrite?.();
       sent.push({ topic, payload }); queueMicrotask(() => feed(topic.split('/').at(-1), Number(payload)));
     } });
   h66.setConnected(true);

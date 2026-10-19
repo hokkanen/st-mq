@@ -6,6 +6,10 @@ const MESSAGES = {
   SHELLY_COMMAND_UNCONFIRMED: 'The relay command could not be confirmed. It may have reached the device; check its reported state.',
   SHELLY_CONTROL_FAILED: 'The relay request failed. Check its current availability and reported state.',
   FLOOR_PENDING: 'Waiting for the previous floor-heating override to be restored.',
+  H66_NORMAL_ROOM_TIMEOUT: 'Waiting for normal ROOM setting timed out. Preheat was cancelled.',
+  H66_NORMAL_ROOM_UNCONFIRMED: 'Waiting for normal ROOM setting before Preheat.',
+  H66_TARIFF_UNCONFIRMED: 'Preheat needs current confirmed Normal tariff relay readback.',
+  H66_PREHEAT_PLAN_CHANGED: 'Heating conditions changed during preparation. Preheat needs a new plan.',
   EXECUTOR_BUSY: 'A heating request is already in progress. Wait for its result.',
   EXECUTOR_UNCONFIRMED: 'The heating request could not be confirmed. Check the reported equipment state.',
 

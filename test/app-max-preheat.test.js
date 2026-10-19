@@ -19,9 +19,11 @@ function setup(t, { room = 20, boostC = 5, writableMaximum, circulation = true, 
   const feed = register => controller.ingest(decoder.decode({ topic: `${deviceId}/HP/${register}`,
     payload: String(native[register]), receivedAt: now }));
   controller = createH66Controller({ deviceId, store, clock: () => now,
+    tariffFeedback: () => ({ mode: 'normal', verified: true, identity: 'a'.repeat(64) }),
+    requestSnapshot: async () => { for (const [register, value] of Object.entries(native)) feed(register, value); },
     config: { writeEnabled: writable, readbackTimeoutMs: 100 },
     publish: async (topic, payload, options) => {
-      options.beforePublish();
+      options.beforePublish(); options.onFirstWrite?.();
       const register = topic.split('/').at(-1);
       writes.push({ register, value: Number(payload) }); native[register] = Number(payload);
       queueMicrotask(() => feed(register));

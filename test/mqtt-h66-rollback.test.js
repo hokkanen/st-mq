@@ -14,10 +14,13 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 async function fixture(t, store = new Store(':memory:')) {
   const client = new EventEmitter(); let now = START;
   client.subscribe = (_topic, _options, done) => done();
-  client.publish = (_topic, _payload, _options, done) => done();
+  client.stream = { write() { return true; } };
+  client._writePacket = packet => { client.emit('packetsend', packet); client.stream.write(Buffer.from('synthetic MQTT packet')); };
+  client._sendPacket = (packet, done) => { client._writePacket(packet); done(); };
+  client.publish = (topic, payload, options, done) => client._sendPacket({ cmd: 'publish', topic, payload, qos: options.qos, retain: options.retain }, done);
   client.end = (_force, _options, done) => done();
   const config = { input: 'mqtt', deviceId: DEVICE, settings: {  },
-    h66: { writeEnabled: true, readbackTimeoutMs: 1000 }, garage: { enabled: false },
+    h66: { writeEnabled: true, readbackTimeoutMs: 1000, confirmationTimeoutMs: 1000 }, garage: { enabled: false },
     connections: { mqtt: { address: 'mqtt://synthetic.invalid' }, equipment: equipmentConfiguration({ devices: [] }) } };
   const engine = new Engine({ store, config, clock: () => now });
   const reader = await startMqtt({ engine, store, config, connect: () => client });

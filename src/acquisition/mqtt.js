@@ -449,6 +449,9 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     await publish(`${deviceId}/HP/CMD`, 'GETALL', { qos: 0, retain: false });
   };
   const h66 = decoder ? createH66Controller({ deviceId, publish, requestSnapshot, store, clock: () => engine.clock(), config: settings,
+    canControl: () => !commandEvidenceRevoked && !stopped && !stopping && canControl(),
+    tariffFeedback: () => ({ ...engine.heatingActual?.(engine.clock(), {}),
+      identity: engine.executor?.commandTransport?.targetIdentity?.tariff }),
     canAttributeStorageBlock: () => !commandEvidenceRevoked && !stopped && !stopping && canControl() }) : null;
   const matchesTopic = (topic, subscription) => subscription.endsWith('/#')
     ? topic.startsWith(subscription.slice(0, -1)) : subscription === topic;

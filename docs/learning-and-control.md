@@ -436,6 +436,13 @@ baseline for later automatic heating adjustments. Restarting reads the pump; it
 does not replay an old dashboard value or restore a previous native setting.
 Controller configuration remains separate from these native device settings.
 
+All four native settings share one confirmation path: up to ten seconds for
+dispatch, then thirty seconds after the actual MQTT write for committed matching
+readback. Temporary changes remain bounded by their original expiry. A timeout
+does not trigger another write. A later fresh matching report settles the same
+request, clears its timeout and preserves its original request and dispatch clocks.
+Known unsent requests cannot be confirmed by an unrelated matching report.
+
 **Manual heating override** actions share the automatic phase equipment behavior.
 Starting Pause selects Normal; subsequent Normal and Reduced stay until another
 selection, Automatic, or the optional resume time. In Automatic they are
@@ -446,6 +453,29 @@ configured increase
 above the current native ROOM baseline, with normal tariff operation. When
 configured, enabled and commissioned, the floor adapter adds its pooled treatment
 under the [floor lease contract](floor-preheat.md). Otherwise the action is ROOM-only.
+Before starting a new manual or automatic Preheat, ST-MQ confirms Normal from the
+tariff relay and requires a new, committed ROOM publication received after that
+confirmation. It retains the preceding normal and observed reduced ROOM values
+through tariff release and restart. If they differed, a report still equal to
+the reduced value cannot become the new normal baseline, including a delayed
+report arriving after an accepted normal report. When the two recorded values
+are equal, only that same normal value is accepted until an explicit native edit
+establishes another value. A different normal
+value, including a user's changed setting, can become the baseline; an explicit
+native edit confirmed during Normal can also deliberately select the former
+reduced value. Unknown reduction evidence keeps Preheat blocked. Register 0233
+is an offset and is not substituted for the ROOM observed during reduction.
+
+Preparation shows **Waiting for normal ROOM setting** and lasts at most ninety
+seconds, within the original Preheat deadline. Floor overrides and the ROOM
+increase start only after verification. Timeout, reconnect, changed equipment or
+lost control cancels the request. Later evidence cannot restart a cancelled manual
+request. An automatic plan whose normal ROOM baseline changed must be reassessed.
+The accepted baseline is captured once, checked again before dispatch and restored
+when Preheat ends; updates cannot stack boosts or extend the original deadline.
+The current optional `tariffRoom` state is equipment-bound context, not permission
+to write or a configured default. Genuinely absent context starts unknown and is
+established only by current live evidence; startup does not infer it from history.
 Preheat does not stack temperature boosts or start continuous
 DHWR. A deliberate native ROOM edit supersedes an active manual preheat boost;
 changing a different native parameter leaves the boost's restoration duty intact.

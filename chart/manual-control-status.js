@@ -47,8 +47,9 @@ export function h66RequestResult(status = {}) {
   if (!result || result.scope !== 'native-setting' || !actionReceiptRecent(result.at, now)) return null;
   const reading = h66.readings?.[result.register], observedAt = reading?.observedAt ?? reading?.receivedAt ?? reading?.at;
   const fresh = reading?.available === true && reading.stale === false && Number.isFinite(observedAt)
-    && observedAt >= (result.requestedAt ?? result.at) && observedAt <= now;
-  return { ...result, confirmed: fresh ? reading.value === result.value : result.confirmed === true,
+    && observedAt >= (result.dispatchedAt ?? result.requestedAt ?? result.at) && observedAt <= now;
+  return { ...result, confirmed: result.sent === false && result.confirmed !== true ? false
+    : fresh ? reading.value === result.value : result.confirmed === true,
     observedValue: fresh ? reading.value : null, evidenceAt: fresh ? observedAt : null,
     superseded: fresh && reading.value !== result.value };
 }

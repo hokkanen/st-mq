@@ -499,6 +499,19 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate("document.querySelector('#h66-manual-state .status-detail-label').textContent"), '25 °C', 'The current reported native setting remains after its receipt expires');
     await refresh();
     assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'Polling cannot revive an expired native-setting receipt');
+    await evaluate(`(() => {const f=window.equipmentUiFixture;
+      f.status.h66.preheatPreparation={startedAt:f.now,expiresAt:f.now+90000,reason:'Waiting for normal ROOM setting before Preheat'};
+      return true;})()`); await refresh();
+    assert.match(await evaluate("document.getElementById('heating-test-message').textContent"), /Waiting for normal ROOM setting before Preheat/);
+    assert.equal(await evaluate("document.getElementById('heating-preheat-help').hidden"), false);
+    await evaluate(`(() => {const f=window.equipmentUiFixture,at=++f.now;
+      f.status.h66.preheatPreparation=null;
+      f.status.h66.lastManual={register:'0203',value:21,previousValue:25,at,
+        scope:'native-setting',status:'unconfirmed',confirmed:false,sent:true,code:'H66_READBACK_TIMEOUT'};
+      Object.assign(f.status.h66.readings['0203'],{value:21,receivedAt:at,observedAt:at});return true;})()`); await refresh();
+    assert.match(await evaluate("document.getElementById('h66-test-message').textContent"), /device confirmed/);
+    assert.doesNotMatch(await evaluate("document.getElementById('h66-test-message').textContent"), /TIMEOUT|unconfirmed/);
+    assert.equal(await evaluate("document.getElementById('h66-test-message').classList.contains('form-error')"), false);
     await evaluate('window.equipmentUiFixture.status={};window.equipmentUiFixture.heatingResult=null;true'); await refresh();
     // Cover operations remain separate from the contact state and from other device results.
     const door1 = '#garage-equipment-readings [data-device-id=door1]', door2 = '#garage-equipment-readings [data-device-id=door2]';

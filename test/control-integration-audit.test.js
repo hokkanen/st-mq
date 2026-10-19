@@ -83,7 +83,7 @@ function setup(t, { delayed = false, automationEnabled = true, startAt = Date.pa
       };
       const h66 = createH66Controller({ deviceId: 'invented-gateway', store, clock: () => now,
         config: { writeEnabled: true, readbackTimeoutMs: 100 }, publish: async (topic, payload, options) => {
-          options.beforePublish();
+          options.beforePublish(); options.onFirstWrite?.();
           const register = topic.split('/').at(-1), value = Number(payload);
           writes.push({ at: now, register, value });
           queueMicrotask(() => receive(register, value));

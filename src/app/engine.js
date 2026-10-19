@@ -559,6 +559,13 @@ export class Engine {
     this.plant = config.input === 'simulated' ? new SimulatedPlant(store.getState('simulation:plant') ?? {}) : null;
     this.floorOverride = createFloorOverride({ store, settings: config.floorPreheat });
     this.executor = new Executor({ input: config.input, store, plant: this.plant, commandTransport,
+      validateAutomaticPreheat: decision => {
+        const current = this.latestStatus?.decision;
+        if (!this.canControl() || !this.automationEnabled('home') || this.suspended
+          || current && (current.phase !== 'preheat' || current.roomSettingC !== decision.roomSettingC
+            || JSON.stringify(current.plan?.schedule) !== JSON.stringify(decision.plan?.schedule)))
+          throw Object.assign(new Error('Preheat needs a current automatic plan.'), { code: 'H66_PREHEAT_PLAN_CHANGED' });
+      },
       floorOverride: this.floorOverride, config: this.control, clock });
     this.startupRestorationPending = this.executor.status().restorationPending;
     this.latest = Object.create(null);
@@ -791,11 +798,13 @@ export class Engine {
   }
   heatingTests() {
     const available = this.canControl() && ['mqtt', 'providers'].includes(this.config.input) && Boolean(this.executor.commandTransport);
-    const native = this.h66?.status(this.clock()), room = native?.manualPreheat?.baseValue ?? native?.readings?.['0203']?.value;
+    const native = this.h66?.status(this.clock());
+    const ownedRoom = native?.obligations?.['0203']?.baseline ?? native?.manualPreheat?.baseValue;
+    const room = ownedRoom ?? native?.readings?.['0203']?.value;
     const roomMaximum = Math.min(35, native?.controls?.['0203']?.max ?? 35);
     const request = preheatRoomRequest({ roomSettingC: room, roomSettingMaximumC: roomMaximum }, this.control);
     const roomBoostC = request.roomBoostC;
-    const preheatAvailable = available && native?.controls?.['0203']?.available === true
+    const preheatAvailable = available && native?.controlsReady === true && native.writesEnabled === true
       && Number.isFinite(room) && Number.isFinite(roomBoostC)
       && (roomBoostC > 0 || this.floorOverride?.status(this.clock()).available === true);
     return { available, reason: available ? 'Sends a real command to the configured MQTT broker.'
@@ -803,7 +812,7 @@ export class Engine {
       : ['simulated', 'offline'].includes(this.config.input) ? 'Real MQTT tests are unavailable in simulation and offline mode.'
         : 'Configure an MQTT broker to enable real device tests.',
     preheatAvailable, preheatRoomBoostC: preheatAvailable ? roomBoostC : null,
-    preheatTargetC: preheatAvailable ? request.roomSettingC : null, preheatReason: preheatAvailable ? null
+    preheatTargetC: preheatAvailable && (native.normalRoomReady || Number.isFinite(ownedRoom)) ? request.roomSettingC : null, preheatReason: preheatAvailable ? null
       : 'Preheating needs a fresh writable ROOM setting with room for the configured increase, or commissioned floor overrides.',
     lastResult: this.store.getState(`heating-test:${this.config.input}`),
     manualPreheatReport: this.executor.status().manualPreheatReport ?? null };
@@ -1010,7 +1019,7 @@ export class Engine {
         if (command === 'circulation') this.recordDhwr(this.executor.status().pulseUntil, result.at);
         if (command !== 'circulation' && execution.status !== 'waiting' && !unchangedPreheat) {
           this.recordManualHeating(command === 'preheat' ? 'preheat' : command === 'reduction' ? 'reduction' : 'normal',
-            result.at, command === 'preheat' ? capability.preheatRoomBoostC : 0);
+            result.at, command === 'preheat' ? execution.roomBoostC ?? capability.preheatRoomBoostC : 0);
         }
       }, { priority: 'control' });
       return result;

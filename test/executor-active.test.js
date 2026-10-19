@@ -36,11 +36,14 @@ function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, 
       (key === 'executor:home' ? validateExecutorState : validateH66ControlState)(encoded);
       saved.set(key, encoded);
     }, runWrite: async operation => operation(), event() {}, observation: row => observations.push(row) };
+  let tariffMode = 'normal';
   const decoder = createH66Decoder({ deviceId: 'synthetic' });
   const receive = (index, value) => h66.ingest(decoder.decode({ topic: `synthetic/HP/${index}`, payload: String(value), receivedAt: now }));
   const h66 = native ? createH66Controller({ deviceId: 'synthetic', store, clock: () => now,
-    config: { writeEnabled: true, readbackTimeoutMs: 30 }, publish: async (topic, payload, options) => {
-      options.beforePublish();
+    tariffFeedback: () => ({ mode: tariffMode, verified: true, identity: 'a'.repeat(64) }),
+    requestSnapshot: async () => { for (const [index, value] of Object.entries(values)) receive(index, value); },
+    config: { writeEnabled: true, preheatPreparationMs: config.preheatPreparationMs ?? 150, readbackTimeoutMs: 30, confirmationTimeoutMs: 30 }, publish: async (topic, payload, options) => {
+      options.beforePublish(); options.onFirstWrite?.();
       const index = topic.split('/').at(-1);
       assert.ok(saved.get('h66:control:synthetic').obligations[index], 'native restoration saved before publishing');
       log.push({ native: index, value: Number(payload), now }); values[index] = Number(payload);
@@ -50,7 +53,9 @@ function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, 
   const transport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publish: async commands => {
     log.push({ commands: [...commands], now });
     assert(!commands.includes('circulation'), 'DHWR button intents must never enter the heating transport');
-    return publishLegacy ? publishLegacy(commands) : { status: 'mqtt', sent: true, actual: null };
+    const result = publishLegacy ? await publishLegacy(commands) : { status: 'mqtt', sent: true, actual: null };
+    if (result?.sent) tariffMode = commands.at(-1);
+    return result;
   }, publishDhwr: async on => {
     log.push({ dhwr: on, now });
     if (on) {
@@ -172,7 +177,7 @@ test('an explicit circulation pulse survives automatic recovery holding',async t
 
 test('a45-minute preheat keeps its ROOM deadline through acknowledgement latency without requesting extra DHWR', async t => {
   let r;
-  r = rig(t, { publishLegacy: async () => { r.advance(1000); return { status: 'mqtt', sent: true, actual: null }; } });
+  r = rig(t, { config: { preheatPreparationMs: 90_000 }, publishLegacy: async () => { r.advance(1000); return { status: 'mqtt', sent: true, actual: null }; } });
   const end = r.now + 45 * 60_000;
   for (let i = 0; i < 5 && r.now < end; i++) {
     assert.equal((await r.run('preheat', end - r.now)).phase, 'preheat');
@@ -732,4 +737,80 @@ test('every saved manual-restoration boundary stays restorable and cannot resume
   }
   assert.equal(r.executor.status().legacyOutstanding, false);
   assert.equal(r.executor.status().targetBindings.tariff, undefined);
+});
+
+test('failed manual Preheat cannot activate later when a normal ROOM report arrives', async t => {
+  let leases = 0;
+  const floor = { status: () => ({ enabled: true }),
+    async lease() { leases++; return { confirmed: true }; },
+    async release() { return { restorationPending: false }; } };
+  const r = rig(t, { floorOverride: floor }), pause = { id: 'synthetic-gate-pause', expiresAt: null };
+  await r.executor.execute({ commands: ['reduction'] }, { manualTest: true, pause, now: r.now });
+  r.values['0203'] = 9; r.advance(1);
+  await assert.rejects(r.executor.execute({ phase: 'preheat', commands: ['normal'], roomBoostC: 5 },
+    { manualTest: true, pause, now: r.now }), { code: 'H66_NORMAL_ROOM_TIMEOUT' });
+  assert.equal(leases, 0);
+  assert.equal(r.executor.status().manualRequested, null);
+  r.values['0203'] = 20; r.advance(1);
+  await r.executor.maintainPause(r.now, pause);
+  assert.equal(leases, 0);
+  assert.equal(r.log.some(row => row.native === '0203'), false);
+});
+
+test('a changed normal baseline requires a new automatic Preheat plan before leasing floors', async t => {
+  let r, leases = 0;
+  const floor = { status: () => ({ enabled: true }), async lease() { leases++; },
+    async release() { return { restorationPending: false }; } };
+  r = rig(t, { floorOverride: floor, publishLegacy: async () => {
+    r.values['0203'] = 20; r.advance(1); return { status: 'mqtt', sent: true };
+  } });
+  await assert.rejects(r.run('preheat', 60_000, { roomSettingC: 24, floorOverride: true }), { code: 'H66_PREHEAT_PLAN_CHANGED' });
+  assert.equal(leases, 0);
+  assert.equal(r.log.some(row => row.native === '0203'), false);
+});
+
+test('floor-only Preheat keeps its accepted baseline and records the initial Normal dispatch', async t => {
+  const leases = [];
+  const floor = { status: () => ({ enabled: true }), async lease(request) { leases.push(request); },
+    async release() { return { restorationPending: false }; } };
+  const r = rig(t, { floorOverride: floor });
+  r.values['0203'] = 35; r.advance(1);
+  const end = r.now + 600_000;
+  const first = await r.run('preheat', end - r.now, { roomSettingC: 35, floorOverride: true });
+  assert.equal(first.sent, true);
+  assert.equal(r.h66.status().obligations['0203'], undefined);
+  const published = r.log.length;
+  r.advance(1);
+  await r.run('preheat', end - r.now, { roomSettingC: 35, floorOverride: true });
+  assert.equal(r.log.length, published, 'Continuation must not run a new Normal preparation');
+  assert.equal(leases.at(-1).until, end);
+});
+
+test('floor leasing uses the time after preparation while keeping the original Preheat deadline', async t => {
+  let r;
+  const leases = [];
+  const floor = { status: () => ({ enabled: true }), async lease(request) { leases.push(request); },
+    async release() { return { restorationPending: false }; } };
+  r = rig(t, { floorOverride: floor, config: { preheatPreparationMs: 90_000 }, publishLegacy: async () => {
+    r.advance(30_000); return { status: 'mqtt', sent: true };
+  } });
+  const started = r.now, end = started + 600_000;
+  await r.run('preheat', end - started, { floorOverride: true });
+  assert.equal(leases[0].now, started + 30_000);
+  assert.equal(leases[0].until, end);
+});
+
+test('Normal ROOM is captured before a pending Reduction request invalidates earlier relay feedback', async t => {
+  const r = rig(t);
+  let captured = false;
+  const capture = r.h66.captureTariffReduction;
+  r.h66.captureTariffReduction = async options => {
+    assert.notEqual(r.executor.status().tariffRequested?.mode, 'reduction');
+    await capture(options); captured = true;
+  };
+  await r.run('reduction');
+  assert.equal(captured, true);
+  const context = r.saved.get('h66:control:synthetic').tariffRoom;
+  assert.equal(context.normalC, 19);
+  assert.equal(context.awaitingNormal, true);
 });

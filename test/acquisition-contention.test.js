@@ -22,12 +22,15 @@ async function fixture(t, input = 'mqtt', devices = []) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-acquisition-contention-'));
   const store = new Store(join(directory, 'recording.sqlite')), writer = new DatabaseSync(store.path);
   let now = START, locked = false, control = true;
-  const config = { input, deviceId: DEVICE, h66: { writeEnabled: true, readbackTimeoutMs: 1000 },
+  const config = { input, deviceId: DEVICE, h66: { writeEnabled: true, readbackTimeoutMs: 1000, confirmationTimeoutMs: 1000 },
     garage: { enabled: false }, connections: { mqtt: { address: 'mqtt://fixture.invalid' }, equipment: equipmentConfiguration({ devices }) } };
   const engine = new Engine({ store, config, clock: () => now });
   const client = new EventEmitter(), commands = [];
   client.subscribe = (_topic, _options, done) => done();
-  client.publish = (topic, payload, _options, done) => { commands.push({ topic, payload }); done(); };
+  client.stream = { write() { return true; } };
+  client._writePacket = (packet, done) => { client.stream.write(Buffer.from(String(packet.payload))); commands.push({ topic: packet.topic, payload: packet.payload }); done(); };
+  client._sendPacket = (packet, done) => client._writePacket(packet, done);
+  client.publish = (topic, payload, options, done) => client._sendPacket({ cmd: 'publish', topic, payload, qos: options.qos ?? 0 }, done);
   client.end = (_force, _options, done) => done();
   const reader = input === 'mqtt' ? await startMqtt({ engine, store, config, connect: () => client, canControl: () => control }) : null;
   client.emit('connect');

@@ -31,14 +31,16 @@ function validateValues(values) {
  */
 export function createH66Controller({ deviceId, publish, requestSnapshot = async () => {},
   store, clock = Date.now, monotonicClock = () => performance.now(), config = {}, closeWriteTimeoutMs = 5000,
-  canAttributeStorageBlock = () => true } = {}) {
+  canAttributeStorageBlock = () => true, tariffFeedback = () => null, canControl = () => true } = {}) {
   if (typeof deviceId !== 'string' || !deviceId || /[\/# +\u0000]/.test(deviceId)) throw new TypeError('Exact MQTT device identifier required');
   if (typeof publish !== 'function' || !store?.getState || !store?.setState) throw new TypeError('H66 requires transport and persistent state storage');
   const configuredAge = config.maxAgeMs ?? H66_MAX_AGE_MS;
   const maxAgeMs = Math.min(configuredAge, H66_MAX_AGE_MS);
   const timeoutMs = config.readbackTimeoutMs ?? 10_000;
+  const confirmationMs = config.confirmationTimeoutMs ?? 30_000;
+  const preparationMs = config.preheatPreparationMs ?? 90_000;
   const maxOverrideMs = config.maxOverrideMs ?? 24 * HOUR;
-  if ([configuredAge, timeoutMs, maxOverrideMs].some(value => !Number.isFinite(value) || value <= 0)) throw new RangeError('H66 time limits must be positive');
+  if ([configuredAge, timeoutMs, confirmationMs, preparationMs, maxOverrideMs].some(value => !Number.isFinite(value) || value <= 0)) throw new RangeError('H66 time limits must be positive');
   const key = `h66:control:${deviceId}`;
   // A failed read may hide an outstanding physical restoration obligation.
   // Only a genuinely absent record permits initialization of empty state.
@@ -58,6 +60,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   let reconcileAfterActive = false, activeGeneration = null;
   let revision = 0, connectionGeneration = 0, elapsedExpiry = null;
   let lastPublicationAt = null;
+  let normalBoundary = null, preparation = null, wakePreparation = null;
+  const committedRevisions = new Map();
   let compressorState = null;
   const readings = new Map(), pending = new Map();
   const writes = createWriteScope({ closeTimeoutMs: closeWriteTimeoutMs,
@@ -70,9 +74,10 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     const commit = () => {
       const before = { ...state, baseline: { ...state.baseline }, obligations: { ...state.obligations }, requested: { ...state.requested } };
       const restoringBefore = restoreRequired;
-      store.afterRollback?.(() => { state = before; restoreRequired = restoringBefore; });
+      const boundaryBefore = normalBoundary;
+      store.afterRollback?.(() => { state = before; restoreRequired = restoringBefore; normalBoundary = boundaryBefore; });
       try { const result = operation(); persist(); return result; }
-      catch (error) { state = before; restoreRequired = restoringBefore; throw error; }
+      catch (error) { state = before; restoreRequired = restoringBefore; normalBoundary = boundaryBefore; throw error; }
     };
     return writes.run(commit, { priority: 'control', ...options });
   };
@@ -85,6 +90,118 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   };
   const available = (now = clock()) => connected && !closed && config.enabled !== false
     && Number.isFinite(lastPublicationAt) && now >= lastPublicationAt && now - lastPublicationAt <= maxAgeMs;
+  function liveTariff() {
+    let value;
+    try { value = tariffFeedback(); } catch { return null; }
+    return value?.verified === true && !value.stale && ['normal', 'reduction'].includes(value.mode)
+      && /^[a-f0-9]{64}$/.test(value.identity ?? '') ? value : null;
+  }
+  // This reference describes a physical tariff period, not a configured default
+  // or permission to write ROOM. Absence starts unknown; no history is backfilled.
+  function observeTariff() {
+    const feedback = liveTariff();
+    if (!feedback) { normalBoundary = null; return null; }
+    let context = state.tariffRoom;
+    if (!context || context.identity !== feedback.identity) {
+      context = { identity: feedback.identity, mode: 'unknown', normalC: null, reducedC: null, normalAfter: null, awaitingNormal: false };
+      state.tariffRoom = context;
+    }
+    if (context.mode !== feedback.mode || feedback.mode === 'normal' && (!normalBoundary || clock() < normalBoundary.at)) {
+      state.tariffRoom = context = { ...context, mode: feedback.mode,
+        awaitingNormal: context.awaitingNormal || feedback.mode === 'reduction',
+        normalAfter: feedback.mode === 'normal' ? clock() : null };
+      normalBoundary = feedback.mode === 'normal' ? { at: clock(), revision, generation: connectionGeneration } : null;
+    }
+    return context;
+  }
+  function normalRoomReady() {
+    const feedback = liveTariff(), context = state.tariffRoom, reading = current('0203');
+    return Boolean(feedback?.mode === 'normal' && context?.identity === feedback.identity
+      && context.mode === 'normal' && normalBoundary?.generation === connectionGeneration
+      && reading && reading.receivedAt >= normalBoundary.at && reading.revision > normalBoundary.revision
+      && reading.observedAt >= normalBoundary.at
+      && reading.revision <= (committedRevisions.get('0203') ?? -1) && !context.awaitingNormal
+      && Number.isFinite(context.normalC) && equal(reading.value, context.normalC));
+  }
+  function observeRoom(reading) {
+    const context = state.tariffRoom;
+    if (!context || reading.register !== '0203' || !reading.usableForControl || state.obligations['0203']) return;
+    if (context.mode === 'reduction' && !equal(context.reducedC, reading.value)) state.tariffRoom = { ...context, reducedC: reading.value };
+    else if (context.mode === 'normal' && normalBoundary?.generation === connectionGeneration
+      && reading.receivedAt >= normalBoundary.at && reading.observedAt >= normalBoundary.at
+      && reading.revision > normalBoundary.revision) {
+      if (context.awaitingNormal || context.reducedC !== null) {
+        // An unchanged pre-reduction value may have been published before the
+        // reduction took effect. It can confirm that same normal reference,
+        // never authorize a subsequently arriving lower transient baseline.
+        const accepted = Number.isFinite(context.normalC) && Number.isFinite(context.reducedC)
+          && (equal(context.normalC, context.reducedC) ? equal(reading.value, context.normalC)
+            : !equal(reading.value, context.reducedC));
+        if (!accepted) {
+          if (!context.awaitingNormal) state.tariffRoom = { ...context, awaitingNormal: true };
+          return;
+        }
+      }
+      if (!equal(context.normalC, reading.value) || context.awaitingNormal)
+        state.tariffRoom = { ...context, normalC: reading.value, awaitingNormal: false };
+    }
+  }
+  async function captureTariffReduction({ identity = liveTariff()?.identity } = {}) {
+    return writeState(() => {
+      observeTariff();
+      if (!/^[a-f0-9]{64}$/.test(identity ?? '')) return;
+      const context = state.tariffRoom?.identity === identity ? state.tariffRoom
+        : { identity, mode: 'unknown', normalC: null, reducedC: null, normalAfter: null, awaitingNormal: false };
+      if (context.mode === 'reduction') return; // Refreshing the same period retains its reduced observation.
+      const room = current('0203');
+      const normalC = context.mode === 'normal' && room && !state.obligations['0203'] && normalRoomReady()
+        ? room.value : context.normalC;
+      // A requested period remains ambiguous even when Normal feedback was
+      // unavailable before dispatch or no H66 report arrives during reduction.
+      state.tariffRoom = { ...context, normalC, reducedC: null, awaitingNormal: true };
+    });
+  }
+  async function preparePreheat({ releaseTariff, expiresAt, validate = () => {} }) {
+    if (preparation || active) throw failure('H66_BUSY', 'An H66 transition is already in progress.');
+    if (!Number.isFinite(expiresAt) || expiresAt <= clock() || typeof releaseTariff !== 'function')
+      throw failure('H66_EXPIRY_INVALID', 'Preheat preparation needs a future deadline and tariff release.');
+    const generation = connectionGeneration, startedAt = clock(), identity = liveTariff()?.identity;
+    const end = Math.min(startedAt + preparationMs, expiresAt);
+    const elapsedEnd = monotonicClock() + Math.max(0, end - startedAt);
+    const check = () => {
+      requireConnection(clock()); validate();
+      if (closing || !canControl()) throw failure('H66_CLOSED', 'Heating control is no longer available.');
+      if (generation !== connectionGeneration) throw failure('H66_DISCONNECTED', 'H66 reconnected during Preheat preparation.');
+      if (!identity || liveTariff()?.identity !== identity) throw failure('H66_TARIFF_UNCONFIRMED', 'The tariff relay identity or readback changed.');
+      if (clock() >= end || monotonicClock() >= elapsedEnd)
+        throw failure('H66_NORMAL_ROOM_TIMEOUT', 'Waiting for normal ROOM setting timed out. Preheat was cancelled.');
+    };
+    preparation = { startedAt, expiresAt: end, reason: 'Waiting for normal ROOM setting.' };
+    try {
+      check();
+      await releaseTariff();
+      check();
+      await writeState(() => {
+        const context = observeTariff();
+        if (!context || context.mode !== 'normal') throw failure('H66_TARIFF_UNCONFIRMED', 'Normal tariff relay readback is not confirmed.');
+        // Reset the boundary once, after actual relay confirmation. Writer
+        // admission time cannot turn an earlier queued publication into evidence.
+        normalBoundary = { at: clock(), revision, generation };
+        state.tariffRoom = { ...context, normalAfter: normalBoundary.at };
+      });
+      void Promise.resolve().then(requestSnapshot).catch(() => {});
+      while (true) {
+        check();
+        if (liveTariff()?.mode !== 'normal') throw failure('H66_TARIFF_UNCONFIRMED', 'Normal tariff relay readback was lost.');
+        if (normalRoomReady()) return { roomSettingC: current('0203').value };
+        await new Promise(resolve => {
+          const finish = () => { clearTimeout(timer); wakePreparation = null; resolve(); };
+          const timer = setTimeout(finish, Math.min(50, Math.max(1, end - clock())));
+          wakePreparation = finish;
+        });
+      }
+    } finally { preparation = null; }
+  }
   function trackCompressor(reading) {
     const now = clock(), observedAt = reading.observedAt ?? reading.receivedAt, receivedAt = reading.receivedAt;
     if (!connected || reading.usableForControl !== true || ![0, 1].includes(reading.value)
@@ -190,40 +307,56 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     if (!Number.isFinite(scale) || scale === 0 || !Number.isFinite(offset)) throw failure('H66_SCALE_INVALID', 'The H66 MQTT scale is invalid.');
     return String(Number(((value - offset) / scale).toFixed(6)));
   }
-  function publishAndReadback(index, value, validate, recordingAttempt) {
+  function publishAndReadback(index, value, validate, recordingAttempt, activationEnd = Infinity) {
     return new Promise((resolve, reject) => {
-      let settled = false, recordingDeadlineExpired = false;
+      let settled = false, recordingDeadlineExpired = false, dispatchedAt = null, timer;
+      let readbackEnd = Infinity, readbackElapsedEnd = Infinity;
       const cancellation = new AbortController();
-      const deadline = clock() + timeoutMs, elapsedEnd = monotonicClock() + timeoutMs;
+      const dispatchEnd = Math.min(clock() + timeoutMs, activationEnd);
+      const dispatchElapsedEnd = monotonicClock() + Math.max(0, dispatchEnd - clock());
       const finish = (error, reading) => {
         if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        pending.delete(index);
-        cancellation.abort();
-        if (error) reject(error); else resolve(reading);
+        settled = true; clearTimeout(timer); pending.delete(index); cancellation.abort();
+        if (error) { error.dispatchedAt = dispatchedAt; error.dispatchedRevision = waiter.revision; reject(error); }
+        else resolve({ ...reading, dispatchedAt });
       };
-      const timer = setTimeout(() => { recordingDeadlineExpired = true;
-        finish(failure('H66_READBACK_TIMEOUT', 'H66 did not publish matching setting readback.')); }, timeoutMs);
-      const waiter = { value, after: Infinity, revision: Infinity, finish };
+      const expire = (activationExpired = false) => {
+        recordingDeadlineExpired = dispatchedAt === null;
+        finish(failure(activationExpired ? 'H66_EXPIRED' : 'H66_READBACK_TIMEOUT', dispatchedAt === null
+          ? 'H66 setting dispatch was not established before its deadline.'
+          : 'H66 did not publish matching setting readback before its deadline.'));
+      };
+      timer = setTimeout(() => expire(activationEnd <= dispatchEnd), Math.max(1, dispatchEnd - clock()));
+      const waiter = { value, after: Infinity, revision: Infinity, finish: (error, reading) => {
+        if (!error && (clock() >= readbackEnd || monotonicClock() >= readbackElapsedEnd))
+          expire(activationEnd <= readbackEnd);
+        else finish(error, reading);
+      } };
       pending.set(index, waiter);
       const beforePublish = () => {
-        if (settled || clock() >= deadline || monotonicClock() >= elapsedEnd)
-          throw failure('H66_READBACK_TIMEOUT', 'The H66 command deadline has passed.');
+        if (settled || clock() >= dispatchEnd || monotonicClock() >= dispatchElapsedEnd)
+          throw failure('H66_READBACK_TIMEOUT', 'The H66 dispatch deadline has passed.');
         validate();
-        // An observation admitted while this request waits is not its readback.
-        waiter.after = clock(); waiter.revision = revision;
+      };
+      const onFirstWrite = () => {
+        if (settled || dispatchedAt !== null) return;
+        dispatchedAt = clock();
+        waiter.after = dispatchedAt; waiter.revision = revision;
+        readbackEnd = Math.min(dispatchedAt + confirmationMs, activationEnd);
+        readbackElapsedEnd = monotonicClock() + Math.max(0, readbackEnd - dispatchedAt);
+        clearTimeout(timer);
+        timer = setTimeout(() => expire(activationEnd - dispatchedAt <= confirmationMs), Math.max(1, Math.min(confirmationMs, activationEnd - clock())));
       };
       try {
         Promise.resolve(publish(`${deviceId}/HP/SET/${index}`, wireValue(index, value),
-          { qos: 0, retain: false, noReplay: true, beforePublish, signal: cancellation.signal,
+          { qos: 0, retain: false, noReplay: true, beforePublish, beforeWrite: () => { beforePublish(); return true; }, onFirstWrite, signal: cancellation.signal,
             recordingContext: 'heat-pump-command', recordingAttempt, recordingDeadlineExpired: () => recordingDeadlineExpired }))
           .then(() => { if (!settled) return requestSnapshot(); })
           .catch(() => finish(failure('H66_WRITE_FAILED', 'The H66 write could not be confirmed.')));
       } catch { finish(failure('H66_WRITE_FAILED', 'The H66 write could not be confirmed.')); }
     });
   }
-  async function apply(values, { now, reason, expiresAt, activationExpiresAt = expiresAt, restoring = false, restoreTokens = null, manualPause = false }) {
+  async function apply(values, { now, reason, expiresAt, activationExpiresAt = expiresAt, restoring = false, restoreTokens = null, manualPause = false, validateActivation = () => {} }) {
     validateValues(values);
     const checkedAt=clock();
     const generation = connectionGeneration;
@@ -237,6 +370,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     const expectedReadings = Object.fromEntries(Object.keys(values).map(index => [index, current(index, checkedAt)]));
     const check = (index, allowExpired = false) => {
       requireConnection(clock());
+      if (!restoring) validateActivation();
       if (!restoring && closing) throw failure('H66_CLOSED', 'H66 is closing; no new setting changes are accepted.');
       if (connectionGeneration !== generation) throw failure('H66_DISCONNECTED', 'The H66 connection changed while saving the setting.');
       if (!restoring && restoreRequired) throw failure('H66_RESTORATION_PENDING', 'The H66 transition was interrupted.');
@@ -305,7 +439,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
           throw failure('H66_SETTING_CHANGED', 'The saved native-setting obligation was superseded.');
       };
       beforePublish();
-      const readback = await publishAndReadback(index, value, beforePublish, attempt);
+      const readback = await publishAndReadback(index, value, beforePublish, attempt, restoring ? Infinity : activationDeadline);
       await writeState(() => {
         if (state.obligations[index] === writtenObligation) {
           if (restoring) delete state.obligations[index];
@@ -378,6 +512,33 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       && (state.expiresAt === null || timestamp(state.expiresAt) > now)) return restoreRequired;
     return restoreRequired || Object.keys(state.obligations).length > 0 || !['normal', 'recovery'].includes(state.phase);
   }
+  function settleNative(request, readback, dispatchedAt = request.dispatchedAt) {
+    if (state.lastManual?.at !== request.at || state.lastManual?.register !== request.register
+      || state.lastManual?.value !== request.value) return;
+    const register = request.register, obligation = state.obligations[register];
+    // A later temporary owner cannot be released by an older native receipt.
+    if (!obligation || obligation.originalAt <= request.at) {
+      delete state.obligations[register]; delete state.baseline[register]; delete state.requested[register];
+      if (register === '0203') state.manualPreheat = null;
+      if (!Object.keys(state.obligations).length) {
+        state.phase = 'normal'; state.baseline = {}; state.requested = {};
+        state.expiresAt = null; state.pauseId = null; state.manualMode = null; restoreRequired = false;
+      }
+    }
+    const { code, error, ...receipt } = request;
+    state.lastManual = { ...receipt, status: 'confirmed', confirmed: true,
+      sent: Number.isFinite(dispatchedAt) ? true : request.sent,
+      ...(Number.isFinite(dispatchedAt) ? { dispatchedAt } : {}),
+      readback: readback.value, confirmedAt: readback.receivedAt };
+    state.lastResult = { status: 'confirmed', reason: 'native-setting', register, value: request.value,
+      confirmed: true, sent: state.lastManual.sent, at: clock() };
+    const context = observeTariff();
+    if (register === '0203' && context?.mode === 'normal' && !state.obligations['0203'])
+      state.tariffRoom = { ...context, normalC: readback.value, reducedC: null, awaitingNormal: false };
+    event('h66-native-setting-confirmed', { register, value: request.value,
+      previousValue: request.previousValue, sent: state.lastManual.sent,
+      ...(Number.isFinite(dispatchedAt) ? { dispatchedAt, receivedAt: readback.receivedAt } : {}) });
+  }
   /** Ordinary device edits establish the pump's native settings. They have no
    * restoration deadline and are never replayed from saved intent. Later thermal
    * overrides capture their own baseline from fresh pump readback. */
@@ -387,6 +548,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       throw failure('H66_SETTINGS_INVALID', 'Choose an H66 register and value.');
     const { register, value, now = clock() } = options;
     validateValues({ [register]: value });
+    if (preparation) throw failure('H66_BUSY', 'Wait for Preheat preparation to finish.');
     if (manualConflict(state.pauseId ?? undefined))
       throw failure('H66_MANUAL_CONFLICT', 'Wait for the current controller override or restoration before changing a native setting.');
     return exclusive(async () => {
@@ -427,23 +589,29 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         check();
         const readback = changed ? await publishAndReadback(register, value, check, attempt) : previous;
         await writeState(() => {
-          supersede();
-          state.lastManual = { ...requested, status: 'confirmed', confirmed: true, sent: changed,
-            readback: readback.value, confirmedAt: clock() };
-          state.lastResult = { status: 'confirmed', reason: 'native-setting', register, value, confirmed: true, sent: changed, at: clock() };
-          event('h66-native-setting-confirmed', { register, value, previousValue: previous.value, sent: changed });
+          settleNative({ ...requested, sent: changed }, readback, readback.dispatchedAt);
         });
         return copy(state.lastManual);
       } catch (error) {
         attempt?.fail(error);
         const code = ['H66_READBACK_TIMEOUT', 'H66_WRITE_FAILED', 'H66_DISCONNECTED', 'H66_CLOSED'].includes(error?.code)
           ? error.code : 'H66_WRITE_FAILED';
-        await writeState(() => { state.lastManual = { ...state.lastManual, status: 'unconfirmed', confirmed: false, code }; });
+        await writeState(() => { state.lastManual = { ...state.lastManual,
+          status: Number.isFinite(error.dispatchedAt) ? 'unconfirmed' : 'failed', confirmed: false, code,
+          sent: Number.isFinite(error.dispatchedAt),
+          ...(Number.isFinite(error.dispatchedAt) ? { dispatchedAt: error.dispatchedAt } : {}) };
+          const reading = current(register);
+          if (Number.isFinite(error.dispatchedAt) && reading && reading.revision > error.dispatchedRevision
+            && reading.revision <= (committedRevisions.get(register) ?? -1)
+            && reading.receivedAt >= (error.dispatchedAt ?? requested.at) && equal(reading.value, value))
+            settleNative(state.lastManual, reading);
+        });
+        if (state.lastManual.confirmed) return copy(state.lastManual);
         throw failure(code, 'The native setting change was not confirmed. Check its live value before trying again.');
       } finally { attempt?.finish(); }
     });
   }
-  async function setPhase({ phase, roomBoostC = 5, compressorOnly = false, holdDhwReduced = false, now = clock(), expiresAt, activationExpiresAt = expiresAt, manual = false, pauseId = null } = {}) {
+  async function setPhase({ phase, roomBoostC = 5, normalRoomC, validateActivation, compressorOnly = false, holdDhwReduced = false, now = clock(), expiresAt, activationExpiresAt = expiresAt, manual = false, pauseId = null } = {}) {
     if (!['normal', 'recovery', 'preheat', 'reduction'].includes(phase)) throw failure('H66_PHASE_INVALID', 'Unknown H66 control phase.');
     if (pauseId !== null && (!manual || typeof pauseId !== 'string' || !pauseId))
       throw failure('H66_MANUAL_CONFLICT', 'A held heating selection requires its active pause.');
@@ -453,6 +621,9 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         throw failure('H66_MANUAL_CONFLICT', 'Restore the current manual settings before changing control ownership.');
       requireConnection(now);
       if (restoreRequired) throw failure('H66_RESTORATION_PENDING', 'Previous H66 overrides are being restored.');
+      if (phase === 'preheat' && !state.obligations['0203'] && (!normalRoomReady()
+        || normalRoomC !== undefined && !equal(current('0203', clock())?.value, normalRoomC)))
+        throw failure('H66_NORMAL_ROOM_UNCONFIRMED', 'Waiting for normal ROOM setting.');
       // A cycle starts from current normal settings, never from a reduced ROOM value.
       if (!SETTINGS.every(index => Object.hasOwn(state.baseline, index))) {
         captureBaselines(SETTINGS, now);
@@ -479,7 +650,16 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         // settings, including when the preceding phase was a recovery hold.
         for (const index of ['0212', '0208', '2201']) if (state.obligations[index])
           changed.push(...await apply({ [index]: state.baseline[index] }, { now, reason: 'preheat-normal-service', restoring: true }));
-        changed.push(...await apply({ '0203': Math.min(LIMITS['0203'][1], state.baseline['0203'] + roomBoostC) }, { now, reason: 'preheat', expiresAt, activationExpiresAt }));
+        if (!state.obligations['0203'] && (!normalRoomReady() || !equal(current('0203')?.value, state.baseline['0203'])))
+          throw failure('H66_NORMAL_ROOM_UNCONFIRMED', 'The normal ROOM setting changed before Preheat.');
+        const validatePreheat = () => {
+          validateActivation?.();
+          const tariff = liveTariff();
+          if (tariff?.mode !== 'normal' || tariff.identity !== state.tariffRoom?.identity)
+            throw failure('H66_TARIFF_UNCONFIRMED', 'Normal tariff relay readback was lost before Preheat dispatch.');
+        };
+        changed.push(...await apply({ '0203': Math.min(LIMITS['0203'][1], state.baseline['0203'] + roomBoostC) },
+          { now, reason: 'preheat', expiresAt, activationExpiresAt, validateActivation: validatePreheat }));
       } else {
         // ROOM restoration completes before reduction settings are sent. The executor owns DHWR.
         if (state.obligations['0203']) changed.push(...await apply({ '0203': state.baseline['0203'] }, { now, reason: 'preheat-complete', restoring: true }));
@@ -514,24 +694,36 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     // Preserve obligation object identity: an in-flight restoration holds these
     // exact tokens to avoid clearing a later owner's replacement obligation.
     return { state: { ...state, baseline: { ...state.baseline }, obligations: { ...state.obligations }, requested: { ...state.requested } },
-      readings: new Map(readings), revision, lastPublicationAt, compressorState, restoreRequired };
+      readings: new Map(readings), revision, lastPublicationAt, compressorState, restoreRequired, normalBoundary,
+      committedRevisions: new Map(committedRevisions) };
   }
   function restoreIngestionCheckpoint(checkpoint) {
-    ({ state, revision, lastPublicationAt, compressorState, restoreRequired } = checkpoint);
+    ({ state, revision, lastPublicationAt, compressorState, restoreRequired, normalBoundary } = checkpoint);
+    committedRevisions.clear(); for (const [index, value] of checkpoint.committedRevisions) committedRevisions.set(index, value);
     readings.clear(); for (const [index, reading] of checkpoint.readings) readings.set(index, reading);
   }
   function ingest(reading, { afterCommit = effect => effect() } = {}) {
     if (closed || !reading || reading.deviceId !== deviceId || !H66_REGISTERS[reading.register] || reading.duplicate) return;
+    const previous = readings.get(reading.register);
+    if (reading.usableForControl && previous?.usableForControl && previous.receivedAt <= clock() && reading.receivedAt < previous.receivedAt) return;
+    const beforeContext = state.tariffRoom;
+    observeTariff();
     if (reading.register === '1A01') trackCompressor(reading);
     reading = { ...reading, revision: ++revision, connectionGeneration };
     const prior = readings.get(reading.register);
     if (reading.usableForControl || !prior?.usableForControl) readings.set(reading.register, copy(reading));
     if (reading.usableForControl) lastPublicationAt = reading.receivedAt;
+    observeRoom(reading);
+    if (state.tariffRoom !== beforeContext) persist();
+    if (reading.usableForControl)
+      afterCommit(() => { committedRevisions.set(reading.register, Math.max(committedRevisions.get(reading.register) ?? -1, reading.revision)); });
+    afterCommit(() => wakePreparation?.());
     if (reading.usableForControl && state.lastManual?.status === 'unconfirmed'
-      && state.lastManual.register === reading.register && reading.receivedAt >= state.lastManual.at
+      && state.lastManual.sent !== false
+      && state.lastManual.register === reading.register
+      && reading.receivedAt >= (state.lastManual.dispatchedAt ?? state.lastManual.at)
       && equal(reading.value, state.lastManual.value)) {
-      state.lastManual = { ...state.lastManual, status: 'confirmed', confirmed: true,
-        readback: reading.value, confirmedAt: reading.receivedAt };
+      settleNative(state.lastManual, reading);
       persist();
     }
     const waiter = pending.get(reading.register);
@@ -564,7 +756,9 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     const next = Boolean(value);
     if (next && !connected) connectionGeneration++;
     connected = next;
+    wakePreparation?.();
     if (!connected) {
+      normalBoundary = null;
       lastPublicationAt = null;
       compressorState = null;
       if (state.manualMode === 'preheat') restoreRequired = true;
@@ -582,20 +776,21 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       sensorMeasurementTimeKnown: false, baseline: copy(state.baseline), requested: copy(state.requested),
       expiresAt: state.expiresAt, pauseId: state.pauseId ?? null, restorationPending: restoreRequired || state.phase === 'restoration-pending',
       obligations: copy(state.obligations), lastResult: copy(state.lastResult), lastTest: copy(state.lastTest ?? null), lastManual: copy(state.lastManual ?? null),
+      preheatPreparation: copy(preparation), normalRoomReady: normalRoomReady(),
       manualPreheat: copy(state.manualPreheat ?? null),
       compressorState: compressorState ? { value: compressorState.value, since: compressorState.since,
         transitionObserved: compressorState.transitionObserved } : null,
-      controlsReady: live && !closing && SETTINGS.every(index => current(index, now)) && !restoreRequired,
+      controlsReady: live && !closing && !preparation && SETTINGS.every(index => current(index, now)) && !restoreRequired,
       readings: Object.fromEntries([...readings].map(([index, reading]) => [index, { ...copy(reading),
         stale: !current(index, now), available: live && Boolean(current(index, now)),
         unavailableReasons: reading.connectionGeneration !== connectionGeneration ? ['awaiting-live-report'] : [],
         requested: state.requested[index] ?? null, baseline: state.baseline[index] ?? null }])),
       controls: Object.fromEntries(SETTINGS.map(index => [index, { register: index, signal: H66_REGISTERS[index].signal,
-        available: live && !closing && config.writeEnabled === true && Boolean(current(index, now)) && !manualConflict(state.pauseId, now) && !active,
+        available: live && !closing && !preparation && config.writeEnabled === true && Boolean(current(index, now)) && !manualConflict(state.pauseId, now) && !active,
         reason: closing ? 'H66 is closing.' : !live ? 'No recent live H66 publications.' : config.writeEnabled !== true ? 'Native setting writes are disabled.'
           : !current(index, now) ? 'A fresh setting baseline is not available.' : restoreRequired ? 'Restoration is pending.'
             : manualConflict(state.pauseId, now) ? 'A controller override is active.'
-            : active ? 'A setting transition is in progress.' : null,
+            : preparation ? preparation.reason : active ? 'A setting transition is in progress.' : null,
         unit: H66_REGISTERS[index].unit, min: LIMITS[index][0], max: LIMITS[index][1] }])),
       documentation: H66_DOCUMENTATION,
       limitation: 'Setting readback confirms a published register value, not compressor operation. Heat-pump parameter edits remain as native settings. Manual heating overrides restore their captured native settings when they end; restoration requires the application and MQTT connection.' };
@@ -625,5 +820,5 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     // connection requires no new save and must not wait for another writer.
   }
   armExpiry();
-  return { ingest, ingestionCheckpoint, restoreIngestionCheckpoint, setConnected, status, setPhase, updatePause, writeSettings, setSetting, restore, reconcile, test, beginShutdown, close };
+  return { ingest, ingestionCheckpoint, restoreIngestionCheckpoint, setConnected, status, setPhase, preparePreheat, captureTariffReduction, updatePause, writeSettings, setSetting, restore, reconcile, test, beginShutdown, close };
 }

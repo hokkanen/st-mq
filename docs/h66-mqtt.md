@@ -73,6 +73,20 @@ description beside each value. Select a value for freshness and receipt time. Ch
 
 Compare engineering units before sending commands. MQTT temperatures should
 match degrees Celsius displayed by the gateway; auxiliary output is a percentage.
+
+All four setting controls allow ten seconds to dispatch and thirty seconds after
+the actual write for matching committed readback. Temporary overrides retain
+their earlier expiry if it comes first. A timed-out ordinary native edit is never
+automatically repeated; a later matching report updates its original receipt to
+confirmed. Existing restoration duties continue independently.
+Readback confirms the register value, not who caused it or compressor operation.
+`GETALL` can republish gateway values and cannot prove a new native measurement.
+
+Preheat first confirms Normal tariff relay output and then waits for a new ROOM
+report. A lingering reduced ROOM value cannot replace a different preceding
+normal baseline. The wait is bounded by ninety seconds and the original Preheat
+deadline; floor overrides remain off during this preparation. See
+[normal ROOM verification](learning-and-control.md) for user edits and restart.
 Use `controller.h66_verification_file` only for an explicitly verified installed
 scaling difference. A retained broker value alone does not establish live data.
 H66 normally supplies no measurement timestamp, so ST-MQ labels freshness using

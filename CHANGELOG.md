@@ -6,6 +6,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Confirm Normal tariff control and a new normal ROOM report before Preheat,
+  preserving user changes and the correct restoration baseline through reduction
+  and restart. Keep floors off while preparing and cancel unresolved requests.
+- Give all four native heat-pump settings a separate dispatch and readback window.
+  Settle late confirmations consistently, clear obsolete timeout messages and
+  preserve original override deadlines without automatically repeating native edits.
+
 - Compare cheaper one-extra-day charging options after charging starts. Preserve
   the current period's minimum run while optimizing later delivery, and use the
   same commitment when an allowance is approved.

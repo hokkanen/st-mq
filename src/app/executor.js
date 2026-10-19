@@ -11,9 +11,10 @@ const failure = (code, message) => Object.assign(new Error(message), { code });
 // The tariff relay and H66 are separate transports. Broker acknowledgements
 // prove delivery to MQTT, not physical relay or compressor operation.
 export class Executor {
-  constructor({ input, store, plant, commandTransport = null, h66 = null, floorOverride = null, config = {}, clock = Date.now, monotonicClock = () => performance.now(), deliveryBoundMs = 10_000, closeWriteTimeoutMs = 5000 }) {
+  constructor({ input, store, plant, commandTransport = null, h66 = null, floorOverride = null, validateAutomaticPreheat = () => {}, config = {}, clock = Date.now, monotonicClock = () => performance.now(), deliveryBoundMs = 10_000, closeWriteTimeoutMs = 5000 }) {
     if (!Number.isFinite(deliveryBoundMs) || deliveryBoundMs <= 0) throw new Error('A positive command delivery bound is required');
     Object.assign(this, { input, store, plant, commandTransport, h66, floorOverride, clock, monotonicClock, deliveryBoundMs });
+    this.validateAutomaticPreheat = validateAutomaticPreheat;
     this.writes = createWriteScope({ runWrite: (operation, options) => store.runWrite(operation, options), closeTimeoutMs: closeWriteTimeoutMs });
     this.elapsedDeadlines = new Map();
     const minutes = config.dhwrPulseMinutes ?? 10;
@@ -258,8 +259,13 @@ export class Executor {
       if (heating.length) {
         const identity = this.target('tariff', { acquire: heating.includes('reduction') });
         if (this.clock() >= validUntil) throw failure('EXECUTOR_EXPIRED', 'Heating action expired before tariff dispatch.');
+        if (heating.includes('reduction')) {
+          this.requireActivation();
+          // The pending Reduction request invalidates older relay confirmation.
+          // Capture Normal while its existing feedback still has authority.
+          await this.h66?.captureTariffReduction({ identity });
+        }
         this.state.tariffRequested = { mode: heating.at(-1), at: this.clock() }; await this.persistAsync();
-        if (heating.includes('reduction')) this.requireActivation();
         result = await this.commandTransport.publish(heating, { validUntil, clock: this.clock, expectedTarget: identity });
         acknowledgedAt = this.clock();
         // Keep an outstanding episode bound through every durable transition.
@@ -388,8 +394,15 @@ export class Executor {
       native = await this.h66.restore({ now, reason: 'manual-preheat-baseline' });
       if (native.restorationPending) throw failure('H66_RESTORATION_PENDING', 'Restore native settings before preheating.');
       try {
-        if (this.floorOverride?.status(now).enabled) {
-          floor = await this.floorOverride.lease({ owner: choice.floorOwner, until: end, now, renew: false });
+        const validatePreheat = () => {
+          this.requireActivation(); this.target('tariff');
+          if (this.expired('manual-preheat', choice.expiresAt)) throw failure('EXECUTOR_EXPIRED', 'Preheat expired during preparation.');
+        };
+        const prepared = await this.h66.preparePreheat({ expiresAt: end,
+          releaseTariff: () => this.publish(['normal'], this.clock(), { validUntil: end }),
+          validate: validatePreheat });
+        if (this.floorOverride?.status(this.clock()).enabled) {
+          floor = await this.floorOverride.lease({ owner: choice.floorOwner, until: end, now: this.clock(), renew: false });
           if (Number.isFinite(floor?.leaseUntil)) {
             choice.expiresAt = floor.leaseUntil;
             nativeOptions.expiresAt = floor.leaseUntil;
@@ -398,12 +411,16 @@ export class Executor {
             await this.persistAsync();
           }
         }
-        await this.publish(['normal'], now);
-        native = await this.h66.setPhase({ phase, roomBoostC: choice.roomBoostC, ...nativeOptions });
+        native = await this.h66.setPhase({ phase, roomBoostC: choice.roomBoostC,
+          normalRoomC: prepared.roomSettingC, validateActivation: validatePreheat, ...nativeOptions, now: this.clock() });
         choice.roomBoostC = native.roomBoostC ?? choice.roomBoostC;
       } catch (error) {
-        await Promise.allSettled([this.floorOverride?.release({ scope: 'heating', reason: 'manual-preheat-failed', now: this.clock() }),
-          this.h66.restore({ now: this.clock(), reason: 'manual-preheat-failed' })]);
+        // Cancel the request before recovery; a later normal report must not
+        // cause maintainPause() to restart a failed Preheat selection.
+        this.state.manualRequested = { ...choice, phase: 'normal', roomBoostC: 0, floorOwner: null, confirmed: false };
+        await this.persistAsync();
+        try { await this.restoreManualInternal({ now: this.clock(), reason: 'manual-preheat-failed' }); }
+        catch { /* Durable obligations retain their existing restoration owner. */ }
         throw error;
       }
     } else if (phase === 'reduction') {
@@ -590,18 +607,30 @@ export class Executor {
       await this.persistAsync();
       let sent = false;
       try {
+        const alreadyActive = this.state.phase === 'preheat' && this.h66.status(this.clock()).phase === 'preheat';
+        const prepared = alreadyActive ? null : await this.h66.preparePreheat({ expiresAt,
+          releaseTariff: () => this.publish(['normal'], this.clock(), { validUntil: expiresAt }),
+          validate: () => { this.requireActivation(); this.target('tariff'); if (actionExpired()) throw failure('EXECUTOR_EXPIRED', 'Preheat expired during preparation.'); } });
+        sent = !alreadyActive;
+        const validatePreheat = () => {
+          this.requireActivation(); this.validateAutomaticPreheat(decision);
+          if (prepared && Number.isFinite(decision.roomSettingC)
+            && decision.roomSettingC !== Math.min(35, prepared.roomSettingC + (decision.roomBoostC ?? this.preheatRoomBoostC)))
+            throw failure('H66_PREHEAT_PLAN_CHANGED', 'The normal ROOM baseline changed; Preheat needs a new plan.');
+        };
+        validatePreheat();
         if (decision.floorOverride === true) {
-          if (!this.floorOverride?.status(now).enabled) throw failure('FLOOR_UNAVAILABLE', 'Floor preheat is unavailable.');
-          await this.floorOverride.lease({ owner: decision.owner ?? `automatic:${expiresAt}`, until: expiresAt, now });
+          if (!this.floorOverride?.status(this.clock()).enabled) throw failure('FLOOR_UNAVAILABLE', 'Floor preheat is unavailable.');
+          await this.floorOverride.lease({ owner: decision.owner ?? `automatic:${expiresAt}`, until: expiresAt, now: this.clock() });
         } else {
           const floor = await this.floorOverride?.release({ scope: 'heating', reason: 'room-only-preheat', now });
           if (floor?.restorationPending) throw failure('FLOOR_PENDING', 'Floor restoration must finish before ROOM-only preheat.');
         }
         if (actionExpired()) return this.restoreInternal({ now: this.clock(), reason: 'expired-during-preheat' });
         const refresh = needsPulse || this.state.phase !== phase || this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS;
-        if (refresh) { await this.publish(needsPulse ? ['circulation', 'normal'] : ['normal'], now, { validUntil: expiresAt }); sent = true; }
+        if (refresh && (alreadyActive || needsPulse)) { await this.publish(needsPulse ? ['circulation', 'normal'] : ['normal'], this.clock(), { validUntil: expiresAt }); sent = true; }
         const native = await this.h66.setPhase({ phase, roomBoostC: decision.roomBoostC ?? this.preheatRoomBoostC,
-          now: this.clock(), expiresAt });
+          normalRoomC: prepared?.roomSettingC, validateActivation: validatePreheat, now: this.clock(), expiresAt });
         this.state.phase = phase; this.restartRestore = false;
         return this.result(phase, sent || native.changed?.length > 0, { native, roomBoostC: native.roomBoostC ?? decision.roomBoostC ?? this.preheatRoomBoostC,
           floor: this.floorOverride?.status(this.clock()),

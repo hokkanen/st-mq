@@ -5,6 +5,15 @@ validate those contracts; existing assertions do not authorize conflicting chang
 Follow the [conflict procedure](../AGENTS.md#conflicting-requests) before changing
 a foundation, even when the requested implementation would require it.
 
+`test/h66-normal-room.test.js` exercises committed post-Normal ROOM evidence,
+tariff-period references, user changes, restart, cancellation and final dispatch
+fencing. `test/h66-write-confirmation.test.js` checks all four native settings,
+late confirmation without resending and temporary-setting restoration. Executor,
+floor integration, MQTT rollback and contention tests cover preparation ordering,
+unchanged lease deadlines and durable feedback. Equipment browser checks cover
+the preparation message and late native receipt. These synthetic checks establish
+application behavior, not a new native pump measurement or physical heat delivery.
+
 `test/recorder-metadata-batching.test.js` verifies unchanged-stream transaction
 coalescing, exact coverage endpoints/counts, immediate value/quality/gap boundaries,
 rollback, failed worker COMMIT, exact retry and restart. Recording status remains

@@ -446,11 +446,13 @@ function renderHeatingTests(s) {
   $('heating-test-help').textContent = isReadOnlyReplica(s) ? 'Device commands are disabled. Recorded history cannot confirm the current heating state.'
     : `${paused ? s.override?.expiresAt > s.now ? `Normal and Reduced stay until ${time(s.override.expiresAt)} or Automatic.` : 'Normal and Reduced stay until you select another mode or Automatic.'
       : 'Normal and Reduced are reassessed on the next controller update, normally within 1 minute.'} Preheat always ends at its lease deadline. These controls use the same equipment actions as automatic heating.`;
-  $('heating-preheat-help').hidden = true;
+  $('heating-preheat-help').hidden = !s.h66?.preheatPreparation;
   $('heating-preheat-help').textContent = capability?.preheatAvailable === true ? ''
     : capability?.preheatReason || 'Preheating needs a connected heat pump, a fresh writable ROOM setting and qualified floor-valve control when configured.';
   $('test-preheat').title = capability?.preheatAvailable === true
-    ? `Request ROOM ${decimal(capability.preheatTargetC)} °C, ${decimal(capability.preheatRoomBoostC)} °C above the saved normal setting${s.preheatValves?.enabled ? ', with the pooled floor override' : ''}. Native limits bound the increase; repeated commands do not stack it. Normal recirculation keeps its own schedule.`
+    ? Number.isFinite(capability.preheatTargetC)
+      ? `Request ROOM ${decimal(capability.preheatTargetC)} °C, ${decimal(capability.preheatRoomBoostC)} °C above the saved normal setting${s.preheatValves?.enabled ? ', with the pooled floor override' : ''}. Native limits bound the increase; repeated commands do not stack it. Normal recirculation keeps its own schedule.`
+      : 'Return tariff control to Normal, confirm the normal ROOM setting, then apply the requested Preheat increase within native limits.'
     : $('heating-preheat-help').textContent;
   const warning = homeHeatingWarning(s, time);
   $('home-hold-warning').hidden = !warning;
@@ -491,6 +493,11 @@ function renderHeatingTests(s) {
         $('dhwr-message').textContent = circulationStopConfirmed ? 'Circulation stopped · device confirmed.' : 'Circulation stop requested. The manual run has ended.';
       } else circulationStopAt = undefined;
     }
+  }
+  if (s.h66?.preheatPreparation && !isReadOnlyReplica(s)) {
+    $('heating-test-message').classList.remove('form-error');
+    $('heating-test-message').textContent = 'Waiting for normal ROOM setting before Preheat.';
+    $('heating-preheat-help').textContent = 'Tariff reduction must be off and the normal ROOM setting confirmed before Preheat starts.';
   }
 }
 function renderProviderSeries(root, rows, { datasets = false } = {}) {

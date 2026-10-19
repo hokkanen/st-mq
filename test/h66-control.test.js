@@ -58,7 +58,7 @@ function memoryStore(seed = {}) {
     event(type, detail, now) { this.events.push({ type, detail, now }); } };
 }
 function rig({ store = memoryStore(), values = baselines, settings = {}, behavior = null, startAt = initialTime, closeWriteTimeoutMs = 5000, beforePublication = null,
-  canAttributeStorageBlock } = {}) {
+  canAttributeStorageBlock, tariffFeedback = () => ({ mode: 'normal', verified: true, identity: 'a'.repeat(64) }), snapshot } = {}) {
   let now = startAt, elapsed = 0;
   const decoder = createH66Decoder({ deviceId, mqttScaleByRegister: settings.mqttScaleByRegister, verifiedRegisters: settings.verification });
   const sent = [], native = { ...values };
@@ -67,11 +67,12 @@ function rig({ store = memoryStore(), values = baselines, settings = {}, behavio
     topic: `${deviceId}/HP/${index}`, payload: String(value), receivedAt: now, ...extra,
   }));
   controller = createH66Controller({ deviceId, store, clock: () => now, monotonicClock: () => elapsed, closeWriteTimeoutMs,
-    canAttributeStorageBlock,
-    config: { writeEnabled: true, readbackTimeoutMs: 30, ...settings },
+    canAttributeStorageBlock, tariffFeedback,
+    requestSnapshot: async () => { if (snapshot) await snapshot({ feed, native }); else if (controller.status().preheatPreparation) for (const index of Object.keys(native)) feed(index); },
+    config: { writeEnabled: true, preheatPreparationMs: 150, readbackTimeoutMs: 30, confirmationTimeoutMs: settings.readbackTimeoutMs ?? 30, ...settings },
     publish: async (topic, payload, options) => {
       await beforePublication?.({ options, feed });
-      options.beforePublish();
+      options.beforePublish(); options.onFirstWrite?.();
       options.recordingAttempt?.dispatched();
       const index = topic.split('/').at(-1);
       sent.push({ index, payload, options });
@@ -97,7 +98,7 @@ for (const action of ['temporary', 'native']) {
       const store = new Store(':memory:');
       const error = Object.assign(new Error('Synthetic private preparation failure'),
         scenario === 'non-storage' ? {} : { errcode: 10 });
-      let armed = scenario !== 'after-dispatch', failed = false;
+      let armed = false, failed = false;
       const execute = store.db.exec.bind(store.db), save = store.setState.bind(store), run = store.runWrite.bind(store);
       store.db.exec = sql => {
         if (sql === 'COMMIT' && armed && !['non-storage', 'pre-admission'].includes(scenario)) {
@@ -115,6 +116,7 @@ for (const action of ['temporary', 'native']) {
       };
       const r = rig({ store, behavior: () => { if (scenario === 'after-dispatch') armed = true; } });
       t.after(async () => { await r.controller.close(); await store.close(); });
+      armed = scenario !== 'after-dispatch';
       const value = scenario === 'unchanged' ? 20 : 21;
       const operation = action === 'temporary'
         ? r.controller.writeSettings({ '0203': value }, { expiresAt: r.now + 60_000 })
@@ -186,7 +188,7 @@ test('H66 queues intent and restoration behind a real SQLite writer without bloc
     await new Promise(resolve => setTimeout(resolve, 220));
     assert.equal(r.sent.length, before, 'No MQTT command precedes the durable admitted intent.');
     assert.ok(beats >= 5, 'Timers continue during a lock longer than the removed 100 ms timeout.');
-    if (!restoring) assert.equal(store.getState(`h66:control:${deviceId}`), null);
+    if (!restoring) assert.deepEqual(store.getState(`h66:control:${deviceId}`).obligations, {});
     else assert.equal(store.getState(`h66:control:${deviceId}`).obligations['0212'].baseline, 44);
     competitor.exec('ROLLBACK'); clearInterval(heartbeat);
     assert.equal((await operation).status, 'confirmed');
@@ -209,7 +211,7 @@ test('H66 rechecks expiry, connection and native evidence after asynchronous wri
     }[scenario] });
     await nextTurn();
     assert.deepEqual(r.sent, []);
-    assert.equal(store.getState(`h66:control:${deviceId}`), null);
+    assert.deepEqual(store.getState(`h66:control:${deviceId}`).obligations, {});
     if (scenario === 'expiry') r.setNow(r.now + 1000);
     if (scenario === 'clock-rollback') { r.setNow(r.now - 60_000); r.elapse(1000); }
     if (scenario === 'reconnect') { r.controller.setConnected(false); r.controller.setConnected(true); r.feed('0212', 44); }
@@ -480,7 +482,7 @@ test('cached, missing or disconnected readings cannot authorize native writes', 
   r.feed('0007', 5);
   assert.equal(r.controller.status().brokerConnected, true);
   assert.deepEqual(r.controller.status().readings['0007'].unavailableReasons, []);
-  await assert.rejects(r.controller.setPhase({ phase: 'preheat' }), { code: 'H66_BASELINE_UNAVAILABLE' });
+  await assert.rejects(r.controller.setPhase({ phase: 'preheat' }), { code: 'H66_NORMAL_ROOM_UNCONFIRMED' });
   assert.equal(r.sent.length, 0);
 });
 
@@ -604,13 +606,14 @@ test('expiry during a pending native write restores after that operation finishe
     behavior: ({ sent }) => sent.length === 1 ? 'silent' : undefined });
   t.after(() => r.controller.close());
   const transition = r.controller.writeSettings({ '0212': 40 }, { expiresAt: r.now + 1000 });
+  const rejected = assert.rejects(transition, { code: 'H66_EXPIRED' });
   await nextTurn();
   r.setNow(initialTime + 1000); r.elapse(1000);
   t.mock.timers.tick(1000); await nextTurn();
   assert.equal(r.controller.status().restorationPending, true);
   assert.equal(r.sent.length, 1);
   r.feed('0212', 40);
-  await assert.rejects(transition, { code: 'H66_EXPIRED' });
+  await rejected;
   await nextTurn();
   assert.deepEqual(r.sent.map(row => row.payload), ['40', '44']);
   assert.deepEqual(r.controller.status().obligations, {});
@@ -706,17 +709,23 @@ test('plain MQTT acquisition publishes GETALL, exposes receipt-time evidence, an
   const native = { ...baselines };
   let now = initialTime, connectionCount = 0;
   fake.subscribe = (topic, options, done) => { assert.equal(topic, `${deviceId}/HP/#`); done(); };
-  fake.publish = (topic, payload, options, done) => {
-    publications.push({ topic, payload, options });
-    if (topic.includes('/SET/')) native[topic.split('/').at(-1)] = Number(payload);
+  fake.stream = { write() { return true; } };
+  fake._writePacket = (packet, done) => {
+    fake.stream.write(Buffer.from(String(packet.payload)));
+    if (packet.topic.includes('/SET/')) native[packet.topic.split('/').at(-1)] = Number(packet.payload);
     done();
-    if (payload === 'GETALL') queueMicrotask(() => {
+    if (packet.payload === 'GETALL') queueMicrotask(() => {
       for (const [index, value] of Object.entries(native)) fake.emit('message', `${deviceId}/HP/${index}`, Buffer.from(String(value)), { retain: false });
     });
   };
+  fake._sendPacket = (packet, done) => fake._writePacket(packet, done);
+  fake.publish = (topic, payload, options, done) => {
+    publications.push({ topic, payload, options });
+    fake._sendPacket({ cmd: 'publish', topic, payload, qos: 0 }, done);
+  };
   fake.end = (force, options, done) => done();
-  const acquisition = await startMqtt({ store, engine: { clock: () => now, ingest: value => observations.push(value) },
-    config: { deviceId, connections: { mqtt: { address: 'mqtt://fixture.invalid' } }, h66: { enabled: true, writeEnabled: true, readbackTimeoutMs: 50 } },
+  const acquisition = await startMqtt({ store, engine: { clock: () => now, ingest: value => observations.push(value), heatingActual: () => ({ mode: 'normal', verified: true }), executor: { commandTransport: { targetIdentity: { tariff: 'a'.repeat(64) } } } },
+    config: { deviceId, connections: { mqtt: { address: 'mqtt://fixture.invalid' } }, h66: { enabled: true, writeEnabled: true, readbackTimeoutMs: 50, confirmationTimeoutMs: 50 } },
     connect: () => { connectionCount++; return fake; } });
   t.after(() => acquisition.close());
   fake.emit('connect'); await nextTurn();
@@ -750,7 +759,7 @@ for (const authority of ['current', 'owner-revoked', 'gate-revoked'])
     fake.end = (_force, _options, done) => done();
     const acquisition = await startMqtt({ store, engine: { clock: () => now, ingest() {} },
       config: { deviceId, connections: { mqtt: { address: 'mqtt://fixture.invalid' } },
-        h66: { enabled: true, writeEnabled: true, readbackTimeoutMs: 50 } },
+        h66: { enabled: true, writeEnabled: true, readbackTimeoutMs: 50, confirmationTimeoutMs: 50 } },
       canControl: () => ownsControl, connect: () => fake });
     t.after(async () => { await acquisition.close({ restore: false }); await store.close(); });
     fake.emit('connect'); await nextTurn(); await store.runWrite(() => {});

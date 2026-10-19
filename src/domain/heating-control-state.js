@@ -85,7 +85,13 @@ export function validateExecutorState(saved) {
 }
 
 const h66Keys = ['version', 'phase', 'baseline', 'obligations', 'requested', 'expiresAt', 'lastResult',
-  'lastManual', 'lastTest', 'manualMode', 'pauseId', 'manualPreheat', 'externalChangeRevision', 'externalChangeAt'];
+  'lastManual', 'lastTest', 'manualMode', 'pauseId', 'manualPreheat', 'externalChangeRevision', 'externalChangeAt', 'tariffRoom'];
+const tariffRoom = value => executorFields(value, ['identity', 'mode', 'normalC', 'reducedC', 'normalAfter', 'awaitingNormal'])
+  && typeof value.identity === 'string' && /^[a-f0-9]{64}$/.test(value.identity)
+  && ['normal', 'reduction', 'unknown'].includes(value.mode)
+  && nullable(value => h66Value('0203', value))(value.normalC)
+  && nullable(value => h66Value('0203', value))(value.reducedC)
+  && executorDeadline(value.normalAfter) && typeof value.awaitingNormal === 'boolean';
 const h66Preheat = value => executorFields(value, ['enabled', 'confirmed', 'baseValue', 'roomSettingC', 'roomBoostC', 'expiresAt', 'pauseId', 'at'])
   && value.enabled === true && value.confirmed === true && h66Value('0203', value.baseValue)
   && h66Value('0203', value.roomSettingC) && Number.isFinite(value.roomBoostC) && value.roomBoostC >= 0 && value.roomBoostC <= 5
@@ -100,6 +106,7 @@ export function validateH66ControlState(saved) {
     || !optional(saved, 'manualMode', value => value === null || ['recovery', 'preheat', 'reduction'].includes(value))
     || !optional(saved, 'pauseId', nullable(nonempty))
     || !optional(saved, 'manualPreheat', nullable(h66Preheat))
+    || !optional(saved, 'tariffRoom', nullable(tariffRoom))
     || !optional(saved, 'externalChangeRevision', revision)
     || !optional(saved, 'externalChangeAt', executorDeadline)))
     throw failure('H66_STATE_UNSUPPORTED', 'Unsupported native-setting state. Start with a fresh development database after safely restoring equipment.');

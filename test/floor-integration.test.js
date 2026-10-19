@@ -17,13 +17,15 @@ function memoryStore() {
 }
 function executorFixture(t) {
   const store = memoryStore(), calls = [];
-  let releasePending = false, manualPreheat = false;
+  let releasePending = false, manualPreheat = false, nativePhase = 'normal';
   const floor = { status: () => ({ enabled: true }),
     lease: async options => { calls.push({ kind: 'lease', ...options }); return { confirmed: true }; },
     release: async options => { calls.push({ kind: 'release', ...options }); return { restorationPending: releasePending, released: !releasePending }; } };
-  const h66 = { status: () => ({ controlsReady: true, writesEnabled: true, obligations: {}, manualPreheat }),
-    setPhase: async options => { manualPreheat = options.manual === true && options.phase === 'preheat'; calls.push({ kind: 'native', ...options }); return { changed: ['0203'] }; },
-    restore: async options => { manualPreheat = false; calls.push({ kind: 'restore-native', ...options }); return { restorationPending: false }; } };
+  const h66 = { status: () => ({ phase: nativePhase, controlsReady: true, writesEnabled: true, obligations: {}, manualPreheat }),
+    preparePreheat: async ({ releaseTariff, validate }) => { validate(); await releaseTariff(); return { roomSettingC: 20 }; },
+    captureTariffReduction: async () => {},
+    setPhase: async options => { nativePhase = options.phase; manualPreheat = options.manual === true && options.phase === 'preheat'; calls.push({ kind: 'native', ...options }); return { changed: ['0203'] }; },
+    restore: async options => { nativePhase = 'normal'; manualPreheat = false; calls.push({ kind: 'restore-native', ...options }); return { restorationPending: false }; } };
   const commandTransport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, close: async () => {}, publish: async commands => { calls.push({ kind: 'tariff', commands }); return { sent: true }; },
     publishDhwr: async on => { calls.push({ kind: 'dhwr', on }); return { sent: true }; } };
   const executor = new Executor({ input: 'mqtt', store, commandTransport, h66, floorOverride: floor, clock: () => NOW });
@@ -44,7 +46,8 @@ test('Paused decisions never invoke floor leases or device transports', async t 
 test('executor forwards pooled preheat before ROOM and retains its owner', async t => {
   const f = executorFixture(t);
   await f.executor.execute(f.decision, { automationEnabled: true, now: NOW });
-  assert.equal(f.calls[0].kind, 'lease');
+  assert.deepEqual(f.calls.slice(0, 2).map(row => row.kind), ['tariff', 'lease']);
+  assert(f.calls.findIndex(row => row.kind === 'lease') < f.calls.findIndex(row => row.kind === 'native'));
   assert.equal(f.calls.find(row => row.kind === 'native').roomBoostC, 5);
   assert.equal(f.calls.some(row => row.kind === 'dhwr'), false);
   await f.executor.execute({ ...f.decision, expiresAt: NOW + 1_800_000 }, { automationEnabled: true, now: NOW });
