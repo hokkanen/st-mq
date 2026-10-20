@@ -3,6 +3,7 @@ import { garageSettings } from './settings.js';
 import { validateGarageNativeSetting } from './native-settings.js';
 import { validateGarageModeState, validGarageTarget, GARAGE_WARMING_WARNING } from './room-temperature.js';
 import { confirmedGarageDoor, GARAGE_DOOR_SIGNALS } from './door-state.js';
+import { garageSelectionReceipt } from './selection-receipt.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { mqttSourceIdentity } from '../pairing/mqtt-source-context.js';
 import { observationTimeAdmitted } from '../domain/time-evidence.js';
@@ -182,6 +183,7 @@ export class GarageRuntime {
       requestedTargetC, effectiveTargetC: control?.effectiveTargetC ?? null,
       targetConfirmed: Boolean(control && control.externalEnabled && control.targetC === requestedTargetC),
       changedAt: selection?.changedAt ?? null,
+      selectionReceipt: garageSelectionReceipt(this.store, selection),
       warmingWarning: selection?.warmingWarning?.until > now ? copy(selection.warmingWarning) : null,
       controlAvailable: !reason, controlReason: reason, regulationReason,
       nativeControls: this.nativeControls(now), protection,

@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Restore recent Garage Normal/Away action reports after reload or restart.
+  Keep rejected selections visibly rejected when the pump already has that target.
+
 - Restore the latest circulation Stop report after reload, let a newer Start
   replace it, and keep a completed run's confirmed report through OFF feedback.
 

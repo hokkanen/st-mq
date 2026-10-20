@@ -109,6 +109,23 @@ test('selection feedback follows polled confirmation and marks recorded confirma
   assert.equal(f.requests.length, 1, 'Status updates must not resend the selection');
 });
 
+test('a new page restores the committed selection receipt without resending or inventing live confirmation', () => {
+  const f = fixture(), message = f.nodes.get('garage-heating-message');
+  const saved = { ...f.initial, garage: { ...f.initial.garage, targetConfirmed: false,
+    selectionReceipt: { at: now - 1000, mode: 'normal', targetC: 10, commandId: 'saved-action' } } };
+  f.panel.update(saved);
+  assert.match(message.textContent, /Normal selected · 10 °C. Waiting for heat-pump controller confirmation/);
+  f.panel.update({ ...saved, garage: { ...saved.garage, targetConfirmed: true } });
+  assert.match(message.textContent, /Confirmed by the heat-pump controller/);
+  f.panel.update(saved);
+  assert.match(message.textContent, /Confirmed by the heat-pump controller/, 'Later unavailable evidence cannot erase confirmation');
+  f.panel.update({ ...saved, readOnly: true });
+  assert.match(message.textContent, /Recorded selection · live confirmation unavailable/);
+  f.panel.update({ ...saved, now: now + day });
+  assert.equal(message.textContent, '');
+  assert.deepEqual(f.requests, []);
+});
+
 test('polling preserves target validation and request errors after a successful selection', async () => {
   const f = fixture(), message = f.nodes.get('garage-heating-message');
   await f.trigger('garage-mode-normal');
@@ -121,6 +138,16 @@ test('polling preserves target validation and request errors after a successful 
   await f.trigger('garage-mode-away');
   f.panel.update(f.initial);
   assert.equal(message.textContent, 'The heat-pump controller is unavailable.');
+});
+
+test('a rejected repeated selection cannot become confirmed from the pre-existing target', async () => {
+  const f = fixture(), message = f.nodes.get('garage-heating-message');
+  f.reply(Object.assign(new Error('Waiting for a fresh command challenge.'), { status: 409 }));
+  await f.trigger('garage-mode-normal');
+  f.panel.update({ ...f.initial, now: now + 1000, garage: { ...f.initial.garage,
+    adapter: { observedAt: now + 1000 } } });
+  assert.equal(message.textContent, 'Waiting for a fresh command challenge.');
+  assert.equal(message.classes.has('form-error'), true);
 });
 
 test('target edits preserve drafts during polling, select Normal explicitly, and validate half-degree bounds', async () => {

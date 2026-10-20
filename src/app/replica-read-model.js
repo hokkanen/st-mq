@@ -8,6 +8,7 @@ import { GARAGE_FIELDS } from '../garage/contract.js';
 import { GARAGE_NATIVE_SETTINGS } from '../garage/native-settings.js';
 import { validateGarageModeState } from '../garage/room-temperature.js';
 import { garageSettings } from '../garage/settings.js';
+import { garageSelectionReceipt } from '../garage/selection-receipt.js';
 import { validateGarageSenderSnapshot } from '../garage/sender.js';
 import { validateGarageAdapterSnapshot } from '../garage/contract.js';
 import { TEMPERATURE_SENSORS } from '../domain/indoor-sensors.js';
@@ -131,6 +132,7 @@ function garageSnapshot(snapshot, read) {
     mode: mode?.mode ?? null, normalTargetC: mode?.normalTargetC ?? null, awayTargetC: mode?.awayTargetC ?? null,
     doorTravelSeconds: settings?.door_travel_seconds ?? null,
     requestedTargetC, effectiveTargetC: saved?.control?.effectiveTargetC ?? null, targetConfirmed: false,
+    selectionReceipt: garageSelectionReceipt(snapshot?.store, mode),
     warmingWarning: copy(mode?.warmingWarning ?? null),
     protection: { status: 'unavailable', available: false, active: null, reason,
       observedAt: sender?.state?.observedAt ?? null, receivedAt: sender?.state?.receivedAt ?? null,

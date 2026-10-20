@@ -167,6 +167,7 @@ test('read projection exposes saved settings and equipment evidence without live
     store.setState('providers:health', { market: { status: 'ok', lastSuccessAt: at - 60_000,
       connected: true, healthy: true, recording: true }, temperatures: { status: 'ok' } });
     store.setState('garage:mode:mqtt', mode);
+    store.event('garage-mode-changed', { mode: 'normal', targetC: 10, commandId: 'fixture-selection' }, mode.changedAt);
     store.setState('garage:adapter:mqtt', adapter({ power: { value: 'off', measuredAt: at - 5000 } }));
     store.observation(observation('husdata-h66', 'fixture-pump', 'room_setting', 20, { unit: '°C' }));
     store.observation(observation('garage-adapter', 'garage-heat-pump', 'garage_compressor_active', 0));
@@ -191,6 +192,9 @@ test('read projection exposes saved settings and equipment evidence without live
   assert.equal(result.garage.requestedTargetC, 10);
   assert.equal(result.garage.targetConfirmed, false);
   assert.equal(result.garage.mode, 'normal');
+  assert.deepEqual(result.garage.selectionReceipt, {
+    at: mode.changedAt, mode: 'normal', targetC: 10, commandId: 'fixture-selection',
+  });
   assert.equal(result.garage.adapter.native.power, 'off');
   assert.equal(result.garage.adapter.native.readbacks.power.available, false);
   assert.equal(result.garage.adapter.telemetry.compressorActive.value, false, 'Recorded false does not disappear');

@@ -10,6 +10,10 @@ Normal uses the saved normal target; Away uses the configured preset (5°C by
 default). Selecting Normal again restores the normal target. The selection is
 bound to the configured pump and persists across application restart. Pump
 readback and command confirmation remain separate from requested settings.
+Recent Normal/Away action receipts remain visible for 24 hours, including after
+reload or restart, using the committed selection event. Adopting a reported pump
+baseline does not invent an action receipt. A rejected request stays rejected
+when a later pump report happens to match the pre-existing target.
 Changing a mode sends the real target to the heat-pump controller. It does not
 replay unrelated power, mode, fan or vane commands. Native power OFF remains an
 explicit device choice; frost rescue is a separate higher-priority operation.

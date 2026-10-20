@@ -24,6 +24,25 @@ function fixture(t, options = {}) {
   return { ...f, engine, store, config, runtime, recreate };
 }
 
+test('selection receipts require a committed action and survive restart and later native settings', async t => {
+  const f = fixture(t);
+  assert.equal(f.runtime.status().selectionReceipt, null, 'Adopting a reported baseline is not a dashboard action');
+  await f.runtime.setHeating({ mode: 'away' });
+  const receipt = f.runtime.status().selectionReceipt;
+  assert.deepEqual({ ...receipt, commandId: undefined }, {
+    at: GARAGE_TEST_AT, mode: 'away', targetC: 5, commandId: undefined,
+  });
+  assert.equal(typeof receipt.commandId, 'string');
+  f.update({ control: { targetC: 5, effectiveTargetC: 5 } });
+  f.at(GARAGE_TEST_AT + 1000);
+  const restarted = f.recreate();
+  assert.deepEqual(restarted.status().selectionReceipt, receipt);
+  f.store.event('garage-native-setting-requested', { setting: 'fan', value: 1 }, f.now());
+  assert.deepEqual(restarted.status().selectionReceipt, receipt);
+  f.store.event('garage-mode-changed', { mode: 'normal', targetC: 10, commandId: 'different-action' }, receipt.at);
+  assert.equal(restarted.status().selectionReceipt, null, 'A different action cannot confirm this saved selection');
+});
+
 test('Away is explicit and indefinite, Normal target survives reboot, and neither selection forces power on', async t => {
   const f = fixture(t);
   assert.equal(f.runtime.status().normalTargetC, 10);

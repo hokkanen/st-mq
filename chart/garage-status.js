@@ -233,6 +233,10 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
   };
   const render = () => {
     const garage = status?.garage ?? {};
+    const savedReceipt = garage.selectionReceipt;
+    if (savedReceipt && actionReceiptRecent(savedReceipt.at, status?.now ?? Date.now())
+      && (!selectionFeedback || !selectionFeedback.error && savedReceipt.at > selectionFeedback.at))
+      selectionFeedback = { ...savedReceipt };
     if (input && !dirty) input.value = finite(garage.normalTargetC) ? String(garage.normalTargetC) : '';
     const help = $('garage-heating-status');
     if (help) help.textContent = available() ? 'Control available' : 'Control unavailable';
@@ -245,7 +249,7 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
       else {
         const matches = garage.mode === receipt.mode && garage.requestedTargetC === receipt.targetC;
         if (!matches && !receipt.error) receipt.superseded = true;
-        if (matches && garage.targetConfirmed === true && !receipt.superseded) {
+        if (matches && garage.targetConfirmed === true && !receipt.superseded && !receipt.rejected) {
           receipt.confirmed = true;
           if (garage.adapter?.observedAt >= receipt.at) receipt.error = null;
         }
@@ -269,6 +273,7 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
       status = await request('/api/garage/heating', payload); dirty = false; onStatus(status);
     } catch (error) {
       selectionFeedback.error = error.message;
+      selectionFeedback.rejected = error.status >= 400 && error.status < 500;
       if (message) { message.classList.add('form-error'); message.textContent = error.message; }
     } finally { busy = false; onBusy(false); render(); }
     await afterRequest();
