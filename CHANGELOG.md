@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Recover a Caravan power check interrupted by controller shutdown after native
+  power restoration and fresh stable reports. Preserve five-minute restart waits
+  and latched failures when the meter does not confirm the physical switches.
+
 - Restore recent Garage Normal/Away action reports after reload or restart.
   Keep rejected selections visibly rejected when the pump already has that target.
 

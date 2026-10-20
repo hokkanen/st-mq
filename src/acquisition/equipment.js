@@ -438,9 +438,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const meter = caravanPower(device, now), ready = healthy(device, now);
     const qualified = Boolean(ready && meter && state.qualified && state.meterSignature === meter.signature && !state.restoration);
     const probe = state.probe, association = state.qualification.record;
+    const interrupted = (probe?.reason ?? association?.failed?.reason) === 'controller-stopping';
     const evidence = probe?.status === 'testing' ? probe.evidence : passedLocationEvidence(state);
     const testStatus = state.restoration && probe?.status !== 'testing' ? 'restoring'
-      : probe?.status ?? (association?.failed ? 'failed' : evidence ? 'passed' : 'waiting');
+      : interrupted ? 'waiting' : probe?.status ?? (association?.failed ? 'failed' : evidence ? 'passed' : 'waiting');
     const restartAt = ready ? restartNotBefore(device, now) : null;
     return { configured: true, ...policy, canEdit: !closed && canControl() && !probeBusy(device) && validDehumidifierIdentity(state.boundIdentity),
       sensorDeviceId: device.temperatureControl.sensorDeviceId,
@@ -470,7 +471,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       reason: !ready ? 'appliance-unavailable' : testStatus === 'restoring' ? 'restoring-power'
         : !meter ? 'power-unavailable' : !canControl() && !qualified ? 'control-unavailable'
           : !qualified && caravanCold(device, now) ? 'cold'
-          : testStatus === 'failed' ? 'power-test-failed'
+          : interrupted ? 'power-check-interrupted' : testStatus === 'failed' ? 'power-test-failed'
             : !qualified && probe?.status !== 'testing' ? association?.proof && association.invalidatedAt === null
               ? 'recovering-feedback' : 'waiting-stable-feedback' : !qualified ? 'checking-power'
             : !policy.enabled ? 'disabled' : !airFresh ? 'air-unavailable'
@@ -570,6 +571,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (recovery.ready) { state.qualified = true; state.sessionActive = true; return; }
     state.qualified = false;
     if (!canControl() || closed || caravanStopping) return;
+    if (watch.record?.failed?.reason === 'controller-stopping' && recovery.testReady) {
+      // One new bounded check for this controller interruption, after restoration
+      // and independently advancing recovery. A measured retry failure still latches.
+      watch.record.failed = null; watch.record.revision++;
+      state.probe = null; state.sessionActive = false; persistQualification(device);
+    }
     if (watch.record?.failed?.reason === 'cold' && !caravanCold(device, now)) {
       watch.record.failed = null; state.probe = null; state.sessionActive = false; persistQualification(device);
     }
@@ -1614,8 +1621,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       try {
         await admitted(() => reception.run(() => {
           for (const device of appliances) {
-            if (device.temperatureGuard.probe?.status === 'testing')
+            if (device.temperatureGuard.probe?.status === 'testing') {
               abortCaravanProbe(device.temperatureGuard.probe, 'controller-stopping', engine.clock());
+              device.temperatureGuard.qualification.stable = null;
+            }
             confirmDehumidifier(device, engine.clock());
           }
         }));

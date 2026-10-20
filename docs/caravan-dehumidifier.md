@@ -285,14 +285,22 @@ in control of its physical operation.
 The UI shows **Recording active/paused**, waiting for fresh reports, checking
 power, restoring power, or a failed check. A pass is evidence that the Caravan
 meter followed both switches; unrelated load changes can still confound that
-inference. A failed or inconclusive check stays latched across restart and brief
-flaps. Restore the previous native power first; a new physical check requires
+inference. A measured failed or inconclusive check stays latched across restart
+and brief flaps. Restore the previous native power first; a new physical check requires
 an explicit **Recheck appliance location**, changed equipment/wiring, or a
 sustained new outage followed by stable feeds. The configured, enabled `caravan`
 meter in the same area supplies `caravan_power` in W or kW; no replacement-meter
 preference is stored. Historical association does not establish current readings,
-recordability, native power, command permission or completed restoration. While
-warm fresh evidence is present but recovery/retesting is pending or a check has
+recordability, native power, command permission or completed restoration.
+
+A controller shutdown during an unfinished check is an interruption rather than
+a measured power-test failure. Restore its captured native power first, then
+require 30 seconds of independently advancing fresh appliance and meter reports
+before one new bounded check. Restart timing, cold protection, identity and
+authority checks remain binding. A measured failure of that replacement check
+stays latched; it cannot start another automatic retry.
+
+While warm fresh evidence is present but recovery/retesting is pending or a check has
 failed, keep the current native baseline; this sends no On command. Cold or
 missing-air protection still uses current native evidence to request Off.
 That same rule is checked after observation commit and immediately before

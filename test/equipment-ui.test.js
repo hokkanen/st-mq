@@ -757,7 +757,8 @@ test('recording explains the power check, modest loads and missing evidence inde
     ['air-unavailable', /fresh caravan air temperature for automatic power/], ['power-unavailable', /fresh Caravan power/],
     ['restoring-power', /Restoring.*previous power setting/], ['control-unavailable', /control authority/],
     ['cold', /temperature above the automatic Off threshold before checking power/],
-    ['power-test-failed', /power did not confirm both switches/]]) {
+    ['power-test-failed', /power did not confirm both switches/],
+    ['power-check-interrupted', /controller stopped.*restoring power.*30 seconds.*five-minute restart wait/]]) {
     Object.assign(device.dehumidifier.temperatureControl, { reason }); panel.update(current);
     assert.match(appliance.querySelector('.caravan-recording').textContent, expected);
     assert.doesNotMatch(appliance.querySelector('.caravan-recording').textContent, /inside|outside|located|in caravan/i);

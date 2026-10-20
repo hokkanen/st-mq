@@ -147,5 +147,6 @@ export function advanceCaravanQualification(watch, { now, healthy, powerAt, mete
     && powerAt - watch.stable.firstPowerAt >= CARAVAN_FEED_STABLE_MS
     && meterAt - watch.stable.firstMeterAt >= CARAVAN_FEED_STABLE_MS;
   watch.ready = Boolean(stable && record?.proof && record.invalidatedAt === null && record.failed === null);
-  return { ready: watch.ready, testReady: stable && !watch.ready && !record?.failed };
+  return { ready: watch.ready, testReady: stable && !watch.ready
+    && (!record?.failed || record.failed.reason === 'controller-stopping') };
 }

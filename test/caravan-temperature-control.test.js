@@ -146,6 +146,34 @@ test('a passed Caravan association survives current-version restart with origina
   assert.equal(f.guard().locationTest.completedAt, proof.completedAt, 'A recovered association keeps its actual test clock');
 });
 
+test('an interrupted power check restores first and retries once after fresh stable recovery without skipping restart protection', async t => {
+  const f = fixture(t);
+  await f.start({ enabled: false }); await f.sample(5000, 'off', 100);
+  await f.sample(1000, 'on', 105);
+  assert.deepEqual(f.sent, [{ power: 'on' }]);
+  await f.capture.restoreCaravanProbes({ timeoutMs: 0 }); await settle();
+  assert.equal(f.guard().locationTest.reason, 'controller-stopping');
+  assert.equal(f.store.getState(RESTORE_KEY)?.power, 'off');
+  f.restart(); f.advance(1); f.air(); f.dryer('off'); f.meter(100); await settle();
+  assert.equal(f.store.getState(RESTORE_KEY), null);
+  const commands = f.sent.length;
+  await f.sample(29_000, 'off', 100);
+  assert.equal(f.sent.length, commands, 'Cached or insufficient recovery cannot authorize a new power cycle');
+  await f.sample(1000, 'off', 100);
+  assert.equal(f.guard().locationTest.status, 'testing', 'A stopped controller is not a measured physical-test failure');
+  assert.equal(f.guard().qualified, false);
+  assert.equal(f.guard().recording, false);
+  assert.equal(f.sent.length, commands, 'The new connection still owes its five-minute native Off wait');
+  await f.waitRestart(); await f.sample(5000, 'off', 100);
+  assert.equal(f.sent.at(-1).power, 'on');
+  for (let index = 0; index < 4; index++) await f.sample(45_000, 'on', 100);
+  await f.sample(1000, 'off', 100);
+  assert.equal(f.guard().locationTest.status, 'failed', 'A genuine failure on the replacement check stays latched');
+  const failedCommands = f.sent.length;
+  for (let index = 0; index < 5; index++) await f.sample(30_000, 'off', 100);
+  assert.equal(f.sent.length, failedCommands, 'Interruption recovery cannot become a repeated physical test');
+});
+
 test('an abandoned meter scope cannot recover its old pass after a quick A to B to A change', async t => {
   const f = fixture(t); let meterAddress = 'mqtt://synthetic-meter-a';
   f.restart({ brokerIdentityForDevice: d => ({ address: d.id === 'caravan' ? meterAddress : 'mqtt://synthetic-source', username: 'synthetic' }) });
