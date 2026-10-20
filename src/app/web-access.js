@@ -4,6 +4,7 @@ import { createDatabaseExport } from './database-export.js';
 import { createDatabaseVerification } from './database-verification.js';
 import { createBackupCatalog } from '../storage/backup-catalog.js';
 import { backupDirectory } from '../storage/backup-directory.js';
+import { createWebSessions } from './web-sessions.js';
 import { createBackupInspection } from './backup-inspection.js';
 
 import { createHttpsManager } from '../https/manager.js';
@@ -69,6 +70,11 @@ export function createWebAccess({ config: initialConfig, httpsManagerFactory = c
   let config = initialConfig, ingressServer, recovery, lanHttp, https, certificate,
     started = false, closed = false, pending, httpsError = null, lanHttpError = null, managerError = null;
   let certificatePending = Promise.resolve();
+  const sessions = createWebSessions({ store: serverOptions.store,
+    getAccess: () => ({ token: config.token, familyToken: config.familyToken ?? '' }),
+    writable: () => serverOptions.role !== 'slave' && (!serverOptions.pairContext || serverOptions.pairContext.canControl()),
+    peer: serverOptions.pairContext?.webSessions, clock: serverOptions.clock ?? Date.now });
+  serverOptions.webSessions = sessions;
   const backupConfig = () => ({ ...config, recording: { ...config.recording,
     backupDirectory: serverOptions.getDatabaseExportDirectory?.() ?? backupDirectory(config) } });
   serverOptions.backupCatalog ??= createBackupCatalog({ getConfig: backupConfig, clock: serverOptions.clock ?? Date.now });
@@ -304,6 +310,7 @@ export function createWebAccess({ config: initialConfig, httpsManagerFactory = c
     return {
       async commit() {
         if (finished || closed || pending !== reservation) throw new Error('Web access update is no longer available.');
+        await sessions.credentialsChanged({ token: next.token, familyToken: next.familyToken ?? '' });
         config = next;
         for (const [record, network] of [[recovery, false], [lanHttp, true], [https, true]])
           if (record && (record.state.token !== config.token || record.state.familyToken !== (config.familyToken ?? '')))
@@ -322,12 +329,15 @@ export function createWebAccess({ config: initialConfig, httpsManagerFactory = c
     get httpsServer() { return https?.server; },
     get lanHttpServer() { return lanHttp?.server; },
     get httpsManager() { return manager; },
-    status, installCertificate,
+    status, installCertificate, sessions,
     async start() {
       if (closed) throw new Error('Web access has been closed.');
       if (started) return;
       started = true;
       try {
+        // Optional remembered access cannot prevent controller/recovery startup.
+        // Invalid or unwritable state still fails closed when that login is used.
+        await sessions.credentialsChanged({ token: config.token, familyToken: config.familyToken ?? '' }).catch(() => {});
         recovery = listener(authentication());
         await listen(recovery.server, config.port, config.host);
         if (config.addon) {

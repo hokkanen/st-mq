@@ -21,11 +21,18 @@ older 0.7.5 runtime installations are not maintained by the CSV import support.
 There is no promise of compatibility with earlier development databases or
 configuration formats.
 
-Use trusted local networking or an authenticated HTTPS reverse proxy for remote
-direct access. Configure the admin/family passwords as described in the
+Use the application's HTTPS listener for remote direct access. Configure the
+admin/family passwords as described in the
 [access policy](docs/configuration.md#admin-and-family-web-access).
 Every accepted Home Assistant ingress session has application admin access;
 sidebar visibility is not a separate authorization boundary.
+
+Optional remembered HTTPS logins expire 360 days after password sign-in, without
+automatic renewal. They retain access to that role until expiry or revocation;
+an unlocked browser or stolen session can therefore retain access longer than a
+tab-only login. Logout revokes its token, password changes invalidate matching
+logins, and HTTPS admins can sign out all remembered browsers. Cookies are
+`Secure`, `HttpOnly`, host-only and `SameSite=Strict`; HTTP never accepts them.
 
 A secret removed from the current tree may remain in Git history or another
 clone. If exposure is suspected, stop publishing the affected history and follow

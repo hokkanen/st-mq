@@ -21,6 +21,7 @@ import { recoveryFailure } from '../recovery/errors.js';
 import { EQUIPMENT_COMMAND_ERRORS } from '../domain/equipment-command-errors.js';
 import { FLOOR_COMMAND_ERRORS } from '../domain/floor-command-errors.js';
 import { ReplicaCheckpointMismatchError, REPLICA_CHECKPOINT_MISMATCH, createReplicaReadRefusalReporter } from './replica-errors.js';
+import { createWebSessions, rememberedCookieDigest, rememberedCookie, clearRememberedCookie } from './web-sessions.js';
 
 function authorized(req, token) {
   if (!token) return false;
@@ -110,7 +111,7 @@ function chargingReportQuery(url, kind) {
 }
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '', familyToken = '',
-  getAccess, ingress = false, tls, transportLimits, webTransport, role = 'master', topology = 'standalone', getReadContext, syncStatus,
+  getAccess, ingress = false, tls, transportLimits, webTransport, webSessions, clock = Date.now, role = 'master', topology = 'standalone', getReadContext, syncStatus,
   pairContext, controlAuthority, historyRecovery, recordingHealth, databaseExport, databaseVerification,
   backupCatalog, backupInspection, getDatabaseExportDirectory,
   reloadSettings, previewSettings, settingsReloadStatus = () => ({ available: false, busy: false,
@@ -134,10 +135,13 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
     onBackupEvent: (event, sourceStore) => recordingHealth.backupEvent(event, sourceStore ?? store) });
   const writesBlocked = () => role === 'slave' || Boolean(pairContext && !pairContext.canControl())
     || Boolean(controlAuthority && !controlAuthority.canControl());
+  webSessions ??= createWebSessions({ store, getAccess: access, writable: () => !writesBlocked(), peer: pairContext?.webSessions, clock });
   const recovering = () => Boolean(historyRecovery?.busy() || pairContext?.recovering?.());
   const readOnlyMessage = 'This computer is read-only. Database edits, settings changes and device commands require the active master.';
   const handler = async (req, res) => {
-    let acceptedAccess, completingReload = false, readContext, webAccess;
+    let acceptedAccess, completingReload = false, readContext, webAccess, cookieDigest, rememberedRecord;
+    const identity = current => webIdentity(req, current, ingress)
+      ?? (!ingress && !req.headers.authorization && webSessions.identity(cookieDigest, rememberedRecord));
     const json = (code, value) => {
       // Revocation also covers reads that were awaiting chart/database work.
       // An already authenticated reload may finish its own success response.
@@ -145,6 +149,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         const current = access();
         if (!current.enabled) { code = 503; value = { error: 'Direct web access is disabled' }; }
         else if (current !== acceptedAccess) { code = 401; value = { error: 'Authentication required' }; }
+        else if (webAccess?.remembered && !identity(current)) { code = 401; value = { error: 'Authentication required' }; }
       }
       const unreadBody = !req.complete && (Number(req.headers['content-length']) > 0 || req.headers['transfer-encoding']);
       if (code >= 400 && unreadBody) {
@@ -177,17 +182,54 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (req.headers.origin && (new URL(req.headers.origin).host !== host
           || !ingress && new URL(req.headers.origin).protocol !== (req.socket.encrypted ? 'https:' : 'http:')))
           return json(403, { error: 'Cross-origin request rejected' });
+        cookieDigest = !ingress ? rememberedCookieDigest(req) : null;
+        const sessionAction = ['/api/session/remember', '/api/session/logout', '/api/session/revoke-all'].includes(url.pathname);
+        if (sessionAction) {
+          if (req.method !== 'POST') return json(405, { error: 'Use an explicit sign-in or sign-out action.' });
+          if (ingress || !req.socket.encrypted) return json(403, { error: 'Remembered login requires HTTPS.' });
+          if (!req.headers.origin) return json(403, { error: 'A same-origin request is required.' });
+        }
+        if (url.pathname === '/api/session/logout') {
+          const input = await body(req, transportLimits?.bodyTimeoutMs);
+          if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
+            return json(400, { error: 'Sign out with an empty request.' });
+          await webSessions.revoke(cookieDigest);
+          res.setHeader('Set-Cookie', clearRememberedCookie());
+          return json(200, { signedOut: true });
+        }
+        if (!ingress && !req.headers.authorization && cookieDigest) rememberedRecord = await webSessions.authenticate(cookieDigest);
         const stillAuthorized = () => {
           const current = access();
           if (!current.enabled) { json(503, { error: 'Direct web access is disabled' }); return false; }
-          const identity = webIdentity(req, current, ingress);
-          if (!identity || !ingress && current !== acceptedAccess) {
+          const identified = identity(current);
+          if (!identified || !ingress && current !== acceptedAccess) {
             json(401, { error: 'Authentication required' }); return false;
           }
-          webAccess = identity;
+          webAccess = identified;
           return true;
         };
         if (!stillAuthorized()) return;
+        if (sessionAction) {
+          const input = await body(req, transportLimits?.bodyTimeoutMs);
+          if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
+            return json(400, { error: 'Use an empty sign-in or sign-out request.' });
+          if (!stillAuthorized()) return;
+          if (url.pathname === '/api/session/remember') {
+            if (!webIdentity(req, access(), false)) return json(401, { error: 'Enter your password to remember this browser.' });
+            const issued = await webSessions.issue(webAccess.role);
+            if (!stillAuthorized()) return;
+            await webSessions.revoke(cookieDigest);
+            if (!stillAuthorized()) return;
+            res.setHeader('Set-Cookie', rememberedCookie(issued.token, issued.expiresAt));
+            return json(200, { expiresAt: issued.expiresAt });
+          }
+          if (webAccess.role !== 'admin') return json(403, { error: 'Admin access is required for this action.' });
+          await webSessions.revokeAll(webAccess.remembered ? cookieDigest : null);
+          // Successful self-revocation is allowed to return its confirmation.
+          webAccess = undefined;
+          res.setHeader('Set-Cookie', clearRememberedCookie());
+          return json(200, { signedOut: true });
+        }
         if (webAccess.role === 'family' && !familyRouteAllowed(req.method, url.pathname))
           return json(403, { error: 'Admin access is required for this action.' });
         if (url.pathname === '/api/web-access' && ['GET', 'POST'].includes(req.method)) {
@@ -258,7 +300,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             authorized: () => {
               const current = access();
               return current.enabled && (ingress || current === acceptedAccess)
-                && webIdentity(req, current, ingress)?.role === 'admin';
+                && identity(current)?.role === 'admin';
             } });
         }
         const saveDatabase = req.method === 'POST' && url.pathname === '/api/database-export';
@@ -292,7 +334,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           const result = await historyRecovery.upload(req, () => {
             const current = access();
             return current.enabled && (ingress || current === acceptedAccess)
-              && webIdentity(req, current, ingress)?.role === 'admin' && !writesBlocked() && !unavailable();
+              && identity(current)?.role === 'admin' && !writesBlocked() && !unavailable();
           });
           if (!stillAuthorized()) return;
           return json(201, result);

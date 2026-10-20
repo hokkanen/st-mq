@@ -111,6 +111,10 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
         return manager.peer.request(`https-${operation}`, body, { timeoutMs: 10_000 });
       },
     },
+    webSessions: {
+      request: body => closed || closing ? Promise.reject(pairError('peer_unavailable'))
+        : manager.peer.request('web-session', body, { timeoutMs: 10_000 }),
+    },
     status: () => {
       const status = manager.status(), reset = resetStatus();
       const historyBusy = Boolean(runtime?.historyRecovery?.working()), job = runtime?.historyRecovery?.currentJob();
@@ -181,6 +185,10 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     },
   };
   const hooks = {
+    webSession: body => {
+      if (!manager.canControl() || !runtime?.webAccess?.sessions) throw pairError('not_master');
+      return runtime.webAccess.sessions.perform(body);
+    },
     dbPath: () => runtime?.store?.path ?? primaryPath,
     webCertificateStatus: () => ({ nodeId: manager?.state?.value?.nodeId ?? null,
       ...(runtime?.webAccess?.httpsManager?.pairStatus?.() ?? { enabled: false, ready: false }) }),

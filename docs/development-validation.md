@@ -5,6 +5,14 @@ validate those contracts; existing assertions do not authorize conflicting chang
 Follow the [conflict procedure](../AGENTS.md#conflicting-requests) before changing
 a foundation, even when the requested implementation would require it.
 
+`test/web-sessions.test.js` checks fixed 360-day expiry without renewal, protected
+cookies, server revocation, password changes, database reopen, active-peer
+forwarding, unsupported state, failed writes and authority loss. Its real TLS
+fixture covers same-origin enforcement, role restrictions and expiry independent
+of browser cookie handling. The access/browser suites retain ordinary tab login,
+Home Assistant ingress, credential rotation and family permissions. These
+synthetic checks do not establish a particular phone's browser retention policy.
+
 `test/h66-normal-room.test.js` exercises committed post-Normal ROOM evidence,
 tariff-period references, user changes, restart, cancellation and final dispatch
 fencing. `test/h66-write-confirmation.test.js` checks all four native settings,

@@ -1273,6 +1273,10 @@ export class PairManager {
   async handlePeer(operation, body) {
     if (this.closed || this.stopping) throw pairError('stopped');
     if ((this.state.invalid || this.state.value.reset) && !['status', 'https-status'].includes(operation)) throw pairError('protected_history');
+    if (operation === 'web-session') {
+      if (!this.canControl() || !this.hooks.webSession) throw pairError('not_master');
+      return this.hooks.webSession(body);
+    }
     if (operation === 'https-status' || operation === 'https-get') {
       if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length)
         throw pairError('peer_protocol_failed');

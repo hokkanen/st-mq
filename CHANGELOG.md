@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Add an optional **Keep me signed in for 360 days** choice for HTTPS access.
+  Its fixed expiry never renews with activity. Remembered logins survive restart
+  and paired handover, and can be revoked by logout, password changes or the
+  administrator's **Sign out remembered browsers** action.
+
 - Keep **One extra day** available when the other charger is paused or idle and
   reports residual standby current. Active and native-scheduled peer charging
   remains part of the shared cost and capacity comparison.

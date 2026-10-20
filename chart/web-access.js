@@ -41,6 +41,11 @@ export function createWebSession({ storage, ingress = false }) {
       token = password; locked = false;
       storage.setItem(tokenKey, password); storage.removeItem(loggedOutKey);
     },
+    useRemembered() {
+      cancellation.abort(); cancellation = new AbortController();
+      token = ''; locked = false;
+      storage.removeItem(tokenKey); storage.removeItem(loggedOutKey);
+    },
     logout() {
       locked = true; token = '';
       storage.removeItem(tokenKey); storage.setItem(loggedOutKey, 'true');
@@ -159,5 +164,7 @@ export function createAccessControls({ document, Observer = globalThis.MutationO
     label.textContent = next?.source === 'ingress' ? 'Admin via Home Assistant'
       : next?.role === 'family' ? 'Signed in as Family' : next?.role === 'admin' ? 'Signed in as Admin' : 'Not signed in';
     document.getElementById('web-logout').hidden = next?.source !== 'password';
+    const revoke = document.getElementById('web-revoke-sessions');
+    if (revoke) revoke.hidden = next?.role !== 'admin' || globalThis.location?.protocol !== 'https:';
   }, refresh: apply, close() { observer?.disconnect(); for (const type of ['click', 'submit', 'change']) document.removeEventListener(type, block, true); } };
 }

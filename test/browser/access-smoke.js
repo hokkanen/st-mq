@@ -1,6 +1,8 @@
 // Isolated simulation and browser profile; never opens household configuration.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { X509Certificate, createHash } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,6 +25,7 @@ try {
   const config = loadConfig({ STMQ_CONFIG: configuration, STMQ_DATA_DIR: directory,
     STMQ_INPUT: 'simulated', STMQ_PORT: '0', STMQ_API_TOKEN: admin, STMQ_FAMILY_API_TOKEN: family }, directory);
   config.topology = 'pair'; // Synthetic pairContext below owns authority; no peer transport starts.
+  config.web.httpsHost = '127.0.0.1'; config.web.httpsPort = 0;
   const pair = { role: 'master', canControl: true, busy: false,
     peer: { reachable: true, role: 'slave', lastSeenAt: now }, vip: { owned: true, ready: true },
     recovery: { state: 'idle' }, reset: { token: 'b'.repeat(64) }, actions: { 'check-recovery': true, recover: false, rejoin: false, handover: true, promote: false, reset: true } };
@@ -93,9 +96,18 @@ try {
   };
   addFireplace(app.store, 'simulated', { requestId: 'synthetic-browser-old-firewood', kg: 2 }, now - 16 * 60_000);
   const profile = join(directory, 'browser');
+  const fixtureHostname = 'remembered-login.fixture.invalid';
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(directory, 'key.pem'),
+    '-out', join(directory, 'cert.pem'), '-days', '2', '-subj', `/CN=${fixtureHostname}`,
+    '-addext', `subjectAltName=DNS:${fixtureHostname}`], { stdio: 'ignore' });
+  const cert = await readFile(join(directory, 'cert.pem')), key = await readFile(join(directory, 'key.pem'));
+  const pin = createHash('sha256').update(new X509Certificate(cert).publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
+  await app.webAccess.installCertificate({ hostname: fixtureHostname, cert, key });
+  assert(app.webAccess.httpsServer?.listening, 'Isolated HTTPS fixture is listening');
   await mkdir(profile);
   browser = spawn(process.env.STMQ_CHROME_BIN ?? '/opt/google/chrome/chrome', [
     '--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking',
+    `--host-resolver-rules=MAP ${fixtureHostname} 127.0.0.1`, `--ignore-certificate-errors-spki-list=${pin}`,
     '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank',
   ], { stdio: 'ignore' });
   let launchError, port;
@@ -434,9 +446,49 @@ try {
   pairingUnavailable = false;
   await until("!document.getElementById('pairing-reset').disabled");
   assert.match(await evaluate("document.getElementById('error').textContent"), /Unsupported voltage estimate state/);
+  dashboardUnavailable = false;
+  Object.assign(pair, { role: 'master', canControl: true, reason: null, error: null });
+  const httpsUrl = `https://${fixtureHostname}:${app.webAccess.httpsServer.address().port}/`;
+  await send('Page.navigate', { url: httpsUrl });
+  await until("!document.getElementById('auth')?.hidden");
+  assert.deepEqual(await evaluate("[document.getElementById('remember-login').disabled,document.getElementById('remember-login').checked]"), [false, false]);
+  for (const width of [320, 1440]) for (const theme of ['dark', 'light']) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`window.homeEnergyTheme.setTheme(${JSON.stringify(theme)});true`);
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Remembered-login choice fits narrow and wide screens');
+  }
+  await evaluate("document.getElementById('remember-login').click();true");
+  await login(family);
+  assert.equal(await evaluate("sessionStorage.getItem('stmq-token')"), null, 'Remembered login stores no password in tab storage');
+  const cookies = (await send('Network.getCookies', { urls: [httpsUrl] })).cookies;
+  const remembered = cookies.find(value => value.name === '__Host-stmq-session');
+  assert(remembered?.secure && remembered.httpOnly && remembered.sameSite === 'Strict');
+  assert(Math.abs(remembered.expires - (now + 360 * 86400_000) / 1000) < 1,
+    'Browser Date-header clock compensation stays within one second of the fixed server expiry');
+  const handler = socket.onmessage;
+  socket.close();
+  const fresh = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' }).then(response => response.json());
+  socket = new WebSocket(fresh.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
+  socket.onmessage = handler;
+  await send('Runtime.enable'); await send('Page.enable'); await send('Network.enable');
+  await send('Page.navigate', { url: httpsUrl });
+  await until("document.body.dataset.authenticated === 'true' && document.body.dataset.accessRole === 'family'");
+  assert.equal(await evaluate("sessionStorage.getItem('stmq-token')"), null, 'A new tab signs in from its protected cookie');
+  assert.equal((await send('Network.getCookies', { urls: [httpsUrl] })).cookies.find(value => value.name === remembered.name).expires,
+    remembered.expires, 'New tabs and polling do not renew the original expiry');
+  await evaluate("document.getElementById('web-logout').click();true");
+  await until("document.body.dataset.authenticated === 'false' && !document.getElementById('auth').hidden");
+  assert.equal((await send('Network.getCookies', { urls: [httpsUrl] })).cookies.some(value => value.name === remembered.name), false);
+  await evaluate("document.getElementById('remember-login').click();true");
+  await login('synthetic-browser-rotated-admin-access-token');
+  await until("!document.getElementById('web-revoke-sessions').hidden");
+  await evaluate("document.getElementById('web-revoke-sessions').click();true");
+  await until("document.body.dataset.authenticated === 'false' && !document.getElementById('auth').hidden");
+  assert.equal((await send('Network.getCookies', { urls: [httpsUrl] })).cookies.some(value => value.name === remembered.name), false);
   assert.deepEqual(errors, []);
   assert.deepEqual(layoutFailures, [], `Layout failures${screenshotDirectory ? `; inspect ${screenshotDirectory}/geometry.json` : ''}`);
-  console.log('Access browser checks passed: password visibility, family controls, restricted downloads, firewood window, logout, admin login, credential revocation and fresh-load pairing recovery during dashboard failure.');
+  console.log('Access browser checks passed: password visibility, family controls, restricted downloads, firewood window, logout, credential revocation, pairing recovery, fixed HTTPS cookie expiry, fresh-tab remembered login and remembered-browser revocation.');
 } finally {
   socket?.close(); for (const request of pending.values()) clearTimeout(request.timer);
   await app?.close();

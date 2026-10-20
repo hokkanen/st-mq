@@ -89,6 +89,14 @@ const session = createWebSession({ storage: sessionStorage, ingress });
 const accessControls = createAccessControls({ document });
 const readOnlyControls = createReadOnlyControls({ document });
 const passwordVisibility = bindPasswordVisibility({ input: $('token'), button: $('password-visibility') });
+const secureLogin = !ingress && location.protocol === 'https:';
+$('remember-login').disabled = !secureLogin;
+$('remember-login-requires-https').hidden = secureLogin;
+$('remember-login').addEventListener('change', () => {
+  $('auth-help').textContent = $('remember-login').checked
+    ? 'This browser stays signed in for 360 days. Activity does not extend this period.'
+    : 'Your password stays in this browser tab.';
+});
 let webAccess;
 let lastStatus;
 let dashboardStatusReceived = false;
@@ -1106,22 +1114,56 @@ async function refreshPairing() {
   }
   finally { pairPollBusy = false; }
 }
-$('auth').addEventListener('submit', event => {
+async function sessionAction(action, password) {
+  const { response, result } = await fetchJsonResponse(applicationUrl(`/api/session/${action}`), {
+    method: 'POST', credentials: 'same-origin', cache: 'no-store',
+    headers: { 'Content-Type': 'application/json', ...(password ? { Authorization: `Bearer ${password}` } : {}) }, body: '{}',
+  });
+  if (!response.ok) throw new Error(response.status === 401 ? 'Password not recognised. Try again.'
+    : result?.error ?? 'The sign-in change could not be confirmed. Try again.');
+  return result;
+}
+$('auth').addEventListener('submit', async event => {
   event.preventDefault();
   $('auth').setAttribute('aria-busy', 'true');
   $('auth').querySelector('[type="submit"]').disabled = true;
-  session.login($('token').value); $('token').value = ''; passwordVisibility.hide();
-  // A fresh document discards any previous login's pending forms and responses.
-  window.location.reload();
+  try {
+    if (secureLogin && $('remember-login').checked) {
+      await sessionAction('remember', $('token').value);
+      session.useRemembered();
+    } else {
+      if (secureLogin) await sessionAction('logout');
+      session.login($('token').value);
+    }
+    $('token').value = ''; passwordVisibility.hide();
+    // A fresh document discards any previous login's pending forms and responses.
+    window.location.reload();
+  } catch (error) {
+    $('auth-error').textContent = error.message; $('auth-error').hidden = false;
+    $('auth').removeAttribute('aria-busy'); $('auth').querySelector('[type="submit"]').disabled = false;
+  }
 });
 $('token').addEventListener('input', () => {
   $('token').removeAttribute('aria-invalid');
   $('auth-error').textContent = '';
   $('auth-error').hidden = true;
 });
-$('web-logout').addEventListener('click', () => {
-  lockScreen();
-  window.location.reload();
+$('web-logout').addEventListener('click', async () => {
+  $('web-logout').disabled = true;
+  try {
+    if (secureLogin) await sessionAction('logout');
+    lockScreen(); window.location.reload();
+  } catch (error) { showError(error); $('web-logout').disabled = false; }
+});
+$('web-revoke-sessions').addEventListener('click', async () => {
+  $('web-revoke-sessions').disabled = true;
+  try {
+    const { response, result } = await session.run(({ headers, signal }) => fetchJsonResponse(applicationUrl('/api/session/revoke-all'), {
+      signal, method: 'POST', credentials: 'same-origin', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{}',
+    }));
+    if (!response.ok) throw new Error(result?.error ?? 'Remembered browsers could not be signed out. Try again.');
+    lockScreen(); window.location.reload();
+  } catch (error) { showError(error); $('web-revoke-sessions').disabled = false; }
 });
 for (const [field, id] of Object.entries(temporaryFields)) {
   const changed = () => {

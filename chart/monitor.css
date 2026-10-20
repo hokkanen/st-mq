@@ -2205,6 +2205,9 @@ body[data-authenticated="false"] #connection { display: none; }
 #password-visibility[aria-pressed="true"] [data-password-hide] { display: block; }
 #auth .auth-submit { width: 100%; min-height: 44px; margin: 20px 0 0; }
 #auth-help { margin: 16px 0 0; font-size: 11px; }
+.remember-login { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 16px 0 0; font-size: 12px; }
+.remember-login input { flex: none; width: 16px; height: 16px; min-height: 16px; margin: 0; padding: 0; accent-color: var(--accent); }
+.remember-login span { flex-basis: 100%; margin-left: 24px; font-size: 11px; }
 #auth-error { margin: 10px 0 0; font-size: 12px; }
 #token[aria-invalid="true"] { border-color: var(--error-text); }
 body[data-authenticated="false"] #error { max-width: 420px; margin: 24px auto; }

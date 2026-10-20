@@ -353,9 +353,23 @@ wiring and the explicit HTTP opt-in, independently of those installation choices
 controller data or the database. Empty uses persistent `/data/st-mq/https` on
 Home Assistant; standalone uses an external installation-specific state path.
 See [secure web access](https.md) for DNS, backup, pairing and recovery instructions.
-Credentials are concealed in API responses; the direct-access
-browser keeps its entered password in session storage for that tab. **Log out**
-returns to the password prompt without stopping previously requested operations.
+Credentials are concealed in API responses. Ordinary direct-access sign-in keeps
+the entered password in session storage for that tab. On HTTPS, the optional,
+initially unchecked **Keep me signed in for 360 days** choice instead uses a
+protected browser cookie containing a random token. Only its hash, credential
+binding, role and original timestamps enter committed, replicated application
+state. Its fixed expiry is 360 days after successful password sign-in; activity,
+restart and paired handover never renew it. The server enforces that same expiry.
+HTTP access cannot issue or authenticate this cookie, including through forwarded
+HTTPS headers. **Log out** revokes that remembered login and clears the cookie;
+it returns to the password prompt without stopping requested operations. Changing
+the corresponding password invalidates its remembered logins. Admins on HTTPS
+may choose **Sign out remembered browsers** to revoke all remembered logins,
+including their own. Browser data removal can require an earlier sign-in.
+Remembered access on a standby uses the active peer over the authenticated,
+encrypted pair channel; an unavailable peer does not authorize from stale replica
+state. Ordinary password access remains available for standby diagnosis. Token
+creation and revocation use the active writer and existing database journal.
 For ingress, use Home Assistant to log out.
 
 ## Recording budget and database exports
