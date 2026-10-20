@@ -736,6 +736,8 @@ try {
     assert.deepEqual(await evaluate('chargingFixture.writes[1]'), [`/api/charging/chargers/${id}/use-automatic`, {
       association: `fixture:${id}`, sessionId: `session:${id}`, revision: 8, controlRevision: 4 }]);
     await until(`document.getElementById('${id}-takeover-message').textContent.includes('Automatic scheduling selected')`);
+    assert.equal(await evaluate(`document.getElementById('${id}-pause-message').textContent`), '',
+      'Returning to Automatic clears the superseded Pause receipt');
     await evaluate(`chargingFixture.setCase('charge-now-only'); chargingFixture.writes = []; chargingFixture.hold = true;
       document.getElementById('${id}-device').open = true;
       document.getElementById('${id}-charge-now').scrollIntoView({block:'center'})`);

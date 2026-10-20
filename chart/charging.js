@@ -1049,6 +1049,12 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const explanation = Object.fromEntries(view.explanations);
       device.charger = charger; device.titleLabel.textContent = charger.label;
       const pauseReceipt = device.pauseReceipt, pause = chargingSessionPause(charger);
+      if (pauseReceipt && (pauseReceipt.association !== charger.association
+        || pauseReceipt.sessionId !== charger.request?.sessionId
+        || validTime(pauseReceipt.requestedAt) && pauseReceipt.requestedAt !== charger.request?.pause?.requestedAt)) {
+        actionMessage(device.pauseMessage, ''); actionMessages.delete(device.pauseMessage);
+        device.pauseReceipt = null;
+      }
       if (pause && pauseReceipt?.pending && actionMessages.has(device.pauseMessage) && !device.pauseMessage.matches('.form-error')
         && pauseReceipt.association === charger.association && pauseReceipt.sessionId === charger.request?.sessionId
         && pauseReceipt.requestedAt === pause?.requestedAt) {

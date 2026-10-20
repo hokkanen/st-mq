@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Clear a charger's earlier Pause confirmation after that pause is superseded
+  or its physical connection changes. Temporary feed loss still preserves the
+  receipt for the same saved pause.
+
 - Stop reporting an unchanged Garage Normal/Away selection as an out-of-date
   device. Preserve the original selection timestamp; actual
   heat-pump and sensor freshness warnings remain independent.

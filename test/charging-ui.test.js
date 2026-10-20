@@ -3124,6 +3124,31 @@ test('session Pause shares balanced expanded controls and serializes a scoped re
   }
 });
 
+test('a superseded or replaced connection clears its previous Pause receipt', async () => {
+  for (const id of ['charger1', 'charger2']) for (const transition of ['resume', 'charge-now', 'new-pause', 'connection', 'equipment']) {
+    const document = documentFixture(), $ = name => document.getElementById(name);
+    const item = connected(id);
+    item.control = { sessionPause: { available: true, active: false } };
+    const paused = { ...item, request: { ...item.request, revision: 2, pause: { requestedAt: now } },
+      control: { phase: 'paused', sessionPause: { available: true, active: true, confirmed: true } } };
+    const panel = createChargingPanel({ document, request: async () => status(paused) });
+    panel.update(status(item)); await clickAction($(`${id}-pause`));
+    assert.equal($(`${id}-pause-message`).textContent, 'Pause confirmed for this connection.');
+    const next = structuredClone(paused);
+    if (transition === 'connection') next.request.sessionId += ':replacement';
+    else if (transition === 'equipment') next.association += ':replacement';
+    else if (transition === 'new-pause') next.request.pause.requestedAt++;
+    else {
+      delete next.request.pause;
+      next.request.chargeNow = transition === 'charge-now';
+      next.control = { phase: 'released', sessionPause: { available: true, active: false } };
+    }
+    panel.update(status(next));
+    assert.equal($(`${id}-pause-message`).textContent, '', `${id}: ${transition} supersedes the receipt`);
+    panel.close();
+  }
+});
+
 test('session Pause retains honest activity, source and no promised completion through pending and stale status', () => {
   const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => {} });
   const item = active(); item.request.pause = { requestedAt: now - 60_000 };
