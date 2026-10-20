@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Stop reporting an unchanged Garage Normal/Away selection as an out-of-date
+  device. Show it as a saved selection with its original timestamp; actual
+  heat-pump and sensor freshness warnings remain independent.
+
 - With the updated Garage protection sender, accept independently fresh probe
   reports without the former 65-second timestamp-alignment restriction. Preserve
   individual freshness limits, actual pipe-risk protection and Bluetooth

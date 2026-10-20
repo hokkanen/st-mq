@@ -55,6 +55,16 @@ test('event-only door recordings distinguish last report age from current connec
   assert.doesNotMatch(display.detail,/Attention starts|Limit/);
 });
 
+test('saved Garage selection is described as durable intent rather than a device heartbeat',()=>{
+  const display=recordingStatus({freshness:{status:'last-reported',sourceObservedAt:0,maxAgeMs:null,
+    ageBasis:'saved-selection'}},{now:7*86400_000});
+  assert.equal(display.label,'Saved selection');
+  assert.match(display.detail,/Normal\/Away selection remains in effect until changed/);
+  assert.match(display.detail,/7 d old/);
+  assert.match(display.detail,/does not confirm current heat-pump or sensor availability/);
+  assert.doesNotMatch(display.detail,/heartbeat|Limit|Fresh/);
+});
+
 function fixture(request) {
   let now=Date.parse('2026-09-08T10:00:00Z'),visible=true;
   const classes=new Set(),attributes=new Map(),renders=[],states=[];

@@ -53,7 +53,7 @@ export function recordingStatus(row = {}, { now = Date.now() } = {}) {
   const label = freshness.status === 'stale' ? freshness.reasons?.some(reason => ['source-expired', 'missing-report'].includes(reason))
     ? 'Out of date' : 'Reading rejected' : ({ fresh: 'Fresh', failed: 'Acquisition failed', unavailable: 'Reading unavailable',
     held: 'Last known reading', 'held-attention': 'Last known reading · needs attention', 'recorded-interval': 'Recorded interval',
-    'last-reported': 'Last reported state' })[freshness.status] ?? 'Waiting for source';
+    'last-reported': freshness.ageBasis === 'saved-selection' ? 'Saved selection' : 'Last reported state' })[freshness.status] ?? 'Waiting for source';
   const age = Number.isFinite(freshness.sourceObservedAt) ? now - freshness.sourceObservedAt : null;
   const limit = Number.isFinite(freshness.maxAgeMs) ? freshness.maxAgeMs : null;
   const periodic = freshness.ageBasis === 'periodic-report', interval = freshness.ageBasis === 'completed-interval', eventOnly = freshness.ageBasis === 'event-only';
@@ -63,7 +63,8 @@ export function recordingStatus(row = {}, { now = Date.now() } = {}) {
     const text = qualityReasonText(reason);
     if (text) messages.push(`${text.replace(/^./, value => value.toUpperCase())}.`);
   }
-  if (interval) messages.push('A saved, completed energy interval does not expire as a live reading.');
+  if (freshness.ageBasis === 'saved-selection') messages.push(`The saved Normal/Away selection remains in effect until changed.${age !== null && age >= 0 ? ` The selection is ${durationText(age)} old.` : ''} This is application intent and does not confirm current heat-pump or sensor availability.`);
+  else if (interval) messages.push('A saved, completed energy interval does not expire as a live reading.');
   else if (eventOnly) messages.push(`This device reports state changes without a periodic heartbeat.${age !== null && age >= 0 ? ` The last report is ${durationText(age)} old.` : ' The report time is unavailable.'} Report age alone does not indicate a fault. Current connection availability is shown under Equipment.`);
   else if (age !== null && age >= 0) messages.push(`${periodic ? 'Latest source report' : 'Source reading'} is ${durationText(age)} old.${limit === null
     ? ' No age cutoff applies.' : ` Limit ${durationText(limit)}${periodic && Number.isFinite(freshness.reportIntervalMs)

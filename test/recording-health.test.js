@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
+import { Recorder } from '../src/storage/recorder.js';
 import { createWriteHealth } from '../src/storage/write-health.js';
 import { createRecordingHealth, diskSpaceStatus } from '../src/app/recording-health.js';
 import { createAppServer } from '../src/app/server.js';
@@ -133,6 +134,28 @@ test('held readings do not need new observation rows and a stale tick is not ref
   assert.equal((await f.status()).recording.state, 'ok');
   f.parameter.freshness = { status: 'fresh', sourceObservedAt: start, maxAgeMs: MINUTE };
   assert.equal((await f.status()).recording.state, 'source-unavailable');
+});
+
+test('old saved Garage selection raises no source warning while expired pump readback still does', async t => {
+  const f = fixture(), store = new Store(':memory:');
+  t.after(() => store.close());
+  const recorder = new Recorder(store, { clock: f.now });
+  recorder.record({ source: 'stmq', device: 'fixture-pump', signal: 'garage_away_mode', value: 0,
+    unit: 'state', sourceTime: start, receivedAt: start, quality: ['good'],
+    raw: { requested: true, usableForControl: false } });
+  f.engine.recordingSourceStatus = now => recorder.sourceStatus(now);
+  f.advance(2 * 60 * MINUTE); f.engine.latestStatus.now = f.now();
+  const healthy = await f.status();
+  assert.equal(healthy.recording.state, 'ok');
+  assert.equal(healthy.recording.sources.attentionStreams, 0);
+  assert.deepEqual(healthy.attention, []);
+  recorder.record({ source: 'garage-adapter', device: 'fixture-pump', signal: 'garage_native_power', value: 1,
+    unit: 'state', sourceTime: start, receivedAt: start, quality: ['good'] });
+  const stale = await f.status();
+  assert.equal(stale.recording.sources.attentionStreams, 1);
+  assert.equal(stale.recording.sources.issues[0].label, 'Garage heat-pump power setting');
+  assert.equal(stale.recording.sources.issues[0].status, 'stale');
+  assert(stale.attention.some(row => row.id === 'recording-sources'));
 });
 
 test('a live loop that never completed warns, while an intentional replica never expects local recording', async () => {

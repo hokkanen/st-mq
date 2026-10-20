@@ -1523,6 +1523,11 @@ has arrived, a subsequent source loss warns immediately. This initial wait never
 hides write failures or a stalled loop. **Monitoring active** means some observed
 recording evidence is usable. Partial loss of an observed source still raises
 attention and links to its explanation, even when other sources remain healthy.
+Garage's saved Normal/Away selection is durable application intent without a
+reporting deadline. Its details show **Saved selection** with the original event
+time; its age alone raises no source warning. This neither extends recorded
+coverage nor confirms current heat-pump or sensor availability. Explicit failed
+or invalid evidence remains visible, and physical readback keeps its own limits.
 Stream labels preserve their measurement and unit, with links to the applicable
 recording details, without exposing private source identifiers. **Last source check** dates a source polling attempt, including
 an unavailable result, and does not claim a saved measurement or successful write.
