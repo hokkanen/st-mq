@@ -24,7 +24,8 @@ Direct HTTPS sign-in offers **Keep me signed in for 360 days**, initially
 unchecked. The server issues a host-only `__Host-` cookie with `Secure`,
 `HttpOnly`, `SameSite=Strict` and a fixed `Expires` deadline. There is no automatic
 renewal. Both cookie issuance and authentication require actual TLS; forwarded
-headers and HTTP backup do not qualify. Logout revokes the saved token hash,
+headers and HTTP backup do not qualify. The choice is hidden outside direct
+HTTPS access. Logout revokes the saved token hash,
 password changes invalidate the corresponding role's sessions, and HTTPS admins
 can sign out all remembered browsers. The same-origin JSON request checks also
 cover sign-in and sign-out. See [web access ownership](configuration.md#admin-and-family-web-access)

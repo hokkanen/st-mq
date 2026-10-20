@@ -56,10 +56,15 @@
           <svg data-password-hide viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18M10.6 5.1 12 5c6.5 0 10 7 10 7a19 19 0 0 1-3.1 3.9M6.1 6.1A20 20 0 0 0 2 12s3.5 7 10 7a11 11 0 0 0 5.9-1.9M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
         </button>
       </div>
-      <label class="remember-login" for="remember-login"><input id="remember-login" type="checkbox">Keep me signed in for 360 days<span id="remember-login-requires-https" class="muted" hidden>Requires HTTPS</span></label>
+      <div id="remember-login-option" hidden>
+        <label class="remember-login" for="remember-login">
+          <input id="remember-login" type="checkbox" aria-describedby="auth-help" disabled>
+          <span class="remember-login-text">Keep me signed in for <span class="remember-login-duration">360 days</span></span>
+        </label>
+      </div>
       <p id="auth-error" class="form-error" role="alert" hidden></p>
       <button class="auth-submit" type="submit">Sign in</button>
-      <p id="auth-help" class="muted">Your password stays in this browser tab.</p>
+      <p id="auth-help" class="muted">Sign-in lasts for this browser tab.</p>
     </form>
     <p id="error" role="alert" hidden></p>
     <aside id="recording-status" class="recording-status" aria-label="Recording and storage" hidden>

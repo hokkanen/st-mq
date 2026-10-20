@@ -361,7 +361,8 @@ binding, role and original timestamps enter committed, replicated application
 state. Its fixed expiry is 360 days after successful password sign-in; activity,
 restart and paired handover never renew it. The server enforces that same expiry.
 HTTP access cannot issue or authenticate this cookie, including through forwarded
-HTTPS headers. **Log out** revokes that remembered login and clears the cookie;
+HTTPS headers. The choice is hidden on HTTP and Home Assistant ingress.
+**Log out** revokes that remembered login and clears the cookie;
 it returns to the password prompt without stopping requested operations. Changing
 the corresponding password invalidates its remembered logins. Admins on HTTPS
 may choose **Sign out remembered browsers** to revoke all remembered logins,

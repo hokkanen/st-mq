@@ -7,6 +7,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 ## Unreleased
 
 - Add an optional **Keep me signed in for 360 days** choice for HTTPS access.
+  Keep the checkbox and label aligned on phones, with a complete touch target;
+  hide the option on HTTP. Preserve the choice and restore editing after a
+  rejected password, and prevent duplicate submissions while signing in.
   Its fixed expiry never renews with activity. Remembered logins survive restart
   and paired handover, and can be revoked by logout, password changes or the
   administrator's **Sign out remembered browsers** action.

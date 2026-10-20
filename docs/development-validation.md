@@ -11,7 +11,11 @@ forwarding, unsupported state, failed writes and authority loss. Its real TLS
 fixture covers same-origin enforcement, role restrictions and expiry independent
 of browser cookie handling. The access/browser suites retain ordinary tab login,
 Home Assistant ingress, credential rotation and family permissions. These
-synthetic checks do not establish a particular phone's browser retention policy.
+checks also cover checkbox/first-line geometry, native size, a 44px label target,
+HTTP hiding, stable checked/unchecked layout, 150%/200% text enlargement, short
+and landscape viewports, keyboard order/focus, touch on label padding and a held
+sign-in request with duplicate-submit rejection and password-error recovery.
+Synthetic checks do not establish a particular phone's browser retention policy.
 
 `test/h66-normal-room.test.js` exercises committed post-Normal ROOM evidence,
 tariff-period references, user changes, restart, cancellation and final dispatch

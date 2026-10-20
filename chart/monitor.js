@@ -90,13 +90,9 @@ const accessControls = createAccessControls({ document });
 const readOnlyControls = createReadOnlyControls({ document });
 const passwordVisibility = bindPasswordVisibility({ input: $('token'), button: $('password-visibility') });
 const secureLogin = !ingress && location.protocol === 'https:';
+$('remember-login-option').hidden = !secureLogin;
 $('remember-login').disabled = !secureLogin;
-$('remember-login-requires-https').hidden = secureLogin;
-$('remember-login').addEventListener('change', () => {
-  $('auth-help').textContent = $('remember-login').checked
-    ? 'This browser stays signed in for 360 days. Activity does not extend this period.'
-    : 'Your password stays in this browser tab.';
-});
+$('auth-help').textContent = secureLogin ? 'Sign out to end remembered access.' : 'Sign-in lasts for this browser tab.';
 let webAccess;
 let lastStatus;
 let dashboardStatusReceived = false;
@@ -1119,14 +1115,25 @@ async function sessionAction(action, password) {
     method: 'POST', credentials: 'same-origin', cache: 'no-store',
     headers: { 'Content-Type': 'application/json', ...(password ? { Authorization: `Bearer ${password}` } : {}) }, body: '{}',
   });
-  if (!response.ok) throw new Error(response.status === 401 ? 'Password not recognised. Try again.'
-    : result?.error ?? 'The sign-in change could not be confirmed. Try again.');
+  if (!response.ok) throw Object.assign(new Error(response.status === 401 ? 'Password not recognised. Try again.'
+    : result?.error ?? 'The sign-in change could not be confirmed. Try again.'), { status: response.status });
   return result;
+}
+function setSignInBusy(busy) {
+  $('auth').setAttribute('aria-busy', String(busy));
+  $('token').readOnly = busy;
+  $('password-visibility').disabled = busy;
+  $('remember-login').disabled = busy || !secureLogin;
+  const submit = $('auth').querySelector('[type="submit"]');
+  submit.disabled = busy;
+  submit.textContent = busy ? 'Signing in…' : 'Sign in';
 }
 $('auth').addEventListener('submit', async event => {
   event.preventDefault();
-  $('auth').setAttribute('aria-busy', 'true');
-  $('auth').querySelector('[type="submit"]').disabled = true;
+  if ($('auth').getAttribute('aria-busy') === 'true') return;
+  setSignInBusy(true);
+  $('auth-error').textContent = ''; $('auth-error').hidden = true;
+  $('token').removeAttribute('aria-invalid');
   try {
     if (secureLogin && $('remember-login').checked) {
       await sessionAction('remember', $('token').value);
@@ -1140,7 +1147,8 @@ $('auth').addEventListener('submit', async event => {
     window.location.reload();
   } catch (error) {
     $('auth-error').textContent = error.message; $('auth-error').hidden = false;
-    $('auth').removeAttribute('aria-busy'); $('auth').querySelector('[type="submit"]').disabled = false;
+    setSignInBusy(false);
+    if (error.status === 401) { $('token').setAttribute('aria-invalid', 'true'); $('token').focus(); }
   }
 });
 $('token').addEventListener('input', () => {

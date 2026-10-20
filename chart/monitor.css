@@ -2195,9 +2195,9 @@ body[data-authenticated="false"] #connection { display: none; }
 #auth .auth-intro { margin: 0 0 24px; color: var(--muted); font-size: 13px; }
 #auth > label { margin: 0 0 8px; }
 .password-entry { position: relative; }
-.password-entry input { display: block; width: 100%; height: 48px; padding: 11px 52px 11px 12px; font-size: 16px; }
+.password-entry input { display: block; width: 100%; min-height: 48px; padding: 11px 52px 11px 12px; font-size: 16px; line-height: 1.5; }
 .password-entry input::-ms-reveal { display: none; }
-#password-visibility { position: absolute; top: 2px; right: 2px; display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; margin: 0; padding: 11px; color: var(--muted); background: transparent; border: 0; border-radius: 4px; }
+#password-visibility { position: absolute; top: 50%; right: 2px; transform: translateY(-50%); display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; margin: 0; padding: 11px; color: var(--muted); background: transparent; border: 0; border-radius: 4px; }
 #password-visibility:hover { color: var(--accent); background: var(--surface-soft); }
 #password-visibility:focus-visible { outline-offset: -3px; }
 #password-visibility svg { display: block; width: 22px; height: 22px; }
@@ -2205,9 +2205,14 @@ body[data-authenticated="false"] #connection { display: none; }
 #password-visibility[aria-pressed="true"] [data-password-hide] { display: block; }
 #auth .auth-submit { width: 100%; min-height: 44px; margin: 20px 0 0; }
 #auth-help { margin: 16px 0 0; font-size: 11px; }
-.remember-login { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 16px 0 0; font-size: 12px; }
-.remember-login input { flex: none; width: 16px; height: 16px; min-height: 16px; margin: 0; padding: 0; accent-color: var(--accent); }
-.remember-login span { flex-basis: 100%; margin-left: 24px; font-size: 11px; }
+#remember-login-option { margin-top: 8px; }
+#auth .remember-login { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; gap: 10px; min-height: 44px; margin: 0; padding: 10px 0; font-size: 13px; line-height: 1.5; cursor: pointer; }
+.remember-login input { width: 18px; height: 18px; min-height: 18px; margin: max(0px, calc((1.5em - 18px) / 2)) 0 0; padding: 0; accent-color: var(--accent); }
+.remember-login-text { min-width: 0; }
+.remember-login-duration { white-space: nowrap; }
+.remember-login:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 4px; border-radius: 3px; }
+.remember-login input:focus-visible { outline: none; }
+.remember-login:has(input:disabled) { cursor: wait; }
 #auth-error { margin: 10px 0 0; font-size: 12px; }
 #token[aria-invalid="true"] { border-color: var(--error-text); }
 body[data-authenticated="false"] #error { max-width: 420px; margin: 24px auto; }

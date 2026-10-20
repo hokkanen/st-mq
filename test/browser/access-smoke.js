@@ -17,7 +17,7 @@ const now = Date.parse('2026-09-25T12:00:00Z');
 const screenshotDirectory = process.env.STMQ_ACCESS_SCREENSHOT_DIR;
 const layoutReport = [], layoutFailures = [];
 const writes = [];
-let app, browser, socket, sequence = 0, dashboardUnavailable = false, pairingUnavailable = false;
+let app, browser, socket, sequence = 0, dashboardUnavailable = false, pairingUnavailable = false, heldLoginRequest, rememberRequests = 0;
 const pending = new Map(), errors = [];
 try {
   const configuration = join(directory, 'fixture.json');
@@ -104,6 +104,7 @@ try {
   const pin = createHash('sha256').update(new X509Certificate(cert).publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
   await app.webAccess.installCertificate({ hostname: fixtureHostname, cert, key });
   assert(app.webAccess.httpsServer?.listening, 'Isolated HTTPS fixture is listening');
+  app.webAccess.httpsServer.on('request', request => { if (request.url === '/api/session/remember') rememberRequests++; });
   await mkdir(profile);
   browser = spawn(process.env.STMQ_CHROME_BIN ?? '/opt/google/chrome/chrome', [
     '--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking',
@@ -129,6 +130,7 @@ try {
       pending.delete(message.id); clearTimeout(request.timer);
       if (message.error) request.reject(new Error(JSON.stringify(message.error))); else request.resolve(message.result);
     } else if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails);
+    else if (message.method === 'Fetch.requestPaused') heldLoginRequest = message.params;
   };
   const send = (method, params = {}) => new Promise((resolve, reject) => {
     const id = ++sequence;
@@ -348,6 +350,8 @@ try {
   await until("document.getElementById('auth') && !document.getElementById('auth').hidden");
   assert.equal(await evaluate("document.body.dataset.authenticated"), 'false');
   await auditLayout('login');
+  assert.equal(await evaluate("document.getElementById('remember-login-option').checkVisibility()"), false, 'HTTP has no remembered-login row or spacing');
+  assert.equal(await evaluate("document.getElementById('remember-login').disabled"), true, 'HTTP cannot focus or submit the hidden option');
   await auditShortLogin();
   await evaluate("document.getElementById('password-visibility').click();true");
   assert.equal(await evaluate("document.getElementById('token').type"), 'text');
@@ -451,13 +455,101 @@ try {
   const httpsUrl = `https://${fixtureHostname}:${app.webAccess.httpsServer.address().port}/`;
   await send('Page.navigate', { url: httpsUrl });
   await until("!document.getElementById('auth')?.hidden");
-  assert.deepEqual(await evaluate("[document.getElementById('remember-login').disabled,document.getElementById('remember-login').checked]"), [false, false]);
-  for (const width of [320, 1440]) for (const theme of ['dark', 'light']) {
-    await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+  const rememberGeometry = () => evaluate(`(() => {
+    const label = document.querySelector('.remember-login'), box = document.getElementById('remember-login');
+    const range = document.createRange(); range.selectNodeContents(document.querySelector('.remember-login-text'));
+    const firstLine = range.getClientRects()[0], check = box.getBoundingClientRect();
+    const password = document.getElementById('token').getBoundingClientRect(), row = label.getBoundingClientRect();
+    const eye = document.getElementById('password-visibility').getBoundingClientRect();
+    const form = document.getElementById('auth').getBoundingClientRect(), submit = document.querySelector('#auth [type="submit"]').getBoundingClientRect();
+    return { sameRow: Math.abs(check.top + check.height / 2 - firstLine.top - firstLine.height / 2) < 4,
+      beforeText: check.right + 4 <= firstLine.left, boxWidth: check.width, boxHeight: check.height, targetHeight: row.height,
+      passwordGap: row.top - password.bottom, buttonGap: submit.top - row.bottom, formHeight: form.height, buttonTop: submit.top + scrollY,
+      aligned: Math.abs(password.left - row.left) < 1 && Math.abs(password.left - submit.left) < 1
+        && Math.abs(password.width - submit.width) < 1 && Math.abs(form.right - password.right - password.left + form.left) < 1,
+      eyeCentered: Math.abs(eye.top + eye.height / 2 - password.top - password.height / 2) < 1,
+      textContained: [...range.getClientRects()].every(rect => rect.right <= row.right + 1),
+      noOverflow: document.documentElement.scrollWidth <= innerWidth };
+  })()`);
+  const auditRememberedLayout = async (width, theme, scale = 1, height = 900) => {
+    await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width <= 480 || height <= 400 });
     await evaluate(`window.homeEnergyTheme.setTheme(${JSON.stringify(theme)});true`);
-    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Remembered-login choice fits narrow and wide screens');
-  }
-  await evaluate("document.getElementById('remember-login').click();true");
+    // Browser-only text enlargement retains fixed viewport and native control
+    // sizes, so wrapping and first-line alignment are checked independently.
+    await evaluate(`(() => {
+      const nodes = [...document.querySelectorAll('#auth h2, #auth .auth-intro, #auth > label, #token, #auth .remember-login, #auth button, #auth-help, #auth-error')];
+      for (const node of nodes) node.style.fontSize = '';
+      const sizes = nodes.map(node => getComputedStyle(node).fontSize);
+      nodes.forEach((node, index) => node.style.fontSize = parseFloat(sizes[index]) * ${scale} + 'px');
+      window.scrollTo(0,0);
+    })()`);
+    let previous;
+    for (const checked of [false, true]) {
+      await evaluate(`document.getElementById('remember-login').checked=${checked};true`);
+      await settle();
+      const name = `login-https-${width}-${theme}-${scale}x-${height}-${checked ? 'checked' : 'unchecked'}`;
+      await capture(name, '#auth');
+      const geometry = await rememberGeometry();
+      assert(geometry.sameRow && geometry.beforeText, name + ': checkbox sits beside the first text line');
+      assert.equal(geometry.boxWidth, 18, name + ': native checkbox keeps its intended size');
+      assert.equal(geometry.boxHeight, 18, name + ': checkbox is square');
+      assert(geometry.targetHeight >= 44, name + ': whole row is a touch target');
+      assert(geometry.passwordGap >= 8 && geometry.buttonGap >= 12, name + ': field, option and button have breathing room');
+      assert(geometry.aligned && geometry.eyeCentered && geometry.textContained && geometry.noOverflow, name + ': balanced, contained controls');
+      if (previous) {
+        assert.equal(geometry.formHeight, previous.formHeight, name + ': selecting the option does not resize the card');
+        assert.equal(geometry.buttonTop, previous.buttonTop, name + ': selection does not move the sign-in button');
+      }
+      previous = geometry;
+      if (height <= 400) for (const selector of ['#token', '#remember-login', '#auth [type="submit"]']) {
+        assert.equal(await evaluate(`(() => {
+          const node = document.querySelector(${JSON.stringify(selector)}); node.scrollIntoView({block:'center',behavior:'instant'});
+          const rect = node.getBoundingClientRect(); return rect.top >= 0 && rect.bottom <= innerHeight;
+        })()`), true, name + ': controls remain reachable in a short or landscape viewport');
+      }
+    }
+  };
+  assert.deepEqual(await evaluate("[document.getElementById('remember-login-option').checkVisibility(),document.getElementById('remember-login').disabled,document.getElementById('remember-login').checked]"), [true, false, false]);
+  for (const width of [320, 360, 390, 412, 480, 768, 1440]) for (const theme of ['dark', 'light'])
+    await auditRememberedLayout(width, theme);
+  for (const width of [320, 390, 768]) for (const theme of ['dark', 'light']) for (const scale of [1.5, 2])
+    await auditRememberedLayout(width, theme, scale);
+  for (const theme of ['dark', 'light']) await auditRememberedLayout(390, theme, 1, 320);
+  for (const theme of ['dark', 'light']) await auditRememberedLayout(844, theme, 1, 390);
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await evaluate("document.querySelectorAll('#auth [style]').forEach(node=>node.style.fontSize='');document.getElementById('remember-login').checked=false;document.getElementById('password-visibility').focus();true");
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+  assert.equal(await evaluate("document.activeElement.id"), 'remember-login', 'Keyboard order follows password visibility, remember option, sign-in');
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+  assert.equal(await evaluate("document.getElementById('remember-login').checked"), true, 'Space toggles the native checkbox');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.remember-login')).outlineStyle"), 'solid', 'Keyboard focus outlines the complete option');
+  await capture('login-https-keyboard-focus', '#auth');
+  await evaluate("document.querySelector('.remember-login').scrollIntoView({block:'center'});true");
+  const tap = await evaluate("(()=>{const r=document.querySelector('.remember-login').getBoundingClientRect();return {x:r.right-6,y:r.bottom-4};})()");
+  await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...tap, radiusX: 1, radiusY: 1 }] });
+  await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await until("!document.getElementById('remember-login').checked");
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+  assert.equal(await evaluate("document.activeElement.type"), 'submit', 'The option has no extra keyboard stops');
+  await send('Fetch.enable', { patterns: [{ urlPattern: httpsUrl + 'api/session/remember', requestStage: 'Request' }] });
+  await evaluate("document.getElementById('token').value='synthetic-rejected-remember-password';document.getElementById('remember-login').checked=true;document.getElementById('auth').requestSubmit();true");
+  for (let attempt = 0; attempt < 100 && !heldLoginRequest; attempt++) await new Promise(resolve=>setTimeout(resolve,20));
+  assert(heldLoginRequest, 'A deliberately held sign-in request exercises pending controls');
+  assert.deepEqual(await evaluate("[document.getElementById('auth').getAttribute('aria-busy'),document.getElementById('token').readOnly,document.getElementById('remember-login').disabled,document.getElementById('password-visibility').disabled,document.querySelector('#auth [type=submit]').textContent]"),
+    ['true', true, true, true, 'Signing in…']);
+  await capture('login-https-pending', '#auth');
+  const requestsBeforeFailure = rememberRequests;
+  await evaluate("document.getElementById('auth').requestSubmit();true");
+  await send('Fetch.continueRequest', { requestId: heldLoginRequest.requestId });
+  await until("!document.getElementById('auth-error').hidden && document.getElementById('auth').getAttribute('aria-busy')==='false'");
+  await send('Fetch.disable'); heldLoginRequest = undefined;
+  assert.equal(rememberRequests, requestsBeforeFailure + 1, 'Repeated submission cannot send a second remembered-login request');
+  assert.deepEqual(await evaluate("[document.getElementById('remember-login').checked,document.getElementById('remember-login').disabled,document.getElementById('token').readOnly,document.getElementById('token').getAttribute('aria-invalid'),document.activeElement.id,document.querySelector('#auth [type=submit]').textContent]"),
+    [true, false, false, 'true', 'token', 'Sign in'], 'Rejected password restores editing, focus and the selected login scope');
+  await capture('login-https-password-error', '#auth');
   await login(family);
   assert.equal(await evaluate("sessionStorage.getItem('stmq-token')"), null, 'Remembered login stores no password in tab storage');
   const cookies = (await send('Network.getCookies', { urls: [httpsUrl] })).cookies;
@@ -488,7 +580,7 @@ try {
   assert.equal((await send('Network.getCookies', { urls: [httpsUrl] })).cookies.some(value => value.name === remembered.name), false);
   assert.deepEqual(errors, []);
   assert.deepEqual(layoutFailures, [], `Layout failures${screenshotDirectory ? `; inspect ${screenshotDirectory}/geometry.json` : ''}`);
-  console.log('Access browser checks passed: password visibility, family controls, restricted downloads, firewood window, logout, credential revocation, pairing recovery, fixed HTTPS cookie expiry, fresh-tab remembered login and remembered-browser revocation.');
+  console.log('Access browser checks passed: 60 HTTPS checkbox layout states, HTTP hiding, enlarged text, short/landscape screens, touch/keyboard, pending/duplicate/error recovery, family permissions, pairing recovery, fixed cookie expiry, fresh-tab login and revocation.');
 } finally {
   socket?.close(); for (const request of pending.values()) clearTimeout(request.timer);
   await app?.close();
