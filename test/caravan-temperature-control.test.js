@@ -466,7 +466,8 @@ for (const corrections of [[10_000], [10_000, 10_000, 10_000]]) {
     assert.equal(f.elapsed, 270_000); assert.deepEqual(f.timing(), original);
     assert.equal(f.guard().restartWaiting, true);
     assert.equal(f.guard().powerRestartNotBefore, f.now + 30_000);
-    await assert.rejects(f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' }), /drying/);
+    await assert.rejects(f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' }),
+      error => error.code === 'DEHUMIDIFIER_RESTART_WAITING' && error.statusCode === 409 && error.sent === false && /drying/.test(error.message));
     assert.deepEqual(f.sent, []);
     f.advance(29_999); f.dryer('off');
     await assert.rejects(f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' }), /drying/);
@@ -495,7 +496,8 @@ test('missing and invalid monotonic receipt cannot establish elapsed restart per
   for (const point of [null, NaN, Infinity, -1, Number.MAX_SAFE_INTEGER, 1_000_000]) {
     f.advance(1); f.capture.receive('fixture/dryer/state', body(), {}, f.now, null, null, point);
     if (point === null) await f.policy({ enabled: false });
-    await assert.rejects(f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' }), /fresh native/);
+    await assert.rejects(f.capture.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' }),
+      error => error.code === 'DEHUMIDIFIER_POWER_EVIDENCE_REQUIRED' && error.statusCode === 409 && error.sent === false);
     assert.deepEqual(f.sent, []);
   }
   f.dryer('off'); assert.equal(f.guard().restartWaiting, true);

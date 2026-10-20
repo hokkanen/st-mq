@@ -415,8 +415,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   function assertRestartReady(device, setting, value, now) {
     if (setting !== 'power' || value !== 'on' || !restartWait(device, now)) return;
     const remaining = restartRemaining(device, now);
-    throw fail(remaining === null ? 'dehumidifier restart needs a fresh native power transition'
-      : `dehumidifier restart is waiting for native drying; wait ${Math.max(1, Math.ceil(remaining / 1000))} seconds`);
+    throw Object.assign(fail(remaining === null ? 'dehumidifier restart needs a fresh native power transition'
+      : `dehumidifier restart is waiting for native drying; wait ${Math.max(1, Math.ceil(remaining / 1000))} seconds`),
+    { code: remaining === null ? 'DEHUMIDIFIER_POWER_EVIDENCE_REQUIRED' : 'DEHUMIDIFIER_RESTART_WAITING',
+      statusCode: 409, sent: false });
   }
   function caravanCold(device, now) {
     if (!device.temperatureGuard.settings.enabled) return false;

@@ -1,5 +1,7 @@
 /** Only these authored, known-unsent outcomes cross the equipment API/UI boundary. */
 export const EQUIPMENT_COMMAND_ERRORS = Object.freeze({
+  DEHUMIDIFIER_RESTART_WAITING: 'The On request was not sent. Wait five minutes after confirmed native Off, then try again.',
+  DEHUMIDIFIER_POWER_EVIDENCE_REQUIRED: 'The On request was not sent. Wait for fresh native power reports before trying again.',
   EQUIPMENT_COMMAND_WAIT_EXPIRED: 'The request was not sent because recording did not catch up in time. Try again shortly.',
   EQUIPMENT_COMMAND_RECORDING_FAILED: 'The request was not sent because an observation could not be saved. Check recording status.',
   EQUIPMENT_COMMAND_CANCELLED: 'The request was not sent because the device state, connection or control request changed. Check its current state before trying again.',

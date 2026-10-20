@@ -276,6 +276,9 @@ A current-format restart retains the obligation and timing; a new connection's
 uncertain interval may conservatively extend the remaining wait. Manual On
 during the hold is refused with the remaining wait, and the card keeps On
 unavailable until fresh timing and all ordinary command checks permit it.
+If a connection change introduces that restriction just before a click, the
+rejection explicitly says that On was not sent and identifies the required wait
+or fresh native power evidence. Unknown delivery failures remain unconfirmed.
 A fresh independent native power change aborts the test and supersedes its
 captured setting, so restoration cannot overwrite that newer manual or native
 choice. Commands always use the native appliance controls, never the

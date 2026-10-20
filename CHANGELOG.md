@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Explain that a dehumidifier On request blocked by native restart protection
+  was not sent, instead of presenting its delivery as uncertain.
+
 - Recover a Caravan power check interrupted by controller shutdown after native
   power restoration and fresh stable reports. Preserve five-minute restart waits
   and latched failures when the meter does not confirm the physical switches.

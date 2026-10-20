@@ -83,14 +83,16 @@ test('all equipment HTTP actions require authenticated same-origin JSON before d
   assert.deepEqual(f.calls, []); assert.deepEqual(f.checks, []); assert.equal(f.store.getState(KEY), null);
 });
 
-test('known unsent door and switch requests retain their safe cause through HTTP and manual receipts', async t => {
+test('known unsent door, switch and dehumidifier requests retain their safe cause through HTTP and manual receipts', async t => {
   const f = await serverFixture(t);
   for (const [code, message] of Object.entries(EQUIPMENT_COMMAND_ERRORS)) {
     const reject = async () => { throw Object.assign(new Error('synthetic transport internals'), { code, sent: false }); };
     f.engine.equipment.setCover = reject;
     f.engine.equipment.setSwitch = reject;
+    f.engine.equipment.setDehumidifier = reject;
     for (const [path, input] of [['/api/equipment/cover', { deviceId: 'garage_door1', action: 'open' }],
-      ['/api/equipment/switch', { deviceId: 'caravan', on: true }]]) {
+      ['/api/equipment/switch', { deviceId: 'caravan', on: true }],
+      ['/api/equipment/dehumidifier', { deviceId: 'caravan_dehumidifier', setting: 'power', value: 'on' }]]) {
       const result = await f.post(path, input);
       assert.equal(result.status, 409);
       assert.deepEqual(result.body, { code, error: message });
