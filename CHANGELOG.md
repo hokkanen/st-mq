@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Release circulation-only recovery after the pump's confirmed OFF state is
+  committed, so a completed run cannot leave later heating selections blocked.
+  Preserve separately held heating choices and other restoration duties.
+
 - Correlate a Shelly current change's same-second notification when it arrives
   after acknowledgement, so the controller's own write cannot become a false
   external current ceiling. Preserve later native choices and original clocks.

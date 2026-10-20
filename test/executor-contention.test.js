@@ -149,6 +149,32 @@ test('committed circulation still stops when a competing writer arrives only aft
   await f.executor.pending;
   assert.equal(f.store.getState('executor:home').dhwrOutstanding, false);
   assert.deepEqual(switches, [true, false]);
+  assert.equal(f.executor.status().restorationPending, false,
+    'Committed OFF reconciliation must release its recovery fence.');
+  await f.executor.execute({ commands: ['normal'] }, { manualTest: true, now: f.now(),
+    pause: { id: 'synthetic-pause', expiresAt: null } });
+  assert.deepEqual(f.commands, ['normal'], 'A later manual selection is available after circulation has stopped.');
+});
+
+test('circulation OFF reconciliation preserves a separately held Reduced selection', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(t), switches = [], pause = { id: 'synthetic-pause', expiresAt: null };
+  await f.executor.execute({ commands: ['reduction'], phase: 'reduction' },
+    { manualTest: true, now: f.now(), pause });
+  const selection = f.executor.status().manualRequested;
+  f.executor.pulseMs = 60_000;
+  f.transport.setDhwrRelay(async on => { switches.push(on); return { sent: true, confirmed: true }; }, ['synthetic-circulation']);
+  await f.executor.execute({ commands: ['circulation'] }, { manualTest: true, now: f.now() });
+  f.lock(); f.advance(60_000); t.mock.timers.tick(60_000);
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(101); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(switches, [true, false]);
+  assert.equal(f.executor.status().restorationPending, true);
+  f.release(); t.mock.timers.tick(10); await f.executor.pending;
+  assert.equal(f.executor.status().restorationPending, false);
+  assert.deepEqual(f.executor.status().manualRequested, selection);
+  assert.equal(f.executor.status().legacyOutstanding, true);
+  assert.deepEqual(f.commands, ['reduction'], 'The circulation expiry must not restore the held heating mode.');
 });
 
 test('shutdown rejects new circulation and reduction activations already waiting for SQLite admission', async t => {

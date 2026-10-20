@@ -33,6 +33,7 @@ export class Executor {
       && this.state.manualRequested.confirmed && (this.state.manualPause.expiresAt === null || this.state.manualPause.expiresAt > clock()));
     this.restartRestore = !this.restartManualPause && Boolean(this.state.legacyOutstanding || this.state.dhwrOutstanding || this.state.manualPause || this.state.manualTemporary || this.state.manualBaseline);
     this.manualRestorePending = false;
+    this.dhwrRecoveryPending = false;
     this.pending = null; this.timer = null; this.closed = false; this.closing = false;
     this.durableState = saved == null ? null : copy(saved);
     this.dhwrDeadlineTimer = null; this.expiryDhwr = null;
@@ -78,7 +79,7 @@ export class Executor {
       if (!this.expired('dhwr', end)) { this.armDhwrDeadline(); return; }
       if (this.durableState?.targetBindings?.dhwr?.generation !== binding.generation
         || !this.durableState.dhwrOutstanding || this.state.targetBindings.dhwr?.generation !== binding.generation) return;
-      this.restartRestore = true;
+      this.dhwrRecoveryPending = true;
       void this.dispatchDhwrOff(binding, end).promise.catch(() => {
         if (!this.closed) {
           this.dhwrDeadlineTimer = setTimeout(() => this.armDhwrDeadline(), 1000);
@@ -123,7 +124,7 @@ export class Executor {
     return Math.min(wallEnd - this.clock(), saved.end - this.monotonicClock());
   }
   expired(name, wallEnd) { return this.remaining(name, wallEnd) <= 0; }
-  status() { return { ...copy(this.state), restartManualPause: this.restartManualPause, manualPreheatReport: this.state.manualPreheatReport?.expiresAt > this.clock() ? copy(this.state.manualPreheatReport) : null, busy: Boolean(this.pending), restorationPending: this.restartRestore }; }
+  status() { return { ...copy(this.state), restartManualPause: this.restartManualPause, manualPreheatReport: this.state.manualPreheatReport?.expiresAt > this.clock() ? copy(this.state.manualPreheatReport) : null, busy: Boolean(this.pending), restorationPending: this.restartRestore || this.dhwrRecoveryPending }; }
   requireActivation() {
     if (this.closed || this.closing) throw failure('EXECUTOR_CLOSED', 'Heating control is closing.');
   }
@@ -299,7 +300,7 @@ export class Executor {
         || durable.targetBindings.dhwr?.identity !== this.target('dhwr')) throw error;
       // The OFF duty is already durable. Failing to record its dispatch attempt
       // cannot require leaving that original relay ON; clearing still commits.
-      this.restartRestore = true;
+      this.dhwrRecoveryPending = true;
     }
     const binding = this.state.targetBindings.dhwr;
     const duty = this.dispatchDhwrOff(binding, this.state.pulseUntil);
@@ -315,6 +316,15 @@ export class Executor {
       // obligated, with the original confirmation available for a later retry.
       this.commitState(saved, () => {
         this.state = copy(saved); this.elapsedDeadlines.delete('dhwr'); this.expiryDhwr = null;
+        this.dhwrRecoveryPending = false;
+        // OFF reconciliation releases only its own fence. A failed earlier
+        // operation may also have set the general recovery flag; retain it
+        // whenever another physical or manual restoration duty remains.
+        if (!saved.legacyOutstanding && !saved.manualBaseline && !saved.manualPause && !saved.manualTemporary
+          && !this.h66?.status(this.clock()).restorationPending && !this.floorOverride?.status(this.clock()).restorationPending) {
+          this.restartRestore = false;
+          this.manualRestorePending = false;
+        }
       });
     }, { priority: 'control' });
     await this.writes.run(() => this.store.observation?.({ source: 'controller', device: this.input, signal: 'dhwr_request', value: 0,
@@ -327,7 +337,7 @@ export class Executor {
     if (pause && (typeof pause.id !== 'string' || !pause.id || pause.expiresAt !== null
       && (!Number.isFinite(pause.expiresAt) || pause.expiresAt <= now || pause.expiresAt - now > 366 * 86_400_000)))
       throw failure('EXECUTOR_PAUSE_INVALID', 'Choose a current heating pause.');
-    if (this.restartRestore || this.h66?.status(now).restorationPending)
+    if (this.restartRestore || this.dhwrRecoveryPending || this.h66?.status(now).restorationPending)
       throw failure('EXECUTOR_RESTORATION_PENDING', 'Wait for the previous heating settings to be restored.');
     const currentEnd = this.state.manualPause ? this.state.manualPause.expiresAt : this.state.manualTemporary?.expiresAt;
     if (this.state.manualBaseline && (Number.isFinite(currentEnd) && currentEnd <= now

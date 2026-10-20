@@ -115,7 +115,24 @@ test('failed clearing alone retains the duty and does not repeat a confirmed OFF
   f.setFault(null);
   await f.stop();
   assert.equal(f.read().dhwrOutstanding, false);
+  assert.equal(f.executor.status().restorationPending, false,
+    'A committed clearing releases a circulation-only failure fence.');
   assert.deepEqual(f.calls, [true, false]);
+});
+
+test('a cleared circulation duty retains independent native and floor restoration fences', async t => {
+  for (const owner of ['h66', 'floorOverride']) await t.test(owner, async t => {
+    const f = fixture(t);
+    await f.start();
+    f.setFault({ code: 'IOERR', at: 'commit', clearingOnly: true });
+    await assert.rejects(f.stop(), { code: 'ERR_SQLITE_ERROR' });
+    f.executor[owner] = { status: () => ({ restorationPending: true }) };
+    f.setFault(null);
+    await f.stop();
+    assert.equal(f.read().dhwrOutstanding, false);
+    assert.equal(f.executor.status().restorationPending, true);
+    assert.deepEqual(f.calls, [true, false]);
+  });
 });
 
 test('a later ON cannot reuse an earlier OFF confirmation with the same target and deadline', async t => {

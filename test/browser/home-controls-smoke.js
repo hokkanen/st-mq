@@ -395,7 +395,8 @@ try {
     document.getElementById('pause-until').value = '2026-09-21T17:00';
     document.getElementById('pause-until').dispatchEvent(new Event('input', { bubbles: true }));
     document.getElementById('temporary-form').requestSubmit()`);
-  await until(`document.getElementById('override-status').textContent.includes('17:00')`);
+  await until(`document.getElementById('override-status').textContent.includes('17:00')
+    && !document.getElementById('pause-until').disabled`);
   await evaluate(`document.getElementById('pause-until').value = '';
     document.getElementById('pause-until').dispatchEvent(new Event('input', { bubbles: true }));
     document.getElementById('temporary-form').requestSubmit()`);
