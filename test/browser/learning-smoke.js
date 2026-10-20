@@ -393,7 +393,7 @@ try {
   assert.equal(await evaluate("window.savedProviderFold === document.querySelector('#providers .provider-fold') && window.savedProviderFold.open"), true, 'Provider folds stay mounted and open across refreshes');
   assert.equal(await evaluate("document.activeElement === document.querySelector('#providers summary')"), true, 'Provider summary keeps keyboard focus');
   assert.equal(await evaluate("document.querySelector('#providers .provider-series').children.length > 0"), true);
-  app.engine.setTemporary({ pauseUntil: new Date(now + 60_000).toISOString() });
+  await app.engine.runWrite(() => app.engine.setTemporary({ pauseUntil: new Date(now + 60_000).toISOString() }));
   await send('Page.reload');
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.match(await evaluate("document.getElementById('h66-test-status').textContent"), /Remains as the pump’s setting until changed again/);
