@@ -7,7 +7,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 ## Unreleased
 
 - Stop reporting an unchanged Garage Normal/Away selection as an out-of-date
-  device. Show it as a saved selection with its original timestamp; actual
+  device. Preserve the original selection timestamp; actual
   heat-pump and sensor freshness warnings remain independent.
 
 - With the updated Garage protection sender, accept independently fresh probe
