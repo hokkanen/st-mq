@@ -85,8 +85,11 @@ the reserve. Neither another location warming nor native ON replenishes it.
 The protection sender runs this calculation independently for both probes.
 Neither location can donate reserve to the other. Freshness follows genuine
 probe reports; repeating cached values or receiving a new target cannot create
-warmth. A short door-related air plunge spends reserve according to actual
-elapsed exposure.
+warmth. Each probe must independently be younger than 180 seconds; asynchronous
+reports do not invalidate protection merely because their timestamps differ.
+Valid Bluetooth advertisements still wait for both probe measurements to advance
+since the preceding valid advertisement. A short door-related air plunge spends
+reserve according to actual elapsed exposure.
 
 The sender persists settings and conservatively handles reboot or acquisition
 gaps. Missing history is unknown: it cannot initialize a warm reference merely

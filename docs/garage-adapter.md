@@ -114,9 +114,13 @@ sender's persisted readback; approval alone does not establish probe freshness.
 
 Only new native `temperature_measurement` events provide source freshness.
 Check actual reports from both probes, including unchanged values, at roughly
-60-second intervals. Do not replace these with cached status polling. The
-sender emits a valid BLE packet only for a new pair of probe reports; stale,
-invalid or unapproved protection emits invalid/rescue flags without temperatures.
+60-second intervals. Do not replace these with cached status polling. Each probe
+must independently be younger than 180 seconds; their report timestamps do not
+need to align. The sender still emits a valid BLE packet only after both probe
+measurements have advanced since the preceding valid packet. Stale, invalid or
+unapproved protection emits invalid/rescue flags without temperatures.
+This sender assessment change needs no heat-pump controller script, configuration
+or Bluetooth mapping change.
 
 Register the sender with the heat-pump controller's native BTHome receiver.
 Inspect the generated component IDs and configure the complete mapping in the

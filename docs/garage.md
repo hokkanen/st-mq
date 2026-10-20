@@ -99,6 +99,11 @@ and reserve above the configured margin. The pipe temperature and reserve are
 model estimates, not direct pipe measurements. Unknown or stale evidence is
 unavailable, never proof that the pipes are safe.
 
+Each probe must independently be younger than 180 seconds. Healthy front/rear
+reports do not need aligned timestamps; each pipe estimate follows its own
+probe's measurement clock. Valid Bluetooth reports still require a new
+measurement from both probes, rather than treating cached values as fresh.
+
 Protection monitors both locations in Normal and Away. When no intervention is
 needed, it leaves ordinary target, power and mode choices to their existing
 controls. When protection demands heating, it has two separate effects:

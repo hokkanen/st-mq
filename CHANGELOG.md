@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- With the updated Garage protection sender, accept independently fresh probe
+  reports without the former 65-second timestamp-alignment restriction. Preserve
+  individual freshness limits, actual pipe-risk protection and Bluetooth
+  freshness safeguards. The heat-pump controller script and mapping need no update.
+
 - Keep the **Heating pump active** chart bar continuous while fresh reports
   confirm an unchanged state, including in cached views. Preserve actual
   reporting gaps and OFF states.
