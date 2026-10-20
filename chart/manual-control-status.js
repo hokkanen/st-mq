@@ -14,10 +14,11 @@ export function heatingModeSelection(status = {}) {
 export function heatingRequestResult(status = {}, result = status.heatingTests?.lastResult) {
   const now = status.now ?? Date.now();
   if (!result || !actionReceiptRecent(result.at, now)) return null;
+  const rejected = result.sent === false && failed(result);
   const restorationPending = Boolean(status.execution?.restorationPending || status.h66?.restorationPending || status.preheatValves?.restorationPending);
   if (result.command === 'circulation') {
     const dhwr = status.dhwr ?? {}, superseded = dhwr.requestedAt > result.at;
-    const active = dhwr.active === true && !superseded;
+    const active = !rejected && dhwr.active === true && !superseded;
     return { ...result, active, superseded, confirmed: active && dhwr.confirmed === true,
       lifecycle: superseded ? 'superseded' : active ? 'active' : failed(result) ? 'failed' : 'completed' };
   }
@@ -32,11 +33,11 @@ export function heatingRequestResult(status = {}, result = status.heatingTests?.
   const superseded = Boolean(!sameHold && (fresh && observedPhase !== result.command
     || actual.requestedPhase && actual.requestedPhase !== result.command)
     || hold && hold.phase !== result.command || pause?.createdAt > result.at);
-  const active = (!failed(result) || fresh && observedPhase === result.command) && !superseded && !restorationPending && owned
+  const active = !rejected && (!failed(result) || fresh && observedPhase === result.command) && !superseded && !restorationPending && owned
     && (result.command !== 'preheat' || !status.h66 || Boolean(status.h66.manualPreheat));
   return { ...result, active, superseded, restorationPending, observedPhase,
     evidenceAt: fresh ? observedAt : null,
-    confirmed: fresh ? observedPhase === result.command : result.confirmed === true,
+    confirmed: !rejected && (fresh ? observedPhase === result.command : result.confirmed === true),
     holdUntil: sameHold ? hold.until : result.holdUntil,
     indefinite: active && sameHold && hold.until === null,
     lifecycle: superseded ? 'superseded' : active ? 'active' : failed(result) ? 'failed' : 'completed' };

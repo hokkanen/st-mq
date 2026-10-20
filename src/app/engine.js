@@ -817,6 +817,8 @@ export class Engine {
     preheatTargetC: preheatAvailable && (native.normalRoomReady || Number.isFinite(ownedRoom)) ? request.roomSettingC : null, preheatReason: preheatAvailable ? null
       : 'Preheating needs a fresh writable ROOM setting with room for the configured increase, or commissioned floor overrides.',
     lastResult: this.store.getState(`heating-test:${this.config.input}`),
+    lastResults: Object.fromEntries(['heating', 'circulation'].map(control =>
+      [control, this.store.getState(`heating-test:${this.config.input}:${control}`)])),
     manualPreheatReport: this.executor.status().manualPreheatReport ?? null };
   }
   preheatValveStatus(now = this.clock()) {
@@ -1017,6 +1019,7 @@ export class Engine {
         requestedAt: unchangedPreheat ? this.executor.status().manualRequested.at : requestedAt, at: this.clock() };
       await this.runWrite(() => {
         this.store.setState(`heating-test:${this.config.input}`, result);
+        this.store.setState(`heating-test:${this.config.input}:${command === 'circulation' ? 'circulation' : 'heating'}`, result);
         this.store.event('heating-test-sent', { input: this.config.input, ...result }, result.at);
         if (command === 'circulation') this.recordDhwr(this.executor.status().pulseUntil, result.at);
         if (command !== 'circulation' && execution.status !== 'waiting' && !unchangedPreheat) {
@@ -1034,6 +1037,7 @@ export class Engine {
         code, actual: null, requestedAt, at: this.clock(), error: message };
       await this.runWrite(() => {
         this.store.setState(`heating-test:${this.config.input}`, result);
+        this.store.setState(`heating-test:${this.config.input}:${command === 'circulation' ? 'circulation' : 'heating'}`, result);
         this.store.event('heating-test-failed', { input: this.config.input, ...result }, result.at);
       }, { priority: 'control' });
       throw new Error(message);

@@ -6,6 +6,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve separate manual-heating and circulation action reports across page
+  reloads and application restarts. A circulation action no longer hides the
+  previous heating report.
+
+- Keep a heating request rejected before dispatch visibly failed when a later
+  device report happens to match it. Show that current report separately;
+  uncertain deliveries can still receive late confirmation.
+
 - Release circulation-only recovery after the pump's confirmed OFF state is
   committed, so a completed run cannot leave later heating selections blocked.
   Preserve separately held heating choices and other restoration duties.

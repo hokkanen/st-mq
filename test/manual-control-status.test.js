@@ -55,6 +55,21 @@ test('late tariff readback updates a request including reports received before d
   assert.equal(heatingRequestResult(status).confirmed, false, 'An older report cannot confirm this request');
 });
 
+test('a matching current state cannot confirm a heating request rejected before dispatch', () => {
+  for (const command of ['normal', 'reduction', 'preheat', 'circulation']) {
+    const status = heating(command), original = status.heatingTests.lastResult;
+    Object.assign(original, { status: 'failed', sent: false, error: 'The request was rejected.' });
+    Object.assign(status.observations.actual, { phase: command, verified: true, stale: false, observedAt: at + 1 });
+    status.dhwr = { active: true, confirmed: true, requestedAt: at - 100 };
+    const receipt = heatingRequestResult(status);
+    assert.equal(receipt.confirmed, false, command);
+    assert.equal(receipt.active, false, command);
+    assert.equal(receipt.lifecycle, 'failed', command);
+    assert.equal(receipt.error, original.error);
+    if (command !== 'circulation') assert.equal(receipt.observedPhase, command);
+  }
+});
+
 test('new manual choices and fresh conflicting feedback supersede historical requests', () => {
   const status = heating();
   status.decision.manualHold.phase = 'normal';

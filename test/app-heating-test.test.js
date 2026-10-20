@@ -58,6 +58,8 @@ test('paused manual heating selections use the executor and preserve the automat
   const restarted = new Engine({ store, config, commandTransport, clock: engine.clock });
   t.after(() => { clearTimeout(restarted.executor.timer); restarted.executor.closed = true; });
   assert.equal(restarted.status().heatingTests.lastResult.command, 'circulation');
+  assert.equal(restarted.status().heatingTests.lastResults.heating.command, 'normal');
+  assert.equal(restarted.status().heatingTests.lastResults.circulation.command, 'circulation');
   await restarted.dispatchPending;
   assert.equal(commands.length, 2, 'Startup and normal ticks do not replay manual commands');
   assert.deepEqual(switches, [true, false], 'Restart restores the outstanding circulation run');
@@ -111,6 +113,9 @@ test('pending tests cannot overlap and failed tests are recorded without exposin
   commandTransport.publishDhwr = async () => { throw Object.assign(new Error('synthetic-private-broker-address'), { code: 'SHELLY_IDENTITY_UNAVAILABLE' }); };
   await assert.rejects(engine.testHeating({ command: 'circulation' }), /identity has not been confirmed/);
   assert.match(engine.status().heatingTests.lastResult.error, /identity has not been confirmed/);
+  assert.deepEqual(engine.status().heatingTests.lastResults.circulation, engine.status().heatingTests.lastResult);
+  assert.equal(engine.status().heatingTests.lastResults.heating.command, 'normal',
+    'A failed circulation request does not replace the independent heating report.');
   assert.equal(JSON.stringify(store.events()).includes('synthetic-private-broker-address'), false);
   commandTransport.publishDhwr = async () => ({ status: 'mqtt', sent: true, actual: null });
   await engine.executor.restore();

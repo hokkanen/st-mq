@@ -250,7 +250,9 @@ export function replicaReadModel(snapshot, config) {
     ...outlook, providers, configuredPrices: null,
     equipment: equipmentSnapshot(config, read, snapshot),
     equipmentTests: { ...unavailable, active: null }, equipmentControls: { ...unavailable },
-    heatingTests: { ...unavailable, commands: [], lastResult: state(`heating-test:${input}`) },
+    heatingTests: { ...unavailable, commands: [], lastResult: state(`heating-test:${input}`),
+      lastResults: Object.fromEntries(['heating', 'circulation'].map(control =>
+        [control, state(`heating-test:${input}:${control}`)])) },
     dhwr: { ...unavailable, active: false, actualOn: null, confirmed: false, recorded: true, snapshotAt: at,
       feedback: { configured: circulationConfigured, stateConfigured: circulationConfigured, powerConfigured: false,
         deviceId: circulationConfigured ? 'dhwr' : null, available: false,

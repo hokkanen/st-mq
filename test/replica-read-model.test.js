@@ -36,6 +36,21 @@ const observation = (source, device, signal, value, extra = {}) => ({ source, de
   unit: 'state', sourceTime: at - 20_000, receivedAt: at - 10_000,
   quality: ['good'], raw: { supported: true, timeBasis: 'source-measured' }, ...extra });
 
+test('replicas retain separate heating and circulation reports without granting control', t => {
+  const heating = { command: 'normal', at: at - 1000, status: 'mqtt', sent: true };
+  const circulation = { command: 'circulation', at, status: 'failed', sent: false };
+  const snapshot = fixture(t, store => {
+    store.setState('heating-test:mqtt', circulation);
+    store.setState('heating-test:mqtt:heating', heating);
+    store.setState('heating-test:mqtt:circulation', circulation);
+  });
+  const view = replicaReadModel(snapshot, config);
+  assert.deepEqual(view.heatingTests.lastResult, circulation);
+  assert.deepEqual(view.heatingTests.lastResults, { heating, circulation });
+  assert.equal(view.heatingTests.available, false);
+  assert.equal(hash(snapshot.path), snapshot.digest);
+});
+
 test('replica garage temperatures keep rear/front names and primary-first order without live authority', t => {
   const snapshot = fixture(t, store => {
     store.observation(observation('shelly-mqtt', 'garage', 'garage_temperature', 12.1, { unit: 'degC' }));

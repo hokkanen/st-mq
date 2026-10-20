@@ -469,10 +469,10 @@ function renderHeatingTests(s) {
       ? 'Requests are sent over MQTT. The reported state updates when device feedback arrives.'
       : capability?.reason || 'Manual heating control is unavailable in this installation.' });
   if (!heatingTestBusy) {
-    if (capability?.lastResult) {
-      const id = capability.lastResult.command === 'circulation' ? 'dhwr-message' : 'heating-test-message';
+    for (const receipt of [...Object.values(capability?.lastResults ?? {}), capability?.lastResult].filter(Boolean)) {
+      const id = receipt.command === 'circulation' ? 'dhwr-message' : 'heating-test-message';
       const previous = heatingResults.get(id);
-      if (!previous || capability.lastResult.at >= previous.at) heatingResults.set(id, capability.lastResult);
+      if (!previous || receipt.at >= previous.at) heatingResults.set(id, receipt);
     }
     for (const id of ['heating-test-message', 'dhwr-message']) {
       clearControlMessage(id);

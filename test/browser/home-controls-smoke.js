@@ -117,6 +117,7 @@ try {
       const response = await nativeFetch(input, options);
       if (!new URL(typeof input === 'string' ? input : input.url, location.href).pathname.endsWith('/api/status')) return response;
       const status = await response.json();
+      status.now += homeFixture.clockOffset ?? 0;
       if (homeFixture.staleReceipt && !homeFixture.currentStatusClock) status.now = ${now} - 1000;
       homeFixture.reads++;
       status.automation = { home: { enabled: homeFixture.automatic && !homeFixture.paused, available: true, activity: homeFixture.automatic && !homeFixture.paused ? 'automatic' : 'paused' } };
@@ -134,7 +135,8 @@ try {
       status.decision.manualHold = homeFixture.paused
         ? { until: homeFixture.manualPhase === 'preheat' ? status.now + 900000 : status.override.expiresAt, phase: homeFixture.manualPhase ?? 'preheat', changed: true } : null;
       status.heatingTests = { ...status.heatingTests, available: true, busy: homeFixture.transitionBusy === true, preheatAvailable: true,
-        preheatTargetC: 25, preheatRoomBoostC: 5, lastResult: homeFixture.staleReceipt ?? homeFixture.receipt };
+        preheatTargetC: 25, preheatRoomBoostC: 5, lastResult: homeFixture.staleReceipt ?? homeFixture.receipt,
+        lastResults: homeFixture.controlReceipts ?? {} };
       status.observations.actual = { ...status.observations.actual, source: 'simulation', verified: homeFixture.confirmed !== false, observedAt: status.now,
         stale: false, mode: 'normal', phase: homeFixture.manualPhase ?? (homeFixture.paused ? 'preheat' : 'normal'),
         requestedPhase: homeFixture.manualPhase ?? (homeFixture.paused ? 'preheat' : 'normal') };
@@ -432,10 +434,31 @@ try {
   assert.equal(await evaluate('homeFixture.mutations.length'), beforeBusyClick, 'Busy buttons send no rejected follow-up request');
   await evaluate(`homeFixture.holdTransition = false; homeFixture.transitionBusy = false; homeFixture.staleReceipt = null`);
   await until(`!document.getElementById('test-reduction').disabled`);
+  await evaluate(`homeFixture.clockOffset = 1;
+    homeFixture.receipt = { command: 'normal', at: ${now} + 1, requestedAt: ${now} + 1,
+    status: 'failed', sent: false, error: 'Synthetic request rejected before dispatch' };
+    homeFixture.manualPhase = 'normal'; homeFixture.confirmed = true;`);
+  await evaluate(`homeFixture.poll()`);
+  assert.equal(await evaluate(`document.getElementById('heating-test-message').classList.contains('form-error')`), true);
+  assert.match(await evaluate(`document.getElementById('heating-test-message').textContent`), /rejected before dispatch.*Latest device report: Normal heating/);
+  assert.doesNotMatch(await evaluate(`document.getElementById('heating-test-message').textContent`), /Device confirmed|delivery was uncertain/);
   await evaluate(`document.getElementById('dashboard-reset').click()`);
   assert.equal(await evaluate(`document.querySelectorAll('details[open]').length`), 0,
     'Dashboard reset closes controls, strategies and models after cross-link navigation');
   assert.equal(await evaluate(`document.activeElement.id`), 'dashboard-reset');
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    homeFixture.paused = true; homeFixture.pauseEnd = null; homeFixture.automatic = false; homeFixture.manualPhase = 'reduction';
+    homeFixture.controlReceipts = {
+      heating: { command: 'reduction', at: ${now} - 1000, requestedAt: ${now} - 1000, status: 'mqtt', sent: true, holdUntil: null },
+      circulation: { command: 'circulation', at: ${now}, requestedAt: ${now}, status: 'mqtt', sent: true }
+    };
+    homeFixture.receipt = homeFixture.controlReceipts.circulation;
+  ` });
+  await send('Page.reload');
+  await until(`document.getElementById('heating-test-message').textContent.includes('Reduced heating requested')
+    && document.getElementById('dhwr-message').textContent.includes('Circulation requested')`);
+  assert.match(await evaluate(`document.getElementById('heating-test-message').textContent`), /Device confirmed.*Held until you select/,
+    'A cold page renders the independent heating receipt alongside the newer circulation receipt');
   assert.deepEqual(errors, [], 'Production monitor runs without browser exceptions');
   console.log(`Home controls browser checks passed. Synthetic screenshots: ${artifacts}`);
 } finally {

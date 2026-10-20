@@ -61,6 +61,9 @@ Action receipts, including Garage and equipment controls, remain visible for
 24 hours unless replaced by a newer action on the same control. Device feedback
 updates pending messages; completed receipts describe past actions, not active
 ownership. Ongoing faults/restoration are visible until resolved regardless of age.
+Manual heating and circulation keep separate reports across page reloads and
+application restarts. A request rejected before dispatch stays failed even if a
+later device report matches it; that current report is shown separately.
 
 ## Garage manual heating
 
