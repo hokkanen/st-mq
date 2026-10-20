@@ -1603,6 +1603,64 @@ test('a successful current command needs fresh native readback and then observed
  assert.equal(controller.status().pending,null);
  assert.equal(f.writes.filter(row=>row.method==='Number.Set').length,1);
 });
+test('a same-second current notification after ACK retains its write while a later native choice wins', async t => {
+  const f = fixture(t, { limiterEnabled: true });
+  await f.ready(); f.setNow(NOW + 2000);
+  f.sources.set('current_limit', 'rpc');
+  f.holdReplies((frame, reply) => {
+    if (frame.method !== 'Number.Set') return false;
+    f.setNow(NOW + 2200); reply(); return true;
+  });
+  let notified = false;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: state => {
+      if (!notified && state.pending?.role === 'current_limit' && state.pending.stage === 'accepted') {
+        notified = true; f.setNow(NOW + 2400);
+        f.delta('current_limit', { value: 12, source: 'rpc' }, { eventAt: NOW + 2300, apply: false });
+      }
+    } });
+  t.after(() => controller.close());
+  await controller.update({ enabled: false, allocation: {} });
+  assert.equal(f.fields.current_limit, 12);
+  assert.equal(controller.status().manualCurrentA, null);
+  assert.equal(f.adapter.snapshot().fields.current_limit.measuredAt, NOW + 2000);
+  assert.equal(f.adapter.snapshot().fields.current_limit.instructionAt, NOW + 2300);
+  f.setNow(NOW + 3500);
+  f.delta('current_limit', { value: 12, source: 'rpc', last_update_ts: (NOW + 3000) / 1000 },
+    { eventAt: NOW + 3300 });
+  await f.adapter.refresh();
+  await controller.update({ enabled: false, allocation: {} });
+  assert.equal(controller.status().manualCurrentA, 12,
+    'A same-value choice with a new native value clock still becomes a session ceiling');
+});
+test('restart reconciles a same-second current notification after ACK without replay or a false ceiling', async t => {
+  const f = fixture(t, { limiterEnabled: true });
+  await f.ready(); f.setNow(NOW + 2000); f.sources.set('current_limit', 'rpc');
+  f.holdReplies((frame, reply) => {
+    if (frame.method !== 'Number.Set') return false;
+    f.setNow(NOW + 2200); reply(); return true;
+  });
+  let saved, controller;
+  const options = { adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: state => {
+      saved = structuredClone(state);
+      if (state.pending?.role === 'current_limit' && state.pending.stage === 'accepted') {
+        f.setNow(NOW + 2400);
+        f.delta('current_limit', { value: 12, source: 'rpc' }, { eventAt: NOW + 2300, apply: false });
+        controller.invalidate();
+      }
+    } };
+  controller = createShellyController(options); t.after(() => controller.close());
+  await controller.update({ enabled: false, allocation: {} });
+  assert.equal(saved.pending.stage, 'accepted');
+  await controller.close();
+  controller = createShellyController({ ...options, initialState: saved, saveState: () => {} });
+  const result = await controller.update({ enabled: false, allocation: {} });
+  assert.equal(result.pending, null); assert.equal(result.manualCurrentA, null);
+  assert.equal(f.writes.filter(row => row.method === 'Number.Set').length, 1);
+  assert.equal(f.adapter.snapshot().fields.current_limit.measuredAt, NOW + 2000);
+  assert.equal(f.adapter.snapshot().fields.current_limit.instructionAt, NOW + 2300);
+});
 test('an enabled native schedule owns start and stop while current limiting stays available',async t=>{
  const f=fixture(t,{limiterEnabled:true});f.fields.current_limit=12;f.schedules.jobs=[{id:1,enable:true}];await f.ready();
  const controller=createShellyController({adapter:f.adapter,clock:f.now,canControl:()=>true});t.after(()=>controller.close());

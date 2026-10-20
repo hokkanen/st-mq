@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Correlate a Shelly current change's same-second notification when it arrives
+  after acknowledgement, so the controller's own write cannot become a false
+  external current ceiling. Preserve later native choices and original clocks.
+
 - Clear a charger's earlier Pause confirmation after that pause is superseded
   or its physical connection changes. Temporary feed loss still preserves the
   receipt for the same saved pause.

@@ -412,6 +412,16 @@ or unfinished descriptors cannot supply continuity. These checks prevent a
 future false backend boundary. They neither repair an existing disagreement nor
 prove accepted-period or restart continuity across a complete backend switch.
 
+An acknowledged Shelly current write can have its partial notification arrive
+after the acknowledgement. When a fresh query after both observations confirms
+the requested value in the write's native whole second, that notification belongs
+to the confirmed change; its event clock alone cannot create an external current
+ceiling. Keep both original clocks. Later native value clocks, different values
+and separately evidenced current choices retain their session precedence. A
+same-value selection without distinguishable native evidence cannot identify a
+new instruction. This correlation applies only to current settings, not Starts
+or Stops.
+
 Shelly command confirmation requires its acknowledged setting and fresh native
 readback within the same adapter generation and physical connection. An unrelated
 connected work-state update does not erase that confirmation. Pending observations

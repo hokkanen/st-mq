@@ -1129,12 +1129,23 @@ const commandReadback = (field, pending) => field.measuredAt >= pending.dispatch
   // rounding the source clock forward or accepting an older second/cache.
   || field.measuredAt === Math.floor(pending.dispatchedAt / 1000) * 1000 && acceptedReadback(field, pending);
 
+const laterCurrentInstruction = (field, pending) => currentInstructionAt(field) > pending.acceptedAt
+  && !(field.commandSource === 'sys' && field.value === pending.value)
+  // The device can publish the changed value's partial notification after its
+  // ACK. Its event clock is not a second current selection. A matching query
+  // made after both the ACK and notification confirms the write in that native
+  // whole second; preserve the original value and event clocks independently.
+  && !(field.commandSource === 'rpc' && field.value === pending.value
+    && field.measuredAt === Math.floor(pending.dispatchedAt / 1000) * 1000
+    && Math.floor(currentInstructionAt(field) / 1000) * 1000 === field.measuredAt
+    && acceptedReadback(field, { ...pending, stage: 'accepted' }));
+
 // Attribution is shared with the runtime because individual adapter fields can
 // update before the controller finishes and persists its refresh result.
 export function shellyCurrentCommandReadback(field, pending) {
   return Boolean(field && field.invalidatedAt === undefined && pending && time(pending.acceptedAt) && field.value === pending.value
     && commandReadback(field, { ...pending, stage: 'accepted' })
-    && (currentInstructionAt(field) <= pending.acceptedAt || field.commandSource === 'sys'));
+    && !laterCurrentInstruction(field, pending));
 }
 
 function validIdentificationPause(value) {
@@ -1568,7 +1579,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         test.phase = test.restoreCurrentA === null ? 'active' : 'restored';
         test.confirmedAt ??= clock(); rememberCurrent(current); await persist();
       } else if (currentInstructionAt(current) > pending.dispatchedAt && (current.value !== pending.value
-        || time(pending.acceptedAt) && currentInstructionAt(current) > pending.acceptedAt && !systemEcho(current, pending.value))) {
+        || time(pending.acceptedAt) && laterCurrentInstruction(current, pending))) {
         test.phase = 'superseded'; test.pending = null; await persist();
       } else {
         // An absent acknowledgement cannot be replaced by matching amperage.
@@ -1999,7 +2010,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
               // A later same-value app selection is still a native ceiling.
               // Without an acknowledgement time, attribution is also unknown.
               if (pending.stage !== 'accepted' || !time(pending.acceptedAt)
-                || currentInstructionAt(readback) > pending.acceptedAt && !systemEcho(readback, pending.value))
+                || laterCurrentInstruction(readback, pending))
                 state.manualCurrentA = readback.value < adapter.config.maximumCurrentA ? readback.value : null;
               rememberCurrent(readback);
             }
@@ -2318,7 +2329,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             else if (value === true) state.owned = null;
           } else {
             state.currentExecutionStage = 'read-back';
-            if (currentInstructionAt(readback) > state.pending.acceptedAt && !systemEcho(readback, value))
+            if (laterCurrentInstruction(readback, state.pending))
               state.manualCurrentA = readback.value < adapter.config.maximumCurrentA ? readback.value : null;
             rememberCurrent(readback); expectedCurrent = copy(readback);
           }
