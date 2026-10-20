@@ -463,9 +463,12 @@ benefit when revising a running plan; the routine five-cent ongoing/one-cent wai
 improvements. The uncertainty comparison subtracts the extra-day plan's
 allowance and credits the normal plan's allowance; shared forecast exposure is
 not charged twice. Independently confirmed native periods remain
-real competing loads without gaining new scheduling authority. A stopped or idle
-unscheduled peer's unfulfilled battery request does not block comparison of the
-selected charger. An independently running or scheduled peer remains in shared
+real competing loads without gaining new scheduling authority. When the peer
+does not report charging and valid measured power is zero, residual standby
+current does not add a battery-delivery obligation to either alternative.
+Unavailable power is not zero. A stopped or idle unscheduled peer's unfulfilled
+battery request does not block comparison of the selected charger. An
+independently running or scheduled peer remains in shared
 capacity and equal-service accounting; unavailable electrical demand cannot be
 silently treated as zero or excluded to certify a saving. A previously
 approved deadline retains its durable approval provenance after the checkpoint;

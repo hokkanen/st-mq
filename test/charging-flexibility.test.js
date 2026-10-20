@@ -291,6 +291,73 @@ test('an independently stopped or idle peer does not turn its outstanding batter
   }
 });
 
+test('standby current on a stopped or idle peer cannot block either charger’s extra-day comparison', () => {
+  for (const selectedId of ['charger1', 'charger2']) for (const state of ['paused', 'native-stop', 'disabled']) {
+    const options = planning(true), peer = options.chargers.find(charger => charger.id !== selectedId);
+    peer.requiredGridKwh = 500;
+    peer.values.actualCurrentA = reading(0.01);
+    if (state === 'paused') {
+      peer.request = { pause: { requestedAt: options.now - 60_000 } };
+      peer.control.sessionPause = { confirmed: true };
+      peer.deadlineAt = options.now - HOUR;
+    } else if (state === 'native-stop') {
+      peer.control.manual = { kind: 'stop' };
+      peer.telemetry.manualStop = true;
+    } else peer.settings.enabled = false;
+    const before = structuredClone(options);
+    const result = compareChargingFlexibility(options, { chargerId: selectedId,
+      normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
+    assert.equal(result.available, true, `${selectedId} with ${state} peer`);
+    assert.deepEqual(result.chargers.map(charger => charger.id), [selectedId]);
+    assert.ok(result.savingsCents > 0);
+    assert.deepEqual(options, before, 'comparison preserves measured current and independent instructions');
+    const approved = structuredClone(options);
+    approved.chargers.find(charger => charger.id === selectedId).deadlineAt = options.now + 4 * HOUR;
+    approved.deadlineBaselines = { [selectedId]: options.now + 2 * HOUR };
+    assert.equal(planChargers(approved).plans[selectedId].feasible, true);
+  }
+});
+
+test('a native-scheduled peer with zero present draw remains in the extra-day service comparison', () => {
+  const options = planning(true), peer = options.chargers[1];
+  peer.settings.enabled = false;
+  peer.values.scheduledStartAt = reading(options.now + HOUR / 2);
+  const choice = { chargerId: 'charger1', normalReadyByAt: options.now + 2 * HOUR,
+    deferredReadyByAt: options.now + 4 * HOUR };
+  const result = compareChargingFlexibility(options, choice);
+  assert.equal(result.available, true);
+  assert.equal(result.chargers.length, 2);
+  assert.ok(result.chargers.find(charger => charger.id === peer.id).normalCostCents > 0);
+  peer.values.maximumCurrentA = { value: null, available: false };
+  peer.configuration.maximumCurrentA = undefined;
+  const unknown = compareChargingFlexibility(options, choice);
+  assert.equal(unknown.available, false);
+  assert.equal(unknown.blockingReason, 'competing-load-unavailable');
+});
+
+test('a pause request cannot exclude an independently charging peer before native confirmation', async t => {
+  const service = createChargingPlannerService(); t.after(() => service.close());
+  const options = planning(true), peer = options.chargers[1];
+  peer.request = { pause: { requestedAt: options.now - 60_000 } };
+  peer.control.sessionPause = { confirmed: false };
+  peer.values.charging = reading(true);
+  peer.values.actualCurrentA = reading(6);
+  peer.values.powerKw = reading(4.14);
+  const choice = { chargerId: 'charger1', normalReadyByAt: options.now + 2 * HOUR,
+    deferredReadyByAt: options.now + 4 * HOUR };
+  const pending = await service.compare(options, choice);
+  assert.equal(pending.available, false);
+  assert.equal(pending.savingsCents, null, 'unconfirmed stopping cannot certify a saving');
+  peer.control.sessionPause.confirmed = true;
+  peer.values.charging = reading(false);
+  peer.values.actualCurrentA = reading(0.01);
+  peer.values.powerKw = reading(0);
+  const stopped = await service.compare(options, choice);
+  assert.equal(stopped.available, true);
+  assert.deepEqual(stopped.chargers.map(charger => charger.id), ['charger1']);
+  assert.ok(stopped.savingsCents > 0);
+});
+
 test('independently active peers retain capacity and equal-service accounting; missing demand blocks comparison', () => {
   const options = planning(true), peer = options.chargers[1];
   peer.settings.enabled = false;
@@ -307,6 +374,20 @@ test('independently active peers retain capacity and equal-service accounting; m
   assert.equal(unknown.available, false);
   assert.equal(unknown.blockingReason, 'competing-load-unavailable');
   assert.equal(unknown.savingsCents, null);
+});
+
+test('nonzero peer current with positive or unavailable power cannot be dismissed as standby', () => {
+  for (const power of [reading(4.14), { value: 0, available: false }]) {
+    const options = planning(true), peer = options.chargers[1];
+    peer.settings.enabled = false;
+    peer.values.charging = { value: null, available: false };
+    peer.values.actualCurrentA = reading(6);
+    peer.values.powerKw = power;
+    const result = compareChargingFlexibility(options, { chargerId: 'charger1',
+      normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
+    assert.equal(result.available, false);
+    assert.equal(result.savingsCents, null);
+  }
 });
 
 test('a lower uncertainty allowance cannot make extra time increase estimated cash cost', () => {

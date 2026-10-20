@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep **One extra day** available when the other charger is paused or idle and
+  reports residual standby current. Active and native-scheduled peer charging
+  remains part of the shared cost and capacity comparison.
+
 - Restore green availability dots with neutral labels in MQTT and equipment
   status, use content descriptions consistently in connection setup subtitles,
   and omit repeated charger notices while keeping their explanations available.

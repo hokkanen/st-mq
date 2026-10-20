@@ -904,9 +904,11 @@ export function chargingPlanParticipants(chargers, ...results) {
   // A stopped or idle unscheduled peer remains an observed resource input; its
   // unfulfilled battery request is not a promise the scheduler can deliver.
   // Independently running/native-scheduled peers with modeled service remain
-  // in the joint cost and equal-service comparison.
+  // in the joint cost and equal-service comparison. Valid zero power can
+  // disambiguate standby current; unknown power cannot establish an idle peer.
   return chargers.filter(charger => value(charger, 'connected') === true && charger.requiredGridKwh > EPS
-    && (value(charger, 'charging') === true || value(charger, 'actualCurrentA') > 0
+    && (value(charger, 'charging') === true
+      || value(charger, 'actualCurrentA') > 0 && value(charger, 'powerKw') !== 0
       || results.some(result => result.plans[charger.id]?.feasible != null
         || ['scheduled', 'charging', 'permitted'].some(key => result.forecasts[charger.id]?.[key]))));
 }
