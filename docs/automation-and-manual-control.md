@@ -64,6 +64,9 @@ ownership. Ongoing faults/restoration are visible until resolved regardless of a
 Manual heating and circulation keep separate reports across page reloads and
 application restarts. A request rejected before dispatch stays failed even if a
 later device report matches it; that current report is shown separately.
+Circulation Stop is restored from its saved OFF instruction after reload. A newer
+Start replaces that report; OFF feedback ends a run without undoing its earlier
+confirmation.
 
 ## Garage manual heating
 

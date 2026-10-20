@@ -63,6 +63,8 @@ test('paused manual heating selections use the executor and preserve the automat
   await restarted.dispatchPending;
   assert.equal(commands.length, 2, 'Startup and normal ticks do not replay manual commands');
   assert.deepEqual(switches, [true, false], 'Restart restores the outstanding circulation run');
+  assert.equal(restarted.status().dhwr.stopRequestedAt, engine.clock(),
+    'The saved OFF instruction remains available for its report after restart.');
 });
 
 test('manual MQTT tests require live input, exact commands and a configured transport', async t => {

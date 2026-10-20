@@ -17,7 +17,7 @@ export function heatingRequestResult(status = {}, result = status.heatingTests?.
   const rejected = result.sent === false && failed(result);
   const restorationPending = Boolean(status.execution?.restorationPending || status.h66?.restorationPending || status.preheatValves?.restorationPending);
   if (result.command === 'circulation') {
-    const dhwr = status.dhwr ?? {}, superseded = dhwr.requestedAt > result.at;
+    const dhwr = status.dhwr ?? {}, superseded = dhwr.active === true && dhwr.requestedAt > result.at;
     const active = !rejected && dhwr.active === true && !superseded;
     return { ...result, active, superseded, confirmed: active && dhwr.confirmed === true,
       lifecycle: superseded ? 'superseded' : active ? 'active' : failed(result) ? 'failed' : 'completed' };
@@ -53,6 +53,12 @@ export function h66RequestResult(status = {}) {
     : fresh ? reading.value === result.value : result.confirmed === true,
     observedValue: fresh ? reading.value : null, evidenceAt: fresh ? observedAt : null,
     superseded: fresh && reading.value !== result.value };
+}
+
+/** Restore the saved OFF report after reload, unless a later Start replaced it. */
+export function circulationStopRequest(status = {}) {
+  const at = status.dhwr?.stopRequestedAt;
+  return actionReceiptRecent(at, status.now ?? Date.now()) && !(status.dhwr.requestedAt > at) ? at : undefined;
 }
 
 /** Restoration remains visible until resolved, independently from receipt age. */

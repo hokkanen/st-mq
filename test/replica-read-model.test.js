@@ -43,11 +43,17 @@ test('replicas retain separate heating and circulation reports without granting 
     store.setState('heating-test:mqtt', circulation);
     store.setState('heating-test:mqtt:heating', heating);
     store.setState('heating-test:mqtt:circulation', circulation);
+    store.setState('executor:home', { version: 2, targetBindings: {}, phase: 'normal',
+      pulseUntil: 0, expiresAt: null, legacyOutstanding: false, dhwrOutstanding: false,
+      dhwrRequested: { on: false, at } });
   });
   const view = replicaReadModel(snapshot, config);
   assert.deepEqual(view.heatingTests.lastResult, circulation);
   assert.deepEqual(view.heatingTests.lastResults, { heating, circulation });
   assert.equal(view.heatingTests.available, false);
+  assert.equal(view.dhwr.stopRequestedAt, at);
+  assert.equal(view.dhwr.actualOn, null);
+  assert.equal(view.dhwr.confirmed, false);
   assert.equal(hash(snapshot.path), snapshot.digest);
 });
 

@@ -956,6 +956,7 @@ export class Engine {
       restorationPending: Boolean(state.dhwrOutstanding && (state.restorationPending || state.pulseUntil <= now)),
       commandTopic: configuredDevice?.prefix ? `${configuredDevice.prefix}/rpc` : null,
       actualOn, confirmed, attention: !confirmed, reason, requestedAt,
+      stopRequestedAt: state.dhwrRequested?.on === false ? requestedAt : null,
       feedback: { configured: Boolean(device), stateConfigured, powerConfigured, deviceId: device?.id ?? null, available: device?.available === true,
         basis: powerConfigured ? 'power' : stateConfigured ? 'switch' : null, state: feedbackState, power: reportedPower } };
   }

@@ -227,6 +227,7 @@ export function replicaReadModel(snapshot, config) {
   const circulationDevice = config.connections?.equipment?.devices?.find(device => device.id === 'dhwr' && device.enabled);
   const circulation = read('dhwr_active', 'shelly-mqtt', 'dhwr');
   const circulationConfigured = Boolean(circulationDevice || circulation);
+  const circulationRequest = state(input === 'simulated' ? 'executor:simulated' : 'executor:home')?.dhwrRequested;
   const readings = Object.fromEntries(Object.entries(H66_REGISTERS).flatMap(([register, definition]) => {
     const row = read(definition.signal, 'husdata-h66');
     return row ? [[register, { ...row, register }]] : [];
@@ -254,6 +255,8 @@ export function replicaReadModel(snapshot, config) {
       lastResults: Object.fromEntries(['heating', 'circulation'].map(control =>
         [control, state(`heating-test:${input}:${control}`)])) },
     dhwr: { ...unavailable, active: false, actualOn: null, confirmed: false, recorded: true, snapshotAt: at,
+      requestedAt: circulationRequest?.at ?? null,
+      stopRequestedAt: circulationRequest?.on === false ? circulationRequest.at : null,
       feedback: { configured: circulationConfigured, stateConfigured: circulationConfigured, powerConfigured: false,
         deviceId: circulationConfigured ? 'dhwr' : null, available: false,
         basis: circulation?.basis ?? null, state: circulation, power: null,

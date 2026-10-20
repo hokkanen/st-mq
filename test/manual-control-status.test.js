@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ACTION_RECEIPT_MS, actionReceiptRecent, createReceiptTracker } from '../chart/action-receipts.js';
-import { heatingRequestResult, heatingModeSelection, h66RequestResult, circulationStopPending } from '../chart/manual-control-status.js';
+import { heatingRequestResult, heatingModeSelection, h66RequestResult, circulationStopRequest, circulationStopPending } from '../chart/manual-control-status.js';
 import { homeHeatingWarning } from '../chart/heating-warning.js';
 
 const at = Date.parse('2026-09-16T10:48:00Z');
@@ -127,6 +127,27 @@ test('circulation completion remains a receipt and stop waiting resolves on actu
   assert.equal(circulationStopPending(status, at), false);
   status.dhwr.restorationPending = true;
   assert.equal(circulationStopPending(status, at), true);
+});
+
+test('circulation OFF completion retains the earlier confirmed run instead of claiming it was never confirmed', () => {
+  const status = heating('circulation'), track = createReceiptTracker();
+  status.dhwr = { active: true, requestedAt: at - 100, confirmed: true };
+  assert.equal(track('run', heatingRequestResult(status), status.now).confirmed, true);
+  status.dhwr = { active: false, requestedAt: at + 500, confirmed: true, actualOn: false };
+  const completed = track('run', heatingRequestResult(status), status.now);
+  assert.equal(completed.confirmed, true);
+  assert.equal(completed.lifecycle, 'completed');
+  assert.equal(completed.superseded, false);
+});
+
+test('the saved circulation Stop report is bounded and yields to a later Start', () => {
+  const status = { now: at + 1000, dhwr: { stopRequestedAt: at, requestedAt: at } };
+  assert.equal(circulationStopRequest(status), at);
+  status.dhwr.requestedAt++;
+  assert.equal(circulationStopRequest(status), undefined);
+  status.dhwr.requestedAt = at;
+  status.now = at + ACTION_RECEIPT_MS;
+  assert.equal(circulationStopRequest(status), undefined);
 });
 
 test('delayed Reduction remains pending through normal readback then follows the eventual device report', () => {

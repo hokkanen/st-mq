@@ -52,7 +52,7 @@ import { homeHeatingWarning } from './heating-warning.js';
 import { createOcppSetupAction, ocppSetupRevision } from './ocpp-setup.js';
 import { createPageFullscreen } from './page-fullscreen.js';
 import { ACTION_RECEIPT_MS, actionReceiptRecent, createReceiptTracker } from './action-receipts.js';
-import { heatingRequestResult, heatingModeSelection, h66RequestResult, circulationStopPending } from './manual-control-status.js';
+import { heatingRequestResult, heatingModeSelection, h66RequestResult, circulationStopRequest, circulationStopPending } from './manual-control-status.js';
 
 const $ = id => document.getElementById(id);
 const selectPickers = createSelectPickers(document);
@@ -497,6 +497,13 @@ function renderHeatingTests(s) {
       $('heating-test-message').textContent = failure ? `${$('heating-test-message').textContent} ${restore}` : restore;
     }
     if (!controlErrors.has('dhwr-message')) {
+      const savedStopAt = circulationStopRequest(s);
+      if (savedStopAt !== undefined && savedStopAt !== circulationStopAt) {
+        circulationStopAt = savedStopAt; circulationStopConfirmed = false;
+      }
+      if (s.dhwr?.requestedAt > circulationStopAt) {
+        circulationStopAt = undefined; circulationStopConfirmed = false;
+      }
       if (s.dhwr?.restorationPending) $('dhwr-message').textContent = 'Stopping circulation. Restoration is still pending.';
       else if (circulationStopPending(s, circulationStopAt)) $('dhwr-message').textContent = 'Stop sent. Waiting for a new device report to verify the request.';
       else if (actionReceiptRecent(circulationStopAt, s.now)) {

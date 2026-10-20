@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Restore the latest circulation Stop report after reload, let a newer Start
+  replace it, and keep a completed run's confirmed report through OFF feedback.
+
 - Preserve separate manual-heating and circulation action reports across page
   reloads and application restarts. A circulation action no longer hides the
   previous heating report.

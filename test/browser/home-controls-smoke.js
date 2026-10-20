@@ -152,6 +152,8 @@ try {
         active: true, actualOn: null, confirmed: false, feedback: { configured: true, available: false } };
       if (homeFixture.circulationScenario === 'unknown') status.dhwr = {
         active: false, actualOn: null, confirmed: false, feedback: { configured: true, available: false } };
+      if (homeFixture.circulationStopAt != null) Object.assign(status.dhwr, {
+        stopRequestedAt: homeFixture.circulationStopAt, requestedAt: homeFixture.circulationStopAt });
       status.h66 = { ...status.h66, manualPreheat: homeFixture.manualPhase === 'preheat' ? { confirmed: true } : null, connected: true, brokerConnected: true, enabled: true,
         readings: Object.fromEntries(Object.entries({ '2201': 1, '0203': 20, '0212': 45,
           '0208': 55, '1A01': 1, '1A07': 0, '3104': 0, '1A20': 0 })
@@ -459,6 +461,10 @@ try {
     && document.getElementById('dhwr-message').textContent.includes('Circulation requested')`);
   assert.match(await evaluate(`document.getElementById('heating-test-message').textContent`), /Device confirmed.*Held until you select/,
     'A cold page renders the independent heating receipt alongside the newer circulation receipt');
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: `homeFixture.circulationStopAt = ${now};` });
+  await send('Page.reload');
+  await until(`document.getElementById('dhwr-message').textContent === 'Circulation stopped · device confirmed.'`);
+  assert.match(await evaluate(`document.getElementById('heating-test-message').textContent`), /Reduced heating requested/);
   assert.deepEqual(errors, [], 'Production monitor runs without browser exceptions');
   console.log(`Home controls browser checks passed. Synthetic screenshots: ${artifacts}`);
 } finally {
