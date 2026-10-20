@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep the **Heating pump active** chart bar continuous while fresh reports
+  confirm an unchanged state, including in cached views. Preserve actual
+  reporting gaps and OFF states.
+
 - Add an optional **Keep me signed in for 360 days** choice for HTTPS access.
   Keep the checkbox and label aligned on phones, with a complete touch target;
   hide the option on HTTP. Preserve the choice and restore editing after a

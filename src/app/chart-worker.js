@@ -12,6 +12,7 @@ import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { CHART_VIEW_BY_KEY } from '../domain/chart-views.js';
 import { CHARGING_ALLOWANCE_SIGNALS } from '../charging/allowance-history.js';
 import { CHARGING_ALLOWANCE_SERIES } from './chart-charging-allowances.js';
+import { H66_CHART_COVERAGE_SIGNALS } from './chart-coverage.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
 import { ENERGY_SIGNALS, HISTORY_AXIS_BY_KEY } from '../domain/history-series.js';
 import { createChartQueryContext } from './chart-query-context.js';
@@ -90,7 +91,7 @@ const pendingEnergyFingerprint = (args,range) => JSON.stringify(pendingEnergyObs
 const latestSourceCoverage=db.prepare(`SELECT c.*,o.raw,o.source_time AS observed_at FROM state s
   JOIN active_recorder_coverage c ON c.id=json_extract(s.value,'$.coverageId')
   JOIN active_observations o ON o.id=c.observation_id WHERE s.key LIKE 'recorder:signal:%' AND (
-    json_extract(o.raw,'$.reportIntervalMs')>0 OR c.source IN ('husdata-h66','simulation') AND c.signal IN ('compressor_active','dhw_routing','operating_mode','auxiliary_output')
+    json_extract(o.raw,'$.reportIntervalMs')>0 OR c.source IN ('husdata-h66','simulation') AND c.signal IN (${H66_CHART_COVERAGE_SIGNALS.map(signal=>`'${signal}'`).join(',')})
     OR c.source='controller-estimate' AND c.signal='auxiliary_power'
     OR c.source IN ('mqtt-equipment','shelly-mqtt') AND c.signal='dhwr_active') ORDER BY c.id`);
 function sourceCoverageFingerprint(args,range) {

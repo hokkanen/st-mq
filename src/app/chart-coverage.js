@@ -2,9 +2,12 @@ import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { selectedCoverageSpan, nextCoverageStart, nextCoverageId } from '../storage/coverage-history.js';
 
-const EQUIPMENT_SIGNALS = ['compressor_active', 'dhw_routing', 'operating_mode', 'auxiliary_output'];
+// Keep confirmed-state projection and worker cache freshness on the same signals.
+export const H66_CHART_COVERAGE_SIGNALS = Object.freeze([
+  'compressor_active', 'heating_pump_active', 'dhw_routing', 'operating_mode', 'auxiliary_output',
+]);
 function sourceReportAge(row,raw) {
-  if (['husdata-h66','simulation'].includes(row.source) && EQUIPMENT_SIGNALS.includes(row.signal)
+  if (['husdata-h66','simulation'].includes(row.source) && H66_CHART_COVERAGE_SIGNALS.includes(row.signal)
     || row.source==='controller-estimate' && row.signal==='auxiliary_power') return H66_MAX_AGE_MS;
   if (row.source!=='mqtt-equipment' || row.signal!=='dhwr_active') return null;
   return raw.eventOnly===true ? Infinity : Number.isFinite(raw.maxAgeMs)&&raw.maxAgeMs>0 ? raw.maxAgeMs : null;
@@ -64,7 +67,7 @@ function* confirmedReportRows(store,{from,to,input,signals,now=to}) {
         : "c.source<>'simulation' AND NOT(c.source='controller-estimate' AND c.device='simulated')"}
       AND o.received_at<=?
       AND (json_extract(o.raw,'$.reportIntervalMs')>0
-        OR c.source IN ('husdata-h66','simulation') AND c.signal IN (${EQUIPMENT_SIGNALS.map(signal=>`'${signal}'`).join(',')})
+        OR c.source IN ('husdata-h66','simulation') AND c.signal IN (${H66_CHART_COVERAGE_SIGNALS.map(signal=>`'${signal}'`).join(',')})
         OR c.source='controller-estimate' AND c.signal='auxiliary_power'
         OR c.source='mqtt-equipment' AND c.signal='dhwr_active')
       AND (c.status<>'fresh' OR c.source_time+COALESCE(json_extract(o.raw,'$.reportIntervalMs'),

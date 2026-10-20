@@ -209,6 +209,29 @@ test('read-only worker and compact range reconstruct the same priced energy with
   assert.notDeepEqual(changed.series.heat_pump_power, direct.series.heat_pump_power, 'Configuration-only changes invalidate the worker cache');
 });
 
+test('heating-pump confirmations refresh cached bars without adding observations or changing completed ranges',async t=>{
+  const directory=mkdtempSync(join(tmpdir(),'stmq-heating-pump-chart-'));
+  const store=new Store(join(directory,'synthetic.sqlite')),service=createChartService({store}),recorder=new Recorder(store);
+  t.after(async()=>{await service.close();store.close();rmSync(directory,{recursive:true,force:true});});
+  const record=minute=>recorder.record(observation('heating_pump_active',1,start+minute*MINUTE,{unit:'state'}));
+  record(0);
+  const args={input:'mqtt',now:start+9*MINUTE,startDate:day.startDate,endDate:day.endDate,view:'control'};
+  const before=await service.query(args),revision=store.db.prepare('SELECT MAX(id) id FROM observations').get().id;
+  assert.deepEqual(before.shading.heating_pump_active,[{start,end:start+5*MINUTE,value:1}]);
+  assert.equal((await service.query(args)).meta.cacheHit,true);
+  const completed={...args,viewFrom:start+MINUTE,viewTo:start+2*MINUTE};
+  await service.query(completed);
+  record(4);
+  assert.equal(store.db.prepare('SELECT MAX(id) id FROM observations').get().id,revision);
+  assert.equal((await service.query(args)).meta.cacheHit,true,'Uncommitted metadata cannot extend known coverage');
+  recorder.flush(args.now);
+  const after=await service.query(args);
+  assert.notEqual(after.meta.cacheHit,true,'A committed unchanged confirmation refreshes the bar');
+  assert.deepEqual(after.shading.heating_pump_active,[{start,end:start+9*MINUTE,value:1}]);
+  assert.equal((await service.query(args)).meta.cacheHit,true);
+  assert.equal((await service.query(completed)).meta.cacheHit,true,'Later confirmations preserve completed historical selections');
+});
+
 test('worker caches renew unchanged source coverage and growing pending energy without new observation IDs',async t=>{
   const directory=mkdtempSync(join(tmpdir(),'stmq-source-coverage-cache-'));
   const store=new Store(join(directory,'synthetic.sqlite')),service=createChartService({store}),recorder=new Recorder(store);

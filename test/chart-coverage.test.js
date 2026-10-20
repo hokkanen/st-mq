@@ -165,6 +165,38 @@ test('unchanged auxiliary zero and compressor shading survive compact multi-day 
   }
 });
 
+for (const value of [0,1]) test(`unchanged heating-pump state ${value} fills confirmed multi-day chart coverage`,t=>{
+  const {store,date,start,put}=fixture(t),first=start-24*HOUR,last=start+24*HOUR;
+  for(let at=first;at<=last;at+=4*MINUTE) put('heating_pump_active',value,at,{unit:'state'});
+  assert.equal(store.observations().length,1,'Unchanged reports retain one original observation');
+  for(const selection of [{startDate:date,endDate:date},
+    {startDate:'2026-01-01',endDate:date},
+    {startDate:date,endDate:date,viewFrom:start+5*HOUR,viewTo:start+5*HOUR+MINUTE}]) {
+    const result=getChartData({store,input:'mqtt',now:last+HOUR,view:'control',...selection});
+    assert.deepEqual(result.shading.heating_pump_active,[{
+      start:Math.max(first,result.range.from),end:result.range.to,value,
+    }]);
+    assert.ok(result.series.heating_pump_active.every(row=>row.y===value&&row.sourceCoverage&&row.observedAt===first),
+      'Drawing boundaries retain the original observation clock');
+  }
+});
+
+test('heating-pump bars retain silent gaps, explicit failure, expiry and identical recovery',t=>{
+  const {store,recorder,date,start,put}=fixture(t);
+  const record=minute=>put('heating_pump_active',1,start+minute*MINUTE,{unit:'state'});
+  record(0);record(4);record(12);
+  recorder.recordFailure({source:'husdata-h66',device:'synthetic-heatpump',signal:'heating_pump_active',
+    unit:'state',at:start+13*MINUTE});
+  record(14);recorder.flush(start+22*MINUTE);
+  const result=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+22*MINUTE,view:'control'});
+  assert.deepEqual(result.shading.heating_pump_active,[
+    {start,end:start+9*MINUTE,value:1},
+    {start:start+12*MINUTE,end:start+13*MINUTE,value:1},
+    {start:start+14*MINUTE,end:start+19*MINUTE,value:1},
+  ]);
+  for(const minute of [9,13,19]) assert.ok(result.series.heating_pump_active.some(row=>row.x===start+minute*MINUTE&&row.y===null));
+});
+
 test('source coverage preserves silent gaps, immediate failures, source expiry and unchanged recovery',t=>{
   const {store,recorder,date,start,put}=fixture(t);
   const record=at=>{
@@ -189,6 +221,7 @@ test('as-of charts cannot borrow future compact source or periodic confirmations
   const {store,date,start,put}=fixture(t);
   for(let minute=0;minute<=10;minute++) {
     put('compressor_active',1,start+minute*MINUTE);put('dhw_routing',0,start+minute*MINUTE);
+    put('heating_pump_active',1,start+minute*MINUTE,{unit:'state'});
     put('indoor_temperature',20,start+minute*MINUTE,{source:'mqtt-temperature',raw:{reportIntervalMs:5*MINUTE,reportGraceMs:0}});
   }
   const result=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+8*MINUTE,left:'compressor_active'});
@@ -197,6 +230,8 @@ test('as-of charts cannot borrow future compact source or periodic confirmations
     assert.ok(result.series[signal].some(row=>row.x===start+5*MINUTE&&row.y===null));
     assert.ok(result.series[signal].every(row=>row.y===null||row.x<start+5*MINUTE));
   }
+  const heating=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+8*MINUTE,view:'control'});
+  assert.deepEqual(heating.shading.heating_pump_active,[{start,end:start+5*MINUTE,value:1}]);
 });
 
 test('unchanged equipment confirmation refreshes current short selections while long and past dates retain their TTL',t=>{
