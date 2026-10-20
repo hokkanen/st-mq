@@ -77,6 +77,11 @@ try {
     for (let i = 0; i < 200; i++) { if (await evaluate(expression)) return; await new Promise(resolve => setTimeout(resolve, 30)); }
     throw new Error(`UI did not settle: ${expression}. ${errors.join('; ')}`);
   };
+  // Source corrections finish their controller update in the background. Drive
+  // the existing status poll while awaiting that committed view, rather than
+  // assuming the mutation's first refresh already contains the new readings.
+  const untilStatus = expression => until(`(async () => {
+    await globalThis.refreshSensorSmokeStatus(); return (${expression}); })()`);
   const confirmClick = async (selector, accept, message) => {
     await until(`document.querySelector(${JSON.stringify(selector)})?.disabled === false`);
     await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
@@ -250,7 +255,7 @@ try {
     'Cancelling the confirmation does not record a sensor change');
   assert.equal(await evaluate('globalThis.sensorSmokeSavedRequest === undefined'), true);
   await confirmClick('#sensor-change-submit', true, /Recorded readings are kept/);
-  await until("document.getElementById('sensor-change-entries').children.length === 1 && document.getElementById('indoor').textContent === 'Unavailable'");
+  await untilStatus("document.getElementById('sensor-change-entries').children.length === 1 && document.getElementById('indoor').textContent === 'Unavailable'");
   assert.match(await evaluate("document.getElementById('sensor-change-message').textContent"), /Downstairs change recorded/);
   await evaluate("document.getElementById('sensor-change-refresh').click()");
   await until("!document.getElementById('sensor-change-refresh').disabled");
@@ -325,7 +330,7 @@ try {
   }
   assert.equal(app.engine.sensorChangesStatus().rebuild.current, true, 'The rebuilt model becomes active');
   await evaluate('globalThis.refreshSensorSmokeStatus()');
-  await until("document.getElementById('sensor-change-rebuild').textContent.includes('Relearning complete') && document.getElementById('indoor').textContent === '21.0 °C'");
+  await untilStatus("document.getElementById('sensor-change-rebuild').textContent.includes('Relearning complete') && document.getElementById('indoor').textContent === '21.0 °C'");
   const restored = (await fetch(`${base}/api/status`).then(response => response.json())).observations;
   assert.equal(restored.downstairs.value, 20.2, 'Relearning preserves the recorded sensor value');
   assert.notEqual(restored.downstairs.settling, true, 'A reversed reset no longer excludes the sensor');
