@@ -171,7 +171,7 @@ fences are covered by `test/energy-check-refresh.test.js`. Date-scoped checks
 include complete meter/session boundaries, empty selections, DST days, concurrent
 different periods, explicit refresh and the absence of automatic completed-job
 rechecks. The recording-health browser fixture checks every nested disclosure's
-24 px / 16 px inset, including widths either side of the 640 px breakpoint,
+12 px inset, including widths either side of responsive layout breakpoints,
 compact inventory issues and their focus retention, independent energy date
 controls, and mobile counter-only storage explanations. Storage UI regressions
 keep queued, background and local-task failures separate and label past-day
@@ -1071,6 +1071,7 @@ Never point them at a household application.
 These scripts start their own disposable Chrome processes:
 
 ```sh
+node test/browser/spacing-smoke.js
 node test/browser/access-smoke.js
 node test/browser/configuration-smoke.js
 node test/browser/configuration-recovery-smoke.js
@@ -1320,7 +1321,7 @@ without activating a range, and fitting the end calendar on small screens.
 The timing compatibility suite uses the production comparison-section markup
 with native, missing and delayed `ResizeObserver` delivery. It checks visible
 figures and controls, resizing, refresh, keyboard focus and unclipped content at
-seven widths in both themes, including either side of the indentation breakpoint.
+seven widths in both themes, including either side of responsive layout breakpoints.
 The comparison section uses an accessible button
 and an ordinary hidden panel, keeping native inner folds mounted without placing
 the cards inside a native outer disclosure. Enter/Space activation, expanded state

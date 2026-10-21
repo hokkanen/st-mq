@@ -20,7 +20,7 @@
 .charging-setup-descriptors > div { grid-template-columns: minmax(0, .65fr) minmax(0, 2fr); }
 .charging-setup-descriptors code { font-size: 11px; overflow-wrap: anywhere; }
 .charging-setup-descriptors small { display: block; color: var(--muted); margin-top: 3px; }
-.charging-setup-limit { padding-left: 12px; border-left: 2px solid var(--border); }
+.charging-setup-limit { padding-inline-start: var(--ui-inset); border-left: 2px solid var(--border); }
 .charging-setup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 #charging-setup-content .secondary-button { font-size: 12px; }
 #charging-setup-content a, .charging-setup-reference a, .provider-charging-setup a { color: var(--accent); text-underline-offset: 3px; }

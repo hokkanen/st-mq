@@ -40,7 +40,7 @@ try {
         response.writeHead(result.status, headers); response.end(JSON.stringify(status));
       } else {
         if (request.url.startsWith('/api/events?')) eventReads++;
-        if (request.url === '/api/energy-audits') energyReads++;
+        if (new URL(request.url, 'http://fixture').pathname === '/api/energy-audits') energyReads++;
         response.writeHead(result.status, headers); response.end(Buffer.from(await result.arrayBuffer()));
       }
     } catch (error) {

@@ -18,9 +18,9 @@
 .secure-web-access-owner-choice { margin: 16px 0; }
 .secure-web-access-owner-choice label { display: grid; gap: 5px; max-width: 300px; margin: 0; }
 .secure-web-access-owner-choice p { margin: 8px 0; }
-.secure-web-access-notice { border-left: 2px solid var(--stale); padding-left: 10px; }
+.secure-web-access-notice { border-left: 2px solid var(--stale); padding-inline-start: var(--ui-inset); }
 .secure-web-access-body .secure-web-access-notice { font-size: 12px; }
-.secure-web-access-security { margin: 14px 0; padding: 10px 12px; border: 1px solid var(--border); border-left: 3px solid var(--stale); border-radius: 6px; overflow-wrap: anywhere; }
+.secure-web-access-security { margin: 14px 0; padding: 10px var(--ui-inset); border: 1px solid var(--border); border-left: 3px solid var(--stale); border-radius: 6px; overflow-wrap: anywhere; }
 .secure-web-access-security strong { font-size: 12px; font-weight: 550; }
 .secure-web-access-security p { margin: 5px 0; }
 .secure-web-access-security p:empty { display: none; }

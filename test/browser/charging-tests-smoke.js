@@ -1,3 +1,4 @@
+import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Run after npm run build. Every provider/status/action below is synthetic;
 // the isolated application and disposable browser never load household config.
 import assert from 'node:assert/strict';
@@ -106,6 +107,7 @@ try {
     }
   })()`);
   const screenshot = async (name, selector, { preserveScroll = false, viewport = false } = {}) => {
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Visible surfaces use one small inset');
     // Fixed-position dialogs must be captured at document scroll zero: Chrome
     // otherwise clips background content at the dialog's document coordinates.
     await evaluate(`${viewport ? `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'});` : 'window.scrollTo(0, 0);'} ${preserveScroll ? '' : `document.querySelector(${JSON.stringify(selector)}).scrollTop = 0;`} true`);

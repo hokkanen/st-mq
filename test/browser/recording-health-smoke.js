@@ -1,3 +1,4 @@
+import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Production recording markup, tables and styles in a disposable browser,
 // with synthetic data only. No application or household connections are made.
 import assert from 'node:assert/strict';
@@ -379,6 +380,7 @@ try {
     `(() => { const box=document.getElementById('${id}').getBoundingClientRect(); return {x:box.left,y:box.top+scrollY,width:box.width,height:box.height,scale:1}; })()`);
   const captureGlance = name => captureFold('recording-health', name);
   const checkLayout = async label => {
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'All visible surfaces use one small inset');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${label}: page fits`);
     const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-backup-list, .recording-backup-toolbar, .recording-backup-actions, .recording-source-exceptions, .recording-source-heading, .recording-source-reason, .recording-source-clocks, .recording-source-clocks dd, #recording-recording-unknown, #recording-recording-coverage, .recording-storage-inventory, .recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-data-group, .recording-data-group > summary, .recording-data-group > p, .recording-dataset, .recording-dataset-facts, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents, .recording-operation-list, .recording-operation, .recording-command-coverage')).filter(node => {
       if(!node.checkVisibility()) return false;
@@ -389,7 +391,7 @@ try {
       width:node.clientWidth, content:node.scrollWidth}))`);
     if(clipped.length) await capture(`clipping-${label.replaceAll('/', '-')}`);
     assert.deepEqual(clipped, [], `${label}: recording content fits without clipping`);
-    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#recording-details details')).filter(node => node.checkVisibility() && !node.classList.contains('recording-health-card')).filter(node => Number.parseFloat(getComputedStyle(node).marginInlineStart) !== (innerWidth <= 640 ? 16 : 24)).map(node => node.id || node.className)`), [], `${label}: every nested fold uses the shared inset`);
+    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#recording-details .recording-section, #recording-details .recording-guide, #recording-details .recording-data-group, #recording-details .recording-dataset')).filter(node => node.checkVisibility()).filter(node => Number.parseFloat(getComputedStyle(node).marginInlineStart) !== 12).map(node => node.id || node.className)`), [], `${label}: plain nested folds use the shared inset; card and table padding own their level`);
     assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.recording-section-group')).flatMap(group => {
       const folds = Array.from(group.querySelectorAll(':scope > details'));
       return folds.slice(1).filter((fold, index) => fold.getBoundingClientRect().top < folds[index].getBoundingClientRect().bottom - 1).map(fold => fold.id);

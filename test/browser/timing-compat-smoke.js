@@ -1,3 +1,4 @@
+import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Isolated comparison UI through disclosure cycles; no runtime or household data.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -127,8 +128,9 @@ try {
     requestAnimationFrame(frame);
   })`);
   const checkIndentation = async () => {
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'All visible surfaces use one small inset');
     assert.deepEqual(await evaluate(`(() => {
-      const inset = innerWidth <= 640 ? 16 : 24;
+      const inset = 12;
       const left = node => node.getBoundingClientRect().left;
       const panelLeft = left(document.getElementById('comparison-toggle')) + inset;
       const failures = [];

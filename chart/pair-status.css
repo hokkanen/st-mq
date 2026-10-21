@@ -2,7 +2,7 @@
 .pairing-panel #pairing-details[open] + .pairing-attention { display: none; }
 .pairing-panel .pairing-operation-status {
   margin: 0 0 18px;
-  padding: 10px 12px;
+  padding: 10px var(--ui-inset);
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-soft);
@@ -21,7 +21,7 @@
 .pairing-panel .pairing-verification label { margin: 0; font-size: 11px; color: var(--muted); }
 .pairing-panel .pairing-verification select { width: 100%; min-width: 0; margin: 0; font-size: 12px; }
 .pairing-panel .pairing-verification p { margin: 0; font-size: 11px; line-height: 1.5; }
-.pairing-panel .pairing-history-result { margin-top: 12px; border-left: 2px solid var(--border); padding-left: 12px; }
+.pairing-panel .pairing-history-result { margin-top: 12px; border-left: 2px solid var(--border); padding-inline-start: var(--ui-inset); }
 .pairing-panel .pairing-history-result[data-tone="attention"] { border-color: var(--stale); }
 .pairing-panel .pairing-history-result[data-tone="progress"] { border-color: var(--accent); }
 .pairing-panel .pairing-history-result h4 { font-size: 11px; color: var(--text); margin: 0 0 3px; }

@@ -1,3 +1,4 @@
+import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Run after npm run build. All configuration, runtime and browser data are synthetic.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -120,6 +121,7 @@ try {
     assert.equal(applyRequests(), before, 'Cancel never applies configuration');
   };
   const capture = async name => {
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Visible surfaces use one small inset');
     await evaluate("document.getElementById('settings-review').scrollIntoView({block:'start',behavior:'instant'});true");
     await settle();
     const geometry = await evaluate(`(() => {

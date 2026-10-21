@@ -840,6 +840,9 @@ Do not broaden a routine code task into a repeated security audit without eviden
 
 ## UI conventions
 
+- Use the shared 12 px horizontal inset at every viewport width. Follow
+  [the layout contract](docs/ui-layout.md): each visible hierarchy level has one
+  spacing owner; do not combine a fold margin with card padding for the same step.
 - Do not use the project name **ST-MQ** in user-facing labels, descriptions,
   popovers, status messages or errors. Use natural wording such as “the controller”
   or “this application”. Keep actual file paths and protocol identifiers accurate.

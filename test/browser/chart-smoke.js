@@ -226,7 +226,7 @@ try {
         assert.equal(fold.hiddenByEmpty, true, `${fold.label} is deliberately grouped inside a folded empty-dataset disclosure`);
         continue;
       }
-      assert.ok(fold.indent >= (fold.dataset ? 16 : 0), `${fold.label} keeps its place in the recording hierarchy (${fold.indent}px)`);
+      assert.ok(fold.indent >= (fold.dataset ? 12 : 0), `${fold.label} keeps its place in the recording hierarchy (${fold.indent}px)`);
     }
   };
   await command('browsingContext.navigate', { context, url: base, wait: 'complete' });

@@ -124,7 +124,8 @@ try {
   await send('Page.navigate', { url: base }); await open(); await until(`!${id('verify')}.disabled`);
   assert.equal((await request('/api/status')).role, 'slave');
   await click('verify'); await until(`${id('status')}.textContent.includes('is running')`);
-  await click('cancel'); await until(`${id('status')}.textContent.includes('No verification is running')`);
+  await click('cancel'); await until(`${id('cancel')}.hidden && !${id('verify')}.disabled`);
+  assert.equal((await request('/api/model-reconstruction')).state, 'idle', 'Cancellation returns the local verification service to idle');
   await click('discard'); await until(`${id('storage')}.textContent.includes('0 B')`);
   assert.equal((await request('/api/model-reconstruction')).lastVerification, null);
   await click('verify'); await until(`${id('result')}.textContent.includes('All four coefficient histories: matched')`);

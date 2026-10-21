@@ -1711,11 +1711,12 @@ updated; database size figures stay in **Storage & growth**. Groups cover:
 A compact count and inventory action introduce the catalogue. Inventory issues
 remain visible as a counted disclosure, with their explanations inside it. Counting
 and selection guidance has its own fold. Adaptive measurements similarly keep a
-short count above their recording guide and measurement table. All nested Recording
-details disclosures use the shared 24 px inset, or 16 px at widths up to 640 px,
-including folds inside content wrappers. The health-card group owns its inset so
-its shared border stays continuous. Measurements use their stacked layout at
-widths up to 800 px.
+short count above their recording guide and measurement table. Recording details
+uses the [shared 12 px horizontal inset](ui-layout.md) at every viewport width.
+Plain nested disclosures own their margin; health-card rows own their content
+padding without another group margin. The shared border stays continuous and
+table disclosures retain their cell alignment. Measurements use their stacked
+layout at widths up to 800 px.
 
 Populated datasets appear first. Empty datasets and entirely empty groups remain
 available under labelled folds with counts, without dominating the initial view.

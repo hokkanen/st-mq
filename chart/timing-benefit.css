@@ -1,7 +1,7 @@
 /* One period belongs to the whole comparison section, above the individual cards. */
 .comparison-range-controls {
   margin: 4px 0 22px;
-  padding: 16px;
+  padding: 16px var(--ui-inset);
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface-soft);

@@ -1,3 +1,4 @@
+import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Uses only a disposable simulated app, UI build and browser.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -80,6 +81,7 @@ try {
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode });
   };
   const screenshot = async (name, id = 'heating-explorer-dialog') => {
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Visible surfaces use one small inset');
     await evaluate('window.scrollTo(0, 0)');
     const clip = await evaluate(`(() => {
       const box = document.getElementById('${id}').getBoundingClientRect();

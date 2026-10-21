@@ -1,3 +1,4 @@
+import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Synthetic HA fixture: real add-on runtime, ingress listener and configuration
 // imports behind a local proxy, with an in-memory Supervisor API. Requires an
 // isolated Chrome DevTools listener. No household configuration or live providers.
@@ -178,6 +179,7 @@ try {
         }).map(node => node.tagName) };
     })()`);
     assert(layout.pageWidth <= layout.viewport + 2, `${width}/${theme}: pair guide fits the viewport`);
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Ingress uses the same small inset');
     assert.deepEqual(layout.escapes, [], `${width}/${theme}: instructions and field names stay inside the guide`);
     if (screenshots) {
       const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
@@ -203,7 +205,7 @@ try {
     'Status rendering after reviewed application preserves the open guide');
 
   await evaluate("document.getElementById('recording-details').open = true; document.getElementById('recording-overview-details').open = true; document.getElementById('energy-audit-details').open = true;");
-  await until("document.getElementById('recording-overview-message').textContent.startsWith('Inventory:') && !document.getElementById('recording-overview-content').hasAttribute('aria-busy')");
+  await until("document.querySelector('#recording-overview-content .recording-data-group') !== null && !document.getElementById('recording-overview-content').hasAttribute('aria-busy')");
   assert.equal(await evaluate("document.getElementById('recording-overview-message').classList.contains('form-error')"), false,
     'The inventory refresh completed successfully through ingress');
   assert.equal(await evaluate("document.getElementById('recording-overview-content').querySelectorAll('[data-overview-key]').length > 0"), true,

@@ -21,11 +21,11 @@
 .charging-test-gates [data-state="blocked"] { color:var(--stale); }
 .charging-test-milestones { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:.5rem 1rem; }
 .charging-test-milestones dd { margin:0; overflow-wrap:anywhere; }
-[data-test-timer],[data-test-target-summary] { padding:1rem; border:1px solid var(--border); border-radius:8px; margin:1rem 0; }
+[data-test-timer],[data-test-target-summary] { padding:1rem var(--ui-inset); border:1px solid var(--border); border-radius:8px; margin:1rem 0; }
 [data-test-target-summary] > p:first-child { margin-top:0; }
 [data-test-target-review] { margin-top:1rem; padding-top:.5rem; border-top:1px solid var(--border); }
 [data-test-target-review] > label:not(.charging-test-check) { max-width:18rem; }
 [data-test-target-edit] { margin:0; }
 [data-test-schedule-current],[data-test-schedule-receipt],[data-test-target-receipt] { font-weight:600; }
 [data-test-schedule-receipt]:empty,[data-test-target-receipt]:empty { display:none; }
-@media(max-width:420px) { .charging-test-fields { grid-template-columns:1fr; } .charging-test-dialog { padding:1rem; } }
+@media(max-width:420px) { .charging-test-fields { grid-template-columns:1fr; } }

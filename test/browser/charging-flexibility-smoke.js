@@ -1,3 +1,4 @@
+import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Synthetic shared charger cards and guarded dialog. No app runtime or live feeds.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -69,6 +70,7 @@ try {
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: code });
   };
   const screenshot = async name => {
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Visible surfaces use one small inset');
     const result = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(result.data, 'base64'));
   };

@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Use one smaller horizontal inset across dashboard folds, cards, warnings and
+  windows at every screen width. Remove stacked margins and padding, align
+  recording health rows with the compact equipment style, and keep more room
+  for content on narrow screens in every operating role.
+
 - Simplify Recording details headers and inventory issues, align every nested
   fold with the shared indentation, and improve tablet measurement layout.
   Recorded energy checks use their own Finnish date period, defaulting to the

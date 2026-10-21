@@ -1,3 +1,4 @@
+import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Run after npm run build. Uses only a disposable simulated app and browser.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -76,6 +77,7 @@ try {
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode });
   };
   const screenshot = async (name, id = 'garage-control') => {
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Visible surfaces use one small inset');
     await evaluate('window.scrollTo(0, 0)');
     const clip = await evaluate(`(() => {
       const box = (${id ? `document.getElementById('${id}')` : `document.querySelector('.controller-panels')`}).getBoundingClientRect();

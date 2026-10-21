@@ -1307,7 +1307,8 @@ try {
     await capture(`mobile-${width}-activity-explanation-dark`);
     await evaluate("document.querySelector('#operating-modes .activity-summary').click(); true"); await settle();
     const point = await evaluate("(() => { const r = document.getElementById('history').getBoundingClientRect(); return {x:r.left+r.width*.48,y:r.top+r.height*.45}; })()");
-    const popupPainted = () => evaluate('window.chartLabels.some(line => /^(Property|Charger [12]|Average indoor|Outdoor|All-in price|Spot price):/.test(line))');
+    const paintedPopup = 'window.chartLabels.some(line => /^(Property|Charger [12]|Average indoor|Outdoor|All-in price|Spot price):/.test(line))';
+    const popupPainted = () => evaluate(paintedPopup);
     await evaluate("document.getElementById('history').dispatchEvent(new MouseEvent('mouseout',{bubbles:true})); window.chartLabels=[]; true");
     await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...point, id: 1 }] }); await settle();
     assert.equal(await popupPainted(), false, `${width}px: touch-down does not paint a chart popup`);
@@ -1317,6 +1318,9 @@ try {
     assert.equal(await popupPainted(), false, `${width}px: releasing a drag does not paint a chart popup`);
     await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...point, id: 1 }] });
     await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await settle();
+    // Chart.js paints asynchronously after the completed input event. Observe
+    // that paint instead of assuming two animation frames are sufficient.
+    await until(paintedPopup);
     assert.equal(await popupPainted(), true, `${width}px: a completed tap still opens chart details`);
     assert.equal(await cursorHidden(), true, `${width}px: tapping the main plot does not show a time cursor`);
     const touchBand = await bandPoint(.35), touchEnd = await bandPoint(.65), beforeTouch = await viewportState();
