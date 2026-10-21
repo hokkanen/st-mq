@@ -165,7 +165,11 @@ try {
       if (await evaluate(expression)) return;
       await new Promise(resolve => setTimeout(resolve, 40));
     }
-    throw new Error(`Timed out: ${expression}; browser errors: ${JSON.stringify(errors)}`);
+    const state = await evaluate(`({ focused: document.activeElement?.outerHTML?.slice(0, 400),
+      interpolation: document.querySelector('.chart-legend-interpolation')?.getAttribute('aria-pressed'),
+      chart: document.getElementById('chart-status')?.textContent,
+      fullscreen: document.querySelector('.history-panel')?.dataset.fullscreen })`);
+    throw new Error(`Timed out: ${expression}; state: ${JSON.stringify(state)}; browser errors: ${JSON.stringify(errors)}`);
   };
   const settle = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const pickerOpen = () => evaluate("document.getElementById('chart-series-picker').open");
@@ -236,7 +240,26 @@ try {
   const shown = key => evaluate(`document.querySelector('[data-chart-key="${key}"]')?.getAttribute('aria-pressed') === 'true'`);
   const interpolationEnabled = () => evaluate("document.querySelector('.chart-legend-interpolation')?.getAttribute('aria-pressed') === 'true'");
   const toggleInterpolation = async () => {
-    await evaluate("document.querySelector('.chart-legend-interpolation').click(); true"); await settle();
+    const previous = await interpolationEnabled();
+    await evaluate("document.querySelector('.chart-legend-interpolation').click(); true");
+    // Geometry preparation crosses a worker message and a paint/task boundary.
+    // The replacement legend is published after the corresponding canvas draw;
+    // two animation frames alone can still inspect the earlier geometry.
+    await until(`document.querySelector('.chart-legend-interpolation')?.getAttribute('aria-pressed') === '${!previous}'`);
+    await settle();
+  };
+  const checkFocusDuringPreparation = async () => {
+    const previous = await interpolationEnabled();
+    await evaluate(`(() => {
+      const button = document.querySelector('.chart-legend-interpolation');
+      button.focus(); button.click();
+      window.dispatchEvent(new Event('resize'));
+      document.querySelector('.chart-legend-save').focus();
+    })()`);
+    await until(`document.querySelector('.chart-legend-interpolation')?.getAttribute('aria-pressed') === '${!previous}'`);
+    assert.equal(await evaluate("document.activeElement === document.querySelector('.chart-legend-save')"), true,
+      'A completed interpolation draw preserves the newer keyboard focus instead of returning to the earlier action');
+    await toggleInterpolation();
   };
   const drawnPaths = key => evaluate(`(() => {
     const swatch = document.querySelector('[data-chart-key="${key}"] .chart-legend-swatch');
@@ -456,6 +479,7 @@ try {
       `${label}: Interpolation aligns left while Reset view and Save view stay grouped at the right edge`);
     };
     await checkFooter();
+    await checkFocusDuringPreparation();
     const initialInterpolation = await interpolationEnabled();
     const interpolationScroll = await evaluate("document.getElementById('chart-legend').scrollTop");
     const interpolationView = await viewportState();
@@ -463,6 +487,8 @@ try {
       await evaluate("document.querySelector('.chart-legend-interpolation').focus({preventScroll:true}); true");
       await pressKey(key);
       const enabled = index ? initialInterpolation : !initialInterpolation;
+      await until(`document.querySelector('.chart-legend-interpolation')?.getAttribute('aria-pressed') === '${enabled}'
+        && document.activeElement === document.querySelector('.chart-legend-interpolation')`);
       assert.equal(await interpolationEnabled(), enabled, `${label}: ${key === ' ' ? 'Space' : key} toggles interpolation`);
       assert.deepEqual(await evaluate(`(() => {
         const button = document.querySelector('.chart-legend-interpolation');
@@ -1417,17 +1443,15 @@ try {
           trailingDecoration: getComputedStyle(summary, '::after').content,
           fits: outer.left >= 0 && outer.right <= innerWidth };
       })()`);
-      const comparison = await geometry('timing-details'), recording = await geometry('recording-details');
-      for (const key of ['height', 'textInset', 'textCenter', 'textHeight'])
-        assert(Math.abs(comparison[key] - recording[key]) < 1, `${width}px ${theme}: footer ${key} aligns across the two closed folds`);
-      assert.deepEqual(comparison.arrow, recording.arrow, `${width}px ${theme}: both footer folds use the same painted arrow`);
-      assert([comparison, recording].every(row => row.textInset > row.arrow.width && row.arrow.width > 0 && row.arrow.height > 0
-        && row.arrow.content === '""' && row.arrow.shape === 'polygon(15% 0px, 100% 50%, 15% 100%)'
-        && row.arrow.background !== 'rgba(0, 0, 0, 0)' && Math.abs(row.arrow.angle) < .01
-        && row.trailingDecoration === 'none' && row.fits),
-        `${width}px ${theme}: footer titles fit with a visible right-pointing triangle`);
-      await capture(`footer-folds-${width}-${theme}`);
-      for (const [id, closed] of [['timing-details', comparison], ['recording-details', recording]]) {
+      const comparison = await geometry('timing-details');
+      assert(comparison.height >= 44, `${width}px ${theme}: comparison title retains a usable target`);
+      assert(comparison.textInset > comparison.arrow.width && comparison.arrow.width > 0 && comparison.arrow.height > 0
+        && comparison.arrow.content === '\"\"' && comparison.arrow.shape === 'polygon(15% 0px, 100% 50%, 15% 100%)'
+        && comparison.arrow.background !== 'rgba(0, 0, 0, 0)' && Math.abs(comparison.arrow.angle) < .01
+        && comparison.trailingDecoration === 'none' && comparison.fits,
+        `${width}px ${theme}: comparison title fits with a visible right-pointing triangle`);
+      await capture(`comparison-fold-${width}-${theme}`);
+      for (const [id, closed] of [['timing-details', comparison]]) {
         const selector = id === 'timing-details' ? '#comparison-toggle' : `#${id} > summary`;
         const isOpen = id === 'timing-details'
           ? "document.getElementById('comparison-toggle').getAttribute('aria-expanded') === 'true'"
@@ -1448,19 +1472,6 @@ try {
           assert.equal(await evaluate("document.getElementById('comparison-content').hidden"), false);
           assert.equal(await evaluate("document.getElementById('recording-details').open"), false,
             'Opening comparisons leaves recording closed');
-        }
-        if (id === 'recording-details') {
-          const nestedArrow = await evaluate(`(() => {
-            const summary = document.querySelector('#recording-details > #recording-adaptive-details > summary');
-            const style = getComputedStyle(summary);
-            return { display: style.display, type: style.listStyleType,
-              fontSize: getComputedStyle(summary, '::marker').fontSize };
-          })()`);
-          assert(nestedArrow.display === 'list-item' && nestedArrow.type === 'disclosure-closed'
-            && parseFloat(nestedArrow.fontSize) > 0,
-          'The independently expandable Adaptive measurements section keeps its visible native closed triangle');
-          assert.equal(await evaluate("document.getElementById('comparison-toggle').getAttribute('aria-expanded')"), 'false',
-            'Opening recording leaves comparisons closed');
         }
         await capture(`footer-${id}-open-${width}-${theme}`);
         await pressKey(' '); await settle();

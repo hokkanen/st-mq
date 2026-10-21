@@ -2,6 +2,7 @@ import { MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
 import { applyLearningRecord, LEARNING_ALGORITHM, learningVersion } from './committed-learning.js';
 import { fireplaceLearningContext } from './fireplace-inputs.js';
 import { sensorLearningContext } from './sensor-inputs.js';
+import { checkStorageRequest } from '../storage/worker-admission.js';
 
 const sources = { simulated: 'Simulation', history: 'Imported history', mqtt: 'Recorded MQTT inputs', providers: 'Recorded provider inputs' };
 // Derived timelines and resumable replay state stay private to this connection.
@@ -9,7 +10,7 @@ const sources = { simulated: 'Simulation', history: 'Imported history', mqtt: 'R
 const caches = new WeakMap();
 const MAX_CACHE_BYTES = 16 * 1024 * 1024;
 
-function replay(store, input, through) {
+function replay(store, input, through, onProgress) {
   const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
   const replayContext = { ...fireplaceLearningContext(store, input), ...sensorLearningContext(store, input) };
   const bounds = store.db.prepare(`SELECT MAX(id) lastId,
@@ -21,11 +22,20 @@ function replay(store, input, through) {
   if (cache.has(key)) {
     const hit = cache.get(key); cache.delete(key); cache.set(key, hit); return hit.result;
   }
+  let lastProgress = -Infinity;
+  const progress = completed => {
+    checkStorageRequest();
+    if (performance.now() - lastProgress < 100 && completed !== lastId) return;
+    lastProgress = performance.now();
+    onProgress?.({ stage: 'replaying-model', completed, total: lastId });
+    checkStorageRequest();
+  };
   // Advancing the clock does not change an immutable journal prefix. New
   // entries resume its cached state instead of refitting all earlier samples.
   const base = [...cache.values()].filter(entry => entry.input === input && entry.epoch === epoch && entry.lastId < lastId
     && entry.fireplaceRevision === replayContext.fireplaceRevision && entry.sensorRevision === replayContext.sensorRevision)
     .sort((a, b) => b.lastId - a.lastId)[0];
+  progress(base?.lastId ?? 0);
   const result = base ? { ...base.result, events: [...base.result.events] }
     : { events: [], records: 0, replayedRecords: 0, invalidRecords: 0 };
   let checkpoint = base?.checkpoint ?? null, at = base?.at ?? -Infinity, blocked = base?.blocked ?? true;
@@ -43,6 +53,7 @@ function replay(store, input, through) {
   // Stop at the first future entry instead of skipping it and using its tail.
   for (const row of store.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id>? AND id<=? ORDER BY id')
     .iterate(input, base?.lastId ?? 0, lastId)) {
+    progress(row.id);
     at = Math.max(at, row.at);
     result.records++;
     if (row.algorithm_version !== LEARNING_ALGORITHM)
@@ -120,7 +131,7 @@ function replay(store, input, through) {
 /** Derive accepted model states using only immutable journal entries. The
  * application's restart helper persists checkpoints; chart replay deliberately
  * calls its pure per-entry operation and never calls any store writer. */
-export function addModelCoefficients({ store, range, now, input, envelopes }) {
+export function addModelCoefficients({ store, range, now, input, envelopes, onProgress }) {
   const selected = Object.keys(MODEL_COEFFICIENT_INFO).filter(key => envelopes[key]);
   const stats = { records: 0, replayedRecords: 0, invalidRecords: 0, basis: 'read-only-learning-replay' };
   const end = Math.min(range.to, now);
@@ -135,7 +146,7 @@ export function addModelCoefficients({ store, range, now, input, envelopes }) {
   if (first && first.at <= end) streams.push({ input: primary, through: end, from: first.at });
   for (const stream of streams) {
     if (stream.through < range.from) continue;
-    const replayed = replay(store, stream.input, stream.through);
+    const replayed = replay(store, stream.input, stream.through, onProgress);
     for (const key of ['records', 'replayedRecords', 'invalidRecords']) stats[key] += replayed[key];
     const add = (at, event) => {
       for (const key of selected) {

@@ -1203,6 +1203,14 @@ restart and source-loss evidence, and rejection of retired estimator state.
 The chart-views suite exercises every named view, the complete supported series
 explorer, view-specific legend choices, global price visibility, reset behavior,
 garage pump interpretation, line/fill conventions and aligned activity rows.
+Interpolation checks await the replacement legend published after the actual
+canvas draw, including asynchronous geometry preparation. They interrupt that
+preparation with a resize and move focus to another footer control, then require
+the completed plot, interpolation control and current focus to agree. Same-view
+legend and footer buttons retain their DOM identity across those redraws.
+The chart transport
+suite also holds a cold coefficient reconstruction against a concurrent recent
+plot, cancels replay on a pinned reader, and joins worker cleanup before reuse.
 Explorer checks cover the shared selection button, searchable **Views** and
 **All series** modes, selection/dismissal, keyboard navigation and centered
 desktop, mobile and fullscreen layouts. Chart style checks

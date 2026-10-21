@@ -6,6 +6,15 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep recent charts and cost comparisons responsive while model-coefficient
+  history is reconstructed. Show reconstruction progress and let cancelled
+  requests release the worker between journal entries.
+
+- Preserve the current legend or footer keyboard focus when a chart redraw
+  finishes, including when focus moved during geometry preparation.
+  A resize or detail redraw cannot leave interpolation controls and notes behind
+  the displayed plot.
+
 - Explain that a dehumidifier On request blocked by native restart protection
   was not sent, instead of presenting its delivery as uncertain.
 

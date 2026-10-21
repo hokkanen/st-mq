@@ -9,9 +9,38 @@ import { createChartService } from '../src/app/chart-service.js';
 import { createAppServer } from '../src/app/server.js';
 import { getChartData } from '../src/app/chart-data.js';
 import { seedChartActivityFixture, ACTIVITY_FIXTURE_TO } from '../scripts/lib/chart-activity-fixture.js';
+import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 
 const now = Date.parse('2026-09-07T09:00:00Z');
 const args = { input: 'providers', now, startDate: '2026-09-06', endDate: '2026-09-06', view: 'garage', points: 100 };
+
+test('cold coefficient reconstruction leaves recent charts available and pinned cancellation releases the worker', { timeout: 20_000 }, async t => {
+  const { store, service } = fixture(t, { warmCache: false });
+  store.transaction(() => {
+    for (let index = 0; index < 1200; index++) appendLearningRecord(store, 'providers', 'context',
+      { timestamp: now - 1200 + index }, { config: {} });
+  });
+  await service.pin();
+  const controller = new AbortController();
+  let foreground, completed = false, cancelledDuringReplay = false;
+  const reconstruction = service.query({ ...args, startDate: '2026-09-07', endDate: '2026-09-07',
+    view: 'model_coefficient_heat_loss' }, { signal: controller.signal, onProgress(progress) {
+    if (foreground || progress.stage !== 'replaying-model') return;
+    foreground = service.query({ ...args, startDate: '2026-09-07', endDate: '2026-09-07' }).then(result => {
+      cancelledDuringReplay = !completed;
+      controller.abort();
+      return result;
+    });
+  } }).finally(() => { completed = true; });
+  await assert.rejects(reconstruction, { name: 'AbortError' });
+  assert(foreground, 'real worker reports reconstruction progress');
+  assert.equal((await foreground).range.startDate, '2026-09-07');
+  assert(cancelledDuringReplay, 'a recent chart completes before the cold reconstruction finishes');
+  await service.pin(); // Join the cancelled pinned worker without retiring its file handle.
+  assert.equal((await service.query(args)).range.startDate, args.startDate);
+  const observed = storageOperationHealth.status().coverage.find(row => row.kind === 'history-query');
+  assert.equal(observed.running, 0);
+});
 function fixture(t, options) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-transport-'));
   const store = new Store(join(directory, 'synthetic.sqlite'));

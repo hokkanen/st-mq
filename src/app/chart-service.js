@@ -6,6 +6,8 @@ import { getDatabaseOverview } from './database-overview.js';
 import { energyCheckSummaries } from './energy-checks.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
 import { attachStorageAdmission } from '../storage/worker-admission.js';
+import { CHART_VIEW_BY_KEY } from '../domain/chart-views.js';
+import { HISTORY_AXIS_BY_KEY, MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
 
 const aborted = () => Object.assign(new Error('Chart request aborted'), { name: 'AbortError' });
 
@@ -149,8 +151,13 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
       } catch (error) { observation?.finish('failed', { reason: 'operation-failed' }); return Promise.reject(error); }
     }
     const range = operation === 'chart' ? chartRequestRange(args).range : null;
+    // Cold coefficient reconstruction can replay the entire learning journal.
+    // Keep that work in the existing archive lane even for today's selection,
+    // so it cannot hold ordinary recent plots and comparisons behind it.
+    const signals = CHART_VIEW_BY_KEY[args.view]?.leftSignals ?? HISTORY_AXIS_BY_KEY[args.left]?.signals ?? [];
+    const replay = operation === 'chart' && signals.some(signal => Object.hasOwn(MODEL_COEFFICIENT_INFO, signal));
     const residentFrom = settings.cacheDays ? clock() - settings.cacheDays * 86_400_000 : Infinity;
-    const lane = operation === 'maintain' || operation === 'pin' || range && range.from >= residentFrom - 86_400_000
+    const lane = operation === 'maintain' || operation === 'pin' || !replay && range && range.from >= residentFrom - 86_400_000
       ? lanes.resident : lanes.archive;
     const count = item => item.queue.length + Number(Boolean(item.active && !item.active.aborted));
     if (count(lane) >= maxQueue) {

@@ -212,15 +212,23 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   }
   function renderLegend(datasets, view, visibility) {
     const legend = $('chart-legend');
+    const actions = $('chart-legend-actions'), active = document.activeElement;
+    const focusedKey = legend.contains(active) ? active.dataset.chartKey : undefined;
+    const focusedAction = actions.contains(active)
+      ? ['interpolation', 'reset', 'save'].find(name => active.classList.contains(`chart-legend-${name}`)) : undefined;
+    const reuse = legend.dataset.viewKey === view.key;
+    const buttons = new Map(reuse ? [...legend.querySelectorAll('[data-chart-key]')].map(node => [node.dataset.chartKey, node]) : []);
     const scrollTop = legend.dataset.viewKey === view.key ? legend.scrollTop : 0;
     const groups = ['left', 'right', 'activity'].map(axis => {
-      const group = document.createElement('div'); group.className = 'chart-legend-group'; group.dataset.axis = axis;
-      const label = document.createElement('span'); label.className = 'chart-legend-axis';
+      const group = reuse && legend.querySelector(`.chart-legend-group[data-axis="${axis}"]`) || document.createElement('div');
+      group.className = 'chart-legend-group'; group.dataset.axis = axis;
+      const label = group.querySelector('.chart-legend-axis') ?? document.createElement('span'); label.className = 'chart-legend-axis';
       label.textContent = historyLegendLabel(axis, view, datasets);
-      group.setAttribute('aria-label', label.textContent); group.append(label); return group;
+      group.setAttribute('aria-label', label.textContent); if (!label.parentElement) group.append(label); return group;
     });
     function add(group, key, label, detail, swatchColor, kind, dash = []) {
-      const button = document.createElement('button'); button.type = 'button'; button.className = 'chart-legend-button';
+      const retained = buttons.get(key), button = retained ?? document.createElement('button'); button.type = 'button'; button.className = 'chart-legend-button';
+      buttons.delete(key);
       button.dataset.chartKey = key; button.dataset.axis = group.dataset.axis;
       button.setAttribute('aria-pressed', String(visible(key, visibility))); button.title = detail;
       const swatch = document.createElement('span'); swatch.className = 'chart-legend-swatch'; swatch.dataset.kind = kind;
@@ -229,40 +237,47 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       swatch.style.backgroundColor = ['audit', 'session', 'interval-energy'].includes(kind) ? 'transparent'
         : kind === 'fill' ? color(swatchColor).alpha(0.4).rgbString() : swatchColor;
       swatch.style.borderColor = swatchColor; swatch.setAttribute('aria-hidden', 'true');
-      button.append(swatch, document.createTextNode(label));
-      button.addEventListener('click', () => {
-        setChartVisibility(preferences, view, key, !visible(key, visibility)); savePreferences();
-        const focused = document.activeElement === button;
-        void renderChart().then(() => { if (focused) $('chart-legend').querySelector(`[data-chart-key="${key}"]`)?.focus({ preventScroll: true }); });
+      button.replaceChildren(swatch, document.createTextNode(label));
+      if (!retained) button.addEventListener('click', () => {
+        setChartVisibility(preferences, view, key, !visible(key, chartViewPreferences(view, preferences))); savePreferences();
+        void renderChart();
       });
-      group.append(button);
+      if (button.parentElement !== group) group.append(button);
     }
     for (const dataset of datasets) add(groups[dataset.yAxisID === 'left' ? 0 : 1], dataset.visibilityKey,
       dataset.label, dataset.unit, dataset.borderColor, dataset.kind, dataset.borderDash);
     for (const track of tracksForView(view)) add(groups[2], track.key, track.label, track.detail, palette[track.color ?? track.key], 'strip');
-    const reset = document.createElement('button'); reset.type = 'button'; reset.className = 'chart-legend-reset'; reset.textContent = 'Reset view';
+    for (const button of buttons.values()) button.remove();
+    const oldReset = reuse && actions.querySelector('.chart-legend-reset');
+    const reset = oldReset || document.createElement('button'); reset.type = 'button'; reset.className = 'chart-legend-reset'; reset.textContent = 'Reset view';
     reset.title = 'Restore this view’s default series and activity rows; keep your price and interpolation choices';
-    reset.addEventListener('click', () => { delete preferences.views[view.key]; savePreferences(); void renderChart().then(() => $('chart-legend-actions').querySelector('.chart-legend-reset')?.focus({ preventScroll: true })); });
-    const save = document.createElement('button'); save.type = 'button'; save.className = 'chart-legend-save'; save.textContent = 'Save view';
+    if (!oldReset) reset.addEventListener('click', () => { delete preferences.views[view.key]; savePreferences(); void renderChart(); });
+    const oldSave = reuse && actions.querySelector('.chart-legend-save');
+    const save = oldSave || document.createElement('button'); save.type = 'button'; save.className = 'chart-legend-save'; save.textContent = 'Save view';
     save.title = 'Save the selected view, series visibility, price and interpolation choices in this browser';
-    save.addEventListener('click', () => { save.textContent = savePreferences() ? 'View saved' : 'Save failed'; });
-    const interpolation = document.createElement('button'); interpolation.type = 'button'; interpolation.className = 'chart-legend-interpolation';
+    if (!oldSave) save.addEventListener('click', () => { save.textContent = savePreferences() ? 'View saved' : 'Save failed'; });
+    const oldInterpolation = reuse && actions.querySelector('.chart-legend-interpolation');
+    const interpolation = oldInterpolation || document.createElement('button'); interpolation.type = 'button'; interpolation.className = 'chart-legend-interpolation';
     interpolation.setAttribute('aria-label', 'Interpolation'); interpolation.setAttribute('aria-pressed', String(preferences.interpolation));
     interpolation.title = preferences.interpolation
       ? 'Interpolation is on. Turn off to draw all connected lines as steps.'
       : 'Interpolation is off. Turn on to restore the usual curves and straight lines.';
     const state = document.createElement('span'); state.className = 'chart-interpolation-state';
     state.textContent = preferences.interpolation ? 'ON' : 'OFF'; state.setAttribute('aria-hidden', 'true');
-    interpolation.append(document.createTextNode('Interpolation'), state);
-    interpolation.addEventListener('click', () => {
+    interpolation.replaceChildren(document.createTextNode('Interpolation'), state);
+    if (!oldInterpolation) interpolation.addEventListener('click', () => {
       preferences.interpolation = !preferences.interpolation; savePreferences();
-      const focused = document.activeElement === interpolation;
-      overlays.clear(); void renderChart().then(() => {
-        if (focused) $('chart-legend-actions').querySelector('.chart-legend-interpolation')?.focus({ preventScroll: true });
-      });
+      overlays.clear(); void renderChart();
     });
-    legend.replaceChildren(...groups.filter(group => group.children.length > 1));
-    $('chart-legend-actions').replaceChildren(interpolation, reset, save);
+    const shownGroups = groups.filter(group => group.children.length > 1);
+    if (shownGroups.length !== legend.children.length || shownGroups.some((group, index) => legend.children[index] !== group))
+      legend.replaceChildren(...shownGroups);
+    if (!oldInterpolation) actions.replaceChildren(interpolation, reset, save);
+    // Preserve the user's focus at publication, including refresh/theme draws.
+    // An earlier click must not steal focus back after the user has moved on
+    // while asynchronous geometry was being prepared.
+    if (focusedKey) legend.querySelector(`[data-chart-key="${focusedKey}"]`)?.focus({ preventScroll: true });
+    else if (focusedAction) actions.querySelector(`.chart-legend-${focusedAction}`)?.focus({ preventScroll: true });
     // Replacing the scrolling children resets the browser's scroll anchor.
     // Keep the same place for toggles and refreshes; a different view starts at top.
     legend.dataset.viewKey = view.key;
@@ -277,6 +292,9 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     $('chart-status').textContent = loading ? chartLoadingLabel(loadingProgress) : `${plot.startDate === plot.endDate ? plot.startDate : `${plot.startDate} – ${plot.endDate}`} · Finnish time${simulated}${availability ? ` · ${availability}` : ''}`;
   }
   async function renderChart({ viewOnly = false } = {}) {
+    // A detail/resize draw can supersede asynchronous preparation. It must
+    // inherit an unpublished full draw's legend, controls and notes as well.
+    pendingFullRender ||= !viewOnly;
     const render = ++renderGeneration;
     try { await drawChart({ viewOnly, render }); }
     catch (error) {
@@ -287,7 +305,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   async function drawChart({ viewOnly, render }) {
     if (!overview) return;
     if (navigation.moving) { if (!viewOnly) pendingFullRender = true; return; }
-    viewOnly = viewOnly && !pendingFullRender; pendingFullRender = false;
+    viewOnly = viewOnly && !pendingFullRender;
     const view = navigation.view ?? overview.range;
     const exploring = navigation.fullscreen && (view.from > overview.range.from || view.to < overview.range.to);
     const source = exploring ? selectChartResolution(overview, [detail, ...cachedDetails()], view) : overview;
@@ -383,6 +401,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const loading = !sameSelection(selection, plot);
     canvas.dataset.rangeStart = plot.startDate; canvas.dataset.rangeEnd = plot.endDate; canvas.dataset.view = plot.view ?? 'explorer'; canvas.dataset.series = plot.series ?? ''; canvas.dataset.left = plot.left ?? plot.view; canvas.dataset.ready = String(!loading);
     renderStatus(datasets);
+    pendingFullRender = false;
     const noteFlags = datasets.map(dataset => [dataset.kind, dataset.chartEvidence?.carriedForward,
       !dataset.hidden && dataset.chartEvidence?.needsAttention]);
     const aggregated = Object.values(payload.shading ?? {}).some(intervals => intervals.some(interval => interval.aggregated));

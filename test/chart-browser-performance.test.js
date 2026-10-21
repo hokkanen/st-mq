@@ -17,6 +17,8 @@ test('progress is scoped to measurable source work; stage-only updates do not in
   assert.equal(chartLoadingLabel({ stage: 'reading-history', completed: 1, total: 100 }), 'Loading · Reading history 1%');
   assert.equal(chartLoadingLabel({ stage: 'reading-history', completed: 100, total: 100 }), 'Loading · Reading history 100%');
   assert.equal(chartLoadingLabel({ stage: 'preparing-chart' }), 'Loading · Preparing chart…');
+  assert.equal(chartLoadingLabel({ stage: 'replaying-model', completed: 1, total: 4 }),
+    'Loading · Reconstructing model coefficients 25%');
   for (const total of [undefined, 0, -1, Infinity]) assert.doesNotMatch(chartLoadingLabel({ stage: 'reading-history', completed: 1, total }), /%/);
   assert.doesNotMatch(chartLoadingLabel({ completed: 2, total: 1 }), /%/);
 });

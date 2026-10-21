@@ -935,7 +935,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const chargingSessions = addChargingSessionChecks({ store, range, now, envelopes });
   const modelInputs = addModelInputs({ store, range, now, input, envelopes,
     indoorLine: detail ? lines.model_indoor_temperature : undefined, activities });
-  const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes });
+  const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes, onProgress });
   const fireplaceInputs = addFireplaceInputs({ store, range, now, input, envelopes, shading });
   const needsFirewood = !detail || selectedHas(FIREWOOD_OUTCOME_NAMES);
   const outlookForFirewood = !needsFirewood ? {} : input === 'simulated' ? simulated ?? {} : assembleOutlook(market, weather, contract, now);

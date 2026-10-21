@@ -117,6 +117,11 @@ Chart requests use a read-only database connection and never save replay checkpo
 coefficient rows or new snapshots. A bounded memory cache reuses derived timelines
 and resumes replay as new entries arrive; advancing the clock alone does not repeat
 learning. The first request can take longer because it replays earlier learning.
+Coefficient reconstruction uses the existing archive worker lane, including for
+recent dates, so it does not queue ordinary recent plots and cost comparisons
+behind that replay. Progress describes the journal prefix being traversed;
+cancellation is checked between entries, without changing the ordered model
+update or publishing a partial timeline.
 The **View** menu groups compatible comparisons with their relevant temperature
 context and labeled activity rows. Saved temperatures and references, thermal
 inputs, electrical inputs, activity fractions and coefficients keep their own

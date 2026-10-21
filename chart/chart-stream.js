@@ -52,6 +52,7 @@ export async function readChartResponse(response, onProgress = () => {}) {
 const stages = {
   queued: 'Waiting for chart worker', 'reading-history': 'Reading history', 'reading-energy': 'Reading energy',
   'preparing-chart': 'Preparing chart', 'preparing-summary': 'Preparing summary', 'preparing-response': 'Preparing download',
+  'replaying-model': 'Reconstructing model coefficients',
   downloading: 'Receiving chart', drawing: 'Drawing chart',
 };
 /** The percentage describes only the named measurable stage, never a guessed
