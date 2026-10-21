@@ -112,7 +112,7 @@ function chargingReportQuery(url, kind) {
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '', familyToken = '',
   getAccess, ingress = false, tls, transportLimits, webTransport, webSessions, clock = Date.now, role = 'master', topology = 'standalone', getReadContext, syncStatus,
-  pairContext, controlAuthority, historyRecovery, recordingHealth, databaseExport, databaseVerification,
+  pairContext, controlAuthority, historyRecovery, recordingHealth, databaseExport, databaseVerification, modelReconstruction,
   backupCatalog, backupInspection, getDatabaseExportDirectory,
   reloadSettings, previewSettings, settingsReloadStatus = () => ({ available: false, busy: false,
     reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
@@ -263,6 +263,25 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (!stillAuthorized()) return;
           if (settingsReloadStatus().stopping) return json(503, { error: 'The application is shutting down.' });
           return json(202, pairContext.requestAction(input));
+        }
+        // These jobs write only this computer's disposable verification progress.
+        // Standby operation has no main-database or device-command authority.
+        if (url.pathname === '/api/model-reconstruction' && req.method === 'GET') {
+          if ([...url.searchParams.keys()].length) return json(400, { error: 'Unsupported model reconstruction query.' });
+          if (!modelReconstruction) return json(200, { available: false, state: 'unavailable' });
+          const result = await modelReconstruction.status();
+          if (!stillAuthorized()) return;
+          return json(200, { ...result, canManage: webAccess.role === 'admin' });
+        }
+        if (url.pathname === '/api/model-reconstruction/action' && req.method === 'POST') {
+          if (!modelReconstruction) return json(409, { error: 'Model reconstruction is unavailable on this computer.' });
+          const input = await body(req, transportLimits?.bodyTimeoutMs);
+          if (!stillAuthorized()) return;
+          if (webAccess.role !== 'admin') return json(403, { error: 'Admin access is required for this action.' });
+          const transition = settingsReloadStatus();
+          if (transition.stopping || (transition.busy || transition.unavailable) && !['pause', 'cancel', 'discard'].includes(input?.action))
+            return json(503, { error: 'Wait for configuration work to finish before changing reconstruction.' });
+          return json(202, { ...await modelReconstruction.action(input), canManage: true });
         }
         if (url.pathname === '/api/database-verification' && ['GET', 'POST'].includes(req.method)) {
           if (!databaseVerification) return json(409, { error: 'Database verification is unavailable.' });
@@ -775,6 +794,10 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             code: /^backup_[a-z_]+$/.test(error.code ?? '') ? error.code : 'backup_inspection_unavailable',
             error: 'The saved copy or backup list is unavailable. Refresh the list and retry.' });
         }
+        if (/^\/api\/model-reconstruction(?:\/action)?(?:\?|$)/.test(req.url))
+          return json(error.statusCode ?? (error instanceof TypeError || error instanceof SyntaxError ? 400 : 503), {
+            code: /^model_reconstruction_[a-z_]+$/.test(error.code ?? '') ? error.code : 'model_reconstruction_unavailable',
+            error: 'Model reconstruction is unavailable or the request is invalid. Refresh its status before retrying.' });
         if (/^\/api\/database-verification(?:\?|$)/.test(req.url))
           return json(error.statusCode ?? (error instanceof SyntaxError ? 400 : 503),
             error.code === 'full_verification_unavailable'

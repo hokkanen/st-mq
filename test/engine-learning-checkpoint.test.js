@@ -142,6 +142,11 @@ for (const correction of ['fireplace', 'sensor']) test(`incident-sized ${correct
     now++;
     await store.runWrite(() => engine.changeFireplace({ requestId: 'invented-large-future-load', kg: 2 }));
     await engine.refreshLearning();
+    // Future-only revision metadata uses the same asynchronous atomic model /
+    // chart publication. This fixture deliberately disabled the ready callback.
+    await waitReady();
+    await store.runWrite(() => engine.reconcileFireplace());
+    await manager.publication;
     await engine.learningCheckpointCache?.flush();
     assert.equal(manager.status().status, 'current');
     assert.deepEqual(store.getState('adaptive:mqtt'), engine.checkpoint);

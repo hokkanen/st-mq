@@ -15,6 +15,8 @@ import { RECOVERY_MODEL_TIME } from './dependencies.js';
 import { findLearningPrefix, retainLearningPrefix, prefixSourceId, withPrefixRevisions } from './learning-prefix.js';
 import { projectedSensorContext } from './state.js';
 import { recoveryRevisionImpact } from './impact-report.js';
+import { coefficientProjectionAt, readCoefficientCoverage, createCoefficientGeneration, appendCoefficientEvents, discardCoefficientGeneration } from '../storage/coefficient-history.js';
+import { projectCoefficientTransition, compactCoefficientProjection } from '../domain/coefficient-projection.js';
 
 const previewOnly = workerData.mode === 'revision-preview';
 parentPort.postMessage({ type: 'progress', phase: 'validating', processed: 0 });
@@ -43,6 +45,7 @@ const head = () => store.learningJournalHead(input);
 const selection = selectedHistory(store), sourceEpoch = store.learningEpoch(input);
 const sourceFireplace = fireplaceLearningContext(store, input).fireplaceRevision, sourceSensor = sensorRevision(store, input);
 let sourceHead = head(), checkpoint = null, prefix = null, prefixCheckpoint = null, report, source, processed = 0, busy = false, closed = false;
+let coefficientGeneration = null, coefficientSource = null, coefficients = null;
 let restorationToken = null, restorationVerified = null;
 const pendingStates = source => source.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%' ORDER BY key").all();
 const observationHead = source => source.db.prepare('SELECT COALESCE(MAX(id),0) n FROM observations').get().n;
@@ -326,6 +329,10 @@ async function buildProjection() {
   prefix=await findLearningPrefix(store,{input,epoch:sourceEpoch,
     earliest:Math.min(changed.earliest??Infinity,fireplace.earliest??Infinity),
     fireplaceRevision:sourceFireplace,sensorRevision:sourceSensor});
+  coefficientSource=readCoefficientCoverage(store,{input,epoch:sourceEpoch});
+  if(prefix&&(!coefficientSource||coefficientSource.cursor<prefix.cursor))prefix=null;
+  coefficients=coefficientProjectionAt(store,{input,epoch:sourceEpoch,
+    generation:coefficientSource?.generation,cursor:prefix?.cursor??0});
   retainLearningPrefix(store,{input,epoch,prefix}); checkpoint=prefix?.checkpoint??null;
 
   // Only original payloads participate, including new live records written in
@@ -410,6 +417,11 @@ async function remapAndReplay(after = prefix?.cursor??0) {
   source = { ...fireplaceLearningContext(store, input), ...projectedSensorContext(store, input, epoch) };
   checkpoint=withPrefixRevisions(checkpoint,source);
   if (prefix && checkpoint?.journalCursor === prefix.cursor) prefixCheckpoint = checkpoint;
+  if(!coefficientGeneration){
+    coefficientGeneration=store.transaction(()=>createCoefficientGeneration(store,input,{epoch,
+      fireplaceRevision:source.fireplaceRevision,sensorRevision:source.sensorRevision,selection:generation,
+      prefixCursor:prefix?.cursor??0,sourceGeneration:coefficientSource?.generation,projection:coefficients}));
+  }
   // New corrections are fenced; catch-up only appends samples/contexts and
   // replays the appended suffix with the same selected source revision.
   after = checkpoint?.journalCursor ?? 0;
@@ -419,7 +431,15 @@ async function remapAndReplay(after = prefix?.cursor??0) {
   for (;;) {
     const rows = db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND id>? ORDER BY id LIMIT 64').all(epoch,input,after);
     if (!rows.length) break;
-    for (const row of rows) { checkpoint = applyLearningRecord(checkpoint, decode(row), source); after = row.id; replayed++; }
+    const events=[];
+    for (const row of rows) {
+      const prior=checkpoint,entry=decode(row);
+      checkpoint=applyLearningRecord(prior,entry,source);
+      const event=projectCoefficientTransition(coefficients,entry,prior,checkpoint);
+      if(event)events.push({...event,projection:compactCoefficientProjection(coefficients)});
+      after=row.id;replayed++;
+    }
+    store.transaction(()=>appendCoefficientEvents(store,coefficientGeneration,{events,projection:compactCoefficientProjection(coefficients)}));
     progress('rebuilding', { processed: replayed, total, unit: 'entries' }); await yieldTurn();
   }
 }
@@ -462,7 +482,7 @@ async function catchup() {
   progress('publishing', { processed: 0 });
   parentPort.postMessage({ type: 'ready', revision: true, generation, epoch, sourceEpoch, sourceHead,
     sourceSelection: selection, sourceFireplace, sourceSensor, fireplaceRevision: source.fireplaceRevision,
-    sensorRevision: source.sensorRevision, checkpoint, prefixCheckpoint, evidenceVersion,
+    sensorRevision: source.sensorRevision, checkpoint, prefixCheckpoint, coefficientGeneration, evidenceVersion,
     evidenceProof: workerData.active ? publicationRestorationProof(restorationVerified) : null, report, modelChanged });
 }
 
@@ -516,6 +536,20 @@ async function start() {
 async function discardUnpublished() {
   // Only abandoned projections are disposable. Every published decision keeps
   // its epoch and exclusion generation so earlier interpretations remain valid.
+  for (;;) {
+    const rows=db.prepare(`SELECT id FROM coefficient_generations c WHERE c.input=? AND c.epoch>='revision:' AND c.epoch<'revision;'
+      AND NOT EXISTS(SELECT 1 FROM recovery_decisions d WHERE d.epoch=c.epoch)
+      AND NOT EXISTS(SELECT 1 FROM learning_epochs selected WHERE selected.epoch=c.epoch) LIMIT 64`).all(input);
+    if(!rows.length)break;
+    for(const row of rows){
+      let result;
+      do{
+        result=store.transaction(()=>discardCoefficientGeneration(store,row.id,{limit:128}));
+        if(!result.complete&&!result.removed)fail('Abandoned coefficient history is still referenced; preserve its source history.');
+        await yieldTurn();
+      }while(!result.complete);
+    }
+  }
   for (;;) {
     const rows = db.prepare(`SELECT generation,table_name,record_key FROM recovery_exclusions x
       WHERE generation<>? AND generation<>(SELECT generation FROM history_selection WHERE id=1)

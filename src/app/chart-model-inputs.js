@@ -38,9 +38,9 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
   const stats = { records: 0, rejectedIntervals: 0, basis: 'immutable-learning-journal' };
   if (!selected.length) return stats;
   const inputs = input === 'simulated' ? ['simulated'] : ['history', 'providers', 'mqtt'];
-  const query = store.db.prepare(`SELECT id,input,at,algorithm_version,payload FROM learning_journal
-    WHERE kind='sample' AND input IN (${inputs.map(() => '?').join(',')}) AND at>=? AND at<=?
-    ORDER BY at,id`);
+  const query = `SELECT id,input,at,algorithm_version,payload FROM learning_journal_all
+    WHERE epoch=? AND input=? AND kind='sample' AND at>=? AND at<=?
+    ORDER BY at,id`;
   const lastEnd = new Map();
   const project = (key, start, end, value, metadata, endpoint = false) => {
     const line = envelopes[key];
@@ -109,9 +109,21 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
     ...selected.map(key => envelopes[key].contextFrom ?? range.from));
   const queryTo = Math.min(now, Math.max(range.to + WINDOW,
     ...selected.map(key => envelopes[key].contextTo ?? range.to)));
-  for (const row of query.iterate(...inputs, queryFrom, queryTo)) {
+  // Resolve each selected epoch once and merge at most three indexed streams.
+  // A correlated input-IN query through the selected-history UNION can scan
+  // years of unrelated contexts even for a single day's chart.
+  const streams=inputs.map(source=>{
+    const epoch=store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(source)?.epoch??'original';
+    const iterator=store.db.prepare(query).iterate(epoch,source,queryFrom,queryTo),head=iterator.next();
+    return{iterator,head};
+  });
+  for (;;) {
+    const stream=streams.filter(value=>!value.head.done).sort((a,b)=>a.head.value.at-b.head.value.at||a.head.value.id-b.head.value.id)[0];
+    if(!stream)break;
+    const row=stream.head.value;
     if (pending && pending.at !== row.at) { accept(pending); pending = null; }
     if (!pending || priority(row) >= priority(pending)) pending = row;
+    stream.head=stream.iterator.next();
   }
   if (pending) accept(pending);
   for (const [key, end] of lastEnd) if (key !== 'model_indoor_temperature') envelopes[key].add(end, null);

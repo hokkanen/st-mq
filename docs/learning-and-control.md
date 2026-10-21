@@ -102,31 +102,27 @@ state. Four **Model coefficients · Calculated** chart choices show historical h
 loss, combined hydronic response, solar response and fireplace response. Fixed
 building, source and slab assumptions have separate informational rows.
 
-Coefficient charts replay the immutable learning journal in memory with the matching
-algorithm, saved configuration, initial seed and current corrected fireplace revision. Replay preserves journal order,
-including late episodes, and uses earlier entries to establish the model at the
-selected range's start. Each coefficient is a stepped line with initial, fitted or
-retained status in its tooltip. Unsupported or incomplete replay prefixes leave
-gaps; an explicit saved seed can establish a new supported start. The selected live
-learner and imported history are replayed separately, and simulation stays separate.
-Earlier chart intervals never receive today's coefficient values. Replay uses the
-saved configuration and matching learning algorithm; treatment-specific evidence
-keeps ROOM-only observations separate from confirmed floor charging.
+Coefficient charts read the four histories recorded with committed learning in
+the main database. Normal learning captures every coefficient change from its
+ordered input updates, with initial, fitted or retained status and source
+evidence. Selecting a coefficient view or individual series never starts journal
+replay and requires no preparation or enablement setting. A separate optional
+verification under History tools does not gate chart availability.
 
-Chart requests use a read-only database connection and never save replay checkpoints,
-coefficient rows or new snapshots. A bounded memory cache reuses derived timelines
-and resumes replay as new entries arrive; advancing the clock alone does not repeat
-learning. The first request can take longer because it replays earlier learning.
-Coefficient reconstruction uses the existing archive worker lane, including for
-recent dates, so it does not queue ordinary recent plots and cost comparisons
-behind that replay. Progress describes the journal prefix being traversed;
-cancellation is checked between entries, without changing the ordered model
-update or publishing a partial timeline.
-After a successful reconstruction, that bounded worker cache stays available
-for fifteen idle minutes rather than the ordinary archive worker's one minute.
-Browsing another chart therefore does not immediately discard the expensive
-timeline. The worker still retires after that idle interval; no replay snapshot
-is written to the database.
+The selected learning algorithm, saved configuration, seed, firewood and
+sensor-change revisions and recovered-history selection define each history.
+Journal order is preserved, including late episodes. Each coefficient is a
+stepped line with its original provenance in the tooltip; unsupported or missing
+inputs remain gaps. The live learner, imported history and simulation retain
+separate provenance. Earlier intervals never receive today's coefficient values;
+ROOM-only observations remain separate from confirmed floor charging.
+
+A source correction, recovery, revert or restore atomically selects the model and
+its matching coefficient history. Until successful publication, charts keep the
+prior selected interpretation. Unchanged prefixes remain reusable; a stale worker
+cannot mix generations or publish against a newer selection. Coefficient history
+is included in normal main-database backups, exports and mirroring. It uses compact
+change points rather than additional per-minute model snapshots.
 The **View** menu groups compatible comparisons with their relevant temperature
 context and labeled activity rows. Saved temperatures and references, thermal
 inputs, electrical inputs, activity fractions and coefficients keep their own
@@ -225,6 +221,32 @@ Replay uses the same ordered updates as live learning. It restores the model
 checkpoint, including coefficients, estimated building and slab state, comfort
 references and learning evidence. Selecting corrected source events instead
 produces a corrected model; it need not match the model used before that correction.
+
+**History tools → Verify learning reconstruction → Verify saved learning**
+performs an independent seed replay and compares the complete result and all four
+recorded coefficient timelines with a fixed durable model checkpoint and its
+matching saved history. That boundary may lag the live in-memory model and latest
+journal entry. The result names the checked journal boundary and time, reports
+model agreement separately from history agreement, and shows source snapshot age.
+A match establishes reproducibility, not physical accuracy or validation of later
+learning. A mismatch is reported without replacing the controlling model or
+silently repairing saved history. Exact model comparison has no numeric tolerance.
+Its compact per-stream diagnostics show difference counts, up to eight schema
+paths and optional maximum numeric deltas without exposing raw saved or replayed
+values. The replay runtime and CPU architecture help investigate numerical
+differences; they do not turn a mismatch into a match or relax the reconstruction
+requirement. Preserve the source model and journal when investigating a mismatch.
+The UI can identify minor numerical differences as consistent with rounding;
+this diagnostic classification leaves the exact model comparison as a mismatch.
+It does not change the independently reported coefficient-history result.
+
+Verification runs locally on either role with pause/resume/cancel controls.
+Temporary progress survives interruption in the application's data directory;
+explicitly paused work stays paused after restart. A changed source interpretation
+supersedes the run rather than resuming under different inputs. After the worker
+stops, **Discard temporary verification data** removes its progress and results
+without affecting the main database or coefficient charts. Verification is optional
+and never runs because a chart was selected.
 
 Keep a consistent backup of the full SQLite database and the corresponding
 software version. A temperature or telemetry CSV export alone is insufficient.

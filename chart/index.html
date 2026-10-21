@@ -1370,6 +1370,36 @@ G_warming = G / 2</code>
         </section>
         <section class="recording-section-group recording-tools" aria-labelledby="recording-tools-title">
           <h3 id="recording-tools-title" class="recording-group-title">History tools</h3>
+          <details id="model-reconstruction-details" class="recording-section">
+            <summary><span>Verify learning reconstruction<small id="model-reconstruction-summary">Optional full model and coefficient-history check</small></span></summary>
+            <div class="recording-section-body model-reconstruction-body">
+              <p class="muted">Reconstruct the complete saved Home model and all four coefficient histories from the learning journal, and compare them at one fixed saved-model boundary. This checks reproducibility, not physical accuracy. Charts use the coefficient history already recorded in the main database and do not require this check.</p>
+              <div class="recording-tool-actions model-reconstruction-actions">
+                <div>
+                  <button id="model-reconstruction-verify" data-admin-only type="button" class="secondary-button" disabled>Verify saved learning</button>
+                  <p class="muted">A full check can take time with long history. Recording and normal control continue. Jobs run locally on the master or slave and survive leaving this page.</p>
+                </div>
+              </div>
+              <div class="model-reconstruction-job-actions">
+                <button id="model-reconstruction-pause" data-admin-only type="button" class="secondary-button" disabled hidden>Pause verification</button>
+                <button id="model-reconstruction-resume" data-admin-only type="button" class="secondary-button" disabled hidden>Resume verification</button>
+                <button id="model-reconstruction-cancel" data-admin-only type="button" class="secondary-button" disabled hidden>Cancel verification</button>
+                <button id="model-reconstruction-discard" data-admin-only type="button" class="secondary-button" disabled>Discard temporary verification data</button>
+                <button id="model-reconstruction-retry" data-admin-only type="button" class="secondary-button" disabled hidden>Recheck request</button>
+              </div>
+              <p id="model-reconstruction-message" class="muted" role="status" aria-live="polite" hidden></p>
+              <p id="model-reconstruction-status" class="muted" role="status" aria-live="polite"></p>
+              <progress id="model-reconstruction-progress" class="model-reconstruction-progress" aria-label="Learning verification progress" hidden></progress>
+              <p id="model-reconstruction-progress-text" class="muted"></p>
+              <dl class="model-reconstruction-facts">
+                <dt>Checked boundary</dt><dd id="model-reconstruction-boundary"></dd>
+                <dt>Source snapshot</dt><dd id="model-reconstruction-source"></dd>
+                <dt>Temporary files</dt><dd id="model-reconstruction-storage"></dd>
+                <dt>Last verification</dt><dd id="model-reconstruction-result"></dd>
+              </dl>
+              <p class="family-access-note">Admin access is required to manage verification on this computer.</p>
+            </div>
+          </details>
           <details id="history-recovery-details" class="recording-section">
             <summary><span>History recovery<small>Recover missing entries or undo an earlier recovery</small></span></summary>
             <div class="recording-section-body">

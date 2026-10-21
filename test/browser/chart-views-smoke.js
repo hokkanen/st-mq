@@ -651,6 +651,13 @@ try {
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
   assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'power');
+  await choose('view', 'model_coefficient_heat_loss');
+  assert.doesNotMatch(await evaluate("document.getElementById('chart-notes').textContent"), /prepare|enable.*coefficient|Open Model reconstruction/i);
+  const recordedCoefficients = await fetch(`http://127.0.0.1:${app.server.address().port}/api/chart?start=2026-09-07&view=model_coefficient_heat_loss`).then(response => response.json());
+  assert.equal(recordedCoefficients.meta.modelCoefficients.basis, 'committed-coefficient-history');
+  assert(recordedCoefficients.series.model_coefficient_heat_loss.some(point => Number.isFinite(point.y)),
+    'Committed learning makes coefficient data available before any verification');
+  await choose('view', 'power');
   assert.equal(await interpolationEnabled(), true, 'Interpolation starts on, preserving the existing chart rendering');
   for (const [index, expectedVoltage] of CHART_FIXTURE_VOLTAGE_V.entries()) {
     const key = `voltage_estimate_l${index + 1}`;

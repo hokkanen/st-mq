@@ -1,7 +1,30 @@
 import { fireplaceRate, fireplaceActive, FIREPLACE_HORIZON_MS } from '../domain/fireplace.js';
+import { learningPrefixRanges } from '../recovery/learning-prefix.js';
 
 const instant = value => typeof value === 'number' ? value : Date.parse(value);
 const HOUR = 3_600_000;
+
+/** A later manual-source revision may only change the unconsumed future. Seek
+ * the temporal end of every retained range: the last cursor alone is unsafe
+ * when journal entries were committed out of timestamp order. */
+export function unchangedFireplacePrefix(store, input, { fromRevision, toRevision, cursor, epoch } = {}) {
+  if (![fromRevision,toRevision,cursor].every(Number.isSafeInteger)
+    || fromRevision < 0 || toRevision <= fromRevision || cursor <= 0) return false;
+  const changed=store.db.prepare(`SELECT MIN(CASE WHEN e.kind='remove' THEN p.at ELSE e.at END) at,
+    SUM(CASE WHEN e.kind='remove' AND p.at IS NULL THEN 1 ELSE 0 END) missing
+    FROM active_fireplace_events e LEFT JOIN fireplace_events p ON p.id=e.target_id
+    WHERE e.input=? AND e.id>? AND e.id<=?`).get(input,fromRevision,toRevision);
+  if (!Number.isSafeInteger(changed.at) || changed.missing) return false;
+  epoch ??= store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
+  const ranges=learningPrefixRanges(store.db,input,epoch,cursor);
+  if (!ranges.length) return false;
+  return ranges.every(range=>{
+    const latest=store.db.prepare(`SELECT at FROM learning_journal_entries INDEXED BY learning_entries_epoch_time
+      WHERE epoch=? AND input=? AND id>? AND id<=? ORDER BY at DESC LIMIT 1`)
+      .get(range.sourceEpoch,input,range.after,range.through)?.at;
+    return Number.isSafeInteger(latest) && latest < changed.at;
+  });
+}
 
 /** Source events are retained once. This projection is computed in memory for
  * learning, including corrected retrospective rebuilds; it never edits telemetry. */

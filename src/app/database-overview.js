@@ -530,6 +530,10 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['learning_epoch_segments', 'Preserved learning prefixes', 'Compact ranges reuse unaffected learning history before the checkpoint used for a correction.', 'history', 'NULL'],
     ['learning_checkpoints', 'Sparse learning checkpoints', 'Validated replay caches preserve efficient recovery after transaction patches expire. Immutable learning inputs remain the reconstruction source.', 'derived', 'at'],
     ['learning_checkpoint_samples', 'Shared prepared learning samples', 'Exact normalized fitting samples are saved once per distinct value and shared by current and sparse checkpoints, including alternate correction interpretations.', 'derived', 'NULL'],
+    ['coefficient_generations', 'Coefficient model interpretations', 'Recorded coefficient history is selected atomically with its learned model and correction interpretation.', 'history', 'through_at'],
+    ['coefficient_selection', 'Selected coefficient history', 'One current coefficient interpretation per learning input.', 'current', 'NULL'],
+    ['coefficient_events', 'Coefficient changes', 'All four coefficients, fitted evidence and change clocks recorded after ordered learning changes; no chart reconstruction is needed.', 'history', 'at'],
+    ['coefficient_segments', 'Unchanged coefficient prefixes', 'Compact references retain proven unaffected history before a corrected model suffix.', 'history', 'NULL'],
   ];
   const journalCounts = Object.fromEntries(journalTables.map(([table,,, ,time])=>[table,aggregate(table,time)]));
   add('transactions', 'Transaction history and retained branches',

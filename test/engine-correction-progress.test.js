@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events';
 import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
 import { replayLearningJournal } from '../src/app/committed-learning.js';
+import { stageScriptedCoefficientCandidate } from './helpers/coefficient-fixture.js';
 import { sample, start, W } from './helpers/recovery-fixture.js';
 import { addFireplace, removeFireplace, FireplaceRebuildManager } from '../src/app/fireplace.js';
 
@@ -124,18 +125,19 @@ test('correction catches up a controller write admitted at the control-priority 
     worker.terminate = async () => 0;
     worker.postMessage = message => {
       requests.push(message);
+      if(message.type==='coefficient-ack'){worker.emit('coefficient-ack',message);return;}
       if (message.type !== 'catchup') return;
-      const checkpoint = replayLearningJournal(store, 'mqtt', null, { rebuild: true,
-        fireplaceRevision: message.revision, sensorRevision: message.sensorRevision, persistCheckpoint: false });
-      queueMicrotask(() => worker.emit('message', { ...message, type: 'ready', checkpoint,
-        processed: checkpoint.journalCursor, head: checkpoint.journalCursor }));
+      void stageScriptedCoefficientCandidate(worker,store,'mqtt',message,{generation:worker.coefficientGeneration})
+        .then(({checkpoint,coefficientGeneration})=>worker.emit('message',{...message,type:'ready',checkpoint,
+          processed:checkpoint.journalCursor,head:checkpoint.journalCursor,coefficientGeneration}));
     };
     manager.workerFactory = () => worker;
     now++;
     const removed = engine.changeFireplace({ requestId: 'synthetic-fairness-remove', id: load.id }, true);
     const request = requests.find(message => message.type === 'rebuild');
     assert(request);
-    const candidate = replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false });
+    const staged=await stageScriptedCoefficientCandidate(worker,store,'mqtt',request);
+    const candidate=staged.checkpoint;
     let advancing;
     await store.runPublication(async () => {
       // Completing this control turn and then READY reaches the existing eight
@@ -147,7 +149,7 @@ test('correction catches up a controller write admitted at the control-priority 
         now = start + 5 * W;sample(store, now);engine.readAdaptive(now);
       });
       worker.emit('message', { ...request, type: 'ready', checkpoint: candidate,
-        processed: candidate.journalCursor, head: candidate.journalCursor });
+        processed: candidate.journalCursor, head: candidate.journalCursor,coefficientGeneration:staged.coefficientGeneration });
     }, { priority: 'control' });
     await advancing;
     const deadline = Date.now() + 5_000;
@@ -169,19 +171,20 @@ test('correction catches up a controller write admitted at the control-priority 
 test('an older ordinary progress report cannot demote a ready correction after priority admission',async t=>{
   const directory=mkdtempSync(join(tmpdir(),'stmq-correction-ready-progress-'));
   const store=new Store(join(directory,'history.sqlite')),worker=new EventEmitter(),requests=[];
-  worker.terminate=async()=>0;worker.postMessage=message=>requests.push(message);
+  worker.terminate=async()=>0;worker.postMessage=message=>{requests.push(message);if(message.type==='coefficient-ack')worker.emit('coefficient-ack',message);};
   const manager=new FireplaceRebuildManager({store,input:'mqtt',workerFactory:()=>worker});
   t.after(async()=>{await manager.close();store.close();rmSync(directory,{recursive:true,force:true});});
   const load=addFireplace(store,'mqtt',{requestId:'synthetic-ready-progress-load',kg:4},start);
   sample(store,start+W);const original=replayLearningJournal(store,'mqtt');
   removeFireplace(store,'mqtt',{requestId:'synthetic-ready-progress-remove',id:load.id},start+W+1);
   manager.start();const request=requests.find(message=>message.type==='rebuild');assert(request);
-  const checkpoint=replayLearningJournal(store,'mqtt',null,{rebuild:true,persistCheckpoint:false});
+  const staged=await stageScriptedCoefficientCandidate(worker,store,'mqtt',request);
+  const checkpoint=staged.checkpoint;
   await store.runPublication(async()=>{
     // Both reports arrive while admission is reserved. READY must run first;
     // no automatic publication clears the candidate before progress follows.
     worker.emit('message',{...request,type:'progress',processed:checkpoint.journalCursor,journalCursor:checkpoint.journalCursor});
-    worker.emit('message',{...request,type:'ready',checkpoint,processed:checkpoint.journalCursor,head:checkpoint.journalCursor});
+    worker.emit('message',{...request,type:'ready',checkpoint,processed:checkpoint.journalCursor,head:checkpoint.journalCursor,coefficientGeneration:staged.coefficientGeneration});
   });
   await store.runWrite(()=>{
     assert.equal(manager.status().status,'ready');

@@ -6,15 +6,13 @@ import { getDatabaseOverview } from './database-overview.js';
 import { energyCheckSummaries } from './energy-checks.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
 import { attachStorageAdmission } from '../storage/worker-admission.js';
-import { CHART_VIEW_BY_KEY } from '../domain/chart-views.js';
-import { HISTORY_AXIS_BY_KEY, MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
 
 const aborted = () => Object.assign(new Error('Chart request aborted'), { name: 'AbortError' });
 
 /** Recent charts share a resident source window. Archive work owns a separate
  * bounded worker, so broad selections cannot evict that window. Maintenance
  * reads short batches only when no requested chart is waiting. */
-export function createChartService({ store, maxQueue = 8, idleMs = 60_000, replayIdleMs = 15 * 60_000, cacheDays = DEFAULT_CHART_CACHE.cacheDays, cacheBytes = DEFAULT_CHART_CACHE.cacheBytes, clock = Date.now, warmCache = true } = {}) {
+export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cacheDays = DEFAULT_CHART_CACHE.cacheDays, cacheBytes = DEFAULT_CHART_CACHE.cacheBytes, clock = Date.now, warmCache = true } = {}) {
   if (!store?.db || !store.path) throw new TypeError('A history store is required');
   storageOperationHealth.register('history-query'); storageOperationHealth.register('storage-inventory');
   let nextId = 1, closed = false, maintenanceTimer, pinned = false, warming = warmCache;
@@ -23,7 +21,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, repla
     && Number.isSafeInteger(value.cacheBytes) && value.cacheBytes >= 64 * 1024 * 1024 && value.cacheBytes <= 2048 * 1024 * 1024;
   if (!validSettings(settings)) throw new TypeError('Invalid chart cache settings');
   const lanes = Object.fromEntries(['resident', 'archive'].map(name => [name,
-    { name, worker: null, active: null, queue: [], retiring: null, timer: null, replayCache: false, observations: new Map() }]));
+    { name, worker: null, active: null, queue: [], retiring: null, timer: null, observations: new Map() }]));
   const overviewRequests = new Map();
   const cleanup = entry => entry.signal?.removeEventListener('abort', entry.abort);
   const settle = (entry, error, result) => {
@@ -39,7 +37,6 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, repla
   }
   function reset(lane, outcome = 'failed', reason = 'worker-lost') {
     clearTimeout(lane.timer); lane.timer = null;
-    lane.replayCache = false;
     const previous = lane.worker; lane.worker = null;
     if (previous) {
       // Admission cleanup must observe release/exit through termination. The
@@ -58,7 +55,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, repla
     if (closed || lane.active || lane.retiring) return;
     if (!lane.queue.length) {
       if (!pinned && lane.worker && !lane.timer && (lane.name === 'archive' || !settings.cacheDays)) {
-        lane.timer = setTimeout(() => reset(lane), lane.replayCache ? Math.max(idleMs, replayIdleMs) : idleMs); lane.timer.unref();
+        lane.timer = setTimeout(() => reset(lane), idleMs); lane.timer.unref();
       }
       return;
     }
@@ -88,7 +85,6 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, repla
               const entry = lane.active; lane.active = null;
               const response = entry.response;
               const error = response?.error ? Object.assign(new Error(response.error.message), { name: response.error.name }) : null;
-              if (entry.replay && !error && !entry.aborted) lane.replayCache = true;
               settle(entry, error, response?.result); pump();
             }
             return;
@@ -153,13 +149,8 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, repla
       } catch (error) { observation?.finish('failed', { reason: 'operation-failed' }); return Promise.reject(error); }
     }
     const range = operation === 'chart' ? chartRequestRange(args).range : null;
-    // Cold coefficient reconstruction can replay the entire learning journal.
-    // Keep that work in the existing archive lane even for today's selection,
-    // so it cannot hold ordinary recent plots and comparisons behind it.
-    const signals = CHART_VIEW_BY_KEY[args.view]?.leftSignals ?? HISTORY_AXIS_BY_KEY[args.left]?.signals ?? [];
-    const replay = operation === 'chart' && signals.some(signal => Object.hasOwn(MODEL_COEFFICIENT_INFO, signal));
     const residentFrom = settings.cacheDays ? clock() - settings.cacheDays * 86_400_000 : Infinity;
-    const lane = operation === 'maintain' || operation === 'pin' || !replay && range && range.from >= residentFrom - 86_400_000
+    const lane = operation === 'maintain' || operation === 'pin' || range && range.from >= residentFrom - 86_400_000
       ? lanes.resident : lanes.archive;
     const count = item => item.queue.length + Number(Boolean(item.active && !item.active.aborted));
     if (count(lane) >= maxQueue) {
@@ -167,7 +158,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, repla
       return Promise.reject(new RangeError('Too many pending chart requests'));
     }
     return new Promise((resolve, reject) => {
-      const entry = { id: nextId++, args, operation, wire, checkpoint, signal, onProgress, resolve, reject, replay, abort: null,
+      const entry = { id: nextId++, args, operation, wire, checkpoint, signal, onProgress, resolve, reject, abort: null,
         observation: ['pin', 'pin-archive', 'maintain'].includes(operation) ? null : storageOperationHealth.begin(operation === 'overview' ? 'storage-inventory' : 'history-query', { queued: true, scope: 'history' }) };
       entry.abort = () => {
         if (lane.active === entry) {

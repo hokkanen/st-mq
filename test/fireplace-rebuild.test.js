@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { createCoefficientGeneration, appendCoefficientEvents, readCoefficientEvents } from '../src/storage/coefficient-history.js';
+import { emptyCoefficientProjection } from '../src/domain/coefficient-projection.js';
 import { Worker } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -63,6 +65,26 @@ test('background replay is deterministic, leaves the old checkpoint active, and 
   });
   assert.equal(manager.status().status, 'current');
 });
+
+test('a failed coefficient staging transaction releases its waiting worker and preserves the published model',
+  {timeout:15_000}, async t=>{
+    const store=new Store(':memory:');
+    const manager=new FireplaceRebuildManager({store,input:'mqtt'});
+    t.after(async()=>{await manager.close();store.close();});
+    sample(store,1);
+    const checkpoint=replayLearningJournal(store,'mqtt');
+    const events=readCoefficientEvents(store,{input:'mqtt'});
+    addFireplace(store,'mqtt',{requestId:'invented-stage-failure',kg:4},at+900_001);
+    store.db.exec(`CREATE TEMP TRIGGER synthetic_coefficient_failure BEFORE INSERT ON coefficient_generations
+      BEGIN SELECT RAISE(ABORT,'synthetic coefficient staging failure'); END;`);
+    manager.start();
+    const deadline=Date.now()+10_000;
+    while(manager.status().status!=='failed'&&Date.now()<deadline)await pause();
+    assert.equal(manager.status().status,'failed','parent staging failure cannot leave the worker awaiting an acknowledgement');
+    assert.equal(manager.worker,null);
+    assert.deepEqual(store.getState('adaptive:mqtt'),checkpoint);
+    assert.deepEqual(readCoefficientEvents(store,{input:'mqtt'}),events);
+  });
 
 test('restart restores pending work and source changes invalidate completed worker candidates', { timeout: 30_000 }, async t => {
   const store = new Store(':memory:');
@@ -174,8 +196,10 @@ test('epoch switches and stale responses replace workers; failed joint jobs can 
   let manager = new FireplaceRebuildManager({ store, input: 'mqtt', workerFactory });
   t.after(async () => { await manager.close(); store.close(); });
   const respond = (worker, type = 'ready') => {
-    const { revision, sensorRevision, epoch } = worker.messages.at(-1);
-    worker.emit('message', { type, revision, sensorRevision, epoch, head: 0, checkpoint: null, processed: 0 });
+    const { revision, sensorRevision, epoch } = worker.messages.findLast(message=>['rebuild','catchup'].includes(message.type));
+    if(type==='ready')worker.emit('message',{type:'coefficient-start',revision,sensorRevision,epoch,requestId:1,prefixCursor:0,projection:emptyCoefficientProjection()});
+    const coefficientGeneration=worker.messages.findLast(message=>message.type==='coefficient-ack')?.generation;
+    worker.emit('message', { type, revision, sensorRevision, epoch, head: 0, checkpoint: null, processed: 0,coefficientGeneration });
   };
   manager.start();
   respond(workers[0]);
@@ -303,6 +327,16 @@ test('queued catch-up cannot replace a correction candidate while prefix lookup 
   const completed = new Promise((resolve, reject) => {
     worker.on('error', reject);
     worker.on('message', result => {
+      if(result.type==='coefficient-start'||result.type==='coefficient-page'){
+        let generation;
+        store.transaction(()=>{
+          if(result.type==='coefficient-start')generation=createCoefficientGeneration(store,'mqtt',{
+            epoch:store.learningEpoch('mqtt'),fireplaceRevision:result.revision,sensorRevision:result.sensorRevision,
+            prefixCursor:result.prefixCursor,projection:result.projection});
+          else{generation=result.coefficientGeneration;appendCoefficientEvents(store,generation,{events:result.events,projection:result.projection});}
+        });
+        worker.postMessage({type:'coefficient-ack',requestId:result.requestId,generation});return;
+      }
       if (result.type === 'failed' || result.type === 'stale') reject(new Error(`Unexpected ${result.type} correction reply`));
       if (result.type === 'ready') { replies.push(result); if (replies.length === 2) resolve(); }
     });

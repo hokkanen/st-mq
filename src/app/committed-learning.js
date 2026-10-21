@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint, updateAdaptiveLearning, updateAdaptiveEpisode } from '../control/adaptive-learning.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
 import { CONTROL_DEFAULTS } from './config.js';
-import { fireplaceLearningContext, withFireplaceInputs, fireplaceEpisodeAffected } from './fireplace-inputs.js';
+import { fireplaceLearningContext, withFireplaceInputs, fireplaceEpisodeAffected, unchangedFireplacePrefix } from './fireplace-inputs.js';
 import { indoorWeights, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
 import { lastIndoorReading, indoorReportCoverage } from './indoor-readings.js';
 import { sensorBoundaries, affectsThermalLearning, sensorLearningContext } from './sensor-inputs.js';
@@ -13,6 +13,8 @@ import { estimateHeatPumpPerformance } from '../domain/heat-pump-performance.js'
 import { recordedEnergyGroups } from '../storage/energy-history.js';
 import { selectedCoverageSpan } from '../storage/coverage-history.js';
 import { validComfortReference, hasEstimatedIndoor } from '../control/learning.js';
+import { projectCoefficientTransition, compactCoefficientProjection } from '../domain/coefficient-projection.js';
+import { coefficientProjectionAt, persistCoefficientBatch, readCoefficientCoverage } from '../storage/coefficient-history.js';
 
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 import { observationTimeAdmitted } from '../domain/time-evidence.js';
@@ -43,11 +45,14 @@ export function learningVersion(value) {
  * are outside the model checkpoint; model/state, configuration and the applied
  * journal hash chain are covered. The digest never contains itself. */
 const immutableCheckpointDigests = new WeakMap();
+export function learningCheckpointMaterial(checkpoint) {
+  const { checkpointDigest, historyCursor, historyResampling, reconstruction, ...modelCheckpoint } = checkpoint;
+  return modelCheckpoint;
+}
 export function learningCheckpointDigest(checkpoint) {
   if (isImmutableValue(checkpoint) && immutableCheckpointDigests.has(checkpoint))
     return immutableCheckpointDigests.get(checkpoint);
-  const { checkpointDigest, historyCursor, historyResampling, reconstruction, ...modelCheckpoint } = checkpoint;
-  const digest = learningVersion(modelCheckpoint);
+  const digest = learningVersion(learningCheckpointMaterial(checkpoint));
   if (isImmutableValue(checkpoint)) immutableCheckpointDigests.set(checkpoint, digest);
   return digest;
 }
@@ -563,9 +568,18 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
  * A crash before that update replays the same entries from the saved cursor.
  * Rebuild uses precisely this same ordered entry function. A caller composing
  * a catch-up batch may defer checkpoint persistence until its final result. */
-export function replayLearningJournal(store, input, checkpoint = null,
-  { rebuild = false, fireplaceRevision, sensorRevision, persistCheckpoint = true, through = Number.MAX_SAFE_INTEGER } = {}) {
+export function replayLearningJournal(store, input, checkpoint = null, options = {}) {
+  const steps=replayLearningJournalSteps(store,input,checkpoint,options);
+  for(;;){const step=steps.next();if(step.done)return step.value;}
+}
+
+/** One canonical ordered replay, with bounded presentation batches. The live
+ * worker can yield between pages without holding a writer reservation. */
+export function* replayLearningJournalSteps(store, input, checkpoint = null,
+  { rebuild = false, fireplaceRevision, sensorRevision, persistCheckpoint = true, persistCoefficients = persistCheckpoint,
+    onCoefficientBatch, through = Number.MAX_SAFE_INTEGER, pageSize = 256 } = {}) {
   if (!Number.isSafeInteger(through) || through < 0) throw new TypeError('Invalid learning journal boundary');
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 256) throw new TypeError('Invalid learning replay page size');
   // Source recovery may commit old manual events in bounded batches while the
   // selected journal/model still serves live control. Its completed projection
   // is published atomically; do not accidentally trigger a synchronous rebuild
@@ -578,18 +592,48 @@ export function replayLearningJournal(store, input, checkpoint = null,
   if (checkpoint?.algorithmVersion && checkpoint.algorithmVersion !== LEARNING_ALGORITHM)
     throw new Error('Unsupported Home checkpoint algorithm; start fresh.');
   let next = rebuild ? null : checkpoint;
-  if (next && ((next.fireplaceRevision ?? 0) !== fireplaceContext.fireplaceRevision
-    || (next.sensorRevision ?? 0) !== fireplaceContext.sensorRevision)) next = null;
   if (next?.journalCursor) {
     const last = store.learningJournal({ input, after: next.journalCursor - 1, limit: 1, algorithmVersion: LEARNING_ALGORITHM })[0];
     if (!last || !validLearningCheckpoint(next, last)) next = null;
   }
+  let reusedPrefixCursor;
+  if (next && (next.sensorRevision ?? 0) !== fireplaceContext.sensorRevision) next=null;
+  if (next && (next.fireplaceRevision ?? 0) !== fireplaceContext.fireplaceRevision) {
+    const coverage=readCoefficientCoverage(store,{input});
+    const selection=store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation;
+    if (coverage && coverage.selection===selection && coverage.cursor>=next.journalCursor
+      && coverage.fireplaceRevision===(next.fireplaceRevision??0) && coverage.sensorRevision===(next.sensorRevision??0)
+      && unchangedFireplacePrefix(store,input,{fromRevision:next.fireplaceRevision??0,toRevision:fireplaceContext.fireplaceRevision,cursor:next.journalCursor})) {
+      reusedPrefixCursor=next.journalCursor;
+      next={...next,fireplaceRevision:fireplaceContext.fireplaceRevision};
+      next.checkpointDigest=learningCheckpointDigest(next);
+    } else next=null;
+  }
+  const coefficientSource = { epoch: store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch??'original',
+    selection: store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation,
+    fireplaceRevision: fireplaceContext.fireplaceRevision ?? 0, sensorRevision: fireplaceContext.sensorRevision ?? 0 };
+  const projection = coefficientProjectionAt(store, { input, cursor: next?.journalCursor ?? 0 });
+  let publishRevision=reusedPrefixCursor!==undefined;
   for (;;) {
-    const entries = store.learningJournal({ input, after: next?.journalCursor ?? 0, limit: 256, algorithmVersion: LEARNING_ALGORITHM })
+    const entries = store.learningJournal({ input, after: next?.journalCursor ?? 0, limit: pageSize, algorithmVersion: LEARNING_ALGORITHM })
       .filter(entry => entry.id <= through);
-    if (!entries.length) break;
-    for (const entry of entries) next = applyLearningRecord(next, entry, fireplaceContext);
-    if (persistCheckpoint) store.setState(`adaptive:${input}`, next);
+    if (!entries.length && !publishRevision) break;
+    const baseCursor = next?.journalCursor ?? 0, events = [];
+    for (const entry of entries) {
+      const prior = next;
+      next = applyLearningRecord(next, entry, fireplaceContext);
+      const event = projectCoefficientTransition(projection, entry, prior, next);
+      if (event) events.push({ ...event, projection: compactCoefficientProjection(projection) });
+    }
+    const batch = { ...coefficientSource, baseCursor, events, projection: compactCoefficientProjection(projection),
+      cursor: next.journalCursor, throughAt: projection.at, ...(reusedPrefixCursor===undefined?{}:{reusedPrefixCursor}) };
+    if (persistCoefficients || persistCheckpoint) store.transaction(() => {
+      if (persistCoefficients) persistCoefficientBatch(store,input,batch);
+      if (persistCheckpoint) store.setState(`adaptive:${input}`,next);
+    });
+    onCoefficientBatch?.(batch);
+    publishRevision=false;
+    yield batch;
   }
   return next ?? restoreAdaptiveCheckpoint(null);
 }

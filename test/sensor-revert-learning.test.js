@@ -83,7 +83,7 @@ for (const signal of ['bedroom_temperature', 'outdoor_temperature']) test(`${sig
   // Replay is deliberately independent of source acquisition/coverage queries.
   const onlyJournal = { db: store.db, learningJournal: store.learningJournal.bind(store),
     getState: store.getState.bind(store), setState: store.setState.bind(store) };
-  assert.deepEqual(replayLearningJournal(onlyJournal, 'mqtt', null, { rebuild: true }), corrected);
+  assert.deepEqual(replayLearningJournal(onlyJournal, 'mqtt', null, { rebuild: true, persistCheckpoint: false }), corrected);
 });
 
 test('reverting one change keeps a later real boundary, then reverting it restores held pre-change readings', t => {

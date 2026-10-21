@@ -5,6 +5,7 @@ import { appendLearningRecord, replayLearningJournal, LEARNING_WINDOW_MS as WIND
 import { previewRecoveryRevision, reviseRecovery } from '../src/recovery/service.js';
 import { publishLearning } from '../src/app/learning-publication.js';
 import { fixture, recover, start } from './helpers/recovery-fixture.js';
+import { createCoefficientGeneration, readCoefficientCoverage } from '../src/storage/coefficient-history.js';
 
 const HOUR = 3_600_000;
 
@@ -102,22 +103,27 @@ test('publication of a verified empty replacement clears the previous adaptive c
   const previous = replayLearningJournal(f.master, 'mqtt');
   assert(previous.journalCursor > 0);
   const operationToken = 'synthetic-empty-publication', epoch = 'synthetic-empty-epoch', runId = 'synthetic-empty-run';
+  let coefficientGeneration;
   f.master.transaction(() => {
     f.master.setState('recovery:active:mqtt', { status: 'rebuilding', operationToken });
     f.master.db.prepare(`INSERT INTO recovery_runs(id,input,donor_digest,previous_epoch,epoch,status,started_at)
       VALUES(?,?,?,?,?,?,?)`).run(runId, 'mqtt', 'synthetic-digest', 'original', epoch, 'rebuilding', start);
+    coefficientGeneration = createCoefficientGeneration(f.master, 'mqtt', { epoch, fireplaceRevision: 0, sensorRevision: 0 });
   });
   let adopted = false;
   const result = await publishLearning({ store: f.master, input: 'mqtt', kind: 'recovery',
     context: { operationToken, previewId: 'synthetic-reviewed-source' }, signal: t.signal,
     message: { sourceSelection: 'original', sourceEpoch: 'original', sourceHead: previous.journalCursor,
       fireplaceRevision: 0, sourceSensorRevision: 0, sensorRevision: 0, epoch, runId,
-      checkpoint: null, prefixCheckpoint: null, report: { counts: { missing: 0, skipped: 0, conflicts: 0 }, model: {} } },
+      checkpoint: null, prefixCheckpoint: null, coefficientGeneration,
+      report: { counts: { missing: 0, skipped: 0, conflicts: 0 }, model: {} } },
     onPublish(value) { adopted = true; assert.equal(value.checkpoint, null); } });
   assert(adopted);
   assert.equal(result.checkpoint, null);
   assert.equal(f.master.learningEpoch('mqtt'), epoch);
   assert.equal(f.master.learningJournalHead('mqtt'), 0);
   assert.equal(f.master.getState('adaptive:mqtt'), null);
+  assert.equal(readCoefficientCoverage(f.master, { input: 'mqtt' }).generation, coefficientGeneration);
+  assert.equal(readCoefficientCoverage(f.master, { input: 'mqtt' }).cursor, 0);
   assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM learning_journal_entries WHERE epoch=?').get('original').n, 1);
 });

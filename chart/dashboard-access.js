@@ -2,12 +2,14 @@ import { isReadOnlyReplica } from './replica-status.js';
 import { isPairManagementRequest } from './pair-status.js';
 import { lockControl, unlockControl } from './control-locks.js';
 import { dashboardWriterRestriction, retainDashboardHealth } from './dashboard-storage.js';
+import { isModelReconstructionAction } from './model-reconstruction.js';
 
 export const readOnlyMessage = 'View only: database edits, settings changes and device commands are disabled. Use the master to make changes.';
 
 /** Pair management and read-only database verification remain usable on a slave. */
 export function assertDashboardWrite(path, data, status) {
   if (data === undefined || path === '/api/web-access' || isPairManagementRequest(path, data, status)) return;
+  if (status && path === '/api/model-reconstruction/action' && isModelReconstructionAction(data)) return;
   if (status && path === '/api/database-verification' && data && typeof data === 'object' && !Array.isArray(data) && !Object.keys(data).length) return;
   if (status && path === '/api/recording-backups/verify' && data && typeof data === 'object' && !Array.isArray(data)
     && Object.keys(data).join(',') === 'sourceId' && /^[a-f0-9]{64}$/.test(data.sourceId ?? '')) return;

@@ -435,7 +435,7 @@ test('annualized database growth names its settling period and does not claim a 
 
 
 function panelFixture(request = async () => health(), options = {}) {
-  const elements = new Map();
+  const elements = new Map(), documentListeners = new Map();
   function node() {
     const listeners = new Map(), attributes = new Map();
     return {
@@ -459,6 +459,7 @@ function panelFixture(request = async () => health(), options = {}) {
   }
   const document = {
     body: { dataset: { authenticated: 'true' } }, visibilityState: 'visible', querySelectorAll: () => [], createElement: node,
+    addEventListener(name, callback) { documentListeners.set(name, callback); },
     getElementById(id) {
       if (!elements.has(id)) elements.set(id, node());
       return elements.get(id);
@@ -466,7 +467,7 @@ function panelFixture(request = async () => health(), options = {}) {
   };
   let at = now, expire, introId, timerSequence = 0;
   const timers = new Map();
-  return { document, element: id => document.getElementById(id), advance: ms => { at += ms; },
+  return { document, element: id => document.getElementById(id), advance: ms => { at += ms; }, documentListeners,
     expireIntro: () => expire?.(),
     timers,
     fireTimer(ms) {
@@ -477,6 +478,24 @@ function panelFixture(request = async () => health(), options = {}) {
       setTimer(callback, ms) { const id = ++timerSequence; timers.set(id, { callback, ms }); if (ms === 15000) { expire = callback; introId = id; } return id; },
       clearTimer(id) { timers.delete(id); if (id === introId) expire = undefined; } }) };
 }
+
+test('new chart reconstruction links open all enclosing history folds without changing chart state', () => {
+  const view = panelFixture();
+  const outer = view.element('recording-details'), target = view.element('model-reconstruction-details');
+  target.parentElement = { closest: () => outer };
+  outer.parentElement = { closest: () => null };
+  let scrolled = false;
+  target.scrollIntoView = () => { scrolled = true; };
+  const summary = { focus() { view.document.activeElement = this; } };
+  target.querySelector = () => summary;
+  const link = { dataset: { recordingOpen: 'model-reconstruction-details' } };
+  const event = { button: 0, target: { closest: () => link }, preventDefault() { this.prevented = true; } };
+  view.documentListeners.get('click')(event);
+  assert.equal(target.open, true); assert.equal(outer.open, true);
+  assert.equal(view.document.activeElement, summary); assert.equal(scrolled, true); assert.equal(event.prevented, true);
+  const modified = { ...event, ctrlKey: true, prevented: false };
+  view.documentListeners.get('click')(modified); assert.equal(modified.prevented, false, 'Modified navigation retains browser behavior');
+});
 
 function performanceHistory(overrides = {}) {
   const timing = { count: 820, meanMs: 8.5, p95Ms: 20, maxMs: 540 };

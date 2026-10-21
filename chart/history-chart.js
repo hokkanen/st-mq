@@ -407,7 +407,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const aggregated = Object.values(payload.shading ?? {}).some(intervals => intervals.some(interval => interval.aggregated));
     const hasPriceForecast = datasets.some(dataset => !dataset.hidden && dataset.data.some(point => point.priceForecast));
     const notesKey = JSON.stringify([chartView.key, preferences.interpolation, noteFlags, aggregated, hasPriceForecast,
-      replicaSnapshotKey(status) !== null, payload.meta?.warnings]);
+      replicaSnapshotKey(status) !== null, payload.meta?.warnings, payload.meta?.modelCoefficients]);
     if (notesKey === lastNotesKey) return;
     lastNotesKey = notesKey;
     const keys = [...chartView.leftSignals, ...chartView.rightSignals];
@@ -422,7 +422,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (keys.includes('solar_radiation')) notes.push('Solar estimate is the latest valid weather estimate known at each historical time, not a solar sensor reading. Later forecast revisions do not replace it. The future Solar forecast remains separate.');
     if (keys.some(key => ['charger_power', 'charger2_power'].includes(key))) notes.push('Translucent fills show the two chargers, stacked only where their recorded intervals overlap. Tooltips show each charger’s own power. Auxiliary and whole heat-pump estimates are separate lines; the whole estimate includes auxiliary.');
     if (keys.includes('garage_native_indoor_temperature')) notes.push('Pump interpreted indoor temperature is native readback after the pump’s sensing or external-temperature processing; it is not an independent protection probe.');
-    if (keys.some(key => key.startsWith('model_'))) notes.push('Saved learning inputs retain the original interval evidence. Quality eligibility does not establish that a model fit used a point. Coefficients replay the supported journal and correction context; they are not a promise of the model’s original operational state.');
+    if (keys.some(key => key.startsWith('model_'))) notes.push('Saved learning inputs retain the original interval evidence. Quality eligibility does not establish that a model fit used a point. Recorded coefficient history follows the published learning interpretation and its source corrections; it is not a promise of the model’s original operational state.');
     if (chartView.key === 'learning_heat') notes.push('The combined thermal estimate includes compressor and auxiliary heat. The separate saved auxiliary electrical input remains available in All series as Space-heating auxiliary input.');
     if (keys.some(key => ENERGY_SIGNALS.includes(key) || key === 'garage_energy')) notes.push('Energy points describe the original recording intervals, which can have different durations. Do not compare them as equal-period totals.');
     if (keys.includes('caravan_power')) notes.push('Caravan power is measured meter energy divided by its original interval duration. It shows average electrical load, not instantaneous peaks; original energy readings remain in Series explorer.');

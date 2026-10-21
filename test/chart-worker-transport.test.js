@@ -14,47 +14,30 @@ import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 const now = Date.parse('2026-09-07T09:00:00Z');
 const args = { input: 'providers', now, startDate: '2026-09-06', endDate: '2026-09-06', view: 'garage', points: 100 };
 
-test('cold coefficient reconstruction leaves recent charts available and pinned cancellation releases the worker', { timeout: 20_000 }, async t => {
-  const { store, service } = fixture(t, { warmCache: false });
+test('coefficient chart reads never start reconstruction and do not block ordinary recent charts', async t => {
+  const { store, service } = fixture(t, { warmCache: false, idleMs: 10 });
   store.transaction(() => {
-    for (let index = 0; index < 1200; index++) appendLearningRecord(store, 'providers', 'context',
+    for (let index = 0; index < 12; index++) appendLearningRecord(store, 'providers', 'context',
       { timestamp: now - 1200 + index }, { config: {} });
   });
-  await service.pin();
-  const controller = new AbortController();
-  let foreground, completed = false, cancelledDuringReplay = false;
-  const reconstruction = service.query({ ...args, startDate: '2026-09-07', endDate: '2026-09-07',
-    view: 'model_coefficient_heat_loss' }, { signal: controller.signal, onProgress(progress) {
-    if (foreground || progress.stage !== 'replaying-model') return;
-    foreground = service.query({ ...args, startDate: '2026-09-07', endDate: '2026-09-07' }).then(result => {
-      cancelledDuringReplay = !completed;
-      controller.abort();
-      return result;
-    });
-  } }).finally(() => { completed = true; });
-  await assert.rejects(reconstruction, { name: 'AbortError' });
-  assert(foreground, 'real worker reports reconstruction progress');
-  assert.equal((await foreground).range.startDate, '2026-09-07');
-  assert(cancelledDuringReplay, 'a recent chart completes before the cold reconstruction finishes');
-  await service.pin(); // Join the cancelled pinned worker without retiring its file handle.
-  assert.equal((await service.query(args)).range.startDate, args.startDate);
-  const observed = storageOperationHealth.status().coverage.find(row => row.kind === 'history-query');
-  assert.equal(observed.running, 0);
-});
-
-test('completed coefficient reconstruction survives ordinary archive idle time and still has a bounded lifetime', async t => {
-  const { store, service } = fixture(t, { warmCache: false, idleMs: 10, replayIdleMs: 250 });
-  appendLearningRecord(store, 'providers', 'context', { timestamp: now - 60_000 }, { config: {} });
   const selection = { ...args, startDate: '2026-09-07', endDate: '2026-09-07', view: 'model_coefficient_heat_loss' };
-  const first = await service.query(selection);
+  const progress = [], before = store.checkpoint();
+  const [coefficient, ordinary] = await Promise.all([
+    service.query(selection, { onProgress: value => progress.push(value) }),
+    service.query({ ...args, startDate: '2026-09-07', endDate: '2026-09-07' }),
+  ]);
+  assert.equal(ordinary.range.startDate, '2026-09-07');
+  assert.equal(coefficient.meta.modelCoefficients.state, 'missing');
+  assert.equal(coefficient.meta.modelCoefficients.basis, 'committed-coefficient-history');
+  assert.equal(coefficient.meta.modelCoefficients.replayedRecords, 0);
+  assert(!coefficient.series.model_coefficient_heat_loss.some(point => Number.isFinite(point.y)));
+  assert(!progress.some(value => /replay|reconstruct/.test(value.stage)));
+  assert(coefficient.meta.warnings.some(value => /committed coefficient history/.test(value)));
   await new Promise(resolve => setTimeout(resolve, 40));
-  const retained = await service.query(selection);
-  assert.equal(retained.meta.cacheHit, true, 'browsing another recent view does not immediately discard expensive reconstruction');
-  assert.deepEqual(retained.series, first.series);
-  await new Promise(resolve => setTimeout(resolve, 400));
   const reopened = await service.query(selection);
-  assert.notEqual(reopened.meta.cacheHit, true, 'the replay worker still retires after its longer bounded idle interval');
-  assert.deepEqual(reopened.series, first.series);
+  assert.equal(reopened.meta.modelCoefficients.state, 'missing');
+  assert.deepEqual(reopened.series, coefficient.series);
+  assert.deepEqual(store.checkpoint(), before, 'Chart reads never write learning or start a background job');
 });
 function fixture(t, options) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-transport-'));

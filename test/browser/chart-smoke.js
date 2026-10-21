@@ -745,13 +745,14 @@ try {
       const before = tableCounts();
       const replayed = await fetch(`${base}/api/chart?start=2026-09-07&end=2026-09-07&left=${left}`).then(response => response.json());
       assert.deepEqual(tableCounts(), before, 'Coefficient API reads do not add stored entries');
-      assert.equal(replayed.meta.modelCoefficients.basis, 'read-only-learning-replay');
+      assert.equal(replayed.meta.modelCoefficients.basis, 'committed-coefficient-history');
+      assert.equal(replayed.meta.modelCoefficients.replayedRecords, 0);
       const values = replayed.series[left].filter(point => Number.isFinite(point.y));
       assert(values.some(point => point.coefficientStatus === 'initial'));
       assert(values.some(point => point.coefficientStatus === 'fitted' && point.y === coefficientValues[left].value));
       assert(values.every(point => point.modelCoefficient && point.inputSource === 'Simulation'));
       assert(values.every(point => point.x <= now), 'Current coefficients are never extended into the future');
-      assert.match(await evaluate("document.getElementById('chart-notes').textContent"), /Coefficients replay.*supported journal/);
+      assert.match(await evaluate("document.getElementById('chart-notes').textContent"), /Recorded coefficient history follows the published learning interpretation/);
       await checkSeriesDrawn([left], left);
     }
     if (left === 'power') await checkPowerDrawn();

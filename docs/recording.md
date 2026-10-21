@@ -1276,6 +1276,37 @@ complete caught-up checkpoint. See [the mandatory reconstruction and versioning
 contract](reconstruction-and-versioning.md) and [fireplace behavior](fireplace.md).
 This does not expand the storage contract to full control-choice replay.
 
+### Recorded coefficient history and optional verification
+
+Normal committed learning records compact changes for all four coefficient
+histories in the main database, preserving their quality, evidence and source
+selection. Main-database backups, exports and mirroring include them. Coefficient
+views and individual series read the selected history directly; chart selection
+never starts replay and requires no build action or continuous-reconstruction
+setting. Source corrections, recovery, revert and restore publish the matching
+model and coefficient timeline atomically, keeping the prior selection available
+until that publication succeeds.
+
+**Recording details → History tools → Verify learning reconstruction** optionally
+reconstructs the complete saved Home model and all four timelines from their
+journal and compares them at one fixed durable boundary. The boundary may lag live
+learning. Results identify the exact checked journal entry and learning time,
+completion time and source snapshot age; model and history agreement are separate.
+The audit proves reproducibility, not physical accuracy, and cannot silently
+repair the main database or controlling model.
+
+The verifier runs locally on master or slave, with start/pause/resume/cancel and
+**Discard temporary verification data** controls for administrators. Viewers can
+read status. Its private progress, checkpoints and results use
+`<data directory>/temporary-model-verification/temporary-verification.sqlite`
+with an explanatory README, outside `/tmp` and outside essential backups and
+mirroring. It saves rolling progress every five minutes and on orderly
+pause/shutdown, retaining two progress points. Source changes can supersede a run;
+a new run starts from the supported seed. Discard is safe after its worker stops
+and never removes the main learning or coefficient history. See
+[the reconstruction contract](reconstruction-and-versioning.md#coefficient-history-and-local-verification)
+for source fencing, interruption and failure behavior.
+
 ## Local MQTT temperature sensors and interface
 
 Indoor and garage temperature acquisition uses the existing local MQTT broker in
@@ -2575,7 +2606,7 @@ representation change needs current-schema validation and an intentional fresh
 development database when incompatible; no cleanup should add a migration or
 silently remove evidence.
 
-Current physical schema 32 includes a chronological coverage index for seeking
+Current physical schema 33 retains a chronological coverage index for seeking
 the next boundary in one source/device/signal stream. Charts retain the original
 recovery selection, equal-start ID precedence and full successor timestamps,
 including boundaries beyond the drawn range. They do not materialize all retained
@@ -2584,13 +2615,15 @@ The index is not created by a chart request or by opening an incompatible databa
 For this index only, the owner approved a one-time controlled installation upgrade
 on 2026-10-15, preserving all table rows, journal/checkpoint identity and learning
 history, with verified backups, strict current validation and rollback. This adds
-no general migration or startup repair. Journaled data layout 30 is unchanged;
-the physical schema identifier does not redefine journal hashes. Schema 32 also
+no general migration or startup repair. Journaled data layout 30 and its genesis/hash interpretation are unchanged;
+the physical schema identifier does not redefine journal hashes. The schema also
 restricts the journal record index to model-checkpoint/epoch/selection reversal
 and the recovery-energy index to rows with interval ends. Other journal reverse
 queries retain their complete results without indexing every recorder or charger
-receipt. The earlier exception does not authorize this schema-32 installation
-transition; existing incompatible files are rejected before mutation.
+receipt. The earlier index exception does not authorize later installed conversions.
+Schema 33 adds the current coefficient-history tables; any specifically approved
+installation preparation is an external controlled operation under its own
+foundation exception. Incompatible files are rejected before writable startup.
 
 ## History CLI backups and exports
 

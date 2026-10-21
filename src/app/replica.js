@@ -338,6 +338,8 @@ export async function startReplica({ config, clock = Date.now,
     }
     let released = false;
     return { store: snapshot?.store, chartService: snapshot?.chartService,
+      checkpoint: snapshot?.publication.checkpoint, snapshotAt: snapshot?.publication.sourceAt,
+      fileGeneration: snapshot?.publication.fileGeneration,
       engine: { clock: () => snapshot?.publication.sourceAt ?? clock(), config: { input: snapshot?.input ?? 'offline' }, plant: null,
         status: () => status(snapshot), contract: () => snapshot?.store.getState(`contract:${snapshot.input}`) ?? null,
         fireplaceStatus: () => snapshot ? { ...fireplaceView(snapshot.store, snapshot.input, { asOf: snapshot.publication.sourceAt }),

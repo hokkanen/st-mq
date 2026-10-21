@@ -935,7 +935,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const chargingSessions = addChargingSessionChecks({ store, range, now, envelopes });
   const modelInputs = addModelInputs({ store, range, now, input, envelopes,
     indoorLine: detail ? lines.model_indoor_temperature : undefined, activities });
-  const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes, onProgress });
+  const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes });
   const fireplaceInputs = addFireplaceInputs({ store, range, now, input, envelopes, shading });
   const needsFirewood = !detail || selectedHas(FIREWOOD_OUTCOME_NAMES);
   const outlookForFirewood = !needsFirewood ? {} : input === 'simulated' ? simulated ?? {} : assembleOutlook(market, weather, contract, now);
@@ -952,7 +952,9 @@ export function getChartData({ store, input = 'offline', contract = null, market
   }
   if (leftNames.some(name => Object.hasOwn(MODEL_INPUT_INFO, name) && !FIREPLACE_INPUT_NAMES.includes(name)) && !modelInputs.records) warnings.push('No saved learning inputs exist for these dates and input source. Recording sensor values alone does not create learning-input history.');
   if (leftNames.some(name => Object.hasOwn(MODEL_COEFFICIENT_INFO, name))) {
-    if (!leftNames.some(name => Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && envelopes[name].values().some(point => Number.isFinite(point.y)))) warnings.push('No reconstructable model coefficients exist for these dates and input source.');
+    if (modelCoefficients.state === 'missing') warnings.push('Some committed coefficient history is unavailable for this learning source.');
+    else if(modelCoefficients.state==='behind')warnings.push('The latest learning inputs are still being processed. The unprocessed coefficient history stays blank.');
+    else if (!leftNames.some(name => Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && envelopes[name].values().some(point => Number.isFinite(point.y)))) warnings.push('No committed model coefficients exist for these dates and input source.');
     if (modelCoefficients.invalidRecords) warnings.push('Some coefficient history is unavailable because its learning records are invalid or incomplete.');
   }
   for(const signal of leftNames.filter(name=>AUDIT_SIGNALS.includes(name))) {

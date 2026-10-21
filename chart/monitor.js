@@ -28,6 +28,7 @@ import { createRecordingHealth } from './recording-health.js';
 import './recording-health.css';
 import { bindDatabaseExport } from './database-export.js';
 import { bindDatabaseVerification } from './database-verification.js';
+import { createModelReconstruction } from './model-reconstruction.js';
 import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
 import { createSensorChangePanel } from './sensor-changes.js';
@@ -150,6 +151,7 @@ function lockScreen({ authenticationFailed = false } = {}) {
   recordingHealth.clear();
   refreshRecordingOverview.reset();
   databaseVerification.clear();
+  modelReconstruction.clear();
   databaseExport.clear();
   resetAudits();
   recordingContext = undefined;
@@ -218,7 +220,7 @@ function resetRecordingContext(health) {
   if (context === recordingContext) return;
   recordingContext = context;
   refreshRecordingOverview.reset();
-  databaseVerification.reset(); resetAudits();
+  databaseVerification.reset(); modelReconstruction.reset(); resetAudits();
 }
 async function downloadBackup(copy) {
   const path = `/api/recording-backups/download?sourceId=${encodeURIComponent(copy.id)}`;
@@ -272,6 +274,7 @@ const historyRecovery = createHistoryRecoveryPanel({ document, request: api, sto
   upload: file => api('/api/history-recovery/upload', file, { binary: true }),
   afterMutation: () => refresh({ forceChart: true }) });
 const databaseVerification = bindDatabaseVerification({ document, request: api, formatTime: historyTime });
+const modelReconstruction = createModelReconstruction({ document, request: api, storage: sessionStorage, formatTime: historyTime });
 const garageDoors = createGarageDoorPanel({ document,
   onAction: (deviceId, action) => equipmentPanel.actions.cover(deviceId, action),
   blocked: () => !lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy });
@@ -887,6 +890,7 @@ function render(s) {
   ++pairStatusRevision;
   historyRecovery.update({ ...s, webAccess });
   databaseVerification.update({ ...s, webAccess });
+  modelReconstruction.update({ ...s, webAccess });
   const replica = renderReplicaStatus(document, s, { formatTime: time });
   if (replica) garageDoors.close();
   renderHomePlannedChange(document, s);

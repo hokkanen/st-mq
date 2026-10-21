@@ -9,6 +9,8 @@ import { addFireplace, removeFireplace } from '../src/app/fireplace.js';
 import { publishLearning } from '../src/app/learning-publication.js';
 import { replayLearningJournal, LEARNING_WINDOW_MS as WINDOW } from '../src/app/committed-learning.js';
 import { appendLearningRecord } from './helpers/home-learning-fixture.js';
+import { coefficientCandidate } from './helpers/coefficient-fixture.js';
+import { createCoefficientGeneration,publishCoefficientGeneration } from '../src/storage/coefficient-history.js';
 import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
 
@@ -38,11 +40,11 @@ test(`a delayed heating receipt learns from the published ${selection} history`,
   const previous = engine.checkpoint;
   if (selection === 'corrected') {
     removeFireplace(store, 'mqtt', { requestId: 'synthetic-removal', id: load.id }, now);
-    const corrected = replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false });
+    const {checkpoint:corrected,coefficientGeneration} = coefficientCandidate(store,'mqtt');
     await publishLearning({ store, input: 'mqtt', kind: 'correction', message: {
       epoch: store.learningEpoch('mqtt'), selection: store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation,
       revision: corrected.fireplaceRevision, sensorRevision: corrected.sensorRevision,
-      head: store.learningJournalHead('mqtt'), checkpoint: corrected,
+      head: store.learningJournalHead('mqtt'), checkpoint: corrected, coefficientGeneration,
     }, onPublish: result => { engine.checkpoint = result.checkpoint; } });
     assert.notEqual(engine.checkpoint.fireplaceRevision, previous.fireplaceRevision);
   } else {
@@ -52,6 +54,8 @@ test(`a delayed heating receipt learns from the published ${selection} history`,
       store.transaction(() => {
         store.db.prepare("INSERT INTO learning_epochs(input,epoch) VALUES('mqtt','empty-corrected-epoch')").run();
         store.setState('adaptive:mqtt', null);
+        const generation=createCoefficientGeneration(store,'mqtt');
+        publishCoefficientGeneration(store,'mqtt',generation,null);
       });
       engine.checkpoint = null;
     });

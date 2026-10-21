@@ -1172,6 +1172,18 @@ details details { margin-inline-start: 24px; }
 .recording-tool-actions { display: flex; flex-wrap: wrap; gap: 12px 24px; }
 .recording-tool-actions > div { flex: 1 1 240px; min-width: 0; }
 .recording-tool-actions p { max-width: 72ch; }
+.model-reconstruction-actions { margin-block: 20px 8px; }
+.model-reconstruction-body button { min-height: 44px; }
+.model-reconstruction-job-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.model-reconstruction-job-actions:has(> :not([hidden])) { margin-block: 10px 14px; }
+.model-reconstruction-progress { display: block; width: min(100%, 36rem); height: 8px; margin-block: 10px; }
+.model-reconstruction-facts { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(0, 4fr); gap: 12px 18px; font-size: 12px; line-height: 1.6; }
+.model-reconstruction-facts dt { color: var(--muted); }
+.model-reconstruction-facts dd { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .model-reconstruction-facts { grid-template-columns: 1fr; gap: 3px; }
+  .model-reconstruction-facts dd { margin-bottom: 10px; }
+}
 #database-export-message { overflow-wrap: anywhere; }
 .recording-data-group { margin-top: 12px; }
 .recording-data-group > summary { font-weight: 550; }

@@ -20,6 +20,8 @@ import { recoveryCoverageReport, recoverySourceSummary } from './coverage-report
 import { commonCheckpoint, changedRecordKeys } from '../storage/journal.js';
 import { scopeIncrementalSource, openJournalSource } from './incremental-source.js';
 import { findLearningPrefix, retainLearningPrefix, prefixSourceId, withPrefixRevisions } from './learning-prefix.js';
+import { coefficientProjectionAt, readCoefficientCoverage, createCoefficientGeneration, appendCoefficientEvents, discardCoefficientGeneration } from '../storage/coefficient-history.js';
+import { projectCoefficientTransition, compactCoefficientProjection } from '../domain/coefficient-projection.js';
 
 const json = JSON.stringify;
 const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
@@ -230,8 +232,12 @@ async function createProjection(merge, runId) {
     LEFT JOIN fireplace_events p ON p.id=e.target_id
     WHERE e.id>? AND e.input=?`).get(originalFireplaceRevision,input);
   if(fireplace.at!==null) earliest=Math.min(earliest,fireplace.at);
-  const prefix=await findLearningPrefix(snapshot,{input,epoch:sourceEpoch,earliest,
+  let prefix=await findLearningPrefix(snapshot,{input,epoch:sourceEpoch,earliest,
     fireplaceRevision:originalFireplaceRevision,sensorRevision:sourceSensorRevision});
+  const coefficientSource=readCoefficientCoverage(snapshot,{input,epoch:sourceEpoch});
+  if(prefix&&(!coefficientSource||coefficientSource.cursor<prefix.cursor)) prefix=null;
+  const coefficients=coefficientProjectionAt(snapshot,{input,epoch:sourceEpoch,
+    generation:coefficientSource?.generation,cursor:prefix?.cursor??0});
   retainLearningPrefix(target,{input,epoch,prefix});
   const originals=snapshot.db.prepare(`SELECT * FROM learning_journal WHERE input=? AND id>?
     ORDER BY at,CASE kind WHEN 'context' THEN 0 WHEN 'sample' THEN 1 ELSE 2 END,id`).iterate(input,prefix?.cursor??0);
@@ -327,8 +333,12 @@ async function createProjection(merge, runId) {
   }
   const source = { ...fireplaceLearningContext(target, input), ...projectedSensorContext(target, input, epoch) };
   const prefixCheckpoint = withPrefixRevisions(prefix?.checkpoint,source);
+  const coefficientGeneration=target.transaction(()=>createCoefficientGeneration(target,input,{epoch,
+    fireplaceRevision:source.fireplaceRevision,sensorRevision:source.sensorRevision,selection:sourceSelection,
+    prefixCursor:prefix?.cursor??0,sourceGeneration:coefficientSource?.generation,projection:coefficients}));
   projection = { runId, epoch, sourceEpoch, sourceHead, sourceSensorRevision, source, sourceRevision: source.fireplaceRevision,
-    masterIds, donorIds, prefixCheckpoint, checkpoint: prefixCheckpoint, after: prefix?.cursor??0, processed: 0, lastAt: prefix?.at??-Infinity, merge };
+    masterIds, donorIds, prefixCheckpoint, checkpoint: prefixCheckpoint, coefficientGeneration, coefficients,
+    after: prefix?.cursor??0, processed: 0, lastAt: prefix?.at??-Infinity, merge };
   await replayProjection();
   return projection;
 }
@@ -342,11 +352,16 @@ async function replayProjection() {
     const rows = target.db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND id>? ORDER BY id LIMIT 64')
       .all(p.epoch, workerData.input, p.after);
     if (!rows.length) break;
+    const events=[];
     for (const row of rows) {
-      if (row.algorithm_version !== LEARNING_ALGORITHM) { p.after = row.id; continue; }
-      p.checkpoint = applyLearningRecord(p.checkpoint, decode(row), p.source);
+      if (row.algorithm_version !== LEARNING_ALGORITHM) throw invalid('Recovered learning uses an unsupported algorithm');
+      const prior=p.checkpoint,entry=decode(row);
+      p.checkpoint = applyLearningRecord(prior, entry, p.source);
+      const event=projectCoefficientTransition(p.coefficients,entry,prior,p.checkpoint);
+      if(event) events.push({...event,projection:compactCoefficientProjection(p.coefficients)});
       p.lastAt = Math.max(p.lastAt, row.at); p.after = row.id; p.processed++;
     }
+    target.transaction(()=>appendCoefficientEvents(target,p.coefficientGeneration,{events,projection:compactCoefficientProjection(p.coefficients)}));
     progress({ phase: 'rebuilding', processed: p.processed, total, unit: 'entries' }); await yieldTurn();
   }
 }
@@ -376,7 +391,7 @@ async function catchup() {
   progress({ phase: 'publishing', processed: 0 });
   parentPort.postMessage({ type: 'ready', epoch: p.epoch, sourceEpoch: p.sourceEpoch, sourceHead: p.sourceHead,
     sourceSensorRevision: p.sourceSensorRevision, sensorRevision: p.source.sensorRevision,
-    fireplaceRevision: p.sourceRevision, checkpoint: p.checkpoint, prefixCheckpoint:p.prefixCheckpoint,
+    fireplaceRevision: p.sourceRevision, checkpoint: p.checkpoint, prefixCheckpoint:p.prefixCheckpoint, coefficientGeneration:p.coefficientGeneration,
     runId: p.runId, recoveryId, sourceSelection, report: p.merge.report });
 }
 
@@ -398,6 +413,18 @@ async function start() {
     AND NOT EXISTS(SELECT 1 FROM learning_journal_entries j JOIN recovery_members m
       ON m.table_name='learning_journal' AND m.record_key=CAST(j.id AS TEXT) WHERE j.epoch=r.epoch)`).all(workerData.input);
   for (const run of abandoned) {
+    for (;;) {
+      const generations=target.db.prepare('SELECT id FROM coefficient_generations WHERE input=? AND epoch=? LIMIT 64').all(workerData.input,run.epoch);
+      if(!generations.length)break;
+      for(const generation of generations){
+        let result;
+        do{
+          result=target.transaction(()=>discardCoefficientGeneration(target,generation.id,{limit:128}));
+          if(!result.complete&&!result.removed)throw invalid('Abandoned coefficient history is still referenced; preserve its source history');
+          await yieldTurn();
+        }while(!result.complete);
+      }
+    }
     for (;;) {
       const removed = target.db.prepare(`DELETE FROM learning_journal_entries WHERE id IN
         (SELECT id FROM learning_journal_entries WHERE epoch=? LIMIT 64)`).run(run.epoch).changes;

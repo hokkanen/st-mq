@@ -5,6 +5,7 @@ import { projectedSensorContext } from './state.js';
 import { selectedHistory, recoveryEvidenceVersion } from './ledger.js';
 import { saveLearningCheckpoint } from '../storage/learning-checkpoints.js';
 import { compatibleRestorationTail } from './restoration-evidence.js';
+import { publishCoefficientGeneration } from '../storage/coefficient-history.js';
 
 const unavailable = message => Object.assign(new Error(message), { statusCode: 409, code: 'recovery_invalid', public: true });
 const journalHead = (store, input) => store.learningJournalHead(input);
@@ -40,6 +41,7 @@ export function publishRecovery(store, input, message, { operationToken, preview
     // A valid empty replacement selects no model. Keeping the old cache would
     // pair the new empty epoch with learning from its previous interpretation.
     store.setState(`adaptive:${input}`, checkpoint);
+    publishCoefficientGeneration(store,input,message.coefficientGeneration,checkpoint);
   }
   const report = { ...message.report, previewId, status: 'complete', imported: message.report.counts.missing,
     recoveryId: message.recoveryId,
@@ -89,7 +91,16 @@ export function publishRevision(store, input, message, { operationToken, preview
   store.db.prepare('UPDATE history_recoveries SET active=? WHERE id=? AND input=?').run(Number(active), recoveryId, input);
   store.db.prepare('INSERT INTO recovery_decisions(recovery_id,active,at,generation,epoch,report) VALUES(?,?,?,?,?,?)')
     .run(recoveryId, Number(active), Date.now(), message.generation, message.epoch, JSON.stringify(report));
-  if (message.modelChanged !== false) store.setState(`adaptive:${input}`, message.checkpoint);
+  if (message.modelChanged !== false) {
+    store.setState(`adaptive:${input}`, message.checkpoint);
+    publishCoefficientGeneration(store,input,message.coefficientGeneration,message.checkpoint);
+  } else {
+    // Observation-only selection changes preserve the proven numerical timeline.
+    // Keep its source-selection fence current in this same publication transaction.
+    store.db.prepare(`UPDATE coefficient_generations SET history_selection=?
+      WHERE input=? AND id=(SELECT generation FROM coefficient_selection WHERE input=?)`)
+      .run(message.generation,input,input);
+  }
   store.setState(`pending-plan:${input}`, null);
   store.setState(`fireplace:rebuild:${input}`, { status: 'current', revision: message.fireplaceRevision,
     sensorRevision: message.sensorRevision, epoch: message.epoch, requiresRebuild: false });

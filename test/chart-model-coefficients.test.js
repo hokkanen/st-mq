@@ -3,18 +3,48 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
 import { Envelope, getChartData } from '../src/app/chart-data.js';
 import { createChartService } from '../src/app/chart-service.js';
 import { addModelCoefficients } from '../src/app/chart-model-coefficients.js';
+import { createCoefficientGeneration,appendCoefficientEvents,readCoefficientCoverage } from '../src/storage/coefficient-history.js';
+import { compactCoefficientProjection } from '../src/domain/coefficient-projection.js';
+import { reconstructionSource, decodeReconstructionEntry } from '../src/app/model-reconstruction-source.js';
+import { createCoefficientReplayState, applyCoefficientReplayEntry } from '../src/app/model-reconstruction-replay.js';
+import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
+import { sensorLearningContext } from '../src/app/sensor-inputs.js';
 import { addSensorChange, revertSensorChange } from '../src/app/sensor-changes.js';
 import { MODEL_COEFFICIENT_INFO } from '../src/domain/history-series.js';
 import { applyLearningRecord, learningConfiguration, learningVersion,
   LEARNING_ALGORITHM} from '../src/app/committed-learning.js';
-import { appendLearningRecord } from './helpers/home-learning-fixture.js';
+import { appendLearningRecord as appendSourceRecord } from './helpers/home-learning-fixture.js';
 import { initialAdaptiveModel, predictThermalStep, restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 
+/** Explicit synthetic producer fixture: persist the ordered projections before
+ * making the database query-only. Charts themselves never compute or save. */
+function prepareHistory(store, { input = 'providers', through = Infinity } = {}) {
+  if(store.db.prepare('PRAGMA query_only').get().query_only)return;
+  const streams = ['history','providers','mqtt','simulated'];
+  for(const stream of streams){
+    const source=reconstructionSource(store,stream,{through,includeModel:false}),coverage=readCoefficientCoverage(store,{input:stream});
+    if(coverage&&coverage.cursor===source.head&&coverage.epoch===source.epoch&&coverage.fireplaceRevision===source.fireplaceRevision&&coverage.sensorRevision===source.sensorRevision)continue;
+    if(!source.head)continue;
+    const state=createCoefficientReplayState(),events=[];
+    const context={...fireplaceLearningContext(store,stream,source.fireplaceRevision),...sensorLearningContext(store,stream,source.sensorRevision)};
+    for(const row of store.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id<=? ORDER BY id').iterate(stream,source.head)){
+      const event=applyCoefficientReplayEntry(state,decodeReconstructionEntry(row),context);
+      if(event)events.push({...event,projection:compactCoefficientProjection(state)});
+    }
+    store.transaction(()=>{
+      const generation=createCoefficientGeneration(store,stream,{epoch:source.epoch,selection:source.selection,fireplaceRevision:source.fireplaceRevision,sensorRevision:source.sensorRevision});
+      appendCoefficientEvents(store,generation,{events,projection:compactCoefficientProjection(state)});
+      // Synthetic gap fixtures intentionally contain a rejected input. No
+      // controlling model is published by this representation-only helper.
+      store.db.prepare('INSERT INTO coefficient_selection VALUES(?,?) ON CONFLICT(input) DO UPDATE SET generation=excluded.generation').run(stream,generation);
+    });
+  }
+}
+function appendLearningRecord(store,...args){const result=appendSourceRecord(store,...args);prepareHistory(store);return result;}
 const MINUTE = 60_000, start = Date.parse('2026-09-08T08:00:00Z');
 const coefficientFields = {
   model_coefficient_heat_loss: 'lossPerHour',
@@ -34,6 +64,7 @@ function model(lossPerHour, extra = {}) {
 
 function project(store, { input = 'providers', from = start, to = start + 60 * MINUTE,
   now = to, keys = Object.keys(coefficientFields) } = {}) {
+  prepareHistory(store, { input });
   const range = { from, to };
   const envelopes = Object.fromEntries(keys.map(key => [key, new Envelope(from, to, 2000)]));
   const meta = addModelCoefficients({ store, range, now, input, envelopes });
@@ -41,6 +72,7 @@ function project(store, { input = 'providers', from = start, to = start + 60 * M
 }
 
 function databaseSnapshot(store) {
+  prepareHistory(store);
   const tables = store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all();
   return tables.map(({ name }) => [name, store.db.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all()]);
 }
@@ -58,10 +90,11 @@ test('coefficient projection replays before the range and ignores mutable state 
     privateFixture: 'invented-checkpoint-marker-not-for-browser' });
   context(store, start + 45 * MINUTE, { model: model(0.09) });
   const before = databaseSnapshot(store);
+  prepareHistory(store);
   store.db.exec('PRAGMA query_only = ON');
   const result = project(store, { now: start + 30 * MINUTE });
-  assert.equal(result.meta.basis, 'read-only-learning-replay');
-  assert.equal(result.meta.replayedRecords, 2);
+  assert.equal(result.meta.basis, 'committed-coefficient-history');
+  assert.equal(result.meta.replayedRecords, 0);
   for (const [key, field] of Object.entries(coefficientFields)) {
     const points = values(result, key);
     assert(points.length > 0);
@@ -100,12 +133,14 @@ test('the four coefficient selections preserve zero and expose no fixed structur
   const store = new Store(':memory:'); t.after(() => store.close());
   context(store, start, { model: model(0.025, { solarCPerHourPerKwM2: 0 }) });
   assert.deepEqual(Object.keys(MODEL_COEFFICIENT_INFO).sort(), Object.keys(coefficientFields).sort());
+  prepareHistory(store);
+  prepareHistory(store);
   store.db.exec('PRAGMA query_only = ON');
   for (const key of Object.keys(coefficientFields)) {
     const chart = getChartData({ store, input: 'providers', startDate: '2026-09-08',
       now: start + 60 * MINUTE, left: key });
     assert(chart.series[key].some(point => Number.isFinite(point.y)));
-    assert.equal(chart.meta.modelCoefficients.basis, 'read-only-learning-replay');
+    assert.equal(chart.meta.modelCoefficients.basis, 'committed-coefficient-history');
     assert(!Object.hasOwn(chart.series, 'memoryExchangePerHour'));
     assert(!Object.hasOwn(chart.series, 'reserveTimeHours'));
     if (key === 'model_coefficient_solar_response')
@@ -199,11 +234,9 @@ test('a missing first journal seed leaves a gap and blocks its dependent tail', 
     algorithmVersion: LEARNING_ALGORITHM, configVersion: learningVersion(configuration),
     payload: { value: { timestamp: start }, configuration } });
   const first = project(store);
-  assert.equal(first.meta.invalidRecords, 1);
   assert.equal(values(first).length, 0);
   context(store, start + 20 * MINUTE, { model: model(0.06) });
   const continued = project(store);
-  assert.equal(continued.meta.invalidRecords, 1);
   assert.equal(continued.meta.replayedRecords, 0);
   assert.equal(values(continued).length, 0);
   assert(continued.series.model_coefficient_heat_loss.some(point => point.y === null));
@@ -234,9 +267,9 @@ test('a mismatched saved configuration leaves a gap without leaking its payload 
     payload: { value: { timestamp: start + 20 * MINUTE },
       configuration: { privateFixture: 'invented-invalid-payload-not-for-browser' } } });
   context(store, start + 30 * MINUTE, { model: model(0.09) });
+  prepareHistory(store);
   store.db.exec('PRAGMA query_only = ON');
   const result = project(store);
-  assert.equal(result.meta.invalidRecords, 1);
   assert(values(result).some(point => point.y === 0.025));
   assert(values(result).every(point => point.x < start + 20 * MINUTE));
   const chart = getChartData({ store, input: 'providers', startDate: '2026-09-08',
@@ -333,6 +366,7 @@ test('a real sample refit reconstructs the same changed coefficients as the orde
   for (const parameter of ['lossPerHour', 'hydronicCPerKwh'])
     assert.notEqual(expected.model.parameters[parameter], seed.model.parameters[parameter]);
   const before = databaseSnapshot(store);
+  prepareHistory(store);
   store.db.exec('PRAGMA query_only = ON');
   const result = project(store, { from: start - hour });
   for (const [key, parameter] of Object.entries(coefficientFields)) {
@@ -345,10 +379,10 @@ test('a real sample refit reconstructs the same changed coefficients as the orde
   assert.deepEqual(databaseSnapshot(store), before);
 });
 
-test('the file-backed chart worker invalidates cached coefficients for new journal entries without database writes', async t => {
+test('file-backed chart workers cache committed coefficient rows and invalidate after a learning publication', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-coefficient-chart-'));
   const store = new Store(join(directory, 'synthetic.sqlite'));
-  const service = createChartService({ store });
+  const service = createChartService({ store, warmCache: false });
   t.after(async () => {
     await service.close(); store.close(); rmSync(directory, { recursive: true, force: true });
   });
@@ -356,86 +390,65 @@ test('the file-backed chart worker invalidates cached coefficients for new journ
   store.setState('adaptive:providers', { model: model(0.11) });
   const args = { input: 'providers', startDate: '2026-09-08', now: start + 60 * MINUTE,
     left: 'model_coefficient_heat_loss' };
-  const initialSnapshot = databaseSnapshot(store);
-  const initial = await service.query(args);
-  assert(values(initial).every(point => point.y === 0.025));
+  const empty = await service.query(args);
+  assert(values(empty).some(point=>point.y===0.025));
+  prepareHistory(store);
+  const initialSnapshot = databaseSnapshot(store), initial = await service.query(args);
+  assert(values(initial).length > 0 && values(initial).every(point => point.y === 0.025));
   assert.equal((await service.query(args)).meta.cacheHit, true);
   assert.deepEqual(databaseSnapshot(store), initialSnapshot);
   context(store, start + 20 * MINUTE, { model: model(0.06) });
-  const appendedSnapshot = databaseSnapshot(store);
+  const appendedSnapshot = databaseSnapshot(store), behind = await service.query(args);
+  assert(values(behind).some(point=>point.y===0.06),'Computed learning changes are already available without a chart rebuild');
+  prepareHistory(store);
   const changed = await service.query(args);
-  assert.notEqual(changed.meta.cacheHit, true);
+  assert.equal(changed.meta.cacheHit, true);
   assert(values(changed).some(point => point.y === 0.06));
   assert(values(changed).filter(point => point.x >= start + 20 * MINUTE).every(point => point.y === 0.06));
-  assert.equal((await service.query(args)).meta.cacheHit, true);
   assert.deepEqual(databaseSnapshot(store), appendedSnapshot);
 });
 
-test('cached replay resumes only new effective-prefix rows and matches fresh connections across clock changes', t => {
-  const directory = mkdtempSync(join(tmpdir(), 'stmq-coefficient-replay-'));
+test('committed coefficient reads use no learning payload replay and stop at an unprocessed or future dependent tail', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-coefficient-prepared-read-'));
   const store = new Store(join(directory, 'synthetic.sqlite'));
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-  let readRows = 0;
-  const counted = { db: { prepare(sql) {
-    const statement = store.db.prepare(sql);
-    if (!/^SELECT \* FROM learning_journal\b/i.test(sql)) return statement;
-    return { *iterate(...args) {
-      for (const row of statement.iterate(...args)) { readRows++; yield row; }
-    } };
-  } } };
-  const compareFresh = now => {
-    const args = { to: start + 120 * MINUTE, now };
-    const result = project(counted, args);
-    const db = new DatabaseSync(store.path, { readOnly: true });
-    try { assert.deepEqual(result, project({ db }, args)); } finally { db.close(); }
-    return result;
-  };
-  const seed = restoreAdaptiveCheckpoint(null);
-  seed.model.parameters.lossPerHour = 0.03;
-  seed.model.trainedAt = new Date(start - 60 * MINUTE).toISOString();
-  seed.model.validation = { accepted: true, fittedParameters: ['lossPerHour'],
-    parameterEvidence: { lossPerHour: { status: 'identified' } } };
-  seed.health = { status: 'learning', acceptedFits: 1, rejectedFits: 0 };
-  seed.sinceFit = 11;
-  context(store, start, { seed });
-  compareFresh(start + 10 * MINUTE);
-  assert.equal(readRows, 1);
-  compareFresh(start + 10 * MINUTE + 1);
-  assert.equal(readRows, 1, 'Moving the clock does not replay an unchanged prefix');
-
-  appendLearningRecord(store, 'providers', 'sample', { timestamp: start + 15 * MINUTE,
-    indoorC: 21, outdoorC: 5, phase: 'normal', regime: 'occupied', quality: [],
-    compressorDuty: 0.5, auxKw: 0, solarRadiationWm2: 0 });
-  const rejected = compareFresh(start + 20 * MINUTE);
-  assert.equal(readRows, 2, 'The new sample resumes the cached checkpoint');
-  assert(values(rejected).some(point => point.x >= start + 15 * MINUTE && point.coefficientStatus === 'retained'));
+  context(store, start, { model: model(0.025) });
   context(store, start + 25 * MINUTE, { model: model(0.06) });
-  const changed = compareFresh(start + 30 * MINUTE);
-  assert.equal(readRows, 3);
-  assert(values(changed).some(point => point.y === 0.06));
-
   context(store, start + 90 * MINUTE, { model: model(0.09) });
   context(store, start + 20 * MINUTE, { model: model(0.07) });
-  const beforeFuture = compareFresh(start + 30 * MINUTE + 1);
-  assert.equal(readRows, 3, 'A future entry blocks the later ingested older timestamp without replaying the prefix');
-  assert(!values(beforeFuture).some(point => point.y === 0.07 || point.y === 0.09));
-  const afterFuture = compareFresh(start + 100 * MINUTE);
-  assert.equal(readRows, 5, 'Both newly available rows are replayed once');
-  assert(values(afterFuture).some(point => point.x >= start + 90 * MINUTE && point.y === 0.07));
-  compareFresh(start + 40 * MINUTE);
-  assert.equal(readRows, 5, 'The earlier cached prefix remains intact after an incremental extension');
+  prepareHistory(store, { through: start + 30 * MINUTE });
+  const facade = new Proxy(store.db, { get(db, key) {
+    if (key === 'prepare') return sql => {
+      assert(!/^SELECT \* FROM learning_journal\b/.test(sql), 'Chart reads may check indexed boundaries but must never replay journal payloads');
+      return db.prepare(sql);
+    };
+    const value = Reflect.get(db, key); return typeof value === 'function' ? value.bind(db) : value;
+  } });
+  const read = now => {
+    const envelopes = { model_coefficient_heat_loss: new Envelope(start, start + 120 * MINUTE, 2000) };
+    const meta = addModelCoefficients({ store: { db: facade, path: store.path },
+      range: { from: start, to: start + 120 * MINUTE }, now, input: 'providers', envelopes });
+    return { meta, series: { model_coefficient_heat_loss: envelopes.model_coefficient_heat_loss.values() } };
+  };
+  for (const now of [start + 30 * MINUTE, start + 30 * MINUTE + 1]) {
+    const result = read(now);
+    assert.equal(result.meta.replayedRecords, 0);
+    assert(values(result).some(point => point.y === 0.06));
+    assert(!values(result).some(point => [0.07, 0.09].includes(point.y)));
+  }
+  const behind = read(start + 100 * MINUTE);
+  assert.equal(behind.meta.state, 'behind');
+  assert(!values(behind).some(point => [0.07, 0.09].includes(point.y)));
+  assert(values(behind).filter(point=>point.x>=start+90*MINUTE).every(point=>point.y===null),
+    'the last processed coefficient cannot fill an unprocessed interval');
+  prepareHistory(store, { through: start + 100 * MINUTE });
+  const current = read(start + 100 * MINUTE);
+  assert.equal(current.meta.state,'current');
+  assert(values(current).some(point => point.x >= start + 90 * MINUTE && point.y === 0.07));
 });
 
-test('sensor reversal rebuilds a cached earlier coefficient prefix and later records resume the corrected model', t => {
+test('sensor reversal publication preserves corrected coefficient evidence without chart writes', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  let readRows = 0;
-  const counted = { db: { prepare(sql) {
-    const statement = store.db.prepare(sql);
-    if (!/^SELECT \* FROM learning_journal\b/i.test(sql)) return statement;
-    return { *iterate(...args) {
-      for (const row of statement.iterate(...args)) { readRows++; yield row; }
-    } };
-  } } };
   const seed = restoreAdaptiveCheckpoint(null);
   seed.model.parameters.lossPerHour = 0.03;
   seed.model.trainedAt = new Date(start - 60 * MINUTE).toISOString();
@@ -446,30 +459,17 @@ test('sensor reversal rebuilds a cached earlier coefficient prefix and later rec
   const change = addSensorChange(store, 'providers', { signal: 'indoor_temperature', reason: 'replacement',
     requestId: 'coefficient-reset' }, start + 20 * MINUTE);
   const args = { now: start + 30 * MINUTE };
-  const original = project(counted, args);
+  const original = project(store, args);
   assert(values(original).some(point => point.x >= change.at));
-  assert(values(original).every(point => point.y === 0.03 && point.coefficientStatus === 'fitted'),
-    'A sensor boundary preserves learned coefficients and evidence while propagation settles');
-  assert.equal(readRows, 2);
-  assert.deepEqual(project(counted, args), original);
-  assert.equal(readRows, 2, 'An unchanged journal prefix reuses its cache');
-
+  assert(values(original).every(point => point.y === 0.03 && point.coefficientStatus === 'fitted'));
   revertSensorChange(store, 'providers', { id: change.id, requestId: 'coefficient-revert' }, start + 45 * MINUTE);
-  const before = databaseSnapshot(store);
-  const corrected = project(counted, args);
-  assert.equal(readRows, 4, 'A later reversal invalidates the earlier cached prefix even though its last ID did not change');
-  assert(values(corrected).every(point => point.y === 0.03 && point.coefficientStatus === 'fitted'));
-  assert.deepEqual(project(counted, args), corrected);
-  assert.equal(readRows, 4);
-  assert.deepEqual(databaseSnapshot(store), before, 'Retrospective chart correction never writes a checkpoint or source record');
-
-  const caughtUp = project(counted);
-  assert.equal(readRows, 5, 'The reversal record extends the corrected cached prefix');
+  const before = databaseSnapshot(store), corrected = project(store, args);
+  assert(values(corrected).length > 0 && values(corrected).every(point => point.y === 0.03 && point.coefficientStatus === 'fitted'));
+  assert.deepEqual(databaseSnapshot(store), before, 'Chart projection does not change committed model or coefficient history');
+  const caughtUp = project(store);
   assert(values(caughtUp).every(point => point.coefficientStatus === 'fitted'));
   context(store, start + 50 * MINUTE);
-  const extended = project(counted);
-  assert.equal(readRows, 6, 'Later records resume the corrected checkpoint');
-  assert.deepEqual(extended, project(store), 'Incremental correction replay matches a fresh chart cache');
+  assert(values(project(store)).every(point => point.coefficientStatus === 'fitted'));
 });
 
 test('sensor-corrected coefficient replay retains its current seed without manufacturing earlier history', t => {
@@ -484,7 +484,8 @@ test('sensor-corrected coefficient replay retains its current seed without manuf
     requestId: 'archival-coefficient-reset' }, start + 20 * MINUTE);
   revertSensorChange(store, 'providers', { id: change.id, requestId: 'archival-coefficient-revert' }, start + 30 * MINUTE);
   const result = project(store, { from: start - 15 * MINUTE });
-  assert.equal(result.meta.replayedRecords, 3);
+  assert.equal(readCoefficientCoverage(store,{input:'providers'}).cursor,3);
+  assert.equal(result.meta.replayedRecords, 0);
   assert(values(result).every(point => point.x >= start && point.y === 0.04 && point.coefficientStatus === 'fitted'));
   assert(result.series.model_coefficient_heat_loss.filter(point => point.x < start).every(point => point.y === null));
 });

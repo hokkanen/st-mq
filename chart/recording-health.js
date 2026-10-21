@@ -174,13 +174,12 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     (target?.querySelector(':scope > summary') ?? target?.closest('details')?.querySelector(':scope > summary'))?.focus({ preventScroll: true });
     target?.scrollIntoView({ block: 'start', behavior: 'auto' });
   };
-  function bindLink(link) {
-    link.addEventListener('click', event => {
-      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      event.preventDefault(); open(link.dataset.recordingOpen);
-    });
-  }
-  for (const link of document.querySelectorAll('[data-recording-open]')) bindLink(link);
+  document.addEventListener?.('click', event => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const link = event.target.closest?.('[data-recording-open]');
+    if (!link || !$(link.dataset.recordingOpen)) return;
+    event.preventDefault(); open(link.dataset.recordingOpen);
+  });
   function clearCatalog() {
     ++catalogRevision; catalog = undefined; catalogPhase = 'idle'; catalogPending = false; catalogRequestedAt = null;
     catalogFailureAt = null; catalogFollowup = catalogFollowupScan = false; catalogReadSequence = 0;
@@ -378,7 +377,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
         node = document.createElement('li'); node.className = 'recording-status-issue';
         const link = document.createElement('a');
         link.append(document.createElement('strong'), document.createElement('span'));
-        bindLink(link); node.append(link); issueNodes.set(item.id, node);
+        node.append(link); issueNodes.set(item.id, node);
       }
       const link = node.firstElementChild;
       link.dataset.recordingOpen = issueTarget(item.id, health?.recording?.state);
@@ -490,7 +489,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
           const term = document.createElement('dt'); term.textContent = label;
           clocks.append(term, document.createElement('dd'));
         }
-        const link = document.createElement('a'); link.className = 'recording-source-link'; bindLink(link);
+        const link = document.createElement('a'); link.className = 'recording-source-link';
         node.append(heading, reason, clocks, link); sourceNodes.set(id, node);
       }
       if (sourceList.children[index] !== node) {

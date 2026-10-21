@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
+import { validateCoefficientHistory } from './coefficient-history.js';
 import { WriterClient } from './writer-client.js';
 import { writerDatabase } from './writer-database.js';
 import { WalMaintenance } from './wal-maintenance.js';
@@ -102,6 +103,7 @@ export function validateCurrentDatabaseFormat(db, { full = false } = {}) {
 
 export function validateCurrentDatabase(db, { full = false, readOnly = false } = {}) {
   validateCurrentDatabaseFormat(db, { full });
+  validateCoefficientHistory(db,{full});
   // Writable startup rejects unsupported active caches before mutation. A
   // read-only evidence viewer can expose independent observations even when a
   // derived cache is unavailable; its getter still uses only the current

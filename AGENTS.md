@@ -106,6 +106,14 @@ installation, with verified backups, exact journal/history parity and rollback.
 This task-specific exception adds no startup conversion, migration ladder,
 automatic reset or permission to convert other development databases.
 
+For coefficient chart history on 2026-10-21, the owner approved one further
+installation-only, offline physical-schema conversion and historical population
+using an external disposable script. Verify backups, preserve all existing source
+and learning history and transaction identities, and retain rollback before the
+paired installation adopts the new schema. The script stays outside the repository
+and Git. This exception adds no runtime conversion, generic backfill, older-format
+reader or permission to convert other development databases.
+
 Use one current persisted/configuration/API contract. Unknown or retired fields
 and payload versions must fail closed at their relevant boundary, not silently
 be translated, ignored or granted authority. Genuinely missing optional current

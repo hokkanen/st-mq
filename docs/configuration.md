@@ -41,7 +41,9 @@ responses have separate bounded shares. This is not a process RSS cap: requested
 working data, SQLite, worker runtimes and browser memory are additional. Dense
 recording can shorten the resident window; increase the budget for a longer or
 denser window when the host has room. The cache never changes database retention.
-No chart summaries or extra observations are persisted.
+No ordinary chart summaries or extra observations are persisted. Coefficient
+change history is recorded with committed learning in the main database and is
+not controlled by the chart RAM budget.
 
 Apply configuration through the existing settings workflow to resize, disable or
 reenable the cache without restarting the application. Existing configuration
@@ -50,6 +52,24 @@ reads short batches at the lowest storage priority; it may wait indefinitely for
 important work and never delays startup readiness. Each batch releases its SQLite
 snapshot. Requested charts remain available while warming and fall back to the
 ordinary reader whenever the resident head is not current.
+
+### Local learning verification
+
+**Recording details → History tools → Verify learning reconstruction** starts an
+optional full check of the complete saved Home model and its four coefficient
+histories. The action is local to this computer and works for administrators on a
+master or slave. Viewers can inspect progress and results. There is no continuous
+reconstruction preference, coefficient-history enablement or chart preparation
+setting: normal committed learning always records the coefficient history in the
+main database, which backups and mirroring preserve.
+
+Verification progress and results use disposable files below
+`<data directory>/temporary-model-verification/`, separately from the main database.
+The tool supports pause, resume, cancel and discard. Interrupted running jobs can
+resume after restart; explicitly paused jobs remain paused. The temporary files
+are not essential backups or replication inputs. See
+[the reconstruction contract](reconstruction-and-versioning.md#coefficient-history-and-local-verification)
+for fixed verification boundaries, source supersession and deletion behavior.
 
 ## Where a setting belongs
 
@@ -60,6 +80,7 @@ ordinary reader whenever the resident head is not current.
 | Saved Home Assistant app options | The authoritative installation settings in the app. An uploaded sparse `secrets.json` is an import into these settings. |
 | Environment variables | Explicit process/deployment overrides, taking precedence over file settings. |
 | Dashboard controls | Temporary session/deadline overrides, labeled native-device actions and the explicitly documented persistent device-bound choices below. Controller defaults remain configuration-owned. |
+| Local history-tool work | Temporary per-computer verification progress, action receipts and results outside the main replicated database. It grants no device-control authority and is not a controller configuration default. |
 | `config.json.schema` and manifest metadata | Software configuration: accepted fields, types, ranges and Home Assistant packaging. These are not installation overrides. |
 
 Any supported option can be overridden. Validation checks JSON syntax, field names,

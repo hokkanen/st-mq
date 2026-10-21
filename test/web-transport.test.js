@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { createWebAccess, LAN_HTTP_WARNING } from '../src/app/web-access.js';
 import { loadConfig as readConfig, webConfiguration } from '../src/app/config.js';
 import { configurationRestartRequired } from '../src/app/configuration-preview.js';
+import { Store } from '../src/storage/store.js';
 
 const loadConfig = (env = {}, cwd) => readConfig({ HOME: '/missing-stmq-test-home', ...env }, cwd);
 
@@ -32,13 +33,14 @@ function certificate(t, label = 'first') {
 }
 async function setup(t, initial = config(), extra = {}) {
   const actions = [];
+  const store = extra.store ?? new Store(':memory:');
   const manager = { start() {}, configure() {}, close() {},
     status: () => ({ enabled: true, phase: 'ready', privateDiagnostic: 'admin-only' }),
     action: input => { actions.push(input); return { id: 'synthetic-operation', state: 'pending' }; } };
   const access = createWebAccess({ config: initial, engine: { status: () => ({ environment: 'history' }) },
-    store: {}, chartService: { overview: async () => ({}) }, httpsManagerFactory: () => manager, ...extra });
+    store, chartService: { overview: async () => ({}) }, httpsManagerFactory: () => manager, ...extra });
   await access.start();
-  t.after(() => access.close());
+  t.after(async () => { await access.close(); if (!extra.store) await store.close(); });
   return { access, actions, manager };
 }
 function tlsGet(server, material, path = '/api/status', extra = {}) {

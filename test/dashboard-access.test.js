@@ -54,6 +54,19 @@ test('saved-copy verification is an explicit read-only inspection with a bounded
   assert.throws(() => assertDashboardWrite('/api/recording-backups/verify', { sourceId: 'a'.repeat(64) }, null), { status: 403 });
 });
 
+test('instance-local verification actions work on a slave without granting main-database write authority', () => {
+  const requestId = '11111111-1111-4111-8111-111111111111';
+  for (const status of [{ role: 'slave' }, writerStatus('unavailable')]) {
+    for (const action of ['verify', 'pause', 'resume', 'cancel', 'discard'])
+      assert.doesNotThrow(() => assertDashboardWrite('/api/model-reconstruction/action', { action, requestId }, status));
+    assert.throws(() => assertDashboardWrite('/api/automation', { enabled: true }, status));
+    for (const body of [{ action: 'verify' }, { action: 'build', requestId }, { action: 'verify', requestId, includeHistory: true },
+      { action: 'discard', requestId, path: '/private/path' }, { action: 'set-enabled', requestId, enabled: true }])
+      assert.throws(() => assertDashboardWrite('/api/model-reconstruction/action', body, status));
+  }
+  assert.throws(() => assertDashboardWrite('/api/model-reconstruction/action', { action: 'verify', requestId }, null), { status: 403 });
+});
+
 const writerStatus = state => ({ role: 'master', input: 'simulated', recordingHealth: { version: 3, scope: 'simulated', checkedAt: 100,
   recording: { writer: { state } } } });
 

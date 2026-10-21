@@ -10,6 +10,8 @@ import { publishLearning, publicationKey } from '../src/app/learning-publication
 import { replayLearningJournal } from '../src/app/committed-learning.js';
 import { addFireplace } from '../src/app/fireplace.js';
 import { sample, start, W } from './helpers/recovery-fixture.js';
+import { coefficientCandidate } from './helpers/coefficient-fixture.js';
+import { createCoefficientGeneration, publishCoefficientGeneration } from '../src/storage/coefficient-history.js';
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-publication-boundary-'));
@@ -23,8 +25,8 @@ function fixture(t) {
   sample(store, start + W);
   const original = replayLearningJournal(store, 'mqtt', null, { rebuild: true });
   sample(store, start + 2 * W, { indoorC: 21.25 });
-  const checkpoint = replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false });
-  const candidate = { checkpoint, head: checkpoint.journalCursor, revision: checkpoint.fireplaceRevision ?? 0,
+  const staged = coefficientCandidate(store, 'mqtt'), checkpoint=staged.checkpoint;
+  const candidate = { ...staged, head: checkpoint.journalCursor, revision: checkpoint.fireplaceRevision ?? 0,
     sensorRevision: checkpoint.sensorRevision ?? 0, epoch: store.learningEpoch('mqtt'),
     selection: store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation };
   store.setState('fireplace:rebuild:mqtt', { status: 'ready', requiresRebuild: true,
@@ -156,8 +158,13 @@ test(`publication rejects an obsolete ${changed} without replacing the active mo
   if (changed === 'journal head') sample(f.store, start + 3 * W);
   else if (changed === 'fireplace revision') addFireplace(f.store, 'mqtt', { requestId: 'synthetic-source-edit', kg: 2 }, start);
   else if (changed === 'selected history') f.store.db.prepare('UPDATE history_selection SET generation=? WHERE id=1').run(randomUUID());
-  else f.store.db.prepare('INSERT INTO learning_epochs(input,epoch) VALUES(?,?) ON CONFLICT(input) DO UPDATE SET epoch=excluded.epoch')
-    .run('mqtt', randomUUID());
+  else f.store.transaction(()=>{
+    f.store.db.prepare('INSERT INTO learning_epochs(input,epoch) VALUES(?,?) ON CONFLICT(input) DO UPDATE SET epoch=excluded.epoch')
+      .run('mqtt', randomUUID());
+    // Epoch selection and its empty timeline change together. The older
+    // adaptive cache remains available until the replacement is published.
+    publishCoefficientGeneration(f.store,'mqtt',createCoefficientGeneration(f.store,'mqtt'),null);
+  });
   let adopted = false;
   const task = f.launch('normal', { onPublish: () => { adopted = true; } });
   assert.equal(await task.publication, null);

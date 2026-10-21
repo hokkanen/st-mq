@@ -16,6 +16,8 @@ import { applyLearningRecord, replayLearningJournal } from '../src/app/committed
 import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { createMqttSourceContext, mqttSourceIdentity, MQTT_SOURCE_CONTEXT_KEY } from '../src/pairing/mqtt-source-context.js';
 import { randomUUID } from 'node:crypto';
+import { coefficientCandidate } from './helpers/coefficient-fixture.js';
+import { createCoefficientGeneration, readCoefficientCoverage, readCoefficientEvents } from '../src/storage/coefficient-history.js';
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'stmq-writer-publication-'));
@@ -42,9 +44,11 @@ function holdCommit(store) {
 }
 
 async function correction(store) {
-  await store.runWrite(() => store.setState('fireplace:rebuild:mqtt', { status: 'pending' }));
-  return { epoch: store.learningEpoch('mqtt'), selection: 'original', revision: 0,
-    sensorRevision: 0, head: 0, checkpoint: null };
+  return store.runWrite(() => {
+    store.setState('fireplace:rebuild:mqtt', { status: 'pending' });
+    return { epoch: store.learningEpoch('mqtt'), selection: 'original', revision: 0,
+      sensorRevision: 0, head: 0, checkpoint:null, coefficientGeneration:createCoefficientGeneration(store,'mqtt') };
+  });
 }
 
 function publicationWorker(options) {
@@ -159,6 +163,7 @@ test('correction publication waits for active durability and adopts before the n
       order.push('adopted');
       assert.equal(result.epoch, message.epoch);
       assert.equal(store.getState('fireplace:rebuild:mqtt').status, 'current');
+      assert.equal(readCoefficientCoverage(store,{input:'mqtt'}).generation,message.coefficientGeneration);
       assert.ok(store.getState(publicationKey('mqtt')).token);
     } });
   const later = store.runWrite(() => {
@@ -170,6 +175,19 @@ test('correction publication waits for active durability and adopts before the n
   assert.deepEqual(order, []);
   gate.release(); await pending; await publishing; await later;
   assert.deepEqual(order, ['saved', 'adopted', 'later']);
+  verifyJournal(store.db);
+});
+
+test('a correction without complete staged coefficient history cannot publish a model or durable receipt', { timeout:20_000 }, async t => {
+  const {store}=await fixture(t), message=await correction(store);
+  delete message.coefficientGeneration;
+  const checkpoint=store.getState('adaptive:mqtt'), coverage=readCoefficientCoverage(store,{input:'mqtt'});
+  await assert.rejects(publishLearning({store,input:'mqtt',kind:'correction',message,
+    onPublish:()=>assert.fail('incomplete correction adopted')}));
+  assert.deepEqual(store.getState('adaptive:mqtt'),checkpoint);
+  assert.deepEqual(readCoefficientCoverage(store,{input:'mqtt'}),coverage);
+  assert.equal(store.getState('fireplace:rebuild:mqtt').status,'pending');
+  assert.equal(store.getState(publicationKey('mqtt')),null);
   verifyJournal(store.db);
 });
 
@@ -209,6 +227,7 @@ for (const boundary of ['lost-reply', 'cancel-after-commit']) test(`correction $
     const later = store.runWrite(() => {
       assert.equal(adopted, 1);
       assert.equal(store.getState('fireplace:rebuild:mqtt').status, 'current');
+      assert.equal(readCoefficientCoverage(store,{input:'mqtt'}).generation,message.coefficientGeneration);
       store.setState('after-reconciled-publication', true);
     });
     const result = await publishing; await later;
@@ -252,11 +271,22 @@ test('a nonempty corrected model and shared sample bodies publish atomically and
   const expected = journal.reduce((checkpoint, entry) => applyLearningRecord(checkpoint, entry, context), null);
   assert.notDeepEqual(expected, previous);
   assert.deepEqual(store.getState('adaptive:mqtt'), previous, 'the old model remains selected before publication');
+  const original=readCoefficientCoverage(store,{input:'mqtt'});
+  const candidate=await store.runWrite(()=>coefficientCandidate(store,'mqtt'));
+  assert.deepEqual(candidate.checkpoint,expected);
+  assert.deepEqual(readCoefficientCoverage(store,{input:'mqtt'}),original,'staged history leaves the earlier selected model interpretation intact');
+  const stagedEvents=readCoefficientEvents(store,{input:'mqtt',generation:candidate.coefficientGeneration});
+  assert(stagedEvents.length>0);
   const message = { epoch: store.learningEpoch('mqtt'), selection: 'original', revision: context.fireplaceRevision,
-    sensorRevision: 0, head: store.learningJournalHead('mqtt'), checkpoint: expected };
+    sensorRevision: 0, head: store.learningJournalHead('mqtt'), ...candidate };
   let adopted = 0;
   const result = await publishLearning({ store, input: 'mqtt', kind: 'correction', message,
-    onPublish(value) { adopted++; assert.deepEqual(value.checkpoint, expected); } });
+    onPublish(value) {
+      adopted++; assert.deepEqual(value.checkpoint, expected);
+      assert.equal(readCoefficientCoverage(store,{input:'mqtt'}).generation,candidate.coefficientGeneration);
+      assert.deepEqual(readCoefficientEvents(store,{input:'mqtt'}),stagedEvents,
+        'durable receipt adoption sees the whole corrected model and all coefficient transitions together');
+    } });
   assert.equal(adopted, 1);
   assert.deepEqual(result.checkpoint, expected);
   assert.deepEqual(store.getState('adaptive:mqtt'), expected);

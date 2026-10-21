@@ -6,6 +6,8 @@ import { fireplaceLearningContext } from './fireplace-inputs.js';
 import { sensorLearningContext, sensorRevision } from './sensor-inputs.js';
 import { findLearningPrefix, withPrefixRevisions } from '../recovery/learning-prefix.js';
 import { decodeLearningCheckpoint, withLearningCheckpointRead } from '../storage/learning-checkpoint-storage.js';
+import { coefficientProjectionAt, readCoefficientCoverage } from '../storage/coefficient-history.js';
+import { emptyCoefficientProjection, projectCoefficientTransition, compactCoefficientProjection } from '../domain/coefficient-projection.js';
 
 // This connection cannot migrate schemas, alter events, or publish checkpoints.
 const db = workerData.dbPath === ':memory:' ? null : new DatabaseSync(workerData.dbPath, { readOnly: true });
@@ -17,6 +19,12 @@ const store = db && { db, getState: key => withLearningCheckpointRead(db, () => 
   return key.startsWith('adaptive:') ? decodeLearningCheckpoint(db, value) : value;
 }) };
 let checkpoint = null, source = null, processed = 0, selection = null;
+let projection = emptyCoefficientProjection(), coefficientGeneration = null, requestSequence = 0;
+const acknowledgements = new Map();
+const stage = fields => new Promise((resolve,reject) => {
+  const requestId=++requestSequence; acknowledgements.set(requestId,{resolve,reject});
+  parentPort.postMessage({...selection,...fields,requestId});
+});
 const currentEpoch = () => db?.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(workerData.input)?.epoch ?? 'original';
 const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
   algorithmVersion: row.algorithm_version, configVersion: row.config_version === null ? null : JSON.parse(row.config_version),
@@ -25,7 +33,14 @@ const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
 // Prefix lookup yields while holding a read snapshot. Keep later catch-up
 // requests behind it so they cannot replace the shared candidate mid-replay.
 let messages = Promise.resolve();
-parentPort.on('message', message => { messages = messages.then(() => replay(message)); });
+parentPort.on('message', message => {
+  if(message.type==='coefficient-ack'){
+    const pending=acknowledgements.get(message.requestId);acknowledgements.delete(message.requestId);
+    if(message.error)pending?.reject(new Error('Coefficient history staging failed.'));else pending?.resolve(message.generation);
+    return;
+  }
+  messages = messages.then(() => replay(message));
+});
 async function replay(message) {
   const requested = { revision: message.revision, sensorRevision: message.sensorRevision, epoch: message.epoch };
   const stale = () => !selection || !source || selection.epoch !== message.epoch
@@ -45,12 +60,18 @@ async function replay(message) {
         // not their later receipt. Source context and prefix proof share one
         // snapshot; absent proof still replays from the seed.
         if (store && Number.isFinite(message.affectedAt)) {
-          const prefix = await findLearningPrefix(store, { input: workerData.input, epoch: message.epoch,
+          let prefix = await findLearningPrefix(store, { input: workerData.input, epoch: message.epoch,
             earliest: message.affectedAt, fireplaceRevision: message.revision, sensorRevision: message.sensorRevision,
             yieldControl: () => new Promise(resolve => setImmediate(resolve)) });
+          const coverage=readCoefficientCoverage(store,{input:workerData.input,epoch:message.epoch});
+          if(prefix&&(!coverage||coverage.cursor<prefix.cursor))prefix=null;
           checkpoint = withPrefixRevisions(prefix?.checkpoint, source);
+          projection=coefficientProjectionAt(store,{input:workerData.input,cursor:prefix?.cursor??0});
         }
       } finally { if (db) db.exec('ROLLBACK'); }
+      if(!checkpoint)projection=emptyCoefficientProjection();
+      coefficientGeneration=await stage({type:'coefficient-start',prefixCursor:checkpoint?.journalCursor??0,
+        projection:compactCoefficientProjection(projection)});
     }
     if (stale()) {
       parentPort.postMessage({ type: 'stale', ...requested }); return;
@@ -61,15 +82,20 @@ async function replay(message) {
         AND id>? AND id<=? ORDER BY id LIMIT 128`).all(workerData.input, LEARNING_ALGORITHM, after, message.head).map(decode)
         : message.entries.filter(entry => entry.algorithmVersion === LEARNING_ALGORITHM && entry.id > after && entry.id <= message.head).slice(0, 128);
       if (!entries.length) break;
-      for (const entry of entries) checkpoint = applyLearningRecord(checkpoint, entry,
-        source);
+      const events=[];
+      for (const entry of entries) {
+        const prior=checkpoint;checkpoint=applyLearningRecord(checkpoint,entry,source);
+        const event=projectCoefficientTransition(projection,entry,prior,checkpoint);
+        if(event)events.push({...event,projection:compactCoefficientProjection(projection)});
+      }
+      await stage({type:'coefficient-page',coefficientGeneration,events,projection:compactCoefficientProjection(projection)});
       after = entries.at(-1).id; processed += entries.length;
       parentPort.postMessage({ type: 'progress', ...selection, processed, journalCursor: after });
     }
     if (stale()) {
       parentPort.postMessage({ type: 'stale', ...requested }); return;
     }
-    parentPort.postMessage({ type: 'ready', ...selection, checkpoint, processed, head: after });
+    parentPort.postMessage({ type: 'ready', ...selection, checkpoint, processed, head: after, coefficientGeneration });
   } catch {
     parentPort.postMessage({ type: 'failed', ...requested, error: 'Model replay failed.' });
   }

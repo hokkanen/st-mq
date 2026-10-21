@@ -24,18 +24,22 @@ learning epoch. Original observations, frozen forecasts, corrections and their
 provenance keep their historical meaning throughout an upgrade.
 
 The current physical SQLite schema and the current journaled data layout have
-separate identifiers. Physical schema 32 retains the chronological coverage index
-and restricts journal/recovery indexes to their relevant records. Its journaled
-rows retain layout 30 and the same genesis/hash interpretation. Every fresh
-schema-32 database uses that one layout. There is no
-older-schema runtime branch or alternate journal decoder. Strict physical-schema
+separate identifiers. Physical schema 33 records coefficient history with
+committed learning and retains the chronological coverage index and bounded
+journal/recovery indexes. Its journaled rows retain layout 30 and the existing
+genesis/hash interpretation. Every fresh schema-33 database uses that one current
+layout. There is no older-schema runtime branch or alternate journal decoder. Strict physical-schema
 validation rejects incompatible physical schemas before writable setup. The owner's one-time
 2026-10-15 chart-index conversion exception requires verified backups and rollback,
 unchanged table rows, original database/checkpoint identities and journal hashes,
 and successful full current validation before coordinated code/database adoption.
 It does not authorize startup conversion, journal rehashing or conversion to
-schema 32. An installed schema-32 transition requires its own explicit exception;
-the runtime never performs one automatically.
+a later schema. The owner separately approved the installation-only offline
+coefficient-history preparation on 2026-10-21 under [F1](../AGENTS.md#f1), with
+verified backups, retained source/transaction identities, external disposable
+tooling and rollback. That exception adds no runtime conversion or permission to
+convert other databases. An installed schema-32/schema-33 pair cannot mirror or
+hand over across that boundary; both roles must use the same supported schema.
 
 Given an intact committed learning journal, its saved configuration and initial
 seed, the selected fireplace and sensor-correction revisions, and the matching
@@ -149,6 +153,106 @@ learning journal. Simulated alternatives do not add journal entries, consume
 learning allowance or validate a duration. Actual observations use the existing
 ordered learning updates and completion gates. This adds provenance without a
 second learning algorithm or a comprehensive archive of hypothetical decisions.
+
+## Coefficient history and local verification
+
+The main database stores compact changes for all four model coefficients,
+including their initial/fitted/retained quality, evidence and source meaning.
+Ordered learning captures intermediate changes during each committed batch; it
+must not flatten them to the final model or replay the whole journal merely to
+record chart output. Database backups, exports and mirroring carry this history.
+The read-only live worker returns at most 128 new coefficient changes inline.
+Larger new tails stage one unselected generation through acknowledged bounded
+pages, with final selection inside the Engine's existing source/control fence.
+Reconstructing only a model cache skips a matching already-recorded coefficient
+prefix. A local durable owner marker permits cleanup of an interrupted live
+stage; it does not authorize selecting an unfinished generation.
+The current tables `coefficient_generations`, `coefficient_selection`,
+`coefficient_events` and `coefficient_segments` are journaled application data.
+There is no sidecar chart history, build/rebuild action, continuous-upkeep setting
+or coefficient-history storage budget.
+
+Coefficient charts use indexed reads of the selected main-database history.
+Selecting a view, series or date range never starts reconstruction or requires a
+verification run. Unsupported inputs, genuine gaps and source provenance remain
+visible; current values cannot fill earlier unknown history. A source correction,
+history recovery, revert or restore stages the matching coefficient timeline
+alongside its complete model checkpoint. Publication atomically selects both.
+Pending, failed or abandoned staging leaves the previous model and history in use.
+Reuse of an unchanged prefix still requires the current recovery/correction
+proofs; delayed work cannot cross source epochs or override newer selections.
+
+**History tools → Verify learning reconstruction** is an independent optional
+read-only audit. It fixes a durable saved model and exact committed journal
+boundary, replays from the supported seed, compares the complete checkpoint and
+compares every recorded coefficient change and its quality/evidence semantics
+through that same boundary. The target may lag the journal head or live in-memory
+model. Results identify the checked journal entry and time, completion time and
+source snapshot age, with model and coefficient-history agreement reported
+separately. A match proves reproducibility under the supported inputs and
+algorithm, not physical accuracy. A mismatch never repairs the saved model or
+recorded timeline automatically. Cold full verification remains proportional to
+retained learning history, outside ordinary chart requests and control work.
+
+Model agreement uses the exact canonical checkpoint comparison; it has no
+numeric tolerance or additional field exclusions. A mismatch can retain matching
+coefficient history while another part of the complete model differs. Per-stream
+diagnostics report difference counts, finite maximum numeric deltas and at most
+eight schema paths, with dynamic field names redacted. They do not publish saved
+or reconstructed household values. Results also identify the replay's Node/V8
+versions, platform and CPU architecture. CPU or runtime math differences can be
+revealed by exact replay, but this does not establish the cause of a mismatch,
+make it successful or exempt it from the F2 reconstruction requirement. Preserve
+the source model and journal while investigating; verification never silently
+repairs them. The local disposable verification database may retain a complete
+comparison checkpoint and must receive the same privacy protection as source data.
+Minor numeric-only differences may be classified as consistent with rounding.
+This is diagnostic wording, not proof of the cause: the exact full-model result
+remains a mismatch. Coefficient-history agreement is reported independently.
+
+Only one verification job runs per instance. Administrators can start, pause,
+resume, cancel or discard local verification work on a master or slave;
+authenticated chart viewers can inspect status and results. Accepted work outlives
+an open page. Requests retain their unique identities across uncertain replies
+and are rechecked rather than silently duplicated. The strict action API accepts
+only `action` and `requestId`; no chart-preparation or enablement fields exist.
+
+Disposable verification progress, checkpoints, receipts and results live under
+`<data directory>/temporary-model-verification/temporary-verification.sqlite`,
+with an explanatory README in that owned directory. They live outside `/tmp`,
+remain private, and are not essential backups or mirroring inputs. Complete
+rolling progress is saved every five minutes of computation and on orderly
+pause/shutdown; retain the two latest progress points. A single expensive ordered
+entry may exceed this save interval. Restart may resume an interrupted running
+job, while explicit pause remains paused. A new verification starts from the seed;
+rolling points only resume that same identified run.
+
+Every resumable run binds database identity, input stream, supported algorithm,
+learning epoch, selected history, correction revisions and verified journal
+prefix, together with its exact Node/V8 versions, platform and CPU architecture.
+A runtime change requires discarding the disposable progress and starting a new
+seed replay; saved prefixes cannot mix numerical environments. Source correction publication, recovery, revert, restore, divergent source
+history or replica replacement that cannot preserve this exact interpretation
+supersedes the run; it cannot silently switch to another target. Ordinary forward
+learning outside an intact fixed target is not itself a changed interpretation.
+Slave verification reads verified local publications in bounded leases and never
+retains a main-database read transaction for the whole calculation. No verifier
+write changes the source database or confers controller authority.
+
+**Cancel verification** stops the job while retaining its temporary progress and
+results for inspection. **Discard temporary verification data** is available only
+when its worker is stopped, including a paused worker; it closes remaining handles
+before removing the owned temporary data. The main journal, recorded coefficient
+history, current model and backups remain intact. Corrupt or incompatible temporary
+state is not migrated or trusted. Failures and superseded jobs remain terminal
+until an explicit new action; there is no automatic retry loop.
+
+This changes the one current physical schema while retaining journaled layout 30,
+the existing genesis/hash interpretation and the numerical learning algorithm. Incompatible development databases are rejected
+before mutation; the runtime adds no upgrade ladder, permanent historical backfill
+or old-format reader. Any specifically owner-approved, data-preserving preparation
+of an existing installation is an external controlled operation under the exact
+foundation exception, not a startup conversion or new supported historical format.
 
 ## Manual source corrections
 

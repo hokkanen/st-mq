@@ -53,7 +53,7 @@ immediate confirmations while its worker runs, and resumed batching after succes
 failure and cancellation. Policy-recovery fixtures explicitly commit their donor
 and master endpoints before assessing conflicts.
 
-`test/storage-partial-indexes.test.js` separately checks physical schema 32's
+`test/storage-partial-indexes.test.js` separately checks physical schema 33's
 learning-reversal and interval-end index scope, actual query plans, interval-query
 parity and reversible access to records outside the index. Current startup tests
 reject incompatible schemas before mutation. The journaled data layout and hash
@@ -511,6 +511,40 @@ interrupted checks, refused starts and failed status reads with a previous resul
 Network tests distinguish malformed JSON, interrupted bodies and deliberate
 cancellation. Pairing and source-correction tests retain observed receipts across
 late replies, later polling failures and the 24-hour receipt lifetime.
+
+Learning verification fixtures compare complete saved checkpoints and all four
+recorded coefficient histories with independent seed replay at fixed boundaries.
+Test pause/restart/resume with five-minute rolling checkpoints, cancellation,
+discard after stopped-worker cleanup, uncertain request identities and source
+supersession. Recovery → revert → restore and source corrections must publish the
+model and its coefficient generation together, preserve unrelated later history,
+and reject delayed work. Cover missing or corrupted verification files, model-only
+and timeline-only mismatches, disk failure, replica replacement, and terminal
+failure without automatic retry. Measure cold audit time, temporary disk/WAL use,
+indexed chart latency, memory and controller responsiveness on long synthetic
+history. Main database content and device authority must remain unchanged by the
+verifier.
+
+`test/live-learning-coefficient-staging.test.js` drives a large genuinely new
+coefficient tail through the read-only worker and real storage writer. Every
+intermediate transition must survive bounded page admission and a small atomic
+final publication. Measure actual commit sizes, retain the old selected timeline
+until publication, skip already recorded chart prefixes during model-cache
+reconstruction, and discard a superseded worker's explicitly owned staging data
+without removing source inputs or selected history.
+
+`test/model-reconstruction-ui.test.js` checks fixed-boundary wording, independent
+model/history results, exact model-mismatch counts and bounded schema paths,
+finite concise deltas, diagnostic rounding-consistent presentation with unchanged
+exact mismatch state, larger/structural negative cases, replay runtime, snapshot
+age, safe temporary-file discard, strict current
+actions, authenticated viewing and admin actions on a slave. It fences stale
+responses and logout, retains uncertain request identity across reload and stops
+browser polling when hidden without cancelling server work. The isolated
+`test/browser/model-reconstruction-smoke.js` uses actual panel markup/styles with a
+synthetic API across 320/390/768/1440 px and both themes. The
+`test/browser/model-reconstruction-service-smoke.js` uses disposable file-backed
+learning and actual standalone/slave endpoints. Neither accesses household data.
 
 Charging identification tests exercise each prerequisite and its public reason
 without relaxing the control gate. Cost tests distinguish complete session costs
@@ -1006,6 +1040,8 @@ node test/browser/ocpp-setup-smoke.js
 node test/browser/charging-currents-smoke.js
 node test/browser/home-controls-smoke.js
 node test/browser/history-recovery-smoke.js
+node test/browser/model-reconstruction-smoke.js
+node test/browser/model-reconstruction-service-smoke.js
 node test/browser/heating-explorer-smoke.js
 node test/browser/garage-smoke.js
 node test/browser/garage-smoke.js --temperature-hold-only
@@ -1208,9 +1244,11 @@ canvas draw, including asynchronous geometry preparation. They interrupt that
 preparation with a resize and move focus to another footer control, then require
 the completed plot, interpolation control and current focus to agree. Same-view
 legend and footer buttons retain their DOM identity across those redraws.
-The chart transport
-suite also holds a cold coefficient reconstruction against a concurrent recent
-plot, cancels replay on a pinned reader, and joins worker cleanup before reuse.
+Coefficient chart transport checks require indexed selected main-database history
+reads, including current quality/provenance and genuine gaps. Selecting a
+coefficient never schedules replay, requests preparation or changes archive-worker
+idle retention. Optional full-verification tests exercise the independent worker
+and source fences instead of performing model fitting in a chart request.
 Explorer checks cover the shared selection button, searchable **Views** and
 **All series** modes, selection/dismissal, keyboard navigation and centered
 desktop, mobile and fullscreen layouts. Chart style checks

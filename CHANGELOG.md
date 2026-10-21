@@ -6,12 +6,17 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
-- Retain a completed coefficient timeline for fifteen idle minutes, so briefly
-  browsing other charts does not immediately repeat the full reconstruction.
+- Record all four coefficient histories with committed learning in the main
+  database, so every coefficient chart loads directly without reconstruction or
+  preparation controls. Include the selected history in backups and mirroring;
+  corrections, recovery, revert and restore select it together with the model.
 
-- Keep recent charts and cost comparisons responsive while model-coefficient
-  history is reconstructed. Show reconstruction progress and let cancelled
-  requests release the worker between journal entries.
+- Add **Verify learning reconstruction** under History tools to independently
+  reconstruct and compare the complete saved model and all four recorded
+  coefficient histories at one fixed boundary. Local jobs support pause, resume,
+  cancellation and discarding their temporary files on master or slave. The check
+  reports model and history agreement separately, never repairs source data, and
+  does not need to run for charts to work.
 
 - Preserve the current legend or footer keyboard focus when a chart redraw
   finishes, including when focus moved during geometry preparation.

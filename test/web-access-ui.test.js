@@ -158,7 +158,7 @@ test('session requests work in appliance browsers without AbortSignal.any', asyn
 test('logout removes credentials and pending actions, aborts requests, and prevents late responses and automatic reconnection', async () => {
   const storage = storageFixture(), session = createWebSession({ storage });
   session.login('invented-family-browser-password');
-  for (const key of ['stmq-fireplace-pending', 'stmq-sensor-change-pending', 'stmq-pair-pending-v1']) storage.setItem(key, '{}');
+  for (const key of ['stmq-fireplace-pending', 'stmq-sensor-change-pending', 'stmq-pair-pending-v1', 'stmq-history-recovery-pending', 'stmq-model-reconstruction-pending']) storage.setItem(key, '{}');
   let finish, signal, calls = 0;
   const pending = session.run(options => {
     calls++; signal = options.signal;

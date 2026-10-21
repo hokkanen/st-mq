@@ -11,6 +11,7 @@ import { applyLearningRecord, LEARNING_ALGORITHM, validLearningCheckpoint} from 
 import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
 import { decodeLearningCheckpoint, withLearningCheckpointRead } from '../src/storage/learning-checkpoint-storage.js';
+import { readCoefficientCoverage, readCoefficientEvents } from '../src/storage/coefficient-history.js';
 
 const WINDOW = 900_000, start = Date.parse('2026-01-01T00:00:00Z');
 const pause = () => new Promise(resolve => setTimeout(resolve, 10));
@@ -126,27 +127,50 @@ test('engine holds the old revision through real-worker replay and suffix catchu
     assert.deepEqual(f.store.learningJournal({ input: 'mqtt' }).slice(0, journalBefore.length), journalBefore);
   });
 
-test('a load exactly at the closed-window boundary and its immediate removal need no retrospective rebuild', async t => {
+test('a load exactly at the closed-window boundary and its removal publish model and timeline revisions together', async t => {
   const f = fixture(t);
   f.sample(0);
   const original = structuredClone((await f.engine.refreshLearning()));
   const created = f.engine.changeFireplace({ requestId: 'invented-boundary-load', kg: 8 });
-  assert.equal(created.requiresRebuild, false);
-  assert.equal(created.rebuild.status, 'idle');
-  assert.equal(f.engine.fireplaceRebuild, undefined);
-  assert.equal(f.engine.fireplaceReserveOverride, null);
+  assert.equal(created.entries[0].requiresRebuild, false, 'the completed sample contains no new fireplace heat');
+  assert.equal(created.rebuild.status, 'running');
+  assert.deepEqual(f.store.getState('adaptive:mqtt'), original, 'source metadata is not published ahead of its timeline');
   f.now++;
   const removed = f.engine.changeFireplace({ requestId: 'invented-boundary-remove', id: created.entries[0].id }, true);
-  assert.equal(removed.requiresRebuild, false);
-  assert.equal(removed.rebuild.status, 'idle');
-  assert.equal(f.engine.fireplaceRebuild, undefined);
-  assert.equal(f.engine.fireplaceReserveOverride, null);
-  const after = (await f.engine.refreshLearning());
+  assert.equal(removed.rebuild.status, 'running');
+  await waitReady(f.engine);
+  await f.engine.refreshLearning();
+  await f.engine.fireplaceManager().publication;
+  const after = await f.engine.refreshLearning();
   assert.deepEqual(after.model, original.model);
   assert.deepEqual(after.samples, original.samples);
   assert.equal(after.fireplaceRevision, removed.revision);
+  assert.equal(readCoefficientCoverage(f.store,{input:'mqtt'}).fireplaceRevision,removed.revision);
   assert.equal(validLearningCheckpoint(after), true);
 });
+
+test('a new future load reuses the complete proven model and coefficient prefix without historical replay',
+  {timeout:30_000}, async t=>{
+    const f=fixture(t);
+    for(let i=1;i<=100;i++)f.sample(i);
+    const original=structuredClone(await f.engine.refreshLearning());
+    const before=readCoefficientEvents(f.store,{input:'mqtt'});
+    f.now++;
+    const created=f.engine.changeFireplace({requestId:'invented-future-load',kg:4});
+    assert.equal(created.rebuild.status,'running');
+    assert.deepEqual(f.store.getState('adaptive:mqtt'),original);
+    assert.deepEqual(readCoefficientEvents(f.store,{input:'mqtt'}),before);
+    await waitReady(f.engine);
+    assert.equal(f.engine.fireplaceManager().status().processed,0,'unchanged historical inputs are never reapplied');
+    await f.engine.refreshLearning();await f.engine.fireplaceManager().publication;
+    const current=await f.engine.refreshLearning();
+    assert.deepEqual(current.model,original.model);
+    assert.deepEqual(current.samples,original.samples);
+    assert.equal(current.fireplaceRevision,created.revision);
+    assert.deepEqual(readCoefficientEvents(f.store,{input:'mqtt'}),before);
+    assert.equal(readCoefficientCoverage(f.store,{input:'mqtt'}).fireplaceRevision,created.revision);
+    assert.deepEqual(current,pureReplay(f.store));
+  });
 
 test('restart resumes a pending correction while preserving the previous checkpoint until the worker is ready',
   { timeout: 30_000 }, async t => {

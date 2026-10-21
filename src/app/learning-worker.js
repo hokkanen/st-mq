@@ -2,6 +2,8 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { Store } from '../storage/store.js';
 import { LEARNING_ALGORITHM, appendLearningRecord, applyLearningRecord, historicalLearningWindows, validLearningCheckpoint } from './committed-learning.js';
 import { storageStep } from '../storage/worker-admission.js';
+import { coefficientProjectionAt, persistCoefficientBatch } from '../storage/coefficient-history.js';
+import { projectCoefficientTransition, compactCoefficientProjection } from '../domain/coefficient-projection.js';
 
 // History runs off the command/UI thread. Only journal/checkpoint writes hold
 // SQLite's writer lock; fitting a page can take longer than the busy timeout.
@@ -18,6 +20,7 @@ try {
   let adaptiveCursor = lastEntry && validLearningCheckpoint(adaptive, lastEntry) && adaptive.cursor
     && Number.isSafeInteger(adaptive.historyCursor) && adaptive.historyResampling ? adaptive.historyCursor : 0;
   if (!adaptiveCursor) adaptive = null;
+  const projection = coefficientProjectionAt(store,{input:'history',cursor:adaptive?.journalCursor??0});
   let processed = 0;
   while (!stopped) {
     const rows = storageStep(()=>store.trainingRows({ afterId: adaptiveCursor, limit: 64 }));
@@ -36,8 +39,17 @@ try {
     // Journal entries are immutable and committed before fitting. A crash before
     // the checkpoint commit leaves the source cursor unchanged, so restart
     // encounters the same entries and applies them in the same order.
-    for (const entry of entries) adaptive = applyLearningRecord(adaptive, entry);
+    const baseCursor=adaptive?.journalCursor??0,events=[];
+    for (const entry of entries) {
+      const prior=adaptive; adaptive=applyLearningRecord(prior,entry);
+      const event=projectCoefficientTransition(projection,entry,prior,adaptive);
+      if(event)events.push({...event,projection:compactCoefficientProjection(projection)});
+    }
     storageStep(()=>store.transaction(() => {
+      if(entries.length)persistCoefficientBatch(store,'history',{epoch:store.learningEpoch('history'),
+        selection:store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation,
+        fireplaceRevision:adaptive?.fireplaceRevision??0,sensorRevision:adaptive?.sensorRevision??0,
+        baseCursor,events,projection:compactCoefficientProjection(projection),cursor:projection.cursor,throughAt:projection.at});
       adaptive = { ...adaptive, historyCursor: adaptiveCursor, historyResampling: windows.state };
       store.setState('adaptive:history', { ...adaptive,
         reconstruction: { recordedAt: Date.now(), source: 'imported-requested-modes-and-temperatures',

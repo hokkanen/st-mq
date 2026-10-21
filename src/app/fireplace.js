@@ -1,4 +1,5 @@
 import { storageOperationHealth } from '../storage/operation-health.js';
+import { createCoefficientGeneration, appendCoefficientEvents, publishCoefficientGeneration, discardCoefficientGeneration } from '../storage/coefficient-history.js';
 import { Worker } from 'node:worker_threads';
 import { learningJournalHead } from '../storage/store.js';
 import { LEARNING_ALGORITHM, validLearningCheckpoint } from './committed-learning.js';
@@ -48,11 +49,14 @@ function queueRevision(store, input, revision, at, affectedAt) {
   const previousAffectedAt = pending ? previous?.affectedAt ?? null : null;
   const affected = affectedAt !== null && Boolean(store.db.prepare(`SELECT 1 FROM learning_journal
     WHERE input=? AND kind='sample' AND algorithm_version=? AND at>? LIMIT 1`).get(input, LEARNING_ALGORITHM, affectedAt));
-  const requiresRebuild = affected || pending;
-  if (requiresRebuild) store.setState(jobKey(input), { status: 'pending', revision,
+  const requiresRebuild = affected || pending && previous.requiresRebuild !== false;
+  const hasModel=Boolean(store.db.prepare(`SELECT 1 FROM coefficient_selection s JOIN coefficient_generations g
+    ON g.id=s.generation WHERE s.input=? AND g.cursor>0`).get(input)
+    ||store.db.prepare("SELECT 1 FROM state WHERE key=? AND json_extract(value,'$.journalCursor')>0").get(`adaptive:${input}`));
+  if (requiresRebuild || hasModel) store.setState(jobKey(input), { status: 'pending', revision,
     sensorRevision: sensorRevision(store, input), epoch: store.learningEpoch(input),
     requestedAt: at, affectedAt: affectedAt === null ? previousAffectedAt
-      : Math.min(affectedAt, previousAffectedAt ?? affectedAt), requiresRebuild: true });
+      : Math.min(affectedAt, previousAffectedAt ?? affectedAt), requiresRebuild });
   return requiresRebuild;
 }
 
@@ -114,7 +118,7 @@ export function fireplaceView(store, input, { asOf = Date.now(), revision } = {}
   return { available: true, input, revision: source.revision, entries: events, lastAt: events.find(event => event.removedAt === null)?.at ?? null,
     activeNow: fireplaceActive(source.events, asOf), releaseKgPerHour: fireplaceRate(source.events, asOf, asOf + 60_000),
     remainingKgEquivalent: fireplaceIntegral(source.events, asOf, asOf + FIREPLACE_HORIZON_MS),
-    requiresRebuild: ['pending', 'running', 'ready', 'failed'].includes(rebuild.status),
+    requiresRebuild: ['pending', 'running', 'ready', 'failed'].includes(rebuild.status) && rebuild.requiresRebuild !== false,
     rebuild: { ...rebuild, status: rebuild.status === 'ready' ? 'running' : rebuild.status === 'current' ? 'idle' : rebuild.status } };
 }
 
@@ -129,7 +133,16 @@ export class FireplaceRebuildManager {
   }
   retireWorker(worker, outcome, reason = null) {
     const operation = this.observations.get(worker);
-    return Promise.resolve(worker.terminate()).finally(() => operation?.finish(outcome, { reason }));
+    return Promise.resolve(worker.terminate()).finally(async () => {
+      operation?.finish(outcome, { reason });
+      await this.cleanupCoefficientGeneration(worker.coefficientGeneration);
+    });
+  }
+  async cleanupCoefficientGeneration(generation) {
+    if(!generation)return;
+    try{for(;;){const result=await this.store.runWrite(()=>discardCoefficientGeneration(this.store,generation));
+      if(result.complete||!result.removed)break;await new Promise(resolve=>setImmediate(resolve));}}
+    catch{/* Interrupted cleanup remains named in the durable job for the next explicit rebuild. */}
   }
   status() { return this.store.getState(jobKey(this.input)) ?? { status: 'idle',
     revision: fireplaceRevision(this.store, this.input), sensorRevision: sensorRevision(this.store, this.input),
@@ -153,20 +166,23 @@ export class FireplaceRebuildManager {
     if (previousWorker) void this.retireWorker(previousWorker, 'superseded', 'superseded');
     const generation = ++this.generation;
     const old = this.status();
-    this.setStatus({ ...old, ...selection, status: 'running', requiresRebuild: true, processed: 0, error: null });
+    if(old.coefficientGeneration&&old.coefficientGeneration!==previousWorker?.coefficientGeneration)
+      void this.cleanupCoefficientGeneration(old.coefficientGeneration);
+    this.setStatus({ ...old, ...selection, status: 'running', requiresRebuild: old.requiresRebuild ?? true, processed: 0, error: null });
     const operation = storageOperationHealth.begin('learning-rebuild');
     try {
       const worker = this.workerFactory({ workerData: { dbPath: this.store.path, input: this.input } });
+      let coefficientGeneration;
       this.observations.set(worker, operation);
       this.worker = worker; this.workerSelection = selection;
       const fail = () => {
         if (this.closed || generation !== this.generation) return;
         this.worker = null; this.ready = null; this.generation++;
         void this.retireWorker(worker, 'failed', 'operation-failed');
-        this.setStatus({ ...this.status(), status: 'failed', requiresRebuild: true,
+        this.setStatus({ ...this.status(), status: 'failed',
           error: 'Model rebuild failed; the previous model remains active.' });
       };
-      const admit = (operation, { priority = 'normal' } = {}) => {
+      const admit = (operation, { priority = 'normal', onError } = {}) => {
         if (this.closed || generation !== this.generation) return;
         void this.store.runWrite(() => {
           if (this.closed || generation !== this.generation) return;
@@ -174,7 +190,7 @@ export class FireplaceRebuildManager {
           this.store.afterRollback(() => { this.ready = previousReady; });
           return operation();
         }, { priority, isCurrent: () => !this.closed && generation === this.generation })
-          .catch(error => this.store.writeHealth.failure(error));
+          .catch(error => { this.store.writeHealth.failure(error); onError?.(); });
       };
       worker.on('error', () => admit(fail));
       worker.on('exit', () => admit(fail));
@@ -184,6 +200,19 @@ export class FireplaceRebuildManager {
         if (result.revision !== revision || result.sensorRevision !== correctedSensors || result.epoch !== selection.epoch) return;
         if (result.type === 'stale') { this.start(undefined, undefined, { force: true }); return; }
         if (result.error) { fail(); return; }
+        if(result.type==='coefficient-start'||result.type==='coefficient-page'){
+          if(result.type==='coefficient-start')coefficientGeneration=createCoefficientGeneration(this.store,this.input,{
+            epoch:selection.epoch,selection:selection.selection,fireplaceRevision:revision,sensorRevision:correctedSensors,
+            prefixCursor:result.prefixCursor,projection:result.projection});
+          else{
+            if(result.coefficientGeneration!==coefficientGeneration){fail();return;}
+            appendCoefficientEvents(this.store,coefficientGeneration,{events:result.events,projection:result.projection});
+          }
+          worker.coefficientGeneration=coefficientGeneration;
+          this.setStatus({...this.status(),coefficientGeneration});
+          this.store.afterCommit(()=>worker.postMessage({type:'coefficient-ack',requestId:result.requestId,generation:coefficientGeneration}));
+          return;
+        }
         if (result.type === 'progress') {
           // READY has control priority and may overtake its older ordinary
           // progress report. That report cannot demote a complete candidate.
@@ -199,10 +228,19 @@ export class FireplaceRebuildManager {
             || (result.checkpoint?.fireplaceRevision ?? 0) !== revision
             || (result.checkpoint?.sensorRevision ?? 0) !== correctedSensors || !validLearningCheckpoint(result.checkpoint, last))
           || result.head === 0 && result.checkpoint !== null) { fail(); return; }
-        this.ready = { checkpoint: result.checkpoint, ...selection, head: result.head };
+        if(result.coefficientGeneration!==coefficientGeneration||!coefficientGeneration){fail();return;}
+        this.ready = { checkpoint: result.checkpoint, ...selection, head: result.head, coefficientGeneration };
         this.setStatus({ ...this.status(), status: 'ready', journalCursor: result.head, processed: result.processed });
         this.store.afterCommit(() => { if (!this.closed && generation === this.generation) this.onReady?.(); });
-      }, { priority: result.type === 'ready' ? 'control' : 'normal' }));
+      }, { priority: result.type === 'ready' ? 'control' : 'normal', onError:()=>{
+        if(['coefficient-start','coefficient-page'].includes(result.type)
+          &&!this.closed&&generation===this.generation) {
+          // A failed writer transaction must release a read-only worker waiting
+          // for durable staging acknowledgement. Its failure reply then follows
+          // the normal failed-job path while the selected model stays intact.
+          try{worker.postMessage({type:'coefficient-ack',requestId:result.requestId,error:true});}catch{}
+        }
+      } }));
       this.store.afterCommit(() => { if (!this.closed && generation === this.generation)
         this.send({ type: 'rebuild', ...selection, head: this.head(), affectedAt: old.affectedAt }); });
       return true;
@@ -210,7 +248,7 @@ export class FireplaceRebuildManager {
       const worker = this.worker; this.worker = null; this.generation++;
       if (worker) void this.retireWorker(worker, 'failed', 'operation-failed');
       else operation.finish('failed', { reason: 'operation-failed' });
-      this.setStatus({ ...this.status(), status: 'failed', error: 'Model rebuild could not start.', requiresRebuild: true });
+      this.setStatus({ ...this.status(), status: 'failed', error: 'Model rebuild could not start.' });
       return false;
     }
   }
@@ -245,8 +283,12 @@ export class FireplaceRebuildManager {
   complete(checkpoint, { persist = true } = {}) {
     const candidate = this.takeReady();
     if (!candidate || candidate.checkpoint !== checkpoint) return false;
-    if (persist) this.setStatus({ ...this.status(), status: 'current', revision: candidate.revision,
-      sensorRevision: candidate.sensorRevision, epoch: candidate.epoch, requiresRebuild: false });
+    if (persist) this.store.transaction(()=>{
+      this.store.setState(`adaptive:${this.input}`,checkpoint);
+      publishCoefficientGeneration(this.store,this.input,candidate.coefficientGeneration,checkpoint);
+      this.setStatus({ ...this.status(), status: 'current', revision: candidate.revision,
+        sensorRevision: candidate.sensorRevision, epoch: candidate.epoch, requiresRebuild: false });
+    });
     this.ready = null;
     const worker = this.worker; this.worker = null; this.generation++;
     if (worker) void this.retireWorker(worker, 'completed');
@@ -276,7 +318,7 @@ export class FireplaceRebuildManager {
         this.ready = null;
         const worker = this.worker; this.worker = null; this.generation++;
         if (worker) void this.retireWorker(worker, 'failed', 'operation-failed');
-        this.setStatus({ ...this.status(), status: 'failed', requiresRebuild: true,
+        this.setStatus({ ...this.status(), status: 'failed',
           error: 'Model publication failed; the previous model remains active.' });
       }, { signal: cancellation.signal, isCurrent: current });
     }).catch(error => this.store.writeHealth.failure(error)).finally(() => {
@@ -297,7 +339,7 @@ export class FireplaceRebuildManager {
     if (worker) {
       const closing = new AbortController();
       try {
-        const save = this.store.runWrite(() => this.setStatus({ ...this.status(), status: 'pending', requiresRebuild: true }), { signal: closing.signal });
+        const save = this.store.runWrite(() => this.setStatus({ ...this.status(), status: 'pending' }), { signal: closing.signal });
         // Saved running/ready intent also resumes on restart. Teardown must not
         // wait indefinitely merely to relabel that already durable obligation.
         closing.abort();

@@ -14,7 +14,7 @@ import { CHARGING_ALLOWANCE_SIGNALS } from '../charging/allowance-history.js';
 import { CHARGING_ALLOWANCE_SERIES } from './chart-charging-allowances.js';
 import { H66_CHART_COVERAGE_SIGNALS } from './chart-coverage.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
-import { ENERGY_SIGNALS, HISTORY_AXIS_BY_KEY } from '../domain/history-series.js';
+import { ENERGY_SIGNALS, HISTORY_AXIS_BY_KEY, MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
 import { createChartQueryContext } from './chart-query-context.js';
 import { buildHeatingSavings } from './garage-reporting.js';
 import { ChartSourceCache } from './chart-source-cache.js';
@@ -184,7 +184,11 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
     if (sourceCache?.ready && sourceCache.head !== store.chartHead
       && store.chartHead - sourceCache.head <= 256) sourceCache.maintain(args.now, 256);
     const {range,detail}=chartRequestRange(args);
-    const currentVersion = JSON.stringify({ providers: providerFingerprint(args, range), state: db.prepare(`SELECT
+    const selectedSignals = CHART_VIEW_BY_KEY[args.view]?.leftSignals ?? HISTORY_AXIS_BY_KEY[args.left ?? 'power']?.signals ?? [];
+    const coefficientSelection = selectedSignals.some(key => Object.hasOwn(MODEL_COEFFICIENT_INFO, key));
+    const coefficientRevision = coefficientSelection ? db.prepare(`SELECT group_concat(g.id||':'||g.cursor) revision
+      FROM coefficient_selection s JOIN coefficient_generations g ON g.id=s.generation`).get().revision : null;
+    const currentVersion = JSON.stringify({ coefficientRevision, providers: providerFingerprint(args, range), state: db.prepare(`SELECT
       (SELECT generation FROM history_selection WHERE id=1) recoverySelection,
       (SELECT MAX(id) FROM active_fireplace_events AS fireplace_events) fireplaceRevision,
       (SELECT group_concat(CASE WHEN json_valid(value) THEN json_extract(value,'$.checkpointDigest') ELSE 'invalid' END)

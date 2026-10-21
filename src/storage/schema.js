@@ -1,7 +1,7 @@
 import { RECOVERY_DEPENDENCY_SCHEMA } from '../recovery/dependencies.js';
 import { journalSchema } from './journal-schema.js';
 // One current physical schema. Startup never converts an existing database.
-export const SCHEMA_VERSION = 32;
+export const SCHEMA_VERSION = 33;
 // Index changes do not change journaled rows or their hash interpretation.
 // This is one current layout, not a decoder for an earlier database schema.
 export const JOURNALED_DATA_VERSION = 30;
@@ -96,6 +96,22 @@ CREATE TABLE learning_epoch_segments (
  epoch TEXT NOT NULL,input TEXT NOT NULL,source_epoch TEXT NOT NULL,
  after_id INTEGER NOT NULL CHECK(after_id>=0),through_id INTEGER NOT NULL CHECK(through_id>after_id),
  CHECK(epoch<>source_epoch),PRIMARY KEY(epoch,input,source_epoch,after_id,through_id)) WITHOUT ROWID;
+CREATE TABLE coefficient_generations (
+ id TEXT PRIMARY KEY,input TEXT NOT NULL,epoch TEXT NOT NULL,fireplace_revision INTEGER NOT NULL,sensor_revision INTEGER NOT NULL,
+ history_selection TEXT NOT NULL,cursor INTEGER NOT NULL DEFAULT 0,through_at INTEGER,projection TEXT NOT NULL CHECK(json_valid(projection)),
+ retired INTEGER NOT NULL DEFAULT 0 CHECK(retired IN (0,1)));
+CREATE INDEX coefficient_generations_input ON coefficient_generations(input,epoch);
+CREATE INDEX coefficient_generations_retired ON coefficient_generations(retired,id);
+CREATE TABLE coefficient_selection (input TEXT PRIMARY KEY,generation TEXT NOT NULL REFERENCES coefficient_generations(id));
+CREATE TABLE coefficient_events (
+ generation TEXT NOT NULL REFERENCES coefficient_generations(id),cursor INTEGER NOT NULL REFERENCES learning_journal_entries(id),at INTEGER NOT NULL,
+ coefficients TEXT NOT NULL CHECK(json_valid(coefficients)),projection TEXT NOT NULL CHECK(json_valid(projection)),PRIMARY KEY(generation,cursor)) WITHOUT ROWID;
+CREATE INDEX coefficient_events_time ON coefficient_events(generation,at,cursor);
+CREATE TABLE coefficient_segments (
+ generation TEXT NOT NULL REFERENCES coefficient_generations(id),source_generation TEXT NOT NULL REFERENCES coefficient_generations(id),
+ after_cursor INTEGER NOT NULL,through_cursor INTEGER NOT NULL,CHECK(generation<>source_generation AND through_cursor>after_cursor),
+ PRIMARY KEY(generation,source_generation,after_cursor,through_cursor)) WITHOUT ROWID;
+CREATE INDEX coefficient_segments_source ON coefficient_segments(source_generation);
 CREATE TABLE learning_journal_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT, epoch TEXT NOT NULL,
             input TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL,

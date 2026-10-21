@@ -127,8 +127,9 @@ test('current coefficient values retain units and separate fitted values from fi
   assert.equal(display.inputs.length, 12);
   assert.equal(display.coefficients.length, 7);
   assert.match(display.coefficientHistory, /today’s values are not applied to earlier intervals/);
-  assert.match(display.coefficientHistory, /four coefficients eligible for fitting, reconstructed from the learning journal/);
-  assert.match(display.coefficientHistory, /creates no additional stored history/);
+  assert.match(display.coefficientHistory, /four histories recorded with committed learning in the main database/);
+  assert.match(display.coefficientHistory, /charts do not require a verification run/);
+  assert.doesNotMatch(display.coefficientHistory, /creates no additional stored history|Reconstruction stays in memory/);
 });
 
 test('a fireplace-only fit preserves the visible validation of unchanged identified house coefficients', () => {

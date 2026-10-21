@@ -6,6 +6,8 @@ import { createBackupCatalog } from '../storage/backup-catalog.js';
 import { backupDirectory } from '../storage/backup-directory.js';
 import { createWebSessions } from './web-sessions.js';
 import { createBackupInspection } from './backup-inspection.js';
+import { createModelReconstruction } from './model-reconstruction.js';
+import { resolve } from 'node:path';
 
 import { createHttpsManager } from '../https/manager.js';
 import { X509Certificate, randomBytes, createHash } from 'node:crypto';
@@ -97,6 +99,18 @@ export function createWebAccess({ config: initialConfig, httpsManagerFactory = c
       const context = await serverOptions.getReadContext?.();
       const store = context ? context.store : serverOptions.store;
       return { dbPath: store?.path, store, release: context?.release };
+    },
+  });
+  if (config.dataDir) serverOptions.modelReconstruction ??= createModelReconstruction({
+    directory: resolve(config.dataDir, 'temporary-model-verification'), clock: serverOptions.clock ?? Date.now,
+    protectedPaths: [config.dbPath, serverOptions.store?.path],
+    available: () => !closed && !serverOptions.settingsReloadStatus?.().busy && !serverOptions.settingsReloadStatus?.().unavailable,
+    acquire: async () => {
+      const context = await serverOptions.getReadContext?.();
+      const store = context ? context.store : serverOptions.store;
+      return { dbPath: store?.path, store, input: context?.engine.config.input ?? serverOptions.getEngine?.()?.config.input ?? config.input,
+        checkpoint: context?.checkpoint ?? store?.expectedCheckpoint, snapshotAt: context?.snapshotAt, fileGeneration: context?.fileGeneration,
+        role: serverOptions.role ?? config.role, release: context?.release };
     },
   });
   const draining = new Map();
@@ -348,6 +362,7 @@ export function createWebAccess({ config: initialConfig, httpsManagerFactory = c
         }
         await configureOptional();
         serverOptions.databaseVerification.enable();
+        serverOptions.modelReconstruction?.enable();
         try { Promise.resolve(manager?.start()).catch(() => { managerError = 'https_management_unavailable'; }); }
         catch { managerError = 'https_management_unavailable'; }
       } catch (error) {
@@ -365,6 +380,7 @@ export function createWebAccess({ config: initialConfig, httpsManagerFactory = c
       try { await manager?.close(); } catch { /* HTTPS cleanup cannot prevent controller cleanup. */ }
       await certificatePending;
       await serverOptions.databaseVerification.close();
+      await serverOptions.modelReconstruction?.close();
       await serverOptions.backupInspection.close();
       await Promise.all([...new Set([ingressServer, recovery?.server, lanHttp?.server, https?.server, ...draining.keys()])]
         .filter(Boolean).map(server => drain(server, true)));

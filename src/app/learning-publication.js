@@ -5,6 +5,7 @@ import { validLearningCheckpoint } from './committed-learning.js';
 import { fireplaceRevision } from './fireplace.js';
 import { sensorRevision } from './sensor-inputs.js';
 import { recoveryErrorMessage } from '../recovery/errors.js';
+import { publishCoefficientGeneration } from '../storage/coefficient-history.js';
 
 const failure = () => new Error('Model publication failed; the previous committed model remains available.');
 export const publicationKey = input => `learning:publication:${input}`;
@@ -22,6 +23,7 @@ export function publishCorrection(store, input, candidate) {
     || (candidate.checkpoint.fireplaceRevision ?? 0) !== candidate.revision
     || (candidate.checkpoint.sensorRevision ?? 0) !== candidate.sensorRevision : candidate.checkpoint !== null) throw failure();
   store.setState(`adaptive:${input}`, candidate.checkpoint);
+  publishCoefficientGeneration(store,input,candidate.coefficientGeneration,candidate.checkpoint);
   store.setState(`fireplace:rebuild:${input}`, { ...job, status: 'current', revision: candidate.revision,
     sensorRevision: candidate.sensorRevision, epoch: candidate.epoch, requiresRebuild: false, error: null });
   store.setState(`pending-plan:${input}`, null);

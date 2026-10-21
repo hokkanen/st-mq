@@ -8,6 +8,7 @@ import { restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
 import { evaluateCycle, economicAdmission, forecastIntervals, cycleForecastCovered, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope, preheatRoomRequest, effectiveComfortDropC } from '../control/planner.js';
 import { HeatingPlanning } from './heating-planning.js';
 import { LearningCheckpointCache } from './learning-checkpoint-cache.js';
+import { persistCoefficientBatch } from '../storage/coefficient-history.js';
 import { LiveLearning } from './live-learning.js';
 import { sensorRevision } from './sensor-inputs.js';
 import { publishCorrection } from './learning-publication.js';
@@ -357,7 +358,7 @@ export class Engine {
     const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
     const updating = ['pending', 'running', 'ready', 'failed'].includes(job?.status);
     const next = replayCommittedLearning(this.store, this.config.input, checkpoint,
-      { persistCheckpoint: false, ...(updating && checkpoint ? { fireplaceRevision: checkpoint.fireplaceRevision ?? 0,
+      { persistCheckpoint: false, persistCoefficients: true, ...(updating && checkpoint ? { fireplaceRevision: checkpoint.fireplaceRevision ?? 0,
         sensorRevision: checkpoint.sensorRevision ?? 0 } : {}) });
     if (persistCheckpoint && next !== checkpoint && next?.journalCursor) this.persistLearningCheckpoint(next);
     return immutableValue(next);
@@ -450,15 +451,7 @@ export class Engine {
       this.cycles.fireplaceContext = context;
       const job = this.store.getState(`fireplace:rebuild:${input}`);
       if (result.requiresRebuild || ['pending', 'running', 'ready', 'failed'].includes(job?.status)) this.fireplaceManager().start();
-      else if (this.workerLearning()) { this.fireplaceReserveOverride = null; this.requestUpdate(); }
-      else if (this.checkpoint) {
-        // New loads after the consumed history cannot change already fitted inputs.
-        this.fireplaceReserveOverride = null;
-        const next = { ...this.checkpoint, fireplaceRevision: fireplaceRevision(this.store, input) };
-        next.checkpointDigest = learningCheckpointDigest(next);
-        this.checkpoint = immutableValue(next);
-        this.persistLearningCheckpoint(this.checkpoint);
-      }
+      else { this.fireplaceReserveOverride = null; if (this.workerLearning()) this.requestUpdate(); }
       if (removing && this.workerLearning()) this.requestUpdate();
       this.onTemporaryChange?.();
       return this.fireplaceStatus();
@@ -1260,6 +1253,11 @@ export class Engine {
             restart = true; return;
           }
           this.preserveTickState();
+          if (value && ['adaptive','replay'].includes(step?.value?.kind)) {
+            const coefficients=this.liveLearning?.takeCoefficientBatch(value);
+            persistCoefficientBatch(this.store,this.config.input,coefficients);
+            this.liveLearning?.commitCoefficientBatch(coefficients);
+          }
           this.collectingLearningCheckpoint = true; this.pendingLearningCheckpoint = null;
           try {
             step = steps.next(value);
@@ -1281,7 +1279,8 @@ export class Engine {
               this.liveLearning ??= new LiveLearning({ store: this.store, input: this.config.input });
               try {
                 value = await this.liveLearning.calculate(job.kind === 'adaptive' ? 'replay' : job.kind,
-                  job.kind === 'adaptive' ? this.learningReplayOptions(job.checkpoint) : job.options, job.checkpoint);
+                  job.kind === 'adaptive' ? this.learningReplayOptions(job.checkpoint) : job.options, job.checkpoint,
+                  { isCurrent: () => current() && this.sameUpdateFence(fence) });
               } catch (error) {
                 if (current() && !this.sameUpdateFence(fence)) { restart = true; break; }
                 throw error;
