@@ -1224,10 +1224,6 @@ details details { margin-inline-start: var(--ui-inset); }
 .energy-check-result { margin: 0 0 6px; font-weight: 550; font-size: 13px; }
 .energy-check-context { margin: 3px 0; color: var(--muted); font-variant-numeric: tabular-nums; }
 .energy-check-notice { margin: 10px 0 4px; padding-inline-start: var(--ui-inset); border-left: 2px solid var(--border); }
-.energy-check-latest { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 24px; padding: 0 0 16px; font-size: 12px; line-height: 1.6; }
-.energy-check-latest p { margin: 0; color: var(--muted); }
-.energy-check-latest strong { font-size: 16px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.energy-check-latest time { grid-column: 1 / -1; color: var(--muted); font-size: 11px; }
 details.energy-check-details { margin-block: 8px 0; border: 0; font-size: 12px; line-height: 1.6; }
 .energy-check-details > summary { padding: 6px 0; font-size: 12px; }
 .energy-check-details > p { margin: 6px 0; color: var(--muted); max-width: 75ch; overflow-wrap: anywhere; }

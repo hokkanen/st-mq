@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Fit energy-check dates and shortcuts into the recording fold, shorten the
+  completed-check status, and show the latest property meter reading once in
+  its comparison row.
+
 - Keep Sonoff GPIO readback available through an isolated failed monitoring poll
   until its original freshness deadline. Actual disconnects, invalid feedback,
   hardware faults and expiry still show unavailable immediately.

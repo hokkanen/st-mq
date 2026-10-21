@@ -12,7 +12,8 @@ export function createEnergyCheckRange({ document = globalThis.document, now = D
     startPicker.dismiss(); endPicker.dismiss();
     start.value = dates.startDate; end.value = dates.endDate; end.min = dates.startDate;
     for (const key of presets) $(`period-${key}`).setAttribute('aria-pressed', String(key === preset));
-    message.textContent = `${dates.startDate}${dates.endDate === dates.startDate ? '' : ` – ${dates.endDate}`} · Finnish time`;
+    message.textContent = '';
+    message.hidden = true;
     form.dataset.state = 'ready';
   }
   function apply(field) {
@@ -21,6 +22,7 @@ export function createEnergyCheckRange({ document = globalThis.document, now = D
     if (!selected) {
       form.dataset.state = 'error';
       message.textContent = 'Choose valid dates with the end on or after the start.';
+      message.hidden = false;
       return;
     }
     initialized = true; preset = null; dates = selected; draw(); onChange();

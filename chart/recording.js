@@ -407,7 +407,8 @@ export function recordedDataJobView(view, {kind='inventory',now=Date.now()}={}) 
         : hasResult?`${energy?'Recorded energy checks':'Complete inventory'} ready.`
           : energy?`${view?.latest?.summary?.latestReading?'The latest meter reading is shown below.':'Meter history has not been checked yet.'} Historical comparisons have not completed.`
             :'Dataset descriptions are ready. Measure the complete inventory to add counts, recorded dates and detailed sizes.';
-  if(retained)message+=` ${retained}`;
+  if(retained)message=energy&&!active&&!['failed','cancelled'].includes(job?.state)
+    ? `Last checked: ${resultTime??'time unavailable'} · Finnish time.` : `${message} ${retained}`;
   const processed=Number.isSafeInteger(job?.processed)&&job.processed>=0?job.processed:null;
   const total=Number.isSafeInteger(job?.total)&&job.total>=0?job.total:null;
   const details=[active&&processed!==null?`${integerLabel(processed)}${total!==null?` of ${integerLabel(total)}`:''} ${energy?'source rows inspected':'rows and pages examined'}`:null,
@@ -517,7 +518,7 @@ const exclusionLabels = {
   'comparison-incomplete': 'Complete recording or final reference could not be confirmed',
 };
 const propertyCheckStates = {
-  'comparison-pending': 'Historical comparison is being checked',
+  'comparison-pending': 'Historical comparison has not completed',
   'no-readings': 'No property meter readings recorded',
   'waiting-for-second-reading': 'Waiting for a second meter reading',
   'counter-reset': 'Meter counter decreased; waiting for a new comparison period',
@@ -634,26 +635,14 @@ export function renderEnergyAudits(rows, root) {
   if (focused) [...root.querySelectorAll('details[data-check-key]')].find(node => node.dataset.checkKey === focused)?.querySelector('summary')?.focus({ preventScroll: true });
 }
 
-/** Latest meter evidence is separate from a completed, dated historical result. */
+/** Show the bounded meter preview in the Property row until comparisons finish. */
 export function renderEnergyAuditView(view,root) {
   if(!root)return;
-  if(view?.result!==null&&view?.result!==undefined)renderEnergyAudits(view.result,root);
-  else renderEnergyAudits([],root);
-  const summary=view?.latest?.summary,reading=summary?.latestReading;
-  const checking=['queued','running'].includes(view?.job?.state),noReadings=summary?.status==='no-readings';
-  const latest=document.createElement('section');latest.className='energy-check-latest';latest.setAttribute('aria-label','Latest property meter reading');
-  const label=document.createElement('p');label.textContent=view?.range?'Latest property meter in selected period':'Latest property meter';
-  const value=document.createElement('strong');
-  value.textContent=reading?checkEnergy(reading.valueKwh):noReadings?'No readings recorded':checking?'Checking recorded meter…':'Not checked';
-  const time=document.createElement('time');
-  if(validDate(reading?.sourceTime))time.dateTime=new Date(reading.sourceTime).toISOString();
-  time.textContent=reading?`Source reading ${checkDate(reading.sourceTime)} · Received ${checkDate(reading.receivedAt)}`
-    :noReadings?'The completed meter-history check found no recorded readings.'
-      :checking?'The latest recorded meter evidence is being checked.':'The latest recorded meter evidence has not been checked.';
-  latest.append(label,value,time);root.prepend(latest);
-  if(view?.result===null||view?.result===undefined){
+  const hasResult=view?.result!==null&&view?.result!==undefined;
+  renderEnergyAudits(hasResult?view.result:view?.latest?[view.latest]:[],root);
+  if(!hasResult){
     const pending=document.createElement('p');pending.className='muted';
     pending.textContent='Completed comparisons will appear here after the historical check finishes. Missing coverage remains excluded.';
-    latest.after(pending);
+    root.prepend(pending);
   }
 }

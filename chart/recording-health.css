@@ -140,7 +140,19 @@
 .recording-inventory-notice > ul { padding-inline-start: 20px; }
 .recording-inventory-notice li + li { margin-top: 8px; }
 .recording-guide > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
-.energy-check-toolbar { align-items: center; }
+.energy-check-range { display: grid; gap: 10px; margin-bottom: 12px; }
+.energy-check-range-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; font-size: 12px; }
+.energy-check-range-heading > span { font-weight: 550; }
+.energy-check-range-heading > small { font-size: 11px; }
+.energy-check-range-fields { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; }
+.energy-check-range .date-range { flex: 0 1 310px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+.energy-check-range .date-range input[data-date-picker="date"] { width: 100%; height: 44px; }
+.energy-check-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.energy-check-presets > button { margin: 0; min-height: 44px; padding: 8px 10px; font-size: 12px; color: var(--muted); background: transparent; border-color: var(--border); }
+.energy-check-presets > button:hover, .energy-check-presets > button[aria-pressed="true"] { color: var(--text); border-color: var(--muted); background: var(--surface-soft); }
+.energy-check-presets > button[aria-pressed="true"] { font-weight: 550; }
+.energy-check-range > p { margin: 0; font-size: 12px; line-height: 1.6; }
+.energy-check-toolbar { align-items: center; margin-bottom: 12px; }
 .energy-check-toolbar > p { flex: 1 1 250px; }
 .energy-check-toolbar .recording-task-actions { flex: 0 1 auto; }
 .recording-performance-incidents .recording-undated-problems { margin-bottom: 16px; font-size: 12px; line-height: 1.6; color: var(--muted); }
@@ -172,6 +184,8 @@ div.recording-task-status:not(:has(> p:not(:empty):not([hidden]), > progress:not
 .recording-overview-toolbar p { color: var(--muted); }
 
 @media (max-width: 640px) {
+  .energy-check-range .date-range { flex: 1 1 100%; }
+  .energy-check-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
   .recording-task-overview, .recording-task-cleanup { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .recording-task-overview > .recording-task-actions { justify-content: flex-start; min-width: 0; }
   .recording-task-actions > button { flex: 1 1 auto; }

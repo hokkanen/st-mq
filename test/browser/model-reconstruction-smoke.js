@@ -166,12 +166,18 @@ document.getElementById('database-verification-schedule').textContent='The next 
   assert.match(await evaluate("document.getElementById('recording-overview-content').textContent"),/Not measured/);
   for(const state of ['queued','running','idle','failed','cancelled']){
     await evaluate(`showEnergy({latest:null,result:null,job:{state:'${state}'}});true`);
-    const preview=await evaluate("document.querySelector('.energy-check-latest').textContent");
-    assert.match(preview,['queued','running'].includes(state)?/Checking recorded meter/:/Not checked/);
-    assert.doesNotMatch(preview,/No readings|No reading available|not available yet/,'An uninspected meter preview does not establish absent history');
+    const preview=await evaluate("document.getElementById('energy-audit-content').textContent");
+    assert.match(preview,/Completed comparisons will appear here/);
+    assert.equal(await evaluate("document.querySelector('#energy-audit-content .energy-check')"),null,'An uninspected meter has no invented result');
+    assert.doesNotMatch(preview,/No property meter readings|No readings|No reading available|not available yet/,'An uninspected meter preview does not establish absent history');
+    if(['queued','running'].includes(state))assert.match(await evaluate("document.getElementById('energy-audit-message').textContent"),/Energy check (queued|running)/);
   }
-  await evaluate("showEnergy({latest:{kind:'property-meter-summary',summary:{status:'no-readings',latestReading:null}},result:[],job:{state:'completed'}});true");
-  assert.match(await evaluate("document.querySelector('.energy-check-latest').textContent"),/No readings recorded.*completed meter-history check/);
+  for(const state of ['failed','cancelled']){
+    await evaluate(`showEnergy({latest:{kind:'property-meter-summary',signal:'property_import_energy_counter',summary:{status:'comparison-pending',readingCount:null,latestReading:{valueKwh:1,sourceTime:1000,receivedAt:1000}}},result:null,job:{state:'${state}'}});true`);
+    assert.match(await evaluate("document.querySelector('#energy-audit-content .energy-check-result').textContent"),/Historical comparison has not completed/,'Retained meter evidence does not claim a stopped comparison is still running');
+  }
+  await evaluate("(()=>{const empty={kind:'property-meter-summary',signal:'property_import_energy_counter',summary:{status:'no-readings',readingCount:0,latestReading:null}};showEnergy({latest:empty,result:[empty],job:{state:'completed'}})})();true");
+  assert.match(await evaluate("document.querySelector('#energy-audit-content .energy-check-result').textContent"),/No property meter readings recorded/);
   await evaluate("setRole('family');true"); await until(`${id('verify')}.disabled`);
   assert.equal(await evaluate(`${id('discard')}.disabled`), true);
   assert.match(await evaluate(`${id('storage')}.textContent`), /2 MB/);

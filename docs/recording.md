@@ -516,16 +516,20 @@ meter's history cannot supply a baseline or a successful result.
 
 Property and charger summaries run as a shared read-only background job with
 an independent worker, outside the chart and inventory queues. Opening the fold
-returns its job status immediately and starts a check when needed. The latest
-meter reading appears after its bounded source pass; historical comparisons are
-published together only after the complete check succeeds. A previous complete
-result retains its completion time and receipt cutoff while a refresh runs.
+returns its job status immediately and starts a check when needed. With no
+completed result, the latest meter reading appears in the Property row after
+its bounded source pass; historical comparisons are published together only
+after the complete check succeeds. A previous complete result retains its
+completion time and receipt cutoff while a refresh runs.
 The independent **Check period** uses inclusive Finnish dates and initially selects
 **Last 7 days**, including today. Its calendars and Last month / This year / Last
-year shortcuts match Energy cost comparisons. Property uses the latest comparable
-meter interval wholly within the selected dates; Charger 1 includes finalized
-sessions wholly within them. Boundary-crossing sessions are omitted rather than
-prorated. The latest property reading and reading count also belong to that period.
+year shortcuts match Energy cost comparisons, with controls aligned directly in
+the fold and Finnish time labelled once beside the period. The Property row owns
+the latest meter reading; source and receipt times remain in its evidence.
+Property uses the latest comparable meter interval wholly within the selected
+dates; Charger 1 includes finalized sessions wholly within them. Boundary-crossing
+sessions are omitted rather than prorated. The latest property reading and
+reading count also belong to that period.
 Completed results retain their check time until the dates change or the user chooses
 **Refresh checks**. There is no automatic periodic recheck or animated refresh bar;
 short status polling continues only while a requested check is running.

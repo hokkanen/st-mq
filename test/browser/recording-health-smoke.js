@@ -142,7 +142,7 @@ const fixture = `<!doctype html><html lang="en" data-theme="dark"><head><meta ch
 <section class="panel history-panel"><div id="fixture-control">Other dashboard content</div>${recording}</section></main>
 <script type="module">import { createRecordingHealth } from '/chart/recording-health.js';
 import { createEnergyCheckRange } from '/chart/energy-check-range.js';
-import { recordingOverviewRefresh, renderRecording, renderRecordingOverview, renderEnergyAudits } from '/chart/recording.js';
+import { recordingOverviewRefresh, renderRecording, renderRecordingOverview, renderEnergyAuditView, renderRecordedDataJob } from '/chart/recording.js';
 window.payload = ${JSON.stringify(status)}; window.inventory = ${JSON.stringify(inventory)};
 window.initialHealth = structuredClone(payload.recordingHealth);
 window.partialSourceHealth = ${JSON.stringify(partialSourceHealth)};
@@ -283,12 +283,18 @@ element('connection').textContent = 'Updated just now';
 window.renderInventory = () => renderRecordingOverview(inventory, element('recording-overview-content'));
 window.renderMeasurements = () => renderRecording(payload, element('recording-content'));
 renderMeasurements();
-renderEnergyAudits([{ kind:'property-meter-summary', signal:'property_import_energy_counter',
+window.energyView = { result:[{ kind:'property-meter-summary', signal:'property_import_energy_counter',
   summary:{status:'waiting-for-second-reading',readingCount:1,latestReading:{valueKwh:1250,sourceTime:${now},receivedAt:${now}}} },
   {kind:'charging-session-summary',source:'easee',signal:'ev1_session_energy_check',
     summary:{comparedSessions:5,recordedSessions:6,excludedSessions:1,estimatedKwh:49.5,referenceKwh:50,differencePercent:-1,
-      start:${now - 7 * 86400_000},end:${now},lastSessionEnd:${now},exclusionReasons:{'incomplete-coverage':1}}}],element('energy-audit-content'));
-element('energy-audit-message').textContent='Recorded energy comparisons · synthetic fixture';
+      start:${now - 7 * 86400_000},end:${now},lastSessionEnd:${now},exclusionReasons:{'incomplete-coverage':1}}}],
+  resultGeneratedAt:${now},job:{state:'complete'} };
+energyView.latest = structuredClone(energyView.result[0]);
+window.renderEnergyView = (view = energyView) => {
+  renderEnergyAuditView(view,element('energy-audit-content'));
+  renderRecordedDataJob(view,{message:element('energy-audit-message')},{kind:'energy'});
+};
+renderEnergyView();
 window.energyPeriodChanges = [];
 window.energyRange = createEnergyCheckRange({document, now:()=>payload.now, onChange:()=>energyPeriodChanges.push(energyRange.selection())});
 window.inventoryRefresh = recordingOverviewRefresh({
@@ -822,6 +828,20 @@ try {
   await evaluate("document.getElementById('recording-details').open=true; document.getElementById('energy-audit-details').open=true; energyRange.selection()");
   assert.deepEqual(await evaluate("[document.getElementById('energy-check-date-start').value,document.getElementById('energy-check-date-end').value]"), ['2026-10-01','2026-10-07']);
   assert.equal(await evaluate("document.querySelector('#energy-audit-details progress')"), null, 'Energy checks have no animated refresh bar');
+  assert.equal(await evaluate("document.getElementById('energy-check-range-status').checkVisibility()"),false,'Valid dates need no duplicate period summary');
+  assert.equal(await evaluate("document.getElementById('energy-audit-content').textContent.match(/Latest meter reading:/g).length"),1,'The cumulative reading appears once');
+  assert.equal(await evaluate("document.querySelector('#energy-audit-content .energy-check-latest')"),null,'The Property row owns the meter reading');
+  assert.match(await evaluate("document.getElementById('energy-audit-message').textContent"),/^Last checked:.*Finnish time/);
+  await evaluate("document.querySelector('#energy-audit-content details[data-check-key=property_import_energy_counter]').open=true;document.querySelector('#energy-audit-content details[data-check-key=property_import_energy_counter] summary').focus();renderEnergyView()");
+  assert.equal(await evaluate("document.querySelector('#energy-audit-content details[data-check-key=property_import_energy_counter]').open && document.activeElement.closest('details').dataset.checkKey==='property_import_energy_counter'"),true,'Refresh preserves the expanded meter evidence and keyboard focus');
+  assert.match(await evaluate("document.getElementById('energy-audit-content').textContent"),/Latest reading received:/,'Receipt time remains in meter evidence');
+  await evaluate("renderEnergyView({...energyView,result:null,latest:{...energyView.latest,summary:{...energyView.latest.summary,status:'comparison-pending'}},job:{state:'running'}})");
+  assert.match(await evaluate("document.querySelector('#energy-audit-content .energy-check').textContent"),/Historical comparison has not completed.*Latest meter reading:/,'The first check exposes bounded meter evidence in its Property row');
+  await evaluate("renderEnergyView({...energyView,result:null,latest:{...energyView.latest,summary:{status:'no-readings',readingCount:0}},job:{state:'running'}})");
+  assert.match(await evaluate("document.querySelector('#energy-audit-content .energy-check-result').textContent"),/No property meter readings/,'An empty preview stays unknown rather than showing zero');
+  await evaluate("renderEnergyView({...energyView,job:{state:'running'}})");
+  assert.match(await evaluate("document.getElementById('energy-audit-message').textContent"),/running.*Last complete check/,'A refresh retains the completion date of the previous result');
+  await evaluate("renderEnergyView()");
   for (const [preset, expected] of [['month',['2026-09-01','2026-09-30']],['year',['2026-01-01','2026-10-07']],['previous-year',['2025-01-01','2025-12-31']],['week',['2026-10-01','2026-10-07']]]) {
     await evaluate(`document.getElementById('energy-check-period-${preset}').click()`);
     assert.deepEqual(await evaluate("[document.getElementById('energy-check-date-start').value,document.getElementById('energy-check-date-end').value]"), expected);
@@ -829,8 +849,10 @@ try {
   }
   await evaluate("document.getElementById('energy-check-date-end').value='2026-09-30'; document.getElementById('energy-check-date-end').dispatchEvent(new Event('change'))");
   assert.match(await evaluate("document.getElementById('energy-check-range-status').textContent"), /Choose valid dates/);
+  assert.equal(await evaluate("document.getElementById('energy-check-range-status').checkVisibility()"),true);
   assert.equal(await evaluate('energyPeriodChanges.length'),4,'An invalid date never starts another check');
   await evaluate("document.getElementById('energy-check-period-week').click(); inventory.inventoryIssues=['Current-state entries without a registered writer description are present.']; renderInventory()");
+  assert.equal(await evaluate("document.getElementById('energy-check-range-status').checkVisibility()"),false,'Choosing a valid preset clears the date error');
   assert.equal(await evaluate("document.querySelector('.recording-inventory-notice').open"), false);
   assert.equal(await evaluate("document.querySelector('.recording-inventory-notice > summary').textContent"), '1 inventory issue');
   await evaluate("document.querySelector('.recording-inventory-notice').open=true;document.querySelector('.recording-inventory-notice > summary').focus();renderInventory()");
@@ -842,13 +864,16 @@ try {
   assert.match(await evaluate("document.getElementById('recording-performance-undated-problems').textContent"),/1 failed queued operation.*dates and causes are unavailable/);
   await evaluate("document.getElementById('recording-performance-week').click()");
   assert.match(await evaluate("document.getElementById('recording-performance-problem-period').textContent"),/Past day.*past week is unavailable/);
-  for (const width of [320,390,640,641,768,1440]) {
+  for (const width of [320,390,640,641,768,1440]) for (const theme of ['light','dark']) {
     await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
-    await checkLayout(`${width}/updated-details`);
+    await evaluate(`document.documentElement.dataset.theme='${theme}'`);
+    assert.equal(await evaluate("(() => {const range=document.querySelector('.energy-check-range').getBoundingClientRect(),result=document.querySelector('#energy-audit-content .energy-check').getBoundingClientRect();return Math.abs(range.left-result.left)<1;})()"),true,'The period controls align directly with the result rows');
+    assert.equal(await evaluate("Array.from(document.querySelectorAll('.energy-check-range input,.energy-check-presets button,#energy-audit-refresh'),node=>node.getBoundingClientRect()).every(box=>box.height>=44&&box.left>=0&&box.right<=innerWidth)"),true,'Date fields and actions retain unclipped touch targets');
+    await checkLayout(`${width}/${theme}/updated-details`);
     if([320,390,1440].includes(width)) {
-      await captureFold('recording-performance-details',`undated-storage-${width}`);
-      await captureFold('energy-audit-details',`energy-period-${width}`);
-      await captureFold('recording-overview-details',`inventory-header-${width}`);
+      await captureFold('recording-performance-details',`undated-storage-${width}-${theme}`);
+      await captureFold('energy-audit-details',`energy-period-${width}-${theme}`);
+      await captureFold('recording-overview-details',`inventory-header-${width}-${theme}`);
     }
   }
   // Authenticated fallback can expose just health when the first status read fails.

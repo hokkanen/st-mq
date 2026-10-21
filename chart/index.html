@@ -1369,22 +1369,22 @@ G_warming = G / 2</code>
           <details id="energy-audit-details" class="recording-section">
             <summary><span>Recorded energy checks<small>Compare recorded consumption with meter readings</small></span></summary>
             <div class="recording-section-body">
-              <div class="comparison-range-controls" aria-label="Energy check period">
-                <div class="comparison-range-heading"><span class="comparison-range-label" id="energy-check-range-label">Check period</span><span class="muted">Applies to all checks below</span></div>
-                <div class="comparison-range-fields">
-                  <form id="energy-check-range-form" class="date-range" aria-labelledby="energy-check-range-label" aria-describedby="energy-check-range-status">
+              <div class="energy-check-range" role="group" aria-labelledby="energy-check-range-label">
+                <div class="energy-check-range-heading"><span id="energy-check-range-label">Check period</span><small id="energy-check-timezone" class="muted">Finnish time</small></div>
+                <div class="energy-check-range-fields">
+                  <form id="energy-check-range-form" class="date-range" aria-labelledby="energy-check-range-label" aria-describedby="energy-check-timezone energy-check-range-status">
                     <input id="energy-check-date-start" type="text" data-date-picker="date" aria-label="Energy check start date" required>
                     <span aria-hidden="true">–</span>
                     <input id="energy-check-date-end" type="text" data-date-picker="date" aria-label="Energy check end date" required>
                   </form>
-                  <div class="comparison-shortcuts" role="group" aria-label="Quick energy check periods">
+                  <div class="energy-check-presets" role="group" aria-label="Quick energy check periods">
                     <button id="energy-check-period-week" type="button" aria-pressed="true">Last 7 days</button>
                     <button id="energy-check-period-month" type="button" aria-pressed="false">Last month</button>
                     <button id="energy-check-period-year" type="button" aria-pressed="false">This year</button>
                     <button id="energy-check-period-previous-year" type="button" aria-pressed="false">Last year</button>
                   </div>
                 </div>
-                <div class="comparison-range-feedback"><p id="energy-check-range-status" class="muted" role="status"></p></div>
+                <p id="energy-check-range-status" class="form-error" role="status" hidden></p>
               </div>
               <div class="recording-section-intro energy-check-toolbar">
                 <p id="energy-audit-message" role="status" aria-live="polite">Open this section to check the selected period.</p>

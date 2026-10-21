@@ -162,16 +162,16 @@ try {
   assert.equal(await evaluate(`${$('recording-growth-retained')}.textContent`), 'Not checked', 'Opening Recording details alone leaves the full inventory lazy');
   assert.equal(energyReads,0,'Energy history stays lazy until its own fold opens');
   await evaluate(`${$('energy-audit-details')}.open=true;true`);
-  await until(`${$('energy-audit-message')}.textContent.includes('Recorded energy checks ready')`);
+  await until(`${$('energy-audit-message')}.textContent.startsWith('Last checked:')`);
   assert.equal(await evaluate(`!!${$('energy-audit-details')}.querySelector('progress')`),false);
   const firstEnergy = energyReads;
   await pause(4300);
   assert.equal(energyReads,firstEnergy,'Completed checks do not poll or start repeated work');
   await evaluate(`${$('energy-check-period-month')}.click();true`);
-  await until(`${$('energy-audit-message')}.textContent.includes('Recorded energy checks ready')`);
+  await until(`${$('energy-audit-message')}.textContent.startsWith('Last checked:')`);
   assert(energyReads>firstEnergy,'A period change requests its own check');
   await evaluate(`${$('energy-audit-refresh')}.click();true`);
-  await until(`${$('energy-audit-message')}.textContent.includes('Recorded energy checks ready') && !${$('energy-audit-refresh')}.disabled`);
+  await until(`${$('energy-audit-message')}.textContent.startsWith('Last checked:') && !${$('energy-audit-refresh')}.disabled`);
   assert.equal(energyRefreshes,1,'Explicit refresh reaches the current read-only action');
   await evaluate(`${$('energy-audit-details')}.open=false;true`);
 
