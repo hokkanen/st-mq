@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Fix a dashboard refresh error after opening the app or changing snapshots.
+  Refresh energy checks through their current controller when the source changes.
+
 - Open recorded-data descriptions without scanning the whole database. Measure
   complete counts and allocation with a shared background job, progress and
   cancellation; energy checks run independently and retain dated complete results.

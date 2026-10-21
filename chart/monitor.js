@@ -1069,9 +1069,10 @@ async function refresh({ forceChart = false, background = false } = {}) {
     const snapshot = replica ? replicaSnapshotKey(s) ?? 'replica-unavailable' : 'master';
     const replaced = snapshot !== lastReplicaSnapshot;
     if (replaced) {
-      eventStream.reset(snapshot); auditFetchedAt = 0;
+      eventStream.reset(snapshot);
     }
     void refreshRecordingOverview();
+    void refreshAudits({ force: replaced });
     lastReplicaSnapshot = snapshot;
     if (replica && !replica.available) return;
     await Promise.all([historyChart.refresh(s, { force: forceChart || replaced }), events()]);

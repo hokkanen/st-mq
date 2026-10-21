@@ -171,6 +171,12 @@ fences are covered by `test/energy-check-refresh.test.js`. The model-verificatio
 browser fixture also renders all History tools and recorded-data job states at
 320, 390, 768 and 1440 pixels in both themes.
 
+`node test/browser/dashboard-refresh-smoke.js` runs the complete built dashboard
+against a disposable simulation. It checks initial render, repeat status updates,
+role changes, advancing standby snapshots, energy refresh and reload. It asserts
+that the dashboard error banner stays hidden as well as checking uncaught browser
+exceptions: errors handled inside the dashboard refresh path must fail validation.
+
 
 Run checks from the repository root. Ordinary tests, browser fixtures, container
 checks and Garage simulations use synthetic data. The separately invoked live

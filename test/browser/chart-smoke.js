@@ -231,6 +231,8 @@ try {
   };
   await command('browsingContext.navigate', { context, url: base, wait: 'complete' });
   await until("document.body.dataset.authenticated === 'true'");
+  assert.equal(await evaluate("document.getElementById('error').hidden"), true,
+    `The dashboard must load without a handled refresh error: ${await evaluate("document.getElementById('error').textContent")}`);
   if (!recordingOnly) {
   await until("document.getElementById('chart-legend')?.querySelectorAll('button').length > 5");
   assert.equal(await evaluate('document.title'), 'Home Energy');
