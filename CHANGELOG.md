@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Load energy cost comparisons only while their panel is open. Closing cancels
+  unfinished reads while retaining dates, selections and mounted cards; reopening
+  checks the latest source evidence. Label coefficient series as recorded history.
+
 - Record all four coefficient histories with committed learning in the main
   database, so every coefficient chart loads directly without reconstruction or
   preparation controls. Include the selected history in backups and mirroring;

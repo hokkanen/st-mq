@@ -25,7 +25,7 @@ function meaning(signal, info) {
   if (signal === 'firewood_load') return ['manual-addition', 'Corrected manual addition'];
   if (signal === 'model_fireplace_release') return ['fireplace-release', 'Calculated fireplace release'];
   if (signal.startsWith('firewood_')) return [signal, 'Retrospective daily model estimate'];
-  if (MODEL_COEFFICIENT_INFO[signal]) return [`coefficient:${info.unit}`, 'Replayed model coefficient'];
+  if (MODEL_COEFFICIENT_INFO[signal]) return [`coefficient:${info.unit}`, 'Recorded model coefficient'];
   if (signal === 'model_room_boost') return ['saved-temperature-difference', 'Saved temperature difference'];
   if (MODEL_INPUT_INFO[signal]) return [`saved-input:${info.unit}`, 'Saved learning input'];
   if (signal.startsWith('learning_')) return [signal === 'learning_indoor_temperature' ? 'temperature' : `assessed-cycle:${info.unit}`, 'Saved model assessment'];

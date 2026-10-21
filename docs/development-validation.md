@@ -838,6 +838,12 @@ covers cache bounds, late responses, absence of navigation prediction, stream pa
 reuse. Keep the existing chart provenance, gap, extrema, recovery, voltage,
 temperature-geometry and accounting tests alongside these checks.
 
+`test/comparison-range.test.js` checks independent comparison dates, source
+revision fencing and retained cards. Collapsed panels defer reads and forced
+refreshes, closing aborts unfinished work, and reopening either reuses a valid
+cached result or refreshes against the latest status. Late cancelled replies
+cannot replace the mounted comparison.
+
 On Ubuntu x86-64 with an AMD Ryzen 5 1600 and Node 26.8.2, a 90-day,
 596,403-observation fixture produced these median first-worker results over three
 repetitions, comparing the same fixture with revision `d60f4be`:

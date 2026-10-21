@@ -1,5 +1,5 @@
 /** Keep comparison cards mounted in an ordinary panel across disclosure cycles. */
-export function createComparisonDisclosure({ button, content, onOpen = () => {} }) {
+export function createComparisonDisclosure({ button, content, onOpen = () => {}, onClose = () => {} }) {
   function reflect() {
     const open = button.getAttribute('aria-expanded') === 'true';
     button.setAttribute('aria-expanded', String(open));
@@ -9,6 +9,7 @@ export function createComparisonDisclosure({ button, content, onOpen = () => {} 
   function toggle() {
     button.setAttribute('aria-expanded', String(button.getAttribute('aria-expanded') !== 'true'));
     if (reflect()) onOpen();
+    else onClose();
   }
   reflect();
   button.addEventListener('click', toggle);

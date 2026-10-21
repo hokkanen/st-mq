@@ -104,7 +104,7 @@ export const MODEL_INPUT_INFO = Object.freeze(Object.fromEntries([
   ['model_fireplace_release', 'Fireplace release input', 'kg/h', 'firewood', 'The delayed response to recorded firewood, expressed as fuel-equivalent kilograms per hour. This is a calculated input to the thermal model, not a measured burn rate or heat output.'],
 ].map(([signal, label, unit, color, detail, kind = 'Calculated']) => [signal, { label, unit, color, detail, kind, group: 'Model inputs' }])));
 
-// Reconstructed from the learning journal in memory, never recorder channels.
+// Recorded with committed learning; charts read the selected stored history.
 export const MODEL_COEFFICIENT_INFO = Object.freeze(Object.fromEntries([
   ['model_coefficient_heat_loss', 'Heat loss', '1/h', 'outdoor', 'lossPerHour', 4, 'Heat loss per degree of indoor–outdoor temperature difference. Multiply by that difference to get the modeled cooling contribution in °C/h.'],
   ['model_coefficient_hydronic_response', 'Combined compressor + auxiliary response', '°C/kWh thermal', 'compressorSpace', 'hydronicCPerKwh', 4, 'Effective temperature response per estimated thermal kWh supplied by the compressor and resistance heater together. Heat enters the slow reserve before it reaches indoor air. This is a house response, not COP or measured heat capacity.'],

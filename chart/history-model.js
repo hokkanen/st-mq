@@ -437,5 +437,5 @@ export function createChartLoader({ api, now = Date.now, maxEntries = 6, maxReco
     pending = start(selection, onProgress);
     return pending.promise;
   }
-  return { load, invalidate, close() { invalidate(); closed = true; } };
+  return { load, cancel, invalidate, close() { invalidate(); closed = true; } };
 }

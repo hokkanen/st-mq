@@ -126,7 +126,7 @@ change points rather than additional per-minute model snapshots.
 The **View** menu groups compatible comparisons with their relevant temperature
 context and labeled activity rows. Saved temperatures and references, thermal
 inputs, electrical inputs, activity fractions and coefficients keep their own
-units and meanings. Home coefficients share the supported ordered replay. **Series explorer** can isolate every
+units and meanings. Home coefficients follow the selected recorded learning history. **Series explorer** can isolate every
 supported saved input or coefficient by its label or signal identifier. The
 shared electricity-price controls remain available across views. Observed
 temperature history stays distinct from the original normalized inputs used
@@ -693,6 +693,11 @@ time, drawn as a solid line. The future forecast uses a dash-dot line. Neither
 is a solar observation.
 
 ## Timing benefit under the chart
+
+Comparison history is loaded while **Energy cost comparisons** is open. Closing
+the panel cancels unfinished reads and defers polling work, while preserving its
+dates, selections and existing cards. Reopening checks the latest source revisions
+and refreshes when necessary.
 
 The **Energy cost comparisons** fold compares recorded heat-pump and EV energy at its actual times
 with the **same recorded daily energy** spread uniformly over that entire Finnish

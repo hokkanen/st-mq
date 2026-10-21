@@ -6,7 +6,7 @@ const NOW = Date.parse('2026-09-27T12:00:00Z');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // Exercise the real calendars and comparison cards with controlled API replies.
-function fixture() {
+function fixture({ open = true } = {}) {
   class Element {
     constructor(tagName = 'div') {
       this.tagName = tagName; this.children = []; this.listeners = []; this.attributes = {};
@@ -51,6 +51,7 @@ function fixture() {
     element.id = id; element.required = true; elements.set(id, element); document.body.append(element);
   }
   document.getElementById = id => elements.get(id);
+  elements.get('comparison-toggle').setAttribute('aria-expanded', String(open));
   const requests = [];
   const api = (path, { signal }) => new Promise((resolve, reject) => requests.push({ path, signal, resolve, reject }));
   const controller = createComparisonRange({ api, document, now: () => NOW });
@@ -200,7 +201,7 @@ for (const [period, nextHistoryRevision] of [['year', 4], ['previous-year', 5]])
     assert.equal(f.form.dataset.startDate, dates.startDate); assert.equal(f.form.dataset.endDate, dates.endDate);
     await f.controller.refresh(historySelectionStatus(0));
     assert.equal(f.requests.length, 2, 'An unchanged historical selection reuses its settled cache');
-    f.get('comparison-toggle').emit('click'); f.end.focus();
+    f.end.focus();
     const controls = comparisonControlState(f);
 
     const replacement = f.controller.refresh(historySelectionStatus(1, nextHistoryRevision)); await tick();
@@ -223,7 +224,7 @@ for (const [period, nextHistoryRevision] of [['year', 4], ['previous-year', 5]])
     const oldRequest = f.requests[1];
     const oldPoll = f.controller.refresh(historySelectionStatus(0)); await tick();
     assert.equal(f.requests.length, 2, 'An ordinary status poll shares the held historical query');
-    f.get('comparison-toggle').emit('click'); f.start.focus();
+    f.start.focus();
     const controls = comparisonControlState(f);
 
     const replacement = f.controller.refresh(historySelectionStatus(1, nextHistoryRevision)); await tick();
@@ -274,4 +275,44 @@ test('closing aborts requests, removes both calendars and ignores subsequent con
   await f.controller.refresh({ now: NOW });
   reply(f.requests[0], 99); await first;
   assert.equal(f.requests.length, 1); assert.equal(f.root.textContent, '');
+});
+test('collapsed comparisons defer queries and forced refreshes until opened with current source evidence', async t => {
+  const f = fixture({ open: false }); t.after(() => f.controller.close());
+  await f.controller.refresh(historySelectionStatus(0));
+  await f.controller.refresh(historySelectionStatus(1), { force: true });
+  assert.equal(f.requests.length, 0, 'Hidden comparison cards do not compete with requested charts');
+  f.get('comparison-toggle').emit('click'); await tick();
+  assert.equal(f.requests.length, 1);
+  reply(f.requests[0], 2); await tick();
+  assert.equal(f.form.dataset.state, 'ready'); assert.match(f.root.textContent, /€2.00/);
+  f.get('comparison-toggle').emit('click');
+  await f.controller.refresh(historySelectionStatus(2), { force: true });
+  assert.equal(f.requests.length, 1);
+  const children = f.root.children;
+  f.get('comparison-toggle').emit('click'); await tick();
+  assert.equal(f.requests.length, 2, 'Source changes and forced refreshes survive a closed panel');
+  assert.strictEqual(f.root.children, children, 'Previous cards remain mounted while refreshed');
+  reply(f.requests[1], 3); await tick();
+  assert.match(f.root.textContent, /€3.00/);
+  f.get('comparison-toggle').emit('click');
+  await f.controller.refresh(historySelectionStatus(2));
+  f.get('comparison-toggle').emit('click'); await tick();
+  assert.equal(f.requests.length, 2, 'Unchanged reopening reuses the settled cache');
+});
+
+test('collapsing comparisons aborts a broad read, retains choices and rejects its late reply', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  const first = f.controller.refresh(historySelectionStatus(0)); await tick();
+  reply(f.requests[0], 1); await first;
+  f.preset('year'); await tick();
+  const pending = f.requests[1], selected = f.start.value;
+  f.get('comparison-toggle').emit('click');
+  assert.equal(pending.signal.aborted, true);
+  assert.equal(f.root.getAttribute('aria-busy'), 'false');
+  reply(pending, 99); await tick();
+  assert.doesNotMatch(f.root.textContent, /€99.00/);
+  f.get('comparison-toggle').emit('click'); await tick();
+  assert.equal(f.start.value, selected); assert.equal(f.requests.length, 3);
+  reply(f.requests[2], 4); await tick();
+  assert.match(f.root.textContent, /€4.00/); assert.equal(f.form.dataset.state, 'ready');
 });

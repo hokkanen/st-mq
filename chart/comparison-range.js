@@ -29,12 +29,13 @@ export function createComparisonRange({ api, document = globalThis.document, now
   if (!root) return { refresh() {}, close() {} };
   const view = createTimingBenefit(root), loader = createChartLoader({ api, now });
   const disclosure = createComparisonDisclosure({ button: $('comparison-toggle'), content: $('comparison-content'),
-    onOpen: () => view.refreshLayout() });
+    onOpen() { view.refreshLayout(); void refresh(); },
+    onClose() { ++generation; loader.cancel(); root.setAttribute('aria-busy', 'false'); } });
   const start = $('comparison-date-start'), end = $('comparison-date-end');
   const form = $('comparison-range-form'), message = $('comparison-range-status'), retry = $('comparison-range-retry');
   let selection = comparisonPeriod('today', now()), suggestedEndDate = selection.endDate;
   let activePreset = 'today', rangeActive = false, initialized = false, closed = false;
-  let status, loaded, revision, recordingRevision, generation = 0;
+  let status, loaded, revision, recordingRevision, generation = 0, deferredForce = false;
   const listeners = [];
   function listen(node, event, handler) {
     node.addEventListener(event, handler);
@@ -63,6 +64,10 @@ export function createComparisonRange({ api, document = globalThis.document, now
       }
       initialized = true; updateControls();
     }
+    // Keep choices and mounted cards, but spend no history-query work on a
+    // collapsed panel. Reopening uses the latest status and revision checks.
+    if ($('comparison-content').hidden) { deferredForce ||= force; return; }
+    force ||= deferredForce; deferredForce = false;
     const nextRevision = JSON.stringify([status.input, status.contract, replicaSnapshotKey(status), status.recording?.historySelection,
       status.fireplace?.revision, status.fireplace?.rebuild?.status, status.learning?.adaptive?.model?.trainedAt]);
     if (force || revision !== undefined && revision !== nextRevision) { loader.invalidate(); force = true; }
