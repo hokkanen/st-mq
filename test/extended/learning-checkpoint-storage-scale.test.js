@@ -179,7 +179,7 @@ test('fresh-process checkpoint loading, one learning window and incremental pair
       for (const key of ['hydrationMs', 'updateAndPairMs', 'changedBytes', 'changedRows', 'rchar', 'wchar', 'readBytes', 'writeBytes'])
         assert.ok(Number.isFinite(metrics[key]) && metrics[key] >= 0, `a complete measurement is required for ${key}`);
       assert.deepEqual(metrics.changedTables,
-        ['learning_checkpoint_samples', 'learning_checkpoints', 'learning_journal_entries', 'state']);
+        ['coefficient_generations', 'learning_checkpoint_samples', 'learning_checkpoints', 'learning_journal_entries', 'state']);
       assert.ok(metrics.changedBytes < 200 * 1024, 'only one source window, its prepared value and small manifests transfer');
       assert.ok(metrics.rchar < 32 * 1024 ** 2, `routine read I/O stays bounded: ${metrics.rchar}`);
       assert.ok(metrics.wchar < 4 * 1024 ** 2, `routine write I/O stays bounded: ${metrics.wchar}`);

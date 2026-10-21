@@ -1,6 +1,6 @@
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
-import { selectedCoverageSpan, nextCoverageStart, nextCoverageId } from '../storage/coverage-history.js';
+import { selectedCoverageSpan, nextCoverageStart, nextCoverageId, coverageWindow } from '../storage/coverage-history.js';
 
 // Keep confirmed-state projection and worker cache freshness on the same signals.
 export const H66_CHART_COVERAGE_SIGNALS = Object.freeze([
@@ -22,8 +22,11 @@ function* availabilityRows(store,{from,to,input,signals}) {
   const wanted=[...signals];
   if(!wanted.length) return;
   const scope=input==='simulated' ? "c.source='simulation'" : "c.source<>'simulation'";
-  const sql=`WITH gaps AS (
-    SELECT c.* FROM active_recorder_coverage c WHERE c.status<>'fresh' AND c.start_at<?
+  const window=coverageWindow(store,{signals:wanted,from});
+  const sql=`WITH ${window.sql}, gaps AS (
+    SELECT c.* FROM coverage_window w CROSS JOIN active_recorder_coverage c
+    WHERE c.source=w.source AND c.device=w.device AND c.signal=w.signal AND c.start_at>=w.from_at
+      AND c.status<>'fresh' AND c.start_at<?
       AND COALESCE(${nextCoverageStart('c')},?)>=?
       AND c.signal IN (${wanted.map(()=>'?').join(',')}) AND ${scope}
   ), transitions AS (
@@ -34,7 +37,7 @@ function* availabilityRows(store,{from,to,input,signals}) {
       WHERE f.status='fresh' AND f.start_at>=? AND f.start_at<?
   ) SELECT t.*,o.unit,o.value,o.quality,o.raw,o.source_time AS original_source_time
     FROM transitions t LEFT JOIN active_observations o ON o.id=t.observation_id ORDER BY t.at,t.id`;
-  for(const row of store.db.prepare(sql).iterate(to,to,from,...wanted,from,from,to)) {
+  for(const row of store.db.prepare(sql).iterate(...window.params,to,to,from,...wanted,from,from,to)) {
     let raw={},quality=[];
     try {raw=row.raw ? JSON.parse(row.raw) : {};} catch { /* Optional metadata. */ }
     if (temperatureReportMaxAge({raw}) !== null || sourceReportAge(row,raw) !== null) continue;
@@ -58,11 +61,13 @@ function* confirmedReportRows(store,{from,to,input,signals,now=to}) {
   // unchanged spans. Drawing endpoints retain the original measurement time.
   const wanted=[...signals];
   if (!wanted.length) return;
-  const sql=`SELECT c.*,o.value,o.unit,o.quality,o.raw,o.source_time AS original_source_time,
+  const window=coverageWindow(store,{signals:wanted,from,through:now,futureFallback:true});
+  const sql=`WITH ${window.sql} SELECT c.*,o.value,o.unit,o.quality,o.raw,o.source_time AS original_source_time,
     ${nextCoverageStart('c', 'history_clock.known_at', true)} AS next_start
-    FROM active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id
+    FROM coverage_window w CROSS JOIN active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id
     CROSS JOIN (SELECT ? AS known_at) history_clock
-    WHERE c.signal IN (${wanted.map(()=>'?').join(',')}) AND c.start_at<=? AND ${selectedCoverageSpan('c', 'history_clock.known_at', true)}
+    WHERE c.source=w.source AND c.device=w.device AND c.signal=w.signal AND c.start_at>=w.from_at
+      AND c.signal IN (${wanted.map(()=>'?').join(',')}) AND c.start_at<=? AND ${selectedCoverageSpan('c', 'history_clock.known_at', true)}
       AND ${input==='simulated' ? "(c.source='simulation' OR c.source='controller-estimate' AND c.device='simulated')"
         : "c.source<>'simulation' AND NOT(c.source='controller-estimate' AND c.device='simulated')"}
       AND o.received_at<=?
@@ -76,7 +81,7 @@ function* confirmedReportRows(store,{from,to,input,signals,now=to}) {
     ORDER BY c.start_at,c.id`;
   const pending=[];
   const ordered=()=>pending.sort((a,b)=>a.source_time-b.source_time||a.id-b.id);
-  for (const row of store.db.prepare(sql).iterate(now,...wanted,Math.min(to,now),now,from)) {
+  for (const row of store.db.prepare(sql).iterate(...window.params,now,...wanted,Math.min(to,now),now,from)) {
     ordered();
     while(pending.length&&pending[0].source_time<row.start_at) yield pending.shift();
     const raw=JSON.parse(row.raw),periodicAge=temperatureReportMaxAge({raw}),age=periodicAge??sourceReportAge(row,raw);

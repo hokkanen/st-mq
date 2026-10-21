@@ -2683,6 +2683,30 @@ the next boundary in one source/device/signal stream. Charts retain the original
 recovery selection, equal-start ID precedence and full successor timestamps,
 including boundaries beyond the drawn range. They do not materialize all retained
 coverage or impose a historical lookback that could discard a long span.
+Coverage readers seek the immediately preceding selected boundary in each stream
+and its transitions inside the requested period. Stream discovery uses strict
+source, device and signal seeks rather than walking every span with an equal
+index prefix. Equivalent continuations and as-of selection still apply before
+projection. Recent raw-history reads seek the time window before returning
+ingestion-ordered IDs; unbounded ingestion pages retain their ID cursor.
+
+Indoor lookup transfers bounded candidate pages across writer admission and
+continues through invalid or retained candidates. Charging-energy cache creation
+seeks intervals ending after the physical session's start before checking source,
+receipt and deferred-admission clocks. It retains arbitrarily long intervals
+crossing that start. These changes use the existing indexes and current schema.
+Fireplace rebuild-existence checks seek each selected epoch/prefix by sample time;
+an empty result cannot walk all samples belonging to another input environment.
+Household forecast refreshes also seek source and receipt clocks independently
+when checking for newly available inputs, deduplicating rows that advance both.
+Initial household-reference construction still reconstructs retained conditions;
+its worker keeps foreground persistence available, but its completion cost is
+not independent of the retained history.
+Firewood counterfactual calculation still needs its earlier common thermal state;
+its journal reads use bounded pages and indexed sample endpoints instead of
+sorting or aggregating the complete journal in one storage turn. This does not
+make the complete counterfactual calculation independent of retained fire history.
+
 The index is not created by a chart request or by opening an incompatible database.
 For this index only, the owner approved a one-time controlled installation upgrade
 on 2026-10-15, preserving all table rows, journal/checkpoint identity and learning

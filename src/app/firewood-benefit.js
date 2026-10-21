@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { learningJournalHead } from '../storage/store.js';
+import { learningJournalHead, learningJournalRows } from '../storage/store.js';
+import { learningPrefixRanges } from '../recovery/learning-prefix.js';
 import moment from 'moment-timezone';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint, thermalEvidenceReady, fireplaceEvidenceReady } from '../control/adaptive-learning.js';
 import { LEARNING_ALGORITHM, learningVersion, validLearningCheckpoint } from './committed-learning.js';
@@ -17,6 +18,29 @@ const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
   forecastVersion: row.forecast_version ? JSON.parse(row.forecast_version) : null, payload: JSON.parse(row.payload) });
 const dayAt = at => moment.tz(at, 'Europe/Helsinki').startOf('day');
 const overlap = (a, b, c, d) => Math.max(0, Math.min(b, d) - Math.max(a, c));
+
+function* sourceJournal(store, input, head, through = Infinity) {
+  let after = 0;
+  while (after < head) {
+    const page = learningJournalRows(store.db, { input, after, limit: 128 });
+    if (!page.length) return;
+    for (const row of page) {
+      if (row.id > head) return;
+      if (row.at <= through) yield row;
+    }
+    after = page.at(-1).id;
+  }
+}
+
+function latestSampleAt(store, input, head, through) {
+  const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
+  const query = store.db.prepare(`SELECT at FROM learning_journal_entries
+    WHERE epoch=? AND input=? AND kind='sample' AND at<=? AND algorithm_version=?
+      AND +id>? AND +id<=? ORDER BY at DESC,id DESC LIMIT 1`);
+  const times = learningPrefixRanges(store.db, input, epoch, head).map(range =>
+    query.get(range.sourceEpoch, input, through, LEARNING_ALGORITHM, range.after, range.through)?.at).filter(finite);
+  return times.length ? Math.max(...times) : 0;
+}
 
 function empty(range, now, context, reason) {
   const events = context?.fireplaceEvents ?? [];
@@ -56,8 +80,7 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
   if (through <= range.from || !context.fireplaceEvents.some(event => event.at < through)) return result;
   const bounds = { id: learningJournalHead(store.db,input) };
   const checkpointRow = store.db.prepare('SELECT value FROM state WHERE key=?').get(`adaptive:${input}`);
-  const committedThrough = store.db.prepare(`SELECT MAX(at) at FROM learning_journal
-    WHERE input=? AND kind='sample' AND algorithm_version=? AND at<=?`).get(input, LEARNING_ALGORITHM, through).at ?? 0;
+  const committedThrough = latestSampleAt(store, input, bounds.id, through);
   const pricedPrefix = priceIntervals.filter(row => row.start < committedThrough).map(row => ({ start: row.start,
     end: Math.min(row.end, committedThrough), price: row.price, assumedPrice: row.assumedPrice, assumptions: row.assumptions }));
   const key = createHash('sha256').update(JSON.stringify([input, range, Math.min(through, committedThrough), context.fireplaceRevision, bounds.id,
@@ -71,8 +94,10 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
       && (saved.fireplaceRevision ?? 0) === context.fireplaceRevision) checkpoint = saved;
   } catch { /* Damaged snapshots cannot supply authoritative model evidence. */ }
   const firstFireAt = Math.min(...context.fireplaceEvents.filter(event => event.at < through).map(event => event.at));
-  const firstRow = store.db.prepare(`SELECT * FROM learning_journal WHERE input=? AND algorithm_version=? ORDER BY id LIMIT 1`)
-    .get(input, LEARNING_ALGORITHM);
+  let firstRow;
+  for (const row of sourceJournal(store, input, bounds.id)) {
+    if (row.algorithm_version === LEARNING_ALGORITHM) { firstRow = row; break; }
+  }
   if (!firstRow) return empty(range, now, context, 'No supported model-input history exists for this source.');
   let first;
   try { first = decode(firstRow); } catch { return empty(range, now, context, 'The source model seed is unreadable.'); }
@@ -182,7 +207,7 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
     }
     cursor = Math.min(segment.end, through);
   }
-  for (const row of store.db.prepare('SELECT * FROM learning_journal WHERE input=? AND at<=? ORDER BY id').iterate(input, through)) {
+  for (const row of sourceJournal(store, input, bounds.id, through)) {
     if (row.algorithm_version !== LEARNING_ALGORITHM) { unsupportedRows++; if (row.at >= firstFireAt) blocked = true; continue; }
     let entry;
     try { entry = decode(row); if (entry.configVersion !== learningVersion(entry.payload.configuration)) throw new Error(); }

@@ -220,6 +220,23 @@ test('forward evaluation cannot learn from the coming night and advancing the cl
   assert.ok(after.phaseCurrentA[0] > 4 && after.phaseCurrentA[0] < 20);
 });
 
+test('a later receipt activates an old interval once without borrowing its earlier source clock', t => {
+  const { store } = fixture(t);
+  nativeHour(store, '2026-09-13', { current: [4, 4, 4] });
+  const start = Date.parse('2026-09-14T01:00:00Z'), end = start + HOUR;
+  for (const prefix of ['property', 'ev1', 'ev2']) for (const phase of [1, 2, 3]) {
+    store.observation({ source: 'easee', device: 'example-property', signal: `${prefix}_energy_l${phase}`,
+      value: prefix === 'property' ? 20 * 230 / 1000 : 0, unit: 'kWh',
+      sourceTime: end, receivedAt: now + HOUR, quality: [], raw: { intervalStart: start, intervalEnd: end } });
+  }
+  const [before] = forecastHousehold(store, options);
+  assert.equal(before.reference.nights, 1);
+  assert.deepEqual(before.phaseCurrentA, [4, 4, 4]);
+  const [after] = forecastHousehold(store, { ...options, now: now + DAY, deadlineAt: now + DAY + HOUR });
+  assert.equal(after.reference.nights, 2);
+  assert.ok(after.phaseCurrentA[0] > 4 && after.phaseCurrentA[0] < 20);
+});
+
 test('a native recording gap supersedes an overlapping imported estimate instead of reviving it as known coverage', async t => {
   const { store, dir } = fixture(t), start = now - DAY;
   await legacy(store, dir, ['2026-09-14'], { current: [12, 12, 12] });

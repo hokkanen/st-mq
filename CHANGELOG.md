@@ -6,6 +6,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep recent history and charging-energy reads responsive as older recordings
+  accumulate, and prevent temperature-report changes from failing on a large
+  database. Chart coverage seeks the selected period; retrospective firewood
+  history reads yield between bounded pages so recording and control can proceed.
+  Fireplace rebuild checks seek the current learning epoch instead of scanning
+  other environments' retained samples during dashboard refreshes.
+  Household forecast refreshes seek future source and receipt clocks separately.
+
 - Fit energy-check dates and shortcuts into the recording fold, shorten the
   completed-check status, and show the latest property meter reading once in
   its comparison row.

@@ -216,11 +216,22 @@ function buildLegacy(store, reference, now, voltageV, { from = 0, to = now, onSp
 }
 
 const cacheByDb = new WeakMap();
+const availabilitySignals = [...SIGNALS, ...VOLTAGE_SIGNALS, 'outdoor_temperature'];
+// Keep the two original clocks independent. A scalar max() predicate cannot
+// seek either clock and scans all retained inputs to establish an empty future.
+// Unary source/signal terms leave receipt time as that branch's index seek.
+const futureInputs = input => `
+  SELECT id,source_time,received_at,raw,signal FROM active_observations
+    WHERE signal IN (${availabilitySignals.map(() => '?').join(',')}) AND source_time>?
+      AND import_id IS NULL AND ${nativeScope(input)}
+  UNION ALL
+  SELECT id,source_time,received_at,raw,signal FROM active_observations
+    WHERE +signal IN (${availabilitySignals.map(() => '?').join(',')}) AND received_at>?
+      AND import_id IS NULL AND ${nativeScope(input).replace(/\bsource\b/g, '+source')}`;
+const futureBindings = after => [...availabilitySignals, after, ...availabilitySignals, after];
 function nextSourceAt(store, now, input) {
-  return store.db.prepare(`SELECT min(max(source_time,received_at)) AS at FROM active_observations AS observations
-    WHERE signal IN (${[...SIGNALS, ...VOLTAGE_SIGNALS, 'outdoor_temperature'].map(() => '?').join(',')})
-      AND max(source_time,received_at)>? AND import_id IS NULL AND ${nativeScope(input)}`)
-    .get(...SIGNALS, ...VOLTAGE_SIGNALS, 'outdoor_temperature', now).at;
+  return store.db.prepare(`SELECT min(max(source_time,received_at)) AS at FROM (${futureInputs(input)})`)
+    .get(...futureBindings(now)).at;
 }
 function modernRows(store, { from, to, now, input, prefix }) {
   const rows = [];
@@ -365,9 +376,8 @@ export function householdReference(store, { now, input = 'live', voltageV, timez
       AND import_id IS NULL AND ${nativeScope(input)}`).all(cache.watermark, watermark, ...SIGNALS, ...VOLTAGE_SIGNALS, 'outdoor_temperature');
     if (pendingKey !== cache.pendingKey) changed.push(...cache.pendingRows, ...pendingRows);
     if (finite(cache.nextSourceAt) && cache.nextSourceAt <= now) changed.push(...store.db.prepare(`SELECT source_time,raw,signal
-      FROM active_observations AS observations WHERE max(source_time,received_at)>? AND max(source_time,received_at)<=?
-        AND signal IN (${[...SIGNALS, ...VOLTAGE_SIGNALS, 'outdoor_temperature'].map(() => '?').join(',')})
-        AND import_id IS NULL AND ${nativeScope(input)}`).all(cache.now, now, ...SIGNALS, ...VOLTAGE_SIGNALS, 'outdoor_temperature'));
+      FROM (${futureInputs(input)}) WHERE max(source_time,received_at)>? AND max(source_time,received_at)<=?
+      GROUP BY id`).all(...futureBindings(cache.now), cache.now, now));
     const dates = new Map(), changedPeerDates = new Set();
     for (const row of changed) {
       if (!finite(row.source_time) || row.source_time > now) continue;

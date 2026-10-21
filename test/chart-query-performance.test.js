@@ -124,7 +124,7 @@ test('coverage successor lookups seek the immutable chronological index', t => {
   const before = schema(), plans = [];
   const facade = { db: { prepare(sql) {
     const statement = store.db.prepare(sql);
-    return { iterate(...bindings) {
+    return { get: statement.get.bind(statement), iterate(...bindings) {
       plans.push(store.db.prepare('EXPLAIN QUERY PLAN ' + sql).all(...bindings));
       return statement.iterate(...bindings);
     } };

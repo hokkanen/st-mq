@@ -135,6 +135,18 @@ reporting timing. Synthetic timings do not establish installed performance.
 
 Storage health coverage uses the current transient version-3 health/history
 contract and nested version-2 local-operations contract.
+`test/database-range-reads.test.js` checks time-window ingestion order, late
+timestamps, cursor limits and active recovery exclusions. A file-backed writer
+fixture retains more encoded temperature history than one writer response can
+carry and requires selection through multiple pages of invalid candidates.
+Charging-energy reader tests retain independent source, receipt and deferred
+admission clocks, overlapping intervals, rollback and restart parity. Chart
+coverage/recovery tests retain long spans, preceding outages, equal-start
+continuations and historical as-of selection. Firewood cache tests verify that
+moving the clock alone does not repeat committed-history pages. These correctness
+checks complement small/year/three-year fixed-window measurements; test completion
+alone does not prove bounded native SQL time or physical control responsiveness.
+
 `test/storage-control-coverage.test.js` and
 `test/control-attempt.test.js` check exact-once known-unsent outcomes, safe parent
 rollback causes, query/post-dispatch exclusions and monitoring enable/disable

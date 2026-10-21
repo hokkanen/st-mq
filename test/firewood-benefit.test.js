@@ -203,14 +203,16 @@ test('off-grid forecast bridge is explicit, excluded from past money, and does n
   const { args, store } = fixture(t, { hours: 8 });
   const realPrepare = store.db.prepare.bind(store.db);
   let replayReads = 0;
-  store.db.prepare = sql => { if (sql === 'SELECT * FROM learning_journal WHERE input=? AND at<=? ORDER BY id') replayReads++; return realPrepare(sql); };
+  store.db.prepare = sql => { if (sql.includes('COALESCE(e.payload,s.payload) AS payload,e.source_entry_id')) replayReads++; return realPrepare(sql); };
   const range = { from: start, to: args.now + HOUR };
   const first = getFirewoodBenefit({ ...args, range });
+  const firstReads = replayReads;
+  assert.ok(firstReads > 0, 'The initial estimate reads committed journal pages');
   const now = args.now + 5 * 60_000;
   const next = getFirewoodBenefit({ ...args, range, now,
     futureIntervals: [{ start: args.now, end: args.now + 2 * HOUR, outdoorC: 0, solarRadiationWm2: 0,
       price: 20, forecastIssuedAt: args.now - HOUR }] });
-  assert.equal(replayReads, 1, 'A moving clock alone must reuse the expensive committed-history replay');
+  assert.equal(replayReads, firstReads, 'A moving clock alone must reuse the expensive committed-history replay');
   assert.equal(next.summary.valueEuro, first.summary.valueEuro);
   assert.equal(next.summary.remaining.bridgeMs, 5 * 60_000);
   assert.equal(next.summary.remaining.status, 'partial-forecast');

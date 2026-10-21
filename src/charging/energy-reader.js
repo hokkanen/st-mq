@@ -2,6 +2,7 @@ import { recordedChargingEnergy, summarizeRecordedChargingEnergy } from './energ
 import { recordedEnergyGroups } from '../storage/energy-history.js';
 import { pendingEnergyObservations } from '../storage/pending-energy.js';
 import { observationAvailableAt } from '../domain/time-evidence.js';
+import { selectedHistoryPredicate } from '../storage/schema.js';
 
 const MAX_SCOPES = 4, MAX_GROUPS = 8192, MAX_CHANGES = 256, MAX_FUTURE = 128;
 const admission = "json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.timeAdmission.admittedAt')";
@@ -14,13 +15,18 @@ export function createRecordedChargingEnergyReader(store) {
   const scopes = new Map();
   const changes = (query, prefix, after, through, future = false) => {
     const signals = [1, 2, 3].map(n => `${prefix}_energy_l${n}`);
-    return store.db.prepare(`SELECT id,source_time,received_at,raw FROM active_observations AS observations
+    // Only intervals ending after this connection's start can affect its
+    // energy. Keep all three availability clocks, but seek the session before
+    // testing them; an old deferred admission must not be silently discarded.
+    const source = future ? 'observations INDEXED BY observations_signal_time' : 'active_observations AS observations';
+    return store.db.prepare(`SELECT id,source_time,received_at,raw FROM ${source}
       WHERE signal IN (?,?,?) AND source=? AND import_id IS NULL
       ${query.device != null ? 'AND device=?' : ''}
-      AND ${future ? `(source_time>? OR received_at>? OR ${admission}>?)` : 'id>? AND id<=?'}
-      ORDER BY id LIMIT ?`).all(...signals, prefix === 'ev1' ? 'easee' : 'shelly-evse',
+      AND ${future ? `source_time>? AND ${selectedHistoryPredicate('observations', 'observations')}
+        AND (source_time>? OR received_at>? OR ${admission}>?)` : 'id>? AND id<=?'}
+      ${future ? '' : 'ORDER BY id'} LIMIT ?`).all(...signals, prefix === 'ev1' ? 'easee' : 'shelly-evse',
       ...(query.device != null ? [query.device] : []),
-      ...(future ? [query.end, query.end, query.end, MAX_FUTURE + 1] : [after, through, MAX_CHANGES + 1]));
+      ...(future ? [query.start, query.end, query.end, query.end, MAX_FUTURE + 1] : [after, through, MAX_CHANGES + 1]));
   };
   const evidence = row => {
     let raw;

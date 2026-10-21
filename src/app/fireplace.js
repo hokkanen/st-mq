@@ -1,7 +1,7 @@
 import { storageOperationHealth } from '../storage/operation-health.js';
 import { createCoefficientGeneration, appendCoefficientEvents, publishCoefficientGeneration, discardCoefficientGeneration } from '../storage/coefficient-history.js';
 import { Worker } from 'node:worker_threads';
-import { learningJournalHead } from '../storage/store.js';
+import { learningJournalHead, hasLearningSampleAfter } from '../storage/store.js';
 import { LEARNING_ALGORITHM, validLearningCheckpoint } from './committed-learning.js';
 import { fireplaceLearningContext } from './fireplace-inputs.js';
 import { sensorLearningContext, sensorRevision } from './sensor-inputs.js';
@@ -47,8 +47,7 @@ function queueRevision(store, input, revision, at, affectedAt) {
   const previous = store.getState(jobKey(input));
   const pending = ['pending', 'running', 'ready', 'failed'].includes(previous?.status);
   const previousAffectedAt = pending ? previous?.affectedAt ?? null : null;
-  const affected = affectedAt !== null && Boolean(store.db.prepare(`SELECT 1 FROM learning_journal
-    WHERE input=? AND kind='sample' AND algorithm_version=? AND at>? LIMIT 1`).get(input, LEARNING_ALGORITHM, affectedAt));
+  const affected = affectedAt !== null && hasLearningSampleAfter(store.db, input, affectedAt);
   const requiresRebuild = affected || pending && previous.requiresRebuild !== false;
   const hasModel=Boolean(store.db.prepare(`SELECT 1 FROM coefficient_selection s JOIN coefficient_generations g
     ON g.id=s.generation WHERE s.input=? AND g.cursor>0`).get(input)
@@ -108,12 +107,10 @@ export function fireplaceView(store, input, { asOf = Date.now(), revision } = {}
   const removals = store.db.prepare(`SELECT target_id,MIN(at) removed_at FROM active_fireplace_events AS fireplace_events
     WHERE input=? AND kind='remove' AND id<=? AND at<=? GROUP BY target_id`).all(input, source.revision, asOf);
   const removed = new Map(removals.map(row => [row.target_id, row.removed_at]));
-  const affected = store.db.prepare(`SELECT 1 FROM learning_journal WHERE input=? AND kind='sample'
-    AND algorithm_version=? AND at>? LIMIT 1`);
   const events = store.db.prepare(`SELECT * FROM active_fireplace_events AS fireplace_events WHERE input=? AND kind='load'
     AND id<=? AND at<=? AND at>=? ORDER BY at DESC,id DESC`).all(input, source.revision, asOf, Math.max(0, asOf - 48 * 3_600_000))
     .map(row => ({ ...loadEvent(row), removedAt: removed.get(row.id) ?? null,
-      requiresRebuild: Boolean(affected.get(input, LEARNING_ALGORITHM, row.at)) }));
+      requiresRebuild: hasLearningSampleAfter(store.db, input, row.at) }));
   const rebuild = store.getState(jobKey(input)) ?? { status: 'idle', revision: source.revision };
   return { available: true, input, revision: source.revision, entries: events, lastAt: events.find(event => event.removedAt === null)?.at ?? null,
     activeNow: fireplaceActive(source.events, asOf), releaseKgPerHour: fireplaceRate(source.events, asOf, asOf + 60_000),

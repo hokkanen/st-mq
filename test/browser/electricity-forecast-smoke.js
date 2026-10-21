@@ -10,7 +10,9 @@ import { loadConfig } from '../../src/app/config.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-price-browser-'));
 const artifacts = mkdtempSync(join(tmpdir(), 'stmq-price-screenshots-'));
-const now = Date.now(), hour = 3_600_000, startAt = Math.floor(now / hour) * hour;
+// Keep both published and future hours inside the initial Finnish chart day,
+// including when this suite runs just before midnight on the host.
+const now = Date.UTC(2026, 9, 21, 9, 17), hour = 3_600_000, startAt = Math.floor(now / hour) * hour;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const pending = new Map(), errors = [];
 let app, browser, socket, sequence = 0;
@@ -21,27 +23,30 @@ try {
     STMQ_PORT: '0', STMQ_INPUT: 'offline' }, directory);
   app = await start({ config, clock: () => now, installSignalHandlers: false });
   const row = (at, value) => ({ start: at, end: at + hour, spotCtPerKwh: value, unit: 'c/kWh', vatIncluded: false });
-  app.store.setState('provider:market', { source: 'elering', fetchedAt: now,
-    intervals: Array.from({ length: 14 }, (_, i) => ({ ...row(startAt + (i - 12) * hour, 8 + i % 3), source: 'elering' })) });
-  app.store.setState('provider:weather', { source: 'fmi', fetchedAt: now - 30 * 60_000,
-    forecast: Array.from({ length: 6 }, (_, index) => ({ start: startAt + index * hour, end: startAt + (index + 1) * hour,
-      source: 'fmi', outdoorC: 4, solarRadiationWm2: 0, issuedAt: now - 2 * hour,
-      issuedAtBasis: 'provider-result-time', fetchedAt: now - 30 * 60_000,
-      solar: index % 2 ? { source: 'openmeteo', issuedAt: null, issuedAtBasis: 'fetched-snapshot', fetchedAt: now - 15 * 60_000 } : { basis: 'forecast' } })) });
-  app.store.setState('providers:health', { market: { source: 'elering', status: 'ok', lastSuccessAt: now },
-    weather: { source: 'fmi', status: 'fallback', lastSuccessAt: now, acquisition: { selected: 'fmi', solarSource: 'mixed' } } });
-  app.store.setState('contract:offline', { periods: [{ from: '2026-01-01T00:00:00Z', marginCtPerKwh: 1, taxCtPerKwh: 2,
-    vatRate: .2, tariff: 'day-night', transferRates: { vatIncluded: true, dayCtPerKwh: 3, nightCtPerKwh: 1,
-      winterDayCtPerKwh: 4, otherCtPerKwh: 2 } }] });
-  const forecast = { enabled: true, available: true, status: 'ok', source: 'energypriceforecast', fetchedAt: now,
-    generatedAt: now, modelUpdatedAt: now - hour, expiresAt: now + hour, horizonEnd: now + 48 * hour,
-    intervals: Array.from({ length: 47 }, (_, i) => ({ ...row(startAt + (i + 1) * hour, i % 5 - 1),
-      source: 'energypriceforecast', predicted: true, nativeStart: startAt + (i + 1) * hour,
-      nativeEnd: startAt + (i + 2) * hour, nativeResolutionMinutes: 60 })).filter((_, i) => i !== 7) };
-  app.engine.electricityForecast = { snapshot: () => forecast, status: () => {
-    const { intervals, ...health } = forecast; return health;
-  } };
-  await app.engine.tick();
+  let forecast;
+  await app.store.runWrite(() => {
+    app.store.setState('provider:market', { source: 'elering', fetchedAt: now,
+      intervals: Array.from({ length: 14 }, (_, i) => ({ ...row(startAt + (i - 12) * hour, 8 + i % 3), source: 'elering' })) });
+    app.store.setState('provider:weather', { source: 'fmi', fetchedAt: now - 30 * 60_000,
+      forecast: Array.from({ length: 6 }, (_, index) => ({ start: startAt + index * hour, end: startAt + (index + 1) * hour,
+        source: 'fmi', outdoorC: 4, solarRadiationWm2: 0, issuedAt: now - 2 * hour,
+        issuedAtBasis: 'provider-result-time', fetchedAt: now - 30 * 60_000,
+        solar: index % 2 ? { source: 'openmeteo', issuedAt: null, issuedAtBasis: 'fetched-snapshot', fetchedAt: now - 15 * 60_000 } : { basis: 'forecast' } })) });
+    app.store.setState('providers:health', { market: { source: 'elering', status: 'ok', lastSuccessAt: now },
+      weather: { source: 'fmi', status: 'fallback', lastSuccessAt: now, acquisition: { selected: 'fmi', solarSource: 'mixed' } } });
+    app.store.setState('contract:offline', { periods: [{ from: '2026-01-01T00:00:00Z', marginCtPerKwh: 1, taxCtPerKwh: 2,
+      vatRate: .2, tariff: 'day-night', transferRates: { vatIncluded: true, dayCtPerKwh: 3, nightCtPerKwh: 1,
+        winterDayCtPerKwh: 4, otherCtPerKwh: 2 } }] });
+    forecast = { enabled: true, available: true, status: 'ok', source: 'energypriceforecast', fetchedAt: now,
+      generatedAt: now, modelUpdatedAt: now - hour, expiresAt: now + hour, horizonEnd: now + 48 * hour,
+      intervals: Array.from({ length: 47 }, (_, i) => ({ ...row(startAt + (i + 1) * hour, i % 5 - 1),
+        source: 'energypriceforecast', predicted: true, nativeStart: startAt + (i + 1) * hour,
+        nativeEnd: startAt + (i + 2) * hour, nativeResolutionMinutes: 60 })).filter((_, i) => i !== 7) };
+    app.engine.electricityForecast = { snapshot: () => forecast, status: () => {
+      const { intervals, ...health } = forecast; return health;
+    } };
+    return app.engine.tick();
+  });
   const profile = join(directory, 'chrome');
   browser = spawn(process.env.STMQ_CHROME_BIN ?? '/opt/google/chrome/chrome', [
     '--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking',
@@ -81,6 +86,8 @@ try {
   };
   await send('Runtime.enable'); await send('Page.enable');
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+    const nativeNow=Date.now.bind(Date), loadedAt=nativeNow();
+    Date.now=()=>${now}+nativeNow()-loadedAt;
     localStorage.setItem('home-energy-chart-views', JSON.stringify({view:'power',views:{},prices:{spot_price:true,all_in_price:true}}));
     window.priceStrokes=[]; window.priceRequests=[];
     const original=window.fetch.bind(window), stroke=CanvasRenderingContext2D.prototype.stroke;
@@ -154,7 +161,7 @@ try {
     await evaluate(`window.homeEnergyTheme.setTheme('${theme}'); true`);
     for (const status of ['error', 'stale', 'unavailable']) {
       Object.assign(forecast, { available: false, status });
-      await app.engine.tick();
+      await app.engine.update();
       await send('Page.reload');
       await until("document.querySelector('[data-series=electricity_price_forecast] .provider-series-value')?.textContent==='Needs attention'");
       assert.equal(await evaluate("document.querySelector('[data-series=electricity_price_forecast]').dataset.state"), 'attention');

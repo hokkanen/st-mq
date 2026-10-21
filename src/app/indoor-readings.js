@@ -57,36 +57,113 @@ const decode = row => ({ id: row.id, source: row.source, device: row.device, sig
   quality: JSON.parse(row.quality), raw: row.raw ? JSON.parse(row.raw) : null,
   provenance: row.import_id === null ? null : { importId: row.import_id, rowNumber: row.row_number } });
 
+// Probe physical source/device prefixes before the chronological lookup. A
+// missing environment/signal must not search another environment's whole past.
+function hasScopedReading(store, { signal, at, input, notBefore }) {
+  const firstSource = store.db.prepare('SELECT source FROM observations ORDER BY source LIMIT 1');
+  const nextSource = store.db.prepare('SELECT source FROM observations WHERE source>? ORDER BY source LIMIT 1');
+  const firstDevice = store.db.prepare('SELECT device FROM observations WHERE source=? ORDER BY device LIMIT 1');
+  const nextDevice = store.db.prepare('SELECT device FROM observations WHERE source=? AND device>? ORDER BY device LIMIT 1');
+  // These clocks are residual checks: let the three physical-prefix keys seek
+  // the stream here. The following chronological lookup owns the time index.
+  const present = store.db.prepare(`SELECT 1 FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
+    WHERE o.source=? AND o.device=? AND o.signal=? AND o.value IS NOT NULL
+      AND +o.source_time>=? AND +o.source_time<=? AND +o.received_at<=?
+      AND (o.import_id IS NULL OR i.status='complete') LIMIT 1`);
+  for (let row = input === 'simulated' ? { source: 'simulation' } : firstSource.get(); row;
+    row = input === 'simulated' ? null : nextSource.get(row.source)) {
+    if (input !== 'simulated' && row.source === 'simulation' || row.source === 'controller-estimate'
+      || signal === 'indoor_temperature' && row.source.startsWith('husdata')) continue;
+    for (let device = firstDevice.get(row.source); device; device = nextDevice.get(row.source, device.device)) {
+      if (present.get(row.source, device.device, signal, notBefore, at, at)) return true;
+    }
+  }
+  return false;
+}
+
+// The writer bridge materializes iterate() results. Fetch just one candidate:
+// a larger LIMIT would scan all unrelated history trying to fill a sparse page
+// even when its first candidate is already usable. Quality remains checked here.
+function* readingCandidates(store, { signal, at, input, notBefore }) {
+  if (!hasScopedReading(store, { signal, at, input, notBefore })) return;
+  let time = at, id = Number.MAX_SAFE_INTEGER;
+  for (;;) {
+    const rows = store.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
+      WHERE o.signal=? AND o.source_time>=? AND (o.source_time,o.id)<=(?,?) AND o.received_at<=?
+        AND o.value IS NOT NULL AND (o.import_id IS NULL OR i.status='complete')
+        AND ${input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'"}
+      ORDER BY o.source_time DESC,o.id DESC LIMIT 1`).all(signal, notBefore, time, id, at);
+    yield* rows;
+    if (!rows.length) return;
+    const last = rows.at(-1); time = last.source_time; id = last.id - 1;
+  }
+}
+
+function latestReadingAttempt(store, observation, at) {
+  // Unit and recording policy precede receipt in the existing index. Seek each
+  // prefix; invalid units must remain eligible to report a later failed reading.
+  const policy = "json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.recorder.policy')";
+  const prefix = [observation.source, observation.device, observation.signal];
+  const first = store.db.prepare(`SELECT unit,${policy} AS policy FROM observations
+    WHERE source=? AND device=? AND signal=? ORDER BY unit,${policy} LIMIT 1`);
+  const nextPolicy = store.db.prepare(`SELECT unit,${policy} AS policy FROM observations
+    WHERE source=? AND device=? AND signal=? AND unit=? AND ${policy}>? ORDER BY ${policy} LIMIT 1`);
+  const firstPolicy = store.db.prepare(`SELECT unit,${policy} AS policy FROM observations
+    WHERE source=? AND device=? AND signal=? AND unit=? AND ${policy} IS NOT NULL ORDER BY ${policy} LIMIT 1`);
+  const nextUnit = store.db.prepare(`SELECT unit,${policy} AS policy FROM observations
+    WHERE source=? AND device=? AND signal=? AND unit>? ORDER BY unit,${policy} LIMIT 1`);
+  const next = stream => (stream.policy === null ? firstPolicy.get(...prefix, stream.unit)
+    : nextPolicy.get(...prefix, stream.unit, stream.policy)) ?? nextUnit.get(...prefix, stream.unit);
+  const query = store.db.prepare(`SELECT * FROM active_observations WHERE source=? AND device=? AND signal=?
+    AND unit=? AND ${policy} IS ? AND received_at>=? AND (received_at,id)<=(?,?)
+    AND (source_time IS NULL OR source_time>=? AND source_time<=?)
+    ORDER BY received_at DESC,id DESC LIMIT 1`);
+  let latest = observation;
+  for (let stream = first.get(...prefix); stream; stream = next(stream)) {
+    let time = at, id = Number.MAX_SAFE_INTEGER;
+    for (;;) {
+      const row = query.get(...prefix, stream.unit, stream.policy, observation.receivedAt, time, id, observation.sourceTime, at);
+      if (!row) break;
+      const candidate = decode(row);
+      time = row.received_at; id = row.id - 1;
+      if (candidate.raw?.retained === true || candidate.quality?.includes('retained') || candidate.raw?.acquisitionOnly) continue;
+      if (candidate.receivedAt > latest.receivedAt || candidate.receivedAt === latest.receivedAt && candidate.id > latest.id) latest = candidate;
+      break;
+    }
+  }
+  return latest;
+}
+
 /** The recorder extends a fresh span only when each newer report arrives before
  * the preceding source report expires. Its interior therefore proves continuous
  * availability, even after its compact end advances beyond this query. A later
  * span cannot fill an earlier gap. No discarded report timestamp is invented. */
 export function indoorReportCoverage(store, { reading, from, at, notBefore = -Infinity, includeIntervals = false }) {
   let age = temperatureReportMaxAge(reading);
+  if (age === null && from === at) return null;
+  // This boundary is constant for the whole query. Correlating it with each
+  // candidate span repeatedly scans/sorts the same stream as history grows.
+  const preceding = store.db.prepare(`SELECT id,start_at FROM active_recorder_coverage AS recorder_coverage
+    WHERE source=? AND device=? AND signal=? AND start_at<?
+      AND ${selectedCoverageSpan('recorder_coverage')}
+    ORDER BY start_at DESC,id DESC LIMIT 1`).get(reading.source, reading.device, reading.signal, from);
   if (age === null) {
-    if (from === at) return null;
     // Disabling periodic reporting changes future availability only. A window
     // that began under that contract must still retain any earlier report gap.
     const earlier = store.db.prepare(`SELECT o.raw FROM active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id
-      WHERE c.source=? AND c.device=? AND c.signal=? AND c.start_at<=?
+      WHERE c.source=? AND c.device=? AND c.signal=? AND c.start_at>=? AND c.start_at<=?
         AND json_extract(o.raw,'$.reportIntervalMs')>0
         AND ${selectedCoverageSpan('c')} AND COALESCE(${nextCoverageStart('c')},?)>?
-      ORDER BY c.start_at DESC,c.id DESC LIMIT 1`).get(reading.source, reading.device, reading.signal, at, at, from);
+      ORDER BY c.start_at DESC,c.id DESC LIMIT 1`).get(reading.source, reading.device, reading.signal, preceding?.start_at ?? from, at, at, from);
     age = earlier ? temperatureReportMaxAge({ raw: JSON.parse(earlier.raw) }) : null;
     if (age === null) return null;
   }
-  // This boundary is constant for the whole query. Correlating it with each
-  // candidate span repeatedly scans/sorts the same stream as history grows.
-  const preceding = store.db.prepare(`SELECT id FROM active_recorder_coverage AS recorder_coverage
-    WHERE source=? AND device=? AND signal=? AND start_at<=?
-      AND ${selectedCoverageSpan('recorder_coverage')}
-    ORDER BY start_at DESC,id DESC LIMIT 1`).get(reading.source, reading.device, reading.signal, from)?.id ?? null;
-  const args = [reading.source, reading.device, reading.signal, at, from, from - age, preceding];
+  const args = [reading.source, reading.device, reading.signal, preceding?.start_at ?? from, at, from, from - age, preceding?.id ?? null];
   const spans = store.db.prepare(`SELECT c.*,o.id AS original_id,o.source_time AS original_source_time,
       o.received_at AS original_received_at,o.value,o.unit,o.quality,o.raw,o.import_id,o.row_number,
       ${nextCoverageStart('c')} AS next_start
     FROM active_recorder_coverage c LEFT JOIN active_observations o ON o.id=c.observation_id
-    WHERE c.source=? AND c.device=? AND c.signal=? AND c.start_at<=? AND ${selectedCoverageSpan('c')}
+    WHERE c.source=? AND c.device=? AND c.signal=? AND c.start_at>=? AND c.start_at<=? AND ${selectedCoverageSpan('c')}
       AND (c.source_time+COALESCE(json_extract(o.raw,'$.reportIntervalMs'),0)
         +COALESCE(json_extract(o.raw,'$.reportGraceMs'),0)>=? OR c.end_at>=?
         OR c.id=?)
@@ -139,24 +216,11 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
  * Recording can ask only whether a genuine measurement already exists after
  * a sensor boundary; that does not need to reconstruct report availability. */
 export function lastIndoorReading(store, { signal, at, input, notBefore = -Infinity, includeAvailability = true }) {
-  const scope = input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'";
-  const query = store.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
-    WHERE o.signal=? AND o.source_time>=? AND o.source_time<=? AND o.received_at<=?
-      AND o.value IS NOT NULL AND (o.import_id IS NULL OR i.status='complete') AND ${scope}
-    ORDER BY o.source_time DESC,o.id DESC`);
-  for (const row of query.iterate(signal, notBefore, at, at)) {
+  for (const row of readingCandidates(store, { signal, at, input, notBefore })) {
     const observation = decode(row);
     if (!observation.raw?.acquisitionOnly && indoorReadingUsable(observation, at)) {
       if (!includeAvailability) return observation;
-      const after = store.db.prepare(`SELECT * FROM active_observations AS observations WHERE signal=? AND source=? AND device=?
-        AND received_at>=? AND received_at<=? AND (source_time IS NULL OR source_time>=? AND source_time<=?)
-        ORDER BY received_at DESC,id DESC`);
-      let latest = observation;
-      for (const attempt of after.iterate(signal, observation.source, observation.device, observation.receivedAt, at, observation.sourceTime, at)) {
-        const candidate = decode(attempt);
-        if (candidate.raw?.retained === true || candidate.quality?.includes('retained') || candidate.raw?.acquisitionOnly) continue;
-        latest = candidate; break;
-      }
+      const latest = latestReadingAttempt(store, observation, at);
       const coverage = indoorReportCoverage(store, { reading: observation, from: at, at, notBefore });
       const reading = coverage ? { ...observation,
         reportExpiresAt: coverage.expiresAt ?? Math.min(at - 1, observation.sourceTime + temperatureReportMaxAge(observation)),

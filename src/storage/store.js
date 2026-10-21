@@ -54,6 +54,21 @@ export function learningJournalHead(db, input, epoch) {
   return row.id;
 }
 
+/** Existence reads must not aggregate/materialize the canonical journal view.
+ * Each selected immutable prefix has its own indexed time seek, including an
+ * empty result after the newest sample or for a different input environment.
+ */
+export function hasLearningSampleAfter(db, input, at) {
+  const epoch = db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
+  const ranges = db.prepare(`SELECT source_epoch,after_id,through_id FROM learning_epoch_segments
+    WHERE epoch=? AND input=?`).all(epoch, input);
+  ranges.push({ source_epoch: epoch, after_id: 0, through_id: Number.MAX_SAFE_INTEGER });
+  const query = db.prepare(`SELECT 1 FROM learning_journal_entries
+    WHERE epoch=? AND input=? AND kind='sample' AND at>? AND algorithm_version=?
+      AND +id>? AND +id<=? LIMIT 1`);
+  return ranges.some(range => Boolean(query.get(range.source_epoch, input, at, LEARNING_ALGORITHM, range.after_id, range.through_id)));
+}
+
 /** Each immutable prefix range supplies at most one page. A UNION query with
  * an outer LIMIT can sort every inherited row before yielding its first entry. */
 export function learningJournalRows(db, { input, epoch, after = 0, limit = 256 }) {
@@ -912,8 +927,13 @@ export class Store {
     if (from !== undefined) { clauses.push('o.source_time >= ?'); params.push(instant(from, 'from')); }
     if (to !== undefined) { clauses.push('o.source_time < ?'); params.push(instant(to, 'to')); }
     params.push(limitValue(limit));
+    // A time-bounded read must seek the requested window before sorting its
+    // ingestion IDs. ORDER BY id otherwise selects the ID index and filters
+    // every older observation, even for an empty future window.
+    const ranged = from !== undefined;
+    if (ranged) clauses[0] = '+o.id > ?';
     return this.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id = o.import_id
-      WHERE ${clauses.join(' AND ')} ORDER BY o.id LIMIT ?`).all(...params).map(observationResult);
+      WHERE ${clauses.join(' AND ')} ORDER BY ${ranged ? '+o.id' : 'o.id'} LIMIT ?`).all(...params).map(observationResult);
   }
 
   latestObservation(signal) {
