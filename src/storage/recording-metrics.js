@@ -32,20 +32,10 @@ export function readStorageMetrics(db) {
 const currentTables = new Set(['state', 'learning_epochs', 'history_selection', 'recovery_exclusions',
   'recorder_metrics', 'recovery_dependencies', 'learning_checkpoints', 'learning_checkpoint_samples']);
 
-/** Explicit inventory only: dbstat visits allocated b-tree pages, so this must
- * stay in the cached read-only overview worker, never on recording/control ticks.
- * Categories partition allocation and include page slack; they are not payload
- * estimates and never feed the adaptive precision controller. */
-export function inspectPhysicalAllocation(db, { allocatedBytes, reusableBytes }) {
-  let objects;
-  try {
-    objects = db.prepare(`SELECT d.name,s.type,SUM(d.pgsize) bytes FROM dbstat d
-      LEFT JOIN sqlite_schema s ON s.name=d.name GROUP BY d.name,s.type`).all();
-  } catch (error) {
-    if (/no such (?:table|module): dbstat/.test(error?.message ?? ''))
-      return { available: false, reason: 'sqlite-page-statistics-unavailable' };
-    throw error;
-  }
+/** Explicit inventory only. Categories partition allocation and include page
+ * slack; they are not payload estimates and never feed adaptive precision.
+ * The caller owns read-only page measurement and admission between batches. */
+export function physicalAllocationFromObjects(objects, { allocatedBytes, reusableBytes }) {
   const sizes = { observationBytes: 0, historyBytes: 0, currentBytes: 0, journalBytes: 0, peerBacklogBytes: 0,
     branchBytes: 0, indexBytes: 0, internalBytes: 0, reusableBytes };
   for (const { name, type, bytes } of objects) {

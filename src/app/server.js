@@ -22,6 +22,7 @@ import { EQUIPMENT_COMMAND_ERRORS } from '../domain/equipment-command-errors.js'
 import { FLOOR_COMMAND_ERRORS } from '../domain/floor-command-errors.js';
 import { ReplicaCheckpointMismatchError, REPLICA_CHECKPOINT_MISMATCH, createReplicaReadRefusalReporter } from './replica-errors.js';
 import { createWebSessions, rememberedCookieDigest, rememberedCookie, clearRememberedCookie } from './web-sessions.js';
+import { isRecordedDataAction } from '../domain/recorded-data-action.js';
 
 function authorized(req, token) {
   if (!token) return false;
@@ -321,6 +322,36 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
               return current.enabled && (ingress || current === acceptedAccess)
                 && identity(current)?.role === 'admin';
             } });
+        }
+        if (['/api/recording-overview', '/api/energy-audits'].includes(url.pathname)
+          && ['GET', 'POST'].includes(req.method)) {
+          if ([...url.searchParams.keys()].length)
+            return json(400, { error: 'Unsupported recorded-data query. Use the panel actions to refresh or cancel a check.' });
+          const input = req.method === 'POST' ? await body(req, transportLimits?.bodyTimeoutMs) : undefined;
+          if (!stillAuthorized()) return;
+          if (input !== undefined && !isRecordedDataAction(url.pathname, input))
+            return json(400, { error: 'Choose one supported recorded-data action.' });
+          const transition = settingsReloadStatus();
+          if (transition.stopping || (transition.busy || transition.unavailable) && input?.action !== 'cancel')
+            return json(503, { error: 'Wait for configuration work to finish before inspecting recorded data.' });
+          readContext = await getReadContext?.();
+          if (!stillAuthorized()) return;
+          if (readContext && !readContext.store)
+            return json(503, { error: 'Waiting for a verified master snapshot.' });
+          const reader = readContext?.chartService ?? overviewService;
+          const cancellation = new AbortController();
+          const cancel = () => cancellation.abort();
+          res.once('close', cancel);
+          try {
+            const options = { signal: cancellation.signal };
+            const energy = url.pathname === '/api/energy-audits';
+            const args = { now: (readContext?.engine ?? getEngine())?.clock?.() ?? clock() };
+            const result = energy
+              ? input === undefined ? await reader.energyChecks(args, options) : await reader.energyChecksAction(input, args, options)
+              : input === undefined ? await reader.overview(options) : await reader.overviewAction(input, options);
+            if (!res.destroyed) return json(200, result);
+          } finally { res.removeListener('close', cancel); }
+          return;
         }
         const saveDatabase = req.method === 'POST' && url.pathname === '/api/database-export';
         // Pair management and read-only verification above are explicit standby exceptions. Even
@@ -643,36 +674,6 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return await mutate(async (current, input) => { await current.restoreEquipmentTest(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/dhwr/stop')
           return await mutate(async (current, input) => { await current.stopDhwr(input); return json(200, status()); });
-        if (req.method === 'GET' && url.pathname === '/api/recording-overview') {
-          if ([...url.searchParams.keys()].some(key => key !== 'refresh') || url.searchParams.getAll('refresh').length > 1
-            || url.searchParams.has('refresh') && !['true', 'false'].includes(url.searchParams.get('refresh')))
-            return json(400, { error: 'Refresh the inventory with a supported query.' });
-          const cancellation = new AbortController();
-          const cancel = () => cancellation.abort();
-          res.once('close', cancel);
-          try {
-            const result = await (readerCharts?.overview ? readerCharts : overviewService).overview({ signal: cancellation.signal,
-              force: url.searchParams.get('refresh') === 'true' });
-            if (!res.destroyed) return json(200, result);
-          } finally { res.removeListener('close', cancel); }
-          return;
-        }
-        if (req.method === 'GET' && url.pathname === '/api/energy-audits') {
-          const cancellation = new AbortController();
-          const cancel = () => cancellation.abort();
-          res.once('close', cancel);
-          let service, ownsService = false;
-          try {
-            service = readerCharts?.energyChecks ? readerCharts : overviewService?.energyChecks ? overviewService : null;
-            if (!service) { service = createChartService({ store: readerStore }); ownsService = true; }
-            const result = await service.energyChecks({ now: engine.clock() }, { signal: cancellation.signal });
-            if (!res.destroyed) return json(200, result);
-          } finally {
-            res.removeListener('close', cancel);
-            if (ownsService) await service.close();
-          }
-          return;
-        }
         if (req.method === 'GET' && url.pathname === '/api/electricity-forecast') {
           const now = engine.clock();
           return json(200, electricityForecastView({ now,
@@ -791,6 +792,10 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
       }
     } catch (error) {
       if (!res.destroyed) {
+        if (/^\/api\/(?:recording-overview|energy-audits)(?:\?|$)/.test(req.url))
+          return json(error instanceof TypeError || error instanceof SyntaxError ? 400 : 503, {
+            code: 'recorded_data_unavailable',
+            error: 'Recorded data could not be inspected. Refresh the panel to retry.' });
         if (/^\/api\/recording-backups(?:[/?]|$)/.test(req.url)) {
           if (res.headersSent) { res.destroy(); return; }
           return json(error.statusCode ?? (error instanceof SyntaxError ? 400 : 503), {

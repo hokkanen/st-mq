@@ -202,7 +202,7 @@ The optional reusable verifier performs SQLite integrity checks, verifies the
 retained transaction journal and canonically hashes current application contents in a pinned
 read transaction. Peer comparisons require equal transaction checkpoints; a
 source that has advanced is not falsely compared against an older receiver.
-Manual checks are available under **Recording details → Verify database** and
+Manual checks are available under **Recording details → History tools → Check database** and
 scheduled checks use `recording.full_verification_interval_hours` (`0` disables
 them). Pairing manual operations also offer **Verify with full snapshot**.
 

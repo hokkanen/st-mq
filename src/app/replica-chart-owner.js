@@ -22,6 +22,10 @@ export function leaseReplicaCharts(owner, store, checkpoint) {
     service[method] = (args, options) => owner.service[method](args, { ...options, checkpoint });
   for (const method of ['overview', 'pin']) if (owner.service[method])
     service[method] = options => owner.service[method]({ ...options, checkpoint });
+  if (owner.service.overviewAction)
+    service.overviewAction = (input, options) => owner.service.overviewAction(input, { ...options, checkpoint });
+  if (owner.service.energyChecksAction)
+    service.energyChecksAction = (input, args, options) => owner.service.energyChecksAction(input, args, { ...options, checkpoint });
   let closing;
   service.close = () => closing ??= (async () => {
     if (--owner.references) return;

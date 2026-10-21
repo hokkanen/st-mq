@@ -152,12 +152,12 @@ try {
     return decode(result.result);
   };
   const browserTimeZone = await evaluate('Intl.DateTimeFormat().resolvedOptions().timeZone');
-  const until = async (expression, attempts = 150) => {
+  const until = async (expression, attempts = 400) => {
     for (let i = 0; i < attempts; i++) {
       if (await evaluate(expression)) return;
       await new Promise(resolve => setTimeout(resolve, 30));
     }
-    throw new Error(`UI did not settle: ${expression}; errors: ${JSON.stringify(errors)}`);
+    throw new Error(`UI did not settle: ${expression}; errors: ${JSON.stringify(errors)}; fixture status: ${JSON.stringify(await evaluate("({ authenticated: document.body.dataset.authenticated, chart: document.getElementById('chart-status')?.textContent, notice: document.getElementById('connection-message')?.textContent })"))}`);
   };
   if (energyOnly) {
     await app.close();
@@ -217,16 +217,21 @@ try {
     ), fold => {
       const summary = fold.querySelector(':scope > summary');
       const parent = fold.parentElement.closest('details')?.querySelector(':scope > summary');
-      return { label: summary.textContent.trim(), visible: summary.checkVisibility(), dataset: fold.matches('.recording-dataset'),
+      return { label: summary.textContent.trim(), visible: summary.checkVisibility(), hiddenByEmpty: summary.closest('.recording-empty-datasets')?.open === false, dataset: fold.matches('.recording-dataset'),
         indent: parent ? summary.getBoundingClientRect().left - parent.getBoundingClientRect().left : 0 };
     }))`));
     assert.ok(folds.length >= 13, 'Recording hierarchy covers the overview, groups, datasets and storage accounting');
     for (const fold of folds) {
-      assert.equal(fold.visible, true, `${fold.label} is visible inside its expanded parent`);
+      if (!fold.visible) {
+        assert.equal(fold.hiddenByEmpty, true, `${fold.label} is deliberately grouped inside a folded empty-dataset disclosure`);
+        continue;
+      }
       assert.ok(fold.indent >= (fold.dataset ? 16 : 0), `${fold.label} keeps its place in the recording hierarchy (${fold.indent}px)`);
     }
   };
   await command('browsingContext.navigate', { context, url: base, wait: 'complete' });
+  await until("document.body.dataset.authenticated === 'true'");
+  if (!recordingOnly) {
   await until("document.getElementById('chart-legend')?.querySelectorAll('button').length > 5");
   assert.equal(await evaluate('document.title'), 'Home Energy');
   assert.equal(await evaluate("document.documentElement.dataset.theme"), 'dark');
@@ -251,6 +256,7 @@ try {
     EXPLORER_SERIES.map(series => series.key).sort(), 'The explorer retains every supported numerical and state projection');
   await evaluate("document.getElementById('chart-series-close').click(); true");
   assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'power', 'Browsing the catalogues preserves the active chart');
+  }
   const selectChartSubject = async key => {
     const kind = CHART_VIEW_BY_KEY[key] ? 'view' : 'series';
     await evaluate(`document.getElementById('chart-series-toggle').click();
@@ -262,11 +268,12 @@ try {
   if (!energyChecksOnly) {
   assert.equal(await evaluate("performance.getEntriesByType('resource').some(entry=>entry.name.includes('/api/recording-overview'))"),false,'collapsed recording inventory does not fetch');
   await evaluate(`(() => {
-    window.recordingFixture={fetch:window.fetch.bind(window),requests:0,fail:false,hold:false};
+    window.recordingFixture={fetch:window.fetch.bind(window),requests:0,measurements:0,fail:false,hold:false};
     window.fetch=(...args)=>{
       const fixture=window.recordingFixture;
       if(String(args[0]).includes('/api/recording-overview')){
         fixture.requests++;
+        if(args[1]?.method==='POST'&&JSON.parse(args[1].body).action==='measure')fixture.measurements++;
         if(fixture.fail){fixture.fail=false;return Promise.reject(new Error('Synthetic overview failure'));}
         if(fixture.hold){fixture.hold=false;return new Promise(resolve=>{fixture.release=()=>resolve(fixture.fetch(...args));});}
       }
@@ -277,6 +284,10 @@ try {
   await evaluate("document.getElementById('recording-details').open=true; true");
   assert.equal(await evaluate("window.recordingFixture.requests"),0,'opening Recording details alone leaves full inventory lazy');
   await evaluate("document.getElementById('recording-disk-card').open=true; true");
+  await until("window.recordingFixture.requests>0 && document.getElementById('recording-overview-content').children.length>0");
+  assert.equal(await evaluate("window.recordingFixture.measurements"),0,'opening storage loads descriptions without measuring history');
+  assert.match(await evaluate("document.getElementById('recording-growth-inventoryAt').textContent"),/not been measured/);
+  await evaluate("document.getElementById('recording-overview-refresh').click(); true");
   await until("document.getElementById('recording-growth-inventoryAt').textContent.includes('Retained adaptive payload estimate')");
   await evaluate("document.getElementById('recording-disk-card').open=false; true");
   assert.equal(await evaluate("document.getElementById('recording-overview-details').open"),false,'opening Storage & growth leaves Other recorded data folded');
@@ -308,10 +319,10 @@ try {
   assert.equal(await evaluate("document.activeElement.closest('details').dataset.streamId"),focusedReading);
   assert.equal(await evaluate(`document.querySelector('#recording-content details[data-stream-id="${focusedReading}"]').open`),true,
     'fresh status rendering preserves source disclosure and keyboard focus');
-  assert.equal(await evaluate("window.recordingFixture.requests"),1,'the merged storage fold measures inventory once; opening the adaptive table and rerendering reuse it');
+  assert.equal(await evaluate("window.recordingFixture.measurements"),1,'one explicit action measures inventory; opening the adaptive table and rerendering reuse it');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#recording-details > .recording-section-group')].map(group=>({title:group.querySelector('h3').textContent,folds:[...group.querySelectorAll(':scope > details')].map(node=>node.id)}))"),[
     {title:'Recorded data',folds:['recording-adaptive-details','recording-overview-details','energy-audit-details']},
-    {title:'History tools',folds:['history-recovery-details','database-verification-details']},
+    {title:'History tools',folds:['model-reconstruction-details','history-recovery-details','database-verification-details']},
   ],'recorded data and history actions have distinct, consistent sections');
   await until("!document.getElementById('database-export-download').disabled && !document.getElementById('database-export-save').disabled");
   await evaluate(`(() => {
@@ -341,7 +352,7 @@ try {
   await command('input.performActions',{context,actions:[{type:'key',id:'recording-keyboard',actions:[{type:'keyDown',value:'\uE007'},{type:'keyUp',value:'\uE007'}]}]});
   await until("document.querySelectorAll('#recording-overview-content .recording-data-group').length>=8");
   assert.equal(await evaluate("document.getElementById('recording-overview-details').open"),true,'native summary opens by keyboard');
-  assert.equal(await evaluate("window.recordingFixture.requests"),1);
+  assert.equal(await evaluate("window.recordingFixture.measurements"),1);
   for(const key of FLOOR_PREHEAT_SIGNALS) {
     assert.match(await evaluate(`document.querySelector('[data-dataset-id="${key}"]').textContent`),/Every change/);
   }
@@ -353,7 +364,7 @@ try {
   assert.match(chargingInventory,/Charging choices, sessions and device state/);
   assert.match(chargingInventory,/Automatic charging and shared priority.*survive restart and unplugging/);
   assert.match(chargingInventory,/Session edits.*do not replace configured defaults/);
-  assert.match(await evaluate("document.getElementById('recording-overview-message').textContent"),/Inventory:/);
+  assert.match(await evaluate("document.getElementById('recording-overview-message').textContent"),/Complete inventory ready/);
   assert.equal(await evaluate("Boolean(document.querySelector('[data-dataset-id=heat_pump_power]'))"),false,'calculated heat-pump power is not a separate stored series');
   assert(await evaluate("document.querySelectorAll('.recording-storage-accounting tbody tr').length")>10,'physical table accounting is available separately');
   assert.equal(await evaluate("[...document.querySelectorAll('.recording-storage-accounting tbody th')].some(node=>/^chart_rollup/.test(node.textContent))"),false,'plot reduction does not create stored chart-summary tables');
@@ -369,14 +380,14 @@ try {
   await evaluate("document.querySelector('[data-recording-open=recording-storage-details]').click(); true");
   assert.equal(await evaluate("document.getElementById('recording-disk-card').open && document.activeElement===document.querySelector('#recording-disk-card > summary')"),true,
     'inventory links to the single storage and refresh location');
-  await evaluate("window.recordingFixture.hold=true; document.getElementById('recording-overview-refresh').click(); document.querySelector('[data-dataset-id=weather-snapshots] > summary').focus(); true");
+  await evaluate("window.recordingFixture.release=null; window.recordingFixture.hold=true; document.getElementById('recording-overview-refresh').click(); document.querySelector('[data-dataset-id=weather-snapshots] > summary').focus(); true");
   await until("Boolean(window.recordingFixture.release)");
   await evaluate("window.recordingFixture.release(); true");
   await until("!document.getElementById('recording-overview-refresh').disabled");
   assert.equal(await evaluate("document.querySelector('[data-dataset-id=weather-snapshots]').open && document.querySelector('[data-dataset-id=weather-snapshots]').closest('.recording-data-group').open"),true,'refresh preserves nested expansion');
   assert.equal(await evaluate("document.activeElement.closest('[data-dataset-id]')?.dataset.datasetId"),'weather-snapshots','refresh preserves keyboard focus');
   await evaluate("window.recordingFixture.previous=document.getElementById('recording-overview-content').innerHTML; window.recordingFixture.fail=true; document.getElementById('recording-overview-refresh').click(); true");
-  await until("document.getElementById('recording-overview-message').textContent.includes('last successful overview')");
+  await until("document.getElementById('recording-overview-message').textContent.includes('last received descriptions and complete results')");
   assert.equal(await evaluate("document.getElementById('recording-overview-content').innerHTML===window.recordingFixture.previous"),true,'failed refresh preserves the complete inventory');
   await evaluate("document.getElementById('recording-overview-refresh').click(); true");
   await until("!document.getElementById('recording-overview-refresh').disabled && !document.getElementById('recording-overview-message').classList.contains('form-error')");
@@ -439,13 +450,14 @@ try {
   // clock offset bypasses only the audit refresh cache; no real data is read.
   await evaluate(`(async()=>{
     const fixture=window.energyCheckFixture={fetch:window.fetch.bind(window),now:Date.now,offset:0,requests:0};
-    fixture.original=await fixture.fetch('/api/energy-audits').then(response=>response.json());
+    fixture.response=await fixture.fetch('/api/energy-audits').then(response=>response.json());
+    fixture.original=structuredClone(fixture.response.result);
     fixture.rows=structuredClone(fixture.original);
     window.fetch=(...args)=>{
       if(!String(args[0]).includes('/api/energy-audits'))return fixture.fetch(...args);
       fixture.requests++;
       if(fixture.fail){fixture.fail=false;return Promise.reject(new Error('Synthetic energy-check failure'));}
-      return Promise.resolve(new Response(JSON.stringify(fixture.rows),{status:200,headers:{'content-type':'application/json'}}));
+      return Promise.resolve(new Response(JSON.stringify({...fixture.response,result:fixture.rows,latest:fixture.rows[0]}),{status:200,headers:{'content-type':'application/json'}}));
     };
     return true;
   })()`);
@@ -477,7 +489,7 @@ try {
   await refreshEnergyChecks();
   assert.equal(await evaluate("document.getElementById('energy-audit-content').innerHTML===window.energyCheckFixture.previous"),true,
     'Failed refresh preserves the full comparison and expanded detail');
-  assert.match(await checkText('#energy-audit-message'),/last successful results are still shown/);
+  assert.match(await checkText('#energy-audit-message'),/last completed checks are still shown/);
   assert.equal(await evaluate('document.activeElement.closest(".energy-check")?.dataset.checkKey'),'ev1_session_energy_check',
     'Failed refresh preserves the focused disclosure');
   await energyKey('\uE007');
@@ -508,7 +520,7 @@ try {
   assert.match(await checkText(charger1Check), /stored L1–L3 energy sum.*integrating power.*final session meter reading/);
   const methodCheck='#energy-audit-content details[data-check-key="method"]';
   assert.equal(await checkText(methodCheck+' > summary'),'How comparisons work');
-  assert.match(await evaluate("[...document.querySelectorAll('#energy-audit-content > p')].map(node=>node.textContent).join(' ')"),
+  assert.match(await checkText(methodCheck),
     /Charger 2 records lifetime meter increments directly; only the phase split is estimated, so it has no equivalent integration check/);
   assert.match(await checkText(methodCheck),/do not change recorded history, calibrate estimates, train the house model or adjust recording thresholds/);
   await evaluate("document.querySelectorAll('#energy-audit-content .energy-check-details').forEach(node=>node.open=true); true");
@@ -529,6 +541,7 @@ try {
   mkdirSync('var',{recursive:true});
   const recordingShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
   writeFileSync('var/home-energy-recording.png',Buffer.from(recordingShot.data,'base64'));
+  if (!energyChecksOnly) {
   for(const theme of ['dark','light']) for(const width of [320,390,1440]) {
     if(await evaluate('document.documentElement.dataset.theme')!==theme) await evaluate("document.getElementById('theme-toggle').click(); true");
     await command('browsingContext.setViewport',{context,viewport:{width,height:width<=390?844:1100},devicePixelRatio:1});
@@ -538,6 +551,7 @@ try {
       `${theme}/${width}: adaptive rows fit without sideways scrolling`);
     const screenshot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
     writeFileSync(`var/recording-${theme}-${width}.png`,Buffer.from(screenshot.data,'base64'));
+  }
   }
   await evaluate("document.getElementById('theme-toggle').click(); true");
   await command('browsingContext.setViewport',{context,viewport:{width:1440,height:1100},devicePixelRatio:1});

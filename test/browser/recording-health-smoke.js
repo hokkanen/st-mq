@@ -288,13 +288,14 @@ renderEnergyAudits([{ kind:'property-meter-summary', signal:'property_import_ene
 element('energy-audit-message').textContent='Recorded energy comparisons · synthetic fixture';
 window.inventoryRefresh = recordingOverviewRefresh({
   request: async path => {
-    if(!['/api/recording-overview','/api/recording-overview?refresh=true'].includes(path)) throw Error('Unexpected inventory request');
+    if(path!=='/api/recording-overview') throw Error('Unexpected inventory request');
     window.inventoryRequests++;
     if(window.failInventory) throw Error('Private inventory failure');
-    return window.inventory;
+    return {catalogue:{groups:[],database:window.inventory.database,generatedAt:window.inventory.generatedAt},result:window.inventory,job:{state:"completed"}};
   }, root:element('recording-overview-content'), details:[element('recording-overview-details'), element('recording-disk-card')],
   parent:element('recording-details'), message:element('recording-overview-message'), button:element('recording-overview-refresh'),
-  render:(overview, root) => { renderRecordingOverview(overview, root); panel.inventory(overview); }, onState:state => panel.inventoryStatus(state),
+  cancel:element('recording-overview-cancel'),progress:element('recording-overview-progress'),detail:element('recording-overview-detail'),
+  render:renderRecordingOverview,onView:view=>panel.inventory(view.result??view.catalogue,{files:view.catalogue}),onState:state=>panel.inventoryStatus(state),
 });
 element('recording-details').addEventListener('toggle', () => { if(element('recording-details').open) void inventoryRefresh(); });
 for(const id of ['recording-overview-details','recording-disk-card']) element(id).addEventListener('toggle', () => void inventoryRefresh());
@@ -490,7 +491,7 @@ try {
       await evaluate("document.getElementById('recording-disk-card').open=true; document.querySelectorAll('.recording-storage-evidence').forEach(node => node.open=true)");
       await settle();
       assert.equal(await evaluate("document.getElementById('recording-growth-database').textContent"), '84 GB', 'A new scope reloads inventory allocation when Storage & growth opens');
-      assert.match(await evaluate("document.getElementById('recording-overview-message').textContent"), /Inventory:/);
+      assert.match(await evaluate("document.getElementById('recording-overview-message').textContent"), /Complete inventory ready/);
       await checkLayout(`${width}/${theme}/storage`); await capture(`storage-${width}-${theme}`);
       await evaluate("document.getElementById('recording-disk-card').open=false; document.getElementById('recording-adaptive-details').open=true; document.querySelector('[data-signal=outdoor_temperature] .recording-source-history').open=true");
       await settle(); await checkLayout(`${width}/${theme}/adaptive`); await capture(`adaptive-${width}-${theme}`);
@@ -588,7 +589,7 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-growth-database').textContent"), '84 GB');
   await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=false); payload.recordingHealth={...payload.recordingHealth,scope:'snapshot',contextId:'synthetic-next-snapshot'}; renderStatus(payload)"); await settle();
   assert.equal(await evaluate("document.querySelectorAll('#recording-overview-content [data-dataset-id]').length"), 0);
-  assert.match(await evaluate("document.getElementById('recording-overview-message').textContent"), /has not been checked/);
+  assert.match(await evaluate("document.getElementById('recording-overview-message').textContent"), /Dataset descriptions are ready/);
   assert.equal(await evaluate("document.getElementById('recording-growth-database').textContent"), 'Not checked');
   // Home Assistant host/app paths retain their distinct labels on small screens.
   await evaluate("setScenario('healthy'); document.getElementById('recording-details').open=true; document.getElementById('recording-backup-card').open=true; copies.location={environment:'home-assistant',folder:'/addon_configs/synthetic_repository_home_energy/st-mq/backups',insideApp:'/config/st-mq/backups',hostMappingKnown:true}; panel.refreshCopies({force:true})"); await settle();
@@ -740,7 +741,7 @@ try {
   await evaluate("window.previousInventory=document.getElementById('recording-overview-content').innerHTML; failInventory=true; inventoryRefresh({force:true})");
   assert.equal(await evaluate("document.getElementById('recording-overview-content').innerHTML === previousInventory"),true,'Inventory failure preserves the complete last inventory');
   assert.equal(await evaluate("document.getElementById('recording-overview-notice').hidden"),false,'Inventory errors remain visible inside Other recorded data');
-  assert.match(await evaluate("document.getElementById('recording-overview-notice').textContent"),/last successful inventory.*Storage & growth/);
+  assert.match(await evaluate("document.getElementById('recording-overview-notice').textContent"),/last complete result.*Storage & growth/);
   assert.doesNotMatch(await evaluate('document.body.innerText'),/Private inventory failure/);
   await evaluate("failInventory=false; inventoryRefresh({force:true})");
   assert.equal(await evaluate("document.getElementById('recording-overview-notice').hidden"),true,'A successful retry clears inventory attention');
@@ -750,6 +751,14 @@ try {
   await evaluate('panel.inventory(inventory)');
   assert.equal(await evaluate("document.getElementById('recording-growth-retained').textContent"), '6 GB');
   assert.match(await evaluate("document.getElementById('recording-growth-inventoryAt').textContent"), /Retained adaptive payload estimate.*checked/);
+  await evaluate(`window.fullInventory=structuredClone(inventory);fullInventory.generatedAt=${now-3600_000};panel.inventory(fullInventory,{files:{generatedAt:${now},database:{allocatedBytes:90e9,fileBytes:85e9,walBytes:8e9,totalFileBytes:93e9,reusableBytes:3e9}}});true`);
+  assert.equal(await evaluate("document.getElementById('recording-growth-database').textContent"),'90 GB');
+  assert.equal(await evaluate("document.getElementById('recording-growth-files').textContent"),'93 GB');
+  assert.equal(await evaluate("document.getElementById('recording-growth-retained').textContent"),'6 GB');
+  assert.equal(await evaluate("document.getElementById('recording-growth-measuredAllocation').textContent"),'84 GB');
+  assert.match(await evaluate("document.getElementById('recording-growth-allocationAt').textContent"),/1 h ago/);
+  assert.match(await evaluate("document.getElementById('recording-growth-fileEvidence').textContent"),/just now/);
+  await evaluate('panel.inventory(inventory)');
   await evaluate("document.querySelector('#recording-backup-card > summary').focus(); payload.recordingHealth.backup.state = 'running'; payload.recordingHealth.backup.startedAt = payload.recordingHealth.checkedAt; panel.update(payload)");
   assert.equal(await evaluate("document.activeElement === document.querySelector('#recording-backup-card > summary') && document.getElementById('recording-backup-card').open"),true,
     'Health updates preserve disclosure state and keyboard focus');

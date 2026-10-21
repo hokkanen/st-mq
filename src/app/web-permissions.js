@@ -10,6 +10,7 @@ const writes = new Set(['/api/automation', '/api/fireplace', '/api/fireplace/rem
 export function familyRouteAllowed(method, path) {
   return method === 'GET' ? reads.has(path) || /^\/api\/charging\/reports(?:\/[^/]+(?:\/events)?)?$/.test(path)
     : method === 'POST' && (writes.has(path)
+    || ['/api/recording-overview', '/api/energy-audits'].includes(path)
     || /^\/api\/charging\/tests\/(preview|start|schedule|target|cancel)$/.test(path)
     || /^\/api\/charging\/chargers\/[^/]+\/(settings|control|pause|resume|use-automatic|charge-now|identify|flexibility|flexibility-preview)$/.test(path));
 }

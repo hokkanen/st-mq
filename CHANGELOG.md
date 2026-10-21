@@ -6,6 +6,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Open recorded-data descriptions without scanning the whole database. Measure
+  complete counts and allocation with a shared background job, progress and
+  cancellation; energy checks run independently and retain dated complete results.
+  Browser timeouts and leaving the page no longer discard accepted work.
+- Organize recorded data and History tools with consistent actions, status,
+  progress and evidence. Rename the model audit **Check saved learning** and
+  group its detailed results in a secondary fold.
+
 - Load energy cost comparisons without preparing unused chart geometry or
   reading property-energy drawing data. Keep the same original-interval energy
   and cost calculations, and reduce energy-row decoding overhead for charts.
@@ -23,7 +31,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   preparation controls. Include the selected history in backups and mirroring;
   corrections, recovery, revert and restore select it together with the model.
 
-- Add **Verify learning reconstruction** under History tools to independently
+- Add **Check saved learning** under History tools to independently
   reconstruct and compare the complete saved model and all four recorded
   coefficient histories at one fixed boundary. Local jobs support pause, resume,
   cancellation and discarding their temporary files on master or slave. The check

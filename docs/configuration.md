@@ -55,7 +55,7 @@ ordinary reader whenever the resident head is not current.
 
 ### Local learning verification
 
-**Recording details → History tools → Verify learning reconstruction** starts an
+**Recording details → History tools → Check saved learning** starts an
 optional full check of the complete saved Home model and its four coefficient
 histories. The action is local to this computer and works for administrators on a
 master or slave. Viewers can inspect progress and results. There is no continuous
@@ -399,7 +399,7 @@ For ingress, use Home Assistant to log out.
 `recording.full_verification_interval_hours` configures optional background full
 database checks. The shared default is `0` (disabled); a positive interval up to
 8760 hours schedules a check after startup and after the previous check finishes.
-**Recording details → Verify database** starts the same check manually. It pins a
+**Recording details → History tools → Check database** starts the same check manually. It pins a
 read-only SQLite transaction and checks database integrity, the retained transaction
 chain and all current application contents in a separate worker. Compacted
 transactions are no longer available to recheck; their removal does not exclude

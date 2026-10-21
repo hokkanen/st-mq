@@ -160,7 +160,16 @@ test('worker cache renews an unchanged periodic report within the same fifteen-s
 test('recorded energy checks always include property availability and real charger summaries without private identifiers',async t=>{
   const {base,headers,store,now}=await fixture(t);
   assert.equal((await fetch(`${base}/api/energy-audits`)).status,401);
-  const read=()=>fetch(`${base}/api/energy-audits`,{headers}).then(response=>response.json());
+  const read=async()=>{
+    let view=await fetch(`${base}/api/energy-audits`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},
+      body:JSON.stringify({action:'refresh'})}).then(response=>response.json());
+    for(let attempt=0;attempt<100&&['queued','running'].includes(view.job?.state);attempt++) {
+      await new Promise(resolve=>setTimeout(resolve,10));
+      view=await fetch(`${base}/api/energy-audits`,{headers}).then(response=>response.json());
+    }
+    assert.equal(view.job.state,'completed');
+    return view.result;
+  };
   const empty = await read();
   assert.equal(empty[0].kind,'property-meter-summary');
   assert.equal(empty[0].summary.status,'no-readings');
@@ -178,8 +187,7 @@ test('recorded energy checks always include property availability and real charg
   recordChargingSessionCheck(store, { source:'easee',sessionKey:'invented-session',start:now-60000,end:now,
     estimatedKwh:1.1,referenceKwh:1,complete:true,quality:[] });
   const auditCount=store.energyAudits().length;
-  const response=await fetch(`${base}/api/energy-audits`,{headers});assert.equal(response.status,200);
-  const rows=await response.json();
+  const rows=await read();
   assert.deepEqual(rows.map(row=>row.signal),['property_import_energy_counter','ev1_session_energy_check']);
   assert.equal(rows[0].summary.status,'compared');
   assert.equal(rows[0].summary.readingCount,2);

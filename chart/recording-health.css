@@ -130,6 +130,41 @@
 .recording-section-body > :first-child { margin-top: 0; }
 .recording-section-body > .muted, .recording-section-body > p, .recording-overview-toolbar p { font-size: 12px; line-height: 1.6; }
 .recording-section-body > details, #recording-overview-content > details, #recording-content > details { margin-inline-start: 0; }
+.recording-task-overview, .recording-task-cleanup { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 14px 32px; margin: 0 0 16px; }
+.recording-task-overview > p, .recording-task-cleanup > p { margin: 0; max-width: 76ch; font-size: 12px; line-height: 1.65; }
+.recording-task-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.recording-task-actions > button, .recording-task-cleanup > button { margin: 0; min-height: 44px; font-size: 12px; }
+.recording-task-overview > .recording-task-actions { min-width: 184px; }
+.recording-task-overview > .recording-task-actions > button:only-child { min-width: 184px; }
+.recording-task-link { align-self: center; color: var(--text); font-size: 12px; line-height: 1.6; text-underline-offset: 3px; }
+.recording-task-status { padding: 13px 16px; margin: 0 0 16px; border-radius: 6px; background: var(--surface-soft); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.recording-task-status > p { margin: 0; }
+.recording-task-status > :is(p, div) + p:not(:empty) { margin-top: 8px; }
+.recording-task-status > .recording-task-actions { justify-content: flex-start; }
+.recording-task-status > .recording-task-actions:has(> :not([hidden])) { margin-top: 12px; }
+div.recording-task-status:not(:has(> p:not(:empty):not([hidden]), > progress:not([hidden]))) { display: none; }
+.recording-task-detail, .recording-task-footnote { color: var(--muted); font-size: 11px; line-height: 1.65; font-variant-numeric: tabular-nums; }
+.recording-task-detail:empty { display: none; }
+.recording-task-footnote { margin: 14px 0 0; }
+.recording-task-notice { padding-inline-start: 10px; border-inline-start: 2px solid var(--stale); }
+.recording-task-title { margin: 0 0 3px; font-size: 12px; font-weight: 600; line-height: 1.6; }
+.recording-task-evidence { margin: 0; border-block: 1px solid var(--border); }
+.recording-task-evidence > summary { padding: 12px 0; font-size: 12px; font-weight: 500; }
+.recording-task-evidence > summary:focus-visible, .recording-task-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 3px; }
+.recording-task-cleanup { align-items: center; margin: 14px 0; padding-top: 14px; border-top: 1px solid var(--border); }
+.recording-task-cleanup > p { font-size: 11px; }
+.recording-overview-toolbar > div:first-child { min-width: 0; }
+.recording-overview-toolbar p { color: var(--muted); }
+.recording-tools .recording-section[open] > summary { padding-bottom: 18px; }
+@media (max-width: 640px) {
+  .recording-task-overview, .recording-task-cleanup { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .recording-task-overview > .recording-task-actions { justify-content: flex-start; min-width: 0; }
+  .recording-task-actions > button { flex: 1 1 auto; }
+  .recording-task-overview > .recording-task-actions > button:only-child { min-width: 0; flex: none; }
+  .recording-task-status { padding: 12px; }
+  .recording-task-cleanup > button { justify-self: start; }
+  .recording-overview-toolbar > .recording-task-actions { justify-content: flex-start; }
+}
 .recording-inventory-link { margin-bottom: 12px; }
 .recording-inventory-link a { font-size: 12px; color: var(--muted); text-underline-offset: 3px; }
 .recording-storage-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; table-layout: fixed; }

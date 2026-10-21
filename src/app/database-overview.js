@@ -3,10 +3,9 @@ import { createHash } from 'node:crypto';
 import { SIGNAL_INFO } from '../domain/history-series.js';
 import { recordingPolicy, recordedSignalInfo, RECORDING_POLICIES } from '../domain/recording-policy.js';
 import { RECOVERABLE_TABLES, recoveryRecordKey } from '../storage/schema.js';
-import { inspectPhysicalAllocation } from '../storage/recording-metrics.js';
+import { physicalAllocationFromObjects } from '../storage/recording-metrics.js';
 import { JOURNAL_RETENTION } from '../storage/journal.js';
 
-export const OVERVIEW_REFRESH_MS = 5 * 60_000;
 const fields = (...pairs) => pairs.map(([name, description]) => ({ name, description }));
 const observationFields = fields(['Value and unit', 'A numeric value, or an explicit missing value.'],
   ['Observation and receipt times', 'When the source measured it and when this application received it.'],
@@ -72,20 +71,78 @@ const fileSize = (path,{missingIsZero=false}={}) => {
 /** Aggregate metadata only: no history payloads, credentials, device identifiers,
  * import paths, state keys or free-form notes leave SQLite. Every large scan is
  * performed by the read-only history worker and cached, never on control ticks. */
-export function getDatabaseOverview({ store, now = Date.now() }) {
-  const db = store.db;
-  const aggregate = (table, first, last = first, where = '1') => stats(db.prepare(
-    `SELECT COUNT(*) count,MIN(${first}) firstAt,MAX(${last}) lastAt FROM ${table} WHERE ${where}`).get());
-  const grouped = (table, expression, first, last = first, extra = '') => new Map(db.prepare(
+export function getDatabaseOverview(options) {
+  const steps = databaseOverviewQueries(options);
+  let next = steps.next();
+  while (!next.done) {
+    const { sql, params, mode } = next.value;
+    let value;
+    try { value = options.store.db.prepare(sql)[mode](...params); }
+    catch (error) { next = steps.throw(error); continue; }
+    next = steps.next(value);
+  }
+  return next.value;
+}
+
+/** Descriptions are available before any historical measurement. Missing
+ * figures are deliberately unknown, rather than fabricated empty history. */
+export function getDatabaseCatalogue({ store, now = Date.now() }) {
+  const signals = new Set([...Object.keys(SIGNAL_INFO), ...nonAdaptive.map(([signal]) => signal)]);
+  const streams = [...signals].map(signal => {
+    const unit = SIGNAL_INFO[signal]?.unit ?? 'state', policy = recordingPolicy({ source: 'catalogue', signal, unit });
+    return { source: 'catalogue', signal, unit, policyId: policy.id, count: 0, adaptiveEstimatedBytes: 0 };
+  }).filter(row => !RECORDING_POLICIES[row.policyId].adaptive && RECORDING_POLICIES[row.policyId].recorded);
+  const steps = databaseOverviewQueries({ store, now });
+  let next = steps.next();
+  while (!next.done) {
+    const { sql, mode } = next.value;
+    next = steps.next(mode === 'all' ? sql.includes('FROM observations GROUP BY') ? streams : [] : {});
+  }
+  const catalogue = next.value;
+  for (const group of catalogue.groups) for (const row of group.items) {
+    row.count = null; row.firstAt = null; row.lastAt = null; row.missingCount = null; row.status = 'unknown';
+    row.facts = row.facts?.map(fact => typeof fact.value === 'number' ? { ...fact, value: null } : fact);
+    if (row.breakdown) row.breakdown = [];
+  }
+  catalogue.groups.find(group => group.id === 'other_observations').description =
+    'Recording descriptions are available immediately. Measure the complete inventory to list retained streams, counts and dates.';
+  catalogue.catalogueComplete = false;
+  catalogue.inventoryIssues = [];
+  catalogue.accounting = null;
+  catalogue.generatedAt = now;
+  catalogue.database = getDatabaseFileMetrics({ store });
+  return catalogue;
+}
+
+/** Header pragmas and filesystem metadata only; neither walks history pages. */
+export function getDatabaseFileMetrics({ store }) {
+  const db = store.db, pageSize = db.prepare('PRAGMA page_size').get().page_size;
+  const fileBytes = store.path && store.path !== ':memory:' ? fileSize(store.path) : null;
+  const walBytes = store.path && store.path !== ':memory:' ? fileSize(`${store.path}-wal`, { missingIsZero: true }) : 0;
+  return { allocatedBytes: db.prepare('PRAGMA page_count').get().page_count * pageSize,
+    reusableBytes: db.prepare('PRAGMA freelist_count').get().freelist_count * pageSize,
+    fileBytes, walBytes, totalFileBytes: fileBytes === null || walBytes === null ? null : fileBytes + walBytes,
+    physical: { available: false, reason: 'not-measured' }, journalRetention: null,
+    adaptiveEstimatedBytes: null, adaptiveObservationCount: null };
+}
+
+/** The same inventory assembly serves direct offline checks and the bounded
+ * background reader. Queries are explicit work items, so the latter can yield
+ * between source batches without keeping an HTTP request or a chart lane open. */
+export function* databaseOverviewQueries({ store, now = Date.now() }) {
+  const request = function* (sql, mode = 'get', params = []) { return yield { sql, mode, params }; };
+  const aggregate = function* (table, first, last = first, where = '1') { return stats(yield* request(
+    `SELECT COUNT(*) count,MIN(${first}) firstAt,MAX(${last}) lastAt FROM ${table} WHERE ${where}`)); };
+  const grouped = function* (table, expression, first, last = first, extra = '') { return new Map((yield* request(
     `SELECT ${expression} category,COUNT(*) count,MIN(${first}) firstAt,MAX(${last}) lastAt ${extra}
-      FROM ${table} GROUP BY category`).all().map(row => [row.category, stats(row)]));
+      FROM ${table} GROUP BY category`, 'all')).map(row => [row.category, stats(row)])); };
   const groups = [];
   const add = (id, label, description, items) => groups.push({ id, label, description, items });
 
   // Group metadata in SQLite: history payloads and private device identities never
   // leave the database. The same policy drives the recorder and this inventory.
   const raw = "CASE WHEN json_valid(raw) THEN raw ELSE '{}' END";
-  const streams = db.prepare(`SELECT source,signal,unit,import_id IS NOT NULL imported,
+  const streams = yield* request(`SELECT source,signal,unit,import_id IS NOT NULL imported,
     json_extract(${raw},'$.recorder.policy') policyId,
     json_extract(${raw},'$.timeBasis') timeBasis,
     COUNT(*) count,MIN(COALESCE(source_time,received_at)) firstAt,
@@ -96,7 +153,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
         'unit',unit,'sourceTime',source_time,'receivedAt',received_at,
         'quality',json(CASE WHEN json_valid(quality) THEN quality ELSE '[]' END),'raw',json(${raw})) AS BLOB))
       ELSE 0 END) adaptiveEstimatedBytes
-    FROM observations GROUP BY source,signal,unit,imported,policyId,timeBasis`).all();
+    FROM observations GROUP BY source,signal,unit,imported,policyId,timeBasis`, 'all');
   const observations = new Map(), observedDatasets = new Map(), inventoryIssues = [];
   // Retained logical observation payload, including excluded recovery evidence.
   // This requested worker scan is separate from the prospective budget counter;
@@ -154,11 +211,11 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     'Each observed non-adaptive stream is listed below. Exact changes, circulation feedback, direct energy intervals and controller events have separate saving rules.',
     scalarItems.sort((a, b) => a.label.localeCompare(b.label)));
 
-  const imports = grouped('imports', "CASE WHEN kind IN ('stmq','easee') THEN kind ELSE 'other' END", 'started_at', 'COALESCE(completed_at,started_at)');
-  const importRows = aggregate('import_rows', 'source_time');
-  const importFacts = new Map(db.prepare(`SELECT CASE WHEN kind IN ('stmq','easee') THEN kind ELSE 'other' END category,
+  const imports = yield* grouped('imports', "CASE WHEN kind IN ('stmq','easee') THEN kind ELSE 'other' END", 'started_at', 'COALESCE(completed_at,started_at)');
+  const importRows = yield* aggregate('import_rows', 'source_time');
+  const importFacts = new Map((yield* request(`SELECT CASE WHEN kind IN ('stmq','easee') THEN kind ELSE 'other' END category,
     SUM(status='complete') complete,SUM(status='failed') failed,SUM(status='importing') importing,
-    SUM(row_count) sourceRows,SUM(rejected_count) rejected FROM imports GROUP BY category`).all().map(row => [row.category, row]));
+    SUM(row_count) sourceRows,SUM(rejected_count) rejected FROM imports GROUP BY category`, 'all')).map(row => [row.category, row]));
   const importItems = [];
   for (const [kind, signals] of Object.entries(importedSignals)) {
     const values = sum(signals.map(signal => observations.get(`${kind}:${signal}`) ?? empty()));
@@ -184,13 +241,13 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     fields: fields(['Identity and provenance', 'CSV kind, file digest and private source path.'], ['Progress', 'Start/completion times, status, row count and rejected count.']) }));
   add('imports', 'Imported CSV history', 'Supported v0.7.5 controller and Easee CSVs can be imported as historical observations. Source rows and decoded observations are separate stored records, not additional measurements.', importItems);
 
-  const snapshots = grouped('provider_snapshot_fetches', "CASE WHEN kind IN ('weather','market') THEN kind ELSE 'other' END", 'fetched_at');
-  const content = stats(db.prepare(`SELECT COUNT(DISTINCT c.id) count,MIN(f.fetched_at) firstAt,MAX(f.fetched_at) lastAt
-    FROM provider_snapshot_contents c LEFT JOIN provider_snapshot_fetches f ON f.content_id=c.id`).get());
+  const snapshots = yield* grouped('provider_snapshot_fetches', "CASE WHEN kind IN ('weather','market') THEN kind ELSE 'other' END", 'fetched_at');
+  const content = stats(yield* request(`SELECT COUNT(DISTINCT c.id) count,MIN(f.fetched_at) firstAt,MAX(f.fetched_at) lastAt
+    FROM provider_snapshot_contents c LEFT JOIN provider_snapshot_fetches f ON f.content_id=c.id`));
   const contentCount = content.count;
-  const contentStats = new Map(db.prepare(`SELECT CASE WHEN kind IN ('weather','market') THEN kind ELSE 'other' END category,
-    COUNT(DISTINCT content_id) versions,SUM(content_id IS NOT NULL) referenceCount FROM provider_snapshot_fetches GROUP BY category`)
-    .all().map(row => [row.category, row]));
+  const contentStats = new Map((yield* request(`SELECT CASE WHEN kind IN ('weather','market') THEN kind ELSE 'other' END category,
+    COUNT(DISTINCT content_id) versions,SUM(content_id IS NOT NULL) referenceCount FROM provider_snapshot_fetches GROUP BY category`,
+    'all')).map(row => [row.category, row]));
   const snapshotItem = (kind, label, description, definitions) => {
     const c = contentStats.get(kind) ?? { versions: 0, referenceCount: 0 };
     return item(`${kind}-snapshots`, label, description, snapshots.get(kind), {
@@ -202,10 +259,10 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     snapshotItem('weather', 'Temperature and solar forecasts', 'Saved forecasts from the configured weather sources, including their issuance and acquisition metadata.',
       fields(['Forecast intervals', 'Start/end time, outdoor temperature (°C) and solar radiation (W/m²), where supplied.'],
         ['Provenance and freshness', 'Provider, issue time and its basis, fetch time, acquisition health and content reference.']))]);
-  const contractState = aggregate('state', 'updated_at', 'updated_at', "key LIKE 'contract:%'");
-  const periods = stats(db.prepare(`SELECT COUNT(*) count,MIN(json_extract(p.value,'$.from')) firstAt,
+  const contractState = yield* aggregate('state', 'updated_at', 'updated_at', "key LIKE 'contract:%'");
+  const periods = stats(yield* request(`SELECT COUNT(*) count,MIN(json_extract(p.value,'$.from')) firstAt,
     MAX(json_extract(p.value,'$.from')) lastAt FROM state s,json_each(CASE WHEN json_valid(s.value)
-      THEN s.value ELSE '{}' END,'$.periods') p WHERE s.key LIKE 'contract:%'`).get());
+      THEN s.value ELSE '{}' END,'$.periods') p WHERE s.key LIKE 'contract:%'`));
   add('prices', 'Electricity prices and rates', 'Market prices and dated contract components are saved separately. All-in prices are calculated from them.', [
     snapshotItem('market', 'Spot-price snapshots', 'Published spot-price intervals and provider coverage information.',
       fields(['Price intervals', 'Interval start/end and spot price in c/kWh, with VAT/unit basis.'],
@@ -219,10 +276,10 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
         ['Energy components', 'Margin and electricity tax excluding VAT; VAT rate.'],
         ['Network transfer', 'Tariff selection and dated day/night/seasonal transfer rates.']) })]);
 
-  const journal = grouped('learning_journal', "CASE WHEN input IN ('mqtt','providers','simulated','offline') THEN kind ELSE 'inactive-scope' END", 'at');
-  const cycles = aggregate('learning_cycles', 'started_at', 'COALESCE(ended_at,started_at)');
-  const cycleFacts = db.prepare(`SELECT SUM(status='completed') completed,SUM(status='incomplete') incomplete,
-    SUM(json_type(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.assessment')='object') assessed FROM learning_cycles`).get();
+  const journal = yield* grouped('learning_journal', "CASE WHEN input IN ('mqtt','providers','simulated','offline') THEN kind ELSE 'inactive-scope' END", 'at');
+  const cycles = yield* aggregate('learning_cycles', 'started_at', 'COALESCE(ended_at,started_at)');
+  const cycleFacts = yield* request(`SELECT SUM(status='completed') completed,SUM(status='incomplete') incomplete,
+    SUM(json_type(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.assessment')='object') assessed FROM learning_cycles`);
   const learningItems = ['sample', 'episode', 'context'].map(kind => item(`journal-${kind}`, {
     sample: 'Reproducible learning samples', episode: 'Learning episodes', context: 'Learning context and configuration references',
   }[kind], { sample: 'Immutable causal samples constructed from committed history.', episode: 'Immutable completed episode inputs used for learning updates.',
@@ -252,10 +309,10 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
       ['Execution', 'Committed observations, requested phases, adjustments and coverage.'], ['Assessment', 'Recorded cycle cost, comparable space-heating cost and benefit, space-heating recovery error and uncertainty; hot-water service is excluded from benefit.']) }));
   add('learning', 'Learning history', 'Journal samples, episodes and contexts describe the selected model history. Other retained model epochs are listed under storage support. Cycle records retain original plans and outcomes, including records excluded by recovery corrections.', learningItems);
 
-  const fireplace = grouped('fireplace_events', "CASE WHEN kind IN ('load','remove') THEN kind ELSE 'other' END", 'at');
-  const retractedLoads = db.prepare(`SELECT COUNT(*) count FROM fireplace_events loads JOIN
+  const fireplace = yield* grouped('fireplace_events', "CASE WHEN kind IN ('load','remove') THEN kind ELSE 'other' END", 'at');
+  const retractedLoads = (yield* request(`SELECT COUNT(*) count FROM fireplace_events loads JOIN
     (SELECT input,target_id FROM fireplace_events WHERE kind='remove' GROUP BY input,target_id) corrections
-    ON corrections.input=loads.input AND corrections.target_id=loads.id WHERE loads.kind='load'`).get().count;
+    ON corrections.input=loads.input AND corrections.target_id=loads.id WHERE loads.kind='load'`)).count;
   add('fireplace', 'Fireplace history', 'Firewood additions and corrections are retained once. Delayed heat inputs are reconstructed from this history during learning; each correction does not store another copy of the training journal.', [
     item('fireplace-loads', 'Recorded firewood additions', 'Reported loads for either fireplace and subsequent additions. This inventory includes retained mistaken entries as well as current entries, beyond the dashboard’s 48-hour list.', fireplace.get('load'), {
       countLabel: 'additions', dateBasis: 'recording time', writeBehavior: 'Once per distinct submission; retrying the same request does not add another load.',
@@ -304,7 +361,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['pair-mqtt', "key='pair:mqtt-source-context'", 'Paired MQTT source context', 'Current source identities and equipment-configuration binding preserved through verified pair handover. Saved context alone grants no control authority; private broker and equipment identities are omitted.'],
     ['simulation', "key LIKE 'simulation:%'", 'Simulation state', 'Current simulated plant state for resuming a simulation.'],
   ];
-  const state = grouped('state', `CASE ${stateCategories.map(([id, where]) => `WHEN ${where} THEN ${quote(id)}`).join(' ')} ELSE 'other' END`, 'updated_at', 'updated_at', ",SUM(value='null') missingCount");
+  const state = yield* grouped('state', `CASE ${stateCategories.map(([id, where]) => `WHEN ${where} THEN ${quote(id)}`).join(' ')} ELSE 'other' END`, 'updated_at', 'updated_at', ",SUM(value='null') missingCount");
   const currentOptions = { retention: 'current', countLabel: 'current entries', dateBasis: 'last updates',
     retentionDescription: 'Updated in place. Previous versions of these current entries are not retained here.',
     writeBehavior: 'When the associated state changes.', fields: fields(['Current state', 'Latest saved state and update timestamp; private identifiers and values are omitted from this inventory.']) };
@@ -322,8 +379,8 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
       ...(state.get('other')?.count ? [item('state-other', 'Unrecognized current-state entries', 'Each unrecognized entry is identified below by an opaque reference to avoid exposing private device identifiers. No current writer description is available.', state.get('other'), currentOptions)] : [])]);
   if (state.get('other')?.count) {
     inventoryIssues.push('Current-state entries without a registered writer description are present.');
-    groups.at(-1).items.at(-1).breakdown = db.prepare(`SELECT key,updated_at FROM state WHERE NOT
-      (${stateCategories.map(([, where]) => `(${where})`).join(' OR ')}) ORDER BY key`).all()
+    groups.at(-1).items.at(-1).breakdown = (yield* request(`SELECT key,updated_at FROM state WHERE NOT
+      (${stateCategories.map(([, where]) => `(${where})`).join(' OR ')}) ORDER BY key`, 'all'))
       .map(row => ({ label: `State entry ${opaqueId(row.key)}`, count: 1, firstAt: row.updated_at, lastAt: row.updated_at }));
   }
 
@@ -347,8 +404,8 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['history', "type LIKE 'history%'", 'History import and recovery events', 'Import completion and atomic recovery outcomes; source files and private paths are not displayed.'],
     ['application', "type IN ('controller-error','provider-cache-rebuild','settings-reloaded','settings-reload-failed','charging-session-check-conflict')", 'Application diagnostics', 'Controller errors, cache rebuilds, configuration reload results and conflicting charger checks.'],
   ];
-  const eventTypes = db.prepare(`SELECT CASE ${eventCategories.map(([id, where]) => `WHEN ${where} THEN ${quote(id)}`).join(' ')} ELSE 'other' END category,
-    type,COUNT(*) count,MIN(at) firstAt,MAX(at) lastAt FROM events GROUP BY category,type ORDER BY type`).all();
+  const eventTypes = yield* request(`SELECT CASE ${eventCategories.map(([id, where]) => `WHEN ${where} THEN ${quote(id)}`).join(' ')} ELSE 'other' END category,
+    type,COUNT(*) count,MIN(at) firstAt,MAX(at) lastAt FROM events GROUP BY category,type ORDER BY type`, 'all');
   const events = new Map();
   for (const row of eventTypes) addCount(events, row.category, row);
   const eventItems = eventCategories.map(([id, , label, description]) => item(`events-${id}`, label, description, events.get(id), {
@@ -371,8 +428,8 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     const unknown = eventItems.find(row => row.id === 'events-other');
     unknown.label = 'Unrecognized event types'; unknown.description = 'Each distinct unrecognized event type is counted separately below with an opaque reference; payloads remain private.';
   }
-  const counters = aggregate('counters', "COALESCE(source_time,CAST(strftime('%s',observed_date) AS INTEGER)*1000)");
-  const annotations = aggregate('annotations', 'start_at', 'COALESCE(end_at,start_at)');
+  const counters = yield* aggregate('counters', "COALESCE(source_time,CAST(strftime('%s',observed_date) AS INTEGER)*1000)");
+  const annotations = yield* aggregate('annotations', 'start_at', 'COALESCE(end_at,start_at)');
   eventItems.push(item('manual-counters', 'Dated manual runtime counters', 'Manually entered compressor, auxiliary-stage and hot-water runtime readings. A date alone does not imply a known time of day.', counters, {
     dateBasis: 'observation dates', datePrecision: 'date', writeBehavior: 'When manual history is added or seeded.',
     fields: fields(['Runtime counters', 'Compressor, auxiliary 3 kW, auxiliary 6 kW and hot-water hours.'], ['Provenance', 'Observation date, optional precise time, unit and source note.']) }));
@@ -381,16 +438,16 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     fields: fields(['Period and classification', 'Start/end, kind and confidence in the boundaries.'], ['Interpretation', 'Note, provenance and whether the period is excluded from training.']) }));
   add('events', 'Events, manual counters and annotations', 'Recorded decisions and context explain what happened without presenting calculated results as physical measurements.', eventItems);
 
-  const coverage = aggregate('recorder_coverage', 'start_at', 'end_at');
-  const metrics = aggregate('recorder_metrics', 'bucket');
-  const audits = aggregate('energy_audits', 'source_time');
-  const journalEntries = aggregate('learning_journal_entries', 'at');
-  const epochs = aggregate('learning_epochs', 'NULL');
-  const chargingReports = aggregate('charging_reports', 'started_at', 'COALESCE(ended_at,started_at)');
-  const chargingEvents = aggregate('charging_report_events', 'at');
-  const chargingContexts = aggregate('charging_report_contexts', 'NULL');
-  const chargingReportCounts = db.prepare(`SELECT SUM(ended_at IS NULL) active,
-    SUM(saved_at IS NOT NULL) saved FROM charging_reports`).get();
+  const coverage = yield* aggregate('recorder_coverage', 'start_at', 'end_at');
+  const metrics = yield* aggregate('recorder_metrics', 'bucket');
+  const audits = yield* aggregate('energy_audits', 'source_time');
+  const journalEntries = yield* aggregate('learning_journal_entries', 'at');
+  const epochs = yield* aggregate('learning_epochs', 'NULL');
+  const chargingReports = yield* aggregate('charging_reports', 'started_at', 'COALESCE(ended_at,started_at)');
+  const chargingEvents = yield* aggregate('charging_report_events', 'at');
+  const chargingContexts = yield* aggregate('charging_report_contexts', 'NULL');
+  const chargingReportCounts = yield* request(`SELECT SUM(ended_at IS NULL) active,
+    SUM(saved_at IS NOT NULL) saved FROM charging_reports`);
   add('charging_reports', 'Charging session reports',
     'Session summaries and original diagnostic evidence, independent of recorded energy and charger control ownership.', [
       item('charging-reports', 'Session reports', 'Current assessment, observation coverage, finding summaries and saved-report protection.', chargingReports, {
@@ -417,30 +474,31 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
           ['Report ownership', 'Context belongs to one report and cannot extend its retention or grant control authority.']),
       }),
     ]);
-  const recoveryRuns = aggregate('recovery_runs', 'started_at', 'COALESCE(completed_at,started_at)');
-  const recoverySources = aggregate('recovery_provenance', 'NULL');
-  const recoveries = aggregate('history_recoveries', 'started_at', 'COALESCE(completed_at,started_at)');
-  const recoveryMembers = aggregate('recovery_members', 'NULL');
-  const recoveryDecisions = aggregate('recovery_decisions', 'at');
-  const historySelections = aggregate('history_selection', 'NULL');
-  const recoveryExclusions = aggregate('recovery_exclusions', 'NULL');
-  const recoveryFacts = db.prepare(`SELECT SUM(active=1) active,SUM(active=0) reverted,
-    SUM(completed_at IS NULL) unfinished FROM history_recoveries`).get();
+  const recoveryRuns = yield* aggregate('recovery_runs', 'started_at', 'COALESCE(completed_at,started_at)');
+  const recoverySources = yield* aggregate('recovery_provenance', 'NULL');
+  const recoveries = yield* aggregate('history_recoveries', 'started_at', 'COALESCE(completed_at,started_at)');
+  const recoveryMembers = yield* aggregate('recovery_members', 'NULL');
+  const recoveryDecisions = yield* aggregate('recovery_decisions', 'at');
+  const historySelections = yield* aggregate('history_selection', 'NULL');
+  const recoveryExclusions = yield* aggregate('recovery_exclusions', 'NULL');
+  const recoveryFacts = yield* request(`SELECT SUM(active=1) active,SUM(active=0) reverted,
+    SUM(completed_at IS NULL) unfinished FROM history_recoveries`);
   // Only exclusions belonging to the published selection count as excluded
   // history. Indexed source lookups avoid scanning the history again for each
   // view, and ignore stale references to rows no longer physically retained.
-  const excludedRows = table => {
+  const excludedRows = function* (table) {
     const physical = table === 'learning_journal' ? 'learning_journal_entries' : table;
     const lookup = table === 'import_rows'
       ? "r.import_id=CAST(substr(x.record_key,1,instr(x.record_key,':')-1) AS INTEGER) AND r.row_number=CAST(substr(x.record_key,instr(x.record_key,':')+1) AS INTEGER)"
       : 'r.id=x.record_key';
-    return Number(db.prepare(`SELECT COUNT(*) count FROM recovery_exclusions x JOIN ${physical} r
+    return Number((yield* request(`SELECT COUNT(*) count FROM recovery_exclusions x JOIN ${physical} r
       ON ${lookup} AND ${recoveryRecordKey(table)}=x.record_key
-      WHERE x.generation=(SELECT generation FROM history_selection WHERE id=1) AND x.table_name=?`).get(table).count);
+      WHERE x.generation=(SELECT generation FROM history_selection WHERE id=1) AND x.table_name=?`, 'get', [table])).count);
   };
-  const exclusionsByTable = new Map(RECOVERABLE_TABLES.map(table => [table, excludedRows(table)]));
+  const exclusionsByTable = new Map();
+  for (const table of RECOVERABLE_TABLES) exclusionsByTable.set(table, yield* excludedRows(table));
   const selectedExclusions = [...exclusionsByTable.values()].reduce((total, count) => total + count, 0);
-  const excludedLearning = excludedRows('learning_journal');
+  const excludedLearning = yield* excludedRows('learning_journal');
   add('recovery', 'Recovered history and corrections', 'Recoveries retain their original source evidence. Revert and restore change which records charts and learning use; they do not erase the stored source or undo recorded equipment actions. Counts here are records and references, not additional measurements.', [
     item('history-recoveries', 'Recovery operations', 'Persistent identities, sources and outcomes for accepted recoveries, including interrupted work and later reversals.', recoveries, {
       countLabel: 'recoveries', retention: 'mixed', dateBasis: 'recovery start / completion',
@@ -475,7 +533,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
       writeBehavior: 'Built in the background for a proposed reversal or restoration before atomic publication.',
       fields: fields(['Exclusion reference', 'History generation, dataset and original record reference; no duplicated source payload.']) }),
   ]);
-  const otherEpochs = aggregate('learning_journal_entries', 'at', 'at',
+  const otherEpochs = yield* aggregate('learning_journal_entries', 'at', 'at',
     "epoch<>COALESCE((SELECT epoch FROM learning_epochs WHERE input=learning_journal_entries.input),'original')");
   add('support', 'Recording and storage support', 'These support records are stored in addition to measurements. Charts read selected original committed records using SQLite indexes; excluded recovery evidence stays in storage. Display-point reduction and cached chart responses stay in memory; no separate chart summaries are stored in the database.', [
     item('adaptive-observations', 'Saved adaptive measurement history', 'Every saved adaptive dataset is listed here, including recovered history without a current recorder checkpoint. The Adaptive measurements table shows streams with a current checkpoint and their thresholds. Matching signals with the same unit and saving rule are combined across sources.', observations.get('adaptive'), {
@@ -535,7 +593,8 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['coefficient_events', 'Coefficient changes', 'All four coefficients, fitted evidence and change clocks recorded after ordered learning changes; no chart reconstruction is needed.', 'history', 'at'],
     ['coefficient_segments', 'Unchanged coefficient prefixes', 'Compact references retain proven unaffected history before a corrected model suffix.', 'history', 'NULL'],
   ];
-  const journalCounts = Object.fromEntries(journalTables.map(([table,,, ,time])=>[table,aggregate(table,time)]));
+  const journalCounts = {};
+  for (const [table,,,,time] of journalTables) journalCounts[table] = yield* aggregate(table,time);
   add('transactions', 'Transaction history and retained branches',
     'Transaction patches have bounded retention. Durable checkpoint advancement releases older entries while required application history remains intact. Archived divergent evidence remains available for explicit recovery. These records are not additional measured observations.',
     journalTables.map(([table,label,description,retention,time])=>item(table,label,description,journalCounts[table], {
@@ -563,10 +622,11 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     history_selection: historySelections.count, recovery_exclusions: recoveryExclusions.count,
     ...Object.fromEntries(Object.entries(journalCounts).map(([table,value])=>[table,value.count])),
   };
-  const actualTables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
+  const actualTables = yield* request("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name", 'all');
   if (actualTables.some(({ name }) => !Object.hasOwn(tableCounts, name))) inventoryIssues.push('An unregistered physical table needs a writer and retention description.');
-  const tables = actualTables.map(({ name }, index) => Object.hasOwn(tableCounts, name) ? { name, rows: tableCounts[name] }
-    : { name: `Additional internal table ${index + 1}`, rows: db.prepare(`SELECT COUNT(*) count FROM "${name.replaceAll('"', '""')}"`).get().count });
+  const tables = [];
+  for (const [index, { name }] of actualTables.entries()) tables.push(Object.hasOwn(tableCounts, name) ? { name, rows: tableCounts[name] }
+    : { name: `Additional internal table ${index + 1}`, rows: (yield* request(`SELECT COUNT(*) count FROM "${name.replaceAll('"', '""')}"`)).count });
   const selectionTables = RECOVERABLE_TABLES.map(name => ({ name, retainedRows: tableCounts[name],
     selectedRows: tableCounts[name] - exclusionsByTable.get(name), excludedRows: exclusionsByTable.get(name) }));
   const retainedSourceRows = selectionTables.reduce((total, row) => total + row.retainedRows, 0);
@@ -580,22 +640,30 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ...Object.fromEntries(RECOVERABLE_TABLES.map(table => [`active_${table}`, `Selects currently included records from ${table}; excluded originals remain counted in that physical table. This view stores no rows.`])),
     active_provider_snapshots: 'Joins currently included provider fetches and shared content for charts and learning; stores no additional rows.',
   };
-  const actualViews = db.prepare("SELECT name FROM sqlite_schema WHERE type='view' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
+  const actualViews = yield* request("SELECT name FROM sqlite_schema WHERE type='view' AND name NOT LIKE 'sqlite_%' ORDER BY name", 'all');
   if (actualViews.some(({ name }) => !Object.hasOwn(viewDescriptions, name)))
     inventoryIssues.push('An unregistered SQL view needs an interpretation description.');
   const views = actualViews.map(({ name }, index) => Object.hasOwn(viewDescriptions, name)
     ? { name, description: viewDescriptions[name] }
     : { name: `Additional internal view ${index + 1}`, description: 'A read-only projection with no physical rows; its interpretation is not registered.' });
-  const pageSize = db.prepare('PRAGMA page_size').get().page_size;
-  const allocatedBytes = db.prepare('PRAGMA page_count').get().page_count * pageSize;
-  const reusableBytes = db.prepare('PRAGMA freelist_count').get().freelist_count * pageSize;
-  const physical = inspectPhysicalAllocation(db, { allocatedBytes, reusableBytes });
-  const journalAllocation = db.prepare('SELECT base_sequence,sequence,retained_bytes,retained_commits FROM journal_meta WHERE id=1').get();
+  const pageSize = (yield* request('PRAGMA page_size')).page_size;
+  const allocatedBytes = (yield* request('PRAGMA page_count')).page_count * pageSize;
+  const reusableBytes = (yield* request('PRAGMA freelist_count')).freelist_count * pageSize;
+  let physical;
+  try {
+    const objects = yield* request(`SELECT d.name,s.type,SUM(d.pgsize) bytes FROM dbstat d
+      LEFT JOIN sqlite_schema s ON s.name=d.name GROUP BY d.name,s.type`, 'all');
+    physical = physicalAllocationFromObjects(objects, { allocatedBytes, reusableBytes });
+  } catch (error) {
+    if (!/no such (?:table|module): dbstat/.test(error?.message ?? '')) throw error;
+    physical = { available: false, reason: 'sqlite-page-statistics-unavailable' };
+  }
+  const journalAllocation = yield* request('SELECT base_sequence,sequence,retained_bytes,retained_commits FROM journal_meta WHERE id=1');
   const journalRetention = { baseSequence: journalAllocation.base_sequence, headSequence: journalAllocation.sequence,
     payloadBytes: journalAllocation.retained_bytes, commits: journalAllocation.retained_commits, ...JOURNAL_RETENTION };
   const fileBytes = store.path && store.path !== ':memory:' ? fileSize(store.path) : null;
   const walBytes = store.path && store.path !== ':memory:' ? fileSize(`${store.path}-wal`,{missingIsZero:true}) : 0;
-  return { generatedAt: now, refreshAfterMs: OVERVIEW_REFRESH_MS,
+  return { generatedAt: now,
     catalogueComplete: inventoryIssues.length === 0, inventoryIssues: [...new Set(inventoryIssues)],
     database: { allocatedBytes, reusableBytes, physical, journalRetention, fileBytes, walBytes, totalFileBytes: fileBytes === null || walBytes === null ? null : fileBytes + walBytes,
       adaptiveEstimatedBytes,adaptiveObservationCount:observations.get('adaptive')?.count ?? 0,

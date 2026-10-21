@@ -182,7 +182,7 @@ Pending, failed or abandoned staging leaves the previous model and history in us
 Reuse of an unchanged prefix still requires the current recovery/correction
 proofs; delayed work cannot cross source epochs or override newer selections.
 
-**History tools → Verify learning reconstruction** is an independent optional
+**History tools → Check saved learning** is an independent optional
 read-only audit. It fixes a durable saved model and exact committed journal
 boundary, replays from the supported seed, compares the complete checkpoint and
 compares every recorded coefficient change and its quality/evidence semantics

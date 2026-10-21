@@ -514,13 +514,30 @@ its own dates when the latest reading cannot be compared. Reading counts and
 comparisons belong to the latest reading's source and physical meter; another
 meter's history cannot supply a baseline or a successful result.
 
-Property and charger summaries run together in the existing read-only history
-worker, against one committed selected-history snapshot. They share the bounded
-foreground queue, cancellation and idle shutdown used by charts. A successful
-latest property period reads its baseline and count without materializing older
-counter rows. Finding an earlier success streams counter pairs and energy once
-with bounded memory; there is no history-page cutoff. Long histories may still
-take time to inspect, while control, recording and other HTTP requests continue.
+Property and charger summaries run as a shared read-only background job with
+an independent worker, outside the chart and inventory queues. Opening the fold
+returns its job status immediately and starts a check when needed. The latest
+meter reading appears after its bounded source pass; historical comparisons are
+published together only after the complete check succeeds. A previous complete
+result retains its completion time and receipt cutoff while a refresh runs.
+**Refresh checks** starts a new check and **Cancel check** stops the current one.
+Leaving or closing the page only stops browser polling; it does not cancel the
+shared server job. Cancelled or failed jobs wait for an explicit retry.
+
+Source reads use indexed batches and yield storage admission between batches.
+Comparison evidence uses a replaceable, disk-backed worker cache, with bounded
+memory; supported append-only changes can extend that cache. Retained evidence
+is capped at 128 MiB and discarded after two idle minutes. An active exact check
+may use scratch space proportional to its inputs; oversized scratch is discarded
+after completion while the small, dated result remains available. Cache eviction
+only means that a later check rereads evidence; it never limits history or drops
+comparisons. Changed selection,
+incompatible continuity, source edits and clock rollback invalidate affected
+cached evidence. The exact comparison still includes every applicable recorded
+session and may search all older counter pairs for the last successful property
+comparison. A partial scan never becomes a complete count or energy total.
+No history-page cutoff hides an older success. These jobs do not edit source
+history, learn model coefficients or grant device control.
 
 Each check names its measurement method. **Property** compares the sum of its
 stored, power-integrated phase energies with the Equalizer import-counter
@@ -1287,7 +1304,7 @@ setting. Source corrections, recovery, revert and restore publish the matching
 model and coefficient timeline atomically, keeping the prior selection available
 until that publication succeeds.
 
-**Recording details → History tools → Verify learning reconstruction** optionally
+**Recording details → History tools → Check saved learning** optionally
 reconstructs the complete saved Home model and all four timelines from their
 journal and compares them at one fixed durable boundary. The boundary may lag live
 learning. Results identify the exact checked journal entry and learning time,
@@ -1464,9 +1481,10 @@ shows **Still settling** during its first week and then names its seven-day
 smoothing. It explicitly excludes forecasting report expiry or next year's
 database size. The adaptive target remains
 next to adaptive growth, never beside total growth as if it were a total cap.
-The prospective adaptive byte counter names its start date. Opening **Storage & growth** or **Other recorded data** requests the shared
-cached, read-only inventory in a worker;
-its dated estimate covers retained adaptive observations, including recovered
+The prospective adaptive byte counter names its start date. Opening **Storage & growth** or **Other recorded data** requests a quick catalogue and inexpensive
+file/allocation figures. **Measure complete inventory** starts a shared,
+read-only background measurement with progress and cancellation. Its completed,
+dated estimate covers retained adaptive observations, including recovered
 observations and currently excluded recovery evidence. Exact measurements and
 CSV import rows belong to **Other recorded data**, outside that estimate. It excludes shared
 indexes, page slack and other tables, so it cannot be subtracted from physical
@@ -1667,7 +1685,7 @@ created by health polling.
 
 The **Other recorded data** fold appears immediately after **Adaptive measurements**,
 followed by **Recorded energy checks**. **Export database** lives inside **Backups**, alongside the copy list.
-**History recovery** and **Verify database** remain under **History tools**, with
+**Check saved learning**, **History recovery** and **Check database** remain under **History tools**, with
 their explanations and actions inside their own folds. The data inventory describes the remaining
 datasets using field lists, counts, available dates and the way each dataset is
 updated; database size figures stay in **Storage & growth**. Groups cover:
@@ -1706,13 +1724,31 @@ No recovery names, private source paths, fingerprints or record payloads are exp
 by this inventory.
 
 Database inventory queries are read-only. Opening the outer Recording details
-fold alone performs no full inventory query. The shared cached inventory refreshes while **Storage & growth** or **Other recorded data**
-is open. Both folds share one request and cache. A bounded worker query keeps large inventories out of the live
-control loop. **Refresh inventory** bypasses the worker cache; ordinary reads retain
-its five-minute cache. Missing or unreadable database-file sizes remain unknown;
-an absent WAL is zero. A fresh inventory owns the allocation figures consistently
-in both the summary and its details. Database replacement, scope change and logout
-clear previous inventory and energy-check results and fence late responses.
+fold alone performs no inventory query. **Storage & growth** and **Other recorded
+data** share a quick catalogue, job and last completed measurement. Descriptions
+load without a whole-history scan; unmeasured counts and dates remain unknown,
+not empty or zero. **Measure complete inventory** explicitly measures all retained
+history and detailed allocation in bounded source batches. The job has its own
+worker rather than waiting behind archive charts or energy checks. Browsers read
+short status responses while the job continues; leaving a page or a browser
+request timing out does not discard its progress. **Cancel measurement** stops
+the shared job. Previous completed figures retain their original date until a
+new complete result is published.
+
+`GET /api/recording-overview` returns `{catalogue,result,job}`. `POST` on the same
+route accepts exactly `{action:"measure"}` or `{action:"cancel"}`. The energy
+route `GET /api/energy-audits` returns `{latest,result,resultGeneratedAt,resultAsOf,job}`;
+its `POST` accepts exactly `{action:"refresh"}` or `{action:"cancel"}`. The old
+inventory refresh query is unsupported. These read-only inspections are available
+to authenticated admin and family users on master and standby, independently of
+actuator and main-database write authority. Jobs and results belong to the current
+application/store lifetime; they are replaceable caches, not durable history.
+
+Missing or unreadable database-file sizes remain unknown; an absent WAL is zero.
+Database replacement and selected-history changes invalidate affected results;
+scope change and logout clear browser results and fence late responses. Only a
+complete measurement owns historical counts and per-category allocation.
+
 Expand/collapse state and keyboard focus survive updates. Meter-accuracy details
 show the property cumulative-meter check and the Charger 1 session summary
 without changing the learner.

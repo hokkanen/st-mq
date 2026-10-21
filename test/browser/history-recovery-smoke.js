@@ -100,7 +100,14 @@ try {
         }, 100);
         return json(202, { ...recovery, peer });
       }
-      assert.equal(request.method, 'GET', 'Only synthetic recovery mutations are accepted');
+      if(request.url==='/api/recording-overview'&&request.method==='POST'){
+        const chunks=[];for await(const chunk of request)chunks.push(chunk);
+        const body=JSON.parse(Buffer.concat(chunks));
+        assert.deepEqual(Object.keys(body),['action']);assert(['measure','cancel'].includes(body.action));
+        const result=await fetch(`${upstream}${request.url}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        return json(result.status,await result.json());
+      }
+      assert.equal(request.method, 'GET', 'Only synthetic recovery actions and read-only diagnostics are accepted');
       const result = await fetch(`${upstream}${request.url}`);
       const headers = Object.fromEntries([...result.headers].filter(([key]) => !['content-length', 'content-encoding', 'transfer-encoding', 'connection'].includes(key)));
       if (request.url === '/api/status') {
@@ -153,6 +160,8 @@ try {
   await evaluate(`${$('recording-details')}.open = true; true`);
   assert.equal(await evaluate(`${$('recording-growth-retained')}.textContent`), 'Not checked', 'Opening Recording details alone leaves the full inventory lazy');
   await evaluate(`${$('recording-disk-card')}.open = true; true`);
+  await until(`${$('recording-overview-message')}.textContent.includes('Dataset descriptions')`);
+  await evaluate(`${$('recording-overview-refresh')}.click(); true`);
   await until(`${$('recording-growth-inventoryAt')}.textContent.includes('Retained adaptive payload estimate')`);
   await evaluate(`${$('recording-disk-card')}.open = false; true`);
   assert.equal(await evaluate(`${$('recording-overview-details')}.open`), false, 'Storage inventory does not unfold Other recorded data');
@@ -170,8 +179,8 @@ try {
     await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
     await evaluate(`${$('history-recovery-details')}.scrollIntoView({block:'center'});true`);
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Expanded recovery launcher fits');
-    assert.equal(await evaluate("(() => { const body=document.querySelector('#history-recovery-details .recording-section-body'), description=body.firstElementChild.getBoundingClientRect(), button=body.querySelector('button').getBoundingClientRect(); return Math.abs(button.left-description.left)<2 && button.top>=description.bottom; })()"), true, 'Recovery uses the same left-aligned action placement as the export tools');
-    assert.equal(await evaluate("(() => { const buttons=['database-export-save','history-recovery-open','database-verification-start'].map(id=>document.getElementById(id)); const first=buttons[0].getBoundingClientRect(); return buttons.every(button=>{const b=button.getBoundingClientRect(),body=button.closest('.recording-section-body').getBoundingClientRect();return Math.abs(b.left-body.left)<2 && Math.abs(b.height-first.height)<2;}); })()"), true, 'Export, recovery and verification share button height and align within their owning folds');
+    assert.equal(await evaluate("(() => { const body=document.querySelector('#history-recovery-details .recording-task-overview'),description=body.querySelector('p').getBoundingClientRect(),button=body.querySelector('button').getBoundingClientRect(),row=body.getBoundingClientRect();return innerWidth>640?Math.abs(button.right-row.right)<2&&Math.abs(button.top-description.top)<2:Math.abs(button.left-description.left)<2&&button.top>=description.bottom; })()"),true,'Recovery aligns its action with the overview on desktop and stacks it beneath the description on mobile');
+    assert.equal(await evaluate("(() => {const buttons=['history-recovery-open','database-verification-start'].map(id=>document.getElementById(id).getBoundingClientRect());return buttons.every(b=>b.height>=44&&Math.abs((innerWidth>640?b.right:b.left)-(innerWidth>640?buttons[0].right:buttons[0].left))<2&&Math.abs(b.height-buttons[0].height)<2);})()"),true,'History tools share the same action alignment and touch target height');
     await capture(`recording-recovery-expanded-${width}-${theme}`);
   }
   assert.equal(await evaluate('document.activeElement.id'), 'history-recovery-open', 'Recording opener receives keyboard focus');
@@ -280,6 +289,7 @@ try {
   await send('Page.reload'); await until("document.body.dataset.authenticated === 'true'");
   await evaluate(`${$('recording-details')}.open=true;${$('history-recovery-details')}.open=true;true`);
   await until(`${$('history-recovery-summary')}.textContent.includes('Rebuilding')`);
+  assert.equal(await evaluate(`${$('history-recovery-summary')}.checkVisibility()`),true,'Running recovery progress remains visible in its history tool');
   assert.equal(await evaluate(`${$('history-recovery-dialog')}.open`), false, 'Reload discovers progress without opening a modal');
   await click('history-recovery-open'); await until(`${$('history-recovery-status')}.textContent.includes('Rebuilding')`);
   assert.equal(requests.filter(item => item.action === 'recover').length, 1);
@@ -446,7 +456,7 @@ try {
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'history-recovery-browser-passed', layouts, screenshots,
     checks: ['production standalone opener', 'peer same modal and preselection', 'normal comparison cannot recover', 'installation confirmation', 'preview', 'recover with confirmation',
-      'nested recording fold', 'aligned export/recovery/verification actions', 'quiet verification polls', 'stable reload dimensions during automatic refresh', 'energy gaps separate from 28 retained-message diagnostics', 'point duration unknown', 'grouped signal disclosure and focus preserved on refresh',
+      'nested recording fold', 'aligned history tool actions', 'quiet verification polls', 'stable reload dimensions during automatic refresh', 'energy gaps separate from 28 retained-message diagnostics', 'point duration unknown', 'grouped signal disclosure and focus preserved on refresh',
       'separate recovery/history views', 'close and reopen running job', 'complete result', 'whole operation revert and restore', 'old interrupted recovery', 'earlier pages', 'upload', 'keyboard focus and escape', '320/390/768/1440 both themes', 'short-screen header and scrolled review', 'family restriction',
       'normal slave no-recovery visual cue', 'failed recheck clears prior success', 'incompatible algorithm keeps mirroring blocked', 'exporter version provenance', 'slave-first upgrade guidance',
       'unchanged protected source hides recovery', 'neutral resume confirmation and no discard request', 'verification failure separate from zero changes', 'changed source dates retained', 'quiet empty-source polling keeps focus',

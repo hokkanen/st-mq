@@ -23,7 +23,8 @@ import { fetchChartResponse } from './chart-request.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues, priceControlState, renderHomePolicy, homeIndoorEstimate, homeReferenceSummary } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, h66ReadingGroups, renderModelInputs } from './learning-status.js';
-import { renderRecording, renderRecordingOverview, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
+import { renderRecording, renderRecordingOverview, recordingOverviewRefresh } from './recording.js';
+import { createEnergyChecksRefresh } from './energy-check-refresh.js';
 import { createRecordingHealth } from './recording-health.js';
 import './recording-health.css';
 import { bindDatabaseExport } from './database-export.js';
@@ -1303,10 +1304,13 @@ $('h66-test-form').addEventListener('submit', async event => {
   }
   await refresh();
 });
-const refreshRecordingOverview=recordingOverviewRefresh({request:(path, options) => api(path, undefined, options),root:$('recording-overview-content'),
+const recordedDataRequest = (path, options = {}) => api(path, options.method === 'POST' ? JSON.parse(options.body) : undefined, options);
+const refreshRecordingOverview=recordingOverviewRefresh({request:recordedDataRequest,root:$('recording-overview-content'),
   details:[$('recording-overview-details'),$('recording-disk-card')],parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh'),
   isVisible: () => dashboardStatusReceived && document.body.dataset.authenticated === 'true' && document.visibilityState !== 'hidden',
-  render: (overview, root) => { renderRecordingOverview(overview, root); recordingHealth.inventory(overview); },
+  cancel: $('recording-overview-cancel'), progress: $('recording-overview-progress'), detail: $('recording-overview-detail'),
+  render: renderRecordingOverview,
+  onView: view => recordingHealth.inventory(view.result ?? view.catalogue, { files: view.catalogue }),
   onState: state => recordingHealth.inventoryStatus(state) });
 const databaseExport = bindDatabaseExport({ saveButton: $('database-export-save'), downloadButton: $('database-export-download'),
   message: $('database-export-message'), progress: $('database-export-progress'), detail: $('database-export-detail'),
@@ -1345,36 +1349,19 @@ for (const [id, path, filename] of [
     $('floor-download-message').textContent = 'Download ready.';
   } catch (error) { $('floor-download-message').textContent = error.message; }
 });
-for (const id of ['recording-overview-details','recording-disk-card']) $(id).addEventListener('toggle',()=>void refreshRecordingOverview());
+for (const id of ['recording-overview-details','recording-disk-card','recording-details']) $(id).addEventListener('toggle',()=>void refreshRecordingOverview.visibilityChanged());
+document.addEventListener('visibilitychange',()=>void refreshRecordingOverview.visibilityChanged());
 $('recording-overview-refresh').addEventListener('click',()=>void refreshRecordingOverview({force:true}));
-setInterval(refreshRecordingOverview,60_000);
-let auditFetchedAt = 0, auditBusy = false, auditLoaded = false, auditRevision = 0;
-function resetAudits() {
-  auditRevision++; auditFetchedAt = 0; auditBusy = false; auditLoaded = false;
-  $('energy-audit-content').replaceChildren();
-  $('energy-audit-message').hidden = false;
-  $('energy-audit-message').textContent = 'Open this section to load recorded energy checks.';
-}
-async function refreshAudits() {
-  if (session.locked || !dashboardStatusReceived || document.visibilityState === 'hidden'
-    || !$('recording-details').open || !$('energy-audit-details').open || auditBusy || Date.now()-auditFetchedAt<60_000) return;
-  auditBusy = true;
-  const revision = auditRevision;
-  try {
-    const result = await api('/api/energy-audits');
-    if (revision !== auditRevision) return;
-    renderEnergyAudits(result,$('energy-audit-content'));
-    auditFetchedAt=Date.now();auditLoaded=true;$('energy-audit-message').hidden=true;
-  }
-  catch {
-    if (revision !== auditRevision) return;
-    $('energy-audit-message').hidden=false;
-    $('energy-audit-message').textContent=auditLoaded
-      ? 'Could not refresh the checks. The last successful results are still shown.'
-      : 'Recorded energy checks could not be loaded. They will retry while this section is open.';
-  }
-  finally { if (revision === auditRevision) auditBusy=false; }
-}
+$('recording-overview-cancel').addEventListener('click',()=>void refreshRecordingOverview.cancel());
+setInterval(refreshRecordingOverview,2_000);
+const refreshAudits = createEnergyChecksRefresh({ request: recordedDataRequest,
+  root: $('energy-audit-content'), parent: $('recording-details'), details: $('energy-audit-details'),
+  message: $('energy-audit-message'), button: $('energy-audit-refresh'), cancel: $('energy-audit-cancel'),
+  progress: $('energy-audit-progress'), detail: $('energy-audit-detail'),
+  isVisible: () => !session.locked && dashboardStatusReceived && document.visibilityState !== 'hidden' });
+function resetAudits() { refreshAudits.reset(); }
+$('energy-audit-refresh').addEventListener('click', () => void refreshAudits.measure());
+$('energy-audit-cancel').addEventListener('click', () => void refreshAudits.cancel());
 $('recording-details').addEventListener('toggle',()=>{
   if ($('recording-details').open) {
     if ($('recording-adaptive-details').open) renderRecording(lastStatus,$('recording-content'));
@@ -1384,8 +1371,10 @@ $('recording-details').addEventListener('toggle',()=>{
 $('recording-adaptive-details').addEventListener('toggle', () => {
   if ($('recording-details').open && $('recording-adaptive-details').open) renderRecording(lastStatus,$('recording-content'));
 });
-$('energy-audit-details').addEventListener('toggle',refreshAudits);
-setInterval(refreshAudits,60_000);
+$('energy-audit-details').addEventListener('toggle',()=>void refreshAudits.visibilityChanged());
+$('recording-details').addEventListener('toggle',()=>void refreshAudits.visibilityChanged());
+document.addEventListener('visibilitychange',()=>void refreshAudits.visibilityChanged());
+setInterval(refreshAudits,2_000);
 historyChart = createHistoryChart({ api: (path, options) => api(path, undefined, options) });
 document.addEventListener('themechange', event => historyChart.updateTheme(event.detail.theme));
 setInterval(() => refresh({ background: true }), 15_000);

@@ -93,7 +93,7 @@ export function reconstructionView(state, { formatTime = value => new Date(value
   const time = value => timestamp(value) ? formatTime(value) : 'Not known';
   const progress = backgroundProgress(job && { processed: job.processed, total: job.total, unit: 'entries' }, { startedAt: job?.startedAt, now });
   const active = state?.state === 'running', paused = state?.state === 'paused';
-  const summary = !state ? 'Status not loaded' : active ? 'Verification running' : paused ? 'Verification paused'
+  const summary = !state ? 'Compare the saved model with its recorded inputs' : active ? 'Verification running' : paused ? 'Verification paused'
     : state.state === 'superseded' ? 'Verification superseded' : state.state === 'unavailable' ? 'Learning history unavailable'
       : state.state === 'error' ? 'Verification needs attention' : result?.current === false ? 'Earlier verification result'
         : result?.current === null ? 'Verification applicability unconfirmed'
@@ -104,7 +104,8 @@ export function reconstructionView(state, { formatTime = value => new Date(value
       : state.state === 'superseded' ? 'A source-history change superseded this verification. Start a new check of the selected history; the earlier run cannot resume.'
         : state.state === 'unavailable' ? 'Learning history is not available on this computer yet.'
           : state.state === 'error' ? errorLabels[state.error] ?? 'Verification did not complete. Its cause was not identified. Source history and the controlling model are unchanged.'
-            : 'No verification is running. Coefficient charts use the history recorded in the main database independently of this check.';
+            : result ? `${summary}. Completed ${time(result.completedAt)}.`
+              : 'No completed check is recorded. Start a check when you want to compare the saved model with its recorded learning inputs.';
   const targetAt = job ? job.targetAt : result?.checkedAt, journalId = job ? job.journalId : result?.journalId;
   const boundary = timestamp(targetAt) || count(journalId)
     ? `Saved model through ${time(targetAt)} · learning entry ${count(journalId) ? journalId : 'not known'}. Newer learning is outside this check.`
@@ -165,6 +166,7 @@ export function createModelReconstruction({ document, request, storage, formatTi
     controls.pause.hidden = !view.active;
     controls.resume.hidden = !view.paused;
     controls.cancel.hidden = !view.active && !view.paused;
+    controls.discard.hidden = !(state?.storage?.bytes > 0 || state?.job || state?.lastVerification || state?.error);
     controls.retry.hidden = !pending;
     const message = [notice?.message, pending ? 'A request has not been confirmed. Recheck the same request to find its saved outcome.' : '', readFailure].filter(Boolean).join(' ');
     setText('model-reconstruction-message', message);
@@ -176,6 +178,7 @@ export function createModelReconstruction({ document, request, storage, formatTi
     setText('model-reconstruction-storage', view.storage);
     setText('model-reconstruction-result', view.verification);
     setText('model-reconstruction-progress-text', view.active || view.paused ? [view.progress.work, view.progress.timing].filter(Boolean).join(' · ') : '');
+    $('model-reconstruction-progress-text').hidden = !view.active && !view.paused;
     const bar = $('model-reconstruction-progress');
     bar.hidden = !view.active && !view.paused;
     const signature = JSON.stringify([view.progress.determinate, view.progress.processed, view.progress.total, view.progress.work]);

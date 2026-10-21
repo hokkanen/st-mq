@@ -1172,25 +1172,27 @@ details details { margin-inline-start: 24px; }
 .recording-tool-actions { display: flex; flex-wrap: wrap; gap: 12px 24px; }
 .recording-tool-actions > div { flex: 1 1 240px; min-width: 0; }
 .recording-tool-actions p { max-width: 72ch; }
-.model-reconstruction-actions { margin-block: 20px 8px; }
 .model-reconstruction-body button { min-height: 44px; }
-.model-reconstruction-job-actions { display: flex; gap: 10px; flex-wrap: wrap; }
-.model-reconstruction-job-actions:has(> :not([hidden])) { margin-block: 10px 14px; }
 .model-reconstruction-progress { display: block; width: min(100%, 36rem); height: 8px; margin-block: 10px; }
-.model-reconstruction-facts { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(0, 4fr); gap: 12px 18px; font-size: 12px; line-height: 1.6; }
+.model-reconstruction-facts { display: grid; gap: 16px; margin: 4px 0 18px; font-size: 12px; line-height: 1.65; }
+.model-reconstruction-facts > div { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 4fr); gap: 8px 24px; }
 .model-reconstruction-facts dt { color: var(--muted); }
 .model-reconstruction-facts dd { margin: 0; overflow-wrap: anywhere; }
 @media (max-width: 480px) {
-  .model-reconstruction-facts { grid-template-columns: 1fr; gap: 3px; }
-  .model-reconstruction-facts dd { margin-bottom: 10px; }
+  .model-reconstruction-facts > div { grid-template-columns: 1fr; gap: 3px; }
 }
 #database-export-message { overflow-wrap: anywhere; }
-.recording-data-group { margin-top: 12px; }
-.recording-data-group > summary { font-weight: 550; }
+.recording-data-group { margin: 0; border-top: 1px solid var(--border); }
+.recording-data-group > summary { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 12px 0; font-size: 12px; font-weight: 550; list-style: none; }
+.recording-data-group > summary::-webkit-details-marker { display: none; }
+.recording-data-group > summary::before { content: '›'; color: var(--muted); font-size: 18px; width: 10px; text-align: center; }
+.recording-data-group[open] > summary::before { transform: rotate(90deg); }
+.recording-data-group > summary > .recording-group-count { margin-left: auto; text-align: right; color: var(--muted); font-size: 11px; font-weight: 400; }
+.recording-data-group > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 3px; }
 .recording-data-group > p { margin: 0 0 14px; }
 .recording-dataset { margin-block: 0; border-top: 1px solid var(--border); }
 .recording-dataset > summary { font-size: 13px; padding: 12px 0; }
-.recording-dataset > summary small { display: block; margin: 5px 0 0 17px; color: var(--muted); font-size: 11px; font-weight: 400; }
+.recording-dataset > summary small { display: block; margin: 5px 0 0; color: var(--muted); font-size: 11px; font-weight: 400; }
 .recording-dataset > p { margin-top: 0; line-height: 1.6; }
 .recording-dataset h4 { margin: 18px 0 10px; font-size: 12px; font-weight: 550; }
 .recording-dataset-facts, .recording-dataset-fields { display: grid; grid-template-columns: minmax(110px,1fr) minmax(0,4fr); gap: 9px 18px; margin: 10px 0 18px; font-size: 12px; line-height: 1.5; }
@@ -1219,12 +1221,18 @@ details details { margin-inline-start: 24px; }
 .energy-check-result { margin: 0 0 6px; font-weight: 550; font-size: 13px; }
 .energy-check-context { margin: 3px 0; color: var(--muted); font-variant-numeric: tabular-nums; }
 .energy-check-notice { margin: 10px 0 4px; padding-left: 10px; border-left: 2px solid var(--border); }
+.energy-check-latest { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 24px; padding: 0 0 16px; font-size: 12px; line-height: 1.6; }
+.energy-check-latest p { margin: 0; color: var(--muted); }
+.energy-check-latest strong { font-size: 16px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.energy-check-latest time { grid-column: 1 / -1; color: var(--muted); font-size: 11px; }
 details.energy-check-details { margin: 8px 0 0; border: 0; font-size: 12px; line-height: 1.6; }
 .energy-check-details > summary { padding: 6px 0; font-size: 12px; }
 .energy-check-details > p { margin: 6px 0; color: var(--muted); max-width: 75ch; overflow-wrap: anywhere; }
 #energy-audit-content > .energy-check-details { margin-inline-start: 24px; padding-top: 8px; border-top: 1px solid var(--border); }
 @media(max-width: 640px) {
   .energy-check { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .recording-data-group > summary { flex-wrap: wrap; gap: 4px 10px; }
+  .recording-data-group > summary > .recording-group-count { flex-basis: 100%; text-align: left; margin-left: 20px; }
   details details { margin-inline-start: 16px; }
   #comparison-content, .timing-detail-content, .timing-explanations-content { margin-inline-start: 16px; }
   .recording-table { min-width: 720px; }

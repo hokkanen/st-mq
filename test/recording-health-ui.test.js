@@ -1068,13 +1068,45 @@ test('retained adaptive size reports loading and failure without inventing size 
   assert.match(view.element('recording-growth-inventoryAt').textContent,/Measuring retained adaptive data/);
   view.panel.inventoryStatus('failed');
   assert.equal(view.element('recording-growth-retained').textContent,'Unavailable');
-  assert.match(view.element('recording-growth-inventoryAt').textContent,/Refresh inventory to retry/);
+  assert.match(view.element('recording-growth-inventoryAt').textContent,/Measure complete inventory to retry/);
   view.panel.inventory({generatedAt:0,database:{adaptiveEstimatedBytes:0}});
   assert.equal(view.element('recording-growth-retained').textContent,'0 B');
   assert.match(view.element('recording-growth-inventoryAt').textContent,/1 Jan 1970/);
   view.panel.inventoryStatus('failed');
   assert.equal(view.element('recording-growth-retained').textContent,'0 B');
   assert.match(view.element('recording-growth-inventoryAt').textContent,/Could not measure.*checked.*1 Jan 1970/);
+});
+
+test('cheap catalogue metadata never claims that retained payload or page categories have been measured',()=>{
+  const view=panelFixture();
+  view.panel.inventory({generatedAt:now,catalogueComplete:false,database:{allocatedBytes:12000,fileBytes:10000,walBytes:0,totalFileBytes:10000}});
+  assert.equal(view.element('recording-growth-retained').textContent,'Not checked');
+  assert.equal(view.element('recording-growth-inventoryAt').textContent,'Retained adaptive size has not been measured.');
+  assert.match(view.element('recording-growth-fileEvidence').textContent,/File sizes checked/);
+  assert.doesNotMatch(view.element('recording-growth-fileEvidence').textContent,/Complete inventory/);
+  assert.equal(view.element('recording-growth-observations').textContent,'Retained observation count is unknown.');
+});
+
+test('current file metrics refresh independently of retained payload and a dated allocation partition',()=>{
+  const view=panelFixture(),measuredAt=now-3600_000;
+  const completed={generatedAt:measuredAt,database:{allocatedBytes:84e6,adaptiveEstimatedBytes:6e6,adaptiveObservationCount:100,
+    physical:{available:true,observationBytes:20e6,historyBytes:30e6,indexBytes:10e6}}};
+  view.panel.inventory(completed,{files:{generatedAt:now,database:{allocatedBytes:90e6,fileBytes:85e6,walBytes:8e6,totalFileBytes:93e6,reusableBytes:3e6}}});
+  assert.equal(view.element('recording-growth-database').textContent,'90 MB');
+  assert.equal(view.element('recording-growth-files').textContent,'93 MB');
+  assert.equal(view.element('recording-growth-retained').textContent,'6 MB');
+  assert.equal(view.element('recording-growth-measuredAllocation').textContent,'84 MB');
+  assert.match(view.element('recording-growth-allocationAt').textContent,/1 h ago.*same measured total/);
+  assert.match(view.element('recording-growth-fileEvidence').textContent,/just now/);
+  const retainedDate=view.element('recording-growth-inventoryAt').textContent;
+  view.advance(60_000);
+  view.panel.inventory(completed,{files:{generatedAt:now+60_000,database:{allocatedBytes:92e6,fileBytes:90e6,walBytes:9e6,totalFileBytes:99e6,reusableBytes:1e6}}});
+  assert.equal(view.element('recording-growth-files').textContent,'99 MB');
+  assert.equal(view.element('recording-growth-reusable').textContent,'1 MB');
+  assert.equal(view.element('recording-growth-measuredAllocation').textContent,'84 MB');
+  assert.equal(view.element('recording-growth-observationPages').textContent,'20 MB');
+  assert.match(view.element('recording-growth-inventoryAt').textContent,/1 h ago/);
+  assert.match(retainedDate,/1 h ago/);
 });
 
 test('storage inventory keeps file sizes and dated retained evidence through failures and clears them on a scope change', () => {
@@ -1104,7 +1136,7 @@ test('storage inventory keeps file sizes and dated retained evidence through fai
   assert.equal(view.element('recording-growth-reusable').textContent, '12 GB');
   assert.match(view.element('recording-growth-fileEvidence').textContent, /Refresh failed.*1 h ago/);
   assert.equal(view.element('recording-overview-notice').hidden, false);
-  assert.match(view.element('recording-overview-notice').textContent, /last successful inventory.*Storage & growth/);
+  assert.match(view.element('recording-overview-notice').textContent, /last complete result.*Storage & growth/);
   view.panel.update({ recordingHealth: health({ scope: 'snapshot' }) });
   assert.equal(view.element('recording-growth-file').textContent, 'Not checked');
   assert.equal(view.element('recording-growth-wal').textContent, 'Not checked');

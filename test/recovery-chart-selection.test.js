@@ -15,6 +15,19 @@ import { seedVoltage } from './voltage-fixture.js';
 
 const DAY = 24 * HOUR;
 const observationCounts = overview => overview.accounting.selection.tables.find(row => row.name === 'observations');
+async function measureOverview(service) {
+  const started = await service.overviewAction({ action: 'measure' });
+  const deadline = performance.now() + 10_000;
+  let view = started;
+  while (['queued', 'running'].includes(view.job.state) && performance.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    view = await service.overview();
+  }
+  assert.equal(view.job.state, 'completed', JSON.stringify(view.job.error));
+  assert.equal(view.job.id, started.job.id, 'polling retains the explicit shared measurement');
+  assert(view.result);
+  return view.result;
+}
 async function select(f, recoveryId, active) {
   const args = { store: f.master, input: 'mqtt', recoveryId, active, signal: f.signal };
   return reviseRecovery({ ...args, preview: await previewRecoveryRevision(args) });
@@ -26,9 +39,12 @@ test('cached historical charts, CSV export and stored inventory follow completed
   const f = fixture(t);
   observation(f.master, start, 20);
   service = createChartService({ store: f.master });
-  const originalOverview = await service.overview();
+  const catalogue = await service.overview();
+  assert.equal(catalogue.result, null);
+  assert.equal(catalogue.job.state, 'idle', 'opening the catalogue performs no historical measurement');
+  const originalOverview = await measureOverview(service);
   assert.equal(observationCounts(originalOverview).retainedRows, 1);
-  assert.equal((await service.overview()).cache.hit, true);
+  assert.equal((await service.overview()).result, originalOverview, 'ordinary reads retain the dated complete result');
   const donor = await f.donor(); observation(donor, start + W, 999);
   const result = await recover(f, await f.snapshot(donor));
   observation(f.master, start + 2 * W, 21);
@@ -36,8 +52,8 @@ test('cached historical charts, CSV export and stored inventory follow completed
     now: start + 2 * DAY, left: 'indoor_temperature' };
   assert((await service.query(args)).series.indoor_temperature.some(row => row.y === 999));
   assert.equal((await service.query(args)).meta.cacheHit, true);
-  const recoveredOverview = await service.overview();
-  assert.equal(recoveredOverview.cache.hit, false, 'completed recovery renews the stored inventory before its ordinary five-minute expiry');
+  assert.equal((await service.overview()).result, originalOverview, 'appended recovered evidence does not silently start a complete scan');
+  const recoveredOverview = await measureOverview(service);
   assert.equal(observationCounts(recoveredOverview).retainedRows, 3);
   const head = f.master.db.prepare('SELECT MAX(id) id FROM observations').get().id;
   await select(f, result.report.recoveryId, false);
@@ -47,8 +63,10 @@ test('cached historical charts, CSV export and stored inventory follow completed
   assert(!reverted.series.indoor_temperature.some(row => row.y === 999));
   assert(reverted.series.indoor_temperature.some(row => row.y === 21), 'later local recordings survive');
   assert.equal((await service.query(args)).meta.cacheHit, true);
-  const excludedOverview = await service.overview();
-  assert.equal(excludedOverview.cache.hit, false);
+  const excludedStatus = await service.overview();
+  assert.equal(excludedStatus.result, null, 'a published selection change invalidates the previous interpretation');
+  assert.equal(excludedStatus.job.state, 'idle', 'selection invalidation does not automatically launch a full measurement');
+  const excludedOverview = await measureOverview(service);
   assert.equal(observationCounts(excludedOverview).retainedRows, 3);
   assert.equal(observationCounts(excludedOverview).selectedRows, 2);
   assert.equal(excludedOverview.accounting.selection.excludedSourceRows, 1);
@@ -60,7 +78,11 @@ test('cached historical charts, CSV export and stored inventory follow completed
   const restored = await service.query(args);
   assert.notEqual(restored.meta.cacheHit, true);
   assert(restored.series.indoor_temperature.some(row => row.y === 999));
-  assert.equal((await service.overview()).accounting.selection.excludedSourceRows, 0);
+  assert.equal((await service.overview()).result, null, 'restoration invalidates the excluded interpretation');
+  const restoredOverview = await measureOverview(service);
+  assert.equal(restoredOverview.accounting.selection.excludedSourceRows, 0);
+  assert.deepEqual(observationCounts(restoredOverview),
+    { name: 'observations', retainedRows: 3, selectedRows: 3, excludedRows: 0 });
   assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n, 3);
 });
 

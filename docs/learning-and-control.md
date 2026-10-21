@@ -222,7 +222,7 @@ checkpoint, including coefficients, estimated building and slab state, comfort
 references and learning evidence. Selecting corrected source events instead
 produces a corrected model; it need not match the model used before that correction.
 
-**History tools → Verify learning reconstruction → Verify saved learning**
+**History tools → Check saved learning**
 performs an independent seed replay and compares the complete result and all four
 recorded coefficient timelines with a fixed durable model checkpoint and its
 matching saved history. That boundary may lag the live in-memory model and latest

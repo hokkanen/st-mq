@@ -1264,8 +1264,13 @@ G_warming = G / 2</code>
                 <p id="recording-disk-evidence" class="recording-health-evidence"></p>
             <div id="recording-storage-details" class="recording-storage-inventory">
               <div class="recording-overview-toolbar">
-                <p id="recording-overview-message" class="muted" role="status" aria-live="polite">Open Recording details to inspect the database.</p>
-                <button id="recording-overview-refresh" class="secondary-button" type="button">Refresh inventory</button>
+                <div><h4 class="recording-task-title">Complete inventory</h4><p class="muted">Measure retained records and detailed storage use in the background.</p></div>
+                <div class="recording-task-actions"><button id="recording-overview-refresh" class="secondary-button" type="button">Measure complete inventory</button><button id="recording-overview-cancel" class="secondary-button" type="button" hidden>Cancel measurement</button></div>
+              </div>
+              <div class="recording-task-status" role="group" aria-label="Inventory measurement status">
+                <p id="recording-overview-message" role="status" aria-live="polite">No complete inventory has been measured in this application run.</p>
+                <progress id="recording-overview-progress" class="background-work-progress" aria-label="Inventory measurement progress" hidden></progress>
+                <p id="recording-overview-detail" class="recording-task-detail" hidden></p>
               </div>
               <table class="recording-storage-table">
                 <thead><tr><th scope="col">Stored data</th><th scope="col">Retained size</th><th scope="col">Annualized recent growth</th></tr></thead>
@@ -1282,8 +1287,9 @@ G_warming = G / 2</code>
                       <p id="recording-growth-fileEvidence"></p>
                       <p>SQLite allocation includes records, indexes, retained transaction history and reusable pages. Cleanup makes pages reusable without shrinking the file. The WAL can change while recording continues. Backups, transfer staging and other temporary files are additional disk use.</p>
                       <details class="recording-storage-allocation"><summary>Allocation and retained transaction details</summary>
-                      <dl class="recording-storage-facts"><dt>Observation pages</dt><dd id="recording-growth-observationPages">Not checked</dd><dt>Other historical records</dt><dd id="recording-growth-historyPages">Not checked</dd><dt>Current and derived state</dt><dd id="recording-growth-currentPages">Not checked</dd><dt>Disposable transaction history</dt><dd id="recording-growth-journalPages">Not checked</dd><dt>Pending peer catch-up</dt><dd id="recording-growth-peerBacklogPages">Not checked</dd><dt>Archived divergent branches</dt><dd id="recording-growth-branchPages">Not checked</dd><dt>Indexes</dt><dd id="recording-growth-indexPages">Not checked</dd><dt>SQLite bookkeeping</dt><dd id="recording-growth-internalPages">Not checked</dd></dl>
-                      <p>Page categories include unused space within allocated pages. Indexes are counted separately. These sizes are measured only when the inventory refreshes; they do not set adaptive precision.</p>
+                      <dl class="recording-storage-facts"><dt>Total at measurement</dt><dd id="recording-growth-measuredAllocation">Not checked</dd><dt>Observation pages</dt><dd id="recording-growth-observationPages">Not checked</dd><dt>Other historical records</dt><dd id="recording-growth-historyPages">Not checked</dd><dt>Current and derived state</dt><dd id="recording-growth-currentPages">Not checked</dd><dt>Disposable transaction history</dt><dd id="recording-growth-journalPages">Not checked</dd><dt>Pending peer catch-up</dt><dd id="recording-growth-peerBacklogPages">Not checked</dd><dt>Archived divergent branches</dt><dd id="recording-growth-branchPages">Not checked</dd><dt>Indexes</dt><dd id="recording-growth-indexPages">Not checked</dd><dt>SQLite bookkeeping</dt><dd id="recording-growth-internalPages">Not checked</dd></dl>
+                      <p id="recording-growth-allocationAt">Detailed allocation has not been measured.</p>
+                      <p>Page categories include unused space within allocated pages. Indexes are counted separately. These figures share the complete inventory’s measurement date; current file sizes can be newer. They do not set adaptive precision.</p>
                       <p id="recording-growth-journalRetention">Transaction retention has not been checked.</p>
                       </details>
                     </details>
@@ -1355,7 +1361,7 @@ G_warming = G / 2</code>
           <details id="recording-overview-details" class="recording-section">
             <summary><span>Other recorded data<small>Exact measurements, states, forecasts and learning history</small></span></summary>
             <div class="recording-section-body">
-              <p class="recording-inventory-link"><a href="#recording-storage-details" data-recording-open="recording-storage-details">Inventory date, sizes &amp; refresh <span aria-hidden="true">→</span></a></p>
+              <div class="recording-task-overview"><p class="muted">Browse what is recorded and how it is retained. Complete counts and dates are measured separately.</p><a class="recording-task-link" href="#recording-storage-details" data-recording-open="recording-storage-details">Measure complete inventory <span aria-hidden="true">→</span></a></div>
               <p id="recording-overview-notice" class="muted" role="status" hidden></p>
               <div id="recording-overview-content"></div>
             </div>
@@ -1363,7 +1369,12 @@ G_warming = G / 2</code>
           <details id="energy-audit-details" class="recording-section">
             <summary><span>Recorded energy checks<small>Compare recorded consumption with meter readings</small></span></summary>
             <div class="recording-section-body">
-              <p id="energy-audit-message" class="muted" role="status" aria-live="polite">Loading recorded energy checks…</p>
+              <div class="recording-task-overview"><p class="muted">Compare matching recorded and metered periods. Historical checks run in the background while recording continues.</p><div class="recording-task-actions"><button id="energy-audit-refresh" class="secondary-button" type="button">Refresh checks</button><button id="energy-audit-cancel" class="secondary-button" type="button" hidden>Cancel check</button></div></div>
+              <div class="recording-task-status" role="group" aria-label="Energy check status">
+                <p id="energy-audit-message" role="status" aria-live="polite">Open this section to load the latest meter reading.</p>
+                <progress id="energy-audit-progress" class="background-work-progress" aria-label="Energy check progress" hidden></progress>
+                <p id="energy-audit-detail" class="recording-task-detail" hidden></p>
+              </div>
               <div id="energy-audit-content"></div>
             </div>
           </details>
@@ -1371,61 +1382,48 @@ G_warming = G / 2</code>
         <section class="recording-section-group recording-tools" aria-labelledby="recording-tools-title">
           <h3 id="recording-tools-title" class="recording-group-title">History tools</h3>
           <details id="model-reconstruction-details" class="recording-section">
-            <summary><span>Verify learning reconstruction<small id="model-reconstruction-summary">Optional full model and coefficient-history check</small></span></summary>
+            <summary><span>Check saved learning<small id="model-reconstruction-summary">Compare the saved model with its recorded inputs</small></span></summary>
             <div class="recording-section-body model-reconstruction-body">
-              <p class="muted">Reconstruct the complete saved Home model and all four coefficient histories from the learning journal, and compare them at one fixed saved-model boundary. This checks reproducibility, not physical accuracy. Charts use the coefficient history already recorded in the main database and do not require this check.</p>
-              <div class="recording-tool-actions model-reconstruction-actions">
-                <div>
-                  <button id="model-reconstruction-verify" data-admin-only type="button" class="secondary-button" disabled>Verify saved learning</button>
-                  <p class="muted">A full check can take time with long history. Recording and normal control continue. Jobs run locally on the master or slave and survive leaving this page.</p>
+              <div class="recording-task-overview">
+                <p class="muted">Rebuild the saved Home model and coefficient history from recorded learning inputs, then compare the results. This checks reproducibility, not physical accuracy.</p>
+                <div class="recording-task-actions"><button id="model-reconstruction-verify" data-admin-only type="button" class="secondary-button" disabled>Check saved learning</button></div>
+              </div>
+              <div class="recording-task-status" role="group" aria-label="Saved learning check status">
+                <p id="model-reconstruction-message" class="recording-task-notice" role="status" aria-live="polite" hidden></p>
+                <p id="model-reconstruction-status" role="status" aria-live="polite"></p>
+                <progress id="model-reconstruction-progress" class="model-reconstruction-progress" aria-label="Learning verification progress" hidden></progress>
+                <p id="model-reconstruction-progress-text" class="recording-task-detail" hidden></p>
+                <div class="model-reconstruction-job-actions recording-task-actions">
+                  <button id="model-reconstruction-pause" data-admin-only type="button" class="secondary-button" disabled hidden>Pause check</button>
+                  <button id="model-reconstruction-resume" data-admin-only type="button" class="secondary-button" disabled hidden>Resume check</button>
+                  <button id="model-reconstruction-cancel" data-admin-only type="button" class="secondary-button" disabled hidden>Cancel check</button>
+                  <button id="model-reconstruction-retry" data-admin-only type="button" class="secondary-button" disabled hidden>Recheck request</button>
                 </div>
               </div>
-              <div class="model-reconstruction-job-actions">
-                <button id="model-reconstruction-pause" data-admin-only type="button" class="secondary-button" disabled hidden>Pause verification</button>
-                <button id="model-reconstruction-resume" data-admin-only type="button" class="secondary-button" disabled hidden>Resume verification</button>
-                <button id="model-reconstruction-cancel" data-admin-only type="button" class="secondary-button" disabled hidden>Cancel verification</button>
-                <button id="model-reconstruction-discard" data-admin-only type="button" class="secondary-button" disabled>Discard temporary verification data</button>
-                <button id="model-reconstruction-retry" data-admin-only type="button" class="secondary-button" disabled hidden>Recheck request</button>
-              </div>
-              <p id="model-reconstruction-message" class="muted" role="status" aria-live="polite" hidden></p>
-              <p id="model-reconstruction-status" class="muted" role="status" aria-live="polite"></p>
-              <progress id="model-reconstruction-progress" class="model-reconstruction-progress" aria-label="Learning verification progress" hidden></progress>
-              <p id="model-reconstruction-progress-text" class="muted"></p>
-              <dl class="model-reconstruction-facts">
-                <dt>Checked boundary</dt><dd id="model-reconstruction-boundary"></dd>
-                <dt>Source snapshot</dt><dd id="model-reconstruction-source"></dd>
-                <dt>Temporary files</dt><dd id="model-reconstruction-storage"></dd>
-                <dt>Last verification</dt><dd id="model-reconstruction-result"></dd>
-              </dl>
+              <details class="recording-task-evidence"><summary>Result &amp; checked history</summary><p class="recording-task-footnote">Charts use the coefficient history already recorded in the main database and do not require this check.</p><dl class="model-reconstruction-facts">
+                <div><dt>Last completed check</dt><dd id="model-reconstruction-result"></dd></div>
+                <div><dt>Checked boundary</dt><dd id="model-reconstruction-boundary"></dd></div>
+                <div><dt>Source snapshot</dt><dd id="model-reconstruction-source"></dd></div>
+                <div><dt>Temporary files</dt><dd id="model-reconstruction-storage"></dd></div>
+              </dl><div class="recording-task-cleanup"><p class="muted">Discard only the temporary check data on this computer. Recorded history and the controlling model are preserved.</p><button id="model-reconstruction-discard" data-admin-only type="button" class="secondary-button" disabled>Discard temporary data</button></div></details>
+              <p class="recording-task-footnote">Read-only · Recording and control continue · You can leave this page while the check runs.</p>
               <p class="family-access-note">Admin access is required to manage verification on this computer.</p>
             </div>
           </details>
           <details id="history-recovery-details" class="recording-section">
             <summary><span>History recovery<small>Recover missing entries or undo an earlier recovery</small></span></summary>
             <div class="recording-section-body">
-              <p class="muted">Review a backup or paired computer, and see what previous recoveries added. Recovery adds supported missing history. Restoring a complete database is a separate offline operation.</p>
-              <div class="recording-tool-actions">
-                <div>
-                  <button id="history-recovery-open" data-admin-only class="secondary-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="history-recovery-dialog" aria-describedby="history-recovery-open-help">Review history</button>
-                  <p id="history-recovery-open-help" class="muted">Check a source before making changes. Review, recover or undo an earlier recovery in the same window.</p>
-                </div>
-              </div>
-              <p id="history-recovery-summary" class="muted background-work-detail" role="status" hidden></p>
+              <div class="recording-task-overview"><p id="history-recovery-open-help" class="muted">Review missing history from a backup or paired computer before making changes. Inspect what an earlier recovery added, or undo it.</p><div class="recording-task-actions"><button id="history-recovery-open" data-admin-only class="secondary-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="history-recovery-dialog" aria-describedby="history-recovery-open-help">Review history</button></div></div>
+              <p id="history-recovery-summary" class="recording-task-status background-work-detail" role="status" hidden></p>
+              <p class="recording-task-footnote">Preview before applying · Adds supported missing entries · Complete database restore is a separate offline operation.</p>
             </div>
           </details>
           <details id="database-verification-details" class="recording-section">
-            <summary><span>Verify database<small id="database-verification-summary">Optional full integrity and content check</small></span></summary>
+            <summary><span>Check database<small id="database-verification-summary">Check the integrity of stored records</small></span></summary>
             <div class="recording-section-body">
-              <p class="muted">Read the complete database at one fixed transaction checkpoint to check its integrity and content.</p>
-              <div class="recording-tool-actions">
-                <div>
-                  <button id="database-verification-start" data-admin-only type="button" class="secondary-button" aria-describedby="database-verification-start-help">Verify with full snapshot</button>
-                  <p id="database-verification-start-help" class="muted">This can take time and disk I/O. Recording and normal mirroring continue.</p>
-                </div>
-              </div>
-              <p id="database-verification-status" class="muted" role="status" aria-live="polite"></p>
-              <p id="database-verification-activity" class="muted" role="status" aria-live="polite"></p>
-              <p id="database-verification-schedule" class="muted"></p>
+              <div class="recording-task-overview"><p id="database-verification-start-help" class="muted">Read a complete, fixed snapshot to check database integrity and stored content. Longer histories take more time and disk activity.</p><div class="recording-task-actions"><button id="database-verification-start" data-admin-only type="button" class="secondary-button" aria-describedby="database-verification-start-help">Check database</button></div></div>
+              <div class="recording-task-status" role="group" aria-label="Database check status"><p id="database-verification-status" role="status" aria-live="polite"></p><p id="database-verification-activity" class="recording-task-detail" role="status" aria-live="polite"></p><p id="database-verification-schedule" class="recording-task-detail"></p></div>
+              <p class="recording-task-footnote">Read-only · Recording and normal mirroring continue.</p>
             </div>
           </details>
         </section>

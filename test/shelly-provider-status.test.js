@@ -57,12 +57,18 @@ test('energy checks API only includes Property and Charger 1 and needs no Shelly
     charging: { chargers: { charger2: { adapter: {
       snapshot: () => { throw new Error('Energy checks must not request Shelly session evidence'); },
     } } } } };
-  const server = createAppServer({ engine, store, chartService: { overview() {} } });
+  const server = createAppServer({ engine, store });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => { await new Promise(resolve => server.close(resolve)); store.close(); });
   const response = await fetch(`http://127.0.0.1:${server.address().port}/api/energy-audits`);
   assert.equal(response.status, 200);
-  const rows = await response.json();
+  let view = await response.json();
+  for (let attempt = 0; attempt < 100 && ['queued', 'running'].includes(view.job.state); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    view = await fetch(`http://127.0.0.1:${server.address().port}/api/energy-audits`).then(result => result.json());
+  }
+  assert.equal(view.job.state, 'completed');
+  const rows = view.result;
   assert.deepEqual(rows.map(row => row.signal), ['property_import_energy_counter', 'ev1_session_energy_check']);
   assert.equal(rows[1].summary.recordedSessions, 0);
   assert.equal(store.events().length, 0);

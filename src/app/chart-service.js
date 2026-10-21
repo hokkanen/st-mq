@@ -2,8 +2,8 @@ import { DEFAULT_CHART_CACHE } from '../domain/chart-cache.js';
 import { storageOperationHealth } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { getChartData, chartRequestRange } from './chart-data.js';
-import { getDatabaseOverview } from './database-overview.js';
-import { energyCheckSummaries } from './energy-checks.js';
+import { createInventoryService } from './inventory-service.js';
+import { createEnergyChecksService } from './energy-checks-service.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
 import { attachStorageAdmission } from '../storage/worker-admission.js';
 
@@ -22,7 +22,15 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
   if (!validSettings(settings)) throw new TypeError('Invalid chart cache settings');
   const lanes = Object.fromEntries(['resident', 'archive'].map(name => [name,
     { name, worker: null, active: null, queue: [], retiring: null, timer: null, observations: new Map() }]));
-  const overviewRequests = new Map();
+  let inventoryService, energyChecksService;
+  const inventory = () => inventoryService ??= createInventoryService({ store, clock });
+  const energy = () => energyChecksService ??= createEnergyChecksService({ store, clock });
+  const inspect = (service, method, args, options = {}) => {
+    if (closed) return Promise.reject(new Error('Chart service is closed'));
+    if (options.signal?.aborted) return Promise.reject(aborted());
+    const context = { ...options, checkpoint: options.checkpoint ?? store.expectedCheckpoint };
+    return service()[method](...args, context);
+  };
   const cleanup = entry => entry.signal?.removeEventListener('abort', entry.abort);
   const settle = (entry, error, result) => {
     if (entry.settled) return; entry.settled = true;
@@ -131,18 +139,17 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
     if (signal?.aborted) return Promise.reject(aborted());
     args = { ...args, now: args?.now ?? Date.now() };
     try {
-      if (!['chart', 'overview', 'energy-checks', 'pin', 'pin-archive', 'maintain'].includes(operation)) throw new TypeError('Invalid history operation');
+      if (!['chart', 'pin', 'pin-archive', 'maintain'].includes(operation)) throw new TypeError('Invalid history operation');
       if (operation === 'chart') {
         chartRequestRange(args);
       }
       if (wire !== undefined && !['json', 'ndjson'].includes(wire)) throw new TypeError('Invalid chart response format');
     } catch (error) { return Promise.reject(error); }
     if (store.path === ':memory:') {
-      const observation = ['pin', 'pin-archive', 'maintain'].includes(operation) ? null : storageOperationHealth.begin(operation === 'overview' ? 'storage-inventory' : 'history-query', { scope: 'history' });
+      const observation = ['pin', 'pin-archive', 'maintain'].includes(operation) ? null : storageOperationHealth.begin('history-query', { scope: 'history' });
       try {
         if (['pin', 'pin-archive'].includes(operation)) return Promise.resolve({ ready: true });
-        const result = operation === 'overview' ? getDatabaseOverview({ ...args, store })
-          : operation === 'energy-checks' ? energyCheckSummaries(store, args) : getChartData({ ...args, store, onProgress });
+        const result = getChartData({ ...args, store, onProgress });
         const prepared = operation === 'chart' ? prepareChartResponse(result) : null;
         const response = wire ? encodeChartResponse(result, prepared, wire) : result;
         observation?.finish('completed'); return Promise.resolve(response);
@@ -154,12 +161,12 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
       ? lanes.resident : lanes.archive;
     const count = item => item.queue.length + Number(Boolean(item.active && !item.active.aborted));
     if (count(lane) >= maxQueue) {
-      storageOperationHealth.refuse(operation === 'overview' ? 'storage-inventory' : 'history-query');
+      storageOperationHealth.refuse('history-query');
       return Promise.reject(new RangeError('Too many pending chart requests'));
     }
     return new Promise((resolve, reject) => {
       const entry = { id: nextId++, args, operation, wire, checkpoint, signal, onProgress, resolve, reject, abort: null,
-        observation: ['pin', 'pin-archive', 'maintain'].includes(operation) ? null : storageOperationHealth.begin(operation === 'overview' ? 'storage-inventory' : 'history-query', { queued: true, scope: 'history' }) };
+        observation: ['pin', 'pin-archive', 'maintain'].includes(operation) ? null : storageOperationHealth.begin('history-query', { queued: true, scope: 'history' }) };
       entry.abort = () => {
         if (lane.active === entry) {
           if (lane.name === 'resident' || pinned) { entry.aborted = true; Atomics.store(lane.requestSignal, 0, 1); }
@@ -172,38 +179,6 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
       lane.queue.push(entry); progress(entry, { stage: 'queued' }); pump();
     });
   }
-  // Concurrent inventory readers share one bounded worker scan. Each caller
-  // owns its cancellation; leaving the view never aborts another reader.
-  function overview({force=false,signal,checkpoint=store.expectedCheckpoint,...options}={}) {
-    if(typeof force!=='boolean')return Promise.reject(new TypeError('Invalid inventory refresh option'));
-    if(signal?.aborted)return Promise.reject(aborted());
-    const key=JSON.stringify([force,checkpoint??null]);
-    let entry=overviewRequests.get(key);
-    if(!entry) {
-      const controller=new AbortController();entry={controller,readers:0,promise:null};
-      entry.promise=query({force},{...options,checkpoint,signal:controller.signal,operation:'overview'}).finally(()=>{
-        if(overviewRequests.get(key)===entry)overviewRequests.delete(key);
-      });
-      overviewRequests.set(key,entry);
-    }
-    entry.readers++;
-    return new Promise((resolve,reject)=>{
-      let settled=false;
-      const finish=(error,value)=>{
-        if(settled)return;settled=true;signal?.removeEventListener('abort',cancel);entry.readers--;
-        error?reject(error):resolve(value);
-      };
-      const cancel=()=>{
-        finish(aborted());
-        if(!entry.readers) {
-          if(overviewRequests.get(key)===entry)overviewRequests.delete(key);
-          entry.controller.abort();
-        }
-      };
-      signal?.addEventListener('abort',cancel,{once:true});
-      entry.promise.then(value=>finish(null,value),error=>finish(error));
-    });
-  }
   return {
     async pin(options = {}) {
       // Replica leases may outlive a path's publication. Open both file handles
@@ -213,8 +188,10 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
       await Promise.all(['pin', 'pin-archive'].map(operation => query({}, { ...options, operation })));
       return { ready: true };
     },
-    overview,
-    energyChecks(args = {}, options = {}) { return query(args, { ...options, operation: 'energy-checks' }); },
+    overview(options = {}) { return inspect(inventory, 'view', [], options); },
+    overviewAction(input, options = {}) { return inspect(inventory, 'action', [input], options); },
+    energyChecks(args = {}, options = {}) { return inspect(energy, 'view', [], { ...args, ...options }); },
+    energyChecksAction(input, args = {}, options = {}) { return inspect(energy, 'action', [input], { ...args, ...options }); },
     query,
     startWarming,
     configure(value = DEFAULT_CHART_CACHE) {
@@ -234,7 +211,8 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
         if (lane.active) { settle(lane.active, new Error('Chart service is closed')); lane.active = null; }
         reset(lane, 'cancelled', 'cancelled');
       }
-      await Promise.allSettled(Object.values(lanes).map(lane => lane.retiring).filter(Boolean));
+      await Promise.allSettled([...Object.values(lanes).map(lane => lane.retiring),
+        inventoryService?.close(), energyChecksService?.close()].filter(Boolean));
     },
   };
 }

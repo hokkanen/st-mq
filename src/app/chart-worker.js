@@ -3,8 +3,6 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
 import { readCheckpoint, matchingCheckpoint } from '../storage/journal.js';
 import { getChartData, chartRequestRange } from './chart-data.js';
-import { getDatabaseOverview, OVERVIEW_REFRESH_MS } from './database-overview.js';
-import { energyCheckSummaries } from './energy-checks.js';
 import { getHeatingBenefit } from './chart-heating-benefit.js';
 import { pendingEnergyObservations } from '../storage/pending-energy.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
@@ -123,10 +121,6 @@ function sourceCoverageFingerprint(args,range) {
   }
   return JSON.stringify(spans);
 }
-let overview = null, overviewRevision = null;
-const readOverviewRevision = db.prepare(`SELECT generation,
-  (SELECT COUNT(*) FROM history_recoveries WHERE completed_at IS NOT NULL) completedRecoveries
-  FROM history_selection WHERE id=1`);
 parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: configuration }) => {
   if (configuration) { configure(configuration); return; }
   setStorageMaintenance(operation === 'maintain');
@@ -154,26 +148,6 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       throw new Error('The replica checkpoint advanced. Retry the request.');
     if (['pin', 'pin-archive'].includes(operation)) {
       parentPort.postMessage({ id, result: { ready: true } }); return;
-    }
-    if (operation === 'energy-checks') {
-      onProgress({ stage: 'reading-energy-checks' });
-      const result = energyCheckSummaries(store, args);
-      parentPort.postMessage({ id, result });
-      return;
-    }
-    if (operation === 'overview') {
-      const at = Date.now();
-      const currentOverviewRevision = JSON.stringify(readOverviewRevision.get());
-      const hit = !args.force && overview && overviewRevision === currentOverviewRevision
-        && at - overview.generatedAt >= 0 && at - overview.generatedAt < OVERVIEW_REFRESH_MS;
-      observationCacheHit = Boolean(hit);
-      if (!hit) {
-        overview = getDatabaseOverview({ store, now: at });
-        overviewRevision = JSON.stringify(readOverviewRevision.get());
-      }
-      parentPort.postMessage({ id, result: { ...overview,
-        cache: { hit: Boolean(hit), ageMs: at - overview.generatedAt, maxAgeMs: OVERVIEW_REFRESH_MS } } });
-      return;
     }
     // Acquisition checkpoints and rolling recorder metrics update frequently.
     // They do not invalidate a completed historical plot. New observations,

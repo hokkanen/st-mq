@@ -1,4 +1,5 @@
 import { lockControl, unlockControl } from './control-locks.js';
+import { isRecordedDataAction } from '../src/domain/recorded-data-action.js';
 
 const tokenKey = 'stmq-token';
 const loggedOutKey = 'stmq-logged-out';
@@ -10,6 +11,7 @@ export function webRequestAllowed(access, path, data, status) {
   if (access?.role === 'admin') return true;
   if (access?.role !== 'family') return data === undefined && ['/api/status', '/api/pair', '/api/recording-health', '/api/web-access'].includes(path);
   if (data === undefined) return !/^\/api\/(?:database-export|recording-backups|downloads)(?:[/?]|$)/.test(path);
+  if (isRecordedDataAction(path, data)) return true;
   if (['/api/fireplace', '/api/fireplace/remove', '/api/temporary', '/api/dhwr/stop',
     '/api/charging/settings', '/api/automation', '/api/heating/explorer/simulate'].includes(path)) return true;
   if (path === '/api/heating-test') return ['normal', 'reduction', 'preheat', 'circulation'].includes(data.command);

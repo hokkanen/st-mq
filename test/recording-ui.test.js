@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recordingRows, recordingStatus, inventoryItemSummary, inventoryDateSpan, recordingOverviewRefresh, energyAuditRow, durationLabel } from '../chart/recording.js';
+import { recordingRows, recordingStatus, inventoryItemSummary, inventoryDateSpan, recordingOverviewRefresh, energyAuditRow, durationLabel, recordedDataJobView } from '../chart/recording.js';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 
@@ -65,108 +65,106 @@ test('saved Garage selection is described as durable intent rather than a device
   assert.doesNotMatch(display.detail,/heartbeat|Limit|Fresh/);
 });
 
+const catalogue={groups:[{id:'recordings',label:'Recorded data',items:[]}],database:{allocatedBytes:12000}};
+const envelope=(result=null,job={state:'idle'})=>({catalogue,result,job});
 function fixture(request) {
   let now=Date.parse('2026-09-08T10:00:00Z'),visible=true;
-  const classes=new Set(),attributes=new Map(),renders=[],states=[];
+  const classes=new Set(),attributes=new Map(),renders=[],states=[],views=[];
   let clears=0;
   const root={setAttribute:(key,value)=>attributes.set(key,value),removeAttribute:key=>attributes.delete(key),replaceChildren:()=>{clears++;}};
   const details={open:false},storage={open:false},parent={open:false},button={disabled:false};
-  const message={textContent:'',classList:{add:value=>classes.add(value),remove:value=>classes.delete(value)}};
+  const message={textContent:'',classList:{add:value=>classes.add(value),remove:value=>classes.delete(value),toggle:(value,on)=>on?classes.add(value):classes.delete(value)}};
   const refresh=recordingOverviewRefresh({request,root,details:[details,storage],parent,message,button,clock:()=>now,
-    isVisible:()=>visible,render:overview=>renders.push(overview),onState:state=>states.push(state)});
-  return {refresh,details,storage,parent,button,message,attributes,classes,renders,states,
+    isVisible:()=>visible,render:overview=>renders.push(overview),onState:state=>states.push(state),onView:view=>views.push(view)});
+  return {refresh,details,storage,parent,button,message,attributes,classes,renders,states,views,
     get clears(){return clears;},advance:ms=>{now+=ms;},visibility:value=>{visible=value;}};
 }
 
-test('overview requests only while both folds are open and visible, with one in-flight request and a cache lifetime',async()=>{
-  let calls=0,resolve;
-  const view=fixture(()=>{calls++;return new Promise(done=>{resolve=done;});});
-  await view.refresh({force:true});assert.equal(calls,0);
-  view.parent.open=true;await view.refresh();assert.equal(calls,0);
-  view.details.open=true;view.visibility(false);await view.refresh();assert.equal(calls,0);
-  view.visibility(true);
-  const pending=view.refresh();assert.equal(calls,1);assert(view.button.disabled);assert.equal(view.attributes.get('aria-busy'),'true');
-  await view.refresh();assert.equal(calls,1,'concurrent automatic refresh does not duplicate the database scan');
-  const generatedAt=Date.parse('2026-09-07T10:00:00Z');
-  resolve({generatedAt,groups:[],refreshAfterMs:300000,cache:{hit:true}});await pending;
-  assert(!view.button.disabled);assert(!view.attributes.has('aria-busy'));
-  assert.match(view.message.textContent,/7 Sept 2026/,'cached snapshot retains the actual generation date');
-  assert.match(view.message.textContent,/cached/);
-  await view.refresh();assert.equal(calls,1);
-  view.advance(300000);view.parent.open=false;await view.refresh();assert.equal(calls,1);
-  view.parent.open=true;const expired=view.refresh();assert.equal(calls,2);
-  resolve({generatedAt,groups:[]});await expired;
+test('catalogue loading is lazy and ordinary reads never request a complete measurement',async()=>{
+  const requests=[];
+  const view=fixture(async(path,options)=>{requests.push({path,options});return envelope();});
+  await view.refresh();view.parent.open=true;await view.refresh();assert.equal(requests.length,0);
+  view.storage.open=true;view.visibility(false);await view.refresh();assert.equal(requests.length,0);
+  view.visibility(true);await view.refresh();assert.equal(requests.length,1);
+  assert.equal(requests[0].path,'/api/recording-overview');assert.equal(requests[0].options.method,undefined);
+  assert.equal(view.renders[0],catalogue);assert.match(view.message.textContent,/descriptions are ready.*Measure the complete inventory/);
+  assert.equal(view.states.at(-1),'ready');await view.refresh();assert.equal(requests.length,1);
+  view.advance(30000);await view.refresh();assert.equal(requests.length,2);
 });
 
-test('manual inventory refresh bypasses the server cache and coalesces pending requests into one follow-up',async()=>{
-  const pending=[];
-  const view=fixture((path,options)=>new Promise(resolve=>pending.push({path,options,resolve})));
-  view.parent.open=true;view.details.open=true;
-  const first=view.refresh();assert.equal(pending.length,1);
-  await view.refresh({force:true});await view.refresh({force:true});
-  assert.equal(pending.length,1,'only the original request is in flight');
-  pending[0].resolve({generatedAt:0,groups:[]});
-  await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(pending.length,2);
-  assert.equal(pending[1].path,'/api/recording-overview?refresh=true');
-  pending[1].resolve({generatedAt:1,groups:[]});await first;
-  assert.equal(pending.length,2,'repeated clicks request only one fresh follow-up');
-  assert.equal(view.renders.length,2);assert.equal(view.button.disabled,false);
+test('explicit measurement and cancellation use bounded job actions; polling retains full dated results',async()=>{
+  const requests=[],result={generatedAt:Date.parse('2026-09-07T10:00:00Z'),groups:[]};
+  const view=fixture(async(path,options)=>{requests.push({path,options});
+    const action=options.body&&JSON.parse(options.body).action;
+    return envelope(result,{state:action==='cancel'?'cancelled':'running',stage:'observations',processed:100,startedAt:result.generatedAt});});
+  view.parent.open=view.details.open=true;
+  await view.refresh({force:true});assert.equal(requests[0].options.method,'POST');
+  assert.deepEqual(JSON.parse(requests[0].options.body),{action:'measure'});
+  assert(view.button.disabled);assert.match(view.message.textContent,/Inventory measurement running.*7 Sept 2026/);
+  assert.equal(view.renders[0],result);await view.refresh();assert.equal(requests.length,1);
+  view.advance(2000);await view.refresh();assert.equal(requests[1].options.method,undefined);
+  await view.refresh.cancel();assert.deepEqual(JSON.parse(requests[2].options.body),{action:'cancel'});
+  assert.equal(view.button.disabled,false);assert.match(view.message.textContent,/cancelled.*Last complete inventory/);
 });
 
-test('inventory scope reset cancels work, clears old content and rejects late replies from the old generation',async()=>{
-  const pending=[];
-  const view=fixture((path,options)=>new Promise(resolve=>pending.push({path,options,resolve})));
-  view.parent.open=true;view.storage.open=true;
-  const first=view.refresh();pending[0].resolve({generatedAt:0,groups:[{id:'old'}]});await first;
-  const oldRequest=view.refresh({force:true});assert.equal(pending.length,2);
-  await view.refresh({force:true});view.refresh.reset();
-  assert.equal(pending[1].options.signal.aborted,true);
-  assert.equal(view.clears,1);assert.equal(view.states.at(-1),'idle');
-  assert.match(view.message.textContent,/has not been checked/);
-  const currentRequest=view.refresh();assert.equal(pending.length,3,'a new scope has no old cache delay');
-  pending[1].resolve({generatedAt:1,groups:[{id:'wrong-scope'}]});await oldRequest;
-  assert.equal(view.renders.length,1,'even an uncancellable old response is ignored');
-  assert.equal(view.button.disabled,true,'old request cannot release the new request button');
-  pending[2].resolve({generatedAt:2,groups:[{id:'new'}]});await currentRequest;
-  assert.deepEqual(view.renders.map(result=>result.groups[0].id),['old','new']);
-  assert.equal(pending.length,3,'reset cancels the old queued follow-up');
+test('simultaneous viewers requests coalesce and a queued explicit action runs once after the read',async()=>{
+  const requests=[];
+  const view=fixture((path,options)=>new Promise(resolve=>requests.push({path,options,resolve})));
+  view.parent.open=view.details.open=true;
+  const first=view.refresh();await view.refresh({force:true});await view.refresh({force:true});assert.equal(requests.length,1);
+  requests[0].resolve(envelope());await new Promise(resolve=>setImmediate(resolve));assert.equal(requests.length,2);
+  assert.equal(requests[1].path,'/api/recording-overview');assert.deepEqual(JSON.parse(requests[1].options.body),{action:'measure'});
+  requests[1].resolve(envelope(null,{state:'queued'}));await first;assert.equal(requests.length,2);
 });
 
-test('invalid inventory dates stay unavailable instead of crashing or inventing a scan time',async()=>{
-  for(const timestamp of [1e20,-1,Infinity,NaN]) {
-    assert.equal(inventoryDateSpan({firstAt:timestamp,lastAt:timestamp}),'Dates not recorded');
-    assert.equal(inventoryDateSpan({datePrecision:'date',firstAt:timestamp,lastAt:timestamp}),'Dates not recorded');
+test('scope reset fences obsolete responses and closing a fold aborts HTTP without cancelling the shared job',async()=>{
+  const requests=[];
+  const view=fixture((path,options)=>new Promise(resolve=>requests.push({path,options,resolve})));
+  view.parent.open=view.storage.open=true;
+  const first=view.refresh();view.storage.open=false;view.refresh.visibilityChanged();
+  assert.equal(requests[0].options.signal.aborted,true);assert.equal(requests.length,1);
+  view.storage.open=true;const reopened=view.refresh();requests[0].resolve(envelope({generatedAt:0,groups:[{id:'obsolete'}]}));await first;
+  assert.equal(view.renders.length,0);assert.equal(view.button.disabled,true);
+  requests[1].resolve(envelope());await reopened;assert.equal(view.renders.length,1);
+  const old=view.refresh({force:true});view.refresh.reset();assert.equal(requests[2].options.signal.aborted,true);
+  const current=view.refresh();requests[2].resolve(envelope({generatedAt:0,groups:[{id:'old-scope'}]}));await old;
+  requests[3].resolve(envelope());await current;assert.equal(view.renders.length,2);assert.equal(view.clears,1);
+});
+
+test('status failures keep the catalogue and complete results without exposing exceptions',async()=>{
+  let fail=false;
+  const result={generatedAt:0,groups:[]},view=fixture(async()=>{if(fail)throw Error('/private/database-file');return envelope(result);});
+  view.parent.open=view.details.open=true;await view.refresh();fail=true;await view.refresh({force:true});
+  assert.equal(view.renders.length,1);assert.match(view.message.textContent,/last received descriptions and complete results are still shown/);
+  assert.doesNotMatch(view.message.textContent,/private/);assert(view.classes.has('form-error'));assert(!view.button.disabled);
+  fail=false;await view.refresh({force:true});assert.equal(view.renders.length,2);assert(!view.classes.has('form-error'));
+  const obsolete=fixture(async()=>result);obsolete.parent.open=obsolete.details.open=true;await obsolete.refresh();
+  assert.equal(obsolete.renders.length,0,'retired bare overview payloads fail closed');
+});
+
+test('job display keeps unknown counts, failure reason, source date and partial progress distinct',()=>{
+  const idle=recordedDataJobView(envelope());assert.equal(idle.active,false);assert.match(idle.message,/descriptions are ready/);
+  assert.equal(inventoryItemSummary({count:null,retention:'history'}),'Not measured · Retained history');
+  assert.match(inventoryDateSpan({count:null}),/Measure the complete inventory/);
+  const energy=recordedDataJobView({latest:{},result:null,job:{state:'running',stage:'comparing-energy',processed:23,startedAt:1000}},{kind:'energy',now:2000});
+  assert(energy.active);assert.match(energy.details,/23 source rows inspected.*1 s elapsed/);assert.equal(energy.total,null);
+  const failed=recordedDataJobView({result:[],resultGeneratedAt:1000,job:{state:'failed',error:{code:'storage-busy',message:'/private/file'}}},{kind:'energy'});
+  assert.match(failed.message,/Storage is busy.*Last complete check/);assert.doesNotMatch(failed.message,/private/);
+  for(const at of [1e20,-1,Infinity,NaN])assert.match(recordedDataJobView(envelope({generatedAt:at,groups:[]})).message,/time unavailable/);
+});
+
+test('each current inventory failure has an actionable safe explanation',()=>{
+  for(const [code,pattern]of [
+    ['INVENTORY_SOURCE_CHANGED',/selected history changed.*new measurement/],
+    ['INVENTORY_STORAGE_BUSY',/Storage is busy.*Retry/],
+    ['INVENTORY_DATABASE_UNREADABLE',/database could not be read.*Storage health/],
+    ['INVENTORY_READ_FAILED',/saved-history read failed.*Storage health/],
+    ['INVENTORY_WORKER_FAILED',/background worker stopped.*new worker/],
+    ['INVENTORY_TOO_COMPLEX',/too many distinct groups.*supported memory limit/],
+  ]){
+    const display=recordedDataJobView(envelope(null,{state:'failed',error:{code,message:'/private/source.sqlite'}}));
+    assert.match(display.message,pattern,code);assert.doesNotMatch(display.message,/private/);
   }
-  const view=fixture(async()=>({generatedAt:1e20,groups:[]}));view.parent.open=true;view.details.open=true;
-  await view.refresh();assert.equal(view.renders.length,1);assert.match(view.message.textContent,/Inventory: time unavailable/);
-  assert(!view.classes.has('form-error'));
-});
-
-test('storage and dataset folds share one bounded inventory request and refresh while either is open', async () => {
-  let calls=0;
-  const view=fixture(async()=>{calls++;return {generatedAt:0,groups:[]};});
-  view.parent.open=true;view.storage.open=true;
-  await view.refresh();assert.equal(calls,1);
-  view.details.open=true;await view.refresh();assert.equal(calls,1);
-  view.advance(300000);view.storage.open=false;
-  await view.refresh();assert.equal(calls,2);
-  view.advance(300000);view.details.open=false;
-  await view.refresh();assert.equal(calls,2);
-  view.storage.open=true;await view.refresh();assert.equal(calls,3);
-});
-
-test('failed overview refresh preserves the previous inventory and a retry recovers',async()=>{
-  let fail=true,calls=0;
-  const overview={generatedAt:Date.parse('2026-09-07T10:00:00Z'),groups:[{id:'settings',items:[]}]};
-  const view=fixture(async()=>{calls++;if(fail)throw new Error('private backend failure');return overview;});
-  view.parent.open=true;view.details.open=true;
-  await view.refresh();assert.match(view.message.textContent,/could not be loaded/);assert.equal(view.renders.length,0);
-  assert(!view.message.textContent.includes('private'));
-  fail=false;await view.refresh({force:true});assert.equal(view.renders.length,1);assert(!view.classes.has('form-error'));
-  fail=true;await view.refresh({force:true});assert.match(view.message.textContent,/last successful overview is still shown/);
-  assert.equal(view.renders.length,1,'a failed response never replaces the inventory');assert(!view.button.disabled);
-  fail=false;await view.refresh({force:true});assert.equal(view.renders.length,2);assert.equal(calls,4);
 });
 
 test('inventory distinguishes stored calculations, overwritten state and missing history, while excluding reconstructed heat power from adaptive records',()=>{
@@ -329,25 +327,9 @@ test('recording presentation keeps different units, policies and ambiguous curre
 });
 
 
-test('opening Recording details leaves inventory idle until a data fold is expanded',async()=>{
-  let calls=0,resolve;
-  const view=fixture(()=>{calls++;return new Promise(done=>{resolve=done;});});
-  view.parent.open=true;
-  await view.refresh();assert.equal(calls,0,'the outer section alone does not scan retained data');
-  view.storage.open=true;view.visibility(false);
-  await view.refresh();assert.equal(calls,0,'hidden pages do not scan expanded storage');
-  view.visibility(true);
-  const pending=view.refresh();assert.equal(calls,1);
-  assert.deepEqual(view.states,['loading']);
-  view.details.open=true;
-  await view.refresh();assert.equal(calls,1,'storage and dataset folds share the in-flight gate');
-  const overview={generatedAt:0,groups:[],database:{adaptiveEstimatedBytes:1234},refreshAfterMs:300000};
-  resolve(overview);await pending;
-  assert.deepEqual(view.renders,[overview]);assert.deepEqual(view.states,['loading','ready']);
-  await view.refresh();assert.equal(calls,1,'expanded folds reuse the five-minute cache');
-  view.details.open=false;view.storage.open=false;view.advance(300001);
-  await view.refresh({force:true});assert.equal(calls,1,'even an explicit refresh does not scan closed inventory');
-  view.details.open=true;
-  const next=view.refresh();assert.equal(calls,2,'reopening an evidence fold refreshes expired inventory');
-  resolve(overview);await next;
+test('opening Recording details alone does not load or measure retained data',async()=>{
+  let calls=0;
+  const view=fixture(async()=>{calls++;return envelope();});view.parent.open=true;
+  await view.refresh();assert.equal(calls,0);view.details.open=true;await view.refresh();assert.equal(calls,1);
+  assert.deepEqual(view.states,['ready']);assert.deepEqual(view.renders,[catalogue]);
 });

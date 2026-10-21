@@ -3,16 +3,26 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
+import { Worker } from 'node:worker_threads';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { importCsv } from '../src/storage/history.js';
-import { getDatabaseOverview, OVERVIEW_REFRESH_MS } from '../src/app/database-overview.js';
+import { getDatabaseOverview as directDatabaseOverview, getDatabaseCatalogue } from '../src/app/database-overview.js';
+import { readDatabaseInventory } from '../src/app/inventory-reader.js';
+import { createInventoryService } from '../src/app/inventory-service.js';
 import { createChartService } from '../src/app/chart-service.js';
 import { createAppServer } from '../src/app/server.js';
 import { LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
 import { enrollJournalPeer } from '../src/storage/journal-peer.js';
 
 const at = Date.parse('2026-01-10T10:00:00Z');
+const getDatabaseOverview = options => {
+  const expected = directDatabaseOverview(options);
+  assert.deepEqual(readDatabaseInventory({ ...options, batchRows: 2 }), expected,
+    'bounded metadata batches preserve the direct complete inventory semantics');
+  return expected;
+};
 const items = overview => new Map(overview.groups.flatMap(group => group.items.map(item => [item.id, item])));
 const put = (store, signal, value = 1, time = at, extras = {}) => store.observation({
   source: 'fixture-source', device: 'invented-private-device', signal, value, sourceTime: time,
@@ -24,7 +34,6 @@ test('empty overview explains all physical tables without inventing historical p
   try {
     const overview = getDatabaseOverview({ store, now: at });
     assert.equal(overview.generatedAt, at);
-    assert.equal(overview.refreshAfterMs, OVERVIEW_REFRESH_MS);
     assert.equal(overview.database.fileBytes, null);
     assert(overview.database.allocatedBytes > 0);
     assert.equal(overview.database.adaptiveEstimatedBytes, 0);
@@ -535,10 +544,23 @@ test('overview counts composite CSV source identities and avoids disclosing unkn
   assert(!JSON.stringify(overview).includes('private-'));
 });
 
-test('overview API is authenticated, worker-backed, cached and read-only', async t => {
+const completedInventory = async service => {
+  const deadline = performance.now() + 10_000;
+  while (performance.now() < deadline) {
+    const view = await service.overview();
+    if (!['queued','running'].includes(view.job.state)) {
+      assert.equal(view.job.state, 'completed', JSON.stringify(view.job.error));
+      return view;
+    }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.fail('Synthetic inventory did not complete within its test deadline.');
+};
+
+test('overview API opens a fast catalogue and measures only by explicit shared action', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-overview-api-'));
   const store = new Store(join(directory, 'history.sqlite'));
-  const service = createChartService({ store });
+  const service = createChartService({ store, warmCache: false });
   const token = 'fixture-token';
   const server = createAppServer({ store, engine: {}, chartService: service, token });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -555,39 +577,196 @@ test('overview API is authenticated, worker-backed, cached and read-only', async
   const response = await fetch(url, { headers });
   assert.equal(response.status, 200);
   const first = await response.json();
-  assert.equal(first.cache.hit, false);
-  assert(first.database.totalFileBytes > 0);
-  assert.equal(items(first).get('controller_phase').count, 1);
+  assert.equal(first.job.state, 'idle');
+  assert.equal(first.result, null);
+  assert(first.catalogue.database.totalFileBytes > 0);
+  assert.equal(items(first.catalogue).get('controller_phase').count, null);
+  assert.equal(items(first.catalogue).get('controller_phase').status, 'unknown');
+  const measured = await fetch(url, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'measure' }) }).then(result => result.json());
+  assert(['queued', 'running'].includes(measured.job.state));
+  const complete = await completedInventory(service);
+  assert.equal(items(complete.result).get('controller_phase').count, 1);
   put(store, 'controller_phase', 2, at + 1000);
   const cached = await fetch(url, { headers }).then(result => result.json());
-  assert.equal(cached.cache.hit, true);
-  assert.equal(cached.generatedAt, first.generatedAt);
-  assert.equal(items(cached).get('controller_phase').count, 1, 'inventory explicitly reports cached snapshot counts');
-  const fresh=await fetch(`${url}?refresh=true`,{headers}).then(result=>result.json());
-  assert.equal(fresh.cache.hit,false);
-  assert.equal(items(fresh).get('controller_phase').count,2,'manual refresh scans the current committed database');
+  assert.equal(cached.result.generatedAt, complete.result.generatedAt);
+  assert.equal(items(cached.result).get('controller_phase').count, 1, 'the last complete snapshot retains its measurement date and counts');
+  assert.equal((await fetch(`${url}?refresh=true`, { headers })).status, 400, 'retired full-scan query shape fails closed');
+  assert.equal((await fetch(url, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'measure', force: true }) })).status, 400);
+  await service.overviewAction({ action: 'measure' });
+  const fresh = await completedInventory(service);
+  assert.equal(items(fresh.result).get('controller_phase').count,2,'explicit measurement reads the current committed database');
   const cachedAgain=await fetch(url,{headers}).then(result=>result.json());
-  assert.equal(cachedAgain.cache.hit,true);assert.equal(items(cachedAgain).get('controller_phase').count,2);
+  assert.equal(cachedAgain.job.state, 'completed'); assert.equal(items(cachedAgain.result).get('controller_phase').count,2);
   assert.equal(store.db.prepare('PRAGMA data_version').get().data_version, before, 'worker never writes the database');
   const cancellation = new AbortController(); cancellation.abort();
   await assert.rejects(service.overview({ signal: cancellation.signal }), { name: 'AbortError' });
 });
 
-test('concurrent forced inventory reads share one worker slot and cancellation belongs to each reader',async t=>{
+test('inventory measurement survives readers and archive retirement; cancel retains the last complete result',async t=>{
   const directory=mkdtempSync(join(tmpdir(),'stmq-overview-coalescing-'));
   const store=new Store(join(directory,'history.sqlite'));
-  const service=createChartService({store,maxQueue:1});
+  const service=createChartService({store,maxQueue:1,idleMs:1,warmCache:false});
   t.after(async()=>{await service.close();store.close();rmSync(directory,{recursive:true,force:true});});
   put(store,'controller_phase',1);
-  const controller=new AbortController();
-  const cancelled=service.overview({force:true,signal:controller.signal});
-  const retained=service.overview({force:true});
-  controller.abort();
-  await assert.rejects(cancelled,{name:'AbortError'});
-  const result=await retained;
-  assert.equal(result.cache.hit,false);assert.equal(items(result).get('controller_phase').count,1);
+  const first = await service.overviewAction({ action: 'measure' });
+  const second = await service.overviewAction({ action: 'measure' });
+  assert.equal(first.job.id, second.job.id, 'concurrent viewers join one measurement');
+  const result = await completedInventory(service);
+  assert.equal(items(result.result).get('controller_phase').count,1);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal((await service.overview()).result.generatedAt, result.result.generatedAt);
   put(store,'controller_phase',2,at+1000);
-  const fresh=await service.overview({force:true});
-  assert.equal(fresh.cache.hit,false);assert.equal(items(fresh).get('controller_phase').count,2);
-  await assert.rejects(service.overview({force:'true'}),/Invalid inventory refresh option/);
+  const controller = new AbortController();
+  await service.overviewAction({ action: 'measure' }, { signal: controller.signal });
+  controller.abort();
+  const fresh = await completedInventory(service);
+  assert.equal(items(fresh.result).get('controller_phase').count,2,'request disconnection leaves the explicit background measurement running');
+  await service.overviewAction({ action: 'measure' });
+  const cancelled = await service.overviewAction({ action: 'cancel' });
+  assert.equal(cancelled.job.state, 'cancelled');
+  assert.equal(cancelled.result.generatedAt, fresh.result.generatedAt);
+  await assert.rejects(service.overview({force:true}),/Unsupported inventory option/);
+  controller.abort();
+  await assert.rejects(service.overview({signal:controller.signal}),{name:'AbortError'});
+});
+
+test('unmeasured catalogue has unknown counts and performs only header metadata reads', () => {
+  const store = new Store(':memory:');
+  try {
+    const statements = [];
+    const db = { prepare(sql) { statements.push(sql); return store.db.prepare(sql); } };
+    const catalogue = getDatabaseCatalogue({ store: { db, path: ':memory:' }, now: at });
+    assert(statements.every(sql => /^PRAGMA (?:page_size|page_count|freelist_count)$/.test(sql)));
+    assert(catalogue.groups.length > 5);
+    for (const row of items(catalogue).values()) { assert.equal(row.count, null); assert.equal(row.status, 'unknown'); }
+    assert.equal(catalogue.accounting, null);
+    assert.equal(catalogue.database.adaptiveEstimatedBytes, null);
+  } finally { store.close(); }
+});
+
+test('inventory clears measured counts when the selected history changes', async t => {
+  const store = new Store(':memory:');
+  const inventory = createInventoryService({ store });
+  t.after(async () => { await inventory.close(); store.close(); });
+  await inventory.action({ action: 'measure' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert((await inventory.view()).result);
+  store.transaction(() => store.db.prepare('UPDATE history_selection SET generation=? WHERE id=1').run('synthetic-new-selection'));
+  const changed = await inventory.view();
+  assert.equal(changed.result, null);
+  assert.equal(changed.job.state, 'idle');
+});
+
+test('bounded inventory exactly measures a synthetic year with shared content and selected exclusions', () => {
+  const store = new Store(':memory:');
+  try {
+    const observation = store.db.prepare(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality,raw)
+      VALUES('synthetic','private-year-fixture','supply_temperature',?,'degC',?,?,'[]',?)`);
+    const exclusion = store.db.prepare('INSERT INTO recovery_exclusions(generation,table_name,record_key) VALUES(?,?,?)');
+    const generation = store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation;
+    for (let start = 0; start < 365 * 24; start += 100) store.transaction(() => {
+      for (let hour = start; hour < Math.min(start + 100, 365 * 24); hour++) {
+        const time = at + hour * 3_600_000;
+        const id = observation.run(hour % 17, time, time, '{"recorder":{"policy":"adaptive-value"}}').lastInsertRowid;
+        if (hour % 5 === 0) exclusion.run(generation, 'observations', String(id));
+      }
+    });
+    for (let start = 0; start < 365; start += 50) store.transaction(() => {
+      for (let day = start; day < Math.min(start + 50, 365); day++) {
+        store.snapshot({ kind: day % 2 ? 'weather' : 'market', source: 'synthetic', fetchedAt: at + day * 86_400_000,
+          payload: { value: day % 150, private: 'private-year-fixture' } });
+        store.event(day % 2 ? 'decision' : 'settings-changed', { private: 'private-year-fixture' }, at + day * 86_400_000);
+      }
+    });
+    store.db.prepare('INSERT INTO provider_snapshot_contents(digest,payload) VALUES(?,?)').run('unreferenced-content','{}');
+    const expected = directDatabaseOverview({ store, now: at + 365 * 86_400_000 });
+    const progress = [];
+    const measured = readDatabaseInventory({ store, now: expected.generatedAt, batchRows: 37,
+      onProgress: value => progress.push(value) });
+    assert.deepEqual(measured, expected);
+    assert.equal(items(measured).get('adaptive-observations').count, 8760);
+    assert.equal(measured.accounting.selection.excludedSourceRows, 1752);
+    assert.equal(items(measured).get('snapshot-content').count, 151);
+    assert.equal(measured.groups.find(group => group.id === 'forecasts').items[0].facts[0].value, 75);
+    assert(progress.length > 1000, 'year-long work is split into independently admitted bounded batches');
+    assert(!JSON.stringify(measured).includes('private-year-fixture'));
+  } finally { store.close(); }
+});
+
+test('failed refresh keeps the last complete inventory and never exposes native error text', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-inventory-failure-'));
+  const store = new Store(join(directory, 'synthetic.sqlite'));
+  let starts = 0;
+  class FailingWorker extends EventEmitter {
+    constructor(url, options) {
+      super();
+      if (++starts === 1) return new Worker(url, options);
+      queueMicrotask(() => { this.emit('error', new Error('/private-path/private-device secret')); this.emit('exit', 1); });
+    }
+    terminate() { return Promise.resolve(1); }
+  }
+  const inventory = createInventoryService({ store, WorkerClass: FailingWorker });
+  t.after(async () => { await inventory.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  await inventory.action({ action: 'measure' });
+  const first = await completedInventory({ overview: () => inventory.view() });
+  await inventory.action({ action: 'measure' });
+  await new Promise(resolve => setImmediate(resolve));
+  const failed = await inventory.view();
+  assert.equal(failed.job.state, 'failed');
+  assert.equal(failed.job.error.code, 'INVENTORY_WORKER_FAILED');
+  assert.equal(failed.result.generatedAt, first.result.generatedAt);
+  assert(!JSON.stringify(failed).includes('private-path'));
+  assert(!JSON.stringify(failed).includes('secret'));
+});
+
+test('forward replica publications preserve a dated measurement and stale leases cannot cancel it or see future results', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-inventory-replica-'));
+  const store = new Store(join(directory, 'synthetic.sqlite'));
+  let current;
+  class ControlledWorker extends EventEmitter {
+    constructor() { super(); current = this; }
+    terminate() { return Promise.resolve(0); }
+  }
+  const inventory = createInventoryService({ store, clock: () => at, WorkerClass: ControlledWorker });
+  t.after(async () => { await inventory.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const before = store.checkpoint(), snapshot = directDatabaseOverview({ store, now: at });
+  const started = await inventory.action({ action: 'measure' }, { checkpoint: before });
+  current.emit('message', { started: true });
+  store.event('decision', {}, at + 1);
+  const after = store.checkpoint();
+  assert(after.sequence > before.sequence);
+  const advanced = await inventory.view({ checkpoint: after });
+  assert.equal(advanced.job.id, started.job.id);
+  assert.equal(advanced.job.state, 'running', 'ordinary forward publication does not restart historical work');
+  await assert.rejects(inventory.action({ action: 'cancel' }, { checkpoint: before }), { code: 'INVENTORY_SOURCE_CHANGED' });
+  assert.equal((await inventory.view({ checkpoint: after })).job.state, 'running');
+  current.emit('message', { result: snapshot });
+  current.emit('exit', 0);
+  const completed = await inventory.view({ checkpoint: after });
+  assert.equal(completed.job.state, 'completed');
+  assert.equal(completed.result.accounting.totalRows, snapshot.accounting.totalRows);
+  await assert.rejects(inventory.view({ checkpoint: before }), { code: 'INVENTORY_SOURCE_CHANGED' });
+  await assert.rejects(inventory.view({ checkpoint: { ...after, hash: 'f'.repeat(64) } }), { code: 'INVENTORY_SOURCE_CHANGED' });
+  assert.equal((await inventory.view({ checkpoint: after })).job.state, 'completed');
+});
+
+test('closing the inventory while an action yields cannot start an orphan worker', async t => {
+  const store = new Store(':memory:');
+  const inventory = createInventoryService({ store });
+  t.after(() => store.close());
+  const pending = inventory.action({ action: 'measure' });
+  const rejected = assert.rejects(pending, /Inventory service is closed/);
+  await inventory.close();
+  await rejected;
+});
+
+test('paged streams keep stable unit ordering independently of insertion order', () => {
+  const store = new Store(':memory:');
+  try {
+    for (const [source, unit] of [['z','degC'],['a','C']]) put(store, 'garage_temperature', 1, at,
+      { source, unit, raw: { recorder: { policy: 'change-only' } } });
+    getDatabaseOverview({ store, now: at });
+  } finally { store.close(); }
 });

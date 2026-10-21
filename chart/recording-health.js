@@ -155,7 +155,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
   now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout }) {
   const $ = id => document.getElementById(id);
   const performance = createStoragePerformance({ document, now });
-  let health, recording, inventory, inventoryPhase = 'idle', revision = 0, pending = false, unavailable = false;
+  let health, recording, inventory, inventoryFiles, inventoryPhase = 'idle', revision = 0, pending = false, unavailable = false;
   let introStarted = false, introVisible = false, introTimer;
   let catalog, catalogPhase = 'idle', catalogRevision = 0, catalogPending = false, catalogRequestedAt = null, catalogTimer;
   let catalogFailureAt = null, catalogFollowup = false, catalogFollowupScan = false, catalogReadSequence = 0;
@@ -451,7 +451,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
       set(`recording-${section}-detail`, `${section === 'recording' && dated ? 'Last known status. ' : ''}${view[section].detail}`);
     }
     set('recording-disk-free', view.disk.free);
-    const allocation = inventory ? storageBytes(inventory.database?.allocatedBytes)
+    const allocation = inventoryFiles ? storageBytes(inventoryFiles.database?.allocatedBytes)
       : inventoryPhase === 'loading' ? 'Measuring…' : inventoryPhase === 'failed' ? 'Unavailable' : 'Not checked';
     set('recording-disk-database', allocation);
     set('recording-disk-capacity', view.disk.capacity);
@@ -531,14 +531,14 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     set('database-verification-summary', verificationSummary);
     $('database-verification-details').dataset.tone = verificationFailure ? 'warning' : 'neutral';
     const retained = finite(inventory?.database?.adaptiveEstimatedBytes);
-    const checked = validTime(inventory?.generatedAt) ? `Retained adaptive payload estimate · checked ${recordingEvidenceTime(inventory.generatedAt, now())}` : '';
+    const checked = retained && validTime(inventory?.generatedAt) ? `Retained adaptive payload estimate · checked ${recordingEvidenceTime(inventory.generatedAt, now())}` : '';
     set('recording-growth-retained', retained ? storageBytes(inventory.database.adaptiveEstimatedBytes)
       : inventoryPhase === 'loading' ? 'Measuring…' : inventoryPhase === 'failed' ? 'Unavailable' : 'Not checked');
     set('recording-growth-inventoryAt', inventoryPhase === 'loading' ? `Measuring retained adaptive data… ${checked}`.trim()
-      : inventoryPhase === 'failed' ? `Could not measure retained adaptive data. ${checked || 'Use Refresh inventory to retry.'}`
+      : inventoryPhase === 'failed' ? `Could not measure retained adaptive data. ${checked || 'Use Measure complete inventory to retry.'}`
         : checked || 'Retained adaptive size has not been measured.');
     for (const [field, key] of [['file', 'fileBytes'], ['wal', 'walBytes'], ['files', 'totalFileBytes'], ['reusable', 'reusableBytes']]) {
-      set(`recording-growth-${field}`, inventory ? storageBytes(inventory.database?.[key])
+      set(`recording-growth-${field}`, inventoryFiles ? storageBytes(inventoryFiles.database?.[key])
         : inventoryPhase === 'loading' ? 'Measuring…' : inventoryPhase === 'failed' ? 'Unavailable' : 'Not checked');
     }
     for (const [field, key] of [['observationPages', 'observationBytes'], ['historyPages', 'historyBytes'],
@@ -547,11 +547,16 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
       set(`recording-growth-${field}`, inventory ? storageBytes(inventory.database?.physical?.available ? inventory.database.physical[key] : null)
         : inventoryPhase === 'loading' ? 'Measuring…' : inventoryPhase === 'failed' ? 'Unavailable' : 'Not checked');
     }
+    const physicalMeasured = inventory?.database?.physical?.available === true;
+    set('recording-growth-measuredAllocation', physicalMeasured ? storageBytes(inventory.database.allocatedBytes) : 'Not checked');
+    set('recording-growth-allocationAt', physicalMeasured && validTime(inventory?.generatedAt)
+      ? `Detailed allocation measured ${recordingEvidenceTime(inventory.generatedAt, now())}. These categories describe that same measured total.`
+      : 'Detailed allocation has not been measured.');
     const journal = inventory?.database?.journalRetention;
     set('recording-growth-journalRetention', journal
       ? `Recent suffix: ${decimal(journal.commits)} transactions · ${storageBytes(journal.payloadBytes)} of change payload after transaction ${journal.baseSequence}. Retention targets ${decimal(journal.maxCommits)} transactions or ${storageBytes(journal.maxBytes)}; one complete transaction can exceed the byte target. Peer catch-up adds one entry per changed record and its original value, including deletions, until acknowledged. The suffix target does not cap this backlog or protected branches.`
       : 'Transaction retention has not been checked.');
-    const inventoryTime = validTime(inventory?.generatedAt) ? `Inventory checked ${recordingEvidenceTime(inventory.generatedAt, now())}.` : 'Inventory has not been checked yet.';
+    const inventoryTime = validTime(inventoryFiles?.generatedAt) ? `File sizes checked ${recordingEvidenceTime(inventoryFiles.generatedAt, now())}.` : 'File sizes have not been checked yet.';
     set('recording-growth-fileEvidence', `${inventoryPhase === 'failed' ? 'Refresh failed; previous sizes may be out of date. ' : ''}${inventoryTime}`);
     set('recording-growth-observations', Number.isSafeInteger(inventory?.database?.adaptiveObservationCount)
       && inventory.database.adaptiveObservationCount >= 0
@@ -560,12 +565,13 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     notice.hidden = inventoryPhase === 'ready';
     notice.classList?.toggle('form-error', inventoryPhase === 'failed');
     set('recording-overview-notice', inventoryPhase === 'failed'
-      ? `The inventory could not be refreshed.${inventory ? ' The last successful inventory is still shown.' : ''} Open Storage & growth and use Refresh inventory to retry.`
-      : inventoryPhase === 'loading' ? 'Refreshing the recorded-data inventory…' : 'The recorded-data inventory has not been checked yet.');
+      ? `Inventory status could not be refreshed.${inventory ? ' The last complete result is still shown with its original date.' : ' Dataset descriptions remain available.'} Check the measurement status in Storage & growth.`
+      : inventoryPhase === 'loading' ? 'A complete inventory is being measured in the background. Existing results retain their original date.'
+        : 'Dataset descriptions are available immediately. Counts, recorded dates and detailed sizes appear after measuring the complete inventory.');
   }
   function acceptHealth(result) {
     const changed = health?.scope !== result?.scope || health?.contextId !== result?.contextId;
-    if (changed) { inventory = undefined; inventoryPhase = 'idle'; clearCatalog(); }
+    if (changed) { inventory = inventoryFiles = undefined; inventoryPhase = 'idle'; clearCatalog(); }
     health = result; unavailable = false;
     document.body.dataset.recordingHealth = health?.version === 3 ? 'true' : 'false';
     if (changed) onContextChange?.({ contextId: health?.contextId ?? null, scope: health?.scope ?? null });
@@ -599,8 +605,8 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
   return {
     refresh,
     refreshCopies,
-    inventory(overview) { inventory = overview; inventoryPhase = 'ready'; draw(); },
-    inventoryReset() { inventory = undefined; inventoryPhase = 'idle'; draw(); },
+    inventory(overview,{files=overview}={}) { inventory = overview; inventoryFiles = files; inventoryPhase = 'ready'; draw(); },
+    inventoryReset() { inventory = inventoryFiles = undefined; inventoryPhase = 'idle'; draw(); },
     inventoryStatus(state) { inventoryPhase = state; draw(); },
     update(status) {
       if (Object.hasOwn(status ?? {}, 'webAccess')) {
@@ -620,7 +626,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
       if (catalogOpen()) void refreshCopies();
     },
     clear() {
-      ++revision; pending = false; unavailable = false; health = recording = inventory = undefined; inventoryPhase = 'idle';
+      ++revision; pending = false; unavailable = false; health = recording = inventory = inventoryFiles = undefined; inventoryPhase = 'idle';
       clearTimer(introTimer); introTimer = undefined; introStarted = introVisible = false;
       dashboardAccess = undefined; clearCatalog();
       document.body.dataset.recordingHealth = 'false'; draw();

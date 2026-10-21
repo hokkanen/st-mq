@@ -155,6 +155,23 @@ live controller's writer history.
 These offline checks establish instrumentation behavior, not live equipment
 receipt, physical outcomes or Raspberry Pi storage performance.
 
+`test/database-overview.test.js` cross-checks the bounded inventory reader
+against the direct offline calculation across source, selection and storage
+fixtures, and checks the fast catalogue, explicit shared jobs and cancellation.
+`node --test --test-timeout=180000 test/extended/recorded-inventory-scale.test.js`
+checks 100,000 mixed synthetic observations, concurrent recording and exact
+snapshot results while cheap views remain independent.
+`test/energy-checks-worker.test.js` covers independent background jobs, append
+cache continuity, corrections, receipt cutoffs, clock rollback and exact energy
+parity, including synthetic mixed week/month/year workloads. These densities
+and developer-host timings do not qualify Raspberry Pi storage. Read-only API
+access on standby and safe failures are covered by
+`test/recorded-data-api.test.js`; browser request cancellation and late-response
+fences are covered by `test/energy-check-refresh.test.js`. The model-verification
+browser fixture also renders all History tools and recorded-data job states at
+320, 390, 768 and 1440 pixels in both themes.
+
+
 Run checks from the repository root. Ordinary tests, browser fixtures, container
 checks and Garage simulations use synthetic data. The separately invoked live
 suite contacts configured providers; see [live testing](live-testing.md).

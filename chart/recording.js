@@ -220,14 +220,14 @@ const inventoryCount=item=>{
 };
 
 export function inventoryItemSummary(item) {
-  return `${item?.status==='empty'?'No records yet':inventoryCount(item)}${item?.policyLabel?` · ${item.policyLabel}`:''} · ${retentionLabels[item?.retention]??'Recorded data'}`;
+  return `${item?.status==='empty'?'No records yet':item?.count===null?'Not measured':inventoryCount(item)}${item?.policyLabel?` · ${item.policyLabel}`:''} · ${retentionLabels[item?.retention]??'Recorded data'}`;
 }
 
 export function inventoryDateSpan(item) {
   const dateOnly=item?.datePrecision==='date';
   const format=at=>dateOnly&&validDate(at)?inventoryDayFormat.format(at):dateLabel(at);
   const first=format(item?.firstAt),last=format(item?.lastAt);
-  if(!first&&!last)return item?.status==='empty'?'No recorded dates yet':'Dates not recorded';
+  if(!first&&!last)return item?.status==='empty'?'No recorded dates yet':item?.count===null?'Measure the complete inventory to check dates':'Dates not recorded';
   const dates=first&&last&&first!==last?`${first} – ${last}`:last??first;
   return `${item?.dateBasis??'Recorded dates'}: ${dates} · ${dateOnly?'time not recorded':'Finnish time'}`;
 }
@@ -241,14 +241,14 @@ export function renderRecordingOverview(overview,root) {
   const focused=document.activeElement;
   const focusedKey=root.contains(focused)?focused.closest('[data-overview-key]')?.dataset.overviewKey:null;
   const nodes=[];
-  const intro=document.createElement('p');intro.className='muted';
-  intro.textContent=overview.summary??'Exact measurements, equipment states, circulation feedback and the remaining stored datasets are listed here. Each row explains its saving rule, retained history or overwritten state, record count and dates. Matching scalar signals with the same unit and saving rule are combined across sources.';
-  nodes.push(intro);
+  if(overview.summary){const intro=document.createElement('p');intro.className='muted';intro.textContent=overview.summary;nodes.push(intro);}
   if (overview.inventoryIssues?.length) {
     const notice=document.createElement('p');notice.className='recording-inventory-notice';
     notice.textContent=`Inventory needs attention: ${overview.inventoryIssues.join(' ')}`;nodes.push(notice);
   }
-  const accounting=document.createElement('p');accounting.className='muted';accounting.textContent='Stored source counts include retained evidence excluded by recovery corrections. Selected chart history can contain fewer records. Learning journal counts describe the selected model history. Dataset counts may overlap and should not be added together.';nodes.push(accounting);
+  const accounting=document.createElement('details'),accountingTitle=document.createElement('summary'),accountingText=document.createElement('p');
+  accounting.className='recording-reading-details';accounting.dataset.overviewKey='counting';accounting.open=expanded.get('counting')??false;
+  accountingTitle.textContent='About counts and selected history';accountingText.textContent='Stored source counts include retained evidence excluded by recovery corrections. Selected chart history can contain fewer records. Learning journal counts describe the selected model history. Dataset counts may overlap and should not be added together.';accounting.append(accountingTitle,accountingText);
   const groups=overview.groups??[],emptyItem=item=>item.status==='empty'&&item.count===0;
   const populated=groups.filter(group=>group.items?.some(item=>!emptyItem(item)));
   const emptyGroups=groups.filter(group=>!populated.includes(group));
@@ -256,13 +256,16 @@ export function renderRecordingOverview(overview,root) {
   const counts=document.createElement('p');counts.className='recording-inventory-counts';
   const datasetCounts=items=>{const present=items.filter(item=>Number.isSafeInteger(item.count)&&item.count>0).length,empty=items.filter(emptyItem).length;
     return `${present} with records${empty?` · ${empty} empty`:''}${items.length-present-empty?` · ${items.length-present-empty} counts unavailable`:''}`;};
-  counts.textContent=`Datasets: ${datasetCounts(totals)}. Empty datasets remain available below; an empty dataset alone does not establish a recording fault.`;nodes.push(counts);
+  const measured=totals.some(item=>Number.isSafeInteger(item.count));
+  counts.textContent=measured?`Datasets: ${datasetCounts(totals)}. Empty datasets remain available below.`:`${integerLabel(totals.length)} dataset descriptions · Counts and recorded dates have not been measured.`;nodes.push(counts,accounting);
   const emptyGroupDetails=document.createElement('details');emptyGroupDetails.className='recording-empty-datasets';emptyGroupDetails.dataset.overviewKey='empty-groups';
   const emptyGroupTitle=document.createElement('summary');emptyGroupTitle.textContent=`Show empty dataset groups · ${emptyGroups.length}`;emptyGroupDetails.append(emptyGroupTitle);
   for(const group of [...populated,...emptyGroups]) {
     const details=document.createElement('details');details.className='recording-data-group';details.dataset.overviewKey=`group:${group.id}`;
     const groupEmpty=(group.items??[]).filter(emptyItem),groupPresent=(group.items??[]).filter(item=>!emptyItem(item));
-    const summary=document.createElement('summary');summary.textContent=`${group.label} · ${datasetCounts(group.items??[])}`;details.append(summary);
+    const summary=document.createElement('summary'),groupName=document.createElement('span'),groupCount=document.createElement('span');
+    groupName.textContent=group.label;groupCount.className='recording-group-count';groupCount.textContent=measured?datasetCounts(group.items??[]):`${group.items?.length??0} ${group.items?.length===1?'dataset':'datasets'}`;
+    summary.append(groupName,groupCount);details.append(summary);
     if(group.description){const description=document.createElement('p');description.className='muted';description.textContent=group.description;details.append(description);}
     const emptyDetails=document.createElement('details');emptyDetails.className='recording-empty-datasets';emptyDetails.dataset.overviewKey=`empty:${group.id}`;
     const emptyTitle=document.createElement('summary');emptyTitle.textContent=`Show empty datasets · ${groupEmpty.length}`;emptyDetails.append(emptyTitle);
@@ -275,9 +278,9 @@ export function renderRecordingOverview(overview,root) {
       if(item.description){const description=document.createElement('p');description.textContent=item.description;dataset.append(description);}
       const behavior=document.createElement('dl');behavior.className='recording-dataset-facts';
       const fact=(label,value)=>{
-        const key=document.createElement('dt'),text=document.createElement('dd');key.textContent=label;text.textContent=String(value);behavior.append(key,text);
+        const key=document.createElement('dt'),text=document.createElement('dd');key.textContent=label;text.textContent=value===null||value===undefined?'Not measured':String(value);behavior.append(key,text);
       };
-      fact('Recorded',inventoryCount(item));
+      fact('Recorded',item.count===null?'Not measured · use Measure complete inventory':inventoryCount(item));
       if(item.writeBehavior)fact('When saved',item.writeBehavior);
       fact('Retention',item.retentionDescription??retentionDescriptions[item.retention]??'Stored in the database.');
       fact('Dates',inventoryDateSpan(item));
@@ -357,41 +360,118 @@ export function renderRecordingOverview(overview,root) {
   }
 }
 
-export function recordingOverviewRefresh({request,root,details,parent,message,button,clock=Date.now,isVisible=()=>document.visibilityState!=='hidden',render=renderRecordingOverview,onState=()=>{}}) {
-  let fetchedAt=null,active=null,loaded=false,refreshAfterMs=300000,generation=0,queuedForce=false;
-  const refresh=async({force=false}={})=>{
-    queuedForce ||= force;
+const recordedDataStages = {
+  queued:'Waiting for a storage turn', catalogue:'Reading dataset descriptions',
+  observations:'Measuring saved observations', events:'Measuring saved events',
+  state:'Measuring saved state', provider_snapshot_fetches:'Measuring saved forecasts', provider_snapshot_contents:'Measuring saved forecasts',
+  learning_journal_entries:'Measuring recorded learning inputs', learning_checkpoints:'Measuring saved learning models',
+  recorder_coverage:'Measuring source coverage', recorder_metrics:'Measuring recording statistics',
+  energy_audits:'Measuring meter references', charging_reports:'Measuring charging reports', charging_report_events:'Measuring charging report details',
+  allocation:'Measuring database allocation', complete:'Finishing the inventory',
+  'reading-meter-history':'Reading property meter history', 'reading-recorded-energy':'Reading recorded phase energy',
+  'reading-charging-sessions':'Checking completed charging sessions', 'comparing-energy':'Comparing recorded and metered energy',
+  'checking-cache':'Checking which history is already measured',
+};
+const recordedDataErrors = {
+  INVENTORY_SOURCE_CHANGED:'The selected history changed during the measurement. Start a new measurement.',
+  INVENTORY_STORAGE_BUSY:'Storage is busy. Retry when the current storage work finishes.',
+  INVENTORY_DATABASE_UNREADABLE:'The database could not be read. Check Storage health before retrying.',
+  INVENTORY_READ_FAILED:'A saved-history read failed. Check Storage health, then retry the measurement.',
+  INVENTORY_WORKER_FAILED:'The background worker stopped before completing the measurement. Retry to start a new worker.',
+  INVENTORY_TOO_COMPLEX:'A dataset has too many distinct groups to measure within the supported memory limit. Other completed results remain available.',
+  'history-changed':'The selected history changed during the check. Refresh the checks to use the current history.',
+  'checks-failed':'Recorded energy could not be compared completely. Check Storage health, then refresh the checks.',
+  'storage-busy':'Storage is busy. Retry when the current storage work finishes.',
+  'database-unreadable':'The database could not be read. Check Storage health before retrying.',
+  'worker-stopped':'The background worker stopped before completing the check. Refresh checks to start a new worker.',
+};
+
+/** Whole-history work belongs to a local job; a browser only reads its progress. */
+export function recordedDataJobView(view, {kind='inventory',now=Date.now()}={}) {
+  const job=view?.job,energy=kind==='energy',active=['queued','running'].includes(job?.state);
+  const title=energy?'Energy check':'Inventory measurement';
+  const hasResult=view?.result!==null&&view?.result!==undefined;
+  const generatedAt=view?.resultGeneratedAt??(!Array.isArray(view?.result)?view?.result?.generatedAt:null);
+  const resultTime=dateLabel(generatedAt);
+  const retained=hasResult?`Last complete ${energy?'check':'inventory'}: ${resultTime??'time unavailable'} · Finnish time.`:'';
+  let message=active?`${title} ${job.state==='queued'?'queued':'running'}. ${recordedDataStages[job.stage]??'Processing saved history'}.`
+    : job?.state==='failed'?`${title} failed. ${recordedDataErrors[job.error?.code]??'The saved history could not be read completely. Retry the check.'}`
+      : job?.state==='cancelled'?`${title} cancelled.`
+        : hasResult?`${energy?'Recorded energy checks':'Complete inventory'} ready.`
+          : energy?`${view?.latest?.summary?.latestReading?'The latest meter reading is shown below.':'Meter history has not been checked yet.'} Historical comparisons have not completed.`
+            :'Dataset descriptions are ready. Measure the complete inventory to add counts, recorded dates and detailed sizes.';
+  if(retained)message+=` ${retained}`;
+  const processed=Number.isSafeInteger(job?.processed)&&job.processed>=0?job.processed:null;
+  const total=Number.isSafeInteger(job?.total)&&job.total>=0?job.total:null;
+  const details=[active&&processed!==null?`${integerLabel(processed)}${total!==null?` of ${integerLabel(total)}`:''} ${energy?'source rows inspected':'rows and pages examined'}`:null,
+    active&&validDate(job?.startedAt)?`Started ${dateLabel(job.startedAt)}${now>=job.startedAt?` · ${durationText(now-job.startedAt)} elapsed`:' · ahead of browser clock'}`:null,
+    hasResult&&validDate(view?.resultAsOf)?`History through ${dateLabel(view.resultAsOf)}`:null,
+    active?'You can leave this page. Recording and control continue.':null].filter(Boolean).join(' · ');
+  return {active,message,details,processed,total,failed:job?.state==='failed'};
+}
+
+export function renderRecordedDataJob(view,elements,{kind='inventory',now=Date.now(),busy=false}={}) {
+  const display=recordedDataJobView(view,{kind,now});
+  const {message,button,cancel,progress,detail}=elements;
+  if(message){message.textContent=display.message;message.classList?.toggle('form-error',display.failed);}
+  if(button)button.disabled=busy||display.active;
+  if(cancel){cancel.hidden=!display.active;cancel.disabled=busy;}
+  if(detail){detail.textContent=display.details;detail.hidden=!display.details;}
+  if(progress){
+    progress.hidden=!display.active;
+    if(display.total>0&&display.processed!==null){progress.max=display.total;progress.value=Math.min(display.processed,display.total);}
+    else progress.removeAttribute('value');
+    progress.setAttribute('aria-valuetext',display.active?display.message:'No active check');
+  }
+  return display;
+}
+
+export function recordingOverviewRefresh({request,root,details,parent,message,button,cancel,progress,detail,
+  clock=Date.now,isVisible=()=>document.visibilityState!=='hidden',render=renderRecordingOverview,onState=()=>{},onView=()=>{}}) {
+  let fetchedAt=null,active=null,view=null,generation=0,queuedAction=null;
+  const elements={message,button,cancel,progress,detail};
+  const refresh=async({force=false,action=null}={})=>{
+    if(force)queuedAction='measure';
+    if(action)queuedAction=action;
     if(active||!details.some(fold=>fold.open)||!parent.open||!isVisible())return;
-    force=queuedForce;
-    if(!force&&fetchedAt!==null&&clock()>=fetchedAt&&clock()-fetchedAt<refreshAfterMs)return;
-    queuedForce=false;
+    const display=recordedDataJobView(view,{now:clock()});
+    const interval=display.active?2000:30000;
+    if(!queuedAction&&fetchedAt!==null&&clock()>=fetchedAt&&clock()-fetchedAt<interval)return;
+    const requestedAction=queuedAction;queuedAction=null;
     const operation={generation,controller:new AbortController()};active=operation;
-    button.disabled=true;root.setAttribute('aria-busy','true');
-    message.classList.remove('form-error');message.textContent=loaded?'Refreshing recorded-data overview…':'Loading recorded-data overview…';
-    onState('loading');
+    renderRecordedDataJob(view,elements,{now:clock(),busy:true});root.setAttribute('aria-busy','true');
+    if(!view)message.textContent='Loading dataset descriptions…';
     try {
-      const result=await request(`/api/recording-overview${force?'?refresh=true':''}`,{signal:operation.controller.signal});
+      const next=await request('/api/recording-overview',{signal:operation.controller.signal,
+        ...(requestedAction?{method:'POST',body:JSON.stringify({action:requestedAction})}:{})});
       if(operation.generation!==generation)return;
-      if(!result||!Array.isArray(result.groups))throw new Error('Invalid recorded-data overview');
-      render(result,root);loaded=true;fetchedAt=clock();onState('ready');
-      refreshAfterMs=Number.isFinite(result.refreshAfterMs)&&result.refreshAfterMs>0?result.refreshAfterMs:300000;
-      message.textContent=`Inventory: ${dateLabel(result.generatedAt)??'time unavailable'} · Finnish time${result.cache?.hit?' · cached':''}. Refreshes while Storage & growth or Other recorded data is open.`;
+      if(!next||!Array.isArray(next.catalogue?.groups)||!next.job||next.result!==null&&!Array.isArray(next.result?.groups))throw new Error('Invalid recorded-data overview');
+      view=next;fetchedAt=clock();render(next.result??next.catalogue,root);onView(next);
+      const state=renderRecordedDataJob(next,elements,{now:clock()});
+      onState(state.failed?'failed':state.active?'loading':'ready');
     } catch {
       if(operation.generation!==generation)return;
       message.classList.add('form-error');
-      message.textContent=loaded?'Could not refresh the overview. The last successful overview is still shown.':'The recorded-data overview could not be loaded. Use Refresh inventory to try again.';
+      message.textContent=view?'Could not refresh inventory status. The last received descriptions and complete results are still shown. Reopen this section to retry.'
+        :'Dataset descriptions could not be loaded. Reopen this section to retry.';
       onState('failed');
     } finally {
       if(active===operation) {
-        active=null;button.disabled=false;root.removeAttribute('aria-busy');
-        if(queuedForce)await refresh();
+        active=null;button.disabled=recordedDataJobView(view).active;
+        if(cancel)cancel.disabled=false;root.removeAttribute('aria-busy');
+        if(queuedAction)await refresh();
       }
     }
   };
+  refresh.cancel=()=>refresh({action:'cancel'});
+  refresh.visibilityChanged=()=>{
+    if(details.some(fold=>fold.open)&&parent.open&&isVisible())return refresh();
+    generation++;active?.controller.abort();active=null;queuedAction=null;fetchedAt=null;
+    root.removeAttribute('aria-busy');renderRecordedDataJob(view,elements,{now:clock()});
+  };
   refresh.reset=()=>{
-    generation++;active?.controller.abort();active=null;queuedForce=false;fetchedAt=null;loaded=false;refreshAfterMs=300000;
-    root.replaceChildren();root.removeAttribute('aria-busy');button.disabled=false;
-    message.classList.remove('form-error');message.textContent='The recorded-data inventory has not been checked yet.';
+    generation++;active?.controller.abort();active=null;queuedAction=null;fetchedAt=null;view=null;
+    root.replaceChildren();root.removeAttribute('aria-busy');renderRecordedDataJob(null,elements,{now:clock()});
     onState('idle');
   };
   return refresh;
@@ -430,6 +510,7 @@ const exclusionLabels = {
   'comparison-incomplete': 'Complete recording or final reference could not be confirmed',
 };
 const propertyCheckStates = {
+  'comparison-pending': 'Historical comparison is being checked',
   'no-readings': 'No property meter readings recorded',
   'waiting-for-second-reading': 'Waiting for a second meter reading',
   'counter-reset': 'Meter counter decreased; waiting for a new comparison period',
@@ -489,7 +570,7 @@ export function energyAuditRow(item) {
     details: [
       ...(latest ? [
         `Meter source: Equalizer · ${recordingSourceLabel({source:'easee',transport:latest.transport})}.`,
-        `${s.readingCount} cumulative meter reading${s.readingCount === 1 ? '' : 's'} recorded.`,
+        ...(Number.isSafeInteger(s.readingCount)?[`${s.readingCount} cumulative meter reading${s.readingCount === 1 ? '' : 's'} recorded.`]:['The complete meter-reading count has not been measured.']),
         `Latest reading received: ${checkDate(latest.receivedAt)}. Meter times describe the source reading; receiving the same reading again does not create a new counter.`,
       ] : ['The property import counter is supplied by the Easee Equalizer through Easee Cloud. Check its connection under Equipment.']),
       ...(previous ? [`Previous meter reading: ${checkEnergy(previous.valueKwh)} · ${checkDate(previous.sourceTime)}.`] : []),
@@ -524,26 +605,48 @@ export function renderEnergyAudits(rows, root) {
     summary.textContent = label; details.append(summary, ...lines.map(text => paragraph(text)));
     return details;
   };
-  const nodes = [
-    paragraph('Property and Charger 1 compare stored phase-energy totals, estimated by integrating power, with meter references over matching periods.', 'muted'),
-    paragraph('Charger 2 records lifetime meter increments directly; only the phase split is estimated, so it has no equivalent integration check.', 'muted'),
-  ];
+  const nodes = [];
   for (const item of rows) {
     const display = energyAuditRow(item), article = document.createElement('article');
     article.className = 'energy-check'; article.dataset.checkKey = display.key;
     const identity = document.createElement('div'), title = document.createElement('h3');
     title.textContent = display.title; identity.append(title, paragraph(display.subtitle, 'energy-check-source'));
     const body = document.createElement('div'); body.className = 'energy-check-body';
-    body.append(paragraph(display.value, 'energy-check-result'), paragraph(display.method, 'energy-check-context'),
+    body.append(paragraph(display.value, 'energy-check-result'),
       ...display.context.map(text => paragraph(text, 'energy-check-context')));
     if (display.notice) body.append(paragraph(display.notice, 'energy-check-notice'));
-    if (display.details.length) body.append(disclosure(display.key, display.detailsLabel, display.details));
+    body.append(disclosure(display.key, display.detailsLabel, [display.method,...display.details]));
     article.append(identity, body); nodes.push(article);
   }
   nodes.push(disclosure('method', 'How comparisons work', [
+    'Property and Charger 1 compare stored phase-energy totals, estimated by integrating power, with meter references over matching periods. Charger 2 records lifetime meter increments directly; only the phase split is estimated, so it has no equivalent integration check.',
     'Only matching periods with complete recording are compared. Percentages use the summed recorded and metered energy, so larger sessions contribute more. Gaps stay excluded. Dates and times are Finnish time.',
     'These checks are read-only. They do not change recorded history, calibrate estimates, train the house model or adjust recording thresholds.',
   ]));
   root.replaceChildren(...nodes);
   if (focused) [...root.querySelectorAll('details[data-check-key]')].find(node => node.dataset.checkKey === focused)?.querySelector('summary')?.focus({ preventScroll: true });
+}
+
+/** Latest meter evidence is separate from a completed, dated historical result. */
+export function renderEnergyAuditView(view,root) {
+  if(!root)return;
+  if(view?.result!==null&&view?.result!==undefined)renderEnergyAudits(view.result,root);
+  else renderEnergyAudits([],root);
+  const summary=view?.latest?.summary,reading=summary?.latestReading;
+  const checking=['queued','running'].includes(view?.job?.state),noReadings=summary?.status==='no-readings';
+  const latest=document.createElement('section');latest.className='energy-check-latest';latest.setAttribute('aria-label','Latest property meter reading');
+  const label=document.createElement('p');label.textContent='Latest property meter';
+  const value=document.createElement('strong');
+  value.textContent=reading?checkEnergy(reading.valueKwh):noReadings?'No readings recorded':checking?'Checking recorded meter…':'Not checked';
+  const time=document.createElement('time');
+  if(validDate(reading?.sourceTime))time.dateTime=new Date(reading.sourceTime).toISOString();
+  time.textContent=reading?`Source reading ${checkDate(reading.sourceTime)} · Received ${checkDate(reading.receivedAt)}`
+    :noReadings?'The completed meter-history check found no recorded readings.'
+      :checking?'The latest recorded meter evidence is being checked.':'The latest recorded meter evidence has not been checked.';
+  latest.append(label,value,time);root.prepend(latest);
+  if(view?.result===null||view?.result===undefined){
+    const pending=document.createElement('p');pending.className='muted';
+    pending.textContent='Completed comparisons will appear here after the historical check finishes. Missing coverage remains excluded.';
+    latest.after(pending);
+  }
 }
