@@ -844,6 +844,13 @@ refreshes, closing aborts unfinished work, and reopening either reuses a valid
 cached result or refreshes against the latest status. Late cancelled replies
 cannot replace the mounted comparison.
 
+`test/chart-comparison-summary.test.js` checks summary/full-chart accounting
+equality across a Finnish DST transition, overlapping energy, unavailable prices
+and physical/simulated input selection. Summary reads omit property-energy and
+chart-only learning projections. Chart API checks cover authentication, request
+validation, independent plot/summary cache entries and compressed streaming.
+These synthetic checks do not establish phone rendering or Pi storage latency.
+
 On Ubuntu x86-64 with an AMD Ryzen 5 1600 and Node 26.8.2, a 90-day,
 596,403-observation fixture produced these median first-worker results over three
 repetitions, comparing the same fixture with revision `d60f4be`:

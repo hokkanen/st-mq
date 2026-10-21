@@ -363,6 +363,11 @@ export function chartQuery(selection) {
   const points = selection.points ?? 800;
   if (!Number.isInteger(points) || points < 100 || points > 2000) throw new RangeError('Invalid chart resolution.');
   const params = new URLSearchParams({ start: selection.startDate, end: selection.endDate, ...(selection.view !== undefined ? { view: selection.view } : { left: selection.left }), points: String(points) });
+  if (selection.summaryOnly !== undefined) {
+    if (selection.summaryOnly !== true || selection.view !== 'power' || selection.viewFrom !== undefined || selection.viewTo !== undefined)
+      throw new RangeError('Invalid comparison summary selection.');
+    params.set('summary', '1');
+  }
   if (selection.viewFrom !== undefined || selection.viewTo !== undefined) {
     if (!Number.isSafeInteger(selection.viewFrom) || !Number.isSafeInteger(selection.viewTo) || selection.viewFrom >= selection.viewTo)
       throw new RangeError('Invalid chart viewport.');

@@ -70,7 +70,9 @@ export function chartRange({ startDate, endDate, now = Date.now() } = {}) {
 /** Calendar selection is immutable while a detail request changes only the
  * queried viewport. Temperature detail retains explicitly marked neighbouring
  * knots for display tangents; the requested viewport itself remains fixed. */
-export function chartRequestRange({ viewFrom, viewTo, ...args } = {}) {
+export function chartRequestRange({ viewFrom, viewTo, summaryOnly = false, view, left, ...args } = {}) {
+  if (typeof summaryOnly !== 'boolean' || summaryOnly && (viewFrom !== undefined || viewTo !== undefined || view !== 'power' || left !== undefined))
+    throw new TypeError('Comparison summaries require the full power-view date selection.');
   const selection = chartRange(args), detail = viewFrom !== undefined || viewTo !== undefined;
   if (!detail) return { selection, range: selection, detail: false };
   if (!Number.isSafeInteger(viewFrom) || !Number.isSafeInteger(viewTo))
@@ -404,13 +406,30 @@ function addHistoricalChargerTiming(store, timing, range, now, input, cutoff = I
   timing.add('charger1', Math.min(until, now, range.to), null);
 }
 
+function selectedFirewood({ store, input, range, now, priced, market, weather, contract, simulated, detail }) {
+  const outlook = input === 'simulated' ? simulated ?? {} : assembleOutlook(market, weather, contract, now);
+  return getFirewoodBenefit({ store, input, range, now,
+    priceIntervals: priced.map(row => ({ ...row, price: row.totalCtPerKwh })),
+    futureIntervals: !detail && range.from <= now && range.to > now
+      ? forecastIntervals(outlook.prices, outlook.forecast, Math.floor(now / 900_000) * 900_000) : [] });
+}
+
+function comparisonSummaries({ store, input, range, now, timing, priced, firewood }) {
+  const timingBenefit = timing.result();
+  const heatingBenefit = getHeatingBenefit({ store, input, range, now });
+  const heatingSavings = buildHeatingSavings({ range, now, homeModel: heatingBenefit,
+    homeTiming: timingBenefit.heatPump,
+    garageTiming: getGarageTimingBenefit({ store, input, range, now, prices: priced }) });
+  return { timingBenefit, heatingBenefit, heatingSavings, firewoodBenefit: firewood.summary };
+}
+
 /** Combined chart query. This deliberately never calls providers, reads options,
  * writes history, or turns phase-current estimates into electricity metering. */
 export function getChartData({ store, input = 'offline', contract = null, market = null, weather = null,
   simulated = null, now = Date.now(), startDate, endDate, left, view, points = 800, viewFrom, viewTo,
-  onProgress, _queryContext, _relatedTimes, _relatedSignals, _priceProjection }) {
+  onProgress, summaryOnly = false, _queryContext, _relatedTimes, _relatedSignals, _priceProjection }) {
   const started = performance.now();
-  const { range, selection, detail } = chartRequestRange({ startDate, endDate, now, viewFrom, viewTo });
+  const { range, selection, detail } = chartRequestRange({ startDate, endDate, now, viewFrom, viewTo, summaryOnly, view, left });
   const projecting = Array.isArray(_relatedTimes), drawingOnly = detail || projecting;
   const selectedView = view !== undefined && Object.hasOwn(CHART_VIEW_BY_KEY, view) ? CHART_VIEW_BY_KEY[view] : null;
   if (view !== undefined && left !== undefined) throw new TypeError('Choose either a chart view or a historical series.');
@@ -442,7 +461,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const leftNames = selectedView ? [...new Set([...selectedView.leftSignals, ...selectedView.rightSignals,
     ...selectedView.tracks.filter(name => Object.hasOwn(HISTORY_AXIS_BY_KEY, name))])]
     : HISTORY_AXIS_BY_KEY[left].signals;
-  const names = projecting ? _priceProjection ? ['all_in_price', 'spot_price'] : _relatedSignals ?? leftNames
+  const names = summaryOnly ? [] : projecting ? _priceProjection ? ['all_in_price', 'spot_price'] : _relatedSignals ?? leftNames
     : [...new Set([...(selectedView ? [] : [...TEMPERATURES, 'model_indoor_temperature', 'outdoor_forecast']),
       'all_in_price', 'spot_price', ...leftNames])];
   const powerNames = ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'].filter(name => names.includes(name));
@@ -485,9 +504,23 @@ export function getChartData({ store, input = 'offline', contract = null, market
     : new DailyTimingBenchmark(range, now, priced, { heatPump: 'reconstructed-equipment' });
   const heatPumpEnergy = !drawingOnly || envelopes.heat_pump_power
     ? addHistoricalHeatPump({ store, range, now, input, envelope: envelopes.heat_pump_power, timing }) : null;
-  const energyStarts = Object.fromEntries(['property','ev1'].map(prefix=>[prefix,queryContext.energyStart(prefix)]));
+  const energyStarts = Object.fromEntries((summaryOnly ? ['ev1'] : ['property','ev1']).map(prefix=>[prefix,queryContext.energyStart(prefix)]));
   const voltageReader = queryContext.voltageReader;
   if (!drawingOnly) addHistoricalChargerTiming(store, timing, range, now, input, energyStarts.ev1, voltageReader);
+  if (summaryOnly) {
+    // Comparisons need original charger intervals and the same heating/firewood
+    // assessments, but no property-energy scan, chart envelope or resampling.
+    const energyProgress = traversalProgress('reading-energy');
+    for (const prefix of ['ev1', 'ev2']) addRecordedEnergy({ store, range, now, input,
+      envelopes: {}, timing, voltageReader, queryContext, prefix, onProgress: energyProgress });
+    energyProgress?.(range.to, true);
+    onProgress?.({ stage: 'preparing-summary' });
+    const firewood = selectedFirewood({ store, input, range, now, priced, market, weather, contract, simulated, detail });
+    return { range, now, input, series: {}, shading: {}, operatingModes: [],
+      ...comparisonSummaries({ store, input, range, now, timing, priced, firewood }),
+      meta: { summaryOnly: true, warnings, priceAssumptions, returnedPoints: 0,
+        elapsedMs: Math.round((performance.now() - started) * 100) / 100 } };
+  }
   const modeHistory = new ActivityEnvelope(range, points, now);
   const compressorHomeHistory = new ActivityEnvelope(range, points, now);
   let telemetry = new Map(), previousTelemetryAt = null;
@@ -938,11 +971,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes });
   const fireplaceInputs = addFireplaceInputs({ store, range, now, input, envelopes, shading });
   const needsFirewood = !detail || selectedHas(FIREWOOD_OUTCOME_NAMES);
-  const outlookForFirewood = !needsFirewood ? {} : input === 'simulated' ? simulated ?? {} : assembleOutlook(market, weather, contract, now);
-  const firewood = needsFirewood ? getFirewoodBenefit({ store, input, range: firewoodRange, now,
-    priceIntervals: priced.map(row => ({ ...row, price: row.totalCtPerKwh })),
-    futureIntervals: !detail && range.from <= now && range.to > now
-      ? forecastIntervals(outlookForFirewood.prices, outlookForFirewood.forecast, Math.floor(now / 900_000) * 900_000) : [] }) : null;
+  const firewood = needsFirewood ? selectedFirewood({ store, input, range: firewoodRange, now,
+    priced, market, weather, contract, simulated, detail }) : null;
   const firewoodOutcomes = firewood ? addFirewoodOutcomes({ result: firewood, range: firewoodRange, now, envelopes }) : null;
   if (selectedHas(FIREPLACE_INPUT_NAMES) && fireplaceInputs.loggingStartedAt === null)
     warnings.push('No fireplace logging exists for this input source. Earlier unlogged periods are unknown.');
@@ -1044,13 +1074,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
   if (selectedHas(LEARNING)) warnings.push('Learning history records estimates when assessed. Gaps mean no recorded estimate; auxiliary recovery metrics exclude cycles whose auxiliary state was unknown.');
   const operatingModes = modeHistory.values();
   onProgress?.({ stage: 'preparing-summary' });
-  const timingBenefit = detail ? null : timing.result();
-  const heatingBenefit = detail ? null : getHeatingBenefit({ store, input, range, now });
-  const heatingSavings = detail ? null : buildHeatingSavings({ range, now,
-    homeModel: heatingBenefit, homeTiming: timingBenefit.heatPump,
-    garageTiming: getGarageTimingBenefit({ store, input, range, now, prices: priced }) });
   return { range, now, input, ...(view === undefined ? { left } : { view }), series, shading, operatingModes,
-    ...(detail ? { selection } : { timingBenefit, heatingBenefit, heatingSavings, firewoodBenefit: firewood.summary }),
+    ...(detail ? { selection } : comparisonSummaries({ store, input, range, now, timing, priced, firewood })),
     meta: { ...(detail ? { detail: true } : {}), ...(relatedSampling ? { relatedSampling } : {}), ...(chargingAllowances ? { chargingAllowances } : {}),
     ...(propertyHighestPhase ? { propertyHighestPhase: { aggregated: propertyHighestPhase.buckets !== null } } : {}),
     warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',

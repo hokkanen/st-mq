@@ -101,6 +101,7 @@ test('the first status sets Finnish dates and later midnight polls preserve the 
   const first = f.controller.refresh({ now: Date.parse('2026-09-27T21:30:00Z') });
   await tick();
   assert.equal(f.start.value, '2026-09-28'); assert.equal(f.end.value, '2026-09-28');
+  assert.equal(new URL(f.requests[0].path, 'http://fixture.invalid').searchParams.get('summary'), '1');
   reply(f.requests[0]); await first;
   await f.controller.refresh({ now: Date.parse('2026-09-28T21:30:00Z') });
   assert.equal(f.requests.length, 1);

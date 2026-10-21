@@ -1742,7 +1742,10 @@ the chart, and chart navigation does not change comparisons. While loading or
 after a failed request, the status identifies the dates of any retained results;
 failed requests offer Retry. The section uses its own cancellable request cache
 and the current chart API's unreduced comparison calculations, with ordinary
-short/live and long/historical refresh intervals.
+short/live and long/historical refresh intervals. A summary request skips chart
+geometry, property-energy drawing and coefficient/input projections. It still
+uses original charger intervals and the same heating and firewood assessments;
+display resolution never determines energy or cost totals.
 When recovery publishes a new history selection, comparisons invalidate cached
 and pending results for every period, including historical dates. The selected
 period and controls remain in place; late replies from the previous selection

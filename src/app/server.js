@@ -681,6 +681,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (req.method === 'GET' && url.pathname === '/api/chart') {
           const now = engine.clock();
+          const summaryOnly = url.searchParams.has('summary');
+          if (summaryOnly && url.searchParams.get('summary') !== '1') throw new TypeError('Invalid comparison summary selection');
           const args = { input: engine.config.input, contract: engine.contract(),
             market: readerStore.getState('provider:market'), weather: readerStore.getState('provider:weather'),
             simulated: engine.plant ? simulatedOutlook(now) : null, now,
@@ -688,6 +690,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             endDate: url.searchParams.get('end') ?? undefined,
             left: url.searchParams.get('left') ?? undefined, view: url.searchParams.get('view') ?? undefined,
             points: numberParam(url, 'points', 800, 4096),
+            summaryOnly,
             viewFrom: optionalTimestampParam(url, 'viewFrom'), viewTo: optionalTimestampParam(url, 'viewTo') };
           const stream = req.headers.accept?.split(',').some(value => value.trim().split(';')[0] === 'application/x-ndjson');
           if (req.headers['x-chart-prefetch'] !== undefined) throw new TypeError('Unsupported chart header');

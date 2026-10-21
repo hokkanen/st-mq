@@ -35,12 +35,35 @@ async function fixture(t, overrides = {}) {
 test('chart API requires authentication and rejects malformed date/axis/point selections', async t => {
   const { base, headers } = await fixture(t);
   assert.equal((await fetch(`${base}/api/chart`)).status, 401);
-  for (const query of ['start=2026-02-31', 'start=2026-09-08&end=2026-09-07', 'left=arbitrary_signal', 'view=arbitrary_view', 'view=constructor', 'view=garage&left=power', 'points=999999', 'start=not-a-date']) {
+  for (const query of ['start=2026-02-31', 'start=2026-09-08&end=2026-09-07', 'left=arbitrary_signal', 'view=arbitrary_view', 'view=constructor', 'view=garage&left=power', 'points=999999', 'start=not-a-date',
+    'view=power&summary=false', 'view=power&summary=0', 'view=garage&summary=1', 'summary=1',
+    'view=power&summary=1&viewFrom=1&viewTo=2']) {
     const response = await fetch(`${base}/api/chart?${query}`, { headers });
     assert.equal(response.status, 400, query);
   }
   const response = await fetch(`${base}/api/chart`, { headers: { ...headers, Origin: 'https://untrusted.example' } });
   assert.equal(response.status, 403);
+});
+
+test('comparison summaries use the authenticated chart worker and keep cache entries separate from plots', async t => {
+  const { base, headers } = await fixture(t);
+  const path = `${base}/api/chart?start=2026-09-07&view=power`;
+  assert.equal((await fetch(path + '&summary=1')).status, 401);
+  const full = await fetch(path, { headers }).then(response => response.json());
+  const summary = await fetch(path + '&summary=1', { headers }).then(response => response.json());
+  assert.equal(summary.meta.summaryOnly, true);
+  assert.deepEqual(summary.series, {});
+  for (const key of ['range', 'timingBenefit', 'heatingBenefit', 'heatingSavings', 'firewoodBenefit'])
+    assert.deepEqual(summary[key], full[key], key);
+  const again = await fetch(path + '&summary=1', { headers }).then(response => response.json());
+  assert.equal(again.meta.cacheHit, true);
+  const plot = await fetch(path, { headers }).then(response => response.json());
+  assert(Object.keys(plot.series).length > 0);
+  assert.equal(plot.meta.summaryOnly, undefined);
+  const streamed = await fetch(path + '&summary=1', { headers: { ...headers, Accept: 'application/x-ndjson', 'Accept-Encoding': 'gzip' } });
+  assert.equal(streamed.headers.get('content-encoding'), 'gzip');
+  const result = (await streamed.text()).trim().split('\n').map(line => JSON.parse(line)).find(row => row.type === 'result').data;
+  assert.deepEqual(result.heatingSavings, summary.heatingSavings);
 });
 
 test('transient forecast API is authenticated, charger-independent and cannot alter recorded chart prices', async t => {

@@ -18,6 +18,25 @@ test('recorded source labels require explicit transport evidence', () => {
   assert.equal(recordedTransport({raw:'invalid'}),null);
 });
 
+test('reused phase metadata preserves independent values, quality, source and transport', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const start = Date.UTC(2026, 0, 1), end = start + 60_000;
+  const raw = { intervalStart: start, intervalEnd: end, basis: 'synthetic-interval' };
+  for (const [prefix, device] of [['ev1', 'example-first'], ['ev2', 'example-second']]) {
+    for (let phase = 1; phase <= 3; phase++) store.observation({ source: 'easee', device,
+      signal: `${prefix}_energy_l${phase}`, unit: 'kWh', value: phase / 10,
+      sourceTime: end, receivedAt: end, raw,
+      quality: phase === 2 ? ['invalid_numeric', 'local_ocpp'] : phase === 3 ? ['easee_cloud'] : ['local_ocpp'] });
+  }
+  const rows = [...recordedEnergyGroups(store, { from: start, to: end, now: end, input: 'providers' })];
+  assert.equal(rows.length, 2);
+  for (const row of rows) {
+    assert.deepEqual(row.values, [0.1, null, 0.3]);
+    assert.equal(row.transport, null, 'Mixed source transports stay unknown');
+    assert.equal(row.device, row.prefix === 'ev1' ? 'example-first' : 'example-second');
+  }
+});
+
 test('voltage source subtitles show only the latest saved contributor or unknown provenance', () => {
   const label = voltage => recordingSourceLabel({source:'voltage-estimate',voltage});
   assert.equal(label({inputs:1,input:1}),'Easee · OCPP');

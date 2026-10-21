@@ -9,8 +9,11 @@ const invalid = new Set(['missing','invalid-numeric','invalid-unit','invalid-val
   'out-of-order','out-of-order-source-time','future-source-time','source-time-unknown','meter-counter-reset',
   'meter-report-gap','invalid-meter-delta','electricity-unavailable','electricity-gap','clock-rollback',
   'source-time-rollback','mqtt-disconnected','device-offline','acquisition-failed']);
-const invalidFlag = flag => typeof flag !== 'string' || invalid.has(flag.replaceAll('_','-'))
-  || /failed|disconnected|unavailable|missing|invalid|out-of-order|future-source-time/.test(flag.replaceAll('_','-'));
+const invalidFlag = flag => {
+  if (typeof flag !== 'string') return true;
+  const normalized = flag.replaceAll('_', '-');
+  return invalid.has(normalized) || /failed|disconnected|unavailable|missing|invalid|out-of-order|future-source-time/.test(normalized);
+};
 export const validEnergyQuality = quality => Array.isArray(quality) && !quality.some(invalidFlag);
 const invalidGapFlags = new Set(['retained', 'invalid-numeric', 'invalid-unit', 'invalid-value', 'future-source-time',
   'out-of-order-source-time', 'source-time-unknown']);
@@ -30,13 +33,22 @@ const prefixOf = signal => signal.startsWith('ev1_') ? 'ev1'
   : signal.startsWith('ev2_energy_l') ? 'ev2' : signal==='caravan_energy' ? 'caravan' : 'property';
 const totalOnly = prefix => prefix === 'caravan';
 const decodedRows = new WeakMap();
+let previousEncoding, previousDecoded;
 
 function energyRow(row) {
   let value = decodedRows.get(row);
   if (!value) {
-    const raw = JSON.parse(row.raw), flags = JSON.parse(row.quality);
-    value = { raw, flags, validQuality: validEnergyQuality(flags),
-      transport: recordedTransport({ ...row, raw, quality: flags }) };
+    // The phases of one cohort normally carry identical encoded metadata.
+    // Retain just the last encoding; row values and identity stay independent.
+    if (previousEncoding?.raw === row.raw && previousEncoding.quality === row.quality
+      && previousEncoding.transport === row.transport) value = previousDecoded;
+    else {
+      const raw = JSON.parse(row.raw), flags = JSON.parse(row.quality);
+      value = { raw, flags, validQuality: validEnergyQuality(flags),
+        transport: recordedTransport({ transport: row.transport, raw, quality: flags }) };
+      previousEncoding = { raw: row.raw, quality: row.quality, transport: row.transport };
+      previousDecoded = value;
+    }
     decodedRows.set(row, value);
   }
   return value;

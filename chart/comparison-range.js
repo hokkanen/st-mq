@@ -82,7 +82,7 @@ export function createComparisonRange({ api, document = globalThis.document, now
       setState('loading', `Loading ${periodLabel(requested)}…${loaded ? ` Showing ${periodLabel(loaded)} until ready.` : ''}`);
     }
     try {
-      const payload = await loader.load({ ...requested, view: 'power', points: 100 }, { force, today });
+      const payload = await loader.load({ ...requested, view: 'power', points: 100, summaryOnly: true }, { force, today });
       if (closed || requestGeneration !== generation || !sameDates(requested, selection)) return;
       view.render(payload);
       loaded = requested;

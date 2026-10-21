@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Load energy cost comparisons without preparing unused chart geometry or
+  reading property-energy drawing data. Keep the same original-interval energy
+  and cost calculations, and reduce energy-row decoding overhead for charts.
+
 - Reopen a paired computer's HTTPS listener when enabling it again with the
   same saved peer certificate. Keep listener activation failures visible and
   preserve the certificate identity and generation.
