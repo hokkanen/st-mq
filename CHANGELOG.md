@@ -16,7 +16,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   coefficient histories at one fixed boundary. Local jobs support pause, resume,
   cancellation and discarding their temporary files on master or slave. The check
   reports model and history agreement separately, never repairs source data, and
-  does not need to run for charts to work.
+  does not need to run for charts to work. A pruned transaction proof leaves a
+  completed result's applicability unconfirmed instead of marking it outdated.
 
 - Preserve the current legend or footer keyboard focus when a chart redraw
   finishes, including when focus moved during geometry preparation.

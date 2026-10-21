@@ -127,6 +127,19 @@ try {
   const rounding=await evaluate(`${id('result')}.textContent`);
   assert.match(rounding,/Complete model: minor numerical differences consistent with rounding.*All four coefficient histories: matched exactly.*Exact full-model comparison: mismatch/);
   assert.doesNotMatch(rounding,/Complete model: differed|Preserve the learning history/);
+  state.lastVerification.current=null;
+  await evaluate('panel.refresh()');
+  assert.equal(await evaluate(`${id('summary')}.textContent`),'Verification applicability unconfirmed');
+  const unconfirmed=await evaluate(`${id('result')}.textContent`);
+  assert.match(unconfirmed,/Applicability to the selected history is unconfirmed.*Complete model: minor numerical differences consistent with rounding.*coefficient histories: matched exactly.*Exact full-model comparison: mismatch/);
+  assert.doesNotMatch(unconfirmed,/earlier source interpretation|does not verify the currently selected history/);
+  for (const theme of ['light','dark']) for (const width of [320,1440]) {
+    await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:width<500});
+    await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
+    const layout=await evaluate(`({scroll:document.documentElement.scrollWidth,viewport:innerWidth})`);
+    assert(layout.scroll<=layout.viewport,`Unconfirmed result does not overflow at ${width}/${theme}`);
+    layouts.push({theme,width,unconfirmed:true,...layout});
+  }
   await evaluate("setRole('family');true"); await until(`${id('verify')}.disabled`);
   assert.equal(await evaluate(`${id('discard')}.disabled`), true);
   assert.match(await evaluate(`${id('storage')}.textContent`), /2 MB/);

@@ -96,8 +96,9 @@ export function reconstructionView(state, { formatTime = value => new Date(value
   const summary = !state ? 'Status not loaded' : active ? 'Verification running' : paused ? 'Verification paused'
     : state.state === 'superseded' ? 'Verification superseded' : state.state === 'unavailable' ? 'Learning history unavailable'
       : state.state === 'error' ? 'Verification needs attention' : result?.current === false ? 'Earlier verification result'
-        : result?.state === 'matched' ? 'Last verification matched' : roundingOnly ? 'Minor numerical differences'
-          : result?.state === 'mismatch' ? 'Verification mismatch' : 'Optional full learning check';
+        : result?.current === null ? 'Verification applicability unconfirmed'
+          : result?.state === 'matched' ? 'Last verification matched' : roundingOnly ? 'Minor numerical differences'
+            : result?.state === 'mismatch' ? 'Verification mismatch' : 'Optional full learning check';
   const status = !state ? 'Open this section to load verification status.'
     : active || paused ? `Saved model verification ${paused ? 'is paused' : 'is running'}. ${phaseLabels[job?.phase] ?? 'Processing learning history'}. Reconstructing the complete model and all four coefficient histories. You can leave this page.`
       : state.state === 'superseded' ? 'A source-history change superseded this verification. Start a new check of the selected history; the earlier run cannot resume.'
@@ -119,6 +120,7 @@ export function reconstructionView(state, { formatTime = value => new Date(value
   let verification = !result ? 'No completed model verification is recorded.'
     : `Completed ${time(result.completedAt)} at learning entry ${count(result.journalId) ? result.journalId : 'not known'}, through ${time(result.checkedAt)}. Complete model: ${modelRounding ? 'minor numerical differences consistent with rounding' : comparison(result.modelMatched)}. All four coefficient histories: ${roundingOnly ? 'matched exactly' : comparison(result.historyMatched)}. ${modelRounding ? 'Exact full-model comparison: mismatch.' : `${result.state === 'mismatch' ? 'Preserve the learning history and investigate the mismatch. ' : ''}This checks reproducibility, not physical accuracy; no source data or controlling model was repaired.`}`;
   if (result?.current === false) verification = `Result for an earlier source interpretation. ${verification} This does not verify the currently selected history.`;
+  else if (result?.current === null) verification = `Applicability to the selected history is unconfirmed because the transaction proof is no longer retained. ${verification}`;
   if (result?.streams?.length > 1) {
     const labels = { mqtt: 'Recorded MQTT learning', providers: 'Recorded provider learning', history: 'Imported learning', simulated: 'Simulated learning' };
     verification += ` Checked streams: ${result.streams.map(stream => {

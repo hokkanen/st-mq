@@ -66,6 +66,19 @@ test('verification separates saved boundary, complete model, all coefficient his
   assert.doesNotMatch(preparing.boundary, /entry 60/, 'A new job cannot inherit the earlier verification boundary');
 });
 
+test('unconfirmed source applicability preserves exact comparison results without labelling them outdated', () => {
+  for (const result of [matched.lastVerification, { ...matched.lastVerification, state: 'mismatch', modelMatched: false,
+    streams: [{ input: 'mqtt', modelMatched: false, historyMatched: true,
+      differences: { count: 1, numericCount: 1, otherCount: 0, paths: ['baselineC'], maxAbsoluteDelta: 0.125 } }] }]) {
+    const view = reconstructionView({ ...matched, lastVerification: { ...result, current: null } });
+    assert.equal(view.summary, 'Verification applicability unconfirmed');
+    assert.match(view.verification, /Applicability to the selected history is unconfirmed because the transaction proof is no longer retained/);
+    assert.match(view.verification, /Complete model: (?:matched|differed).*All four coefficient histories: matched/);
+    assert.doesNotMatch(view.verification, /earlier source interpretation|does not verify the currently selected history/);
+    if (!result.modelMatched) assert.match(view.verification, /1 model difference.*baselineC.*Exact comparison applies no tolerance/);
+  }
+});
+
 test('exact model mismatch diagnostics remain bounded and separate from matching coefficient histories', () => {
   const paths = Array.from({length: 12}, (_, index) => `samples.${index}.inputSegments.0.fireplaceKgPerHour`);
   const result = { ...matched.lastVerification, state: 'mismatch', modelMatched: false, historyMatched: true,

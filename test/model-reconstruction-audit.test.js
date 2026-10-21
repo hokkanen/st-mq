@@ -1,3 +1,4 @@
+import { Worker } from 'node:worker_threads';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
@@ -445,7 +446,74 @@ test('independent audit: valid independent progress resumes after transaction an
   const before = f.store.checkpoint(), state = await run(service, 'resume');
   assert.equal(state.lastVerification?.state, 'matched');
   assert.equal(state.lastVerification.streams[0].resumedFrom, cursor);
+  assert.equal(state.lastVerification.current, true, 'the final fingerprint supplies a fresh retained proof');
+  assert.deepEqual(state.lastVerification.streams[0].database, before);
   assert.deepEqual(f.store.checkpoint(), before);
+});
+
+test('independent audit: compacted completed proofs are unconfirmed while forward learning preserves applicability', async t => {
+  const f = fixture(t); context(f.store, start, 0.025);
+  const checkpoint = replayLearningJournal(f.store, 'mqtt'), service = f.open();
+  const completed = await run(service); assert.equal(completed.lastVerification.current, true);
+  context(f.store, start + MINUTE, 0.035);
+  replayLearningJournal(f.store, 'mqtt', checkpoint);
+  const appended = await service.status(); assert.equal(appended.lastVerification.current, true);
+  for (let i = 0; i < 6; i++) f.store.setState('invented-forward-bookkeeping', { i });
+  f.store.compactJournal({ maxBytes: 1024 * 1024, maxCommits: 1 });
+  assert(f.store.journalBase().sequence > completed.lastVerification.streams[0].database.sequence);
+  const before = f.store.checkpoint(), bytes = sourceBytes(f.store), db = f.store.db, queries = [];
+  f.store.db = new Proxy(db, { get(target, key) {
+    if (key === 'prepare') return sql => {
+      queries.push(sql);
+      assert(!/SELECT \* FROM learning_journal|FROM coefficient_events/i.test(sql), 'status cannot replay or hash the learning/chart prefix');
+      return target.prepare(sql);
+    };
+    const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  let state;
+  try { for (let i = 0; i < 3; i++) state = await service.status(); }
+  finally { f.store.db = db; }
+  assert(queries.length > 0);
+  assert.equal(state.lastVerification.current, null);
+  assert.equal(state.lastVerification.state, 'matched');
+  assert.equal(state.lastVerification.modelMatched, true); assert.equal(state.lastVerification.historyMatched, true);
+  assert.deepEqual(f.store.checkpoint(), before); assert.deepEqual(sourceBytes(f.store), bytes);
+  f.store.setState('fireplace:rebuild:mqtt', { status: 'pending', requiresRebuild: true });
+  assert.equal((await service.status()).lastVerification.current, false, 'known pending interpretation changes override missing ancestry');
+});
+
+test('independent audit: retained divergent ancestry makes a completed result outdated', async t => {
+  const f = fixture(t); context(f.store, start, 0.025); replayLearningJournal(f.store, 'mqtt');
+  const forkPath = join(f.directory, 'completed-fork.sqlite');
+  await createSourceSnapshot({ dbPath: f.store.path, destination: forkPath, signal: t.signal });
+  const fork = new Store(forkPath); f.select(fork); f.select(f.store);
+  f.store.setState('invented-fork-bookkeeping', { branch: 'verified' });
+  const service = f.open(), result = await run(service);
+  assert.equal(result.lastVerification.current, true);
+  fork.setState('invented-fork-bookkeeping', { branch: 'divergent' });
+  f.select(fork);
+  const before = fork.checkpoint(), state = await service.status();
+  assert.equal(state.lastVerification.current, false);
+  assert.equal(state.lastVerification.state, 'matched', 'historical comparison remains inspectable');
+  assert.deepEqual(fork.checkpoint(), before);
+});
+
+test('independent audit: multistream applicability gives known changes priority over missing ancestry', async t => {
+  const f = fixture(t); context(f.store, start, 0.025); replayLearningJournal(f.store, 'mqtt');
+  appendLearningRecord(f.store, 'history', 'context', { timestamp: start, historySeed: {
+    model: initialAdaptiveModel({ thermalPriors: { lossPerHour: 0.03 } }), source: { basis: 'invented-imported-model' } } }, { config: {} });
+  replayLearningJournal(f.store, 'history');
+  const service = f.open(), completed = await run(service); assert.equal(completed.lastVerification.streams.length, 2);
+  for (let i = 0; i < 6; i++) f.store.setState('invented-forward-bookkeeping', { i });
+  f.store.compactJournal({ maxBytes: 1024 * 1024, maxCommits: 1 });
+  assert.equal((await service.status()).lastVerification.current, null);
+  // One stream has a later complete proof; the other proof has been pruned.
+  const work = new ModelVerificationWork({ path: f.workPath });
+  const result = work.get('lastVerification'); result.streams[0].database = f.store.checkpoint();
+  work.set('lastVerification', result); work.close();
+  assert.equal((await service.status()).lastVerification.current, null, 'a proven stream does not hide an unconfirmed stream');
+  f.store.setState('fireplace:rebuild:mqtt', { status: 'pending', requiresRebuild: true });
+  assert.equal((await service.status()).lastVerification.current, false, 'a known changed stream takes precedence over an unconfirmed one');
 });
 
 test('independent audit: same-inode divergent middle history cannot reuse paused progress after ancestry compaction', async t => {
@@ -612,12 +680,15 @@ test('independent audit: recovery, revert and restore retain fully verifiable co
       });
     }
   } });
-  assert.equal(appended, true); await verify();
+  assert.equal(appended, true);
+  assert.equal((await service.status()).lastVerification.current, false, 'recovery publishes a different selected interpretation');
+  await verify();
   for (const active of [false, true]) {
     for (let i = 0; i < 4; i++) f.master.setState('invented-expiring-bookkeeping', { i, active });
     f.master.compactJournal({ maxBytes: 1024 * 1024, maxCommits: 1 });
     const args = { store: f.master, input: 'mqtt', recoveryId: result.report.recoveryId, active, signal: t.signal };
     await reviseRecovery({ ...args, preview: await previewRecoveryRevision(args) });
+    assert.equal((await service.status()).lastVerification.current, false, 'revert/restore supersedes the earlier proof even after compaction');
     await verify();
     const events = readCoefficientEvents(f.master, { input: 'mqtt' });
     assert.equal(events.some(event => event.coefficients.model_coefficient_heat_loss.value === 0.04), active);
@@ -644,4 +715,71 @@ test('independent audit: observation-only reversal cannot force a future-only co
   assert.equal(batches[0].reusedPrefixCursor, checkpoint.journalCursor);
   assert.deepEqual(batches[0].events, []);
   assert.deepEqual(next, replayLearningJournal(f.master, 'mqtt', null, { rebuild: true, persistCheckpoint: false }));
+});
+
+test('independent applicability audit: compaction during the final fingerprint keeps applicability unknown without changing the exact result', async t => {
+  const f = fixture(t);
+  for (let i = 0; i < 200; i++) context(f.store, start + i * MINUTE, 0.02 + i / 100_000);
+  replayLearningJournal(f.store, 'mqtt');
+  let finalScans = 0, compactOnAcquire = false, compacted = false, scanStart = null;
+  const service = f.open({
+    workerFactory(options) {
+      const worker = new Worker(new URL('../src/app/model-reconstruction-worker.js', import.meta.url), options);
+      worker.on('message', message => {
+        if (message.type === 'progress' && message.phase === 'checking-result' && message.processed === 128) {
+          finalScans++;
+          if (finalScans === 2) { scanStart = f.store.checkpoint(); compactOnAcquire = true; }
+        }
+      });
+      return worker;
+    },
+    acquire: async () => {
+      if (compactOnAcquire) {
+        compactOnAcquire = false;
+        for (let i = 0; i < 6; i++) f.store.setState('invented-mid-final-scan-bookkeeping', { i });
+        f.store.compactJournal({ maxBytes: 1024 * 1024, maxCommits: 1 });
+        assert(f.store.journalBase().sequence > scanStart.sequence);
+        compacted = true;
+      }
+      return { store: f.store, dbPath: f.store.path, input: 'mqtt', role: 'slave',
+        checkpoint: f.store.checkpoint(), snapshotAt: start + 600 * MINUTE, release() {} };
+    },
+  });
+  const result = (await run(service)).lastVerification;
+  assert.equal(compacted, true, 'the fresh final-scan anchor was pruned after its first detached page');
+  assert.equal(result.state, 'matched');
+  assert.equal(result.modelMatched, true); assert.equal(result.historyMatched, true);
+  assert.equal(result.current, null, 'missing fresh scan continuity must not certify an unrelated final head');
+  assert.deepEqual(result.streams[0].database, scanStart, 'keep the actual scanned anchor after it is compacted');
+});
+
+test('independent applicability audit: global compaction during replay is covered by the final fingerprint proof', async t => {
+  const f = fixture(t);
+  for (let i = 0; i < 32; i++) context(f.store, start + i * MINUTE, 0.02 + i / 100_000);
+  replayLearningJournal(f.store, 'mqtt');
+  const captureCheckpoint = f.store.checkpoint(); let compactOnAcquire = false, compacted = false;
+  const service = f.open({
+    workerFactory(options) {
+      const worker = new Worker(new URL('../src/app/model-reconstruction-worker.js', import.meta.url), options);
+      worker.on('message', message => {
+        if (!compacted && message.type === 'progress' && message.phase === 'replaying') compactOnAcquire = true;
+      });
+      return worker;
+    },
+    acquire: async () => {
+      if (compactOnAcquire && !compacted) {
+        compactOnAcquire = false;
+        for (let i = 0; i < 6; i++) f.store.setState('invented-during-replay-bookkeeping', { i });
+        f.store.compactJournal({ maxBytes: 1024 * 1024, maxCommits: 1 });
+        assert(f.store.journalBase().sequence > captureCheckpoint.sequence); compacted = true;
+      }
+      return { store: f.store, dbPath: f.store.path, input: 'mqtt', role: 'slave',
+        checkpoint: f.store.checkpoint(), snapshotAt: start + 600 * MINUTE, release() {} };
+    },
+  });
+  const result = (await run(service)).lastVerification;
+  assert.equal(compacted, true); assert.equal(result.state, 'matched');
+  assert.equal(result.current, true, 'a successful final full fingerprint proves the selected history after ordinary pruning');
+  assert(result.streams[0].database.sequence > captureCheckpoint.sequence, 'completed applicability proof is separate from the capture checkpoint');
+  assert.deepEqual(result.streams[0].database, f.store.checkpoint());
 });

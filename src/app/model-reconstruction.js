@@ -93,14 +93,18 @@ export function createModelReconstruction({ directory, acquire, clock = Date.now
         work = new ModelVerificationWork({ path: workPath, readOnly: true }); result = work.get('lastVerification'); bytes = work.bytes();
       }
       if (result) {
-        result.current = result.streams.every(stream => {
+        const applicability = result.streams.map(stream => {
           const current = reconstructionSource(source.store, stream.input, { through: source.snapshotAt ?? Infinity, includeModel: false });
           const context = { ...fireplaceLearningContext(source.store, stream.input, current.fireplaceRevision),
             ...sensorLearningContext(source.store, stream.input, current.sensorRevision, { epoch: current.epoch }) };
-          return !current.pending && current.key === stream.sourceKey && current.head >= stream.journalId
-            && learningVersion(context) === stream.contextHash
-            && matchingCheckpoint(checkpointAt(source.store.db, stream.database.sequence), stream.database);
+          if (current.pending || current.key !== stream.sourceKey || current.head < stream.journalId
+            || current.database.sequence < stream.database.sequence || learningVersion(context) !== stream.contextHash) return false;
+          const ancestor = checkpointAt(source.store.db, stream.database.sequence);
+          // Retention can remove a proof without changing the selected learning
+          // interpretation. Missing ancestry is unknown, never known divergence.
+          return ancestor ? matchingCheckpoint(ancestor, stream.database) : null;
         });
+        result.current = applicability.includes(false) ? false : applicability.every(value => value === true) ? true : null;
       }
       latest = { ...latest, state: running ? 'running' : settings.paused && settings.job ? 'paused'
         : lastError === 'model_reconstruction_source_changed' ? 'superseded' : lastError ? 'error' : 'idle',

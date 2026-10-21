@@ -189,7 +189,12 @@ compares every recorded coefficient change and its quality/evidence semantics
 through that same boundary. The target may lag the journal head or live in-memory
 model. Results identify the checked journal entry and time, completion time and
 source snapshot age, with model and coefficient-history agreement reported
-separately. A match proves reproducibility under the supported inputs and
+separately. Result applicability is reported independently: a retained matching
+transaction proof confirms the selected interpretation, a known source change
+makes the earlier result outdated, and a pruned proof leaves applicability
+unconfirmed. Compaction alone does not establish a changed interpretation.
+Status reads use source metadata and retained checkpoint lookups, not full replay
+or history hashing. A match proves reproducibility under the supported inputs and
 algorithm, not physical accuracy. A mismatch never repairs the saved model or
 recorded timeline automatically. Cold full verification remains proportional to
 retained learning history, outside ordinary chart requests and control work.

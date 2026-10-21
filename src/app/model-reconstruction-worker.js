@@ -68,6 +68,18 @@ function checkedSource(store, lease, target) {
 }
 async function fingerprint(target, { includeChart = true, progressCursor = 0, phase = 'checking-source' } = {}) {
   let cursor = 0, hash = null, records = 0, progressHash = null, progressRecords = 0, notifiedAt = -Infinity, ancestryProven = true;
+  let scanStart, database, scanAncestryProven = true;
+  const checked = (store, lease) => {
+    const value = checkedSource(store, lease, target);
+    database = value.source.database;
+    if (scanStart) {
+      const ancestor = checkpointAt(store.db, scanStart.sequence);
+      if (database.sequence < scanStart.sequence || ancestor && !matchingCheckpoint(ancestor, scanStart))
+        throw failure('model_reconstruction_source_changed');
+      scanAncestryProven &&= Boolean(ancestor);
+    } else scanStart = database;
+    return value;
+  };
   const notify = (processed, total) => {
     if (performance.now() - notifiedAt < 250) return;
     notifiedAt = performance.now();
@@ -77,7 +89,7 @@ async function fingerprint(target, { includeChart = true, progressCursor = 0, ph
   while (cursor < target.cursor) {
     if (stopped()) throw failure('model_reconstruction_cancelled');
     const page = await read((store, lease) => {
-      const { ancestryProven } = checkedSource(store, lease, target);
+      const { ancestryProven } = checked(store, lease);
       const rows = store.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id>? AND id<=? ORDER BY id LIMIT 128')
         .all(target.source.input, cursor, target.cursor).map(decodeReconstructionEntry);
       return { rows, ancestryProven };
@@ -96,7 +108,7 @@ async function fingerprint(target, { includeChart = true, progressCursor = 0, ph
     cursor = 0;
     for (;;) {
       const page = await read((store, lease) => {
-        checkedSource(store, lease, target);
+        checked(store, lease);
         const coverage = readCoefficientCoverage(store, { input: target.source.input, epoch: target.source.epoch });
         const rows = readCoefficientEvents(store, { input: target.source.input, epoch: target.source.epoch,
           afterCursor: cursor, throughCursor: target.cursor, limit: 128 });
@@ -110,7 +122,11 @@ async function fingerprint(target, { includeChart = true, progressCursor = 0, ph
       await pause();
     }
   }
+  // The final checkpoint covers every detached page only while the fresh scan
+  // anchor remains an ancestor. If retention removed it mid-scan, keep that
+  // anchor: status will report unconfirmed rather than trust an unrelated head.
   return { hash, records, historyHash, historyCount, progressHash, progressRecords, ancestryProven,
+    database: scanAncestryProven ? database : scanStart,
     historyCovered: Boolean(coverage && coverage.cursor >= target.cursor) };
 }
 async function captureTargets() {
@@ -232,10 +248,11 @@ async function run() {
   }
   // Recheck all fixed sources at completion, including an earlier finished
   // imported stream. Normal appends beyond the fixed boundaries are allowed.
-  for (const target of saved.targets) {
+  for (const [index, target] of saved.targets.entries()) {
     const actual = await fingerprint(target, { phase: 'checking-result' });
     if (actual.hash !== target.fingerprint.hash || actual.historyHash !== target.fingerprint.historyHash
       || actual.historyCovered !== target.fingerprint.historyCovered) throw failure('model_reconstruction_source_changed');
+    progress.results[index].database = actual.database;
   }
   const modelMatched = progress.results.every(result => result.modelMatched);
   const historyMatched = progress.results.every(result => result.historyMatched);
