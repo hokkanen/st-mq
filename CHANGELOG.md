@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep Sonoff GPIO readback available through an isolated failed monitoring poll
+  until its original freshness deadline. Actual disconnects, invalid feedback,
+  hardware faults and expiry still show unavailable immediately.
+
 - Use one smaller horizontal inset across dashboard folds, cards, warnings and
   windows at every screen width. Remove stacked margins and padding, align
   recording health rows with the compact equipment style, and keep more room

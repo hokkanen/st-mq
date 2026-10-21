@@ -31,12 +31,13 @@ test('native floor GPIO changes survive the real recorder with explicit receipt 
     generation: 'a'.repeat(32), connected: true, active: false, mask: 0, gpio_mask: 0, gpio_match: true,
     state_evidence: 'gpio_output_readback', board_ok: true, now_ms: mono, lease_until_ms: 0,
     end_ms: 0, owner: '', treatment: 0, seq: 0, highwater: 0, reason: 'connected', max_lease_ms: 900000 };
-  let adapter;
+  let adapter, failPoll = false;
   adapter = createFloorOverride({ store,
     settings: floorOverrideConfiguration({ device_mac: frame.device }), clock: () => wall, monotonicClock: () => mono,
     onObservation: observation => recorder.record(observation),
     publish: async (_topic, payload, options) => {
       const request = JSON.parse(payload); assert.equal(request.op, 'get'); options.beforePublish();
+      if (failPoll) throw new Error('synthetic monitoring failure');
       store.transaction(() => adapter.ingest(FLOOR_MQTT_TOPICS.state,
         JSON.stringify({ ...frame, id: request.id, op: request.op }), {}, wall, mono));
     } });
@@ -61,6 +62,15 @@ test('native floor GPIO changes survive the real recorder with explicit receipt 
   assert(one.every(row => row.raw.reportIntervalMs > 0 && row.raw.reportIntervalMs <= 90_000 && row.raw.reportGraceMs === 0));
   const two = store.observations({ signal: FLOOR_PREHEAT_SIGNALS[1] }).filter(row => row.value !== null);
   assert.deepEqual(transitions(two), [0, 1, 0]);
+  const admittedAt = wall;
+  failPoll = true; wall += 30000; mono += 30000; await adapter.tick();
+  for (const signal of FLOOR_PREHEAT_SIGNALS) {
+    const row = recorder.status(wall).exactParameters.find(row => row.signal === signal);
+    assert.equal(row.freshness.status, 'fresh');
+    assert.equal(row.freshness.sourceObservedAt, admittedAt);
+    assert.equal(row.lastPollAt, admittedAt);
+    assert.equal(store.observations({ signal }).at(-1).value, 0);
+  }
   wall += 1000; mono += 1000;
   adapter.setConnected(false); await store.whenWritesSettled?.();
   for (const signal of FLOOR_PREHEAT_SIGNALS) {

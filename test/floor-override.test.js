@@ -66,6 +66,106 @@ test('fresh correlated custom get establishes GPIO evidence without enabling unc
   assert.equal(f.observations.filter(row => row.value === 0).length, 4);
 });
 
+test('failed monitoring polls retain original GPIO evidence only until its freshness deadline', async () => {
+  let failPoll = false;
+  const f = fixture({ transport: ({ body, standard }) => {
+    if (failPoll && body.op === 'get') throw new Error('synthetic publication failure');
+    standard(body);
+  } });
+  await f.ready();
+  const at = f.now, observations = f.observations.length, learning = f.learning.length;
+  failPoll = true;
+  for (let i = 0; i < 2; i++) {
+    f.advance(30000); await f.adapter.tick();
+    assert.equal(f.adapter.status().devices[0].available, true);
+    assert.equal(f.adapter.status().devices[0].at, at);
+    assert.equal(f.observations.length, observations);
+    assert.equal(f.learning.length, learning);
+  }
+  f.advance(30001); await f.adapter.tick();
+  assert.equal(f.adapter.status().devices[0].available, false);
+  assert(f.observations.slice(-4).every(row => row.value === null && row.quality.includes('floor-feedback-stale')));
+  failPoll = false; f.advance(30000); await f.adapter.tick();
+  assert.equal(f.adapter.status().devices[0].available, true);
+  assert.equal(f.adapter.status().devices[0].at, f.now);
+  await f.adapter.close({ restore: false });
+});
+
+test('a missing poll reply neither invalidates fresh evidence nor lets a late reply renew it', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let dropPoll = false, lateReply;
+  const f = fixture({ transport: ({ body, standard, respond }) => {
+    if (dropPoll && body.op === 'get') { lateReply = () => respond(body); return; }
+    standard(body);
+  } });
+  await f.ready();
+  const at = f.now, observations = f.observations.length;
+  dropPoll = true; f.advance(30000);
+  const poll = f.adapter.tick();
+  await new Promise(resolve => setImmediate(resolve));
+  f.advance(5000); t.mock.timers.tick(5000); await poll;
+  assert.equal(f.adapter.status().devices[0].available, true);
+  lateReply();
+  assert.equal(f.adapter.status().devices[0].at, at);
+  assert.equal(f.observations.length, observations);
+  f.advance(55001); t.mock.timers.tick(85001);
+  assert.equal(f.adapter.status().devices[0].available, false);
+  assert(f.observations.slice(-4).every(row => row.value === null));
+  await f.adapter.close({ restore: false });
+});
+
+test('failed polls cannot mask explicit disconnection, invalid feedback or hardware faults', async () => {
+  for (const invalidate of [
+    f => f.adapter.setConnected(false),
+    f => f.adapter.ingest(FLOOR_MQTT_TOPICS.availability, 'Offline', { retain: false }, f.now, f.mono),
+    f => f.deliver(f.frame({ v: 2 })),
+    f => f.deliver(f.frame({ kind: 'state', op: 'state', now_ms: f.mono, board_ok: false })),
+  ]) {
+    let failPoll = false;
+    const f = fixture({ transport: ({ body, standard }) => {
+      if (failPoll && body.op === 'get') { invalidate(f); throw new Error('synthetic poll failure'); }
+      standard(body);
+    } });
+    await f.ready(); failPoll = true; f.advance(30000); await f.adapter.tick();
+    assert.equal(f.adapter.status().devices[0].available, false);
+    assert.equal(f.adapter.status().manualAvailable, false);
+    await f.adapter.close({ restore: false });
+  }
+});
+
+test('an explicitly rejected monitoring reply still withdraws GPIO evidence', async () => {
+  let rejectPoll = false;
+  const f = fixture({ transport: ({ body, respond, standard }) => {
+    if (rejectPoll && body.op === 'get') return respond(body, { accepted: false, code: 'hardware-fault' });
+    standard(body);
+  } });
+  await f.ready(); rejectPoll = true; f.advance(30000); await f.adapter.tick();
+  assert.equal(f.adapter.status().devices[0].available, false);
+  assert(f.observations.slice(-4).every(row => row.value === null));
+  await f.adapter.close({ restore: false });
+});
+
+test('a failed monitoring poll preserves an active lease without extending its deadline', async () => {
+  let failPoll = false;
+  const f = fixture({ transport: ({ body, standard }) => {
+    if (failPoll && body.op === 'get') throw new Error('synthetic publication failure');
+    standard(body);
+  } });
+  await f.ready(); const until = f.now + 60000;
+  await f.adapter.lease({ owner: 'cycle', until, renew: false });
+  const end = f.native.end_ms;
+  failPoll = true; f.advance(30000); await f.adapter.tick();
+  assert.equal(f.adapter.status().active, true);
+  assert.equal(f.adapter.status().restorationPending, false);
+  assert.equal(f.native.end_ms, end); assert.equal(f.saved.outstanding.until, until);
+  assert.equal(f.publications.some(row => row.body.op === 'release'), false);
+  failPoll = false; f.advance(30001); await f.adapter.tick();
+  assert.equal(f.adapter.status().active, false);
+  assert.equal(f.saved.outstanding, null);
+  assert(f.observations.slice(-4).every(row => row.value === 0));
+  await f.adapter.close({ restore: false });
+});
+
 test('pooled automatic lease persists before ON, confirms four GPIO outputs, and releases with fresh OFF', async () => {
   const f = fixture(); await f.ready();
   const result = await f.adapter.lease({ owner: 'automatic-cycle', until: f.now + 600000 });

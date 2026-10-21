@@ -493,7 +493,11 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
           await releaseInternal({ reason: 'lease-ended-or-feedback-lost' }); return status();
         }
         if (monotonicClock() - lastPoll >= POLL_MS) {
-          try { await refresh(); } catch { withdraw('floor-feedback-unavailable'); }
+          try { await refresh(); } catch (error) {
+            // A failed query does not invalidate still-fresh readback or renew
+            // its clock. Disconnects and invalid feedback withdraw separately.
+            if (error.code !== 'FLOOR_UNCONFIRMED' || !healthy()) withdraw('floor-feedback-unavailable');
+          }
         }
         if (saved?.outstanding && (obligation() || runtime?.releaseRequired)) await releaseInternal({ reason: 'feedback-lost' });
         else if (runtime?.allowRenew && monotonicClock() >= runtime.renewAt) {

@@ -141,6 +141,11 @@ The host uses custom `get` for polling. Native Tasmota status/maintenance comman
 terminate a lease and must never be used as ordinary monitoring. Retained Online
 is only context. Periodic correlated readback establishes current GPIO evidence;
 stale observations cannot be renewed by reading an application cache.
+One failed monitoring poll preserves previously admitted readback until its
+original 90-second freshness deadline or the earlier local lease expiry. It
+does not renew observation clocks, confirm a command or extend a treatment.
+Disconnection, invalid feedback and hardware faults still make the device
+unavailable immediately; expired evidence remains unknown until fresh readback.
 
 Automatic renewal defaults to 300 seconds; each device-local lease grants at most
 900 seconds, capped at the immutable planned end. Renewal preserves unchanged
