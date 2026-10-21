@@ -1180,6 +1180,40 @@ test('a peer certificate recipient never installs or starts a certificate helper
   await assert.rejects(manager.exportCertificate(), { code: 'https_owner_certificate_unavailable' });
 });
 
+test('re-enabling a peer certificate recipient activates its unchanged saved certificate', async t => {
+  const envelope = { pairId: 'reenable-pair', ownerId: 'peer-node', hostname, generation: 5,
+    certificate: { cert: 'fixture-peer', key: 'fixture-key' } };
+  const pair = { configuration: () => ({ vipAddress: '192.0.2.100', pairId: 'reenable-pair', localId: 'local-node', peerId: 'peer-node' }),
+    request: async operation => operation === 'status'
+      ? { nodeId: 'peer-node', ownerId: 'peer-node', pairId: 'reenable-pair', enabled: true } : envelope };
+  const changes = { pair };
+  const { manager, config, calls, directory } = await setup(t, changes); config.topology = 'pair';
+  await manager.action({ action: 'enable', owner: 'peer' }); await settled(t, manager);
+  const certificate = manager.status().certificate;
+  const path = resolve(directory, 'https', 'certificates', '5.json');
+  const bytes = await readFile(path);
+  for (let cycle = 0; cycle < 2; cycle++) {
+    await manager.action({ action: 'disable' }); await settled(t, manager);
+    assert.equal(manager.status().phase, 'disabled');
+    const activations = calls.activations.length;
+    await manager.action({ action: 'enable' }); const enabled = await settled(t, manager);
+    assert.equal(enabled.operation.state, 'completed'); assert.equal(enabled.phase, 'ready');
+    assert.equal(calls.activations.length, activations + 1, 'Enable must reopen the listener even when the peer sends the same generation');
+    assert.deepEqual(enabled.certificate, certificate);
+    assert.equal(enabled.pair.localOwner, false);
+    assert.deepEqual(await readFile(path), bytes, 'The immutable certificate is reused without rewriting it');
+  }
+  await manager.action({ action: 'disable' }); await settled(t, manager);
+  changes.activationError = true;
+  await manager.action({ action: 'enable' }); const failed = await settled(t, manager);
+  assert.equal(failed.operation.state, 'failed'); assert.equal(failed.operation.error, 'tls_port_unavailable');
+  assert.notEqual(failed.phase, 'ready'); assert.deepEqual(failed.certificate, certificate);
+  changes.activationError = false;
+  await manager.action({ action: 'recheck' }); const recovered = await settled(t, manager);
+  assert.equal(recovered.phase, 'ready'); assert.equal(recovered.operation.state, 'completed');
+  assert.equal(calls.install, 0); assert.equal(calls.helperStart, 0);
+});
+
 test('local owner retains renewal responsibility while its enabled peer is offline after local disable', async t => {
   let offline = false; let delivered = 0;
   const pair = { configuration: () => ({ vipAddress: '192.0.2.100', pairId: 'fixture-pair', localId: 'local-node', peerId: 'peer-node' }), request: async operation => {

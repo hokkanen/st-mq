@@ -604,7 +604,13 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
             throw httpsError(localOwner() ? 'https_peer_owner_conflict' : 'https_peer_owner_not_configured');
         }
         state.enabled = true; phase = 'preparing'; await persist();
-        if (localOwner()) await renew({ authorize: true, adoptHostname: true }); else { phase = 'peer_certificate_pending'; await pullPeer(); }
+        if (localOwner()) await renew({ authorize: true, adoptHostname: true });
+        else {
+          phase = 'peer_certificate_pending'; await pullPeer();
+          // Receiving the saved generation is intentionally idempotent. Enable
+          // still has to reopen the listener that Disable closed.
+          if (certificate && phase !== 'ready') await activate(certificate, state.certificate.generation);
+        }
         await checkDns(); return;
       } catch (error) {
         // Roll back only a new tentative choice that admitted no runtime or

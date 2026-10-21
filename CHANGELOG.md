@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Reopen a paired computer's HTTPS listener when enabling it again with the
+  same saved peer certificate. Keep listener activation failures visible and
+  preserve the certificate identity and generation.
+
 - Load energy cost comparisons only while their panel is open. Closing cancels
   unfinished reads while retaining dates, selections and mounted cards; reopening
   checks the latest source evidence. Label coefficient series as recorded history.
