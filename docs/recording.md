@@ -984,7 +984,7 @@ The button at the chart's top right shows the active view or series and opens a
 centered explorer. Its **Views** mode offers searchable, grouped named comparisons;
 **All series** offers the supported historical projections: recorded
 measurements and states, interval energy, counters, saved learning inputs,
-replayed coefficients and supported calculations. It includes individual
+recorded coefficient history and supported calculations. It includes individual
 diagnostics beyond the named views and retains entries with no records in the
 current installation or date range. It is a catalogue of defined chart meanings,
 not access to every numeric database field or current-state JSON value.
@@ -1910,7 +1910,7 @@ charger timing comparisons or heating learning.
 ## Chart projections and retained evidence
 
 The explorer separates everyday electricity, room, caravan and garage pump views
-from Home saved learning inputs, replayed coefficients and equipment
+from Home saved learning inputs, recorded coefficient history and equipment
 diagnostics. Each choice states its unit and basis. A plot is not a promise of
 another database channel: power, phase-current estimates, indoor average,
 front–rear difference, coefficients, fireplace response and compressor activity rows

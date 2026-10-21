@@ -268,9 +268,10 @@ Learning derives fireplace inputs in memory from the event revision. Corrected
 replay can change fitted parameters, reserve estimates and comfort/evidence state.
 Affected cycle assessments lose their savings/recovery claims; their actual
 observations, command history and original frozen forecasts remain recorded.
-Coefficient charts replay with the current corrected fireplace revision and the
-configuration recorded with each journal entry. They describe reconstructed model
-history, not a complete account of every model instance used by past decisions.
+Coefficient charts read the recorded timeline reconstructed and atomically
+published with the current corrected fireplace revision and the configuration
+recorded with each journal entry. They describe reconstructed model history, not
+a complete account of every model instance used by past decisions.
 
 If no subsequent learning window consumed a load, removal needs no coefficient
 rebuild. Otherwise a worker replays the corrected history while the existing model

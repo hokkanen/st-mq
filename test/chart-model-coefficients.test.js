@@ -79,7 +79,7 @@ function databaseSnapshot(store) {
 
 const values = (result, key = 'model_coefficient_heat_loss') => result.series[key].filter(point => point.y !== null);
 
-test('coefficient projection replays before the range and ignores mutable state and future records without writing', t => {
+test('coefficient projection reads recorded history before the range and ignores mutable state and future records without writing', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   context(store, start - 60 * MINUTE, { config: { thermalPriors: { lossPerHour: 0.025 } } });
   context(store, start - 30 * MINUTE, { model: model(0.035) });
@@ -98,7 +98,7 @@ test('coefficient projection replays before the range and ignores mutable state 
   for (const [key, field] of Object.entries(coefficientFields)) {
     const points = values(result, key);
     assert(points.length > 0);
-    assert.equal(points[0].x, start, 'The visible range starts with the earlier replayed model');
+    assert.equal(points[0].x, start, 'The visible range starts with the earlier recorded coefficient');
     assert(points.every(point => point.y === checkpoint.model.parameters[field]));
     assert(points.every(point => point.x <= start + 30 * MINUTE));
     assert(points.every(point => point.modelCoefficient === true && point.algorithmVersion === LEARNING_ALGORITHM));
@@ -107,7 +107,7 @@ test('coefficient projection replays before the range and ignores mutable state 
   assert.deepEqual(databaseSnapshot(store), before);
 });
 
-test('independent input journals and imported fallback never share a replay checkpoint', t => {
+test('independent input journals and imported fallback retain separate coefficient histories', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   context(store, start, { input: 'history', model: model(0.011) });
   context(store, start + 10 * MINUTE, { input: 'providers', config: { thermalPriors: { lossPerHour: 0.03 } } });

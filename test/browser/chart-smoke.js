@@ -94,7 +94,7 @@ try {
   const config = loadConfig({ STMQ_CONFIG: join(directory, 'options.json'), STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
   config.priceSettings = { ...config.priceSettings, effectiveDate: '2020-01-01' };
   // Seed this temporary simulation before startup writes its current context,
-  // keeping journal order chronological and exercising actual API replay.
+  // keeping journal order chronological and exercising recorded-history API reads.
   const fixtureStore = new Store(config.dbPath);
   try {
     appendLearningRecord(fixtureStore, 'simulated', 'context', { timestamp: now - 8 * 3600000 },
@@ -743,11 +743,11 @@ try {
       const tableCounts = () => app.store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()
         .map(({ name }) => [name, app.store.db.prepare(`SELECT COUNT(*) AS count FROM "${name.replaceAll('"', '""')}"`).get().count]);
       const before = tableCounts();
-      const replayed = await fetch(`${base}/api/chart?start=2026-09-07&end=2026-09-07&left=${left}`).then(response => response.json());
+      const recorded = await fetch(`${base}/api/chart?start=2026-09-07&end=2026-09-07&left=${left}`).then(response => response.json());
       assert.deepEqual(tableCounts(), before, 'Coefficient API reads do not add stored entries');
-      assert.equal(replayed.meta.modelCoefficients.basis, 'committed-coefficient-history');
-      assert.equal(replayed.meta.modelCoefficients.replayedRecords, 0);
-      const values = replayed.series[left].filter(point => Number.isFinite(point.y));
+      assert.equal(recorded.meta.modelCoefficients.basis, 'committed-coefficient-history');
+      assert.equal(recorded.meta.modelCoefficients.replayedRecords, 0);
+      const values = recorded.series[left].filter(point => Number.isFinite(point.y));
       assert(values.some(point => point.coefficientStatus === 'initial'));
       assert(values.some(point => point.coefficientStatus === 'fitted' && point.y === coefficientValues[left].value));
       assert(values.every(point => point.modelCoefficient && point.inputSource === 'Simulation'));
@@ -1176,7 +1176,7 @@ try {
       'session-counts-and-exclusions', 'property-gap-and-retained-result', 'keyboard-and-refresh-preservation', 'dark-and-light', '390-and-1440-layouts'] }
     : chartOnly ? { result: 'chart-only-browser-smoke-passed', browserTimeZone, timings,
     checked: ['named-views-and-series-explorer', 'recording-inventory', 'power-visible-pixels', 'fullscreen-and-zoom',
-      'pointer-gestures-and-keyboard', 'date-and-view-request-races', 'tooltips', 'charger-fills', 'coefficient-replay', 'activity-rows'] }
+      'pointer-gestures-and-keyboard', 'date-and-view-request-races', 'tooltips', 'charger-fills', 'recorded-coefficient-history', 'activity-rows'] }
     : recordingOnly?{result:'recording-browser-smoke-passed',browserTimeZone,
     checked:['actual-adaptive-measurements-only','folded-source-identities','current-source-spacing-and-open-energy','unit-distinction','all-four-floor-outputs',
       'every-change-circulation-feedback','observed-defrost','abnormal-feed-events','event-type-breakdown','saved-history-without-checkpoint','durable-open-energy','lazy-read-only-inventory',
@@ -1184,7 +1184,7 @@ try {
     electricityConnections: ['combined-source-overview-and-connection', 'charger2-native-phase-readings-and-total-energy',
       'source-scoped-charger2-errors', 'keyboard-expansion', 'refresh-preserves-expansion'],
     chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-reading-status-and-retained-comparison','charger-session-totals-and-sample-size','session-counts-exclusions-and-energy-weighting'],
-    checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-read-only-replay', 'coefficient-visible-pixels-and-status', 'last-theme-restored-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'immediate-end-date', 'immediate-date-range', 'one-day-window-stepping', 'rapid-range-stepping', 'calendar-boundary-stepping', 'compact-responsive-arrow-buttons', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'home-model-settings-with-folded-equipment', 'equipment-grouped-readings-and-manual-controls', 'status-detail-escape-outside-dismissal-and-focus', 'status-detail-poll-preservation', 'status-detail-bounded-mobile-and-landscape', 'dynamic-equipment-rows-and-inline-controls', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
+    checked: ['electricity-first-without-right-axis-duplicates', 'four-coefficients-from-recorded-history', 'coefficient-visible-pixels-and-status', 'last-theme-restored-on-reload', 'theme-toggle', 'Finnish-today', 'single-old-day', 'immediate-end-date', 'immediate-date-range', 'one-day-window-stepping', 'rapid-range-stepping', 'calendar-boundary-stepping', 'compact-responsive-arrow-buttons', 'range-validation', 'shortcut-order-and-state', 'axis-and-legend-selection', 'property-and-charger-visible-pixels', 'asynchronous-provider-phase-power', 'historical-charger-assumed-rates', 'timing-evidence-shares-and-dates', 'heating-model-and-timing-selector-keyboard-touch', 'heating-saving-selection-refresh-reload-persistence', 'heating-model-positive-zero-negative-and-unavailable', 'timing-reconstructed-and-unavailable', 'timing-consistent-elapsed-time-coverage-and-standby-exclusion', 'timing-equal-closed-card-heights-and-independent-expansion', 'timing-stable-heading-and-fold-positions', 'timing-nested-fold-keyboard-touch-and-refresh', 'timing-dark-light-responsive-inline-explanations', 'grouped-history-catalogue', 'recording-frequencies', 'recording-inventory-lazy-fetch', 'recording-inventory-keyboard-mobile', 'recording-inventory-refresh-and-error-preservation', 'physical-storage-accounting', 'reconstructed-heat-pump-note', 'audit-only-diagnostics', 'price-defaults', 'date-races', 'tomorrow-only', 'desktop-mobile', 'Finnish-away-and-pause', 'independent-cancellation', 'draft-poll-preservation', 'DST-atomic-rejection', 'read-only-rates', 'home-model-settings-with-folded-equipment', 'equipment-grouped-readings-and-manual-controls', 'status-detail-escape-outside-dismissal-and-focus', 'status-detail-poll-preservation', 'status-detail-bounded-mobile-and-landscape', 'dynamic-equipment-rows-and-inline-controls', 'nested-learning-keyboard', 'closed-away-and-pause-deadlines', 'provider-sources-and-fallbacks', 'collapsed-MQTT-tests', 'MQTT-publish-acknowledgement-and-failure', 'MQTT-draft-preservation'] }, null, 2));
   }
   await command('browser.close', {}); ownsBrowser=false;
 } finally {
