@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Retain a completed coefficient timeline for fifteen idle minutes, so briefly
+  browsing other charts does not immediately repeat the full reconstruction.
+
 - Keep recent charts and cost comparisons responsive while model-coefficient
   history is reconstructed. Show reconstruction progress and let cancelled
   requests release the worker between journal entries.

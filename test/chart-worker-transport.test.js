@@ -41,6 +41,21 @@ test('cold coefficient reconstruction leaves recent charts available and pinned 
   const observed = storageOperationHealth.status().coverage.find(row => row.kind === 'history-query');
   assert.equal(observed.running, 0);
 });
+
+test('completed coefficient reconstruction survives ordinary archive idle time and still has a bounded lifetime', async t => {
+  const { store, service } = fixture(t, { warmCache: false, idleMs: 10, replayIdleMs: 250 });
+  appendLearningRecord(store, 'providers', 'context', { timestamp: now - 60_000 }, { config: {} });
+  const selection = { ...args, startDate: '2026-09-07', endDate: '2026-09-07', view: 'model_coefficient_heat_loss' };
+  const first = await service.query(selection);
+  await new Promise(resolve => setTimeout(resolve, 40));
+  const retained = await service.query(selection);
+  assert.equal(retained.meta.cacheHit, true, 'browsing another recent view does not immediately discard expensive reconstruction');
+  assert.deepEqual(retained.series, first.series);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  const reopened = await service.query(selection);
+  assert.notEqual(reopened.meta.cacheHit, true, 'the replay worker still retires after its longer bounded idle interval');
+  assert.deepEqual(reopened.series, first.series);
+});
 function fixture(t, options) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-chart-transport-'));
   const store = new Store(join(directory, 'synthetic.sqlite'));

@@ -122,6 +122,11 @@ recent dates, so it does not queue ordinary recent plots and cost comparisons
 behind that replay. Progress describes the journal prefix being traversed;
 cancellation is checked between entries, without changing the ordered model
 update or publishing a partial timeline.
+After a successful reconstruction, that bounded worker cache stays available
+for fifteen idle minutes rather than the ordinary archive worker's one minute.
+Browsing another chart therefore does not immediately discard the expensive
+timeline. The worker still retires after that idle interval; no replay snapshot
+is written to the database.
 The **View** menu groups compatible comparisons with their relevant temperature
 context and labeled activity rows. Saved temperatures and references, thermal
 inputs, electrical inputs, activity fractions and coefficients keep their own

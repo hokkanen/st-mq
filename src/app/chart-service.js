@@ -14,7 +14,7 @@ const aborted = () => Object.assign(new Error('Chart request aborted'), { name: 
 /** Recent charts share a resident source window. Archive work owns a separate
  * bounded worker, so broad selections cannot evict that window. Maintenance
  * reads short batches only when no requested chart is waiting. */
-export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cacheDays = DEFAULT_CHART_CACHE.cacheDays, cacheBytes = DEFAULT_CHART_CACHE.cacheBytes, clock = Date.now, warmCache = true } = {}) {
+export function createChartService({ store, maxQueue = 8, idleMs = 60_000, replayIdleMs = 15 * 60_000, cacheDays = DEFAULT_CHART_CACHE.cacheDays, cacheBytes = DEFAULT_CHART_CACHE.cacheBytes, clock = Date.now, warmCache = true } = {}) {
   if (!store?.db || !store.path) throw new TypeError('A history store is required');
   storageOperationHealth.register('history-query'); storageOperationHealth.register('storage-inventory');
   let nextId = 1, closed = false, maintenanceTimer, pinned = false, warming = warmCache;
@@ -23,7 +23,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
     && Number.isSafeInteger(value.cacheBytes) && value.cacheBytes >= 64 * 1024 * 1024 && value.cacheBytes <= 2048 * 1024 * 1024;
   if (!validSettings(settings)) throw new TypeError('Invalid chart cache settings');
   const lanes = Object.fromEntries(['resident', 'archive'].map(name => [name,
-    { name, worker: null, active: null, queue: [], retiring: null, timer: null, observations: new Map() }]));
+    { name, worker: null, active: null, queue: [], retiring: null, timer: null, replayCache: false, observations: new Map() }]));
   const overviewRequests = new Map();
   const cleanup = entry => entry.signal?.removeEventListener('abort', entry.abort);
   const settle = (entry, error, result) => {
@@ -39,6 +39,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
   }
   function reset(lane, outcome = 'failed', reason = 'worker-lost') {
     clearTimeout(lane.timer); lane.timer = null;
+    lane.replayCache = false;
     const previous = lane.worker; lane.worker = null;
     if (previous) {
       // Admission cleanup must observe release/exit through termination. The
@@ -57,7 +58,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
     if (closed || lane.active || lane.retiring) return;
     if (!lane.queue.length) {
       if (!pinned && lane.worker && !lane.timer && (lane.name === 'archive' || !settings.cacheDays)) {
-        lane.timer = setTimeout(() => reset(lane), idleMs); lane.timer.unref();
+        lane.timer = setTimeout(() => reset(lane), lane.replayCache ? Math.max(idleMs, replayIdleMs) : idleMs); lane.timer.unref();
       }
       return;
     }
@@ -87,6 +88,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
               const entry = lane.active; lane.active = null;
               const response = entry.response;
               const error = response?.error ? Object.assign(new Error(response.error.message), { name: response.error.name }) : null;
+              if (entry.replay && !error && !entry.aborted) lane.replayCache = true;
               settle(entry, error, response?.result); pump();
             }
             return;
@@ -165,7 +167,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
       return Promise.reject(new RangeError('Too many pending chart requests'));
     }
     return new Promise((resolve, reject) => {
-      const entry = { id: nextId++, args, operation, wire, checkpoint, signal, onProgress, resolve, reject, abort: null,
+      const entry = { id: nextId++, args, operation, wire, checkpoint, signal, onProgress, resolve, reject, replay, abort: null,
         observation: ['pin', 'pin-archive', 'maintain'].includes(operation) ? null : storageOperationHealth.begin(operation === 'overview' ? 'storage-inventory' : 'history-query', { queued: true, scope: 'history' }) };
       entry.abort = () => {
         if (lane.active === entry) {
