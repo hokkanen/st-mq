@@ -213,3 +213,18 @@ test('shared fallback evidence can span counter boundaries while retaining the m
   assert.equal(summary.lastSuccessfulComparison.meteredKwh,1);
   assert.equal(summary.lastSuccessfulComparison.edgeEstimated,true);
 });
+
+test('selected dates require whole meter periods and do not reuse an older successful comparison', t => {
+  const {store, audit, energy} = fixture(t);
+  audit(0, 100); audit(10, 101); audit(20, 102); audit(30, 103);
+  energy(0, 10, 1); energy(10, 20, 1);
+  const read = (from, to) => propertyEnergyCheckSummary(store, { now: start + 40 * MINUTE,
+    range: { from: start + from * MINUTE, to: start + to * MINUTE } }).summary;
+  assert.equal(read(10, 20).comparison.start, start + 10 * MINUTE);
+  assert.equal(read(10, 20).comparison.end, start + 20 * MINUTE);
+  assert.equal(read(10, 20).readingCount, 2);
+  assert.equal(read(11, 20).status, 'waiting-for-second-reading');
+  assert.equal(read(21, 30).lastSuccessfulComparison, null);
+  assert.equal(read(31, 40).status, 'no-readings');
+  assert.equal(read(10, 30).lastSuccessfulComparison.start, start + 10 * MINUTE);
+});

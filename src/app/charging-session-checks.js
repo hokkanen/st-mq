@@ -75,21 +75,23 @@ export function recordChargingSessionCheck(store, input) {
   });
 }
 
-/** Read-only aggregates over every stored check, independently for each source.
+/** Read-only aggregates over stored checks within the optional selected period.
  * No counter readings are converted into sessions and no acquisition is started.
  */
-export function chargingSessionCheckSummaries(store) {
+export function chargingSessionCheckSummaries(store, { now = Date.now(), range = null } = {}) {
   const rows = Object.entries(SOURCES).map(([source, descriptor]) => ({ kind: 'charging-session-summary', source,
     signal: descriptor.signal, summary: { basis: descriptor.basis, recordedSessions: 0, comparedSessions: 0,
       excludedSessions: 0, exclusionReasons: {}, estimatedKwh: 0, referenceKwh: 0, differenceKwh: null, differencePercent: null,
       start: null, end: null, lastSessionEnd: null, referenceTransports: [] } }));
   const bySource = new Map(rows.map(row => [row.source, row.summary]));
-  // Store.events() has a page limit. Iteration deliberately includes all history
-  // without loading every session into memory or silently averaging one page.
-  for (const row of store.db.prepare('SELECT payload FROM active_events AS events WHERE type=? ORDER BY at,id').iterate(EVENT_TYPE)) {
+  // Iterate every check in the period without a page limit or unbounded memory.
+  // A finalized session crossing either boundary cannot be partly compared.
+  for (const row of store.db.prepare(`SELECT payload FROM active_events AS events WHERE type=? AND at>=? AND at<=?
+    ORDER BY at,id`).iterate(EVENT_TYPE, range?.from ?? 0, Math.min(now, range?.to ?? now))) {
     const check = JSON.parse(row.payload), summary = bySource.get(check.source);
     assertCurrentChargingSessionCheck(check);
     if (!summary || check.version !== VERSION) continue;
+    if (range && (check.start < range.from || check.end > range.to)) continue;
     const transport = ['cloud','ocpp'].includes(check.transport) ? check.transport : 'unknown';
     if (!summary.referenceTransports.includes(transport)) summary.referenceTransports.push(transport);
     summary.recordedSessions++;

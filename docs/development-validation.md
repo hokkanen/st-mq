@@ -167,7 +167,15 @@ parity, including synthetic mixed week/month/year workloads. These densities
 and developer-host timings do not qualify Raspberry Pi storage. Read-only API
 access on standby and safe failures are covered by
 `test/recorded-data-api.test.js`; browser request cancellation and late-response
-fences are covered by `test/energy-check-refresh.test.js`. The model-verification
+fences are covered by `test/energy-check-refresh.test.js`. Date-scoped checks
+include complete meter/session boundaries, empty selections, DST days, concurrent
+different periods, explicit refresh and the absence of automatic completed-job
+rechecks. The recording-health browser fixture checks every nested disclosure's
+24 px / 16 px inset, including widths either side of the 640 px breakpoint,
+compact inventory issues and their focus retention, independent energy date
+controls, and mobile counter-only storage explanations. Storage UI regressions
+keep queued, background and local-task failures separate and label past-day
+fallback when the selected period is unavailable. The model-verification
 browser fixture also renders all History tools and recorded-data job states at
 320, 390, 768 and 1440 pixels in both themes.
 

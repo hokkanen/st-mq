@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Simplify Recording details headers and inventory issues, align every nested
+  fold with the shared indentation, and improve tablet measurement layout.
+  Recorded energy checks use their own Finnish date period, defaulting to the
+  last seven days, with explicit refresh and no animated refresh bar.
+  Storage history explains counted failures even when individual dates are missing.
+
 - Fix a dashboard refresh error after opening the app or changing snapshots.
   Refresh energy checks through their current controller when the source changes.
 

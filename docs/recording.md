@@ -520,6 +520,15 @@ returns its job status immediately and starts a check when needed. The latest
 meter reading appears after its bounded source pass; historical comparisons are
 published together only after the complete check succeeds. A previous complete
 result retains its completion time and receipt cutoff while a refresh runs.
+The independent **Check period** uses inclusive Finnish dates and initially selects
+**Last 7 days**, including today. Its calendars and Last month / This year / Last
+year shortcuts match Energy cost comparisons. Property uses the latest comparable
+meter interval wholly within the selected dates; Charger 1 includes finalized
+sessions wholly within them. Boundary-crossing sessions are omitted rather than
+prorated. The latest property reading and reading count also belong to that period.
+Completed results retain their check time until the dates change or the user chooses
+**Refresh checks**. There is no automatic periodic recheck or animated refresh bar;
+short status polling continues only while a requested check is running.
 **Refresh checks** starts a new check and **Cancel check** stops the current one.
 Leaving or closing the page only stops browser polling; it does not cancel the
 shared server job. Cancelled or failed jobs wait for an explicit retry.
@@ -1699,6 +1708,15 @@ updated; database size figures stay in **Storage & growth**. Groups cover:
 - Recovery contributions, immutable revert/restore decisions and the current history selection.
 - Availability coverage, recorder statistics and storage support.
 
+A compact count and inventory action introduce the catalogue. Inventory issues
+remain visible as a counted disclosure, with their explanations inside it. Counting
+and selection guidance has its own fold. Adaptive measurements similarly keep a
+short count above their recording guide and measurement table. All nested Recording
+details disclosures use the shared 24 px inset, or 16 px at widths up to 640 px,
+including folds inside content wrappers. The health-card group owns its inset so
+its shared border stays continuous. Measurements use their stacked layout at
+widths up to 800 px.
+
 Populated datasets appear first. Empty datasets and entirely empty groups remain
 available under labelled folds with counts, without dominating the initial view.
 An empty dataset is identified as empty rather than inferred to contain
@@ -1737,8 +1755,14 @@ new complete result is published.
 
 `GET /api/recording-overview` returns `{catalogue,result,job}`. `POST` on the same
 route accepts exactly `{action:"measure"}` or `{action:"cancel"}`. The energy
-route `GET /api/energy-audits` returns `{latest,result,resultGeneratedAt,resultAsOf,job}`;
-its `POST` accepts exactly `{action:"refresh"}` or `{action:"cancel"}`. The old
+route `GET /api/energy-audits` returns
+`{range,latest,result,resultGeneratedAt,resultAsOf,job,waitingForPeriod}`. Both GET
+and POST accept paired `start=YYYY-MM-DD&end=YYYY-MM-DD` query parameters;
+missing both selects all retained history. Invalid, reversed, duplicate, unknown
+or more-than-ten-year ranges are rejected. The dashboard always sends its dates.
+Its `POST` body accepts exactly `{action:"refresh"}` or `{action:"cancel"}`.
+One shared job runs at a time. A different period waits for it without cancelling
+it or receiving its results; cancellation only applies to the requested period. The old
 inventory refresh query is unsupported. These read-only inspections are available
 to authenticated admin and family users on master and standby, independently of
 actuator and main-database write authority. Jobs and results belong to the current
@@ -2325,8 +2349,12 @@ Opening the fold separates **Current activity** (writer availability, backlog,
 lock wait, last confirmed write and active local tasks) from **Monitored history**.
 One past-day/past-week selector applies to writer and local-task history. The
 period overview separates save queue delay, whole transaction duration and, when
-the runtime schedules them separately, WAL checkpoint calls. The latest
-three dated problems are shown directly; additional retained problems have a
+the runtime schedules them separately, WAL checkpoint calls. If failure counters have no displayable dated incident, **Earlier problems** names
+each affected category and count separately; overlapping counters are never summed.
+Individual dates and causes remain explicitly unavailable. These explanations use
+the selected history period. If that evidence is unavailable, past-day problems
+reported by the subtitle remain inspectable with an explicit **Past day** label.
+The latest three dated problems are shown directly; additional retained problems have a
 shared disclosure. Each keeps type, date, context, outcome and any established
 recovery separate. Full writer counters, including observed zeroes, belong under
 **Save outcomes**. A confirmed save retains its original success clock

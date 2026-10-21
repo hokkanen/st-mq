@@ -4,7 +4,7 @@ import { createServer as createHttpsServer } from 'node:https';
 import { timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
-import { getChartData, chartRequestRange } from './chart-data.js';
+import { getChartData, chartRequestRange, chartRange } from './chart-data.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
 import { simulatedOutlook } from './simulator.js';
 import { createChartService } from './chart-service.js';
@@ -325,8 +325,16 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (['/api/recording-overview', '/api/energy-audits'].includes(url.pathname)
           && ['GET', 'POST'].includes(req.method)) {
-          if ([...url.searchParams.keys()].length)
+          const energy = url.pathname === '/api/energy-audits';
+          const dateArgs = {};
+          if ([...url.searchParams.keys()].length && (!energy
+            || [...url.searchParams.keys()].some(key => !['start', 'end'].includes(key))
+            || ['start', 'end'].some(key => url.searchParams.getAll(key).length !== 1)))
             return json(400, { error: 'Unsupported recorded-data query. Use the panel actions to refresh or cancel a check.' });
+          if (energy && url.searchParams.has('start')) {
+            dateArgs.startDate = url.searchParams.get('start'); dateArgs.endDate = url.searchParams.get('end');
+            try { chartRange(dateArgs); } catch { return json(400, { error: 'Choose valid energy-check dates, in order, within ten years.' }); }
+          }
           const input = req.method === 'POST' ? await body(req, transportLimits?.bodyTimeoutMs) : undefined;
           if (!stillAuthorized()) return;
           if (input !== undefined && !isRecordedDataAction(url.pathname, input))
@@ -344,8 +352,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           res.once('close', cancel);
           try {
             const options = { signal: cancellation.signal };
-            const energy = url.pathname === '/api/energy-audits';
-            const args = { now: (readContext?.engine ?? getEngine())?.clock?.() ?? clock() };
+            const args = { now: (readContext?.engine ?? getEngine())?.clock?.() ?? clock(), ...dateArgs };
             const result = energy
               ? input === undefined ? await reader.energyChecks(args, options) : await reader.energyChecksAction(input, args, options)
               : input === undefined ? await reader.overview(options) : await reader.overviewAction(input, options);

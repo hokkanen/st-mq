@@ -75,7 +75,7 @@ function incidentView(value, lastWriteAt) {
   const outcome = originalRecovered ? `The original update was saved on retry ${dates.format(new Date(value.recoveredAt))}.`
     : incidentOutcomes[value.outcome];
   const recovery = !originalRecovered && resumed ? `Saving resumed ${dates.format(new Date(lastWriteAt))}; this does not establish recovery of missing history.` : '';
-  return { at: value.at, title: incidentCategories[value.category], context: incidentContexts[value.context],
+  return { category: value.category, at: value.at, title: incidentCategories[value.category], context: incidentContexts[value.context],
     date: dates.format(new Date(value.at)), dateTime: new Date(value.at).toISOString(),
     reason: incidentReasons[value.reason], outcome, recovery };
 }
@@ -153,6 +153,9 @@ export function storageOperationsView(health, period = 'day', { unavailable = fa
       summary: active ? `${activity}${stale ? ' · last known' : ''}` : problems ? 'Earlier problems'
         : outcomes || (outcomesKnown ? 'No observed work' : 'Outcomes unknown'),
       activity: `${stale ? 'Last known: ' : ''}${activity}`, activeDetails,
+      undatedProblems: known ? ['failed', 'unconfirmed', 'refused']
+        .filter(key => count(window[key]) && window[key] > 0 && problem?.outcome !== key)
+        .map(key => `${label}: ${integer.format(window[key])} ${operationOutcomes[key].toLowerCase()} task${window[key] === 1 ? '' : 's'}. Individual dates and causes are unavailable.`) : [],
       outcomes: `${outcomes || (outcomesKnown ? 'No finished or refused tasks' : 'Outcomes unknown')}${outcomes && !outcomesKnown ? ' · some counts unknown' : ''}`,
       duration, coverage, latest, problemDetail,
       incident: problem ? { title: `${label} · ${operationOutcomes[problem.outcome].toLowerCase()}`,
@@ -171,6 +174,7 @@ export function storageOperationsView(health, period = 'day', { unavailable = fa
   return { available: valid, stale, observedAt: valid ? operations.observedAt : null, rows: visible, activeRows, coverage: registered,
     groups: operationGroups.map(group => ({ ...group, rows: visible.filter(row => group.kinds.includes(row.kind)) })).filter(group => group.rows.length),
     problemsObserved, outcomesKnown: monitored.length > 0 && monitored.every(row => row.outcomesKnown),
+    undatedProblems: rows.flatMap(row => row.undatedProblems),
     incidents: rows.map(row => row.incident).filter(Boolean),
     summary: !valid ? 'Evidence unavailable' : !monitored.length ? 'No monitoring registered' : visible.length ? `${visible.length} task types with activity or outcomes` : 'No tasks observed in this period',
     activity: !valid ? 'Local task activity unavailable' : activeRows.length ? `${stale ? 'Last known: ' : ''}${activeRows.length} active task type${activeRows.length === 1 ? '' : 's'}`
@@ -193,11 +197,28 @@ function historySummary(writer, operations) {
   const incidents = [...writer.incidents, ...operations.incidents].sort((a, b) => b.at - a.at);
   const problems = writer.problemsObserved || operations.problemsObserved;
   const known = (!writer.currentVisible || writer.outcomesKnown) && operations.outcomesKnown;
-  return { problems, incidents,
+  return { problems, incidents, undatedProblems: [...writer.undatedProblems, ...operations.undatedProblems],
     label: problems ? `Earlier problems${incidents.length ? ` · ${incidents[0].date}` : ' · date unavailable'}` : '',
     outcome: problems ? 'Problems were observed in this period. Current activity is shown separately.'
       : known ? 'No problems observed in the monitored period.' : 'No problems reported in the available evidence; coverage is incomplete.',
   };
+}
+
+export function storageProblemDetails(health, period = 'day', options = {}) {
+  const writer = storagePerformanceView(health, period, options), operations = storageOperationsView(health, period, options);
+  const dayWriter = period === 'day' ? writer : storagePerformanceView(health, 'day', options);
+  const dayOperations = period === 'day' ? operations : storageOperationsView(health, 'day', options);
+  const writerFallback = period !== 'day' && !writer.available && dayWriter.problemsObserved;
+  const taskFallback = period !== 'day' && !operations.coverage.some(row => row.known) && dayOperations.problemsObserved;
+  const selected = historySummary(writer, operations), fallback = writerFallback || taskFallback;
+  const labelFallback = view => ({ ...view,
+    undatedProblems: view.undatedProblems.map(text => `Past day · ${text}`),
+    incidents: view.incidents.map(item => ({ ...item, context: `Past day · ${item.context}` })),
+  });
+  return { ...historySummary(writerFallback ? labelFallback(dayWriter) : writer, taskFallback ? labelFallback(dayOperations) : operations),
+    period: fallback && !selected.problems ? 'day' : period,
+    explanation: fallback ? `Past day · ${writerFallback && taskFallback ? 'Writer and local task' : writerFallback ? 'Writer' : 'Local task'} evidence for the selected past week is unavailable. The corresponding past-day problems from the subtitle are shown here; other evidence uses the selected period.`
+      : `${period === 'week' ? 'Past week' : 'Past day'} · Latest retained problem per type. A later success does not establish recovery of earlier work.` };
 }
 
 const storageKinds = { checkpoint: 'WAL checkpoint', mirror: 'Mirroring or recovery', history: 'History read',
@@ -359,13 +380,23 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
     && count(runtime.samples) && (runtime.samples === 0 || finite(runtime.maxObservedDelayMs) && finite(runtime.p99ObservedDelayMs));
   const checkpointFailureAt = scheduling.available ? health.recording.storage.checkpoint?.lastFailureAt : null;
   const checkpointIncidents = valid && window.checkpointFailures > 0 && validDate(checkpointFailureAt) ? [{
-    at: checkpointFailureAt, title: 'Checkpoint request failed', context: 'Background storage',
+    category: 'checkpoint-failed', at: checkpointFailureAt, title: 'Checkpoint request failed', context: 'Background storage',
     date: dates.format(new Date(checkpointFailureAt)), dateTime: new Date(checkpointFailureAt).toISOString(),
     reason: 'The background checkpoint request did not complete.',
     outcome: 'Earlier confirmed saves remain recorded.', recovery: '',
   }] : [];
+  const incidents = [...(Array.isArray(window?.incidents) ? window.incidents.slice(0, 5).map(item => incidentView(item, health?.recording?.lastWriteAt)).filter(Boolean) : []), ...checkpointIncidents];
+  const undatedProblems = monitored ? [
+    ['failedWrites', 'failed save', 'save-failed'], ['queueRejected', 'queue-full refusal', 'queue-refused'],
+    ['commandsNotSent', 'unsent device command', 'command-not-sent'], ['postCommitFailures', 'failed follow-up', 'follow-up-failed'],
+    ['failedJobs', 'failed queued operation'], ['controlRequestsBlocked', 'blocked control request', 'control-request-blocked'],
+    ['backgroundFailedJobs', 'failed background operation'], ['backgroundQueueRejected', 'refused background operation'],
+    ['checkpointFailures', 'failed checkpoint request', 'checkpoint-failed'],
+  ].filter(([key, , category]) => count(window[key]) && window[key] > 0 && !incidents.some(item => item.category === category))
+    .map(([key, label]) => `${integer.format(window[key])} ${label}${window[key] === 1 ? '' : 's'}. Individual dates and causes are unavailable.`) : [];
   return {
     available: valid,
+    undatedProblems,
     problemsObserved, outcomesKnown: knownOutcomes,
     notice,
     stale,
@@ -425,8 +456,7 @@ export function storagePerformanceView(health, period = 'day', { unavailable = f
     backgroundRejected: observed(window?.backgroundQueueRejected),
     backgroundCancelled: observed(window?.backgroundCancelledJobs),
     checkpointFailures: observed(window?.checkpointFailures),
-    incidents: [...(valid && Array.isArray(window.incidents) ? window.incidents.slice(0, 5)
-      .map(value => incidentView(value, health.recording.lastWriteAt)).filter(Boolean) : []), ...checkpointIncidents],
+    incidents,
   };
 }
 
@@ -531,6 +561,7 @@ export function createStoragePerformance({ document, now = () => Date.now() }) {
     const operations = storageOperationsView(health, period, options);
     const scheduling = storageSchedulingView(health, options);
     const history = historySummary(view, operations);
+    const problems = storageProblemDetails(health, period, options);
     const overview = period === 'day' ? history : storageProblemSummary(health, options);
     renderOperations(operations);
     set('coverage', view.available ? `Writer · ${view.coverage}` : 'Local task coverage varies by owner');
@@ -583,11 +614,16 @@ export function createStoragePerformance({ document, now = () => Date.now() }) {
     resize(commandList, view.commandCoverage.length, () => document.createElement('li'));
     view.commandCoverage.forEach((row, index) => text(commandList.children[index], `${row.context} · ${row.state} · ${row.count === 'Not monitored' ? 'No monitored period evidence' : `${row.count} known unsent in this period`}`));
     set('command-coverage-empty', view.commandCoverage.length ? '' : 'Command monitoring coverage is unknown.');
-    renderIncidents($('recording-performance-incident-list'), history.incidents.slice(0, 3));
-    renderIncidents($('recording-performance-more-problem-list'), history.incidents.slice(3));
-    hide('more-problems', history.incidents.length <= 3);
-    set('more-problems-summary', `${Math.max(0, history.incidents.length - 3)} more dated problem${history.incidents.length === 4 ? '' : 's'}`);
-    hide('incidents', history.incidents.length === 0);
+    set('problem-period', problems.explanation);
+    const undated = $('recording-performance-undated-problems');
+    resize(undated, problems.undatedProblems.length, () => document.createElement('li'));
+    problems.undatedProblems.forEach((value, index) => text(undated.children[index], value));
+    hide('undated-problems', problems.undatedProblems.length === 0);
+    renderIncidents($('recording-performance-incident-list'), problems.incidents.slice(0, 3));
+    renderIncidents($('recording-performance-more-problem-list'), problems.incidents.slice(3));
+    hide('more-problems', problems.incidents.length <= 3);
+    set('more-problems-summary', `${Math.max(0, problems.incidents.length - 3)} more dated problem${problems.incidents.length === 4 ? '' : 's'}`);
+    hide('incidents', !problems.problems && problems.incidents.length === 0);
   }
   for (const key of ['day', 'week']) $(`recording-performance-${key}`).addEventListener('click', () => { period = key; draw(); });
   return {

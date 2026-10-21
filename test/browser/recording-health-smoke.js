@@ -132,7 +132,7 @@ const partialSourceHealth = await healthService.status({ engine: { config: { inp
 assert.equal(partialSourceHealth.recording.state, 'ok');
 assert.equal(partialSourceHealth.recording.sources.attentionStreams, 1);
 const fixture = `<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="stylesheet" href="/chart/monitor.css"><link rel="stylesheet" href="/chart/recording-health.css"></head>
+<link rel="stylesheet" href="/chart/monitor.css"><link rel="stylesheet" href="/chart/recording-health.css"><link rel="stylesheet" href="/chart/timing-benefit.css"></head>
 <body data-authenticated="true">${header}<main>${dashboardContext}
 <section class="controller-panels" aria-label="Synthetic dashboard layout" data-snapshot-content>
   <div class="controller-column"><article class="panel"><h2>Home</h2><p class="muted">Synthetic controller panel</p></article></div>
@@ -140,6 +140,7 @@ const fixture = `<!doctype html><html lang="en" data-theme="dark"><head><meta ch
 </section>
 <section class="panel history-panel"><div id="fixture-control">Other dashboard content</div>${recording}</section></main>
 <script type="module">import { createRecordingHealth } from '/chart/recording-health.js';
+import { createEnergyCheckRange } from '/chart/energy-check-range.js';
 import { recordingOverviewRefresh, renderRecording, renderRecordingOverview, renderEnergyAudits } from '/chart/recording.js';
 window.payload = ${JSON.stringify(status)}; window.inventory = ${JSON.stringify(inventory)};
 window.initialHealth = structuredClone(payload.recordingHealth);
@@ -278,6 +279,7 @@ window.inventoryRequests = 0;
 const element = id => document.getElementById(id);
 element('context').textContent = 'Live controller · synthetic dashboard';
 element('connection').textContent = 'Updated just now';
+window.renderInventory = () => renderRecordingOverview(inventory, element('recording-overview-content'));
 window.renderMeasurements = () => renderRecording(payload, element('recording-content'));
 renderMeasurements();
 renderEnergyAudits([{ kind:'property-meter-summary', signal:'property_import_energy_counter',
@@ -286,6 +288,8 @@ renderEnergyAudits([{ kind:'property-meter-summary', signal:'property_import_ene
     summary:{comparedSessions:5,recordedSessions:6,excludedSessions:1,estimatedKwh:49.5,referenceKwh:50,differencePercent:-1,
       start:${now - 7 * 86400_000},end:${now},lastSessionEnd:${now},exclusionReasons:{'incomplete-coverage':1}}}],element('energy-audit-content'));
 element('energy-audit-message').textContent='Recorded energy comparisons · synthetic fixture';
+window.energyPeriodChanges = [];
+window.energyRange = createEnergyCheckRange({document, now:()=>payload.now, onChange:()=>energyPeriodChanges.push(energyRange.selection())});
 window.inventoryRefresh = recordingOverviewRefresh({
   request: async path => {
     if(path!=='/api/recording-overview') throw Error('Unexpected inventory request');
@@ -302,7 +306,7 @@ for(const id of ['recording-overview-details','recording-disk-card']) element(id
 element('recording-overview-refresh').addEventListener('click', () => void inventoryRefresh({force:true}));
 renderStatus(payload);
 window.ready = true;</script></body></html>`;
-const assets = new Map(['monitor.css', 'recording-health.css'].map(name => [`/chart/${name}`,
+const assets = new Map(['monitor.css', 'recording-health.css', 'timing-benefit.css'].map(name => [`/chart/${name}`,
   [name.endsWith('.css') ? 'text/css' : 'text/javascript', readFileSync(new URL(`../../chart/${name}`, import.meta.url))]]));
 function addModule(path) {
   if(assets.has(path)) return;
@@ -315,6 +319,7 @@ function addModule(path) {
 addModule('/chart/recording-health.js');
 addModule('/chart/recording.js');
 addModule('/chart/storage-health.js');
+addModule('/chart/energy-check-range.js');
 const server = createServer((request, response) => {
   const path = new URL(request.url, 'http://fixture').pathname, asset = assets.get(path);
   response.writeHead(asset || path === '/' ? 200 : 404, { 'Content-Type': asset?.[0] ?? 'text/html; charset=utf-8' });
@@ -375,7 +380,7 @@ try {
   const captureGlance = name => captureFold('recording-health', name);
   const checkLayout = async label => {
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${label}: page fits`);
-    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-backup-list, .recording-backup-toolbar, .recording-backup-actions, .recording-source-exceptions, .recording-source-heading, .recording-source-reason, .recording-source-clocks, .recording-source-clocks dd, #recording-recording-unknown, #recording-recording-coverage, .recording-storage-inventory, .recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-dataset, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents, .recording-operation-list, .recording-operation, .recording-command-coverage')).filter(node => {
+    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-backup-list, .recording-backup-toolbar, .recording-backup-actions, .recording-source-exceptions, .recording-source-heading, .recording-source-reason, .recording-source-clocks, .recording-source-clocks dd, #recording-recording-unknown, #recording-recording-coverage, .recording-storage-inventory, .recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-data-group, .recording-data-group > summary, .recording-data-group > p, .recording-dataset, .recording-dataset-facts, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents, .recording-operation-list, .recording-operation, .recording-command-coverage')).filter(node => {
       if(!node.checkVisibility()) return false;
       const b = node.getBoundingClientRect(), owner=node.closest('.recording-health-card')?.getBoundingClientRect();
       return b.width <= 0 || b.left < 0 || b.right > innerWidth + 1 || node.scrollWidth > node.clientWidth + 1
@@ -384,6 +389,7 @@ try {
       width:node.clientWidth, content:node.scrollWidth}))`);
     if(clipped.length) await capture(`clipping-${label.replaceAll('/', '-')}`);
     assert.deepEqual(clipped, [], `${label}: recording content fits without clipping`);
+    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#recording-details details')).filter(node => node.checkVisibility() && !node.classList.contains('recording-health-card')).filter(node => Number.parseFloat(getComputedStyle(node).marginInlineStart) !== (innerWidth <= 640 ? 16 : 24)).map(node => node.id || node.className)`), [], `${label}: every nested fold uses the shared inset`);
     assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.recording-section-group')).flatMap(group => {
       const folds = Array.from(group.querySelectorAll(':scope > details'));
       return folds.slice(1).filter((fold, index) => fold.getBoundingClientRect().top < folds[index].getBoundingClientRect().bottom - 1).map(fold => fold.id);
@@ -810,6 +816,38 @@ try {
     await send('Emulation.setDeviceMetricsOverride', {width,height:1000,deviceScaleFactor:1,mobile:false});
     await evaluate("document.querySelectorAll('#recording-overview-content > .recording-data-group').forEach(node=>node.open=true); scrollTo(0,0)");
     await settle(); await checkLayout(`${width}/production-inventory`); await capture(`production-inventory-${width}`);
+  }
+  await evaluate("document.getElementById('recording-details').open=true; document.getElementById('energy-audit-details').open=true; energyRange.selection()");
+  assert.deepEqual(await evaluate("[document.getElementById('energy-check-date-start').value,document.getElementById('energy-check-date-end').value]"), ['2026-10-01','2026-10-07']);
+  assert.equal(await evaluate("document.querySelector('#energy-audit-details progress')"), null, 'Energy checks have no animated refresh bar');
+  for (const [preset, expected] of [['month',['2026-09-01','2026-09-30']],['year',['2026-01-01','2026-10-07']],['previous-year',['2025-01-01','2025-12-31']],['week',['2026-10-01','2026-10-07']]]) {
+    await evaluate(`document.getElementById('energy-check-period-${preset}').click()`);
+    assert.deepEqual(await evaluate("[document.getElementById('energy-check-date-start').value,document.getElementById('energy-check-date-end').value]"), expected);
+    assert.equal(await evaluate(`document.getElementById('energy-check-period-${preset}').getAttribute('aria-pressed')`),'true');
+  }
+  await evaluate("document.getElementById('energy-check-date-end').value='2026-09-30'; document.getElementById('energy-check-date-end').dispatchEvent(new Event('change'))");
+  assert.match(await evaluate("document.getElementById('energy-check-range-status').textContent"), /Choose valid dates/);
+  assert.equal(await evaluate('energyPeriodChanges.length'),4,'An invalid date never starts another check');
+  await evaluate("document.getElementById('energy-check-period-week').click(); inventory.inventoryIssues=['Current-state entries without a registered writer description are present.']; renderInventory()");
+  assert.equal(await evaluate("document.querySelector('.recording-inventory-notice').open"), false);
+  assert.equal(await evaluate("document.querySelector('.recording-inventory-notice > summary').textContent"), '1 inventory issue');
+  await evaluate("document.querySelector('.recording-inventory-notice').open=true;document.querySelector('.recording-inventory-notice > summary').focus();renderInventory()");
+  assert.equal(await evaluate("document.querySelector('.recording-inventory-notice').open && document.activeElement === document.querySelector('.recording-inventory-notice > summary')"),true,'Inventory issues retain expansion and focus');
+  await evaluate("document.querySelector('#recording-overview-content .recording-task-link').focus();renderInventory()");
+  assert.equal(await evaluate("document.activeElement === document.querySelector('#recording-overview-content .recording-task-link')"),true,'The measurement action retains focus on refresh');
+  await evaluate("setScenario('healthy');document.getElementById('recording-performance-day').click();payload.recordingHealth.recording.history.windows.day.failedJobs=1;payload.recordingHealth.recording.history.windows.day.incidents=[];delete payload.recordingHealth.recording.history.windows.week;panel.update(payload);document.getElementById('recording-performance-details').open=true");
+  assert.equal(await evaluate("document.getElementById('recording-performance-incidents').hidden"),false);
+  assert.match(await evaluate("document.getElementById('recording-performance-undated-problems').textContent"),/1 failed queued operation.*dates and causes are unavailable/);
+  await evaluate("document.getElementById('recording-performance-week').click()");
+  assert.match(await evaluate("document.getElementById('recording-performance-problem-period').textContent"),/Past day.*past week is unavailable/);
+  for (const width of [320,390,640,641,768,1440]) {
+    await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+    await checkLayout(`${width}/updated-details`);
+    if([320,390,1440].includes(width)) {
+      await captureFold('recording-performance-details',`undated-storage-${width}`);
+      await captureFold('energy-audit-details',`energy-period-${width}`);
+      await captureFold('recording-overview-details',`inventory-header-${width}`);
+    }
   }
   // Authenticated fallback can expose just health when the first status read fails.
   await evaluate("panel.clear(); document.body.dataset.authenticated = 'false'; document.getElementById('recording-details').open = true; window.fallback = panel.refresh()");

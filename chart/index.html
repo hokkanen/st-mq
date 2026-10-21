@@ -1007,7 +1007,7 @@ G_warming = G / 2</code>
           </div>
           <div class="comparison-range-controls" aria-label="Comparison period">
             <div class="comparison-range-heading">
-              <span id="comparison-range-label">Comparison period</span>
+              <span class="comparison-range-label" id="comparison-range-label">Comparison period</span>
               <span class="muted">Applies to all comparisons below</span>
             </div>
             <div class="comparison-range-fields">
@@ -1125,7 +1125,8 @@ G_warming = G / 2</code>
                   </div>
                   <div id="recording-performance-incidents" class="recording-performance-incidents" hidden>
                     <h5>Earlier problems</h5>
-                    <p class="recording-health-evidence">Latest retained problem per type. A later success does not establish recovery of earlier work.</p>
+                    <p id="recording-performance-problem-period" class="recording-health-evidence"></p>
+                    <ul id="recording-performance-undated-problems" class="recording-undated-problems" hidden></ul>
                     <ul id="recording-performance-incident-list"></ul>
                     <details id="recording-performance-more-problems" class="recording-performance-explanation" hidden>
                       <summary id="recording-performance-more-problems-summary">More dated problems</summary>
@@ -1355,13 +1356,12 @@ G_warming = G / 2</code>
         <section class="recording-section-group" aria-labelledby="recording-data-title">
           <h3 id="recording-data-title" class="recording-group-title">Recorded data</h3>
           <details id="recording-adaptive-details" class="recording-section">
-            <summary><span>Adaptive measurements<small>Saving intervals, change thresholds and source history</small></span></summary>
+            <summary><span>Adaptive measurements<small>Saving intervals, thresholds and source history</small></span></summary>
             <div id="recording-content" class="recording-section-body"></div>
           </details>
           <details id="recording-overview-details" class="recording-section">
             <summary><span>Other recorded data<small>Exact measurements, states, forecasts and learning history</small></span></summary>
             <div class="recording-section-body">
-              <div class="recording-task-overview"><p class="muted">Browse what is recorded and how it is retained. Complete counts and dates are measured separately.</p><a class="recording-task-link" href="#recording-storage-details" data-recording-open="recording-storage-details">Measure complete inventory <span aria-hidden="true">→</span></a></div>
               <p id="recording-overview-notice" class="muted" role="status" hidden></p>
               <div id="recording-overview-content"></div>
             </div>
@@ -1369,11 +1369,26 @@ G_warming = G / 2</code>
           <details id="energy-audit-details" class="recording-section">
             <summary><span>Recorded energy checks<small>Compare recorded consumption with meter readings</small></span></summary>
             <div class="recording-section-body">
-              <div class="recording-task-overview"><p class="muted">Compare matching recorded and metered periods. Historical checks run in the background while recording continues.</p><div class="recording-task-actions"><button id="energy-audit-refresh" class="secondary-button" type="button">Refresh checks</button><button id="energy-audit-cancel" class="secondary-button" type="button" hidden>Cancel check</button></div></div>
-              <div class="recording-task-status" role="group" aria-label="Energy check status">
-                <p id="energy-audit-message" role="status" aria-live="polite">Open this section to load the latest meter reading.</p>
-                <progress id="energy-audit-progress" class="background-work-progress" aria-label="Energy check progress" hidden></progress>
-                <p id="energy-audit-detail" class="recording-task-detail" hidden></p>
+              <div class="comparison-range-controls" aria-label="Energy check period">
+                <div class="comparison-range-heading"><span class="comparison-range-label" id="energy-check-range-label">Check period</span><span class="muted">Applies to all checks below</span></div>
+                <div class="comparison-range-fields">
+                  <form id="energy-check-range-form" class="date-range" aria-labelledby="energy-check-range-label" aria-describedby="energy-check-range-status">
+                    <input id="energy-check-date-start" type="text" data-date-picker="date" aria-label="Energy check start date" required>
+                    <span aria-hidden="true">–</span>
+                    <input id="energy-check-date-end" type="text" data-date-picker="date" aria-label="Energy check end date" required>
+                  </form>
+                  <div class="comparison-shortcuts" role="group" aria-label="Quick energy check periods">
+                    <button id="energy-check-period-week" type="button" aria-pressed="true">Last 7 days</button>
+                    <button id="energy-check-period-month" type="button" aria-pressed="false">Last month</button>
+                    <button id="energy-check-period-year" type="button" aria-pressed="false">This year</button>
+                    <button id="energy-check-period-previous-year" type="button" aria-pressed="false">Last year</button>
+                  </div>
+                </div>
+                <div class="comparison-range-feedback"><p id="energy-check-range-status" class="muted" role="status"></p></div>
+              </div>
+              <div class="recording-section-intro energy-check-toolbar">
+                <p id="energy-audit-message" role="status" aria-live="polite">Open this section to check the selected period.</p>
+                <div class="recording-task-actions"><button id="energy-audit-refresh" class="secondary-button" type="button">Refresh checks</button><button id="energy-audit-cancel" class="secondary-button" type="button" hidden>Cancel check</button></div>
               </div>
               <div id="energy-audit-content"></div>
             </div>

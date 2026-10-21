@@ -129,12 +129,12 @@ export function renderRecording(status, root) {
   const focusedStream=focused?.closest('details[data-stream-id]')?.dataset.streamId;
   const focusedSource=focused?.closest('[data-recording-source]')?.dataset.recordingSource;
   const recording=status?.recording ?? {}, rows=recordingRows(recording);
-  const description=document.createElement('p');description.className='muted';
-  description.textContent=`${rows.length} ${rows.length===1?'measurement':'measurements'}. Expand a source to inspect its status or recording history. Exact measurements, states, settings and counters are under Other recorded data.`;
+  const description=document.createElement('p');description.className='recording-section-caption';
+  description.textContent=`${rows.length} adaptive ${rows.length===1?'measurement':'measurements'}`;
   const note=document.createElement('p');note.className='muted';
-  note.textContent='Counts and approximate storage include all listed identities within 24 hours. Spacing, threshold and open interval use the current source, or the latest recorded source in a read-only snapshot.';
+  note.textContent='Expand a source to inspect its status or recording history. Exact measurements, states, settings and counters are under Other recorded data. Counts and approximate storage include all listed identities within 24 hours. Spacing, threshold and open interval use the current source, or the latest recorded source in a read-only snapshot.';
   const help=document.createElement('details'),helpTitle=document.createElement('summary'),helpText=document.createElement('p');
-  help.className='recording-reading-details';help.dataset.streamId='recording-table-help';help.open=expanded.has(help.dataset.streamId);
+  help.className='recording-reading-details recording-guide';help.dataset.streamId='recording-table-help';help.open=expanded.has(help.dataset.streamId);
   helpTitle.textContent='How recording is counted';
   helpText.textContent='Mean spacing uses actual saved receipt timestamps within each window. Source history uses Finnish time. Unchanged readings extend availability coverage. Energy keeps accumulating in a saved open interval until power or quality changes close it. The soft annual target covers estimated adaptive measurement additions. Exact records, imported history, journals and database overhead are additional; whole-database growth is under Storage & growth. Saved datasets without a recorder checkpoint are under Other recorded data → Recording and storage support.';
   help.append(helpTitle,note,helpText);
@@ -241,23 +241,30 @@ export function renderRecordingOverview(overview,root) {
   const focused=document.activeElement;
   const focusedKey=root.contains(focused)?focused.closest('[data-overview-key]')?.dataset.overviewKey:null;
   const nodes=[];
-  if(overview.summary){const intro=document.createElement('p');intro.className='muted';intro.textContent=overview.summary;nodes.push(intro);}
+
   if (overview.inventoryIssues?.length) {
-    const notice=document.createElement('p');notice.className='recording-inventory-notice';
-    notice.textContent=`Inventory needs attention: ${overview.inventoryIssues.join(' ')}`;nodes.push(notice);
+    const notice=document.createElement('details'), title=document.createElement('summary'), list=document.createElement('ul');
+    notice.className='recording-inventory-notice recording-guide';notice.dataset.overviewKey='issues';notice.open=expanded.get('issues')??false;
+    title.textContent=`${overview.inventoryIssues.length} inventory ${overview.inventoryIssues.length===1?'issue':'issues'}`;
+    for(const issue of overview.inventoryIssues){const item=document.createElement('li');item.textContent=issue;list.append(item);}
+    notice.append(title,list);nodes.push(notice);
   }
   const accounting=document.createElement('details'),accountingTitle=document.createElement('summary'),accountingText=document.createElement('p');
-  accounting.className='recording-reading-details';accounting.dataset.overviewKey='counting';accounting.open=expanded.get('counting')??false;
-  accountingTitle.textContent='About counts and selected history';accountingText.textContent='Stored source counts include retained evidence excluded by recovery corrections. Selected chart history can contain fewer records. Learning journal counts describe the selected model history. Dataset counts may overlap and should not be added together.';accounting.append(accountingTitle,accountingText);
+  accounting.className='recording-reading-details recording-guide';accounting.dataset.overviewKey='counting';accounting.open=expanded.get('counting')??false;
+  accountingTitle.textContent='About counts and selected history';accountingText.textContent='Complete counts and dates are measured separately. Empty datasets remain available below. Stored source counts include retained evidence excluded by recovery corrections. Selected chart history can contain fewer records. Learning journal counts describe the selected model history. Dataset counts may overlap and should not be added together.';accounting.append(accountingTitle,accountingText);
+  if(overview.summary){const explanation=document.createElement('p');explanation.textContent=overview.summary;accounting.append(explanation);}
   const groups=overview.groups??[],emptyItem=item=>item.status==='empty'&&item.count===0;
   const populated=groups.filter(group=>group.items?.some(item=>!emptyItem(item)));
   const emptyGroups=groups.filter(group=>!populated.includes(group));
   const totals=groups.flatMap(group=>group.items??[]);
-  const counts=document.createElement('p');counts.className='recording-inventory-counts';
+  const counts=document.createElement('p');counts.className='recording-section-caption recording-inventory-counts';
   const datasetCounts=items=>{const present=items.filter(item=>Number.isSafeInteger(item.count)&&item.count>0).length,empty=items.filter(emptyItem).length;
     return `${present} with records${empty?` · ${empty} empty`:''}${items.length-present-empty?` · ${items.length-present-empty} counts unavailable`:''}`;};
   const measured=totals.some(item=>Number.isSafeInteger(item.count));
-  counts.textContent=measured?`Datasets: ${datasetCounts(totals)}. Empty datasets remain available below.`:`${integerLabel(totals.length)} dataset descriptions · Counts and recorded dates have not been measured.`;nodes.push(counts,accounting);
+  counts.textContent=measured?`Datasets · ${datasetCounts(totals)}`:`${integerLabel(totals.length)} datasets · Counts and dates not measured`;const heading=document.createElement('div'), action=document.createElement('a');
+  heading.className='recording-section-intro';heading.dataset.overviewKey='inventory-action';
+  action.className='recording-task-link';action.href='#recording-storage-details';action.dataset.recordingOpen='recording-storage-details';
+  action.textContent='Measure complete inventory →';heading.append(counts,action);nodes.unshift(heading);nodes.push(accounting);
   const emptyGroupDetails=document.createElement('details');emptyGroupDetails.className='recording-empty-datasets';emptyGroupDetails.dataset.overviewKey='empty-groups';
   const emptyGroupTitle=document.createElement('summary');emptyGroupTitle.textContent=`Show empty dataset groups · ${emptyGroups.length}`;emptyGroupDetails.append(emptyGroupTitle);
   for(const group of [...populated,...emptyGroups]) {
@@ -352,7 +359,7 @@ export function renderRecordingOverview(overview,root) {
   }
   root.replaceChildren(...nodes);
   if(focusedKey) {
-    const target=[...root.querySelectorAll('[data-overview-key]')].find(node=>node.dataset.overviewKey===focusedKey)?.querySelector('summary')??root.querySelector('summary');
+    const target=[...root.querySelectorAll('[data-overview-key]')].find(node=>node.dataset.overviewKey===focusedKey)?.querySelector('summary, a')??root.querySelector('summary');
     // A dataset can move into or out of the empty disclosure between scans.
     // Its focused summary must remain reachable after that regrouping.
     for(let ancestor=target?.parentElement?.parentElement?.closest('details');ancestor&&root.contains(ancestor);ancestor=ancestor.parentElement?.closest('details'))ancestor.open=true;
@@ -620,7 +627,7 @@ export function renderEnergyAudits(rows, root) {
   }
   nodes.push(disclosure('method', 'How comparisons work', [
     'Property and Charger 1 compare stored phase-energy totals, estimated by integrating power, with meter references over matching periods. Charger 2 records lifetime meter increments directly; only the phase split is estimated, so it has no equivalent integration check.',
-    'Only matching periods with complete recording are compared. Percentages use the summed recorded and metered energy, so larger sessions contribute more. Gaps stay excluded. Dates and times are Finnish time.',
+    'The Property check uses the latest comparable meter interval wholly inside the selected dates. Charger 1 includes finalized sessions wholly inside those dates; sessions crossing a boundary are omitted. Only matching periods with complete recording are compared. Percentages use the summed recorded and metered energy, so larger sessions contribute more. Gaps stay excluded. Dates and times are Finnish time.',
     'These checks are read-only. They do not change recorded history, calibrate estimates, train the house model or adjust recording thresholds.',
   ]));
   root.replaceChildren(...nodes);
@@ -635,7 +642,7 @@ export function renderEnergyAuditView(view,root) {
   const summary=view?.latest?.summary,reading=summary?.latestReading;
   const checking=['queued','running'].includes(view?.job?.state),noReadings=summary?.status==='no-readings';
   const latest=document.createElement('section');latest.className='energy-check-latest';latest.setAttribute('aria-label','Latest property meter reading');
-  const label=document.createElement('p');label.textContent='Latest property meter';
+  const label=document.createElement('p');label.textContent=view?.range?'Latest property meter in selected period':'Latest property meter';
   const value=document.createElement('strong');
   value.textContent=reading?checkEnergy(reading.valueKwh):noReadings?'No readings recorded':checking?'Checking recorded meter…':'Not checked';
   const time=document.createElement('time');

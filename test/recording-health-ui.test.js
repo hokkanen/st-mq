@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRecordingHealth, recordingHealthView, recordingEvidenceTime, backupCheckFailure, storageBytes } from '../chart/recording-health.js';
 import { createStorageOperationHealth, STORAGE_OPERATION_KINDS } from '../src/storage/operation-health.js';
-import { storagePerformanceView, storageDuration, storageOperationsView, storageProblemSummary, storageSchedulingView } from '../chart/storage-health.js';
+import { storagePerformanceView, storageDuration, storageOperationsView, storageProblemSummary, storageProblemDetails, storageSchedulingView } from '../chart/storage-health.js';
 import { storageHealthFixture } from './helpers/storage-health-fixture.js';
 
 const now = Date.parse('2026-10-07T12:00:00Z');
@@ -975,7 +975,8 @@ test('storage problems use safe labels, preserve blocked commands and distinguis
   assert.match(row.children[3].textContent, /Saving resumed.*does not establish recovery/);
   history.windows.day.incidents = [];
   dashboard.panel.update({ recordingHealth: value });
-  assert.equal(dashboard.element('recording-performance-incidents').hidden, true);
+  assert.equal(dashboard.element('recording-performance-incidents').hidden, false);
+  assert.match(dashboard.element('recording-performance-undated-problems').children.map(node => node.textContent).join(' '), /failed queued operation/);
 });
 
 test('all four collapsed health areas explicitly label retained evidence after a failed or stale check', async () => {
@@ -1353,4 +1354,42 @@ test('server-save and browser-transfer failure receipts name their independent o
   const both = recordingHealthView(health({ backup }), undefined, now);
   assert.equal(both.backup.label, 'Save and download failed');
   assert.match(both.backup.activity, /Server save failed.*Browser transfer failed/);
+});
+
+test('undated storage problems name each counter separately inside the existing fold', () => {
+  const history = performanceHistory(), value = health({ recording: { history } });
+  Object.assign(history.windows.day, { failedJobs: 1, postCommitFailures: 0, backgroundFailedJobs: 2, failedWrites: 1 });
+  const view = storageProblemDetails(value, 'day', { now });
+  assert.deepEqual(view.undatedProblems, [
+    '1 failed save. Individual dates and causes are unavailable.',
+    '1 failed queued operation. Individual dates and causes are unavailable.',
+    '2 failed background operations. Individual dates and causes are unavailable.',
+  ]);
+  assert.equal(storagePerformanceView(value, 'day', { now }).state, 'Caught up');
+  const dashboard = panelFixture(); dashboard.panel.update({ recordingHealth: value });
+  assert.equal(dashboard.element('recording-performance-incidents').hidden, false);
+  assert.equal(dashboard.element('recording-performance-undated-problems').children.length, 3);
+  assert.match(dashboard.element('recording-performance-problem-period').textContent, /Past day/);
+  assert.equal(storageProblemDetails(value, 'day', { now, unavailable: true }).undatedProblems.length, 3);
+  delete history.windows.week;
+  const fallback = storageProblemDetails(value, 'week', { now });
+  assert.equal(fallback.period, 'day'); assert.match(fallback.explanation, /selected past week is unavailable/);
+  history.windows.week = { ...history.windows.day, failedJobs: 3 };
+  assert.match(storageProblemDetails(value, 'week', { now }).undatedProblems[1], /3 failed queued operations/);
+});
+
+test('local task counters without dated receipts remain visible and known zeroes do not invent problems', () => {
+  let tick = 0;
+  const observer = createStorageOperationHealth({ clock: () => now - 1000 + tick, monotonic: () => tick });
+  const task = observer.begin('backup'); tick = 100; task.finish('failed'); tick = 1000;
+  const operations = observer.status();
+  const backup = operations.coverage.find(row => row.kind === 'backup');
+  backup.day.lastProblem = null;
+  const value = health({ operations });
+  const view = storageProblemDetails(value, 'day', { now });
+  assert.deepEqual(view.undatedProblems, ['Database copy creation: 1 failed task. Individual dates and causes are unavailable.']);
+  backup.day.failed = 0;
+  assert.deepEqual(storageProblemDetails(value, 'day', { now }).undatedProblems, []);
+  backup.day.failed = null;
+  assert.deepEqual(storageProblemDetails(value, 'day', { now }).undatedProblems, []);
 });

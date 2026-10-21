@@ -36,7 +36,7 @@ const preview = { previewId, status: 'checked',
       { signal: 'indoor_temperature',basis: 'receipt-coverage',reason: 'stale',status: 'stale',
         from: Math.floor(now / 1000) * 1000 - 100000,to: Math.floor(now / 1000) * 1000 - 99750,potentialCoverage: true },
     ] } } };
-let app, server, browser, socket, sequence = 0, admin = true, topology = 'standalone', peer = null, finishExport, recoveryReads = 0, verificationReads = 0;
+let app, server, browser, socket, sequence = 0, admin = true, topology = 'standalone', peer = null, finishExport, recoveryReads = 0, verificationReads = 0, energyReads = 0, energyRefreshes = 0;
 let recovery = { available: true, readOnly: false, busy: false, job: null, preview: null, sources: [source], nextBefore: '10:old-operation',
   operations: [{ id: 'old-operation', startedAt: now - 86400000, source: { label: 'Earlier backup' }, active: true, status: 'interrupted', canRevert: true,
     contributions: 9, period: { from: now - 259200000, to: now - 172800000 } }] };
@@ -100,10 +100,11 @@ try {
         }, 100);
         return json(202, { ...recovery, peer });
       }
-      if(request.url==='/api/recording-overview'&&request.method==='POST'){
+      if(request.url.startsWith('/api/energy-audits')) { if(request.method==='GET') energyReads++; else energyRefreshes++; }
+      if((request.url==='/api/recording-overview'||request.url.startsWith('/api/energy-audits'))&&request.method==='POST'){
         const chunks=[];for await(const chunk of request)chunks.push(chunk);
         const body=JSON.parse(Buffer.concat(chunks));
-        assert.deepEqual(Object.keys(body),['action']);assert(['measure','cancel'].includes(body.action));
+        assert.deepEqual(Object.keys(body),['action']);assert(['measure','refresh','cancel'].includes(body.action));
         const result=await fetch(`${upstream}${request.url}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
         return json(result.status,await result.json());
       }
@@ -159,6 +160,21 @@ try {
   assert.equal(await evaluate(`${$('history-recovery-open')}.checkVisibility()`), false, 'Recovery does not escape the closed recording fold');
   await evaluate(`${$('recording-details')}.open = true; true`);
   assert.equal(await evaluate(`${$('recording-growth-retained')}.textContent`), 'Not checked', 'Opening Recording details alone leaves the full inventory lazy');
+  assert.equal(energyReads,0,'Energy history stays lazy until its own fold opens');
+  await evaluate(`${$('energy-audit-details')}.open=true;true`);
+  await until(`${$('energy-audit-message')}.textContent.includes('Recorded energy checks ready')`);
+  assert.equal(await evaluate(`!!${$('energy-audit-details')}.querySelector('progress')`),false);
+  const firstEnergy = energyReads;
+  await pause(4300);
+  assert.equal(energyReads,firstEnergy,'Completed checks do not poll or start repeated work');
+  await evaluate(`${$('energy-check-period-month')}.click();true`);
+  await until(`${$('energy-audit-message')}.textContent.includes('Recorded energy checks ready')`);
+  assert(energyReads>firstEnergy,'A period change requests its own check');
+  await evaluate(`${$('energy-audit-refresh')}.click();true`);
+  await until(`${$('energy-audit-message')}.textContent.includes('Recorded energy checks ready') && !${$('energy-audit-refresh')}.disabled`);
+  assert.equal(energyRefreshes,1,'Explicit refresh reaches the current read-only action');
+  await evaluate(`${$('energy-audit-details')}.open=false;true`);
+
   await evaluate(`${$('recording-disk-card')}.open = true; true`);
   await until(`${$('recording-overview-message')}.textContent.includes('Dataset descriptions')`);
   await evaluate(`${$('recording-overview-refresh')}.click(); true`);

@@ -50,9 +50,9 @@ function comparisonRaw(encoded) {
     'timeAdmission', 'transport', 'pending'];
   return JSON.stringify(Object.fromEntries(fields.filter(key => Object.hasOwn(raw, key)).map(key => [key, raw[key]])));
 }
-function preview(now) {
-  const row = evidence.prepare(`SELECT * FROM active_energy_audits WHERE signal=? AND source_time<=? AND received_at<=?
-    ORDER BY received_at DESC,id DESC LIMIT 1`).get(SIGNAL, now, now);
+function preview(now, range) {
+  const row = evidence.prepare(`SELECT * FROM active_energy_audits WHERE signal=? AND source_time>=? AND source_time<=? AND received_at<=?
+    ORDER BY received_at DESC,id DESC LIMIT 1`).get(SIGNAL, range?.from ?? 0, Math.min(now, range?.to ?? now), now);
   if (!row) return { kind: 'property-meter-summary', signal: SIGNAL, summary: { status: 'no-readings', readingCount: 0,
     latestReading: null, previousReading: null, coverage: null, comparison: null, lastSuccessfulComparison: null } };
   return { kind: 'property-meter-summary', signal: SIGNAL, summary: { status: 'comparison-pending', readingCount: null,
@@ -85,7 +85,7 @@ function appendOnly(head) {
   }
 }
 
-parentPort.on('message', ({ id, now, checkpoint }) => {
+parentPort.on('message', ({ id, now, checkpoint, range }) => {
   setStorageRequestActive(true);
   let processed = 0, progressAt = 0;
   const progress = (stage, force = false) => {
@@ -118,7 +118,7 @@ parentPort.on('message', ({ id, now, checkpoint }) => {
       } finally { evidence.exec('COMMIT'); }
       cursors.audits = rows.at(-1).id; processed += rows.length; progress('reading-meter-history');
     }
-    parentPort.postMessage({ id, latest: preview(now) });
+    parentPort.postMessage({ id, latest: preview(now, range) });
     progress('reading-recorded-energy', true);
     const observations = source.prepare(`SELECT id,source,device,signal,value,unit,source_time,received_at,quality,raw,import_id,
       ${selectedHistoryPredicate('observations', 'r')} selected FROM observations r INDEXED BY observations_signal_id
@@ -167,7 +167,7 @@ parentPort.on('message', ({ id, now, checkpoint }) => {
     previous = { head, selection, now, audits: heads.audits ?? 0,
       observations: heads.observations ?? 0, events: heads.events ?? 0 };
     progress('comparing-energy', true);
-    const result = energyCheckSummaries({ db: evidence }, { now });
+    const result = energyCheckSummaries({ db: evidence }, { now, range });
     const evidenceBytes = evidence.prepare('PRAGMA page_count').get().page_count
       * evidence.prepare('PRAGMA page_size').get().page_size;
     parentPort.postMessage({ id, result, evidenceBytes, evictEvidence: evidenceBytes > workerData.evidenceCacheBytes });

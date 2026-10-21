@@ -83,3 +83,24 @@ test('client permits only the current diagnostic actions without relaxing equipm
   }
   assert.throws(() => assertDashboardWrite('/api/equipment/switch', { on: true }, status));
 });
+
+test('energy dates are validated for both access roles and retained for read-only refresh actions', async t => {
+  const seen = [];
+  const { request } = await fixture(t, { chartService: {
+    overview: async () => ({}),
+    energyChecks: async args => { seen.push(args); return {}; },
+    energyChecksAction: async (input, args) => { seen.push(args); return {}; },
+  } });
+  const path = '/api/energy-audits?start=2026-10-15&end=2026-10-21';
+  for (const token of [admin, family]) {
+    assert.equal((await request(path, undefined, token)).status, 200);
+    assert.equal((await request(path, { action: 'refresh' }, token)).status, 200);
+    assert.equal(webRequestAllowed({ role: token === admin ? 'admin' : 'family' }, path, { action: 'refresh' }), true);
+    assert.doesNotThrow(() => assertDashboardWrite(path, { action: 'refresh' }, { replica: { role: 'slave' } }));
+  }
+  assert(seen.every(args => args.startDate === '2026-10-15' && args.endDate === '2026-10-21'));
+  for (const query of ['start=2026-10-15', 'start=2026-10-15&end=2026-10-14', 'start=2026-02-30&end=2026-03-01',
+    'start=2026-01-01&start=2026-02-01&end=2026-03-01', 'start=2026-01-01&end=2026-01-02&refresh=true'])
+    assert.equal((await request(`/api/energy-audits?${query}`)).status, 400);
+  assert.equal(seen.length, 4);
+});

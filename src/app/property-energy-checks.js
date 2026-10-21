@@ -39,10 +39,10 @@ function latestComparison(store,pairs,now) {
 // Delayed readings and changed values at an existing timestamp remain visible,
 // but cannot replace the comparison baseline. SQLite owns the ordered cursor;
 // the worker uses file-backed temporary storage if ordering needs a sort.
-function* comparisonPairs(store,latest,now) {
+function* comparisonPairs(store,latest,now,range) {
   let highest=null;
   for(const row of store.db.prepare(`SELECT * FROM active_energy_audits AS energy_audits WHERE source=? AND device=? AND signal=?
-    AND source_time<=? AND received_at<=? ORDER BY received_at,id`).iterate(latest.source,latest.device,SIGNAL,now,now)) {
+    AND source_time>=? AND source_time<=? AND received_at<=? ORDER BY received_at,id`).iterate(latest.source,latest.device,SIGNAL,range?.from ?? 0,Math.min(now,range?.to ?? now),now)) {
     if(row.id!==latest.id&&highest&&row.source_time>highest.source_time&&row.value>=highest.value)
       yield {row,previous:highest};
     if(!highest||row.source_time>highest.source_time)highest=row;
@@ -53,11 +53,11 @@ function* comparisonPairs(store,latest,now) {
  * contains only counter values, timestamps and interval evidence; equipment and
  * provider identifiers stay inside the database queries.
  */
-export function propertyEnergyCheckSummary(store, { now = Date.now() } = {}) {
+export function propertyEnergyCheckSummary(store, { now = Date.now(), range = null } = {}) {
   if (!Number.isSafeInteger(now) || Math.abs(now) > 8640000000000000)
     throw new TypeError('Property checks require a valid receipt cutoff');
-  const latest = store.db.prepare(`SELECT * FROM active_energy_audits AS energy_audits WHERE signal=? AND source_time<=? AND received_at<=?
-    ORDER BY received_at DESC,id DESC LIMIT 1`).get(SIGNAL,now,now);
+  const latest = store.db.prepare(`SELECT * FROM active_energy_audits AS energy_audits WHERE signal=? AND source_time>=? AND source_time<=? AND received_at<=?
+    ORDER BY received_at DESC,id DESC LIMIT 1`).get(SIGNAL,range?.from ?? 0,Math.min(now,range?.to ?? now),now);
   const summary = { status:'no-readings', readingCount:0, latestReading:null, previousReading:null,
     coverage:null, comparison:null, lastSuccessfulComparison:null };
   const result = { kind:'property-meter-summary', signal:SIGNAL, summary };
@@ -66,9 +66,10 @@ export function propertyEnergyCheckSummary(store, { now = Date.now() } = {}) {
   // A successful latest period needs only an aggregate count and its baseline,
   // never every historical counter materialized as JavaScript objects.
   summary.readingCount=store.db.prepare(`SELECT COUNT(*) AS count FROM active_energy_audits AS energy_audits
-    WHERE source=? AND device=? AND signal=? AND source_time<=? AND received_at<=?`)
-    .get(latest.source,latest.device,SIGNAL,now,now).count;
-  const previous=previousEnergyAudit(store,latest,now);
+    WHERE source=? AND device=? AND signal=? AND source_time>=? AND source_time<=? AND received_at<=?`)
+    .get(latest.source,latest.device,SIGNAL,range?.from ?? 0,Math.min(now,range?.to ?? now),now).count;
+  const candidate=previousEnergyAudit(store,latest,now);
+  const previous=candidate && (!range || candidate.source_time >= range.from) ? candidate : null;
   summary.latestReading = reading(latest);
   summary.previousReading = reading(previous);
   Object.assign(summary,checkEnergyAudit(store,latest,previous,now));
@@ -77,6 +78,6 @@ export function propertyEnergyCheckSummary(store, { now = Date.now() } = {}) {
 
   // No page limit can hide a valid result. Stream older counters and energy
   // together once, keeping memory bounded even across a long run of gaps.
-  summary.lastSuccessfulComparison=latestComparison(store,comparisonPairs(store,latest,now),now);
+  summary.lastSuccessfulComparison=latestComparison(store,comparisonPairs(store,latest,now,range),now);
   return result;
 }

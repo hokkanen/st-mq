@@ -367,3 +367,30 @@ test('energy HTTP responses retain replica context and reject revoked access bef
   assert.deepEqual(await denied.json(), { error: 'Direct web access is disabled' });
   assert.equal(released, 1);
 });
+
+test('date-scoped jobs share bounded work without cancelling another period or automatically refreshing results', async t => {
+  const { store, service } = fixture(t);
+  counters(store, 3); energy(store, start, start + 1000);
+  recordChargingSessionCheck(store, { source: 'easee', sessionKey: 'range-included', start, end: start + 1000,
+    estimatedKwh: 1, referenceKwh: 1, complete: true });
+  recordChargingSessionCheck(store, { source: 'easee', sessionKey: 'range-crossing', start: start - 86400_000,
+    end: start + 1000, estimatedKwh: 2, referenceKwh: 2, complete: true });
+  const args = { now: start + 4 * 86400_000, startDate: '2026-09-01', endDate: '2026-09-01' };
+  const other = { ...args, startDate: '2026-09-02', endDate: '2026-09-02' };
+  const first = await service.view(args), waiting = await service.view(other);
+  assert.equal(waiting.job.id, first.job.id); assert.equal(waiting.waitingForPeriod, true);
+  assert.equal((await service.action({ action: 'cancel' }, other)).job.id, first.job.id);
+  const completed = await finished(service, args);
+  assert.equal(completed.result[1].summary.recordedSessions, 1);
+  const unchanged = await service.view({ ...args, now: args.now + 120_000 });
+  assert.equal(unchanged.job.id, first.job.id); assert.equal(unchanged.resultAsOf, args.now);
+  const changed = await finished(service, other);
+  assert.notEqual(changed.job.id, first.job.id);
+  assert.equal(changed.result[0].summary.status, 'no-readings');
+  assert.equal(changed.result[1].summary.recordedSessions, 0);
+  for (const [day, hours] of [['2026-03-29', 23], ['2026-10-25', 25]]) {
+    const state = await finished(service, { now: Date.parse('2026-11-01T12:00:00Z'), startDate: day, endDate: day });
+    assert.equal(state.range.to - state.range.from, hours * 3600_000);
+  }
+  await assert.rejects(service.view({ ...args, endDate: '2026-02-30' }));
+});

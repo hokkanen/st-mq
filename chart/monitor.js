@@ -25,6 +25,7 @@ import { activeRates, rateRows, temporaryValues, priceControlState, renderHomePo
 import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, h66ReadingGroups, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderRecordingOverview, recordingOverviewRefresh } from './recording.js';
 import { createEnergyChecksRefresh } from './energy-check-refresh.js';
+import { createEnergyCheckRange } from './energy-check-range.js';
 import { createRecordingHealth } from './recording-health.js';
 import './recording-health.css';
 import { bindDatabaseExport } from './database-export.js';
@@ -1355,10 +1356,12 @@ document.addEventListener('visibilitychange',()=>void refreshRecordingOverview.v
 $('recording-overview-refresh').addEventListener('click',()=>void refreshRecordingOverview({force:true}));
 $('recording-overview-cancel').addEventListener('click',()=>void refreshRecordingOverview.cancel());
 setInterval(refreshRecordingOverview,2_000);
+const energyCheckRange = createEnergyCheckRange({ document, now: () => lastStatus?.now ?? Date.now(),
+  onChange: () => void refreshAudits.changeRange() });
 const refreshAudits = createEnergyChecksRefresh({ request: recordedDataRequest,
   root: $('energy-audit-content'), parent: $('recording-details'), details: $('energy-audit-details'),
   message: $('energy-audit-message'), button: $('energy-audit-refresh'), cancel: $('energy-audit-cancel'),
-  progress: $('energy-audit-progress'), detail: $('energy-audit-detail'),
+  getRange: () => energyCheckRange.selection(),
   isVisible: () => !session.locked && dashboardStatusReceived && document.visibilityState !== 'hidden' });
 function resetAudits() { refreshAudits.reset(); }
 $('energy-audit-refresh').addEventListener('click', () => void refreshAudits.measure());
