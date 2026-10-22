@@ -14,8 +14,28 @@ import { replayLearningJournal, LEARNING_WINDOW_MS } from '../src/app/committed-
 import { pairDisplay } from '../chart/pair-status.js';
 import { createAppServer } from '../src/app/server.js';
 import { derivedCacheId, matchesDerivedCacheAnchor } from '../src/storage/derived-cache-anchor.js';
+import { PairManager } from '../src/pairing/manager.js';
 
 const W = LEARNING_WINDOW_MS, now = Date.parse('2026-01-09T12:00Z');
+
+test('initializing pair status identifies its configured pair without inventing authority', () => {
+  const status = PairManager.prototype.status.call({ config: { pairId: 'synthetic-initializing-pair' }, state: { value: null } });
+  assert.equal(status.pairId, 'synthetic-initializing-pair');
+  assert.equal(status.role, 'protected'); assert.equal(status.canControl, false);
+  assert.equal(status.phase, 'initializing'); assert.equal(status.busy, true);
+});
+
+test('the real paired runtime API exposes configured pair identity without changing peer claims or authority', { timeout: 30_000 }, async t => {
+  const f = await fixture(t), app = await f.open('status-identity', 'slave', 'ubuntu');
+  const response = await fetch(`${url(app)}/api/pair`, { signal: t.signal });
+  assert.equal(response.status, 200);
+  const status = await response.json();
+  assert.equal(status.pairId, app.pair.config.pairId);
+  assert.equal(status.pairId, app.pair.state.value.pairId);
+  assert.equal(status.nodeId, app.pair.state.value.nodeId);
+  assert.equal(status.role, 'slave'); assert.equal(status.canControl, false);
+  assert.equal(Object.hasOwn(app.pair.state.claim(), 'pairId'), false, 'Web status identity does not alter the encrypted peer claim contract');
+});
 
 test('a read-only paired viewer registers only derived cache proofs through its current writable peer', {timeout:30_000},async t=>{
   const f=await fixture(t),primary=await f.open('cache-primary','master','hassio'),secondary=await f.open('cache-secondary','slave','ubuntu');

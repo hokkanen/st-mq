@@ -26,7 +26,10 @@ try {
    while(true){const{done,value}=await reader.read();if(done)break;bytes+=value.byteLength;if(bytes>1048576){await reader.cancel();throw Error();}chunks.push(Buffer.from(value));}
    const p=JSON.parse(Buffer.concat(chunks).toString('utf8'));
    if(!p || typeof p!=='object' || Array.isArray(p))throw Error();
-   const pair={};for(const key of ['role','nodeId','pairId','canControl','busy','phase','bootstrapPending'])pair[key]=p[key];
+   // Pair identity belongs to this host's validated configuration. Runtime
+   // authority and node identity come from the authenticated owned listener.
+   if(typeof config.pair?.pairId!=='string'||!config.pair.pairId)throw Error();
+   const pair={pairId:config.pair.pairId};for(const key of ['role','nodeId','canControl','busy','phase','bootstrapPending'])pair[key]=p[key];
    pair.error=p.error==null?null:'present';pair.vip={owned:p.vip?.owned};
    pair.peer={};for(const key of ['nodeId','role','reachable','lastSeenAt'])pair.peer[key]=p.peer?.[key];
    pair.sync={state:p.sync?.state,error:p.sync?.error==null?null:'present'};

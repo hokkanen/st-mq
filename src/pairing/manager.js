@@ -391,7 +391,7 @@ export class PairManager {
 
   status() {
     const local = this.state.value;
-    if (!local) return { role: 'protected', canControl: false, busy: true, phase: 'initializing', actions: {} };
+    if (!local) return { pairId: this.config.pairId, role: 'protected', canControl: false, busy: true, phase: 'initializing', actions: {} };
     const recovery = this.publicRecovery();
     const primary = local.role === 'master' && this.canControl();
     const bootstrapPending = canBootstrap(local);
@@ -399,7 +399,7 @@ export class PairManager {
     const checked = local.recovery?.metadata?.claim;
     const protectedDonor = recovery.donorRole === 'protected' && (!this.peerState.reachable
       || this.peerState.role === 'protected' && this.peerState.nodeId === checked?.nodeId && this.peerState.epoch === checked?.epoch);
-    return { ...this.state.claim(), canControl: this.canControl(), busy: this.busy, bootstrapPending,
+    return { ...this.state.claim(), pairId: this.config.pairId, canControl: this.canControl(), busy: this.busy, bootstrapPending,
       phase: this.phase, error: this.error, vip: this.vip.status(), peer: { ...this.peerState },
       sync: { ...this.sync, error: this.sync.error ?? this.peerPollError },
       recovery, recentActions: local.actions.map(({ requestId, name, state, error, startedAt, finishedAt }) =>

@@ -9,6 +9,10 @@ import { main, LinuxDeploymentError, validateConnection, validateEnvironment, pa
   privateFile, readPair, canonical, checkoutRoot, validateInstalledRuntime } from '../scripts/lib/linux-deployment.js';
 
 import { validateStandby } from '../scripts/lib/paired-deployment.js';
+import { PairManager } from '../src/pairing/manager.js';
+import { PairState } from '../src/pairing/state.js';
+import { createAppServer } from '../src/app/server.js';
+import { randomUUID } from 'node:crypto';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 function fixture(t, scope = 'user') {
@@ -355,6 +359,37 @@ test('local status authentication never follows redirects or exposes private res
   assert.equal(seen.url, f.c.status_url + '/api/pair'); assert.equal(seen.options.redirect, 'error');
   assert.equal(seen.options.headers.Authorization, 'Bearer synthetic-private-token');
   await assert.rejects(readPair(f.c, { fetchImpl: async () => { throw Error('synthetic-private-response'); } }), e => !/synthetic-private-response/.test(e.message));
+});
+
+test('deployment consumes the actual paired status producer through the authenticated application API', async t => {
+  const f = fixture(t), config = { directory: join(f.root, 'native-pair-state'), pairId: 'synthetic-api-contract-pair', platform: 'ubuntu',
+    databasePath: join(f.data, 'native-source.sqlite'), snapshotDirectory: join(f.root, 'native-snapshots'),
+    token: 'synthetic-private-peer-token-01234567890123456789', peerUrl: 'http://127.0.0.1:1', vip: {} };
+  const state = new PairState(config); await state.open(); t.after(() => state.close());
+  await state.update({ bootstrapPending: false });
+  const manager = new PairManager({ config, state, peer: {}, snapshots: {}, announcements: () => null,
+    vip: { status: () => ({ owned: false, ready: false, error: null }) } });
+  manager.recordPeerStatus({ nodeId: randomUUID(), platform: 'hassio', role: 'master', epoch: randomUUID(), sequence: 0, ancestors: [] }, { state: 'ready' });
+  manager.sync = { state: 'ready', sourceAt: Date.now(), verifiedAt: Date.now(), lastSuccessAt: Date.now(), error: null };
+  const token = 'synthetic-native-api-token-01234567890123456789';
+  const server = createAppServer({ token, role: 'slave', topology: 'pair', store: { getState: () => null },
+    engine: { status: () => { throw Error('The management API must not depend on dashboard storage.'); } },
+    chartService: { overview: async () => ({ rows: [] }) },
+    pairContext: { status: () => manager.status(), canControl: () => manager.canControl() } });
+  await new Promise(yes => server.listen(0, '127.0.0.1', yes));
+  t.after(() => new Promise(yes => server.close(yes)));
+  f.c.status_url = `http://127.0.0.1:${server.address().port}`;
+  f.c.token_file = join(f.secrets, 'native-api-token'); writeFileSync(f.c.token_file, token + '\n', { mode: 0o600 }); f.saveConnection();
+  assert.equal((await fetch(f.c.status_url + '/api/pair')).status, 401);
+  const native = await readPair(f.c);
+  assert.equal(native.pairId, config.pairId, 'Pair identity must come from the production status producer.');
+  assert.equal(native.nodeId, state.value.nodeId); assert.equal(native.peer.nodeId, manager.peerState.nodeId);
+  assert.equal(native.webAccess.role, 'admin'); assert.doesNotThrow(() => validateStandby(native, null, Date.now(), true));
+  assert.ok(!JSON.stringify(native).includes(config.token)); assert.ok(!JSON.stringify(native).includes(token));
+  f.deps.pair = readPair; f.deps.clock = Date.now;
+  await f.setup(); f.update(); await f.invoke('deploy');
+  assert.equal(f.state.active, true); assert.equal(f.state.helperCalls.length, 1);
+  const ready = await readPair(f.c); assert.doesNotThrow(() => validateStandby(ready, native, Date.now(), true));
 });
 
 test('command timeout and cancellation reap the child without leaking output', async () => {

@@ -12,9 +12,9 @@ test('HA container probe reads authenticated synthetic status only from the expe
   const directory = mkdtempSync(join(tmpdir(), 'ha-runtime-probe-'));
   mkdirSync(join(directory, 'src/app'), { recursive: true });
   writeFileSync(join(directory, 'package.json'), '{"type":"module"}');
-  writeFileSync(join(directory, 'src/app/config.js'), "export function loadConfig(){return{port:Number(process.env.SYNTHETIC_PORT),token:process.env.SYNTHETIC_TOKEN,host:'127.0.0.1'}};\n");
+  writeFileSync(join(directory, 'src/app/config.js'), "export function loadConfig(){return{port:Number(process.env.SYNTHETIC_PORT),token:process.env.SYNTHETIC_TOKEN,host:'127.0.0.1',pair:{pairId:'synthetic-pair'}}};\n");
   writeFileSync(join(directory, 'src/main.js'), `import{createServer}from'node:http';
-const server=createServer((req,res)=>{if(req.headers.authorization!=='Bearer '+process.env.SYNTHETIC_TOKEN){res.writeHead(401);res.end('{}');return;}res.setHeader('content-type','application/json');res.end(JSON.stringify({role:'slave',nodeId:'synthetic-node',pairId:'synthetic-pair',canControl:false,busy:false,phase:null,vip:{owned:false},peer:{nodeId:'synthetic-master',role:'master',reachable:true,lastSeenAt:Date.now()},sync:{state:'ready',error:null},privateUnrelated:'synthetic-private-detail'}));});
+const server=createServer((req,res)=>{if(req.headers.authorization!=='Bearer '+process.env.SYNTHETIC_TOKEN){res.writeHead(401);res.end('{}');return;}res.setHeader('content-type','application/json');res.end(JSON.stringify({role:'slave',nodeId:'synthetic-node',canControl:false,busy:false,phase:null,vip:{owned:false},peer:{nodeId:'synthetic-master',role:'master',reachable:true,lastSeenAt:Date.now()},sync:{state:'ready',error:null},privateUnrelated:'synthetic-private-detail'}));});
 server.listen(0,'127.0.0.1',()=>console.log(JSON.stringify({port:server.address().port})));process.on('SIGTERM',()=>server.close(()=>process.exit(0)));\n`);
   const env = { ...process.env, SYNTHETIC_TOKEN: 'synthetic-private-token' };
   const app = spawn(process.execPath, ['src/main.js'], { cwd: directory, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -28,6 +28,7 @@ server.listen(0,'127.0.0.1',()=>console.log(JSON.stringify({port:server.address(
   // Keep the test's event loop serving the synthetic app in its separate process.
   const output = probe(); const value = JSON.parse(output);
   assert.equal(value.state, 'ready'); assert.equal(value.pair.role, 'slave');
+  assert.equal(value.pair.pairId, 'synthetic-pair', 'Configured pair identity is independent of runtime authority fields');
   assert(Number.isFinite(value.observedAt)); assert(!output.includes('synthetic-private-token'));
   assert(!output.includes('synthetic-private-detail'));
   assert.equal(JSON.parse(probe({ SYNTHETIC_TOKEN: 'synthetic-wrong-token' })).state, 'error');

@@ -280,7 +280,7 @@ test('promotion probe runs against an authenticated live disposable listener and
   const directory = mkdtempSync(join(tmpdir(), 'setup-ha-promotion-'));
   mkdirSync(join(directory, 'src/app'), { recursive: true });
   writeFileSync(join(directory, 'package.json'), '{"type":"module"}');
-  writeFileSync(join(directory, 'src/app/config.js'), 'export function loadConfig(){return{port:Number(process.env.SYNTHETIC_PORT),host:"127.0.0.1",token:process.env.SYNTHETIC_TOKEN}}');
+  writeFileSync(join(directory, 'src/app/config.js'), 'export function loadConfig(){return{port:Number(process.env.SYNTHETIC_PORT),host:"127.0.0.1",token:process.env.SYNTHETIC_TOKEN,pair:{pairId:"synthetic-pair"}}}');
   writeFileSync(join(directory, 'src/main.js'), `import{createServer}from'node:http';
 let count=0;const server=createServer(async(req,res)=>{
  if(req.headers.authorization!=='Bearer '+process.env.SYNTHETIC_TOKEN){res.writeHead(401);res.end('{}');return;}
