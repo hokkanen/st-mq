@@ -21,6 +21,29 @@ async function stage(promise, label) {
   } finally { clearTimeout(timer); }
 }
 
+async function settleReceivedWork(f) {
+  const deadline = performance.now() + 10_000;
+  while (performance.now() < deadline) {
+    // Household completion can start another plan and native reconciliation
+    // after a writer barrier. Finish that received work before selecting the
+    // displayed takeover token whose publication this fixture holds below.
+    await f.settle();
+    await f.runtime.stateRefreshFlight;
+    await f.store.runWrite(() => {});
+    await new Promise(resolve => setImmediate(resolve));
+    const items = Object.values(f.runtime.chargers);
+    if (f.runtime.historyReady && f.runtime.historyFlights.size === 0
+      && !f.runtime.planningFlight && !f.runtime.stateRefreshFlight
+      && items.every(item => !item.reconcileFlight && !item.reconcileQueued && !item.reconcileAgain)
+      && f.store.canDispatch()) {
+      assert.equal(await f.runtime.chargers.charger2.adapter.waitForInputAdmission(), true);
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.fail('The fixture did not finish its received household history and native-input work');
+}
+
 async function ready(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-manual-current-plan-'));
   const store = new Store(join(directory, 'fixture.sqlite'));
@@ -32,12 +55,7 @@ async function ready(t) {
   // setting carried into a new plug or a direct edit of controller RAM.
   f.fields.current_limit = { value: 9, at: f.now, source: 'rpc' };
   await f.settle(); await store.runWrite(() => {}); await store.startWriter();
-  // Worker startup can overlap an ordinary native polling episode. Join its
-  // accepted input and already queued reconciliation before selecting the
-  // explicit action token; an active admission correctly withholds takeover.
-  await store.runWrite(() => {});
-  for (const item of Object.values(f.runtime.chargers)) await item.reconcileFlight;
-  await store.runWrite(() => {});
+  await settleReceivedWork(f);
   const before = f.view('charger2'), item = f.runtime.chargers.charger2;
   assert.equal(before.control.manualCurrentA, 9);
   assert.equal(before.control.takeover.available, true);

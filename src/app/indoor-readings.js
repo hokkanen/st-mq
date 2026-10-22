@@ -59,38 +59,57 @@ const decode = row => ({ id: row.id, source: row.source, device: row.device, sig
 
 // Probe physical source/device prefixes before the chronological lookup. A
 // missing environment/signal must not search another environment's whole past.
-function hasScopedReading(store, { signal, at, input, notBefore }) {
+function hasScopedReading(store, { signal, input }) {
   const firstSource = store.db.prepare('SELECT source FROM observations ORDER BY source LIMIT 1');
   const nextSource = store.db.prepare('SELECT source FROM observations WHERE source>? ORDER BY source LIMIT 1');
   const firstDevice = store.db.prepare('SELECT device FROM observations WHERE source=? ORDER BY device LIMIT 1');
   const nextDevice = store.db.prepare('SELECT device FROM observations WHERE source=? AND device>? ORDER BY device LIMIT 1');
-  // These clocks are residual checks: let the three physical-prefix keys seek
-  // the stream here. The following chronological lookup owns the time index.
-  const present = store.db.prepare(`SELECT 1 FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
-    WHERE o.source=? AND o.device=? AND o.signal=? AND o.value IS NOT NULL
-      AND +o.source_time>=? AND +o.source_time<=? AND +o.received_at<=?
-      AND (o.import_id IS NULL OR i.status='complete') LIMIT 1`);
+  // Check only the indexed physical prefix. A clock/quality residual here can
+  // walk the whole old stream when a new sensor boundary has no measurement.
+  // The following chronological lookup owns time and selected-history checks.
+  const present = store.db.prepare(`SELECT 1 FROM observations
+    WHERE source=? AND device=? AND signal=? LIMIT 1`);
   for (let row = input === 'simulated' ? { source: 'simulation' } : firstSource.get(); row;
     row = input === 'simulated' ? null : nextSource.get(row.source)) {
     if (input !== 'simulated' && row.source === 'simulation' || row.source === 'controller-estimate'
       || signal === 'indoor_temperature' && row.source.startsWith('husdata')) continue;
     for (let device = firstDevice.get(row.source); device; device = nextDevice.get(row.source, device.device)) {
-      if (present.get(row.source, device.device, signal, notBefore, at, at)) return true;
+      if (present.get(row.source, device.device, signal)) return true;
     }
   }
   return false;
 }
 
+// Mirror only immutable scalar exclusions in the indexed candidate query. The
+// shared JavaScript validator still owns admission, source and quality meaning.
+// JSON false/zero/empty text follow JavaScript truthiness; text "0" is not false.
+const falseyRaw = (alias, path) => `(json_type(${alias}.raw,'$.${path}') IS NULL
+  OR json_type(${alias}.raw,'$.${path}') IN ('null','false')
+  OR json_type(${alias}.raw,'$.${path}') IN ('integer','real') AND json_extract(${alias}.raw,'$.${path}')=0
+  OR json_type(${alias}.raw,'$.${path}')='text' AND json_extract(${alias}.raw,'$.${path}')='')`;
+const recordedCandidate = `o.unit IN ('degC','°C') AND o.source<>'controller-estimate'
+  AND ${falseyRaw('o', 'acquisitionOnly')} AND ${falseyRaw('o', 'auditOnly')}
+  AND COALESCE(json_type(o.raw,'$.retained'),'null')<>'true'
+  AND COALESCE(json_extract(o.raw,'$.timeBasis'),'')<>'availability-transition'
+  AND json_type(o.quality)='array'
+  AND NOT EXISTS(SELECT 1 FROM json_each(o.quality) WHERE value NOT IN (${[...ALLOWED].map(value => `'${value}'`).join(',')}))
+  AND (o.source NOT GLOB 'husdata*' OR json_type(o.raw,'$.usableForControl')='true'
+    OR EXISTS(SELECT 1 FROM json_each(o.quality) WHERE value='stale') AND NOT ${falseyRaw('o', 'verification')})`;
+
 // The writer bridge materializes iterate() results. Fetch just one candidate:
 // a larger LIMIT would scan all unrelated history trying to fill a sparse page
 // even when its first candidate is already usable. Quality remains checked here.
 function* readingCandidates(store, { signal, at, input, notBefore }) {
+  if (!HELD_TEMPERATURE_SIGNALS.includes(signal)) return;
   if (!hasScopedReading(store, { signal, at, input, notBefore })) return;
   let time = at, id = Number.MAX_SAFE_INTEGER;
   for (;;) {
     const rows = store.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
       WHERE o.signal=? AND o.source_time>=? AND (o.source_time,o.id)<=(?,?) AND o.received_at<=?
         AND o.value IS NOT NULL AND (o.import_id IS NULL OR i.status='complete')
+        AND ${recordedCandidate}
+        AND ${signal === 'indoor_temperature' ? "o.source NOT GLOB 'husdata*' AND o.value>2 AND o.value<40"
+          : ['garage_temperature', 'garage_temperature_2'].includes(signal) ? 'o.value>=-60 AND o.value<=70' : 'o.value>2 AND o.value<40'}
         AND ${input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'"}
       ORDER BY o.source_time DESC,o.id DESC LIMIT 1`).all(signal, notBefore, time, id, at);
     yield* rows;

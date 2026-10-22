@@ -493,10 +493,12 @@ function updateModern(store, reference, { from, to, now, input, voltageV, cohort
  * their affected dates. This separate forecast index never changes thermal
  * learning journals or their versioned replay. */
 export function householdReferenceIdentity(store, { now, input = 'live', timezone = TIME_ZONE }) {
-  const imports = input === 'simulated' ? '' : JSON.stringify(store.db.prepare("SELECT id,row_count,completed_at FROM active_imports AS imports WHERE status='complete' AND kind IN ('stmq','easee') ORDER BY id").all());
+  const imported = input === 'simulated' ? [] : store.db.prepare("SELECT id,kind,row_count,completed_at FROM active_imports AS imports WHERE status='complete' AND kind IN ('stmq','easee') ORDER BY id").all();
+  const imports = input === 'simulated' ? '' : JSON.stringify(imported.map(({ kind, ...row }) => row));
   // Only first-usable fallback publication changes pre-estimate CSV meaning.
   // Ordinary later estimates must not repeatedly reinterpret that archive.
-  const csvVoltageKey = input === 'simulated' ? '' : JSON.stringify(createVoltageReader(store, { input, now })(0, { allowFuture: true }));
+  const csvVoltageKey = imported.some(row => row.kind === 'easee')
+    ? JSON.stringify(createVoltageReader(store, { input, now }).firstUsable()) : '';
   const historySelection = store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation;
   const key = JSON.stringify([input, timezone, historySelection]);
   return { key, imports, csvVoltageKey, input, selection: historySelection };

@@ -217,6 +217,11 @@ first fully established per-phase database estimates as labelled retrospective
 assumptions. Later voltage changes cannot rewrite that early-CSV basis. Measured
 energy, charging progress and billed interval energy never depend on those
 retrospective voltage assumptions.
+Forecast identity reads this retrospective basis only when a completed Easee CSV
+is present. Its first per-phase estimates seek an earliest usable receipt, then
+refine that early prefix using both original clocks, preserving late-publication
+ordering, selected history and original ID ties. Ordinary later voltage history
+does not require sorting the archive to identify that fixed early-CSV basis.
 
 The household forecast selects at most 32 independent nights in each local-hour
 and 5 °C condition bucket, with at most 24 load patterns per entry. Its compact

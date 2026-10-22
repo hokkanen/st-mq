@@ -173,7 +173,7 @@ test('Charge Now API authenticates and rejects stale scope with automatic chargi
       assert.equal(accepted.request.chargeNow, true);
       assert.equal(accepted.request.sessionId, request.sessionId);
       assert.equal(accepted.request.revision, request.revision + 1);
-      assert.deepEqual(updates.at(-1).chargeNow, { connectedAt });
+      assert.deepEqual(updates.at(-1).chargeNow, { connectedAt, requestedAt: connectedAt });
       assert.equal(readChargingRuntime(store, 'charging:mqtt').chargers.charger1.request.chargeNow, true);
       assert.equal((await post(request)).status, 400, 'an old screen cannot overwrite the accepted request');
       advance(60_000); sessionAt = engine.clock();

@@ -944,14 +944,18 @@ export class Store {
   }
 
   /** Original historical episodes in ingestion order; callers reject non-increasing time. */
-  trainingRows({ afterId = 0, limit = 256 } = {}) {
+  trainingRows({ afterId = 0, throughId = Number.MAX_SAFE_INTEGER, limit = 256 } = {}) {
+    const after = integer(afterId, 'afterId'), through = integer(throughId, 'throughId'), maximum = limitValue(limit);
+    if (!this.db.prepare("SELECT 1 FROM active_imports WHERE kind='stmq' AND status='complete' LIMIT 1").get()) return [];
     return this.db.prepare(`SELECT o.id, o.source_time, o.value, o.quality, r.canonical,
       EXISTS(SELECT 1 FROM active_annotations a WHERE a.exclude_training = 1 AND a.start_at <= o.source_time
         AND (a.end_at IS NULL OR a.end_at > o.source_time)) AS annotated
-      FROM active_observations o JOIN active_imports i ON i.id = o.import_id
+      FROM observations candidate INDEXED BY observations_signal_id
+      CROSS JOIN active_observations o ON o.id=candidate.id JOIN active_imports i ON i.id = o.import_id
       JOIN active_import_rows r ON r.import_id = o.import_id AND r.row_number = o.row_number
-      WHERE o.id > ? AND o.signal = 'indoor_temperature' AND i.kind = 'stmq' AND i.status = 'complete'
-      ORDER BY o.id LIMIT ?`).all(integer(afterId, 'afterId'), limitValue(limit)).map(row => {
+      WHERE candidate.signal='indoor_temperature' AND candidate.id>? AND candidate.id<=?
+        AND i.kind = 'stmq' AND i.status = 'complete'
+      ORDER BY candidate.id LIMIT ?`).all(after, through, maximum).map(row => {
       const canonical = JSON.parse(row.canonical);
       const heatInput = canonical.find(o => o.signal === 'requested_heat_mode');
       const outdoorInput = canonical.find(o => o.signal === 'outdoor_temperature');

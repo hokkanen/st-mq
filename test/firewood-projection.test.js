@@ -213,7 +213,7 @@ test('real chart maintenance leaves source proofs and sidecar unchanged for firs
   // A queued request left by an interrupted turn is cleared once as well.
   f.projection.request('mqtt',START-2*HOUR);
   const demands=[START-2*HOUR,START,START+DAY].map(from=>({input:'mqtt',from}));
-  const maintain=()=>service.query({now:f.args.now,inputs:['mqtt'],inputClocks:{mqtt:f.args.now},demands},{operation:'maintain'});
+  const maintain=()=>service.query({now:f.args.now,inputs:['mqtt'],demands},{operation:'maintain'});
   await maintain();
   assert.equal(f.projection.requested('mqtt'),null);
   const head=f.source.db.prepare('SELECT sequence FROM journal_meta WHERE id=1').get().sequence;

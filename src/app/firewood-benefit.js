@@ -5,9 +5,9 @@ import { learningPrefixRanges } from '../recovery/learning-prefix.js';
 import moment from 'moment-timezone';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint, thermalEvidenceReady, fireplaceEvidenceReady } from '../control/adaptive-learning.js';
 import { LEARNING_ALGORITHM, learningVersion, validLearningCheckpoint } from './committed-learning.js';
-import { fireplaceLearningContext,fireplaceWindowContext } from './fireplace-inputs.js';
+import { fireplaceLearningContext,fireplaceWindowContext,unchangedFireplacePrefix } from './fireplace-inputs.js';
 import { fireplaceIntegral, fireplaceBurnGroups, FIREPLACE_HORIZON_MS } from '../domain/fireplace.js';
-import { firewoodScenarios, advanceFirewoodPair } from '../domain/firewood-benefit.js';
+import { firewoodScenarios, advanceFirewoodPair, firewoodSimulationIdentity } from '../domain/firewood-benefit.js';
 import { decodeLearningCheckpoint, withLearningCheckpointRead } from '../storage/learning-checkpoint-storage.js';
 
 const HOUR = 3_600_000, DAY = 24 * HOUR, WINDOW = 15 * 60_000;
@@ -67,6 +67,17 @@ function latestSampleAt(store, input, head, through) {
   const times = learningPrefixRanges(store.db, input, epoch, head).map(range =>
     query.get(range.sourceEpoch, input, through, LEARNING_ALGORITHM, range.after, range.through)?.at).filter(finite);
   return times.length ? Math.max(...times) : 0;
+}
+
+/** Locate newly eligible rows through their original clock, without searching
+ * the earlier archive. Their source order determines how far to rewind. */
+function firstActivatedEntry(store, input, head, from, through) {
+  const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
+  const query = store.db.prepare(`SELECT MIN(id) id FROM learning_journal_entries INDEXED BY learning_entries_epoch_time
+    WHERE epoch=? AND input=? AND at>=? AND at<=? AND +id>? AND +id<=?`);
+  const ids = learningPrefixRanges(store.db, input, epoch, head).map(range =>
+    query.get(range.sourceEpoch, input, from, through, range.after, range.through)?.id).filter(Number.isSafeInteger);
+  return ids.length ? Math.min(...ids) : null;
 }
 
 function empty(range, now, context, reason) {
@@ -144,7 +155,10 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
     try {
       const saved=checkpointRow?decodeLearningCheckpoint(store.db,JSON.parse(checkpointRow.value)):null;
       const tailRow=saved?.journalCursor?store.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id=?').get(input,saved.journalCursor):null;
-      if(tailRow&&validLearningCheckpoint(saved,decode(tailRow))&&(saved.fireplaceRevision??0)===context.fireplaceRevision)
+      const unchanged = saved && ((saved.fireplaceRevision ?? 0) === context.fireplaceRevision
+        || unchangedFireplacePrefix(store, input, { fromRevision: saved.fireplaceRevision ?? 0,
+          toRevision: context.fireplaceRevision, cursor: saved.journalCursor }));
+      if(tailRow&&validLearningCheckpoint(saved,decode(tailRow))&&unchanged)
         checkpoint={model:saved.model,learningConfiguration:saved.learningConfiguration,configVersion:saved.configVersion};
     } catch { /* Damaged snapshots cannot supply authoritative model evidence. */ }
     verifiedModels.set(store.db,{value:checkpointRow?.value,revision:context.fireplaceRevision,checkpoint});
@@ -166,6 +180,7 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
   const invalidModel = normalized.health.reason === 'invalid-checkpoint-model';
   if (invalidModel) checkpoint = null;
   const trainedAt = time(model.trainedAt);
+  const evidenceAfter = finite(trainedAt) ? trainedAt : null;
   const assumptions = new Set(result.summary.assumptions);
   assumptions.add('Current corrected estimate under the same normal heating policy with and without all logged fires; actual controller demand is not held fixed.');
   assumptions.add('Scenario range varies fireplace gain, house response and nominal compressor power; it is not a confidence interval.');
@@ -176,12 +191,22 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
   const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
   const selection = store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get()?.generation;
   const signature = createHash('sha256').update(JSON.stringify([LEARNING_ALGORITHM, input, epoch, selection,
-    context.fireplaceRevision, model, checkpoint?.configVersion ?? null, checkpoint?.learningConfiguration ?? null,
+    firewoodSimulationIdentity(model), checkpoint?.configVersion ?? null, checkpoint?.learningConfiguration ?? null,
     Boolean(checkpoint), invalidModel, projection?.cacheId, process.versions.node, process.versions.v8, process.platform, process.arch])).digest('hex');
   let resume = null, generation;
   if (projection) {
     generation = projection.generation(input,signature,store.db,bounds.id,now,_build);
     if(generation.notReady) {const pending=empty(range,now,context,'The firewood comparison is preparing its current-model history in the background.');pending.summary.preparing=true;return pending;}
+    if (generation.next_at !== null && generation.next_at !== undefined && generation.next_at <= through) {
+      if (!_build) {
+        const pending=empty(range,now,context,'The firewood comparison is preparing newly available inputs.');
+        pending.summary.preparing=true;return pending;
+      }
+      const activated = firstActivatedEntry(store, input, bounds.id, generation.next_at, through);
+      if (activated !== null) projection.rewind(input, activated, { sourceDb: store.db });
+      else projection.invalidate(input);
+      generation = projection.generation(input,signature,store.db,bounds.id,now,_build);
+    }
     const last = projection.latest(input);
     if (last && generation.head < bounds.id) {
       const additions = learningJournalRows(store.db,{input,after:generation.head,limit:129});
@@ -209,6 +234,13 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
     }
     const wanted=projection.requested(input);
     resume = _build ? wanted===null?projection.latest(input):projection.nearest(input,wanted) : projection.nearest(input,before);
+    if (resume && resume.state.evidenceAfter !== evidenceAfter && evidenceAfter !== null && resume.at > evidenceAfter) {
+      // Evidence cells can straddle a training boundary. Resume before it and
+      // accumulate original complete segments again; never prorate old cells.
+      const previous = projection.nearest(input, evidenceAfter);
+      if (_build) projection.rewind(input, (previous?.cursor ?? 0) + 1, { sourceDb: store.db });
+      resume = previous;
+    }
     const requiredBefore=Math.min(before,committedThrough);
     if (!_build && (resume ? requiredBefore-resume.at>MAX_PREFIX_TAIL : requiredBefore-first.at>MAX_PREFIX_TAIL)) {
       projection.request(input,before);
@@ -223,6 +255,7 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
     const end=_build?Math.max(beginning,...batch.filter(row=>row.at<=through).map(row=>row.at)):through;
     context=projection.context(input,beginning,end+1);
   }
+  const evidenceChanged = Boolean(resume && resume.state.evidenceAfter !== evidenceAfter);
   let previous = null, scenarios = null, cursor = null, blocked = false;
   let includedMs = 0, firstAt = null, lastAt = null, sourceGaps = 0, unsupportedRows = 0, resetCount = 0;
   const priceAssumptions = { ...result.summary.priceAssumptions };
@@ -236,15 +269,18 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
     const saved=resume.state;
     previous=saved.previous; cursor=saved.cursor; blocked=saved.blocked;
     scenarios=saved.scenarios?.map((scenario,i)=>({...scenario,model:firewoodScenarios(model,{indoorC:0,reserveC:0})[i].model}));
-    ({sourceGaps,unsupportedRows,resetCount,evidenceHours,observedKwh,predictedKwh,dutyErrorHours,auxErrorKwh,lastConfiguration,lastTargetC}=saved);
+    ({sourceGaps,unsupportedRows,resetCount,lastConfiguration,lastTargetC}=saved);
     for(const value of saved.assumptions) assumptions.add(value);
-    for(const [day,hours] of saved.evidenceDays) evidenceDays.set(day,hours);
-    fireEvidence.push(...saved.fireEvidence);cleanEvidence.push(...saved.cleanEvidence);
-    for(const id of saved.evidenceBurns) evidenceBurns.add(id);
+    if (saved.evidenceAfter === evidenceAfter) {
+      ({evidenceHours,observedKwh,predictedKwh,dutyErrorHours,auxErrorKwh}=saved);
+      for(const [day,hours] of saved.evidenceDays) evidenceDays.set(day,hours);
+      fireEvidence.push(...saved.fireEvidence);cleanEvidence.push(...saved.cleanEvidence);
+      for(const id of saved.evidenceBurns) evidenceBurns.add(id);
+    }
   }
   const snapshot = () => ({ previous,cursor,blocked,
     scenarios:scenarios?.map(({model,...state})=>state)??null,sourceGaps,unsupportedRows,resetCount,
-    evidenceHours,observedKwh,predictedKwh,dutyErrorHours,auxErrorKwh,lastConfiguration,lastTargetC,
+    evidenceAfter,evidenceHours,observedKwh,predictedKwh,dutyErrorHours,auxErrorKwh,lastConfiguration,lastTargetC,
     assumptions:[...assumptions],evidenceDays:[...evidenceDays],fireEvidence,cleanEvidence,evidenceBurns:[...evidenceBurns] });
   const prices = priceIntervals.filter(row => finite(row.start) && finite(row.end) && row.end > row.start)
     .sort((a, b) => a.start - b.start);
@@ -341,6 +377,11 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
       projection.save(input,{at:maxAt,cursor:lastId,state:snapshot()},{checkpoint:true});
       projection.requestedComplete(input);demanded=null;
     }
+    // Retain the exact source prefix before a deferred row. If its clock later
+    // becomes eligible, only this suffix needs replay, including later IDs
+    // whose clocks were already eligible in an earlier maintenance turn.
+    if (_build && row.at > through && nextAt === null && lastId)
+      projection.save(input,{at:maxAt,cursor:lastId,state:snapshot()},{checkpoint:true});
     scanned++;lastId=row.id;
     if(row.at>through) { nextAt=nextAt===null?row.at:Math.min(nextAt,row.at);continue; }
     const beforeAt=maxAt;
@@ -396,7 +437,7 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
       projection.save(input,{at:maxAt,cursor:lastId,state:snapshot()},{checkpoint:true});
       projection.requestedComplete(input);
     }
-    if(scanned&&lastId) {
+    if((scanned||evidenceChanged)&&lastId) {
       projection.save(input,{at:maxAt,cursor:lastId,state:snapshot()}, {head:bounds.id,nextAt,sourceDb:store.db});
     }
     if(lastId>=bounds.id&&(scanned||projection.needsPublication(input))) projection.publish(input,store.db);

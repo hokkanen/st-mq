@@ -179,14 +179,28 @@ five minutes for an accessed checkpoint; they do not write source history. Backg
 source-proof requests have a short bounded wait and retry backoff, so an unavailable
 peer cannot hold an ordinary chart request for the peer connection timeout.
 
-Checkpoints bind the current numerical model, supported algorithm, source selection,
-fireplace revision, local cache identity and numerical runtime. They require a
-matching source transaction proof. A small source-owned pending/published cache
-anchor binds the compact cache catalog and preserves that proof across normal
+Checkpoints bind the current simulation inputs, supported algorithm, source selection,
+proven fireplace prefix, local cache identity and numerical runtime. The simulation
+identity includes thermal parameters, floor/source assumptions, effective Normal
+response, auxiliary calibration and the fireplace-validation scenario choice.
+Reporting counters, provenance text and training timestamps do not by themselves
+discard an unchanged thermal trajectory. Electrical holdout evidence retains its
+own training boundary: a newer fit withdraws earlier evidence immediately. A
+changed boundary inside previously accumulated evidence resumes before that
+boundary and reaccumulates original complete segments without prorating cells.
+Checkpoints require a matching source transaction proof. A small source-owned
+pending/published cache anchor binds the compact cache catalog and preserves that proof across normal
 transaction-journal pruning. It contains no derived heating state and grants no
 control authority. A rewind, divergent source or missing matching proof cannot
 bless old results. Frozen read-only histories can use their retained source proof
-without a writable owner. Forward learning appends catch up from the retained prefix. A changed model
+without a writable owner. A new load strictly after a proven calculated boundary
+extends the manual-source tail and preserves earlier thermal checkpoints, including
+while the learning checkpoint adopts the new source revision. Removals, backdated
+loads and changed selections retain conservative correction handling. Maintenance
+uses its current clock rather than the last chart request's clock. Deferred input
+activation resumes before its first affected source ID, preserving unaffected
+earlier calculations even when later IDs have earlier timestamps.
+Forward learning appends catch up from the retained prefix. A numerically changed model
 or correction can require a complete background reconstruction because earlier heat
 continues to affect both thermal states. Earlier coefficients are never presented
 as a current-model answer. This necessary reconstruction still scales with retained

@@ -19,7 +19,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
   let nextId = 1, closed = false, maintenanceTimer, pinned = false, warming = warmCache;
   let settings = { cacheDays, cacheBytes };
   let projectionRetryAt=0,projectionFailures=0;
-  let projectionRequested=false,projectionWritable=true,projectionRetirement=null,projectionRetireAck=null; const projectionInputs=new Set(),projectionDemands=new Map(),projectionClocks=new Map(),anchorFlights=new Set();
+  let projectionRequested=false,projectionWritable=true,projectionRetirement=null,projectionRetireAck=null; const projectionInputs=new Set(),projectionDemands=new Map(),anchorFlights=new Set();
   const projectionCacheId=derivedCacheId(projectionCachePath,cacheIdentity);
   const anchor=derivedCacheAnchor??(!store.readOnly&&typeof store.runWrite==='function'?(request,{isCurrent})=>createDerivedCacheAnchorOwner({store,cacheId:projectionCacheId,purpose:'firewood',isCurrent})(request):null);
   const validSettings = value => value && Number.isInteger(value.cacheDays) && value.cacheDays >= 0 && value.cacheDays <= 14
@@ -164,7 +164,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
     maintenanceTimer = null;
     if (closed || !projectionWritable || !warming && !projectionRequested || store.path === ':memory:') return;
     if (!Object.values(lanes).some(lane => lane.active || lane.queue.length || lane.retiring)) {
-      void query({ now: clock(), inputs:[...projectionInputs], demands:[...projectionDemands.values()], inputClocks:Object.fromEntries(projectionClocks),skipFirewood:Date.now()<projectionRetryAt }, { operation: 'maintain' }).catch(() => {});
+      void query({ now: clock(), inputs:[...projectionInputs], demands:[...projectionDemands.values()], skipFirewood:Date.now()<projectionRetryAt }, { operation: 'maintain' }).catch(() => {});
     }
     maintenanceTimer = setTimeout(maintain, lanes.resident.cacheStatus?.complete ? 1000 : lanes.resident.cacheStatus?.firewood?.complete === false ? 25 : 250); maintenanceTimer.unref();
   }
@@ -187,7 +187,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
       if (wire !== undefined && !['json', 'ndjson'].includes(wire)) throw new TypeError('Invalid chart response format');
     } catch (error) { return Promise.reject(error); }
     if(operation==='chart'&&projectionWritable) {
-      projectionInputs.add(args.input??'offline');projectionClocks.set(args.input??'offline',args.now);projectionRequested=true;
+      projectionInputs.add(args.input??'offline');projectionRequested=true;
       const from=chartRequestRange(args).range.from,key=`${args.input??'offline'}:${from}`;
       projectionDemands.delete(key);projectionDemands.set(key,{input:args.input??'offline',from});
       while(projectionDemands.size>8) projectionDemands.delete(projectionDemands.keys().next().value);

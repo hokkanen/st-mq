@@ -152,6 +152,17 @@ moving the clock alone does not repeat committed-history pages. These correctnes
 checks complement small/year/three-year fixed-window measurements; test completion
 alone does not prove bounded native SQL time or physical control responsiveness.
 
+`test/firewood-incremental.test.js` compares cached and full-source results through
+forward loads, model-revision adoption, reporting-only updates, training-boundary
+changes, numerical scenario changes, deferred source clocks and restart. The
+holdout checks withdraw old validation and reaccumulate complete original segments
+when a boundary crosses a saved evidence cell. Real worker maintenance advances
+without another chart request. `test/firewood-projection-cache.test.js` separately
+checks bounded source admission, interrupted writes, source-ancestry rejection,
+pruned proofs and cursor-based suffix rewind. These checks preserve exact current
+results; they do not make genuine numerical model changes independent of history
+or establish physical Raspberry Pi timing.
+
 `test/storage-control-coverage.test.js` and
 `test/control-attempt.test.js` check exact-once known-unsent outcomes, safe parent
 rollback causes, query/post-dispatch exclusions and monitoring enable/disable
@@ -889,6 +900,16 @@ source scope, bounded request-local replay and measured stage progress.
 request isolation, receipt cutoffs and exact fallback after cache eviction.
 Each historical voltage reader retains at most 1,024 checked intervals and an
 estimated 512 KiB per phase; source interpretation and recorded rows are unchanged.
+The first-CSV-basis regression also covers two years of later estimates, late
+receipt ties, simulation isolation and selected-history changes. Household cache
+tests reject any voltage-history read when no completed Easee CSV exists.
+`test/history-learning-lock.test.js` checks the empty CSV-learning suffix across
+real worker restarts with three years of native indoor rows, a later import and
+a lost model cache, retaining exact journal and numerical replay equivalence.
+Indoor-learning tests cover clock-free stream probes, a three-year rejected
+attempt suffix in one candidate query, scalar truthiness and H66 qualification.
+One candidate query still may scan its rejected indexed range internally; these
+tests do not establish constant SQLite time for arbitrarily many invalid rows.
 `test/chart-worker-transport.test.js` covers active cancellation, independent
 speculation, worker retirement/failure, concurrent recording, response equality
 and authentication revocation during streaming. `test/chart-browser-performance.test.js`

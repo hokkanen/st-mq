@@ -32,6 +32,13 @@ const workerHarness = `
 const { workerData, parentPort } = require('node:worker_threads');
 (async () => {
   const { Store } = await import(workerData.storeModule);
+  if (workerData.observeTrainingRows) {
+    const trainingRows = Store.prototype.trainingRows;
+    Store.prototype.trainingRows = function(options) {
+      parentPort.postMessage({ trainingRead: options });
+      return trainingRows.call(this, options);
+    };
+  }
   const probe = workerData.probe ? new Store(workerData.dbPath) : null;
   if (probe) {
     probe.db.exec('PRAGMA busy_timeout=0');
@@ -65,13 +72,13 @@ const { workerData, parentPort } = require('node:worker_threads');
 
 function runHistory(dbPath, options = {}) {
   return new Promise((resolve, reject) => {
-    let failure = null;
+    let failure = null; const trainingReads = [];
     const worker = new Worker(workerHarness, { eval: true, workerData: { dbPath,
       storeModule: new URL('../src/storage/store.js', import.meta.url).href,
       learningModule: new URL('../src/app/learning-worker.js', import.meta.url).href, ...options } });
-    worker.on('message', result => { if (result.error) failure = new Error(result.error); });
+    worker.on('message', result => { if (result.error) failure = new Error(result.error); if (result.trainingRead) trainingReads.push(result.trainingRead); });
     worker.once('error', error => { failure = error; });
-    worker.once('exit', code => failure ? reject(failure) : code ? reject(new Error(`Worker exit ${code}`)) : resolve());
+    worker.once('exit', code => failure ? reject(failure) : code ? reject(new Error(`Worker exit ${code}`)) : resolve(trainingReads));
   });
 }
 
@@ -129,4 +136,44 @@ test('a crash after journal commit resumes original entries even when model sett
   await runHistory(dbPath, { config: { heatPumpCompressorKw: 3.4 } });
   assert.deepEqual(store.getState('adaptive:history'), saved);
   assert.equal(store.getState('learning:health').processed, 0);
+});
+
+test('history worker retains an empty native tail across restart without skipping later imports or a lost model cache', async t => {
+  const { dbPath, store, directory } = await historyFixture(t);
+  await runHistory(dbPath);
+  const initial = store.getState('adaptive:history'), entries = store.learningJournal({ input: 'history' });
+  store.transaction(() => {
+    for (let day = 0; day < 1095; day++) store.observation({ source: 'mqtt-temperature', device: 'synthetic-room',
+      signal: 'indoor_temperature', value: 21, unit: 'degC', sourceTime: start + day * 24 * HOUR,
+      receivedAt: start + day * 24 * HOUR, quality: [] });
+  });
+  const through = store.db.prepare('SELECT MAX(id) id FROM observations').get().id;
+  await runHistory(dbPath);
+  const reads = await runHistory(dbPath, { observeTrainingRows: true });
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].afterId, through, 'A fresh worker seeks beyond the already checked native suffix');
+  assert.deepEqual(store.getState('adaptive:history'), initial);
+  assert.deepEqual(store.learningJournal({ input: 'history' }), entries);
+  const scan = store.getState('learning:history-scan');
+  store.setState('learning:history-scan', { ...scan, cursor: 'malformed' });
+  const invalidated = await runHistory(dbPath, { observeTrainingRows: true });
+  assert.equal(invalidated[0].afterId, initial.historyCursor, 'A malformed disposable watermark supplies no source authority');
+  store.db.prepare("UPDATE history_selection SET generation='synthetic-reselection' WHERE id=1").run();
+  const reselected = await runHistory(dbPath, { observeTrainingRows: true });
+  assert.equal(reselected[0].afterId, initial.historyCursor, 'A changed historical selection invalidates the skipped suffix');
+  assert.deepEqual(store.getState('adaptive:history'), initial);
+
+  const file = join(directory, 'later.csv');
+  writeFileSync(file, 'unix_time,price,heat_on,temp_in,temp_ga,temp_out\n'
+    + `${(start + 25 * HOUR) / 1000},10,15,21,10,0\n${(start + 26 * HOUR) / 1000},10,15,21,10,0\n`);
+  await importCsv(store, file, { kind: 'stmq' });
+  await runHistory(dbPath);
+  const expected = store.getState('adaptive:history'), allEntries = store.learningJournal({ input: 'history' });
+  assert(allEntries.length > entries.length, 'Later publication remains visible beyond the saved empty suffix');
+  store.setState('adaptive:history', null);
+  await runHistory(dbPath);
+  const rebuilt = store.getState('adaptive:history');
+  rebuilt.reconstruction.recordedAt = expected.reconstruction.recordedAt;
+  assert.deepEqual(rebuilt, expected, 'The source optimization cannot seed a missing model; only the reconstruction receipt time changes');
+  assert.deepEqual(store.learningJournal({ input: 'history' }), allEntries);
 });

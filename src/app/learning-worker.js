@@ -21,9 +21,30 @@ try {
     && Number.isSafeInteger(adaptive.historyCursor) && adaptive.historyResampling ? adaptive.historyCursor : 0;
   if (!adaptiveCursor) adaptive = null;
   const projection = coefficientProjectionAt(store,{input:'history',cursor:adaptive?.journalCursor??0});
-  let processed = 0;
+  let processed = 0, scanned = null;
   while (!stopped) {
-    const rows = storageStep(()=>store.trainingRows({ afterId: adaptiveCursor, limit: 64 }));
+    const source = storageStep(() => {
+      // An empty suffix includes native rows too. Bind its high-water mark and
+      // imported selection to the same read snapshot; an import completing after
+      // this snapshot allocates later observation IDs and cannot be skipped.
+      store.db.exec('BEGIN');
+      try {
+        const through = store.db.prepare('SELECT COALESCE(MAX(id),0) id FROM observations').get().id;
+        const basis = { version: 1, databaseId: store.checkpoint().databaseId,
+          selection: store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation,
+          imports: JSON.stringify(store.db.prepare("SELECT id,row_count,completed_at FROM active_imports WHERE kind='stmq' AND status='complete' ORDER BY id").all()),
+          historyCursor: adaptiveCursor, checkpointDigest: adaptive?.checkpointDigest ?? null };
+        const saved = store.getState('learning:history-scan');
+        const valid = saved && typeof saved === 'object' && !Array.isArray(saved)
+          && Object.keys(saved).length === Object.keys(basis).length + 1
+          && Object.entries(basis).every(([key, value]) => saved[key] === value)
+          && Number.isSafeInteger(saved.cursor) && saved.cursor >= adaptiveCursor && saved.cursor <= through;
+        const rows = store.trainingRows({ afterId: valid ? saved.cursor : adaptiveCursor, throughId: through, limit: 64 });
+        return { rows, empty: { ...basis, cursor: through } };
+      } finally { store.db.exec('ROLLBACK'); }
+    });
+    const { rows } = source;
+    if (!rows.length) scanned = source.empty;
     if (!rows.length) break;
     const windows = historicalLearningWindows(rows.filter(row => row.id > adaptiveCursor), adaptive?.historyResampling);
     adaptiveCursor = Math.max(adaptiveCursor, rows.at(-1).id);
@@ -60,10 +81,13 @@ try {
     // Let ingestion acquire the database between bounded transactions.
     await new Promise(resolve => setTimeout(resolve, 10));
   }
-  storageStep(()=>store.setState('learning:health', { status: stopped ? 'paused' : 'history-current', processed, cursor: adaptiveCursor,
-    reference: adaptive?.comfortReference,
-    adaptive: adaptive?.health ?? null, adaptiveCursor,
-    evidence: 'Historical requested modes and temperatures; energy and causal savings unverified', updatedAt: Date.now() }));
+  storageStep(()=>store.transaction(() => {
+    if (scanned) store.setState('learning:history-scan', scanned);
+    store.setState('learning:health', { status: stopped ? 'paused' : 'history-current', processed, cursor: adaptiveCursor,
+      reference: adaptive?.comfortReference,
+      adaptive: adaptive?.health ?? null, adaptiveCursor,
+      evidence: 'Historical requested modes and temperatures; energy and causal savings unverified', updatedAt: Date.now() });
+  }));
   parentPort.postMessage({ processed, cursor: adaptiveCursor });
 } catch (error) {
   parentPort.postMessage({ error: error.message });

@@ -10,7 +10,7 @@ import { Recorder } from '../src/storage/recorder.js';
 import { importCsv } from '../src/storage/history.js';
 import { createHouseholdHistoryCache } from '../src/charging/history-cache.js';
 import { createHouseholdForecastService } from '../src/charging/history-service.js';
-import { forecastHousehold } from '../src/charging/history.js';
+import { forecastHousehold, householdReferenceIdentity } from '../src/charging/history.js';
 import { seedVoltage } from './voltage-fixture.js';
 import { sourceTimeAdmission } from '../src/domain/time-evidence.js';
 
@@ -46,6 +46,19 @@ function archived(store) {
   native(store, now - 300 * DAY, { current: 9, temperature: -20 });
   native(store, now - 2 * DAY, { current: 3, temperature: 20 });
 }
+
+test('household identity never reads voltage history without a completed Easee CSV', async t => {
+  const f = fixture(t);
+  const facade = { db: { prepare(sql) {
+    assert(!sql.includes('voltage-estimate'), 'Native-only forecasts have no retrospective CSV voltage dependency');
+    return f.store.db.prepare(sql);
+  } } };
+  assert.equal(householdReferenceIdentity(facade, options).csvVoltageKey, '');
+  const file = join(f.dir, 'st-mq.csv');
+  writeFileSync(file, 'unix_time,price,heat_on,temp_in,temp_ga,temp_out\n1701842400,10,15,21,10,0\n');
+  await importCsv(f.store, file, { kind: 'stmq' });
+  assert.equal(householdReferenceIdentity(facade, options).csvVoltageKey, '', 'Thermal CSVs alone need no current conversion');
+});
 
 test('a sealed one-year source restores the compact projection after a real worker restart', async t => {
   const f = fixture(t); archived(f.store);

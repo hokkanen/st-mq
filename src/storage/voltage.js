@@ -344,15 +344,54 @@ export function createVoltageReader(store, { input = 'live', now = Date.now(), p
   const availableAt = 'MAX(source_time,received_at)';
   const before = store.db.prepare(`SELECT *,${availableAt} AS available_at FROM active_observations AS observations WHERE ${where} AND signal=?
     AND source_time<=? ORDER BY available_at DESC,id DESC LIMIT 1`);
-  const first = store.db.prepare(`SELECT * FROM active_observations AS observations WHERE ${where} AND signal=?
-    AND source_time<=? AND value BETWEEN 200 AND 250 AND json_extract(raw,'$.voltageEstimate.version')='${VOLTAGE_VERSION}'
+  const firstUsable = `value BETWEEN 200 AND 250 AND json_extract(raw,'$.voltageEstimate.version')='${VOLTAGE_VERSION}'
     AND json_type(raw,'$.voltageMature') IS NULL
     AND json_type(raw,'$.voltageEstimate.input')='integer' AND json_extract(raw,'$.voltageEstimate.input') IN (1,2,4,8)
     AND json_type(raw,'$.voltageEstimate.inputs')='integer' AND json_extract(raw,'$.voltageEstimate.inputs') BETWEEN 1 AND 15
     AND (json_extract(raw,'$.voltageEstimate.inputs') & json_extract(raw,'$.voltageEstimate.input'))=json_extract(raw,'$.voltageEstimate.input')
     AND (json_extract(raw,'$.voltageEstimate.inputs') & 8)=CASE WHEN json_extract(raw,'$.voltageEstimate.inputs')=8 THEN 8 ELSE 0 END
-    AND NOT EXISTS (SELECT 1 FROM json_each(observations.quality) WHERE value NOT IN ('estimated','good','simulated'))
-    ORDER BY ${availableAt},id LIMIT 1`);
+    AND NOT EXISTS (SELECT 1 FROM json_each(observations.quality) WHERE value NOT IN ('estimated','good','simulated'))`;
+  const first = store.journalSource === true ? store.db.prepare(`SELECT * FROM active_observations AS observations
+    WHERE ${where} AND signal=? AND source_time<=? AND ${firstUsable} ORDER BY ${availableAt},id LIMIT 1`) : (() => {
+    // The earliest usable receipt supplies a real candidate, hence an upper
+    // bound on the first publication clock. Refine only that early receipt
+    // prefix: future source leads retain exact MAX-clock/ID ordering without
+    // sorting ordinary later history or another physical stream's archive.
+    const policy = "json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.recorder.policy')";
+    const selected = selectedHistoryPredicate('observations', 'observations');
+    const eligible = `source='voltage-estimate' AND unit='V' AND received_at<=? AND signal=? AND source_time<=? AND ${selected}`;
+    const seed = store.db.prepare(`SELECT * FROM observations INDEXED BY observations_stream_receipt
+      WHERE ${eligible} AND device=? AND ${policy} IS ? AND ${firstUsable}
+      ORDER BY received_at,id LIMIT 1`);
+    const refine = store.db.prepare(`SELECT * FROM observations INDEXED BY observations_stream_receipt
+      WHERE ${eligible} AND device=? AND ${policy} IS ? AND ${firstUsable}
+      ORDER BY ${availableAt},id LIMIT 1`);
+    const firstPolicy = store.db.prepare(`SELECT ${policy} AS policy FROM observations INDEXED BY observations_stream_receipt
+      WHERE source='voltage-estimate' AND device=? AND signal=? AND unit='V' ORDER BY ${policy} LIMIT 1`);
+    const afterNull = store.db.prepare(`SELECT ${policy} AS policy FROM observations INDEXED BY observations_stream_receipt
+      WHERE source='voltage-estimate' AND device=? AND signal=? AND unit='V' AND ${policy} IS NOT NULL ORDER BY ${policy} LIMIT 1`);
+    const nextPolicy = store.db.prepare(`SELECT ${policy} AS policy FROM observations INDEXED BY observations_stream_receipt
+      WHERE source='voltage-estimate' AND device=? AND signal=? AND unit='V' AND ${policy}>? ORDER BY ${policy} LIMIT 1`);
+    return { get(receivedThrough, signal, sourceThrough) {
+      let earliest = null; const streams = [];
+      const earlier = row => row && (!earliest || Math.max(row.source_time, row.received_at) < Math.max(earliest.source_time, earliest.received_at)
+        || Math.max(row.source_time, row.received_at) === Math.max(earliest.source_time, earliest.received_at) && row.id < earliest.id);
+      for (const device of input === 'simulated' ? ['simulated'] : ['mqtt', 'providers', 'live']) {
+        for (let stream = firstPolicy.get(device, signal); stream; stream = stream.policy === null
+          ? afterNull.get(device, signal) : nextPolicy.get(device, signal, stream.policy)) {
+          streams.push({ device, policy: stream.policy });
+          const row = seed.get(receivedThrough, signal, sourceThrough, device, stream.policy);
+          if (earlier(row)) earliest = row;
+        }
+      }
+      if (earliest) for (const stream of streams) {
+        const bound = Math.max(earliest.source_time, earliest.received_at);
+        const row = refine.get(Math.min(receivedThrough, bound), signal, Math.min(sourceThrough, bound), stream.device, stream.policy);
+        if (earlier(row)) earliest = row;
+      }
+      return earliest;
+    } };
+  })();
   const next = store.db.prepare(`SELECT ${availableAt} AS available_at FROM active_observations AS observations WHERE ${where} AND signal=?
     AND ${availableAt}>? AND source_time<=? ORDER BY available_at,id LIMIT 1`);
   const cached = [null, null, null], firstRows = [undefined, undefined, undefined];
@@ -474,6 +513,12 @@ export function createVoltageReader(store, { input = 'live', now = Date.now(), p
     });
     return resultOf(phases);
   };
+  // Identity checks need only this explicitly retrospective basis. Resolving a
+  // point at epoch zero would also search/sort all later publication boundaries.
+  lookup.firstUsable = () => resultOf(VOLTAGE_SIGNALS.map((signal, phase) => {
+    firstRows[phase] ??= { row: decoded(first.get(now, signal, now), true) };
+    return firstRows[phase].row;
+  }));
   const boundaryPages = [];
   const boundaryQuery = store.db.prepare(`SELECT DISTINCT ${availableAt} AS at FROM active_observations AS observations WHERE ${where}
       AND signal IN ('voltage_estimate_l1','voltage_estimate_l2','voltage_estimate_l3')

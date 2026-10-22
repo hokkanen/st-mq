@@ -1292,6 +1292,13 @@ updates and rebuilding use the same journal-entry function. The journal stores a
 explicit initial seed when adopting an existing model; original discarded source
 polls are not required to reproduce subsequent learning. Older imported history is
 resampled causally with bounded holds, retaining unknown heating/solar information.
+The CSV history worker seeks its indoor source-ID suffix through the existing
+signal index. After checking an empty suffix, it retains one small disposable
+scan watermark bound to the same database, selected history, completed imports
+and saved model boundary. Later native readings do not make each worker restart
+rescan the previous nontraining suffix. A new import, changed selection or lost
+model cache invalidates that optimization; original CSV rows, sample ordering,
+the resampling cursor and committed learning journal remain authoritative.
 
 The current algorithm is `committed-house-v17-time-evidence-admission`. Saved configuration retains
 source-output assumptions, selected-slab priors, the relative ROOM increase and the

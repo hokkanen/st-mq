@@ -2,6 +2,25 @@ import { evaluateCycle } from '../control/planner.js';
 import { fireplaceEvidenceReady, THERMAL_PARAMETER_BOUNDS } from '../control/adaptive-learning.js';
 const clampParameter = (name, value) => Math.max(THERMAL_PARAMETER_BOUNDS[name][0], Math.min(THERMAL_PARAMETER_BOUNDS[name][1], value));
 
+/** Identity of the normal-policy trajectories consumed below. Training clocks,
+ * validation diagnostics and episode counts do not change those trajectories.
+ * Fireplace readiness does change the scenario gains; the effective Normal
+ * response and auxiliary calibration also affect predicted demand. Keep this
+ * dependency list aligned with advanceFirewoodPair and evaluateCycle. */
+export function firewoodSimulationIdentity(model) {
+  const response = model.equipmentResponse?.phases?.normal;
+  return {
+    version: model.version,
+    parameters: model.parameters,
+    floor: model.floor ?? null,
+    performance: model.performance ?? null,
+    normalRatio: response?.treatmentKey === 'normal' && Number.isFinite(response.ratio)
+      ? Math.max(0, Math.min(2, response.ratio)) : 1,
+    auxiliaryRiskScale: model.energy?.auxiliaryRiskScale ?? 1,
+    fireplaceValidated: fireplaceEvidenceReady(model),
+  };
+}
+
 /** Parameter scenarios, never probability bounds. Each scenario maintains two
  * independent thermal states; observed compressor demand never drives either. */
 export function firewoodScenarios(model, initialState) {

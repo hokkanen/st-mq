@@ -32,6 +32,49 @@ function estimate(store, at, values, { input = 'providers', receivedAt = at } = 
       voltageAvailability: 'reporting', basis: 'time-weighted-voltage-estimate' } });
 }
 
+test('first CSV voltage basis seeks original clocks and matches causal fallback through late ties and selection changes', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  estimate(store, START + 20 * MINUTE, [240, 240, 240]);
+  estimate(store, START + 5 * MINUTE, [231, 232, 233], { receivedAt: START + 10 * MINUTE });
+  const lateIds = store.db.prepare('SELECT id FROM observations WHERE received_at=?').all(START + 10 * MINUTE).map(row => row.id);
+  for (const id of lateIds) store.db.prepare("UPDATE observations SET raw=json_set(raw,'$.recorder.policy','synthetic-policy') WHERE id=?").run(id);
+  estimate(store, START + 10 * MINUTE, [235, 235, 235]);
+  estimate(store, START + 12 * MINUTE, [245, 245, 245], { receivedAt: START + MINUTE });
+  estimate(store, START + 2 * MINUTE, [220, 220, 220], { input: 'simulated' });
+  store.transaction(() => {
+    for (let day = 1; day <= 730; day++) estimate(store, START + day * 24 * HOUR, [230, 230, 230]);
+  });
+  const plans = [];
+  const facade = { db: { prepare(sql) {
+    const statement = store.db.prepare(sql);
+    return new Proxy(statement, { get(target, property) {
+      if (property === 'get') return (...params) => {
+        if (sql.includes('ORDER BY MAX(source_time,received_at)')) {
+          assert(sql.includes('INDEXED BY observations_stream_receipt'));
+          assert(params[0] <= START + 12 * MINUTE && params[2] <= START + 12 * MINUTE,
+            'Publication ordering refines only the proved early receipt prefix');
+        }
+        plans.push(...store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params).map(row => row.detail));
+        return target.get(...params);
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  } } };
+  const options = { input: 'providers', now: START + 731 * 24 * HOUR };
+  const first = createVoltageReader(facade, options).firstUsable();
+  assert.deepEqual(first, createVoltageReader(store, options)(0, { allowFuture: true }));
+  assert.deepEqual(first.voltageV, [231, 232, 233], 'Equal publication times retain the earliest original ID');
+  assert(plans.some(plan => plan.includes('observations_stream_receipt')));
+  assert.deepEqual(createVoltageReader(store, { ...options, now: START + 9 * MINUTE }).firstUsable().voltageV,
+    [null, null, null], 'A later receipt remains unavailable before its own clock');
+  store.transaction(() => {
+    store.db.prepare("UPDATE history_selection SET generation='synthetic-selection' WHERE id=1").run();
+    for (const id of lateIds) store.db.prepare("INSERT INTO recovery_exclusions(generation,table_name,record_key) VALUES('synthetic-selection','observations',?)").run(String(id));
+  });
+  assert.deepEqual(createVoltageReader(store, options).firstUsable().voltageV, [235, 235, 235]);
+});
+
 test('one historical reader reuses voltage intervals across interleaved traversals without sharing evidence across requests', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   store.transaction(() => {

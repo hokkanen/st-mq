@@ -34,6 +34,61 @@ function context(store, at = start, configuration = config) {
     at, { config: configuration });
 }
 
+test('measurement-boundary probes seek stream prefixes and rejected scalar attempts do not cause repeated candidate queries', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const signal = 'bedroom_temperature';
+  record(store, signal, 21, start);
+  store.transaction(() => {
+    for (let day = 1; day <= 1095; day++) record(store, signal, 25, start + day * 24 * 3_600_000,
+      day % 2 ? { quality: ['invalid_numeric'] } : { raw: { acquisitionOnly: true } });
+  });
+  let candidates = 0, probes = 0;
+  const facade = { db: { prepare(sql) {
+    const statement = store.db.prepare(sql);
+    return new Proxy(statement, { get(target, property) {
+      if (property === 'get' && sql.includes('SELECT 1 FROM observations')) return (...params) => {
+        probes++;
+        assert(!sql.includes('source_time') && !sql.includes('received_at'), 'Prefix existence cannot scan old clocks after a sensor boundary');
+        return target.get(...params);
+      };
+      if (property === 'all' && sql.includes('ORDER BY o.source_time DESC')) return (...params) => {
+        candidates++; return target.all(...params);
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  } } };
+  const request = { signal, input: 'providers', at: start + 1096 * 24 * 3_600_000, includeAvailability: false };
+  assert.equal(lastIndoorReading(facade, request).value, 21);
+  assert.equal(candidates, 1, 'The writer bridge never round-trips once per rejected historical attempt');
+  assert(probes > 0);
+  candidates = 0;
+  assert.equal(lastIndoorReading(facade, { ...request, notBefore: request.at - 1000 }), null);
+  assert.equal(candidates, 1, 'An empty current boundary reaches one indexed chronological query');
+});
+
+test('temperature candidate scalar exclusions preserve canonical truthiness, H66 qualification and genuine zero Garage readings', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const signal = 'bedroom_temperature', rows = [];
+  for (const [index, extra] of [
+    {}, { raw: { acquisitionOnly: false, auditOnly: 0 } }, { raw: { acquisitionOnly: '' } },
+    { raw: { acquisitionOnly: '0' } }, { raw: { auditOnly: {} } }, { raw: { retained: true } },
+    { source: 'husdata-h66', quality: ['stale'], raw: { verification: {} } },
+    { source: 'husdata-h66', quality: ['stale'], raw: { verification: false } },
+    { source: 'husdata-h66', raw: { usableForControl: true } },
+    { source: 'husdata-h66', raw: { usableForControl: 1 } },
+  ].entries()) {
+    const at = start + index * 1000;
+    const observation = { source: 'mqtt-temperature', device: 'synthetic-room', signal, value: 21 + index / 10,
+      unit: 'degC', sourceTime: at, receivedAt: at, quality: [], ...extra };
+    const id = store.observation(observation); rows.push({ ...observation, id });
+    const expected = rows.filter(row => !row.raw?.acquisitionOnly && indoorReadingUsable(row, at)).at(-1);
+    assert.equal(lastIndoorReading(store, { signal, input: 'providers', at, includeAvailability: false })?.id, expected?.id);
+  }
+  record(store, 'garage_temperature', 0, start);
+  assert.equal(lastIndoorReading(store, { signal: 'garage_temperature', input: 'providers', at: start, includeAvailability: false }).value, 0);
+});
+
 test('learning keeps three endpoints and their lineage while predicting a fixed configured average', t => {
   const store = new Store(':memory:'); t.after(() => store.close()); context(store); window(store, start + W);
   const sample = committedLearningSample({ store, input: 'providers', at: start + W, config });

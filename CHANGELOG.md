@@ -6,6 +6,15 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve prepared firewood history when logging a new fire or advancing time.
+  Reuse unchanged simulations across model-report updates while restarting
+  independent validation at the actual training boundary. Genuine numerical
+  changes and historical corrections still prepare affected history in the
+  background; source proofs and cache-size limits remain enforced.
+- Avoid repeated searches through live indoor history when no new CSV learning
+  is available. Keep temperature fallback reads and historical voltage selection
+  focused, and skip unused CSV voltage assumptions in household forecasts.
+
 - Add Today to the shared date calendars, align recorded-energy period shortcuts
   to the right, and set the end date to each newly selected start date in charts
   and energy cost comparisons without dimming the end field.

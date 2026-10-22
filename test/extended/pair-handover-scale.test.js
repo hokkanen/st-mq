@@ -115,16 +115,19 @@ for (const payloadMiB of [1, ...scales.filter(size => size !== 1)]) {
     const warmReadBytes = syscallAfter && syscallAfter.rchar - syscallBefore.rchar;
     const warmWriteBytes = syscallAfter && syscallAfter.wchar - syscallBefore.wchar;
     if (syscallAfter) {
-      // A syscall trace attributes ~30 MiB to repeated worker module loading;
-      // the complete 1 MiB fixture reads ~36 MiB. Bound that fixed work as well
-      // as growth with retained history, including cached SQLite reads.
-      if (payloadMiB === 1) baselineWarmReadBytes = warmReadBytes;
+      // Worker module loading is fixed overhead: a current syscall trace
+      // attributes ~40 MiB to it. Bound total baseline work separately from
+      // the permitted <4 MiB of larger-fixture metadata/journal growth below;
+      // applying the baseline ceiling to both would erase that allowance.
+      if (payloadMiB === 1) {
+        baselineWarmReadBytes = warmReadBytes;
+        assert(warmReadBytes < 48 * 1024 ** 2, `Warm handover fixed read work must stay bounded (${warmReadBytes} bytes)`);
+      }
       else {
         assert(Number.isSafeInteger(baselineWarmReadBytes), 'Warm handover requires the 1 MiB baseline case');
         assert(warmReadBytes - baselineWarmReadBytes < 4 * 1024 ** 2,
           `Warm read I/O must not grow with historical contents (${warmReadBytes} bytes; baseline ${baselineWarmReadBytes})`);
       }
-      assert(warmReadBytes < 48 * 1024 ** 2, `Warm handover fixed read work must stay bounded (${warmReadBytes} bytes)`);
       assert(warmWriteBytes < 8 * 1024 ** 2, `Warm handover must not copy historical database contents (${warmWriteBytes} bytes)`);
     }
     assert.equal(f.source.canControl(), true);

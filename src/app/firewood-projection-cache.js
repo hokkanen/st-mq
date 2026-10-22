@@ -11,12 +11,13 @@ import { derivedCacheId,matchesDerivedCacheAnchor } from '../storage/derived-cac
 // Individual bodies bound every read; SQLite pages and payloads bound disk use.
 export const FIREWOOD_PROJECTION_BYTES = 16 * 1024 * 1024;
 export const FIREWOOD_PROJECTION_BODY_BYTES = 4 * 1024 * 1024;
-const VERSION = 7, hash = body => createHash('sha256').update(body).digest('hex');
+const VERSION = 8, hash = body => createHash('sha256').update(body).digest('hex');
 const invalidCache = message => Object.assign(new Error(message),{invalidDisposableCache:true});
 const SAME = (a,b) => a && b && a.databaseId===b.databaseId && a.sequence===b.sequence && a.hash===b.hash;
 const finite = Number.isFinite, object = value => value && typeof value==='object' && !Array.isArray(value);
 function validState(state) {
   if(!object(state)||![null,undefined].includes(state.cursor)&&!finite(state.cursor)||typeof state.blocked!=='boolean') return false;
+  if(!Object.hasOwn(state,'evidenceAfter')||state.evidenceAfter!==null&&!finite(state.evidenceAfter)) return false;
   if(!['sourceGaps','unsupportedRows','resetCount','evidenceHours','observedKwh','predictedKwh','dutyErrorHours','auxErrorKwh']
     .every(key=>finite(state[key])&&state[key]>=0)) return false;
   if(!Array.isArray(state.assumptions)||state.assumptions.length>64||!state.assumptions.every(value=>typeof value==='string')) return false;
@@ -87,6 +88,7 @@ export class FirewoodProjectionCache {
     catch(error) {this.db.close();throw error;}
   }
   manual(store,input,now,{advance=false,maxRows=128}={}) {
+    if(!Number.isSafeInteger(maxRows)||maxRows<1||maxRows>128) throw new TypeError('A bounded firewood source page is required');
     const source=store.db;this.sourceDb=source;
     if(!this.validCatalog(input)) {
       if(this.readOnly) return {complete:false};
@@ -96,25 +98,37 @@ export class FirewoodProjectionCache {
     const head=source.prepare('SELECT MAX(id) id FROM active_fireplace_events WHERE input=?').get(input).id??0;
     const selection=source.prepare('SELECT generation FROM history_selection WHERE id=1').get()?.generation;
     const token=JSON.stringify([head,selection]);
-    let meta=this.db.prepare('SELECT * FROM manual_meta WHERE input=?').get(input),valid=this.manualIntact(meta)&&meta?.token===token&&meta.as_of<=now&&!(meta.next_at!==null&&meta.next_at<=now);
-    if(valid) try {const proof=JSON.parse(meta.proof);valid=SAME(checkpointAt(source,proof.sequence),proof)||this.trustedAnchor(input,source);} catch {valid=false;}
-    if(!valid) {
+    let meta=this.db.prepare('SELECT * FROM manual_meta WHERE input=?').get(input);
+    let intact=this.manualIntact(meta)&&meta.as_of<=now;
+    if(intact) try {const proof=JSON.parse(meta.proof);intact=SAME(checkpointAt(source,proof.sequence),proof)||this.trustedAnchor(input,source);} catch {intact=false;}
+    let valid=intact&&meta.token===token&&!(meta.next_at!==null&&meta.next_at<=now);
+    // A new, chronologically appended load cannot change an earlier numerical
+    // boundary. Classify only the new ID tail before admitting its revision;
+    // removals, first-fire changes and backdated loads still rebuild safely.
+    let sameSelection=false;
+    if(intact) try {const previous=JSON.parse(meta.token);sameSelection=Array.isArray(previous)&&previous.length===2&&previous[0]===meta.head&&previous[1]===selection;} catch {}
+    if(!valid&&intact&&sameSelection&&head>meta.head&&meta.next_at===null
+      &&meta.first_active_at!==null&&['complete','append'].includes(meta.phase)) {
       if(this.readOnly) return {complete:false};
-      this.invalidate(input);
       const revision=source.prepare('SELECT id FROM active_fireplace_events WHERE input=? AND at<=? ORDER BY id DESC LIMIT 1').get(input,now)?.id??0;
-      const first=source.prepare("SELECT at FROM active_fireplace_events WHERE input=? AND kind='load' AND at<=? ORDER BY at,id LIMIT 1").get(input,now)?.at??null;
-      const next=source.prepare('SELECT at FROM active_fireplace_events WHERE input=? AND at>? ORDER BY at LIMIT 1').get(input,now)?.at??null;
+      const proof=JSON.stringify(readCheckpoint(source));
+      const numericalIntact=this.numericalIntact(input,source);
       this.db.exec('BEGIN IMMEDIATE');
       try {
-        this.db.prepare('DELETE FROM manual_groups WHERE input=?').run(input);
-        this.db.prepare(`INSERT OR REPLACE INTO manual_meta VALUES(?,?,?,?,0,?,?,0,NULL,NULL,?,?,?,?,NULL,NULL)`)
-          .run(input,token,JSON.stringify(readCheckpoint(source)),head,first===null?'complete':'groups',Number.MIN_SAFE_INTEGER,revision,first,next,now);
-        this.sealManual(input);
-        this.db.exec('COMMIT');
+        if(!numericalIntact) this.invalidate(input);
+        this.db.prepare("UPDATE manual_meta SET token=?,proof=?,head=?,cursor=?,phase='append',revision=?,as_of=? WHERE input=?")
+          .run(token,proof,head,meta.phase==='complete'?meta.head:meta.cursor,revision,now,input);
+        this.changedSource(input,proof);
+        this.sealManual(input);this.db.exec('COMMIT');
       } catch(error) {this.db.exec('ROLLBACK');throw error;}
-      meta=this.db.prepare('SELECT * FROM manual_meta WHERE input=?').get(input);
+      meta=this.db.prepare('SELECT * FROM manual_meta WHERE input=?').get(input);valid=true;
+    }
+    if(!valid) {
+      if(this.readOnly) return {complete:false};
+      meta=this.resetManual(source,input,now,head,token);
     }
     if(this.readOnly||!advance||meta.phase==='complete') return {...meta,complete:meta.phase==='complete'};
+    if(meta.phase==='append') return this.appendManual(source,input,now,meta,maxRows);
     const rows=source.prepare(`SELECT id,at,kind FROM active_fireplace_events WHERE input=?
       AND (at,id)>(?,?) AND at<=? AND id<=? ORDER BY at,id LIMIT ?`)
       .all(input,meta.scan_at,meta.scan_id,meta.as_of,meta.revision,maxRows);
@@ -138,6 +152,84 @@ export class FirewoodProjectionCache {
       this.db.exec('COMMIT');
     } catch(error) {this.db.exec('ROLLBACK');throw error;}
     return {...meta,complete:meta.phase==='complete'};
+  }
+  resetManual(source,input,now,head,token) {
+    const revision=source.prepare('SELECT id FROM active_fireplace_events WHERE input=? AND at<=? ORDER BY id DESC LIMIT 1').get(input,now)?.id??0;
+    const first=source.prepare("SELECT at FROM active_fireplace_events WHERE input=? AND kind='load' AND at<=? ORDER BY at,id LIMIT 1").get(input,now)?.at??null;
+    const next=source.prepare('SELECT at FROM active_fireplace_events WHERE input=? AND at>? ORDER BY at LIMIT 1').get(input,now)?.at??null;
+    const proof=JSON.stringify(readCheckpoint(source));
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.invalidate(input);this.db.prepare('DELETE FROM manual_groups WHERE input=?').run(input);
+      this.db.prepare(`INSERT OR REPLACE INTO manual_meta VALUES(?,?,?,?,0,?,?,0,NULL,NULL,?,?,?,?,NULL,NULL)`)
+        .run(input,token,proof,head,first===null?'complete':'groups',Number.MIN_SAFE_INTEGER,revision,first,next,now);
+      this.sealManual(input);this.db.exec('COMMIT');
+    } catch(error) {this.db.exec('ROLLBACK');throw error;}
+    return this.db.prepare('SELECT * FROM manual_meta WHERE input=?').get(input);
+  }
+  appendManual(source,input,now,meta,maxRows) {
+    const rows=source.prepare(`SELECT id,at,kind FROM active_fireplace_events WHERE input=? AND id>? AND id<=? ORDER BY id LIMIT ?`)
+      .all(input,meta.cursor,meta.head,maxRows);
+    const boundary=this.db.prepare('SELECT MAX(at) at FROM snapshots WHERE input=?').get(input).at;
+    let previousAt=meta.scan_at;
+    for(const row of rows) {
+      if(row.kind!=='load'||row.at>meta.as_of||row.at<previousAt||boundary!==null&&row.at<=boundary) {
+        const reset=this.resetManual(source,input,now,meta.head,meta.token);
+        return {...reset,complete:reset.phase==='complete'};
+      }
+      previousAt=row.at;
+    }
+    const numericalIntact=this.numericalIntact(input,source);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if(!numericalIntact) this.invalidate(input);
+      for(const row of rows) {
+        if(meta.group_at===null||row.at-meta.group_at>=86_400_000) {
+          meta.group_at=row.at;meta.group_id=String(row.id);
+          this.db.prepare('INSERT INTO manual_groups VALUES(?,?,?,?)').run(input,meta.group_id,meta.group_at,hash(JSON.stringify([input,meta.group_id,meta.group_at])));
+        }
+        meta.cursor=row.id;meta.scan_at=row.at;meta.scan_id=row.id;
+      }
+      if(rows.length<maxRows||meta.cursor===meta.head) meta.phase='complete';
+      const proof=JSON.stringify(readCheckpoint(source));
+      this.db.prepare('UPDATE manual_meta SET cursor=?,phase=?,scan_at=?,scan_id=?,group_id=?,group_at=?,proof=? WHERE input=?')
+        .run(meta.cursor,meta.phase,meta.scan_at,meta.scan_id,meta.group_id,meta.group_at,proof,input);
+      if(rows.length) this.changedSource(input,proof);
+      this.sealManual(input);this.db.exec('COMMIT');
+    } catch(error) {this.db.exec('ROLLBACK');throw error;}
+    const result=this.db.prepare('SELECT * FROM manual_meta WHERE input=?').get(input);
+    return {...result,complete:result.phase==='complete'};
+  }
+  changedSource(input,proof) {
+    // A published digest binds the previous catalog. Its token cannot certify
+    // newly appended source rows; the next background turn pins this boundary
+    // and publishes a new catalog, without holding foreground requests on RPC.
+    this.db.prepare('UPDATE generation SET proof=?,pending=NULL,published=NULL WHERE input=?').run(proof,input);
+  }
+  numericalIntact(input,sourceDb) {
+    const current=this.db.prepare('SELECT proof FROM generation WHERE input=?').get(input);
+    if(!current) return true;
+    try {const proof=JSON.parse(current.proof);return SAME(checkpointAt(sourceDb,proof.sequence),proof)||this.trustedAnchor(input,sourceDb);}
+    catch {return false;}
+  }
+  verifiedManualProof(input,sourceDb) {
+    if(sourceDb.prepare('SELECT 1 FROM journal_pending LIMIT 1').get())
+      throw new Error('Uncommitted source cannot supply a derived firewood comparison');
+    const meta=this.db.prepare('SELECT * FROM manual_meta WHERE input=?').get(input);
+    if(!meta) return null;
+    if(this.manualIntact(meta)&&meta.phase==='complete') try {
+      const proof=JSON.parse(meta.proof);
+      if(SAME(checkpointAt(sourceDb,proof.sequence),proof)||this.trustedAnchor(input,sourceDb)) return meta.proof;
+    } catch {}
+    throw new Error('The firewood source projection needs a verified source boundary.');
+  }
+  refreshManualProof(input,previous,proof) {
+    // Numerical preparation may outlive the journal's retained proof window.
+    // Advance this separately checked source fence only with actual progress,
+    // before a replacement generation removes the old published catalog.
+    if(previous===null||previous===proof) return;
+    this.db.prepare('UPDATE manual_meta SET proof=? WHERE input=?').run(proof,input);
+    this.sealManual(input);
   }
   manualIntact(meta) {
     if(!meta||typeof meta.checksum!=='string') return false;
@@ -177,14 +269,16 @@ export class FirewoodProjectionCache {
   generation(input,signature,sourceDb,head,now,prepare=true) {
     if(sourceDb.prepare('SELECT 1 FROM journal_pending LIMIT 1').get()) throw new Error('Uncommitted source cannot supply a derived firewood comparison');
     const current=this.db.prepare('SELECT * FROM generation WHERE input=?').get(input);
-    let valid=current?.signature===signature&&current.head<=head&&!(current.next_at!==null&&current.next_at<=now);
+    let valid=current?.signature===signature&&current.head<=head;
     if(valid) try {const proof=JSON.parse(current.proof);valid=SAME(checkpointAt(sourceDb,proof.sequence),proof)||this.trustedAnchor(input,sourceDb);} catch {valid=false;}
     if(!valid) {
       if(this.readOnly||!prepare) return {notReady:true,head};
+      const previousManualProof=this.verifiedManualProof(input,sourceDb),proof=JSON.stringify(readCheckpoint(sourceDb));
       this.db.exec('BEGIN IMMEDIATE');
       try {
+        this.refreshManualProof(input,previousManualProof,proof);
         this.db.prepare('DELETE FROM snapshots WHERE input=?').run(input);
-        this.db.prepare('INSERT OR REPLACE INTO generation VALUES(?,?,?,?,NULL,NULL,NULL,NULL)').run(input,signature,JSON.stringify(readCheckpoint(sourceDb)),head);
+        this.db.prepare('INSERT OR REPLACE INTO generation VALUES(?,?,?,?,NULL,NULL,NULL,NULL)').run(input,signature,proof,head);
         this.db.exec('COMMIT');
       } catch(error) {this.db.exec('ROLLBACK');throw error;}
       this.pin(input,sourceDb);
@@ -255,9 +349,12 @@ export class FirewoodProjectionCache {
     const json=JSON.stringify({version:VERSION,input,...snapshot});
     if(Buffer.byteLength(json)>FIREWOOD_PROJECTION_BODY_BYTES) throw new Error('Firewood projection checkpoint exceeds its bounded working size');
     const payload=deflateSync(json,{level:1});
+    const previousManualProof=sourceDb?this.verifiedManualProof(input,sourceDb):null;
+    const proof=sourceDb?JSON.stringify(readCheckpoint(sourceDb)):null;
     if(sourceDb) this.pin(input,sourceDb);
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      this.refreshManualProof(input,previousManualProof,proof);
       this.db.prepare('DELETE FROM snapshots WHERE input=? AND progress=1 AND cursor<>?').run(input,snapshot.cursor);
       let retained=this.db.prepare('SELECT COALESCE(SUM(length(payload)),0) bytes FROM snapshots').get().bytes;
       while(retained+payload.length>this.maxBytes) {
@@ -269,7 +366,7 @@ export class FirewoodProjectionCache {
         progress=MIN(snapshots.progress,excluded.progress),payload=excluded.payload,digest=excluded.digest,touched=excluded.touched`)
         .run(input,snapshot.cursor,snapshot.at,Number(!checkpoint),payload,hash(json),Date.now());
       if(head!==undefined) this.db.prepare('UPDATE generation SET head=?,next_at=?,proof=? WHERE input=?')
-        .run(head,nextAt,JSON.stringify(readCheckpoint(sourceDb)),input);
+        .run(head,nextAt,proof,input);
       let bytes=this.db.prepare('SELECT COALESCE(SUM(length(payload)),0) bytes FROM snapshots').get().bytes;
       while(bytes>this.maxBytes) {
         // A demanded old prefix is retained while it is reconstructed. Discard
@@ -284,6 +381,23 @@ export class FirewoodProjectionCache {
   }
   current() {try{const info=statSync(this.path);return info.ino===this.identity.ino&&info.dev===this.identity.dev;}catch{return false;}}
   removeAfter(input,at,cursor) {this.db.prepare('DELETE FROM snapshots WHERE input=? AND at>? AND cursor<?').run(input,at,cursor);}
+  rewind(input,beforeCursor,{sourceDb}={}) {
+    if(this.readOnly) throw new Error('The firewood projection owner must rewind its derived suffix');
+    if(!Number.isSafeInteger(beforeCursor)||beforeCursor<1||!sourceDb) throw new TypeError('A source boundary before the activated row is required');
+    if(sourceDb.prepare('SELECT 1 FROM journal_pending LIMIT 1').get()) throw new Error('Uncommitted source cannot rewind a derived firewood comparison');
+    const proof=JSON.stringify(readCheckpoint(sourceDb));
+    const numericalIntact=this.numericalIntact(input,sourceDb);
+    this.db.exec('BEGIN IMMEDIATE');
+    let removed;
+    try {
+      removed=this.db.prepare('DELETE FROM snapshots WHERE input=? AND cursor>=?').run(input,numericalIntact?beforeCursor:0).changes;
+      if(!numericalIntact) this.invalidate(input);
+      this.db.prepare('UPDATE generation SET next_at=NULL WHERE input=?').run(input);
+      this.changedSource(input,proof);this.db.exec('COMMIT');
+    } catch(error) {this.db.exec('ROLLBACK');throw error;}
+    const cursor=this.db.prepare('SELECT cursor FROM snapshots WHERE input=? ORDER BY cursor DESC LIMIT 1').get(input)?.cursor??0;
+    return {removed,cursor};
+  }
   invalidate(input) {this.db.prepare('DELETE FROM generation WHERE input=?').run(input);this.db.prepare('DELETE FROM snapshots WHERE input=?').run(input);}
   close() {this.db.close();}
 }

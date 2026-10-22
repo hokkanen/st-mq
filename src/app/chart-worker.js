@@ -62,12 +62,12 @@ function openFirewoodProjection() {
 }
 openFirewoodProjection();
 let firewoodMaintenanceInput=0;
-function maintainFirewood(now,inputs=[],demands=[],inputClocks={}) {
+function maintainFirewood(now,inputs=[],demands=[]) {
   if(!inputs.length) return {complete:true};
   openFirewoodProjection();
   const input=inputs[firewoodMaintenanceInput++%inputs.length];
   try {
-    return maintainFirewoodProjection({store,input,now:inputClocks[input]??now,
+    return maintainFirewoodProjection({store,input,now,
       demands:demands.filter(value=>value.input===input).map(value=>value.from)});
   }
   catch {return {complete:true,failed:true};}
@@ -194,7 +194,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
           return sourceCache?.maintain(args.now, 256);
         } finally { db.exec('ROLLBACK'); }
       });
-      const firewood=args.skipFirewood?{complete:true,retrying:true}:maintainFirewood(args.now,args.inputs,args.demands,args.inputClocks);
+      const firewood=args.skipFirewood?{complete:true,retrying:true}:maintainFirewood(args.now,args.inputs,args.demands);
       // A preparing response cannot remain a completed historical response-cache
       // hit after its derived prefix has become available.
       for(const [key,entry] of cache) if(entry.result.firewoodBenefit?.preparing||entry.result.firewoodBenefit?.retryable) {cache.delete(key);cacheBytes-=entry.bytes;}

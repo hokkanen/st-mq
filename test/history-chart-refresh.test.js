@@ -62,14 +62,13 @@ function fixture(t) {
   return { chart, requests, nodes };
 }
 
-test('a start selected before the first status keeps the original inactive end suggestion', async t => {
+test('a start selected before the first status sets both dates to the selected day', async t => {
   const { requests, nodes } = fixture(t);
-  const suggestedEnd = nodes.get('date-end').value;
   const start = nodes.get('date-start');
   start.value = '2024-01-15'; start.dispatchEvent(new Event('change'));
   await Promise.resolve();
-  assert.equal(nodes.get('date-end').value, suggestedEnd);
-  assert.equal(nodes.get('date-end').dataset.singleDay, 'true');
+  assert.equal(nodes.get('date-end').value, '2024-01-15');
+  assert.equal(nodes.get('date-end').dataset.singleDay, undefined);
   const query = new URL(requests[0].path, 'http://fixture');
   assert.equal(query.searchParams.get('start'), '2024-01-15');
   assert.equal(query.searchParams.get('end'), '2024-01-15');
