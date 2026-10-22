@@ -93,7 +93,7 @@ test('native SYS incident details use ordinary report entries and include recove
     firmware: 'synthetic-fw', model: 'synthetic-model' }]);
   await f.open();
   const text = textOf(f.dialog);
-  assert.match(text, /SYS startup retry sent/);
+  assert.match(text, /SYS startup retry attempted/);
   assert.match(text, /Retry 2 of 3/);
   assert.match(text, /Scheduled charging/);
   assert.match(text, /Current setting 14 A/);

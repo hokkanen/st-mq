@@ -34,7 +34,7 @@ const EVENTS = {
   'shelly-pause-interrupted': 'SYS transition interrupted an owned pause',
   'shelly-sys-off': 'SYS permission Stop observed', 'shelly-sys-on': 'SYS permission Enable observed',
   'shelly-permission-restored': 'Native permission restored', 'shelly-readback-reconciled': 'Start reconciled with SYS readback',
-  'shelly-recovery-waiting': 'SYS startup recovery scheduled', 'shelly-recovery-attempt': 'SYS startup retry sent',
+  'shelly-recovery-waiting': 'SYS startup recovery scheduled', 'shelly-recovery-attempt': 'SYS startup retry attempted',
   'shelly-recovery-restored': 'SYS startup recovery succeeded · sustained draw observed',
   'shelly-recovery-exhausted': 'SYS startup recovery exhausted', 'shelly-recovery-cancelled': 'SYS startup recovery cancelled',
   connected: 'Connection observed', 'observation-started': 'Monitoring began during this connection',

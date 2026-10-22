@@ -306,7 +306,8 @@ restart, transport reconnection and paired handover. Only confirmed unplug or
 changed physical identity ends their connection scope.
 
 A retry uses the normal controller/current preparation and command path. Its
-budget is durably reserved at publication. Fresh native false, physical zero,
+budget is durably reserved before publication. A recorded attempt alone does not
+prove dispatch, acceptance or physical charging. Fresh native false, physical zero,
 live authority/readiness and an actual open requested period are required.
 Dashboard Pause, a later external instruction, schedule closure or scope change
 cancels recovery. Electrical/native/vehicle restrictions and uncertain command
