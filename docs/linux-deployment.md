@@ -20,44 +20,48 @@ Keep the source checkout and runtime separate. For example:
 | Location | Purpose |
 | --- | --- |
 | `~/st-mq` | Source checkout; commit intended changes here |
-| `~/.local/share/home-energy-runtime` | Managed code and frontend releases |
+| `~/.local/share/st-mq-runtime` | Managed code and frontend releases |
 | `~/.config/st-mq` | Private application and deployment configuration |
 | `~/.local/share/st-mq` | Application data, databases and pairing state |
 
-These are examples. **When replacing a runner, reuse its actual data, database
-and pairing paths.** New empty paths create a different installation; they do not
-restore the old computer's role. Preserve verified backups and private configuration.
+Choose persistent configuration, database and pairing paths for the installation.
+Keep them unchanged across deployments and retain verified backups. Run only one
+application instance against each set of writable state directories.
 
-Stop and disable the previous application service or runner before starting its
-replacement. Do not run two applications against the same state. Keep the
-[restricted VIP helper](pairing.md#mqtt-address-management) installed when required;
-it is a separate root-owned network service, not the application runner.
-When installing that helper for an ordinary user account, adapt its socket's
-`SocketGroup` to a group that account belongs to. The pairing guide's example
-assumes an existing `stmq` account/group. Keep the helper code, policy and units
-root-owned; the application itself does not receive network administration rights.
+Pair mode requires the [restricted VIP helper](pairing.md#mqtt-address-management).
+Install it separately using the application account's group. Its code, policy and
+units remain root-owned; the application itself receives no network administration
+rights.
 
 Create a private directory:
 
 ```sh
-install -d -m 0700 "$HOME/.config/st-mq"
+install -d -m 0700 "${XDG_CONFIG_HOME:-$HOME/.config}/st-mq"
 ```
 
-Use your editor to create the files below, with mode `0600`. Secrets stay outside
-the checkout and managed runtime.
+The commands below create the deployment files with mode `0600`. Review them in
+an editor before setup. Secrets stay outside the checkout and managed runtime.
 
 ### Application environment
 
-Create `linux-runtime.env`, substituting your actual absolute paths:
+Create `linux-runtime.env` with resolved paths for the current account. The
+unquoted heredoc resolves the account's paths when creating the file; systemd
+later reads literal absolute paths. This command refuses to overwrite an existing file:
 
-```ini
-STMQ_CONFIG=/home/you/.config/st-mq/secrets.json
-STMQ_DATA_DIR=/home/you/.local/share/st-mq
-STMQ_DATABASE_DIR=/home/you/.local/share/st-mq
-STMQ_PAIR_DIR=/home/you/.local/share/st-mq/pairing
+```sh
+(
+  umask 077
+  set -C
+  cat > "${XDG_CONFIG_HOME:-$HOME/.config}/st-mq/linux-runtime.env" <<EOF
+STMQ_CONFIG='${XDG_CONFIG_HOME:-$HOME/.config}/st-mq/secrets.json'
+STMQ_DATA_DIR='$HOME/.local/share/st-mq'
+STMQ_DATABASE_DIR='$HOME/.local/share/st-mq'
+STMQ_PAIR_DIR='$HOME/.local/share/st-mq/pairing'
 STMQ_TOPOLOGY=pair
 STMQ_INPUT=providers
 STMQ_PORT=1234
+EOF
+)
 ```
 
 `secrets.json` must already contain the current installation configuration,
@@ -71,7 +75,8 @@ supported absolute paths or include the required PATH in this environment file.
 The service does not inherit an interactive shell's startup scripts.
 
 Use one `KEY=value` assignment per line. Single quotes allow literal spaces or
-special characters: `STMQ_DATA_DIR='/home/you/House data'`. Blank lines and lines
+special characters. The generated path assignments above use single quotes so
+spaces in the account's home directory work. Blank lines and lines
 starting with `#` are allowed. Shell commands, variable expansion, double quotes,
 escapes, duplicate keys, inline comments and multiline values are unsupported.
 This common subset is read consistently by the validator and systemd's
@@ -79,19 +84,35 @@ This common subset is read consistently by the validator and systemd's
 
 ### Deployment connection
 
-Create `linux-deploy.json`:
+Generate `linux-deploy.json` from the current account's home directory and Node
+executable. This command also refuses to overwrite an existing file:
 
-```json
-{
-  "runtime_dir": "/home/you/.local/share/home-energy-runtime",
-  "service_scope": "user",
-  "service_name": "home-energy.service",
-  "node_path": "/usr/local/bin/node",
-  "environment_file": "/home/you/.config/st-mq/linux-runtime.env",
-  "status_url": "http://127.0.0.1:1234",
-  "token_file": "/home/you/.config/st-mq/linux-status-token"
-}
+```sh
+node --input-type=module <<'JS'
+import { writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+const home = homedir();
+const directory = join(process.env.XDG_CONFIG_HOME || join(home, '.config'), 'st-mq');
+const connection = {
+  runtime_dir: join(home, '.local/share/st-mq-runtime'),
+  service_scope: 'user',
+  service_name: 'st-mq.service',
+  node_path: process.execPath,
+  environment_file: join(directory, 'linux-runtime.env'),
+  status_url: 'http://127.0.0.1:1234',
+  token_file: join(directory, 'linux-status-token'),
+};
+writeFileSync(join(directory, 'linux-deploy.json'),
+  JSON.stringify(connection, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+JS
 ```
+
+The generated JSON contains actual absolute paths. Neither JSON nor the runtime
+environment file expands shell variables when read. Keep the configured Node
+executable available across updates; review the generated path if using a Node
+version manager.
 
 `status_url` is the local loopback HTTP origin, using the recovery listener port
 (`STMQ_PORT`). Do not use ingress, a VIP, a remote address or an API path. The
@@ -106,9 +127,28 @@ Paths must be normalized and absolute. Deployment path names support letters,
 numbers, spaces, `/`, `_`, `.` and `-`. Unknown fields fail validation.
 `sync_timeout_seconds` is optional, defaults to 900, and accepts 1–86400.
 
-For a **system** service, use `"service_scope": "system"` and add
-`"service_user": "your-linux-user"`. Run setup/deployment as that same non-root
-account so private inputs retain their mode `0600` ownership. It must be able to
+For a **system** service, run this before initial setup to select system scope
+and resolve the service account automatically from `$USER`:
+
+```sh
+node --input-type=module <<'JS'
+import { readFileSync, writeFileSync } from 'node:fs';
+import { homedir, userInfo } from 'node:os';
+import { join } from 'node:path';
+
+const user = process.env.USER;
+if (!user || user === 'root' || user !== userInfo().username)
+  throw new Error('Run this as the intended non-root deployment user.');
+const path = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'st-mq/linux-deploy.json');
+const connection = JSON.parse(readFileSync(path, 'utf8'));
+connection.service_scope = 'system';
+connection.service_user = user;
+writeFileSync(path, JSON.stringify(connection, null, 2) + '\n', { mode: 0o600 });
+JS
+```
+
+Run setup/deployment as that same non-root account so private inputs retain their
+mode `0600` ownership. It must be able to
 write the runtime and run the required `sudo -n install` and `sudo -n systemctl`.
 The tools do not prompt for passwords or change sudo policy. A user service avoids those privileges;
 a system service can start independently of a login. The root-owned VIP helper
@@ -119,7 +159,7 @@ still has its own installation.
 From a clean, committed source checkout:
 
 ```sh
-cd /path/to/st-mq
+cd "$HOME/st-mq"
 npm run setup:linux
 ```
 
@@ -139,27 +179,28 @@ It validates current application configuration without starting the application
 or opening a database, builds the selected commit, installs the persistent
 service, and verifies it is stopped. It does **not** enable startup or control.
 
-Confirm the old runner is stopped, preserved pair state belongs to this computer,
-and HA is still master. Then explicitly start the service:
+Start the configured service explicitly:
 
 ```sh
-systemctl --user start home-energy.service
-systemctl --user is-active home-energy.service
+systemctl --user start st-mq.service
+systemctl --user is-active st-mq.service
 ```
 
-Open **Paired computers**. Confirm this computer remains **Slave**, its peer is
-**Master**, and synchronization becomes ready. A running process alone does not
-prove startup or synchronization succeeded. Inspect local logs if needed:
+For a new pair, complete [initial role selection](pairing.md#configuration) on
+both computers. For an established pair, verify its saved roles under **Paired
+computers**. Before using managed deployment, this computer must be **Slave**,
+its peer must be **Master**, and synchronization must be ready. A running process
+alone does not establish readiness. Inspect local logs if needed:
 
 ```sh
-journalctl --user -u home-energy.service -n 50
+journalctl --user -u st-mq.service -n 50
 ```
 
 Do not paste private logs into public issues. Optionally enable the verified
 service for future starts:
 
 ```sh
-systemctl --user enable home-energy.service
+systemctl --user enable st-mq.service
 ```
 
 For system scope, use `sudo systemctl` and `sudo journalctl` without `--user`.
@@ -171,7 +212,7 @@ lingering policy; setup does not change it.
 With HA master and this computer running as a synchronized slave:
 
 ```sh
-cd /path/to/st-mq
+cd "$HOME/st-mq"
 npm run deploy:linux
 ```
 
@@ -182,10 +223,10 @@ preparation, and again immediately before stopping. Do not hand over or promote
 concurrently.
 
 Preparation clones the exact commit into `runtime_dir/releases`, installs locked
-dependencies and builds while the old slave remains available. The service must
+dependencies and builds while the installed slave remains available. The service must
 confirm a complete stop before `current` changes to the new release. The script
 verifies the installed source/build, restarts the same service and waits for the
-same slave, the same master and successful synchronization. Old releases remain.
+same slave, the same master and successful synchronization. Prepared releases remain.
 The status listener must belong to the service's actual Node process, checked
 through Linux `/proc`; another process answering the same URL cannot qualify it.
 
@@ -199,7 +240,7 @@ The source comes from the script's location, independently of the terminal's
 directory. For example:
 
 ```sh
-node /path/to/st-mq/scripts/deploy-linux.js --connection /private/path/linux-deploy.json
+node "$HOME/st-mq/scripts/deploy-linux.js" --connection "${XDG_CONFIG_HOME:-$HOME/.config}/st-mq/linux-deploy.json"
 ```
 
 ### Deploy an already stopped service
@@ -238,7 +279,7 @@ those artifacts before repeating setup into an empty location; setup does not
 erase them. Never delete application data to fix deployment.
 
 Changing the environment or service requires explicit installation maintenance;
-deployment refuses a mismatched service instead of rewriting it. Old code releases
+deployment refuses a mismatched service instead of rewriting it. Inactive releases
 are not automatically removed. Remove an inactive release only after checking
 `current` and running process references.
 

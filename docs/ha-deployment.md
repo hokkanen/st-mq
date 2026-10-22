@@ -17,7 +17,7 @@ Supervisor's schema and shared defaults are refreshed to the deployed commit.
 ## One-time setup
 
 Install the checkout's dependencies with `npm ci`. Ubuntu needs the OpenSSH
-client. Home Assistant must already have Home Energy installed from its Git
+client. Home Assistant must already have the `st-mq` app installed from its Git
 repository and Advanced SSH & Web Terminal running with SSH access configured.
 Reuse the SSH key and trusted host entry that already work from Ubuntu. The
 script uses noninteractive authentication and strict host-key verification; it
@@ -60,10 +60,8 @@ npm run deploy:ha -- --connection "$HOME/.config/st-mq/ha-deployment/connection.
 
 If more than one matching app is installed, add `app_slug` with its exact slug
 from HA. The optional `sync_timeout_seconds` defaults to 900 and accepts integers
-from 1 to 86400, matching Linux. Only these three connection fields are accepted. The retired
-`url`, `token_path` and `terminal_slug` fields are rejected; replace the connection
-file explicitly. There is no web-terminal fallback or automatic conversion.
-An earlier local token file is unused and is never automatically deleted.
+from 1 to 86400, matching Linux. Only these three connection fields are accepted;
+unknown fields are rejected.
 
 ## Each paired deployment
 
@@ -212,14 +210,12 @@ no uncertain operation is automatically replayed. Each logical command uses
 noninteractive SSH without an inherited multiplexed session. This avoids browser
 terminal state and does not attach to an unrelated SSH session.
 
-A directory named `/tmp/home-energy-deploy-<app-slug>.lock` in the SSH app prevents
+A directory named `/tmp/st-mq-deploy-<app-slug>.lock` in the SSH app prevents
 overlapping runs. After confirming that the previous deployment process and
 Supervisor rebuild have finished, remove that empty directory with `rmdir`
-before retrying. Never remove it while a deployment is running. A lock retained
-by an interrupted web-terminal deployment has the same ownership and must also
-be inspected before removal.
+before retrying. Never remove it while a deployment is running.
 
-Deployment-owned temporary files under `/tmp/home-energy-deploy-*` are retained
+Deployment-owned temporary files under `/tmp/st-mq-deploy-*` are retained
 on failure for inspection; successful runs remove their own files and lock.
 A retry starts a fresh transfer. Neither retry nor lock removal erases app data.
 Errors identify existing locks, command failure, transport failure and the failed

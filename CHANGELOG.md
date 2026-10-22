@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Standardize deployment paths and service names on `st-mq`. Linux setup examples
+  generate private files with resolved home paths, Node executable and `$USER`
+  for system scope. Document fresh setup and routine updates, and keep the
+  separately installed VIP helper independent of application storage modules.
+
 - Align HA and Linux deployment: both normally verify a running paired slave,
   prepare, stop, deploy, restart and wait for synchronization. Both offer
   `--stopped` for an already stopped target, leaving it stopped without lifecycle
@@ -1651,8 +1656,8 @@ repository source for this release.
 
 ### Added
 
-- One Node application for standalone Linux and the Home Assistant **Home Energy**
-  app, with a shared dashboard, simulated startup and independent feature controls.
+- One Node application for standalone Linux and the Home Assistant app, with a
+  shared dashboard, simulated startup and independent feature controls.
 - Home thermal learning with deterministic journal reconstruction, reversible
   source corrections, price-based heating plans and complete-cycle assessments.
 - Durable Garage Normal/Away targets and the `shelly-cn105/v2` integration for

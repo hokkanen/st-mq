@@ -84,7 +84,7 @@ function workflowFixture(t, { managed = false, snapshot, buildFailure = false, l
         if (lostLockResponse) throw new DeploymentTransportError('SSH connection lost; the submitted operation may still be running');
         return { exitCode: existingLock ? 73 : 0, output: '' };
       }
-      if (/^umask 077\nmkdir \/tmp\/home-energy-deploy-[a-f0-9]+$/.test(script)) return { exitCode: 0, output: '' };
+      if (/^umask 077\nmkdir \/tmp\/st-mq-deploy-[a-f0-9]+$/.test(script)) return { exitCode: 0, output: '' };
       if (input !== undefined && script.includes('sha256sum')) {
         assert.ok(Buffer.isBuffer(input), 'upload streams bytes directly');
         const path = script.match(/sha256sum '([^']+)'/)[1];
@@ -228,7 +228,7 @@ for (const state of ['started', 'unknown', 'synthetic-private-state']) {
   test(`initial app state ${state} reports preflight refusal without implying deployment mutations`, async t => {
     const fixture = workflowFixture(t, { initialState: state });
     await assert.rejects(fixture.deploy(), error => {
-      assert.match(error.message, /Stop Home Energy in HA/);
+      assert.match(error.message, /Stop the st-mq app in HA/);
       assert.match(error.message, /Deployment stopped during app preflight/);
       assert.match(error.message, /observed (started|unknown|unrecognized)/);
       assert.match(error.message, /No remote changes were attempted by this run/);
@@ -271,7 +271,7 @@ for (const stoppedAfterRebuild of [false, true]) {
     await fixture.deploy();
     const reads = fixture.events.filter(event => event.type === 'ssh' && event.script.startsWith('docker container ls '));
     assert.equal(reads.length, 5, 'each error-state observation requires new Docker evidence');
-    assert.match(fixture.messages[0], /Supervisor reports error; Docker confirms Home Energy is stopped/);
+    assert.match(fixture.messages[0], /Supervisor reports error; Docker confirms the st-mq app is stopped/);
     assert.match(fixture.messages.at(-2), /App remains stopped/);
     assert.ok(!fixture.events.some(event => event.type === 'api' && /\/(start|restart|stop)$/.test(event.endpoint)));
   });
@@ -339,7 +339,7 @@ test('successful deployment runs the emitted image verifier before final stopped
   assert.notEqual(verificationIndex, -1);
   const finalEvents = fixture.events.slice(verificationIndex + 1);
   assert.equal(finalEvents[0].endpoint, '/addons/synthetic_st-mq/info');
-  assert.match(finalEvents.at(-2).script, /rmdir \/tmp\/home-energy-deploy-synthetic_st-mq\.lock/);
+  assert.match(finalEvents.at(-2).script, /rmdir \/tmp\/st-mq-deploy-synthetic_st-mq\.lock/);
   assert.equal(finalEvents.at(-3).endpoint, '/store');
   assert.equal(finalEvents.at(-1).type, 'close');
   assert.equal(fixture.events.filter(event => event.type === 'api' && event.endpoint.endsWith('/rebuild')).length, 1);
@@ -391,7 +391,7 @@ test('Supervisor reordering saved options during rebuild still completes image v
   await fixture.deploy();
   assert.equal(fixture.events.filter(event => event.type === 'api' && event.endpoint.endsWith('/rebuild')).length, 1);
   assert.ok(fixture.events.some(event => event.type === 'ssh' && event.script.includes('docker run')));
-  assert.ok(fixture.events.some(event => event.type === 'ssh' && /rmdir \/tmp\/home-energy-deploy-synthetic_st-mq\.lock/.test(event.script)));
+  assert.ok(fixture.events.some(event => event.type === 'ssh' && /rmdir \/tmp\/st-mq-deploy-synthetic_st-mq\.lock/.test(event.script)));
   assert.ok(!fixture.events.some(event => event.type === 'api' && /\/(start|restart|stop)$/.test(event.endpoint)));
   assert.match(fixture.messages.at(-2), /Stored-file metadata and saved settings unchanged through the stopped deployment window\. App remains stopped/);
 });
@@ -486,7 +486,7 @@ test('managed HA deployment stops a verified slave, brackets preservation checks
   const stop = index('/stop'), rebuild = index('/rebuild'), start = index('/start');
   const snapshot = f.events.findIndex(e => e.type === 'ssh' && e.input?.toString().includes('\n snapshot(FILE_HASSIO_APPS'));
   const verification = f.events.findLastIndex(e => e.type === 'ssh' && /^ verify\(FILE_HASSIO_APPS,.*check_files=True\)/m.test(e.input?.toString() ?? ''));
-  const cleanup = f.events.findIndex(e => e.type === 'ssh' && e.script.includes('rmdir /tmp/home-energy-deploy'));
+  const cleanup = f.events.findIndex(e => e.type === 'ssh' && e.script.includes('rmdir /tmp/st-mq-deploy'));
   assert(stop > 0 && stop < snapshot && snapshot < rebuild && rebuild < verification && verification < start && start < cleanup);
   assert.equal(f.events.filter(e => e.endpoint?.endsWith('/stop')).length, 1);
   assert.equal(f.events.filter(e => e.endpoint?.endsWith('/start')).length, 1);
@@ -564,7 +564,7 @@ test('managed HA cannot report success if synchronization regresses during final
     snapshot: (s, reads) => reads === 4 ? { ...s, pair: { ...s.pair, sync: { state: 'syncing' } } } : s });
   await assert.rejects(f.deploy(), /has not completed synchronization/);
   assert(!f.messages.some(s => s.startsWith('Verified ')));
-  assert(!f.events.some(e => e.type === 'ssh' && e.script.includes('rmdir /tmp/home-energy-deploy')));
+  assert(!f.events.some(e => e.type === 'ssh' && e.script.includes('rmdir /tmp/st-mq-deploy')));
 });
 
 test('managed HA rejects a different node after Start', async t => {
@@ -586,5 +586,5 @@ test('managed HA synchronization timeout leaves the started app for inspection w
     snapshot: (s, reads) => reads > 2 ? { ...s, pair: { ...s.pair, sync: { state: 'syncing', error: null } } } : s });
   await assert.rejects(f.deploy(), /Synchronization timed out/);
   assert.equal(f.events.filter(e => e.endpoint?.endsWith('/start')).length, 1);
-  assert(!f.events.some(e => e.type === 'ssh' && e.script.includes('rmdir /tmp/home-energy-deploy')));
+  assert(!f.events.some(e => e.type === 'ssh' && e.script.includes('rmdir /tmp/st-mq-deploy')));
 });

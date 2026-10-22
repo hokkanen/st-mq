@@ -172,8 +172,9 @@ and merges it without expanding or rewriting it. Removing an override restores
 the shared default on the next application. Keep the directory at mode `0700`
 and the file at `0600`.
 
-In Home Assistant, save options under **Settings → Apps → Home Energy → Configuration**,
-then use **Check & review configuration** and **Apply reviewed configuration**
+In Home Assistant, select the installed `st-mq` app under **Settings → Apps** and
+save options on its **Configuration** tab, then use **Check & review configuration**
+and **Apply reviewed configuration**
 in ST-MQ. The English form labels/descriptions come from `translations/en.yaml`;
 the YAML editor uses the exact option keys in `config.json.schema`. These files
 are still supported by the current Home Assistant app format.
@@ -247,8 +248,8 @@ configuration source and lets you check corrected settings before restarting.
 Database and other runtime failures are not configuration recovery cases.
 
 In Home Assistant, start the app explicitly after deployment and open
-**Home Energy → Open Web UI**. Recovery accepts only Home Assistant ingress;
-direct access stays closed. Unknown removed fields normally permit the container
+the installed `st-mq` app's **Open Web UI** action. Recovery accepts only Home
+Assistant ingress; direct access stays closed. Unknown removed fields normally permit the container
 to start into application recovery. If Supervisor rejects missing required
 settings or malformed values before starting the container, correct those in
 Home Assistant's Configuration editor first; the recovery page cannot run until

@@ -1,11 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, mkdir, copyFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { manageVip, serveVip } from '../scripts/pair-vip.js';
 import { requestVipSocket, validateVip, VirtualIP } from '../src/pairing/vip.js';
+
+test('documented restricted helper installation runs independently of application storage modules', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'st-mq-installed-vip-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const path of ['scripts', 'src/pairing']) await mkdir(join(root, path), { recursive: true });
+  for (const path of ['package.json', 'scripts/pair-vip.js', 'src/pairing/vip.js'])
+    await copyFile(new URL('../' + path, import.meta.url), join(root, path));
+  const result = spawnSync(process.execPath, [join(root, 'scripts/pair-vip.js'), 'invalid-action'], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, 'error:vip_failed\n');
+  assert.equal(result.stderr, 'VIP operation failed.\n');
+});
 
 test('VIP policy accepts only fixed validated address and reports real release failures', async t => {
   const root = await mkdtemp(join(tmpdir(), 'stmq-pair-vip-')); t.after(() => rm(root, { recursive: true, force: true }));

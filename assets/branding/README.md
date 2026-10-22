@@ -1,6 +1,6 @@
 # ST-MQ branding assets
 
-[smart-timing.svg](smart-timing.svg) is the editable source for the Home Energy
+[smart-timing.svg](smart-timing.svg) is the editable source for the ST-MQ
 clock-and-lightning artwork. It contains vector shapes with no fonts, embedded
 bitmaps or external assets, and follows the project MIT license.
 
@@ -22,8 +22,8 @@ for store artwork requirements.
 
 ## Installed Android app icons
 
-The dashboard links [app.webmanifest](../../chart/public/app.webmanifest), using
-the name **Home Energy** and the forest green launch background. Its dedicated
+The dashboard links [app.webmanifest](../../chart/public/app.webmanifest) for
+installation metadata and uses the forest green launch background. Its dedicated
 192 px and 512 px PNGs are exported from the Smart timing vector. The 512 px
 maskable variant has an opaque forest green background; the clock and bolt fit
 inside Android's central circular safe area (radius 40% of the image width).
@@ -42,16 +42,17 @@ installed (an artwork tool only, not an application dependency):
 python3 - <<'PY'
 from pathlib import Path
 import cairosvg
+import json
 
 source = Path('assets/branding/smart-timing.svg').read_bytes()
 output = Path('chart/public/icons')
 output.mkdir(parents=True, exist_ok=True)
-for size in (192, 512):
+manifest = json.loads(Path('chart/public/app.webmanifest').read_text())
+for icon in manifest['icons']:
+    size = int(icon['sizes'].split('x')[0])
     cairosvg.svg2png(bytestring=source, output_width=size, output_height=size,
-                    write_to=str(output / f'home-energy-{size}.png'))
-cairosvg.svg2png(bytestring=source, output_width=512, output_height=512,
-                background_color='#101e19',
-                write_to=str(output / 'home-energy-maskable-512.png'))
+                    background_color='#101e19' if icon.get('purpose') == 'maskable' else None,
+                    write_to=str(Path('chart/public') / icon['src']))
 PY
 ```
 

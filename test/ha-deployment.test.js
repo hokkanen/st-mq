@@ -39,7 +39,7 @@ test('deployment requires a stopped app with valid identity and matching manifes
   assert.doesNotThrow(() => validateDeploymentState(app, manifest));
   assert.doesNotThrow(() => validateDeploymentState({ ...app, state: 'started' }, manifest, { running: true }));
   assert.throws(() => validateDeploymentState(app, manifest, { running: true }), /running paired slave/);
-  for (const state of ['started', 'starting', 'unknown', undefined]) assert.throws(() => validateDeploymentState({ ...app, state }, manifest), /Stop Home Energy/);
+  for (const state of ['started', 'starting', 'unknown', undefined]) assert.throws(() => validateDeploymentState({ ...app, state }, manifest), /Stop the st-mq app/);
   assert.throws(() => validateDeploymentState(app, { version: '0.9.6' }), /versions differ/);
   assert.throws(() => validateDeploymentState({ ...app, repository: undefined }, manifest), /Git-backed/);
   assert.throws(() => validateDeploymentState({ ...app, slug: "invalid'; false" }, manifest), /identity/);
@@ -47,7 +47,7 @@ test('deployment requires a stopped app with valid identity and matching manifes
 
 test('Supervisor error requires separate stopped-container evidence and preserves the original state', async () => {
   const failed = { ...app, state: 'error' };
-  assert.throws(() => validateDeploymentState(failed, { version: app.version }), /Stop Home Energy/);
+  assert.throws(() => validateDeploymentState(failed, { version: app.version }), /Stop the st-mq app/);
   assert.throws(() => validateUnchangedApp(failed, app), /state/);
   for (const output of ['', ...['app_', 'addon_'].map(prefix => JSON.stringify({ Names: prefix + app.slug, State: 'exited' }))]) {
     const evidence = await readStoppedEvidence({ run: async () => ({ exitCode: 0, output }) }, failed);
@@ -55,7 +55,7 @@ test('Supervisor error requires separate stopped-container evidence and preserve
     assert.doesNotThrow(() => validateUnchangedApp(failed, app, evidence));
     assert.equal(failed.state, 'error');
     for (const state of ['started', 'starting', 'startup', 'unknown', undefined]) {
-      assert.throws(() => validateDeploymentState({ ...app, state }, { version: app.version }, evidence), /Stop Home Energy/);
+      assert.throws(() => validateDeploymentState({ ...app, state }, { version: app.version }, evidence), /Stop the st-mq app/);
       assert.throws(() => validateUnchangedApp({ ...app, state }, app, evidence), /state/);
     }
   }

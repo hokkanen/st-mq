@@ -47,7 +47,7 @@ export function selectApp(apps, slug) {
 export function validateDeploymentState(app, manifest, { running = false, ...evidence } = {}) {
   if (typeof app.slug !== 'string' || !/^[a-z0-9_-]+$/.test(app.slug)) throw new DeploymentError('Invalid app identity');
   if (running && app.state !== 'started') throw new DeploymentError('Default deployment requires a running paired slave; use --stopped only for an already stopped app.');
-  if (!running && !appIsStopped(app, evidence)) throw new DeploymentError(`Stop Home Energy in HA before deploying and wait until it is stopped (observed ${publicAppState(app.state)}); --stopped never stops or starts it.`);
+  if (!running && !appIsStopped(app, evidence)) throw new DeploymentError(`Stop the st-mq app in HA before deploying and wait until it is stopped (observed ${publicAppState(app.state)}); --stopped never stops or starts it.`);
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.version)) throw new DeploymentError('Invalid manifest version');
   if (app.version !== manifest.version) throw new DeploymentError('Installed and checkout versions differ; install the matching version through Supervisor first');
   if (typeof app.repository !== 'string' || !/^[a-z0-9_-]+$/.test(app.repository)) throw new DeploymentError('Expected a Git-backed app repository');
@@ -75,7 +75,7 @@ export async function readStoppedEvidence(ssh, app, { always = false } = {}) {
   // a failed inspect command or rewrite the original Supervisor observation.
   const names = ['app_' + app.slug, 'addon_' + app.slug];
   const result = await ssh.run(`docker container ls --all --filter ${shellQuote(`name=^/(app|addon)_${app.slug}$`)} --format ${shellQuote('{{json .}}')}`);
-  const message = 'Docker could not confirm an absent or exited container. Inspect Home Energy in HA before retrying.';
+  const message = 'Docker could not confirm an absent or exited container. Inspect the st-mq app in HA before retrying.';
   if (result.exitCode !== 0) throw new DeploymentError(message);
   let rows;
   try { rows = result.output.trim().split('\n').filter(Boolean).map(line => JSON.parse(line)); }
@@ -160,8 +160,8 @@ export async function main(args, { checkout = root, connect = connectSSH, superv
   if (git('status', '--porcelain')) throw new DeploymentError('Commit or set aside local changes before deploying');
   const target = git('rev-parse', 'HEAD');
   const manifest = JSON.parse(git('show', target + ':config.json'));
-  const local = mkdtempSync(join(tmpdir(), 'home-energy-deploy-'));
-  const remote = '/tmp/home-energy-deploy-' + randomBytes(10).toString('hex');
+  const local = mkdtempSync(join(tmpdir(), 'st-mq-deploy-'));
+  const remote = '/tmp/st-mq-deploy-' + randomBytes(10).toString('hex');
   let ssh, phase = 'SSH connection';
   let remoteChangesPossible = false, rebuildSubmitted = false, rebuildCompleted = false;
   let lifecycle = 'No lifecycle commands requested.';
@@ -183,7 +183,7 @@ export async function main(args, { checkout = root, connect = connectSSH, superv
       initialRuntime = await readRuntime(ssh, app);
       identity = validateStandby(initialRuntime?.pair, null, initialRuntime?.observedAt, true);
     }
-    if (app.state === 'error') log('Supervisor reports error; Docker confirms Home Energy is stopped. Continuing with fresh container checks.');
+    if (app.state === 'error') log('Supervisor reports error; Docker confirms the st-mq app is stopped. Continuing with fresh container checks.');
     const readUnchangedApp = async (options = {}) => {
       const current = await api(`/addons/${app.slug}/info`);
       if (current.slug !== app.slug) throw new DeploymentError('Supervisor returned a different app identity');
@@ -226,7 +226,7 @@ PY`));
     phase = 'remote lock';
     // Mark before submission: a lost response cannot prove the lock was not created.
     remoteChangesPossible = true;
-    const lock = await ssh.run(`umask 077\nif mkdir /tmp/home-energy-deploy-${app.slug}.lock; then exit 0; fi\nif test -e /tmp/home-energy-deploy-${app.slug}.lock; then exit 73; fi\nexit 74`);
+    const lock = await ssh.run(`umask 077\nif mkdir /tmp/st-mq-deploy-${app.slug}.lock; then exit 0; fi\nif test -e /tmp/st-mq-deploy-${app.slug}.lock; then exit 73; fi\nexit 74`);
     if (lock.exitCode === 73) throw new DeploymentError('A deployment lock already exists. Confirm the previous deployment and any Supervisor rebuild have finished, then remove only the empty deployment lock before retrying');
     if (lock.exitCode !== 0) throw new DeploymentError('Could not create the remote deployment lock');
     phase = 'remote workspace';
@@ -381,7 +381,7 @@ PY`));
     }
     // Only deployment-owned temporary files are removed, after all checks pass.
     phase = 'cleanup';
-    await execute(`docker exec hassio_supervisor rm -f ${remote}-step.py ${remote}-before.json ${remote}.bundle && rm -rf ${remote} && rmdir /tmp/home-energy-deploy-${app.slug}.lock`);
+    await execute(`docker exec hassio_supervisor rm -f ${remote}-step.py ${remote}-before.json ${remote}.bundle && rm -rf ${remote} && rmdir /tmp/st-mq-deploy-${app.slug}.lock`);
     log(`Verified ${target.slice(0, 12)}: ${checked.sourceFiles} source files, ${checked.frontendFiles} frontend files, ${checked.architecture}. Supervisor schema and defaults match. Stored-file metadata and saved settings unchanged through the stopped deployment window. ${stopped ? 'App remains stopped.' : 'Same paired slave running; no control authority; synchronization ready.'}`);
     if (stopped) log('Start the app explicitly when ready. Incompatible saved fields require configuration recovery; deployment does not remove them.');
   } catch (error) {

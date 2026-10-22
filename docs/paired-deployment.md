@@ -6,8 +6,7 @@ publishing a release.
 
 For initial commissioning, follow [pair setup](pairing.md). Install the Linux
 runtime with [Linux setup](linux-deployment.md), and configure SSH using
-[HA deployment](ha-deployment.md). Replacing a runner must retain its private
-configuration, databases and saved pairing state.
+[HA deployment](ha-deployment.md).
 
 ## Before updating
 

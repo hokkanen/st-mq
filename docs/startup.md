@@ -2,7 +2,7 @@
 
 For Home Assistant installation and saved app options, see [the setup guide](../DOCS.md).
 The shell commands below are for standalone Linux. In Home Assistant, start,
-stop and restart ST-MQ through **Settings → Apps → Home Energy** and read its **Logs**
+stop and restart the installed `st-mq` app under **Settings → Apps** and read its **Logs**
 tab. Restarting Home Assistant Core alone does not restart the ST-MQ app.
 
 ## Run locally
@@ -160,8 +160,9 @@ electricity rates and the admin/family access policy.
 For a persistent paired Linux standby, use the repository's
 [Linux setup and deployment tools](linux-deployment.md). Setup generates a service
 from explicit installation paths and leaves it stopped; deployment manages its
-standby lifecycle. Stop the previous command owner before commissioning a
-replacement. Independent standalone development can continue using `npm start`.
+standby lifecycle. Run only one application instance against each set of writable
+state directories. Independent standalone development can use `npm start` with
+its own configuration and state directories.
 
 Optional [secure web access](https.md) is set up from **Data & settings → Web
 access**. It downloads its private certificate helper only after administrator

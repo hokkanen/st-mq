@@ -1,11 +1,10 @@
 # ST-MQ
 
 <!-- Home Assistant renders this README outside the repository, so images need absolute URLs. -->
-![Home Energy icon](https://raw.githubusercontent.com/hokkanen/st-mq/main/icon.png)
+![ST-MQ icon](https://raw.githubusercontent.com/hokkanen/st-mq/main/icon.png)
 
-ST-MQ is a local home-energy controller for Home Assistant OS and standalone
-Linux. Its dashboard and Home Assistant app are named **Home Energy**; the
-repository and installation slug are `st-mq`.
+ST-MQ is a local household energy controller for Home Assistant OS and standalone
+Linux. The repository and installation slug are `st-mq`.
 
 **0.9.5-dev.4 is the current development prerelease.** It is
 intended for evaluation and installation-specific commissioning. Default startup
@@ -34,8 +33,8 @@ control permission are separate choices.
 ## Install
 
 Add `https://github.com/hokkanen/st-mq` under **Settings → Apps → Install app →
-⋮ → Repositories** in Home Assistant OS, then select **Home Energy**. The
-repository's default branch, `main`, includes the integrated H66 development work
+⋮ → Repositories** in Home Assistant OS, then select the app from the `st-mq`
+repository. The default branch, `main`, includes the integrated H66 development work
 and publishes this development prerelease. Installations configured with `#H66`
 need the default repository source for this release; a tag does not change their
 configured source.

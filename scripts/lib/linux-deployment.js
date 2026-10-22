@@ -76,7 +76,7 @@ const unitQuote = text => '"' + text.replaceAll('\\', '\\\\').replaceAll('"', '\
 export function serviceText(c) {
   const current = join(c.runtime_dir, 'current');
   return `[Unit]
-Description=Home Energy
+Description=st-mq
 After=network.target
 
 [Service]

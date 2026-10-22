@@ -4,8 +4,8 @@ ST-MQ runs as a Home Assistant **app** (formerly called an add-on) on
 **Home Assistant OS**, on `aarch64` including Raspberry Pi 5, or `amd64`.
 Home Assistant Container has no app manager; run ST-MQ separately using the
 [standalone instructions](docs/startup.md). ST-MQ is installed from
-this repository as **Home Energy**, not through HACS or as a Home Assistant Core
-integration. The project and installation slug remain `st-mq`.
+this repository, with installation slug `st-mq`. It is not installed through HACS
+or as a Home Assistant Core integration.
 See Home Assistant's [installation types](https://www.home-assistant.io/installation/#about-installation-types).
 
 The 0.9.5-dev.4 development prerelease starts with **simulated devices and Pause heating**. Default
@@ -15,8 +15,8 @@ for the algorithm, native-setting restoration and equipment testing limits.
 the independent feature controls and Garage local temperature regulation.
 
 1. Open **Settings → Apps → Install app → ⋮ → Repositories**, add
-   `https://github.com/hokkanen/st-mq` and install **Home Energy** from the
-   **Home Energy apps** repository. The default branch, `main`, contains the
+   `https://github.com/hokkanen/st-mq` and install the app from that repository.
+   The default branch, `main`, contains the
    integrated H66 work and the 0.9.5-dev.4 development prerelease. An existing
    repository configured with `#H66` needs the default repository source for
    this release.
@@ -39,9 +39,9 @@ the independent feature controls and Garage local temperature regulation.
 3. Start ST-MQ and choose **Open Web UI** in Home Assistant. Ingress needs no
    separate application password or router port forwarding. **Start on boot**
    keeps ST-MQ running after a host restart; **Show in sidebar** adds the
-   **Home Energy** entry and is optional.
+   app's sidebar entry and is optional.
    Direct HTTPS and explicitly enabled LAN HTTP backup ask for either
-   configured password and selects its role. The **Home Energy** UI clearly labels simulation.
+   configured password and selects its role. The application UI clearly labels simulation.
    The header button switches between dark and light themes. The browser remembers
    the last choice across page loads, with green dark as the initial default.
 4. The working database is under `/config/st-mq/`, in Home Assistant's public
@@ -337,7 +337,7 @@ browser, container and Supervisor boundaries.
 The folder arrangement follows Home Assistant's [public app configuration
 support](https://developers.home-assistant.io/docs/apps/configuration/#app-advanced-options).
 This `/config` is ST-MQ's own app folder, not Home Assistant Core's configuration
-folder. It is included when **Home Energy** is selected for backup; `/share` is a separate
+folder. It is included when the `st-mq` app is selected for backup; `/share` is a separate
 backup selection.
 
 | Purpose | Inside ST-MQ | In Terminal & SSH |
@@ -362,7 +362,7 @@ database is rejected unchanged. For a clean development start, select a fresh
 path and re-import the supported v0.7.5 CSV files if needed. Current-schema
 backup/restore remains available; restoration never overwrites an existing file.
 
-Use **Settings → System → Backups** and include **Home Energy** for ordinary recovery.
+Use **Settings → System → Backups** and include the `st-mq` app for ordinary recovery.
 The manifest requests **cold backup**, so Supervisor stops a running ST-MQ while
 capturing its database and starts it again afterward. Acquisition and ST-MQ
 control are unavailable during that stop; independent device protection remains
@@ -455,7 +455,7 @@ ingress port because the manifest declares `ingress_port: 0`; ST-MQ reads that
 assignment before opening listeners. The ingress listener accepts only the
 Supervisor proxy.
 
-Home Assistant shows the **Home Energy** sidebar entry to administrators, but
+Home Assistant shows the application's sidebar entry to administrators, but
 `panel_admin` controls visibility only. Every accepted ingress session has full
 ST-MQ admin access, including sessions obtained by authenticated Home Assistant
 nonadministrators. Family restrictions apply only to direct access with the
@@ -485,7 +485,7 @@ from the ST-MQ app and from its English configuration descriptions.
 ## Startup and troubleshooting
 
 Use ST-MQ's **Logs** tab or **Settings → System → Logs** to inspect startup errors.
-Restart or stop the app from **Settings → Apps → Home Energy**; restarting Home Assistant
+Restart or stop the installed `st-mq` app under **Settings → Apps**; restarting Home Assistant
 Core alone does not restart ST-MQ. If a host port is occupied, resolve the existing
 listener before retrying; see [startup](docs/startup.md). A database-format error
 requires an explicit fresh path or compatible backup, never deletion by startup.
@@ -498,7 +498,7 @@ on the recovery page. To remove incompatible saved options, explicitly review
 and save a replacement from that upload: omitted settings return to public
 defaults. The previous options are backed up privately before replacement.
 Ordinary merging preserves omitted saved fields, so it cannot clear them.
-Restart **Home Energy** after validation and saving succeed. Invalid uploads
+Restart the `st-mq` app after validation and saving succeed. Invalid uploads
 remain for correction, and no old configuration or database is converted.
 
 After saving options, use the review/apply workflow above for supported live

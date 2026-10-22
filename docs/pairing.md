@@ -260,7 +260,8 @@ old directories intact; choose another suffix if `fresh-1` has already been used
 
 ### Home Assistant app storage
 
-Stop **Settings → Apps → Home Energy** and keep it stopped while changing storage.
+Stop the installed `st-mq` app under **Settings → Apps** and keep it stopped while
+changing storage.
 The app's `/config` is its own app-configuration directory, exposed to suitable
 file editors or SSH environments as `/addon_configs/<actual-app-slug>`. It is
 not Home Assistant Core's `/config`. Find the actual installed app slug; do not
@@ -272,7 +273,7 @@ sidecars, snapshots and exports under that directory. Leave the sibling
 `secrets.json` file in place. On next start, the app creates a new empty
 `/config/st-mq` database directory.
 
-In Home Energy's **Configuration**, change these two fields in the existing
+In the `st-mq` app's **Configuration**, change these two fields in the existing
 `pair` section while preserving its other settings:
 
 ```yaml
@@ -354,20 +355,23 @@ the ordinary unprivileged service cannot acquire an address by itself.
 
 On Ubuntu, install `iproute2` and `iputils-arping`. The restricted helper runs
 as a separate systemd service with only the network capabilities it needs.
-The `stmq` application user accesses its Unix socket; the main service keeps
+The application account accesses its Unix socket; the main service keeps
 `NoNewPrivileges=true` and does not use `sudo` to change addresses.
 
 From the checkout, install the helper's public code and units into root-owned
-locations. These commands assume the application's existing `stmq` user/group
-and Node at `/usr/bin/node`:
+locations. Run these commands as the non-root application account (`$USER`).
+The helper requires a root-owned Node installation at `/usr/bin/node`:
 
 ```sh
-sudo install -d -m 0755 /usr/local/lib/st-mq/scripts /usr/local/lib/st-mq/src/pairing /usr/local/lib/st-mq/src/replication
+sudo install -d -m 0755 /usr/local/lib/st-mq/scripts /usr/local/lib/st-mq/src/pairing
 sudo install -o root -g root -m 0644 package.json /usr/local/lib/st-mq/package.json
 sudo install -o root -g root -m 0644 scripts/pair-vip.js /usr/local/lib/st-mq/scripts/pair-vip.js
-sudo install -o root -g root -m 0644 src/pairing/vip.js src/pairing/state.js /usr/local/lib/st-mq/src/pairing/
-sudo install -o root -g root -m 0644 src/replication/publication.js /usr/local/lib/st-mq/src/replication/publication.js
-sudo install -o root -g root -m 0644 deploy/st-mq-vip.service deploy/st-mq-vip.socket /etc/systemd/system/
+sudo install -o root -g root -m 0644 src/pairing/vip.js /usr/local/lib/st-mq/src/pairing/
+sudo install -o root -g root -m 0644 deploy/st-mq-vip.service /etc/systemd/system/
+awk -v group="$(id -gn "$USER")" '/^SocketGroup=/{ $0 = "SocketGroup=" group } {print}' deploy/st-mq-vip.socket |
+  sudo tee /etc/systemd/system/st-mq-vip.socket > /dev/null
+sudo chown root:root /etc/systemd/system/st-mq-vip.socket
+sudo chmod 0644 /etc/systemd/system/st-mq-vip.socket
 ```
 
 Create the root-owned policy file shown above with mode `0600`, using the same
@@ -381,9 +385,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now st-mq-vip.socket
 ```
 
-The service is started on demand. Its socket admits only root and the `stmq`
-group, and its policy restricts requests to the configured address. Update the
-installed helper code with ST-MQ releases; it must not point to a checkout that
+The service is started on demand. Its socket admits only root and the application
+account's primary group, and its policy restricts requests to the configured
+address. Update the installed helper code with ST-MQ releases; it must not point to a checkout that
 the unprivileged application user can modify.
 
 The Home Assistant app uses host networking and `NET_ADMIN`/`NET_RAW` for

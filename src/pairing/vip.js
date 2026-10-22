@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import { isIP } from 'node:net';
 import { createConnection } from 'node:net';
-import { pairError } from './state.js';
+
+// The restricted helper is installed independently of the application and Store.
+const pairError = code => Object.assign(new Error(code), { code });
 
 export const VIP_ERRORS = new Set(['vip_failed', 'vip_helper_unavailable', 'vip_helper_permission',
   'vip_policy_invalid', 'vip_policy_mismatch', 'vip_interface_missing', 'vip_command_failed',

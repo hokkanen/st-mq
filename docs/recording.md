@@ -20,7 +20,7 @@ provenance. An older runtime or database is not a supported upgrade input; see
 | H66 | Continuous MQTT publications, plus GETALL every 60 seconds | GETALL republishes the gateway's known values; receipt time is not proof of a new sensor measurement. |
 | Easee charger and Equalizer | SignalR observations, sampled as complete cached snapshots every 15 seconds; REST backup and 15-minute reconciliation | Each field retains its last-reported source time. Sampling faster does not force new measurements. |
 | Shelly EVSE (Charger 2) | MQTT notifications and five-second role/status reads | Source-clocked native accumulated-kWh deltas; requires the configured physical association. |
-| TeslaMate / BMW | Read-only vehicle MQTT | Identity, SoC and vehicle constraints only; never another home-energy contribution. |
+| TeslaMate / BMW | Read-only vehicle MQTT | Identity, SoC and vehicle constraints only; never another household energy contribution. |
 | Indoor/garage sensors | Configured local MQTT topics | The publisher determines its measurement frequency; retained messages are marked explicitly. |
 | FMI outdoor observations, Open-Meteo backup | Every five minutes | A successful fetch can contain the same older station or model timestamp. |
 | FMI/Open-Meteo forecast | Every 30 minutes | Actual forecasts update on provider/model schedules; unchanged content is referenced rather than copied. |
