@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Rename the chart shortcuts to Yesterday + today and Today + next 2 days;
+  the latter now shows three Finnish calendar days.
+
 - Preserve prepared firewood history when logging a new fire or advancing time.
   Reuse unchanged simulations across model-report updates while restarting
   independent validation at the actual training boundary. Genuine numerical

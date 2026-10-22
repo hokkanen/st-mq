@@ -10,7 +10,7 @@ import { Envelope } from '../src/app/chart-data.js';
 test('calendar controls use Finnish dates across UTC midnight, leap days and both clock changes', () => {
   assert.equal(finnishDate(Date.parse('2026-09-07T21:30:00Z')), '2026-09-08');
   assert.deepEqual(selectedRange('yesterday', Date.parse('2026-03-29T21:30:00Z')), { startDate: '2026-03-29', endDate: '2026-03-30' });
-  assert.deepEqual(selectedRange('tomorrow', Date.parse('2026-10-24T22:30:00Z')), { startDate: '2026-10-25', endDate: '2026-10-26' });
+  assert.deepEqual(selectedRange('tomorrow', Date.parse('2026-10-24T22:30:00Z')), { startDate: '2026-10-25', endDate: '2026-10-27' });
   assert.equal(shiftDate('2024-02-28', 1), '2024-02-29');
   assert.equal(shiftDate('2026-01-01', -1), '2025-12-31');
   assert.equal(validDate('2026-02-29'), false);

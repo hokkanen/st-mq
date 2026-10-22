@@ -27,7 +27,7 @@ export function shiftDate(date, days) {
 export function selectedRange(preset, now) {
   const today = finnishDate(now);
   if (preset === 'yesterday') return { startDate: shiftDate(today, -1), endDate: today };
-  if (preset === 'tomorrow') return { startDate: today, endDate: shiftDate(today, 1) };
+  if (preset === 'tomorrow') return { startDate: today, endDate: shiftDate(today, 2) };
   return { startDate: today, endDate: today };
 }
 

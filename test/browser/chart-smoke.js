@@ -244,6 +244,15 @@ try {
   await checkDateAlignment();
   assert.equal(await evaluate("document.getElementById('range-today').getAttribute('aria-pressed')"), 'true');
   assert.equal(await evaluate("Array.from(document.querySelectorAll('.range-shortcuts button')).map(button => button.id).join(',')"), 'range-back,range-yesterday,range-today,range-tomorrow,range-forward');
+  assert.deepEqual(await evaluate("['range-yesterday', 'range-tomorrow'].map(id => document.getElementById(id).textContent)"), ['Yesterday + today', 'Today + next 2 days']);
+  for (const theme of ['light', 'dark']) for (const width of [320, 390, 1440]) {
+    if (await evaluate('document.documentElement.dataset.theme') !== theme)
+      await evaluate("document.getElementById('theme-toggle').click(); true");
+    await command('browsingContext.setViewport', { context, viewport: { width, height: 1100 }, devicePixelRatio: 1 });
+    await checkRangeSteps();
+    assert.equal(await evaluate("[...document.querySelectorAll('.range-shortcuts button')].every(button => button.scrollWidth <= button.clientWidth)"), true,
+      `${theme}/${width}: shortcut labels fit their buttons`);
+  }
   await checkRangeSteps();
   assert.equal(await evaluate("document.getElementById('history').dataset.view"), 'power');
   await evaluate("document.getElementById('chart-series-toggle').click(); true");
@@ -790,7 +799,7 @@ try {
   }
   // Rapid changes must settle on the last request even if previous requests finish late.
   await evaluate("document.getElementById('range-yesterday').click(); document.getElementById('range-tomorrow').click(); true");
-  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07' && document.getElementById('history').dataset.rangeEnd === '2026-09-08'");
+  await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07' && document.getElementById('history').dataset.rangeEnd === '2026-09-09'");
   assert.equal(await evaluate("document.getElementById('date-end').disabled"), false);
   await evaluate("document.getElementById('date-start').value='2026-09-08'; document.getElementById('date-end').value='2026-09-08'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-08' && document.getElementById('history').dataset.rangeEnd === '2026-09-08'");

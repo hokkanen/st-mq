@@ -183,10 +183,11 @@ daytime applies November–March, Monday–Saturday 07:00–22:00.
 
 The main chart defaults to today's complete Finnish calendar day. Choose a start
 date to view one day immediately; the second date picker extends the inclusive
-range immediately. Both pickers remain available in chart inspection mode. **Yesterday – today**, **Today**,
-**Today – tomorrow** shortcuts keep both observations and forecasts within the
-selected dates. The small outer arrows move the shown window one calendar day
-back or forward while preserving its length. The **Left axis** drawer offers
+range immediately. Both pickers remain available in chart inspection mode. **Yesterday + today**, **Today**,
+**Today + next 2 days** shortcuts keep both observations and forecasts within the
+selected dates; the last shortcut shows today and the following two days. The
+small outer arrows move the shown window one calendar day back or forward while
+preserving its length. The **Left axis** drawer offers
 Power, phase currents, home temperatures, live heating integral,
 solar radiation and all four historical learning metrics. **Average indoor**, Garage, outdoor temperature and prices remain
 available on the right with their existing colours. Average indoor is the configured
