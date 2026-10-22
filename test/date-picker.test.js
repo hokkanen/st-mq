@@ -66,7 +66,7 @@ function fixture(value = '2026-09-27', min = '2026-09-01', options = {}) {
   };
 }
 
-test('opening preserves the suggested end date and clicking that same day explicitly selects it', () => {
+test('opening preserves the selected date and clicking that same day explicitly selects it', () => {
   const f = fixture();
   assert.equal(f.popup.parentNode, f.panel, 'The fullscreen chart owns its calendar focus targets');
   assert.equal(f.open().defaultPrevented, true);
@@ -81,7 +81,37 @@ test('opening preserves the suggested end date and clicking that same day explic
   assert.equal(f.input.getAttribute('aria-expanded'), 'false');
 });
 
-test('Escape, outside interactions, and programmatic dismissal keep the suggestion without selecting', () => {
+test('Today selects the Finnish current day and closes, including after midnight while open', () => {
+  for (const instant of ['2026-09-27T21:05:00Z', '2026-10-25T22:05:00Z']) {
+    let now = Date.parse(instant) - 86400000;
+    const f = fixture('2026-09-01', '', { now: () => now });
+    f.open();
+    now = Date.parse(instant);
+    f.emit(f.button('Today'), 'click');
+    const expected = instant.startsWith('2026-09') ? '2026-09-28' : '2026-10-26';
+    assert.equal(f.input.value, expected);
+    assert.deepEqual(f.selections, [expected]);
+    assert.equal(f.popup.hidden, true);
+    assert.equal(f.document.activeElement, f.input);
+  }
+});
+
+test('Today respects date bounds and Close leaves the selection unchanged', () => {
+  const f = fixture('2026-09-28', '2026-09-28', { now: () => Date.parse('2026-09-27T12:00:00Z') });
+  f.open();
+  assert.equal(f.button('Today').disabled, true);
+  f.emit(f.button('Today'), 'click');
+  assert.deepEqual(f.selections, []);
+  assert.equal(f.input.value, '2026-09-28');
+  f.input.min = ''; f.input.max = '2026-09-26';
+  f.open();
+  assert.equal(f.button('Today').disabled, true);
+  f.emit(f.button('Close'), 'click');
+  assert.equal(f.popup.hidden, true);
+  assert.deepEqual(f.selections, []);
+});
+
+test('Escape, outside interactions, and programmatic dismissal keep the value without selecting', () => {
   const f = fixture();
   for (const dismiss of [
     () => f.emit(f.document.activeElement, 'keydown', { key: 'Escape' }),
@@ -97,7 +127,7 @@ test('Escape, outside interactions, and programmatic dismissal keep the suggesti
   }
 });
 
-test('an earlier suggestion stays unchanged while its calendar opens at the minimum valid date', () => {
+test('an invalid earlier date stays unchanged while its calendar opens at the minimum valid date', () => {
   const f = fixture('2026-08-20', '2026-09-10');
   f.open();
   assert.equal(f.input.value, '2026-08-20');
@@ -195,6 +225,7 @@ test('the start calendar uses the shared UI and keeps typed dates subject to cal
 
 test('date and time selection stages a draft until Set, preserves cancellation and supports clearing', () => {
   const f = fixture('2026-09-27T09:30', '', { mode: 'datetime-local' });
+  assert.equal(f.button('Today'), null, 'Date/time controls retain explicit Set confirmation');
   f.open();
   assert.equal(f.field('hour').value, '09');
   assert.equal(f.field('minute').value, '30');

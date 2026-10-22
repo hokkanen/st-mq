@@ -1807,8 +1807,11 @@ loop. An independent archive worker preserves the configured recent cache during
 history requests.
 The **Energy cost comparisons** fold starts closed beneath the chart, alongside
 **Recording details**. Its **Comparison period** has independent start/end
-calendars with the same single-day and explicit end-selection behavior as the
-chart. The initial period is today. **Last 7 days** includes today; **Last month**
+calendars with the same behavior as the chart and Recorded energy checks. Selecting
+a start date sets both fields to that day; the end field stays editable with its
+normal appearance. **Today** at the bottom left selects the current Finnish day
+for the open field and closes the calendar; **Close** stays at the bottom right.
+The initial period is today. **Last 7 days** includes today; **Last month**
 and **Last year** select complete calendar periods; **This year** runs from
 January 1 through today. All dates use Finnish time and stay fixed across
 midnight until the reader chooses again. A comparison-date change does not move

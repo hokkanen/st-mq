@@ -308,9 +308,8 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     await key('\uE012');
     await key('\uE007');
     await waitComparison('2026-09-05');
-    assert.equal(await evaluate("document.getElementById('comparison-date-end').value"), '2026-09-06',
-      'A new comparison start shows one day while keeping the existing end-date suggestion');
-    assert.equal(await evaluate("document.getElementById('comparison-date-end').dataset.singleDay"), 'true');
+    assert.equal(await evaluate("document.getElementById('comparison-date-end').value"), '2026-09-05',
+      'A new comparison start sets both fields to that day');
     assert.equal(await evaluate("document.activeElement.id"), 'comparison-date-start', 'Selecting a calendar day restores date-field focus');
     await tap('#comparison-date-end');
     await until("document.getElementById('comparison-date-end').getAttribute('aria-expanded') === 'true'");
@@ -320,10 +319,10 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
       return popup.getAttribute('role') === 'dialog' && popup.querySelector('[data-date="2026-09-04"]').disabled
         && popup.querySelectorAll('.date-picker-weekdays > span').length === 7;
     })()`), true, 'The end calendar disables dates before the selected start');
+    await key('\uE014');
     await key('\uE007');
     await waitComparison('2026-09-05', '2026-09-06');
-    assert.equal(await evaluate("document.getElementById('comparison-date-end').dataset.singleDay"), 'false',
-      'Confirming an unchanged end-date suggestion activates the range immediately');
+    assert.equal(await evaluate("document.getElementById('comparison-date-end').value"), '2026-09-06');
     const validResults = await text('#timing-benefit');
     await evaluate("document.getElementById('comparison-date-end').value = '2026-09-04'; document.getElementById('comparison-date-end').dispatchEvent(new Event('change')); true");
     assert.equal(await evaluate("document.getElementById('comparison-date-end').checkValidity()"), false,

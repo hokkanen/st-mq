@@ -684,25 +684,22 @@ try {
     };
     return true;
   })()`);
-  // A start applies one day immediately while the end field remembers its date.
+  // A start applies one day immediately and sets both fields to that day.
   await evaluate("document.getElementById('date-start').value='2024-09-07'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
   await checkRange('2024-09-07');
-  assert.equal(await evaluate("document.getElementById('date-end').value"), '2026-09-07');
-  assert.equal(await evaluate("document.getElementById('date-end').dataset.singleDay"), 'true');
+  assert.equal(await evaluate("document.getElementById('date-end').value"), '2024-09-07');
   assert.equal(await evaluate("document.getElementById('date-end').disabled"), false);
   await evaluate("document.getElementById('date-end').value='2024-09-09'; document.getElementById('date-end').dispatchEvent(new Event('change')); true");
   await checkRange('2024-09-07', '2024-09-09');
   await evaluate("document.getElementById('date-start').value='2024-09-06'; document.getElementById('date-start').dispatchEvent(new Event('change')); true");
   await checkRange('2024-09-06');
-  assert.equal(await evaluate("document.getElementById('date-end').value"), '2024-09-09');
+  assert.equal(await evaluate("document.getElementById('date-end').value"), '2024-09-06');
   await evaluate("document.getElementById('date-end').click(); true");
-  assert.equal(await evaluate("document.activeElement.dataset.date"), '2024-09-09');
+  assert.equal(await evaluate("document.activeElement.dataset.date"), '2024-09-06');
   await checkRange('2024-09-06');
   await evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true");
-  assert.equal(await evaluate("document.getElementById('date-end').dataset.singleDay"), 'true');
   await evaluate("document.getElementById('date-end').click(); document.querySelector('.date-picker:not([hidden]) .date-picker-day[data-date=\"2024-09-09\"]').click(); true");
   await checkRange('2024-09-06', '2024-09-09');
-  assert.equal(await evaluate("document.getElementById('date-end').dataset.singleDay"), 'false');
   await evaluate("document.getElementById('date-start').dispatchEvent(new Event('change')); true");
   await checkRange('2024-09-06');
   const beforeInvalid = await evaluate('window.dateFixture.requests');

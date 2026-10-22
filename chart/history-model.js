@@ -31,7 +31,7 @@ export function selectedRange(preset, now) {
   return { startDate: today, endDate: today };
 }
 
-/** A new start shows one day; the end picker keeps its own suggested date. */
+/** A new start sets both fields to that day; an end extends the inclusive range. */
 export function dateSelection(selection, field, value) {
   if (!validDate(value)) return null;
   if (field === 'start') return { startDate: value, endDate: value };

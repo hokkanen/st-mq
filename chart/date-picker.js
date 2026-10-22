@@ -18,8 +18,8 @@ function moveMonth(value, amount) {
   return iso(first + (Math.min(day, (date.getTime() - first) / DAY) - 1) * DAY);
 }
 
-/** Shared application calendar. Explicit day selection also confirms an unchanged
- * end-date suggestion; date/time drafts are committed only with Set. */
+/** Shared application calendar. Dates commit immediately; date/time drafts
+ * are committed only with Set. */
 export function createDatePicker(input, { onSelect, label = 'Choose date', mode = 'date', now = () => Date.now() } = {}) {
   const document = input.ownerDocument, window = document.defaultView;
   const listeners = [], originalAttributes = {};
@@ -67,7 +67,9 @@ export function createDatePicker(input, { onSelect, label = 'Choose date', mode 
   const closeButton = button('date-picker-close', 'Close');
   const footer = element('div', 'date-picker-actions');
   const clearButton = button('date-picker-clear', 'Clear');
+  const todayButton = withTime ? null : button('date-picker-today', 'Today');
   clearButton.hidden = input.required;
+  if (todayButton) footer.append(todayButton);
   footer.append(clearButton, closeButton);
   popup.append(header, weekdays, days);
   let hour, minute, apply;
@@ -139,6 +141,13 @@ export function createDatePicker(input, { onSelect, label = 'Choose date', mode 
   const clamp = value => minimum() && value < minimum() ? minimum() : maximum() && value > maximum() ? maximum() : value;
   const dayLabel = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'long', year: 'numeric' });
   const monthLabel = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', month: 'long', year: 'numeric' });
+  // Application dates always mean Finland, independent of browser timezone.
+  const localClock = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  });
+  const localParts = () => Object.fromEntries(localClock.formatToParts(now()).map(({ type, value }) => [type, value]));
+  const localDate = parts => `${parts.year}-${parts.month}-${parts.day}`;
 
   function position() {
     if (!open) return;
@@ -172,6 +181,7 @@ export function createDatePicker(input, { onSelect, label = 'Choose date', mode 
     }
   }
   function render(focus = false) {
+    if (todayButton) todayButton.disabled = !allowed(localDate(localParts()));
     caption.textContent = monthLabel.format(timestamp(month));
     previous.disabled = Boolean(minimum() && month <= `${minimum().slice(0, 7)}-01`);
     next.disabled = Boolean(maximum() && month >= `${maximum().slice(0, 7)}-01`);
@@ -191,12 +201,8 @@ export function createDatePicker(input, { onSelect, label = 'Choose date', mode 
   function show() {
     if (unavailable()) return;
     observeContext();
-    // The controller's local dates always mean Finland, independent of browser timezone.
-    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-    }).formatToParts(now()).map(({ type, value }) => [type, value]));
-    const today = `${parts.year}-${parts.month}-${parts.day}`;
+    const parts = localParts();
+    const today = localDate(parts);
     focusedDate = clamp(validDate(input.value.slice(0, 10)) ? input.value.slice(0, 10) : minimum() || today);
     selectedDate = focusedDate;
     if (withTime) {
@@ -229,6 +235,7 @@ export function createDatePicker(input, { onSelect, label = 'Choose date', mode 
   listen(next, 'click', () => navigate(1));
   listen(closeButton, 'click', () => dismiss(true));
   listen(clearButton, 'click', () => select(''));
+  if (todayButton) listen(todayButton, 'click', () => select(localDate(localParts())));
   function applyTime() {
     if (hour.value === '' || minute.value === '' || !Number.isInteger(Number(hour.value)) || !Number.isInteger(Number(minute.value))
       || Number(hour.value) < 0 || Number(hour.value) > 23 || Number(minute.value) < 0 || Number(minute.value) > 59) {

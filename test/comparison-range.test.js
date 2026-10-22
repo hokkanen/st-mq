@@ -78,7 +78,7 @@ function historySelectionStatus(historySelection, historyRevision = 4) {
 }
 
 function comparisonControlState(f) {
-  return { start: f.start.value, end: f.end.value, endMin: f.end.min, singleDay: f.end.dataset.singleDay,
+  return { start: f.start.value, end: f.end.value, endMin: f.end.min,
     presets: ['week', 'month', 'year', 'previous-year'].map(period => f.get(`comparison-period-${period}`).getAttribute('aria-pressed')),
     expanded: f.get('comparison-toggle').getAttribute('aria-expanded'), contentHidden: f.get('comparison-content').hidden,
     focused: f.document.activeElement?.id };
@@ -115,26 +115,43 @@ test('the first status sets Finnish dates and later midnight polls preserve the 
   assert.equal(f.get('comparison-period-week').getAttribute('aria-pressed'), 'true');
 });
 
-test('custom starts select one day, retain the end suggestion and reject invalid end dates', async t => {
+test('custom starts set both date fields and reject invalid end dates', async t => {
   const f = fixture(); t.after(() => f.controller.close());
   const first = f.controller.refresh({ now: NOW }); await tick(); reply(f.requests[0]); await first;
   f.preset('month'); await tick(); reply(f.requests[1]); await tick();
   assert.equal(f.end.value, '2026-08-31');
   f.change('start', '2026-08-12'); await tick();
   assert.match(f.requests[2].path, /start=2026-08-12&end=2026-08-12/);
-  assert.equal(f.end.value, '2026-08-31'); assert.equal(f.end.min, '2026-08-12');
-  assert.equal(f.end.dataset.singleDay, 'true');
+  assert.equal(f.end.value, '2026-08-12'); assert.equal(f.end.min, '2026-08-12');
   assert.equal(f.get('comparison-period-month').getAttribute('aria-pressed'), 'false');
   reply(f.requests[2]); await tick();
   f.change('end', '2026-08-11'); await tick();
   assert.equal(f.end.checkValidity(), false); assert.equal(f.requests.length, 3);
   f.change('end', '2026-08-31'); await tick();
   assert.match(f.requests[3].path, /start=2026-08-12&end=2026-08-31/);
-  assert.equal(f.end.dataset.singleDay, 'false');
   reply(f.requests[3]); await tick();
   assert.equal(f.form.dataset.startDate, '2026-08-12'); assert.equal(f.form.dataset.endDate, '2026-08-31');
   f.change('start', '2026-02-30'); await tick();
   assert.equal(f.start.checkValidity(), false); assert.equal(f.requests.length, 4);
+});
+
+test('Today in the comparison end changes only the end; Today in the start resets both', async t => {
+  t.mock.method(Date, 'now', () => NOW);
+  const f = fixture(); t.after(() => f.controller.close());
+  const first = f.controller.refresh({ now: NOW }); await tick(); reply(f.requests[0]); await first;
+  f.change('start', '2026-09-25'); await tick(); reply(f.requests[1]); await tick();
+  for (const field of ['end', 'start']) {
+    f[field].emit('click');
+    const popup = f.document.body.children.find(node => node.id === f[field].getAttribute('aria-controls'));
+    const footer = popup.children.find(node => node.className === 'date-picker-actions');
+    footer.children.find(node => node.textContent === 'Today').emit('click');
+    await tick();
+    assert.equal(f.end.value, '2026-09-27');
+    assert.equal(f.start.value, field === 'end' ? '2026-09-25' : '2026-09-27');
+    assert.equal(popup.hidden, true);
+    assert.equal(f.document.activeElement, f[field]);
+    reply(f.requests.at(-1)); await tick();
+  }
 });
 
 test('changing period cancels the old request and a late reply cannot overwrite the newer cards', async t => {

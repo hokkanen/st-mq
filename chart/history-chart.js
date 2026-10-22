@@ -93,7 +93,6 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   let graph, payload, overview, detail, plottedSelection, displayedSelection, fingerprint, status, initialized = false, closed = false;
   let palette = { ...defaultPalette }, lastContract, lastRecording, lastFirewoodRevision, lastReplicaSnapshot, selectionGeneration = 0;
   let selection = { ...selectedRange('today', Date.now()), points: 800, ...selectionForView(preferences.view) };
-  let suggestedEndDate = selection.endDate, rangeActive = false;
   let activePreset = 'today';
   let detailState = 'idle', pendingFullRender = false, refreshQueued = false, queuedForce = false, lastInput;
   let overlays, renderGeneration = 0, lastLegendKey, lastNotesKey, loadingProgress;
@@ -193,9 +192,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   function listen(node, event, handler) { node.addEventListener(event, handler); listeners.push(() => node.removeEventListener(event, handler)); }
   function updateControls() {
     startDatePicker.dismiss(); endDatePicker.dismiss();
-    $('date-start').value = selection.startDate; $('date-end').value = suggestedEndDate;
+    $('date-start').value = selection.startDate; $('date-end').value = selection.endDate;
     seriesPicker.update();
-    $('date-end').dataset.singleDay = String(!rangeActive);
     $('date-end').min = selection.startDate;
     for (const preset of ['today', 'yesterday', 'tomorrow']) $(`range-${preset}`).setAttribute('aria-pressed', String(activePreset === preset));
   }
@@ -450,7 +448,6 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (!initialized) {
       if (activePreset) {
         selection = { ...selection, ...selectedRange(activePreset, status.now) };
-        suggestedEndDate = selection.endDate;
       }
       updateControls(); initialized = true;
     }
@@ -524,13 +521,11 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   }
   function choosePreset(preset) {
     activePreset = preset; selection = { ...selection, ...selectedRange(preset, status?.now ?? Date.now()) };
-    suggestedEndDate = selection.endDate; rangeActive = preset !== 'today';
     updateControls(); return refresh();
   }
   function shiftRange(days) {
     // Shift the last valid selected window, preserving its inclusive length.
     selection = { ...selection, startDate: shiftDate(selection.startDate, days), endDate: shiftDate(selection.endDate, days) };
-    if (rangeActive) suggestedEndDate = selection.endDate;
     activePreset = null;
     updateControls(); return refresh();
   }
@@ -540,8 +535,6 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const dates = dateSelection(selection, field, node.value);
     if (!dates) return;
     activePreset = null; selection = { ...selection, ...dates };
-    rangeActive = field === 'end';
-    if (rangeActive) suggestedEndDate = dates.endDate;
     updateControls(); refresh();
   }
   const startDatePicker = createDatePicker($('date-start'), { label: 'Choose start date', onSelect() { applyDate('start'); } });

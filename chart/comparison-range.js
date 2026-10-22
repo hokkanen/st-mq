@@ -33,8 +33,8 @@ export function createComparisonRange({ api, document = globalThis.document, now
     onClose() { ++generation; loader.cancel(); root.setAttribute('aria-busy', 'false'); } });
   const start = $('comparison-date-start'), end = $('comparison-date-end');
   const form = $('comparison-range-form'), message = $('comparison-range-status'), retry = $('comparison-range-retry');
-  let selection = comparisonPeriod('today', now()), suggestedEndDate = selection.endDate;
-  let activePreset = 'today', rangeActive = false, initialized = false, closed = false;
+  let selection = comparisonPeriod('today', now());
+  let activePreset = 'today', initialized = false, closed = false;
   let status, loaded, revision, recordingRevision, generation = 0, deferredForce = false;
   const listeners = [];
   function listen(node, event, handler) {
@@ -43,8 +43,8 @@ export function createComparisonRange({ api, document = globalThis.document, now
   }
   function updateControls() {
     startPicker.dismiss(); endPicker.dismiss();
-    start.value = selection.startDate; end.value = suggestedEndDate;
-    end.min = selection.startDate; end.dataset.singleDay = String(!rangeActive);
+    start.value = selection.startDate; end.value = selection.endDate;
+    end.min = selection.startDate;
     for (const preset of presets) $(`comparison-period-${preset}`).setAttribute('aria-pressed', String(activePreset === preset));
   }
   function setState(state, text) {
@@ -60,7 +60,6 @@ export function createComparisonRange({ api, document = globalThis.document, now
     if (!initialized) {
       if (activePreset) {
         selection = comparisonPeriod(activePreset, status.now);
-        suggestedEndDate = selection.endDate;
       }
       initialized = true; updateControls();
     }
@@ -98,8 +97,7 @@ export function createComparisonRange({ api, document = globalThis.document, now
     if (!input.checkValidity()) return;
     const dates = dateSelection(selection, field, input.value);
     if (!dates) return;
-    selection = dates; activePreset = null; rangeActive = field === 'end';
-    if (rangeActive) suggestedEndDate = dates.endDate;
+    selection = dates; activePreset = null;
     updateControls(); refresh();
   }
   const startPicker = createDatePicker(start, { label: 'Choose comparison start date', onSelect() { applyDate('start'); } });
@@ -109,7 +107,6 @@ export function createComparisonRange({ api, document = globalThis.document, now
   listen(form, 'submit', event => event.preventDefault());
   for (const preset of presets) listen($(`comparison-period-${preset}`), 'click', () => {
     activePreset = preset; selection = comparisonPeriod(preset, status?.now ?? now());
-    suggestedEndDate = selection.endDate; rangeActive = true;
     updateControls(); refresh();
   });
   listen(retry, 'click', () => refresh(status, { force: true }));

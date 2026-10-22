@@ -1342,9 +1342,9 @@ existing curves and straight lines. Its synthetic screenshot gallery is written 
 ignored `var/chart-views-*.png` files. The Firefox chart suite below retains broader
 chart/date/detail/tooltips and related dashboard regression coverage.
 
-Date checks also cover preserving the inactive end-date suggestion, showing just
-the new start day, explicitly choosing the same or another end date, canceling
-without activating a range, and fitting the end calendar on small screens.
+Date checks also cover setting both fields to a newly selected start day,
+choosing the same or another end date, canceling without changing the range,
+selecting Today in Finnish time, and fitting the calendar on small screens.
 The timing compatibility suite uses the production comparison-section markup
 with native, missing and delayed `ResizeObserver` delivery. It checks visible
 figures and controls, resizing, refresh, keyboard focus and unclipped content at

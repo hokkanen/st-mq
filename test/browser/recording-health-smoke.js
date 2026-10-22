@@ -851,6 +851,14 @@ try {
   assert.match(await evaluate("document.getElementById('energy-check-range-status').textContent"), /Choose valid dates/);
   assert.equal(await evaluate("document.getElementById('energy-check-range-status').checkVisibility()"),true);
   assert.equal(await evaluate('energyPeriodChanges.length'),4,'An invalid date never starts another check');
+  await evaluate("document.getElementById('energy-check-date-start').value='2026-10-02'; document.getElementById('energy-check-date-start').dispatchEvent(new Event('change'))");
+  assert.deepEqual(await evaluate("[document.getElementById('energy-check-date-start').value,document.getElementById('energy-check-date-end').value]"), ['2026-10-02','2026-10-02']);
+  const currentDay = await evaluate("new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Helsinki',year:'numeric',month:'2-digit',day:'2-digit'}).format(Date.now())");
+  for (const field of ['end','start']) {
+    await evaluate(`document.getElementById('energy-check-date-${field}').click(); document.querySelector('.date-picker:not([hidden]) .date-picker-today').click()`);
+    assert.deepEqual(await evaluate("[document.getElementById('energy-check-date-start').value,document.getElementById('energy-check-date-end').value]"), [field==='end'?'2026-10-02':currentDay,currentDay]);
+    assert.equal(await evaluate("document.querySelector('.date-picker:not([hidden])')===null"),true,'Today selects the open field and closes');
+  }
   await evaluate("document.getElementById('energy-check-period-week').click(); inventory.inventoryIssues=['Current-state entries without a registered writer description are present.']; renderInventory()");
   assert.equal(await evaluate("document.getElementById('energy-check-range-status').checkVisibility()"),false,'Choosing a valid preset clears the date error');
   assert.equal(await evaluate("document.querySelector('.recording-inventory-notice').open"), false);
@@ -869,6 +877,7 @@ try {
     await evaluate(`document.documentElement.dataset.theme='${theme}'`);
     assert.equal(await evaluate("(() => {const range=document.querySelector('.energy-check-range').getBoundingClientRect(),result=document.querySelector('#energy-audit-content .energy-check').getBoundingClientRect();return Math.abs(range.left-result.left)<1;})()"),true,'The period controls align directly with the result rows');
     assert.equal(await evaluate("Array.from(document.querySelectorAll('.energy-check-range input,.energy-check-presets button,#energy-audit-refresh'),node=>node.getBoundingClientRect()).every(box=>box.height>=44&&box.left>=0&&box.right<=innerWidth)"),true,'Date fields and actions retain unclipped touch targets');
+    assert.equal(await evaluate("(() => {const fields=document.querySelector('.energy-check-range-fields').getBoundingClientRect(),presets=document.querySelector('.energy-check-presets').getBoundingClientRect();return Math.abs(fields.right-presets.right)<1;})()"),true,'Period shortcuts align with the right edge');
     await checkLayout(`${width}/${theme}/updated-details`);
     if([320,390,1440].includes(width)) {
       await captureFold('recording-performance-details',`undated-storage-${width}-${theme}`);

@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Add Today to the shared date calendars, align recorded-energy period shortcuts
+  to the right, and set the end date to each newly selected start date in charts
+  and energy cost comparisons without dimming the end field.
+
 - Recover supported Shelly SYS startup interruptions with bounded retries and
   separate scheduled/Charge now budgets. Fresh Charge now supersedes an earlier
   SYS hold; confirmed failure returns it to Automatic through the normal OFF
