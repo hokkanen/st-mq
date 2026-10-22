@@ -4,7 +4,9 @@ import { shellyCurrentLimit, vehiclePilotLimit } from './shelly-limit.js';
 import { createMqttAdmission } from '../acquisition/mqtt-admission.js';
 import { shellyProfile, supportedShellyStates } from './shelly-profile.js';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
-import { validShellyDeviceHold, shellyDevicePermission } from './shelly-system-permission.js';
+import { validShellyDeviceHold, shellyDevicePermission, validShellyCompatibility, compatibilityScope,
+  compatibilityPermission, compatibilityStart, compatibilityRecovery, compatibilityEvent, compatibilityDebit,
+  compatibilityAcknowledgedStart } from './shelly-compatibility.js';
 import { chargingDeviceInfo } from './device-info.js';
 import { classifySourceTime, validateAdmittedSourceTime, sourceTimeAdmission } from '../domain/time-evidence.js';
 import { createSourceTimePending } from '../acquisition/source-time-pending.js';
@@ -1184,11 +1186,16 @@ function validShellyExecution(value) {
 export function validateShellyOwnershipState(initialState, association = initialState?.association) {
   if (initialState != null && (typeof initialState !== 'object' || Array.isArray(initialState) || initialState.version !== 1 || initialState.association !== association
     || Object.hasOwn(initialState, 'startup')
+    || !validShellyCompatibility(initialState.compatibility)
     || !validShellyExecution(initialState.execution) || !validCurrentTest(initialState.currentTest) || !validShellyDeviceHold(initialState.deviceHold)
     || initialState.automaticPermission != null && (typeof initialState.automaticPermission !== 'object'
       || Array.isArray(initialState.automaticPermission) || Object.keys(initialState.automaticPermission).length !== 2
       || Object.keys(initialState.automaticPermission).some(key => !['value', 'measuredAt'].includes(key))
       || typeof initialState.automaticPermission.value !== 'boolean' || !time(initialState.automaticPermission.measuredAt))
+    || initialState.chargeNowFailure != null && (typeof initialState.chargeNowFailure !== 'object'
+      || Object.keys(initialState.chargeNowFailure).sort().join(',') !== 'reason,requestedAt'
+      || initialState.chargeNowFailure.requestedAt !== null && !time(initialState.chargeNowFailure.requestedAt)
+      || initialState.chargeNowFailure.reason !== 'startup-retries-exhausted')
     || initialState.scheduleTakeoverPending !== undefined && typeof initialState.scheduleTakeoverPending !== 'boolean'
     || initialState.automaticTakeover != null && (typeof initialState.automaticTakeover !== 'object'
       || Object.keys(initialState.automaticTakeover).some(key => !['sessionId', 'fingerprint'].includes(key))
@@ -1313,11 +1320,17 @@ export function createShellyController({ adapter, initialState, saveState = () =
     const projected = devicePermission(snapshot);
     const before = copy(state);
     state.deviceHold = projected.hold;
+    const permissionRestored = !projected.held && !projected.hold && (before.deviceHold
+      || events.some(event => event.commandSource === 'sys' && event.value === false
+        && snapshot.fields.start_charging?.value === true && fresh(snapshot.fields.start_charging)
+        && snapshot.fields.start_charging.readback?.requestedAt >= event.receivedAt));
     if (projected.pauseBroken) {
+      compatibilityEvent(state.compatibility, 'shelly-pause-interrupted', clock(), { policy: 'permission-transition' });
       state.owned = null; state.ownedPause = false; state.automaticPermission = null;
       if (state.pending?.owned) delete state.pending.owned;
     }
     if (!events.length) {
+      if (permissionRestored) compatibilityEvent(state.compatibility, 'shelly-permission-restored', clock(), { policy: 'permission-transition' });
       try { await persist(); } catch (cause) { state = before; throw cause; }
       if (snapshot.permissionEvents?.length && adapter.acknowledgePermissionEvents)
         await adapter.acknowledgePermissionEvents(state.permissionEventCursor);
@@ -1325,11 +1338,16 @@ export function createShellyController({ adapter, initialState, saveState = () =
     }
     const command = pending?.role === 'start_charging' && pending.stage === 'accepted' && time(pending.acceptedAt)
       ? pending : state.permissionCommand;
-    let external = false;
+    let external = false, previousPermission = before.lastStart;
     for (const event of events) {
       state.permissionEventCursor = event.sequence;
       if (event.sessionId !== snapshot.session?.sessionId || event.connectedAt !== snapshot.session?.connectedAt
         || !time(event.connectedAt) || event.eventAt < event.connectedAt) continue;
+      // Initial false with Auto charge disabled is ordinary readback, not an
+      // interruption. Batch transitions still compare each edge in order.
+      if (projected.held || projected.pauseBroken || previousPermission !== event.value && typeof previousPermission === 'boolean')
+        compatibilityPermission(state.compatibility, event, clock(), adapter.deviceInfo?.());
+      previousPermission = event.value;
       const field = snapshot.fields.start_charging;
       // A value-only notification has the device's event clock, while dispatch
       // and acknowledgement use our receipt clock. An earlier fractional time
@@ -1357,6 +1375,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       state.owned = null; state.ownedPause = false; state.automaticPermission = null;
       state.execution = null; state.provisional = false;
     }
+    if (permissionRestored) compatibilityEvent(state.compatibility, 'shelly-permission-restored', clock(), { policy: 'permission-transition' });
     try { await persist(); } catch (cause) { state = before; throw cause; }
     // A restart between these writes reprocesses only the saved cursor; an
     // uncommitted controller decision never removes a native permission edge.
@@ -1510,7 +1529,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
     return { ...copy(state), devicePermissionHeld: projected.held, owned: owned ? copy(owned) : null, planningRevision, enabled, manual,
       scheduleConfirmed, currentAdjustment,
       takeover: takeoverStatus(snapshot),
-      takeoverRequired: Boolean(snapshot.nativeScheduleActive || ['stop', 'schedule', 'window'].includes(manual?.kind)
+      takeoverRequired: Boolean(projected.held || snapshot.nativeScheduleActive || ['stop', 'schedule', 'window'].includes(manual?.kind)
         || permission?.value === false && !projected.held && !(state.ownedPause && !projected.pauseBroken
           && fresh(permission) && sameSetting(permission, { value: false, measuredAt: state.lastStartAt }))),
       externalStopAt: state.manual?.kind === 'stop' && state.manual.origin === 'external-command' ? state.manual.detectedAt : null,
@@ -1773,6 +1792,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           delete state.lastStart; delete state.lastStartAt; delete state.lastCurrent; delete state.lastCurrentAtSource; delete state.permissionCommand;
           delete state.lastCurrentInstructionAt; delete state.currentExecutionStage; delete state.currentCommandAt; delete state.executionStage;
         }
+        state.compatibility = compatibilityScope(state.compatibility, snapshot.session);
         if (sessionPaused(snapshot)) state.automaticTakeover = null;
         if (snapshot.session?.connected === false && snapshot.pluggedIn === false) {
           // Available capacity is an observation even without a vehicle. Do not
@@ -1988,8 +2008,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
             state.lastStart = false; state.lastStartAt = readback.measuredAt;
           }
           else if (pending.role === 'start_charging' && pending.value === true && fresh(readback) && readback.commandSource === 'sys'
-            && !(acceptedReadback(readback, pending) && commandReadback(readback, pending)
-              && (readback.value === true || devicePermission(snapshot).held && readback.measuredAt > pending.dispatchedAt))) {
+            && !compatibilityAcknowledgedStart({ pending, field: readback, held: devicePermission(snapshot).held,
+              correlated: acceptedReadback(readback, pending) && commandReadback(readback, pending) })) {
             // SYS alone cannot replace a missing ACK or command readback. An
             // acknowledged Start can, however, finish reconciliation through a
             // fresh correlated native query. A later SYS Stop supersedes it
@@ -2023,6 +2043,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
               state.phase = 'uncertain'; state.reason = 'evse-command-unconfirmed'; await persist(); return;
             }
             rememberPermissionCommand(pending);
+            compatibilityEvent(state.compatibility, 'shelly-readback-reconciled', clock(), { policy: 'permission-transition' });
             state.pending = null; state.owned = null; state.ownedPause = false;
             state.lastStart = readback.value; state.lastStartAt = readback.measuredAt;
           } else if (pending.owned && fresh(readback) && readback.value === true && readback.measuredAt > pending.dispatchedAt) {
@@ -2203,8 +2224,35 @@ export function createShellyController({ adapter, initialState, saveState = () =
         // the runtime's identification window ends. Charge now cannot turn an
         // unconfirmed restoration into permission to release the saved Stop.
         const currentUnconfirmed = state.currentTest?.phase === 'uncertain';
-        const shouldStart = !devicePermission(snapshot).held && !pause && allowStart && !snapshot.nativeScheduleActive && !minimumBlocked && !currentUnconfirmed;
-        const mayStartNow = () => shouldStart && (identification || recovery || clock() - (state.lastPauseAt ?? 0) >= adapter.config.dwellMs);
+        // Compatibility owns policy only. Normal preparation and every native
+        // dispatch guard below still apply to an explicit or retried Start.
+        const origin = chargeNow ? 'charge-now' : 'scheduled';
+        const requestAt = chargeNow ? input.chargeNow.requestedAt ?? null : null;
+        const permissionBefore = devicePermission(snapshot);
+        const recoveryEligible = Boolean(economic && inWindow && !nativeBlocked && !state.manual
+          && !snapshot.nativeScheduleActive && !identification && !minimumBlocked && !currentUnconfirmed);
+        const explicitStart = Boolean(chargeNow && takeoverRequested && input.takeoverMode === 'charge-now');
+        const retry = compatibilityRecovery(state.compatibility, { now: clock(), origin, requestAt,
+          eligible: recoveryEligible, held: permissionBefore.held, hold: permissionBefore.hold,
+          permitted: fresh(start) && start.value === true && !permissionBefore.held,
+          physicalAt: physicalFresh(snapshot.fields.phase_info) && fresh(snapshot.fields.work_state) ? snapshot.powerAt : null,
+          charging: snapshot.charging === true && snapshot.powerKw > .1,
+          currentA: current.value, pending: state.pending, blocked: pause, newRequest: explicitStart });
+        const zero = physicalFresh(snapshot.fields.phase_info) && snapshot.powerKw === 0
+          && adapter.liveCurrents().healthy && adapter.liveCurrents().currents.every(value => value < .5);
+        const startOverride = (explicitStart || retry.retry) && permissionBefore.held && zero;
+        const heldBaseline = permissionBefore.hold;
+        const permissionAllowsStart = () => {
+          const projected = devicePermission(adapter.snapshot());
+          const current = adapter.snapshot(), physical = adapter.liveCurrents();
+          return !projected.held || startOverride && projected.hold?.eventAt === heldBaseline?.eventAt
+            && projected.hold?.receivedAt === heldBaseline?.receivedAt && fresh(current.fields.start_charging)
+            && current.fields.start_charging.value === false && physicalFresh(current.fields.phase_info)
+            && current.powerKw === 0 && physical.healthy && physical.currents.every(value => value < .5);
+        };
+        state.chargeNowFailure = retry.failed ? { requestedAt: requestAt, reason: 'startup-retries-exhausted' } : null;
+        const shouldStart = permissionAllowsStart() && !pause && allowStart && !snapshot.nativeScheduleActive && !minimumBlocked && !currentUnconfirmed;
+        const mayStartNow = () => shouldStart && (chargeNow || retry.retry || identification || recovery || clock() - (state.lastPauseAt ?? 0) >= adapter.config.dwellMs);
         const selectCurrentSetting = () => {
           const idleCap = mayStartNow() ? null : idleCurrentSetting(adapter.snapshot(), context);
           const idle = idleCap !== null, settingCap = idle ? idleCap : cap;
@@ -2242,7 +2290,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           const inputPending = commandSnapshot.observationReady && adapter.waitForInputAdmission
             && ['evse-input-persistence-pending', 'evse-source-time-pending'].includes(commandSnapshot.commandBlockReason);
           if (!commandSnapshot.controlReady && !inputPending || role === 'start_charging' && value === true
-            && devicePermission(adapter.snapshot()).held) return false;
+            && !permissionAllowsStart()) return false;
           const attempt = adapter.controlAttempt?.() ?? createControlAttempt();
           try {
           const expiresAt = clock() + 10000;
@@ -2273,10 +2321,18 @@ export function createShellyController({ adapter, initialState, saveState = () =
               && scheduleToken(adapter.snapshot()) === nativeSchedule
               && (role !== 'start_charging' || value === false && (userPause || limitation.pause) || !adapter.snapshot().nativeScheduleActive)
               && (role !== 'start_charging' || value === false
-                || !probeExpired() && !devicePermission(adapter.snapshot()).held)
+                || !probeExpired() && permissionAllowsStart())
               && (!owned || clock() < owned.startAt) && permittedOwnedStop(),
               beforePublish: async () => {
-                if (!owned) return;
+                if (!owned) {
+                  if (role === 'start_charging' && value === true && retry.retry && !explicitStart) {
+                    const previous = copy(state.compatibility);
+                    if (!compatibilityDebit(state.compatibility, clock(), adapter.snapshot().fields.current_limit.value))
+                      throw fail('evse-command-revoked');
+                    try { await persist(); } catch (cause) { state.compatibility = previous; throw cause; }
+                  }
+                  return;
+                }
                 const before = adapter.snapshot(), work = before.fields.work_state, physical = before.fields.phase_info;
                 const witnessedCharging = fresh(work) && physicalFresh(physical)
                   && adapter.config.chargingStates.includes(work.value) && physical.value.total_power > 0;
@@ -2299,7 +2355,12 @@ export function createShellyController({ adapter, initialState, saveState = () =
           // Revoking an intent cannot erase a reply to an already sent command.
           // Save its acknowledgement before stopping work; the next reconcile
           // still requires native readback and must not replay the command.
-          state.pending.stage = 'accepted'; state.pending.acceptedAt = clock(); await persist();
+          state.pending.stage = 'accepted'; state.pending.acceptedAt = clock();
+          if (role === 'start_charging' && value === true && !identification && reason === 'economic-window') {
+            compatibilityStart(state.compatibility, { at: state.pending.dispatchedAt, acceptedAt: state.pending.acceptedAt,
+              origin, requestAt, currentA: adapter.snapshot().fields.current_limit.value });
+          }
+          await persist();
           if (!liveIntent()) return false;
           await refreshCommandReadback(role, snapshot);
           const after = adapter.snapshot();
@@ -2321,6 +2382,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           if (role === 'start_charging') {
             state.executionStage = 'read-back';
             rememberPermissionCommand(state.pending);
+            if (state.deviceHold) compatibilityEvent(state.compatibility, 'shelly-permission-restored', clock(), { policy: 'permission-transition' });
             state.deviceHold = null;
             state.lastStart = value; state.lastStartAt = readback.measuredAt; state.ownedPause = value === false;
             if (state.automaticPermission) state.automaticPermission = { value, measuredAt: readback.measuredAt };
@@ -2370,7 +2432,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           // fixed probe deadline; never send a late probe start.
           if (probeExpired() && adapter.snapshot().fields.start_charging.value && state.manual?.kind !== 'stop')
             if (await command('start_charging', false, 'identification-probe-expired')) state.lastPauseAt = clock();
-          if (!stopPass && mayStartNow() && !devicePermission(adapter.snapshot()).held && !adapter.snapshot().fields.start_charging.value && (!state.manual || nativeRelease)
+          if (!stopPass && mayStartNow() && permissionAllowsStart() && !adapter.snapshot().fields.start_charging.value && (!state.manual || nativeRelease)
             && !probeExpired()
             && (!adapter.config.limiterEnabled || adapter.snapshot().fields.current_limit?.value <= cap)) {
             await command('start_charging', true, recovery ? 'identification-resume' : identification ? 'identification-charge' : 'economic-window');
@@ -2448,6 +2510,11 @@ export function createShellyController({ adapter, initialState, saveState = () =
           if (state.pending?.stage === 'dispatched' && ['evse-control-unavailable', 'evse-command-revoked',
             'invalid-evse-command', 'unsupported-evse-method', 'evse-request-limit'].includes(cause.code))
             state.pending.stage = 'proposed';
+          // A native negative reply is a confirmed refusal, unlike a lost ACK.
+          // A rejected ordinary Start may end its immediate request. Stop,
+          // current-setting and restoration evidence retain their existing duties.
+          if (cause.code === 'evse-rpc-rejected' && state.pending?.role === 'start_charging'
+            && state.pending.value === true && !state.pending.owned) state.pending = null;
           state.phase = 'uncertain'; state.reason = cause.code ?? 'command-unconfirmed';
           if (takeoverRequested) takeoverResult = { state: 'blocked', reason: state.reason };
         }

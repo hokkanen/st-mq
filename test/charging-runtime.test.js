@@ -98,6 +98,24 @@ const editSession = (runtime, id, changes) => {
 };
 const packet = (soc, at, readingId = 'reading-1', extra = {}) => JSON.stringify({ provider: 'bmw-cardata', soc, measuredAt: at, readingId, ...extra });
 
+test('Charge now native refusal returns to ordinary Automatic while unknown or current-limited starts retain the request', async t => {
+  for (const restriction of ['charger-fault', 'charging-authorization', 'no-headroom', 'evse-command-unconfirmed']) {
+    const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+    const adapter = fakeAdapter(f.clock);
+    await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+    await runtime.tick({ prices }); await runtime.reconcile(); runtime.tick = () => {};
+    const view = chargerView(runtime);
+    await runtime.chargeNow('charger1', { association: view.association, sessionId: view.request.sessionId, revision: view.request.revision });
+    adapter.setObservation(restriction === 'charger-fault' ? { faulted: true, mode: 5 }
+      : restriction === 'charging-authorization' ? { authorizationBlocked: true, mode: 7 }
+        : restriction === 'no-headroom' ? { powerKw: 0 } : { online: false });
+    await runtime.reconcile('charger1');
+    const failed = ['charger-fault', 'charging-authorization'].includes(restriction);
+    assert.equal(runtime.chargers.charger1.request.chargeNow === true, !failed, restriction);
+    assert.equal(runtime.chargers.charger1.controls.enabled, failed, restriction);
+  }
+});
+
 test('cloud date representability reaches worker inputs through real runtime views without restricting OCPP', async t => {
   for (const transport of ['cloud', 'ocpp']) {
     const f = fixture(preferences), runtime = f.create(); t.after(() => runtime.close());

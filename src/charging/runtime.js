@@ -700,6 +700,17 @@ export class ChargingRuntime {
           return this.write(() => {
             if (shelly) ownershipWriter.write(this.ownershipKey(id), state, scope);
             else this.store.setState(this.ownershipKey(id), state);
+            // Persist native incident rows in the same ownership admission before
+            // acknowledging their native cursor. No extra polling or commands.
+            if (shelly && state.compatibility?.sequence > (this.sessionDiagnostics.state.chargers[id]?.current?.permissionCursor ?? 0)) {
+              const diagnostics = this.sessionDiagnostics;
+              const previous = { state: diagnostics.state, lastSavedAt: diagnostics.lastSavedAt, lastPrunedAt: diagnostics.lastPrunedAt };
+              this.store.afterRollback(() => Object.assign(diagnostics, previous));
+              try {
+                diagnostics.observe(this.views(this.clock(), { readEnergy: noRecordedEnergy }).filter(view => view.id === id),
+                  this.clock(), this.coordination, { project: false });
+              } catch { this.diagnosticsError = 'Session diagnostics could not be saved.'; }
+            }
             this.store.afterCommit(() => { item.ownershipAdmitted = true; });
           }, { priority: 'control', bytes: Buffer.byteLength(JSON.stringify(state)), isCurrent: () => item.adapter === adapter });
         }, clock: this.clock,
@@ -3139,6 +3150,8 @@ export class ChargingRuntime {
         const control = item.controller?.status();
         return [item.priceRecheckAt, item.request?.flexibility?.activeDefer?.checkpointAt,
           control?.manual?.resumeAt, control?.owned?.startAt,
+          control?.compatibility?.incident?.nextAt,
+          ...(['waiting', 'verifying'].includes(control?.compatibility?.incident?.status) ? [now + 2000, control.compatibility.incident.deadlineAt] : []),
           ['proposed', 'applying', 'active', 'restoring'].includes(control?.currentTest?.phase) ? control.currentTest.expiresAt : null,
           item.identification?.probe?.endedAt === null ? item.identification.probe.deadlineAt : null, item.identification?.phase === 'pausing' ? item.identification.pauseUntil : null,
           ...(item.identification?.phase === 'pausing' || item.identification?.probe?.endedAt === null
@@ -3362,7 +3375,7 @@ export class ChargingRuntime {
       ...(periodicRead?.controller === controller && periodicRead.adapter === item.adapter
         && periodicRead.generation === item.adapterGeneration ? { completedRead: periodicRead.proof } : {}),
       deadlineRequest: deadlineRequest(item),
-      chargeNow: item.request?.chargeNow === true ? { connectedAt: sessionConnectedAt(item.request) } : null,
+      chargeNow: item.request?.chargeNow === true ? { connectedAt: sessionConnectedAt(item.request), requestedAt: item.request.chargeNowAt } : null,
       sessionPause: item.request?.pause ? { connectedAt: sessionConnectedAt(item.request), requestedAt: item.request.pause.requestedAt } : null,
       allocation: id === 'charger2' ? this.allocationContext() : undefined,
       vehicleDisconnect: item.vehicleDisconnect ? { ...item.vehicleDisconnect,
@@ -3372,6 +3385,17 @@ export class ChargingRuntime {
     await this.write(() => {
     const control = controller.status(), probe = this.probeReturn(item), execution = control.execution;
     this.admitSessionSupersession(item, control, this.clock());
+    const failure = control.chargeNowFailure;
+    const native = control.snapshot, now = this.clock();
+    const freshNative = native?.online === true && Number.isSafeInteger(native.readAt) && native.readAt <= now && now - native.readAt <= 60_000;
+    const refused = !control.pending && (['charger-fault', 'charging-authorization', 'access-denied', 'profile-rejected',
+      'evse-rpc-rejected', 'evse-native-restriction'].includes(control.errorCode ?? control.reason)
+      || freshNative && (native.faulted === true || native.authorizationBlocked === true
+        || native.appControl?.faulted === true || native.appControl?.authorizationBlocked === true || native.connectorStatus === 'Faulted'));
+    if (item.request?.chargeNow && (failure?.requestedAt === item.request.chargeNowAt || refused)) {
+      this.returnToAutomatic(item);
+      this.store.afterCommit(() => { item.reconcileAgain = true; this.reconcilePeers(id); });
+    }
     if (probe?.endedAt != null && item.plan?.feasible === true && item.plan.provisional !== true
       && !control.pending && execution && execution.planId === item.plan.id
       && JSON.stringify(execution.periods) === JSON.stringify(item.plan.periods)
@@ -3384,6 +3408,7 @@ export class ChargingRuntime {
     }
     this.persist();
     item.error = null;
+    this.store.afterCommit(() => this.scheduleWakeup(this.clock()));
     }, { priority: 'control', isCurrent: () => item.controller === controller });
     if (refreshPlan || !this.currentPlanReusable(item)) {
       // Native work and its durable state are complete. Keep the economic
@@ -3628,6 +3653,17 @@ export class ChargingRuntime {
     this.invalidateCommands(); await this.updatePlanForControl(); await this.reconcile(id);
     this.reconcilePeers(id);
   }
+  returnToAutomatic(item) {
+    this.supersedeProbeReturn(item);
+    if (!item.controls.enabled) {
+      item.controls = { enabled: true, revision: item.controls.revision + 1 };
+      this.revision++; this.refreshSettings();
+    }
+    if (item.request?.chargeNow) {
+      clearChargeNow(item.request); item.request.revision++; this.revision++; item.plan = null;
+    }
+    item.replan = true;
+  }
   async resume(id, input) {
     await this.write(() => {
     this.checkControlAuthority();
@@ -3638,14 +3674,7 @@ export class ChargingRuntime {
     // Returning this connection to Automatic is one durable choice. Splitting
     // preference and session edits across HTTP requests can apply the second
     // half to a replacement connection or leave a misleading partial result.
-    this.supersedeProbeReturn(item);
-    if (!item.controls.enabled) {
-      item.controls = { enabled: true, revision: item.controls.revision + 1 };
-      this.revision++; this.refreshSettings();
-    }
-    if (item.request?.chargeNow) {
-      clearChargeNow(item.request); item.request.revision++; this.revision++; item.plan = null;
-    }
+    this.returnToAutomatic(item);
     this.persist();
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();

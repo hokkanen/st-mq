@@ -12,6 +12,9 @@ const COVERAGE = { identification: 'Vehicle identification', initialRelease: 'Dr
   resume: 'Draw resumed after pause', lateReplan: 'Inputs reassessed after identification', targetAttainment: 'Requested target reached',
   completion: 'Native vehicle limit reached and stopped', energy: 'Recorded energy coverage' };
 const FINDINGS = {
+  'sys-pause-interruption': ['SYS pause interruption', 'A system permission transition interrupted an owned pause. The controller invalidated continuous-pause proof and retained the original identification bounds.'],
+  'sys-permission-interruption': ['SYS permission interruption', 'The charger reported a system permission Stop. This records native provenance, not who caused it.'],
+  'sys-startup-recovery': ['SYS startup recovery', 'Bounded recovery followed a system permission Stop after an acknowledged Start. The events retain each attempt and its observed outcome.'],
   'shared-priority-mismatch': ['Shared priority mismatch', 'A joint model did not reflect the selected shared priority. The shared charging event retains the proposed and adopted assessments.'],
   'shared-allocation-inconsistent': ['Shared allocation evidence inconsistent', 'A joint allocation or reported cost bound did not agree with its recorded inputs. This checks the model, not physical delivery.'],
   'shared-current-mismatch': ['Shared current limit not respected', 'Fresh Charger 2 current readback exceeded its active current ceiling after settling. Review the recorded shared context and charger evidence.'],
@@ -27,7 +30,14 @@ const FINDINGS = {
   'identity-unavailable': ['Vehicle identity no longer confirmed', 'The current connection lost its confirmed assignment. Previous readings do not establish a new match.'],
   'deadline-unverified': ['Ready-by outcome unconfirmed', 'The deadline passed without an applicable vehicle reading proving whether the requested target had been reached.'],
   'deadline-missed': ['Target missed at ready-by', 'An applicable vehicle reading after ready-by was below the requested target. Reaching the target later does not remove this event.'] };
-const EVENTS = { connected: 'Connection observed', 'observation-started': 'Monitoring began during this connection',
+const EVENTS = {
+  'shelly-pause-interrupted': 'SYS transition interrupted an owned pause',
+  'shelly-sys-off': 'SYS permission Stop observed', 'shelly-sys-on': 'SYS permission Enable observed',
+  'shelly-permission-restored': 'Native permission restored', 'shelly-readback-reconciled': 'Start reconciled with SYS readback',
+  'shelly-recovery-waiting': 'SYS startup recovery scheduled', 'shelly-recovery-attempt': 'SYS startup retry sent',
+  'shelly-recovery-restored': 'SYS startup recovery succeeded · sustained draw observed',
+  'shelly-recovery-exhausted': 'SYS startup recovery exhausted', 'shelly-recovery-cancelled': 'SYS startup recovery cancelled',
+  connected: 'Connection observed', 'observation-started': 'Monitoring began during this connection',
   unplugged: 'Vehicle unplugged', 'connection-replaced': 'Connection changed', 'observation-gap': 'Observation gap',
   'physical-evidence-lost': 'Measured draw became unavailable', 'physical-evidence-restored': 'Measured draw available again',
   'charging-observed': 'Draw above 0.1 kW observed', 'not-charging-observed': 'No draw above 0.1 kW observed',
@@ -316,7 +326,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     if (row.kind === 'physical' && Number.isFinite(row.powerKw) && row.powerKw === 0) return 'No draw measured';
     if (row.kind === 'finding-update') return `${FINDINGS[row.code]?.[0] ?? 'Finding'} · Evidence changed`;
     if (row.kind === 'finding') return FINDINGS[row.code]?.[0] ?? 'Finding recorded';
-    if (row.kind === 'recovery') return `${FINDINGS[row.code]?.[0] ?? 'Issue'} · ${row.resolution === 'request-changed' ? 'request changed' : 'recovered'}`;
+    if (row.kind === 'recovery') return `${FINDINGS[row.code]?.[0] ?? 'Issue'} · ${row.resolution === 'request-changed' ? 'request changed' : row.resolution === 'evidence-reconciled' ? 'evidence reconciled' : 'recovered'}`;
     if (row.kind === 'plan') return row.code === 'initial-plan' ? 'Initial planning state' : changeTitle(changes, 'Planning record');
     if (row.kind === 'control') return `${controlLabels[row.code] ?? 'Control state recorded'}${row.code !== 'unavailable' && row.availability === 'unavailable' ? ' · control unavailable' : ''}`;
     return EVENTS[row.code] ?? 'Observation recorded';
@@ -342,6 +352,16 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     if (row.kind === 'finding-update') details.push('The same episode remains active; its recorded evidence changed.');
     if (row.shared) details.push(chargingSharedText(row.shared, selectedCharger));
     setText(p.label, `${time(row.at, timezone, true)} · ${eventLabel(row)}`);
+    if (row.policy) details.push(row.policy === 'startup-retry' ? 'Startup retry recovery' : 'Permission-transition reconciliation');
+    if (row.origin) details.push(row.origin === 'charge-now' ? 'Charge now' : 'Scheduled charging');
+    if (Number.isInteger(row.attempt)) details.push(`Retry ${row.attempt} of 3`);
+    if (Number.isFinite(row.currentA)) details.push(`Current setting ${number(row.currentA)} A`);
+    if (Number.isFinite(row.startAt)) details.push(`Start sent ${time(row.startAt, timezone, true)}`);
+    if (Number.isFinite(row.acceptedAt)) details.push(`Acknowledged ${time(row.acceptedAt, timezone, true)}`);
+    if (Number.isFinite(row.sourceAt)) details.push(`Native event ${time(row.sourceAt, timezone, true)}`);
+    if (Number.isFinite(row.receivedAt)) details.push(`Received ${time(row.receivedAt, timezone, true)}`);
+    if (row.model) details.push(`Model ${row.model}`);
+    if (row.firmware) details.push(`Firmware ${row.firmware}`);
     if (Number.isFinite(row.powerKw)) details.push(`Measured draw ${number(row.powerKw)} kW`);
     const source = sourceName(row.source);
     if (source) details.push(source);

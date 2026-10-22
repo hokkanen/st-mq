@@ -50,10 +50,16 @@ unresolved restoration remain separate restrictions. See
 **Charge now** clears a dashboard Pause and releases the controller's scheduling
 delay for the current connection without changing the Automatic preference. An
 observed external Stop or supported native schedule requires the displayed native
-instruction token and confirmed takeover; it is explicitly superseded. Current
+instruction token and confirmed takeover; it is explicitly superseded, including
+an earlier Shelly SYS permission hold. Fresh Charge now requests are independent
+of the scheduler's retry budget. Current
 ceilings, faults, authorization and vehicle restrictions remain binding. It works with
 Automatic off. Turning Charge now off returns to Automatic and enables it if
-needed in one committed, connection-and-request-scoped action; a stale browser
+needed in one committed, connection-and-request-scoped action. A confirmed native
+refusal or exhausted Charge now startup recovery uses this same OFF transition;
+no separate failure mode, retry button or scheduler budget reset is added.
+Temporary current shortage and uncertain command results retain the immediate
+request with their reason visible. A stale browser
 cannot cancel a newer request or a replacement connection. Unplugging ends the
 override. A newer positively observed external Stop also ends that request.
 Confirmed control readiness remains required.
@@ -254,10 +260,14 @@ including repeated cycles and changes outside identification. There is no plug,
 first-Start or ten-second eligibility window.
 
 Classification and physical permission remain separate. A genuine device Stop
-blocks replacement Start while permission is false or unknown, including with
-**Charge now**. Fresh true permission can clear only that device hold; it does
+blocks ordinary replacement Start while permission is false or unknown. A fresh
+explicit **Charge now** takeover may supersede an earlier witnessed hold after
+fresh readiness, zero draw and current preparation; a newer transition still
+fences dispatch. The bounded startup recovery below is the only unattended
+exception. Fresh true permission can clear only that device hold; it does
 not supply automatic authority, clear a separate native Stop, or itself request
-another Start. A false-only hold has no retry timer. Restart preserves the
+another Start. A false-only hold outside eligible startup recovery has no retry
+timer. Restart preserves the
 restriction until fresh device evidence resolves it; a restored record cannot
 manufacture a new physical connection, observation or control permission.
 An initially observed false setting on a new connection, with no intervening
@@ -281,6 +291,38 @@ existing attempt, current-test/probe deadlines and energy allowance. The cycle
 does not renew a deadline, create another attempt or authorize an extra Start.
 Original expiry and current-restoration obligations still apply. Fresh physical
 zero remains necessary before raising current while stopped.
+
+### Startup retry recovery
+
+For the identity-checked supported EVSE profile, a fresh SYS false within 60 seconds
+of an acknowledged ordinary scheduled/Charge now Start can arm recovery. Probe,
+identification and restoration Starts never arm it. Three retries wait 10, 30 and
+60 seconds after successive confirmed failures; the incident expires after five
+minutes. Repeated false refreshes do not renew a timer. At most six scheduled
+retries may be sent in one physical connection. Each explicit Charge now ON has
+its own three-retry budget and neither consumes nor resets scheduled retries.
+Counters, scope, deadlines and admitted incident events are durable across process
+restart, transport reconnection and paired handover. Only confirmed unplug or
+changed physical identity ends their connection scope.
+
+A retry uses the normal controller/current preparation and command path. Its
+budget is durably reserved at publication. Fresh native false, physical zero,
+live authority/readiness and an actual open requested period are required.
+Dashboard Pause, a later external instruction, schedule closure or scope change
+cancels recovery. Electrical/native/vehicle restrictions and uncertain command
+outcomes retain their usual fences. Capacity shortage defers dispatch; it is not
+itself a native refusal. Native self-recovery avoids unnecessary retries. Recovery
+success requires true permission plus native charging and independently fresh
+positive measured power for sixty seconds; an ACK alone is insufficient.
+
+On exhaustion the incident remains visible. Charge now turns OFF through exactly
+the normal return-to-Automatic transition. An open scheduled period may then use
+its own remaining retry budget; no special post-failure cooldown or hold is added.
+A fresh explicit Charge now always permits a new scoped attempt, independent of
+the automatic budgets, while normal protection and command-confirmation apply.
+The source `sys` cannot distinguish every intentional native Stop from the
+observed startup failures; the owner accepted that bounded ambiguity on 2026-10-22.
+See [modularity and removal](shelly-compatibility.md).
 
 Other native instructions, current reductions, schedules, faults, authorization,
 vehicle restrictions and electrical limits retain their existing authority.

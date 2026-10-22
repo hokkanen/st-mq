@@ -326,6 +326,29 @@ function observation(view, now) {
     energyAt: at(view.progress?.basis?.lastMeasuredAt), targetConflict: view.targetSelection?.conflict === true };
 }
 
+// Passive incident ingestion is independent of the removable recovery policy.
+// Cursor and immutable rows commit together, including native cycles between views.
+function deviceIncidents(record, view, now) {
+  for (const entry of view.control?.compatibility?.events ?? []) {
+    if (!Number.isSafeInteger(entry.sequence) || entry.sequence <= (record.permissionCursor ?? 0)
+      || !time(entry.at) || entry.at > now) continue;
+    record.permissionCursor = entry.sequence;
+    event(record, entry.at, 'evidence', entry.code, Object.fromEntries(
+      ['policy', 'sourceAt', 'receivedAt', 'origin', 'attempt', 'currentA', 'startAt', 'acceptedAt', 'model', 'firmware']
+        .filter(key => entry[key] !== undefined).map(key => [key, entry[key]])));
+    if (entry.code === 'shelly-pause-interrupted') {
+      finding(record, 'sys-pause-interruption', true, entry.at);
+      finding(record, 'sys-pause-interruption', false, entry.at, 'attention', 'evidence-reconciled');
+    }
+    if (entry.code === 'shelly-sys-off') finding(record, 'sys-permission-interruption', true, entry.at);
+    if (['shelly-permission-restored', 'shelly-recovery-restored'].includes(entry.code))
+      finding(record, 'sys-permission-interruption', false, entry.at, 'attention', 'native-permission-restored');
+    if (entry.code === 'shelly-recovery-waiting') finding(record, 'sys-startup-recovery', true, entry.at);
+    if (entry.code === 'shelly-recovery-restored') finding(record, 'sys-startup-recovery', false, entry.at, 'attention', 'sustained-draw-observed');
+    if (entry.code === 'shelly-recovery-cancelled') finding(record, 'sys-startup-recovery', false, entry.at, 'attention', 'request-changed');
+  }
+}
+
 function event(record, now, kind, code, extra = {}) {
   record.events.push({ sequence: ++record.counts.events, at: now, kind, code, ...extra });
 }
@@ -523,7 +546,7 @@ function publicReport(record, now) {
   if (record?.version !== VERSION) throw unsupported();
   // Observer comparison context can hold large price and plan arrays. Detach
   // only the public projection; copying discarded context serves no reader.
-  const omitted = new Set(['pendingChecks', 'expectationAt', 'planContext', 'events', 'findingContext', 'association']);
+  const omitted = new Set(['pendingChecks', 'expectationAt', 'planContext', 'events', 'findingContext', 'association', 'permissionCursor']);
   const result = clone(Object.fromEntries(Object.keys(record).filter(key => !omitted.has(key))
     .map(key => [key, record[key]])));
   const stale = result.endedAt === null && !fresh(result.observedAt, now, 3 * MINUTE);
@@ -595,18 +618,19 @@ function pageLimit(value) {
 const unsupported = () => new Error('Unsupported charging diagnostics; start a fresh development database');
 function validateRecord(row, id) {
   const keys = 'association,chargerId,counts,coverage,current,endReason,endedAt,events,expectationAt,findings,firstChargingAt,id,observedAt,observedFrom,outcome,pendingChecks,planContext,saved,savedAt,startedAt,vehicleId,version';
-  if (!row || row.version !== VERSION || row.chargerId !== id || Object.keys(row).filter(key => key !== 'shared').sort().join(',') !== keys
+  if (!row || row.version !== VERSION || row.chargerId !== id || Object.keys(row).filter(key => !['shared', 'permissionCursor'].includes(key)).sort().join(',') !== keys
     || !/^[a-f0-9]{64}$/.test(row.id) || !/^[a-f0-9]{64}$/.test(row.association)
     || !time(row.startedAt) || !time(row.observedFrom) || !time(row.observedAt) || row.observedAt < row.startedAt
     || !time(row.expectationAt) || row.firstChargingAt !== null && !time(row.firstChargingAt)
     || row.endedAt !== null && (!time(row.endedAt) || row.endedAt < row.startedAt)
     || typeof row.saved !== 'boolean' || row.savedAt !== null && !time(row.savedAt) || row.saved !== (row.savedAt !== null)
     || row.shared !== undefined && !validSharedAssessment(row.shared)
+    || row.permissionCursor !== undefined && !time(row.permissionCursor)
     || !row.current || !row.outcome || !row.coverage || COVERAGE.some(name => !row.coverage[name])
     || Object.keys(row.coverage).some(name => !COVERAGE.includes(name)) || !row.pendingChecks
     || !row.counts || ['events', 'plans', 'findings'].some(key => !time(row.counts[key]))
     || !Array.isArray(row.events) || row.events.length || !Array.isArray(row.planContext) || row.planContext.length > 8
-    || !Array.isArray(row.findings) || row.findings.length > 16) throw unsupported();
+    || !Array.isArray(row.findings) || row.findings.length > 24) throw unsupported();
   return row;
 }
 
@@ -722,6 +746,7 @@ export class ChargingSessionDiagnostics {
       const record = slot.current;
       if (!record || now < record.observedAt || id && id !== record.id) continue;
       const before = JSON.stringify([record.findings, record.coverage, record.pendingChecks]);
+      deviceIncidents(record, view, now);
       const sharedAssessment = advanceSharedAssessment(record.shared, shared);
       const processingOnly = execution => execution
         && (execution.commandReady || execution.commandBlockReason === 'input-processing');

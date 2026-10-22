@@ -380,8 +380,9 @@ permission to act. See [the configuration guide](docs/configuration.md).
   also supersedes earlier instructions, enables Automatic and returns to price
   scheduling; it need not start charging immediately. **Charge now** is also an
   explicit takeover of the displayed external Stop and supported native charging
-  schedules, requesting immediate charging without changing Automatic or clearing
-  an external adjustable current ceiling. Ordinary polling within an established
+  schedules, including an earlier Shelly SYS permission hold, requesting immediate
+  charging without changing Automatic or clearing an external adjustable current
+  ceiling. A fresh explicit request is independent of automatic retry budgets. Ordinary polling within an established
   connection and the Automatic preference switch never acquire takeover authority.
   Bind takeover to current equipment,
   connection and observed native instructions; newer external changes retain
@@ -421,17 +422,29 @@ permission to act. See [the configuration guide](docs/configuration.md).
   separately scoped and confirmed; ordinary local scheduling never requires it
   or automatically clears an unexplained zero-current state. See
   [local Easee operation](docs/charging/integrations/easee.md#easee-cloud-outages).
-- The owner-approved [Shelly system permission exception](docs/charging/execution-and-recovery.md#shelly-system-permission-changes)
-  classifies fresh, supported `sys` permission changes as device transitions at
-  any time, including repeated cycles, independently of plug time, charging
-  current or identification. This explicit amendment was approved on 2026-10-04;
-  it is not proof of who caused an instruction. A device Stop remains physically
-  stopped and blocks replacement Start until fresh permission returns. System
-  Enable does not create authority or clear an unrelated native instruction.
-  Interrupted application pauses must not furnish continuous stop evidence.
-  Identification keeps its original attempt, deadlines and energy allowance;
-  native protection and other instructions retain priority. An indistinguishable
-  native action reported as `sys` is the accepted residual ambiguity.
+- The owner-approved [Shelly native-permission compatibility exception](docs/charging/execution-and-recovery.md#shelly-system-permission-changes)
+  has two removable policies: permission-transition reconciliation and startup
+  retry recovery. Fresh supported `sys` permission changes remain device
+  transitions at any connection age/current, not evidence of an external actor.
+  A witnessed Stop retains its physical hold until fresh native permission,
+  a fresh explicit Charge now takeover or an eligible bounded startup retry
+  resolves it. Retry recovery covers a SYS Stop within 60 seconds of an
+  acknowledged ordinary Start, excluding identification/restoration Starts:
+  three retries after 10/30/60 seconds, at most five minutes per incident and
+  six scheduled retries per physical connection. Charge now has three retries
+  per explicit ON request and never consumes or resets the scheduler budget.
+  A confirmed terminal Charge now failure performs the ordinary OFF transition,
+  enabling Automatic and reassessing the schedule without a special hold.
+  Retry state survives restart/reconnect/handover; fresh authority, current
+  preparation, physical zero and all independent restrictions remain required.
+  An indistinguishable native user Stop reported as SYS within the startup
+  window may be retried; the owner explicitly accepted this ambiguity and
+  amendment on 2026-10-22. System Enable supplies no Start authority and clears
+  no unrelated instruction. Interrupted pauses cannot furnish continuous stop
+  evidence; identification keeps its original deadlines and energy allowance.
+  Capture native incidents and outcomes even when recovery works, using normal
+  report retention and explicit Save. See the linked contract for evidence and
+  removal boundaries. No firmware-based automatic enable/disable is inferred.
 - Explicit configuration import/application and clearly labeled native-device
   setup/commands are separate from controller-default edits. Keep their actual
   effect visible. Historical records, restoration obligations, commissioning and
@@ -644,7 +657,8 @@ Details: [recording and provenance](docs/recording.md),
   obligations; a command acknowledgement alone does not prove restoration.
 - The [Shelly system permission exception](docs/charging/execution-and-recovery.md#shelly-system-permission-changes)
   preserves a device permission hold as a restriction across restart. Fresh native
-  evidence must resolve it; restored state grants no new Start or observation.
+  evidence, a fresh explicit Charge now instruction or the bounded F3 startup
+  recovery must resolve it; restored state grants no new Start or observation.
   A device hold is not an owned identification pause or evidence of physical
   charging. Existing restoration duties and original identification limits remain.
 - Preserve device-local freshness and command fencing. Garage permanent targets

@@ -105,6 +105,11 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
     else if (frame.method.endsWith('.GetConfig')) result = components()[role];
     else if (frame.method.endsWith('.Set')) {
       writes.push({ method: frame.method, ...frame.params, at: now });
+      if (role === 'start_charging' && frame.params.value === true && startOutcome === 'rejected') {
+        done?.(); queueMicrotask(() => client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
+          id: frame.id, src: DEVICE, dst: frame.src, error: { code: -1, message: 'synthetic refusal' } })), {}));
+        return;
+      }
       const echoKind = frame.params.value ? startEcho : stopEcho;
       if (role === 'start_charging' && echoKind) {
         pendingStartEcho = { dispatchedAt: now, nativeAt: now - (echoKind === 'different native second' ? 1083 : 83),
@@ -419,6 +424,120 @@ test('probe expiry reconciles its own fractional-clock Stop without another atte
 
 const starts = f => f.writes.filter(row => row.role === 'start_charging' && row.value === true);
 const currentWrites = f => f.writes.filter(row => row.role === 'current_limit');
+
+async function chargeNow(f) {
+  const view = f.runtime.status().chargers.find(view => view.id === 'charger2');
+  await f.runtime.chargeNow('charger2', { association: view.association, sessionId: view.request.sessionId,
+    revision: view.request.revision, ...(view.control.takeoverRequired ? {
+      controlRevision: view.controls.revision, takeoverToken: view.control.takeover.token } : {}) });
+}
+
+test('scheduled SYS startup recovery uses the real Start path and records its sustained outcome', async t => {
+  const f = await ordinaryFixture(t);
+  assert.equal(starts(f).length, 1);
+  f.advance(9000); f.permission(false); await f.update();
+  const due = f.item().controller.status().compatibility.incident.nextAt;
+  f.advance(due - f.now - 1); await f.update(); assert.equal(starts(f).length, 1);
+  f.advance(1); await f.update(); assert.equal(starts(f).length, 2);
+  assert.equal(f.item().controller.status().compatibility.scheduledRetries, 1);
+  for (let i = 0; i < 4; i++) { f.advance(20_000); f.measure(14); await f.update(); }
+  assert.equal(f.item().controller.status().compatibility.incident.status, 'recovered');
+  const report = f.runtime.sessionDiagnostics.status().chargers.find(row => row.chargerId === 'charger2' || row.id === 'charger2')?.current
+    ?? f.runtime.sessionDiagnostics.state.chargers.charger2.current;
+  const detail = f.runtime.sessionDiagnostics.reportEvents({ chargerId: 'charger2', reportId: report.id, limit: 100 });
+  assert(detail.events.some(event => event.code === 'shelly-sys-off' && event.firmware === 'synthetic-firmware'));
+  assert(detail.events.some(event => event.code === 'shelly-recovery-attempt' && event.origin === 'scheduled'));
+  assert(detail.events.some(event => event.code === 'shelly-recovery-restored'));
+});
+
+test('Charge now retries have their own budget and exhausted OFF returns to ordinary Automatic', async t => {
+  const f = await ordinaryFixture(t, { automatic: false });
+  await chargeNow(f); assert.equal(starts(f).length, 1);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    f.advance(1000); f.permission(false); await f.update();
+    const incident = f.item().controller.status().compatibility.incident;
+    f.advance(incident.nextAt - f.now); await f.update();
+    assert.equal(starts(f).length, attempt + 2);
+    assert.equal(f.item().controller.status().compatibility.scheduledRetries, 0);
+  }
+  f.advance(1000); f.permission(false); await f.update();
+  assert.equal(f.item().request.chargeNow, undefined);
+  assert.equal(f.item().controls.enabled, true);
+  assert.equal(f.item().controller.status().compatibility.chargeNowRetries, 3);
+  await f.update();
+  const automatic = f.item().controller.status().compatibility.incident;
+  assert.equal(automatic.origin, 'scheduled');
+  f.advance(automatic.nextAt - f.now); await f.update();
+  assert.equal(f.item().controller.status().compatibility.scheduledRetries, 1);
+});
+
+test('fresh Charge now supersedes an old SYS hold without consuming scheduled retries', async t => {
+  const f = await ordinaryFixture(t, { initiallyPermitted: true, autoCharge: true });
+  f.advance(100_000); f.permission(false); await f.update();
+  assert.equal(f.item().controller.status().devicePermissionHeld, true);
+  assert.equal(f.item().controller.status().compatibility.incident, null);
+  f.advance(2000); await chargeNow(f);
+  assert.equal(f.fields.start_charging.value, true);
+  assert.equal(f.item().controller.status().devicePermissionHeld, false);
+  assert.equal(f.item().controller.status().compatibility.scheduledRetries, 0);
+});
+
+test('a later external Stop cancels an armed retry and survives its due time', async t => {
+  const f = await ordinaryFixture(t);
+  f.advance(1000); f.permission(false); await f.update();
+  f.advance(1000); f.permission(false, 'rpc'); await f.update();
+  f.advance(60_000); await f.update();
+  assert.equal(starts(f).length, 1);
+  assert.equal(f.item().controller.status().manual.kind, 'stop');
+  assert.equal(f.item().controller.status().compatibility.incident.status, 'cancelled');
+});
+
+test('startup recovery survives writer-backed process and transport reconnection with its original due time', async t => {
+  const f = await ordinaryFixture(t, { durableStorage: true });
+  await f.store.startWriter();
+  f.advance(1000); f.permission(false); await f.adapter.waitForInputAdmission(); await f.update();
+  const due = f.item().controller.status().compatibility.incident.nextAt;
+  await f.restart(); await f.reconnectBroker();
+  await f.update();
+  assert.equal(f.item().controller.status().compatibility.incident.nextAt, due);
+  f.advance(due - f.now); await f.update();
+  assert.equal(starts(f).length, 2);
+  assert.equal(f.item().controller.status().compatibility.scheduledRetries, 1);
+});
+
+test('a failed ownership save cannot dispatch a due SYS retry', async t => {
+  const f = await ordinaryFixture(t);
+  f.advance(1000); f.permission(false); await f.update();
+  const due = f.item().controller.status().compatibility.incident.nextAt;
+  f.advance(due - f.now); f.failOwnershipSave(true);
+  await assert.rejects(f.update(), /synthetic-ownership-save-failure/);
+  assert.equal(starts(f).length, 1);
+  f.failOwnershipSave(false); await f.update();
+  assert.equal(starts(f).length, 2);
+});
+
+test('a native false/true cycle between reconciles records resolution after its Stop edge', async t => {
+  const f = await ordinaryFixture(t, { initiallyPermitted: true, autoCharge: true });
+  f.advance(1000); f.permission(false); f.advance(1000); f.permission(true);
+  await f.update();
+  const record = f.runtime.sessionDiagnostics.state.chargers.charger2.current;
+  const events = f.runtime.sessionDiagnostics.reportEvents({ chargerId: 'charger2', reportId: record.id, limit: 100 }).events;
+  const off = events.find(event => event.code === 'shelly-sys-off');
+  const restored = events.find(event => event.code === 'shelly-permission-restored');
+  assert(off && restored); assert(restored.id > off.id);
+  assert(record.findings.find(finding => finding.code === 'sys-permission-interruption').resolvedAt !== null);
+});
+
+test('a confirmed native Start rejection returns Charge now OFF without treating it as a lost ACK', async t => {
+  const f = await ordinaryFixture(t, { automatic: false, startOutcome: 'rejected' });
+  await chargeNow(f).catch(() => {});
+  assert.equal(starts(f).length, 1);
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.item().request.chargeNow, undefined);
+  assert.equal(f.item().controls.enabled, true);
+  assert.equal(f.item().controller.status().pending, null);
+  assert.equal(f.item().controller.status().reason, 'evse-rpc-rejected');
+});
 
 function assertOriginalAttempt(f, before, attempt) {
   assert.equal(f.item().identification.id, attempt.id);

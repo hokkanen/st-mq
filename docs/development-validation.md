@@ -534,6 +534,16 @@ native stop/restoration duties during held numerical work. The held-worker
 fixtures request a genuinely changed model; calculation age alone is not a trigger.
 See `test/charging-search.test.js` and `test/charging-replanning.test.js`.
 
+The Shelly compatibility suites cover 10/30/60-second recovery, the connection
+cap, independent Charge now budgets, durable deadlines, current/zero/readiness
+fences, later Stops, paused/closed schedules and sustained draw. Real adapter /
+controller fixtures verify dispatch through the ordinary Start path and normal
+return to Automatic after exhausted immediate charging. Session diagnostics
+checks preserve brief SYS cycles, firmware context, resolved findings and dedup
+across restart. The controls/report browser suites retain the existing toggle
+and conditional event presentation. Synthetic results do not establish firmware
+causality or prove that every physical failure recovers.
+
 ## Automated tests and build
 
 The native OCPP background-read cases in `test/easee-ocpp.test.js` exercise an

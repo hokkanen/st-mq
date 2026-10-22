@@ -85,6 +85,24 @@ function setup() {
     dialog: document.getElementById('charging-report-dialog'), async open(id = 'current') { panel.open('charger1', id); await flush(); } };
 }
 
+test('native SYS incident details use ordinary report entries and include recovery and firmware evidence', async () => {
+  const f = setup();
+  f.records.set('current', [{ id: 2, at: now, kind: 'evidence', code: 'shelly-recovery-attempt',
+    policy: 'startup-retry', origin: 'scheduled', attempt: 2, currentA: 14,
+    startAt: now - 1000, acceptedAt: now - 975, sourceAt: now - 500, receivedAt: now - 450,
+    firmware: 'synthetic-fw', model: 'synthetic-model' }]);
+  await f.open();
+  const text = textOf(f.dialog);
+  assert.match(text, /SYS startup retry sent/);
+  assert.match(text, /Retry 2 of 3/);
+  assert.match(text, /Scheduled charging/);
+  assert.match(text, /Current setting 14 A/);
+  assert.match(text, /Firmware synthetic-fw/);
+  assert.match(text, /Model synthetic-model/);
+  assert.match(text, /Start sent/); assert.match(text, /Acknowledged/);
+  assert.match(text, /Native event/); assert.match(text, /Received/);
+});
+
 test('report buttons retain their label, report state and dialog behavior across refreshes', async () => {
   const f = setup(), button = f.document.getElementById('charger1-session-report');
   const label = button.querySelector('.charging-session-report-label'), statusText = button.querySelector('.charging-session-report-status');

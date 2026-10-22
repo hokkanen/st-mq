@@ -6,6 +6,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Recover supported Shelly SYS startup interruptions with bounded retries and
+  separate scheduled/Charge now budgets. Fresh Charge now supersedes an earlier
+  SYS hold; confirmed failure returns it to Automatic through the normal OFF
+  action. Session reports retain SYS transitions, retries and observed recovery
+  with firmware context, including successful workarounds. Compatibility policies
+  are isolated for later removal after firmware qualification.
+
 - Keep the dashboard, saved heating choices and independently qualified manual
   controls available while a missing Home model cache is reconstructed. Show
   rebuilding explicitly, continue expiry/restoration, and wait for the complete

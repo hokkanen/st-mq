@@ -126,6 +126,19 @@ change. Full inputs and periods are expandable, with concrete before/after value
 shown when recorded changes establish them. An unchanged poll does not create a
 new planning instruction.
 
+Supported Shelly SYS permission incidents appear only when observed. Events retain
+both native edges, the permission-transition policy, Start/ACK/source/receipt
+clocks, applied current and observed model/firmware. Startup recovery entries
+identify scheduled versus Charge now attempts, retry number, cancellation,
+exhaustion and sustained-draw qualification. Successful reconciliation/recovery
+resolves its finding without removing the incident. An ACK is not physical
+recovery. The native cursor and report rows commit together to retain brief
+cycles and prevent duplicate events after restart. Healthy sessions have no SYS
+rows or additional empty section. Firmware metadata is observed context, never
+proof of a defect or its correction. Normal retention and explicit Save apply;
+workarounds never automatically save a report. Historical events remain readable
+without the [compatibility policies](shelly-compatibility.md).
+
 ## Physical evidence and findings
 
 Charger-reported charging state and measured draw remain separate evidence.

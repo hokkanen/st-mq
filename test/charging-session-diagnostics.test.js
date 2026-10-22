@@ -31,6 +31,29 @@ function fixture() {
     observe: (view, at = now) => readCompleteReport(observer, observer.observe([view], at).chargers[0].current) };
 }
 
+test('SYS cycles between observations retain both edges and resolved findings without replay after restart', () => {
+  const { store, observer, observe } = fixture(), view = charger();
+  view.id = 'charger2'; view.provider = 'shelly-evse';
+  const clean = observe(view);
+  assert(!clean.timeline.some(row => row.code.startsWith('shelly-')));
+  view.control.compatibility = { events: [
+    { sequence: 1, at: now + 1000, code: 'shelly-sys-off', sourceAt: now + 900, receivedAt: now + 1000, firmware: 'synthetic-fw' },
+    { sequence: 2, at: now + 2000, code: 'shelly-sys-on' },
+    { sequence: 3, at: now + 2500, code: 'shelly-permission-restored' },
+  ] };
+  const report = observe(refresh(view, now + 3000), now + 3000);
+  assert.equal(report.timeline.filter(row => row.code === 'shelly-sys-off').length, 1);
+  assert.equal(report.timeline.filter(row => row.code === 'shelly-sys-on').length, 1);
+  const finding = report.findings.find(row => row.code === 'sys-permission-interruption');
+  assert.equal(finding.count, 1); assert.equal(finding.resolvedAt, now + 2500);
+  const restarted = new ChargingSessionDiagnostics({ store, clock: () => now + 4000 });
+  restarted.observe([refresh(view, now + 4000)], now + 4000);
+  const events = restarted.reportEvents({ chargerId: 'charger2', reportId: report.id, limit: 100 }).events;
+  assert.equal(events.filter(row => row.code === 'shelly-sys-off').length, 1);
+  assert.equal(events.find(row => row.code === 'shelly-sys-off').firmware, 'synthetic-fw');
+  assert.equal(Object.hasOwn(restarted.getReport({ chargerId: 'charger2', reportId: report.id }), 'permissionCursor'), false);
+});
+
 test('active report readers project the current checkpoint without rewriting a duplicate stored summary', () => {
   const { store, observer, observe } = fixture(), view = charger();
   const initial = observe(view), cached = store.db.prepare('SELECT summary FROM charging_reports').get().summary;
