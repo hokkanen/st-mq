@@ -81,6 +81,7 @@ the configuration is valid and the application is restarted. See
 | Home Assistant bridges | [MQTT setup](docs/homeassistant-mqtt.md), [Caravan dehumidifier](docs/caravan-dehumidifier.md) |
 | Other heating inputs | [Firewood](docs/fireplace.md), [floor preheating](docs/floor-preheat.md) |
 | Replication | [Read-only mirror](docs/replication.md), [manual pair](docs/pairing.md) |
+| Setup and deployment | [Linux setup and updates](docs/linux-deployment.md), [HA updates](docs/ha-deployment.md), [Linux–HA paired deployment](docs/paired-deployment.md) |
 
 ## Operating limits
 
@@ -131,6 +132,14 @@ tag alone does not change that branch or update an installed app. See
 Supervisor checks and their installation limits. For a stopped development app,
 [`npm run deploy:ha`](docs/ha-deployment.md) transfers the current commit over
 SSH and rebuilds it without publishing or starting the app.
+
+For a persistent Linux standby, [`npm run setup:linux`](docs/linux-deployment.md)
+previews its service; add `-- --apply` to install it stopped. After the first
+explicit start, `npm run deploy:linux` prepares, stops, updates and restarts only
+a verified paired slave, then waits for synchronization. Runtime code stays
+separate from development and household state. Follow the
+[paired deployment guide](docs/paired-deployment.md) to update both computers
+using explicit handovers.
 
 ## Development and support
 

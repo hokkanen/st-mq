@@ -655,6 +655,9 @@ simultaneous control.
 
 ## Software upgrades
 
+For runnable commands and the operator sequence, see
+[paired deployment](paired-deployment.md) and [Linux service setup](linux-deployment.md).
+
 Use the existing handover; an upgrade does not introduce another authority path.
 Keep the installed runtime separate from development checkouts. Replacing source
 files under a running process can give newly created workers a different database

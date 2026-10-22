@@ -129,13 +129,13 @@ Remote paths and executable names accept letters, numbers, dots, underscores,
 slashes and hyphens; spaces and parent-directory traversal are rejected. This
 keeps the SSH command interface unambiguous.
 
-The supplied `deploy/st-mq.service` uses `ProtectHome=true`: install the tool in
-`/usr/local/bin/sqlite3_rsync` and keep the service's SSH configuration, identity
-and known-host file under a private `/etc/st-mq/ssh` directory readable by the
-`stmq` user, instead of relying on files under a home directory. Its writable
-state directory is `/var/lib/st-mq`; a slave viewer can use
-`/var/lib/st-mq/mirror`. Put local environment overrides in `/etc/st-mq.env` as
-supported by that unit.
+For a manually managed mirror service, give its account access to the configured
+SSH identity, known-host file, `sqlite3_rsync` executable and writable mirror
+directory. If its systemd hardening hides home directories, use a private
+`/etc/st-mq/ssh` directory and an executable under `/usr/local/bin` instead.
+Keep installation paths and environment settings explicit in that service.
+The repository's [Linux deployment tools](linux-deployment.md) manage paired
+standbys; they do not install or update independent SSH mirrors.
 
 ## Outages and large catch-ups
 

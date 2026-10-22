@@ -1,5 +1,10 @@
 # Deploy a development commit to Home Assistant
 
+For a pair, follow the [Linux–HA deployment sequence](paired-deployment.md) so the
+standby is verified before control moves. Linux has separate
+[setup and deployment commands](linux-deployment.md); this HA command continues
+to require a stopped app and leaves it stopped.
+
 Run this from your Linux checkout:
 
 ```sh

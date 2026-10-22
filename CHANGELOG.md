@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Add repository-managed Linux standby setup and deployment, with persistent
+  user/system services, staged builds and verified synchronization. Document the
+  complete Linux–HA update sequence with explicit handovers and preserved state.
+
 - Rename the chart shortcuts to Yesterday + today and Today + next 2 days;
   the latter now shows three Finnish calendar days.
 

@@ -157,9 +157,11 @@ electricity rates and the admin/family access policy.
 | `STMQ_H66_DEVICE` | Exact H66 topic prefix; enables H66 alongside a configured MQTT broker |
 | `STMQ_H66_VERIFICATION` | Optional JSON path with verified register scaling/evidence |
 
-[deploy/st-mq.service](../deploy/st-mq.service) is a standalone systemd example.
-Adapt its paths and service account before installing it. Stop the previous
-command owner before commissioning a replacement instance.
+For a persistent paired Linux standby, use the repository's
+[Linux setup and deployment tools](linux-deployment.md). Setup generates a service
+from explicit installation paths and leaves it stopped; deployment manages its
+standby lifecycle. Stop the previous command owner before commissioning a
+replacement. Independent standalone development can continue using `npm start`.
 
 Optional [secure web access](https.md) is set up from **Data & settings → Web
 access**. It downloads its private certificate helper only after administrator

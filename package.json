@@ -23,6 +23,8 @@
     "test:all": "npm test && npm run test:extended",
     "test:live": "node scripts/test-live.js",
     "deploy:ha": "node scripts/deploy-ha.js",
+    "setup:linux": "node scripts/setup-linux.js",
+    "deploy:linux": "node scripts/deploy-linux.js",
     "history": "node scripts/history.js",
     "check": "npm run build && npm test"
   },

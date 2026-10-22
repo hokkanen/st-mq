@@ -1,5 +1,15 @@
 # Development validation
 
+Linux setup/deployment boundaries are covered by
+`node --test test/linux-deployment.test.js`: disposable Git repositories and real
+npm builds exercise staged releases, while simulated systemd and authenticated
+pair status cover user/system services, role changes, failures and synchronization.
+These tests never operate installed services. See [Linux deployment](linux-deployment.md)
+and the [paired deployment procedure](paired-deployment.md) for runtime checks.
+`STMQ_REQUIRE_SYSTEMD_TESTS=1 node --test test/extended/linux-deployment-systemd.test.js`
+additionally exercises a real disposable user service and Linux listener ownership;
+it creates and removes only its synthetic unit, never the household service.
+
 Start with the [repository foundations and working rules](../AGENTS.md). Tests
 validate those contracts; existing assertions do not authorize conflicting changes.
 Follow the [conflict procedure](../AGENTS.md#conflicting-requests) before changing
