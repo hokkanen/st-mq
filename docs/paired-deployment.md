@@ -54,9 +54,7 @@ Setup already installs the selected commit; deploying it again is optional.
    review the confirmation and complete it. Wait for **Linux Master** and
    **HA Slave**. An accepted request is not a completed handover. Existing
    readiness checks must succeed; the tools do not override them.
-2. Stop **Home Energy** under **Settings → Apps** in HA. Stop the app itself,
-   not Home Assistant Core or the SSH app.
-3. From the same clean source checkout:
+2. From the same clean source checkout, run:
 
    ```sh
    npm run deploy:ha
@@ -68,12 +66,24 @@ Setup already installs the selected commit; deploying it again is optional.
    npm run deploy:ha -- --connection /private/path/ha-deploy.json
    ```
 
-   The installed HA app version must match `config.json`; use Supervisor's normal
-   installation/update flow first if they differ. The command transfers the
-   commit, rebuilds and verifies the image, preserves saved options and leaves HA
-   **stopped**. It does not reset databases.
-4. Start Home Energy manually in HA. Confirm it returns as a slave and synchronizes.
-   Follow failure instructions before handing over if either deployment fails.
+   Like Linux deployment, this verifies the running slave, prepares, rechecks its
+   role, stops it, deploys, restarts it and waits for synchronization. The installed
+   HA version must match `config.json`; use Supervisor's normal update flow first
+   if they differ. Saved options and databases are preserved.
+3. Confirm HA has returned as a synchronized slave. Follow failure instructions
+   before handing over if either command fails.
+
+Both deployment commands also support `--stopped` for offline maintenance:
+
+```sh
+npm run deploy:linux -- --stopped
+npm run deploy:ha -- --stopped
+```
+
+This requires an already stopped target and leaves it stopped. It sends no
+stop/start or pair-status requests and does not verify runtime readiness. Linux
+still requires its managed runtime and persistent service. HA may be standalone.
+An explicit later start requires its own role and compatibility review.
 
 ## Restore roles and verify
 

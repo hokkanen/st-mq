@@ -1,11 +1,14 @@
+import { runCommand } from '../scripts/lib/deployment-command.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, realpathSync, existsSync, chmodSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { main, validateConnection, validateEnvironment, validateStandby, parseEnvironment, serviceText,
-  privateFile, runCommand, readPair, canonical, checkoutRoot } from '../scripts/lib/linux-deployment.js';
+import { main, LinuxDeploymentError, validateConnection, validateEnvironment, parseEnvironment, serviceText,
+  privateFile, readPair, canonical, checkoutRoot } from '../scripts/lib/linux-deployment.js';
+
+import { validateStandby } from '../scripts/lib/paired-deployment.js';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 function fixture(t, scope = 'user') {
@@ -53,8 +56,8 @@ function fixture(t, scope = 'user') {
     if (exe === 'sudo' && args[1] === 'install') {
       mkdirSync(join(root, 'units'), { recursive: true }); writeFileSync(unit, readFileSync(args.at(-2))); return '';
     }
-    // Service-user access is exercised by the system adapter; the synthetic
-    // repository has no real application configuration module.
+    // This fixture has no real application configuration module or service
+    // process; the native suite separately exercises those boundaries.
     if (args.some(a => /linux-deployment-(?:preflight|process)\.js$/.test(a))) return '';
     return runCommand(exe, args, options);
   };
@@ -189,7 +192,7 @@ test('build failure leaves the old service running without disclosing child outp
 test('start failure retains the selected release, stopped service and lock for inspection', async t => {
   const f = fixture(t); await f.setup(); f.update();
   f.state.onCommand = (exe, args) => { if (exe === 'systemctl' && args.includes('start')) throw new Error('synthetic-private-output'); };
-  await assert.rejects(f.invoke('deploy'), /start.*confirmed stopped/);
+  await assert.rejects(f.invoke('deploy'), /start.*Start requested; outcome unconfirmed/);
   assert.equal(f.state.active, false); assert(existsSync(join(f.c.runtime_dir, 'deployment.lock')));
   assert.equal(git(join(f.c.runtime_dir, 'current'), 'rev-parse', 'HEAD'), git(f.source, 'rev-parse', 'HEAD'));
 });
@@ -197,7 +200,7 @@ test('start failure retains the selected release, stopped service and lock for i
 test('startup waits through unavailable HTTP and peer acquisition, then confirms synchronization', async t => {
   const f = fixture(t); await f.setup(); f.update();
   f.state.onPair = p => {
-    if (f.state.pairCalls === 3) throw new Error('synthetic-connection-refused');
+    if (f.state.pairCalls === 3) throw new LinuxDeploymentError('synthetic-connection-refused');
     if (f.state.pairCalls === 4) return { ...p, peer: { reachable: false }, sync: { state: 'waiting' } };
     return p;
   };
@@ -232,6 +235,33 @@ test('modified installed frontend is rejected before building or stopping the st
   writeFileSync(join(f.c.runtime_dir, 'current/dist/index.html'), 'synthetic-modified-build');
   await assert.rejects(f.invoke('deploy'), /prepared release proof/);
   assert.equal(f.calls.some(call => call.includes('stop') || call.includes('ci')), false);
+});
+
+test('Linux --stopped updates an inactive managed runtime without status or lifecycle requests', async t => {
+  const f = fixture(t); await f.setup(); f.update(); f.state.active = false; f.state.pid = 0; f.calls.length = 0;
+  f.c.token_file = join(f.secrets, 'unused-offline-token'); f.saveConnection();
+  f.state.onPair = () => { throw Error('Stopped deployment must not query an unavailable application.'); };
+  await f.invoke('deploy', ['--stopped']);
+  assert.equal(f.state.active, false); assert.equal(f.state.pairCalls, 0);
+  assert(!f.calls.some(call => call.includes('stop') || call.includes('start')));
+  assert.equal(git(join(f.c.runtime_dir, 'current'), 'rev-parse', 'HEAD'), git(f.source, 'rev-parse', 'HEAD'));
+  assert(f.logs.some(s => s.includes('service remains stopped')));
+});
+
+test('Linux --stopped refuses a running service without stopping it', async t => {
+  const f = fixture(t); await f.setup(); f.calls.length = 0;
+  await assert.rejects(f.invoke('deploy', ['--stopped']), /requires a confirmed inactive service/);
+  assert.equal(f.state.active, true);
+  assert(!f.calls.some(call => call.includes('stop') || call.includes('start') || call.includes('ci')));
+});
+
+test('Linux --stopped rechecks inactivity after preparation and preserves an externally started service', async t => {
+  const f = fixture(t); await f.setup(); f.update(); f.state.active = false; f.state.pid = 0; f.calls.length = 0;
+  const old = realpathSync(join(f.c.runtime_dir, 'current'));
+  f.state.onCommand = (exe, args) => { if (exe === 'npm' && args.includes('build')) { f.state.active = true; f.state.pid = 4321; } };
+  await assert.rejects(f.invoke('deploy', ['--stopped']), /requires a confirmed inactive service/);
+  assert.equal(realpathSync(join(f.c.runtime_dir, 'current')), old);
+  assert(!f.calls.some(call => call.includes('stop') || call.includes('start')));
 });
 
 test('local status authentication never follows redirects or exposes private responses', async t => {

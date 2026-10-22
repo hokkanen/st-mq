@@ -202,12 +202,28 @@ directory. For example:
 node /path/to/st-mq/scripts/deploy-linux.js --connection /private/path/linux-deploy.json
 ```
 
+### Deploy an already stopped service
+
+For offline maintenance of a managed runtime, stop its service explicitly first:
+
+```sh
+npm run deploy:linux -- --stopped
+```
+
+This mode requires a confirmed inactive service with no main process, rechecks
+that state before switching releases, and leaves it stopped. It sends no stop,
+start or pair-status requests. The source/build and installation checks remain;
+runtime startup and synchronization are not verified. It does not install an
+unmanaged standalone runtime or infer authority from saved state. Review roles
+and compatibility before any later explicit start. HA supports the same flag.
+
 ## Failure and recovery
 
-A preparation failure leaves the previous release selected and running. A failure
-after stopping can leave it stopped; a synchronization failure after restart can
-leave it running. The error identifies the phase and any release switch or
-confirmed stop. Inspect systemd and **Paired computers** before continuing.
+A preparation failure leaves the previous release selected and preserves the
+service's initial running or stopped state. In managed mode, a failure after Stop
+can leave it stopped; a synchronization failure after restart can leave it running.
+The error identifies the phase, any release switch and the last lifecycle request
+or confirmation. Inspect systemd and **Paired computers** before continuing.
 
 The tool never automatically rolls back, changes roles, clears pairing, replaces
 configuration, deletes history or retries uncertain service commands. Rolling
@@ -243,6 +259,6 @@ STMQ_REQUIRE_SYSTEMD_TESTS=1 node --test test/extended/linux-deployment-systemd.
 ```
 
 This explicitly creates a disposable synthetic user service under `/run/user`,
-verifies its syntax with `systemd-analyze`, and exercises a real start, deploy
-and restart, including paths containing spaces. It stops and removes that service
+verifies its syntax with `systemd-analyze`, and exercises managed and stopped
+deployment, including paths containing spaces. It stops and removes that service
 afterward. It never loads installation credentials or starts the household app.

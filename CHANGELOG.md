@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Align HA and Linux deployment: both normally verify a running paired slave,
+  prepare, stop, deploy, restart and wait for synchronization. Both offer
+  `--stopped` for an already stopped target, leaving it stopped without lifecycle
+  commands. Preserve existing HA source/image and stopped-window storage checks.
+
 - Add repository-managed Linux standby setup and deployment, with persistent
   user/system services, staged builds and verified synchronization. Document the
   complete Linux–HA update sequence with explicit handovers and preserved state.

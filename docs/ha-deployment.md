@@ -1,21 +1,18 @@
 # Deploy a development commit to Home Assistant
 
 For a pair, follow the [Linux–HA deployment sequence](paired-deployment.md) so the
-standby is verified before control moves. Linux has separate
-[setup and deployment commands](linux-deployment.md); this HA command continues
-to require a stopped app and leaves it stopped.
+standby is verified before control moves. Both [Linux deployment](linux-deployment.md)
+and HA deployment use the same two modes:
 
-Run this from your Linux checkout:
+| Command | Required state | Result |
+| --- | --- | --- |
+| `npm run deploy:ha` | Running, synchronized paired slave | Verify, stop, deploy, restart and wait for synchronization |
+| `npm run deploy:ha -- --stopped` | Already stopped app | Deploy and leave stopped; no stop/start or pair-status requests |
 
-```sh
-npm run deploy:ha
-```
-
-The command deploys the checkout's **committed HEAD**, including commits that have
-not been pushed, over SSH to the Advanced SSH & Web Terminal app. It leaves Home
-Energy **stopped**. It does not publish a release, push Git, start equipment
-control, replace saved installation settings or reset databases. Supervisor's
-configuration schema and shared defaults are refreshed to the deployed commit.
+The command deploys this checkout's **committed HEAD**, including unpublished
+local commits, over SSH to Advanced SSH & Web Terminal. It does not push Git,
+publish a release, change pair roles, replace saved settings or reset databases.
+Supervisor's schema and shared defaults are refreshed to the deployed commit.
 
 ## One-time setup
 
@@ -62,36 +59,58 @@ npm run deploy:ha -- --connection "$HOME/.config/st-mq/ha-deployment/connection.
 ```
 
 If more than one matching app is installed, add `app_slug` with its exact slug
-from HA. Only `ssh_host` and optional `app_slug` are accepted. The retired
+from HA. The optional `sync_timeout_seconds` defaults to 900 and accepts integers
+from 1 to 86400, matching Linux. Only these three connection fields are accepted. The retired
 `url`, `token_path` and `terminal_slug` fields are rejected; replace the connection
 file explicitly. There is no web-terminal fallback or automatic conversion.
 An earlier local token file is unused and is never automatically deleted.
 
-## Each deployment
+## Each paired deployment
 
-1. Commit your intended changes and leave the checkout clean. The command builds
-   the frontend locally using the installed dependencies; use `npm ci` after
-   dependency changes.
-2. Stop Home Energy in HA. The script refuses a running app and never stops or
-   starts it automatically.
-3. Run the command. The installed version number must match `config.json`; use
-   Supervisor's ordinary installation/update flow first when versions differ.
-4. Wait for transfer, Supervisor rebuild and verification to finish. Each file
-   streams as binary stdin through one SSH command and is checked by SHA-256
-   before use. There are no terminal chunks, base64 encoding, screen redraws or
-   per-chunk acknowledgements. The bundle transfer reports verified bytes and
-   elapsed time. Supervisor's image rebuild can still take several minutes.
-   The initial stored-file snapshot and final comparison each allow up to
-   15 minutes and report progress every 30 seconds while listing file metadata.
-   Database and backup contents are never read: a 500 GB file costs the same
-   metadata lookup as a small file. Work scales with file count, not stored bytes.
-   Both local and HA source trees must be clean, and HA's source commit must be
-   an ancestor of local HEAD. Do not change app settings, edit the HA repository
-   or refresh/update app repositories while deployment is running.
-5. Start the app yourself in HA when ready. Deployment verification does not
-   qualify runtime startup, database compatibility, pairing authority or physical
-   equipment behavior. Incompatible development databases remain rejected and
-   require a separate deliberate fresh-start decision.
+1. Commit the intended changes and leave the checkout clean. Use `npm ci` after
+   dependency changes. Both source trees must be clean, and HA's source commit
+   must be an ancestor of the selected local HEAD.
+2. Confirm HA is the running synchronized **Slave** and the other computer is
+   **Master**. Use explicit dashboard handover first if HA is master. The default
+   command refuses a stopped app, a master, unavailable authority, protected
+   recovery, or a role transition.
+3. Run `npm run deploy:ha`, optionally selecting `--connection`. The installed
+   app version must match `config.json`; use Supervisor's ordinary update flow
+   first when they differ. Local frontend preparation happens while HA runs.
+4. The script rechecks the same slave and master immediately before requesting
+   Stop. Supervisor and Docker must confirm the app has stopped before stored-file
+   snapshots or source changes begin. Do not initiate handover, change settings,
+   edit source, or refresh app repositories during deployment.
+5. Wait for transfer, rebuild and verification. Files stream as binary stdin and
+   are checked by SHA-256. Snapshot and final stored-file comparison each allow
+   15 minutes and report progress every 30 seconds. They inspect entry metadata,
+   never database or backup contents; work scales with file count, not stored bytes.
+6. Only after image and preservation checks pass does the script request Start.
+   It verifies the running image digest and the app's own HTTP listener, then
+   waits for the same HA node to remain slave, without control authority, and
+   synchronize with the same master. Fresh peer clocks are assessed on the
+   originating computer; the local synchronization deadline defaults to 15 minutes.
+
+The status probe runs inside the selected app container. It uses the current
+application configuration to authenticate locally; web tokens remain inside that
+container. Container identity, image identity and listener ownership must agree.
+Lifecycle requests use the documented [Supervisor app API](https://contributors.home-assistant.io/apps/supervisor-api/apps/).
+
+### Deploy an already stopped app
+
+For standalone HA, configuration recovery, or offline maintenance:
+
+```sh
+npm run deploy:ha -- --stopped
+```
+
+Stop the app explicitly first. This mode verifies a stopped container and leaves
+it stopped; it does not infer a saved role or start a potentially controlling
+application. Source/image and preservation checks remain enabled. Start it
+manually only after reviewing its configuration, compatibility and authority.
+A successful stopped deployment does not verify runtime startup or synchronization.
+Both modes retain current database/algorithm compatibility gates and do not prove
+physical equipment behavior.
 
 The command verifies the transferred Git bundle, performs a fast-forward source
 update, refreshes Supervisor's local app metadata and asks Supervisor to rebuild
@@ -115,12 +134,13 @@ an unoverridden default can legitimately change them. Saved-object comparisons
 ignore object-key order while preserving values, types and array order. The
 command also compares entry names and types, regular-file sizes and nanosecond
 modification times, and symbolic-link targets under the app's Supervisor
-data/configuration directories before and after. It does not follow links or
+data/configuration directories across the stopped update window. It does not follow links or
 read stored-file contents. This detects metadata changes, not byte-for-byte
 preservation: same-size changes with unchanged modification times are not
 detected. Supervisor saved settings, source and image contents retain their
-full comparisons. A successful run
-reports the exact commit and confirms that the app is stopped.
+full comparisons. Runtime writes before Stop and after Start are outside the stored-file
+comparison. A successful run reports the exact commit and either verified slave
+synchronization or the explicitly requested stopped state.
 
 The operation touches the HA repository cache directly. A later Supervisor
 repository refresh can replace that cache with the published branch; this is a
@@ -160,22 +180,24 @@ container can start; unknown removed fields normally allow that recovery startup
 
 ## If a deployment fails or is interrupted
 
-An **app preflight** refusal means SSH reached Supervisor but the app did not
-meet a deployment prerequisite. If it says to stop Home Energy, stop the app in
-HA, wait until it is stopped and rerun the command. This initial refusal makes
-no remote changes and creates no deployment lock or files. It does not submit a
-rebuild. An unknown or unrecognized app state also blocks deployment.
+An **app preflight** refusal makes no remote changes and submits no lifecycle
+command or rebuild. Check the selected mode and current role. A running master
+requires explicit handover; an already stopped app requires `--stopped` or an
+explicit, separately reviewed initial start before using the managed default.
+Unknown or unrecognized states block deployment.
 
-Supervisor can retain an `error` state after a manual stop. For this state,
-deployment requires a fresh successful Docker listing confirming the selected
-app's container is absent or `exited`. It checks both container names supported
-by current Supervisor (`app_` and `addon_`) at every app-state checkpoint; a
-running container, ambiguous result or failed read blocks deployment. The
-Supervisor error remains visible and is not treated as proof that the app is
-stopped. No stop, start or status-reset command is sent to resolve it.
+Stopped-state checks require a fresh Docker listing showing the selected container
+absent or `exited`, including when Supervisor reports `error`. Both supported
+container names (`app_` and `addon_`) are checked. Ambiguous containers, failed reads
+and running containers fail closed; no status reset is attempted.
 
-The script does not automatically roll back, restart, reset storage or retry a
-possibly running rebuild. Inspect Supervisor's app status and logs locally first.
+Preparation failure leaves a managed slave running. After a confirmed Stop,
+verification failure leaves it stopped. After Start, synchronization failure can
+leave it running and must be inspected before handover. Messages distinguish Stop
+or Start requested with an unconfirmed outcome from an acknowledged operation.
+Lost lifecycle replies are never replayed. Neither mode automatically rolls back,
+resets storage, promotes a peer or retries a possibly running rebuild.
+Inspect Supervisor's app state and logs locally before retrying.
 Remote source may already have advanced while the image still contains the
 previous build. A lost response does not prove that a rebuild failed.
 If Supervisor acknowledged rebuild completion but source verification then
@@ -213,5 +235,5 @@ may contain private configuration.
 Offline transport, boundary and deployment workflow tests run with:
 
 ```sh
-node --test test/ha-deployment.test.js test/ha-deploy-ssh.test.js test/ha-deploy-state.test.js test/ha-deploy-workflow.test.js
+node --test test/ha-deployment.test.js test/ha-deploy-ssh.test.js test/ha-deploy-state.test.js test/ha-deploy-workflow.test.js test/ha-deploy-runtime.test.js test/paired-deployment.test.js
 ```

@@ -1,3 +1,4 @@
+import { runCommand } from '../../scripts/lib/deployment-command.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, realpathSync } from 'node:fs';
@@ -6,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { main, runCommand, readPair } from '../../scripts/lib/linux-deployment.js';
+import { main, readPair } from '../../scripts/lib/linux-deployment.js';
 
 test('native user systemd setup, listener ownership and deployment use only a disposable synthetic app', {
   skip: process.env.STMQ_REQUIRE_SYSTEMD_TESTS !== '1', timeout: 90000,
@@ -70,4 +71,8 @@ server.listen(Number(process.env.STMQ_PORT),'127.0.0.1');process.on('SIGTERM',()
   assert.notEqual(realpathSync(join(runtime, 'current')), old);
   assert.equal(readFileSync(join(data, 'retained'), 'utf8'), 'synthetic-history');
   assert.equal((await readPair(c)).role, 'slave');
+  await runCommand('systemctl', ['--user', 'stop', service]);
+  writeFileSync(join(source, 'revision'), 'synthetic-stopped-update'); git('add', 'revision'); git('commit', '-m', 'Synthetic stopped update');
+  await main('deploy', ['--connection', connection, '--stopped'], dependencies);
+  assert.equal(await runCommand('systemctl', ['--user', 'show', service, '--property=ActiveState', '--value']), 'inactive');
 });

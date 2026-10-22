@@ -129,17 +129,18 @@ docker build -t st-mq:development .
 Home Assistant builds from the configured repository branch. A GitHub prerelease
 tag alone does not change that branch or update an installed app. See
 [deployment validation](docs/development-validation.md) for container and
-Supervisor checks and their installation limits. For a stopped development app,
-[`npm run deploy:ha`](docs/ha-deployment.md) transfers the current commit over
-SSH and rebuilds it without publishing or starting the app.
+Supervisor checks and their installation limits. Both
+[`npm run deploy:linux`](docs/linux-deployment.md) and
+[`npm run deploy:ha`](docs/ha-deployment.md) deploy this checkout's committed HEAD.
+By default they verify a running synchronized slave, prepare the update, stop it,
+deploy, restart it and wait for synchronization. Both accept `-- --stopped` to
+require an already stopped target and leave it stopped without lifecycle commands.
+Neither command changes pair roles or publishes a release.
 
-For a persistent Linux standby, [`npm run setup:linux`](docs/linux-deployment.md)
-previews its service; add `-- --apply` to install it stopped. After the first
-explicit start, `npm run deploy:linux` prepares, stops, updates and restarts only
-a verified paired slave, then waits for synchronization. Runtime code stays
-separate from development and household state. Follow the
-[paired deployment guide](docs/paired-deployment.md) to update both computers
-using explicit handovers.
+For initial Linux service installation, `npm run setup:linux` previews the service;
+add `-- --apply` to install it stopped. Runtime code stays separate from development
+and household state. Follow the [paired deployment guide](docs/paired-deployment.md)
+to update both computers using explicit handovers.
 
 ## Development and support
 

@@ -1,13 +1,14 @@
-import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, realpathSync, readFileSync, writeFileSync, mkdirSync, readdirSync,
   readlinkSync, symlinkSync, renameSync, unlinkSync, rmdirSync } from 'node:fs';
 import { dirname, join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { homedir, userInfo } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { runCommand } from './deployment-command.js';
+import { DeploymentSafetyError, deploymentArguments, synchronizationTimeout, validateStandby, waitForStandby } from './paired-deployment.js';
 
 export const checkoutRoot = fileURLToPath(new URL('../../', import.meta.url));
-export class LinuxDeploymentError extends Error {}
+export class LinuxDeploymentError extends DeploymentSafetyError {}
 const fail = message => { throw new LinuxDeploymentError(message); };
 const inside = (parent, child) => { const r = relative(parent, child); return r === '' || (!r.startsWith('..' + sep) && r !== '..' && !isAbsolute(r)); };
 const sha = value => createHash('sha256').update(value).digest('hex');
@@ -37,7 +38,7 @@ export function validateConnection(value, source = checkoutRoot) {
   try { url = new URL(value.status_url); } catch { fail('Specify a loopback HTTP status_url.'); }
   if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(url.hostname) || url.pathname !== '/' || url.username || url.password || url.search || url.hash)
     fail('status_url must be an HTTP loopback origin, for example http://127.0.0.1:1234.');
-  if (value.sync_timeout_seconds !== undefined && (!Number.isInteger(value.sync_timeout_seconds) || value.sync_timeout_seconds < 1 || value.sync_timeout_seconds > 86400)) fail('sync_timeout_seconds must be an integer from 1 to 86400.');
+  synchronizationTimeout(value.sync_timeout_seconds);
   const runtime = canonical(value.runtime_dir), root = canonical(source);
   if (inside(root, runtime) || inside(runtime, root) || runtime === '/') fail('The managed runtime and source checkout must be separate, non-overlapping directories.');
   for (const name of ['environment_file', 'token_file']) if (value[name] && (inside(runtime, canonical(value[name])) || inside(root, canonical(value[name])))) fail('Private deployment inputs must stay outside the source and runtime directories.');
@@ -98,32 +99,6 @@ export function servicePath(c) {
   return join(c.service_scope === 'user' ? join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd/user') : '/etc/systemd/system', c.service_name);
 }
 
-// Kill the process group on timeout/cancellation, including npm's descendants.
-// Output is bounded and never included in public errors.
-export function runCommand(command, args, { cwd, env = process.env, timeout = 900000, signal, acceptedExitCodes = [0] } = {}) {
-  return new Promise((yes, no) => {
-    let output = [], bytes = 0, reason, timer, killer;
-    const child = spawn(command, args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    const stop = message => {
-      if (reason) return;
-      reason = message;
-      try { process.kill(-child.pid, 'SIGTERM'); } catch { /* Already exited. */ }
-      killer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Already exited. */ } }, 1000);
-    };
-    const abort = () => stop('Command cancelled; inspect service state before retrying.');
-    child.stdout.on('data', data => { bytes += data.length; if (bytes > 16 * 1024 * 1024) stop('Command output exceeded its limit.'); else output.push(data); });
-    child.stderr.on('data', data => { bytes += data.length; if (bytes > 16 * 1024 * 1024) stop('Command output exceeded its limit.'); });
-    child.on('error', () => { reason = 'Command could not start.'; });
-    child.on('close', code => {
-      clearTimeout(timer); clearTimeout(killer); signal?.removeEventListener('abort', abort);
-      if (reason || !acceptedExitCodes.includes(code)) no(new LinuxDeploymentError(reason ?? 'Command failed; private command output suppressed.'));
-      else yes(Buffer.concat(output).toString('utf8').trim());
-    });
-    timer = setTimeout(() => stop('Command timed out; inspect service state before retrying.'), timeout);
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) abort();
-  });
-}
 function digestTree(root, boundary = root) {
   const hashes = [];
   function walk(path) {
@@ -147,17 +122,6 @@ function atomicFile(path, value) {
 function pointCurrent(runtime, release) {
   const temporary = join(runtime, '.current-' + randomUUID());
   symlinkSync(relative(canonical(runtime), release), temporary); renameSync(temporary, join(runtime, 'current'));
-}
-export function validateStandby(pair, identity, now = Date.now(), ready = false) {
-  if (!pair || pair.role !== 'slave' || pair.canControl !== false || pair.busy !== false || pair.phase != null || pair.error != null
-    || pair.vip?.owned !== false || pair.bootstrapPending || pair.recovery?.pendingRelease
-    || pair.recovery?.state && !['idle', 'complete'].includes(pair.recovery.state)
-    || pair.peer?.reachable !== true || pair.peer.role !== 'master' || !Number.isFinite(pair.peer.lastSeenAt)
-    || pair.peer.lastSeenAt > now + 5000 || now - pair.peer.lastSeenAt > 15000
-    || typeof pair.nodeId !== 'string' || typeof pair.pairId !== 'string' || typeof pair.peer.nodeId !== 'string') fail('A fresh, idle paired slave with a reachable master and no control authority is required.');
-  if (identity && ['nodeId', 'pairId'].some(key => pair[key] !== identity[key]) || identity && pair.peer.nodeId !== identity.peer.nodeId) fail('Pair identity changed during deployment.');
-  if (ready && (pair.sync?.state !== 'ready' || pair.sync.error != null)) fail('The standby has not completed synchronization.');
-  return pair;
 }
 export async function readPair(c, { signal, fetchImpl = fetch } = {}) {
   const token = c.token_file ? readFileSync(c.token_file, 'utf8').trim() : '';
@@ -191,14 +155,10 @@ export async function main(mode, args, dependencies = {}) {
       signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
     }), unitPath = servicePath, signal } = dependencies;
   if (args.length === 1 && ['--help', '-h'].includes(args[0])) {
-    log(`Usage: node scripts/${mode === 'setup' ? 'setup' : 'deploy'}-linux.js [--connection /private/path/linux-deploy.json]${mode === 'setup' ? ' [--apply]' : ''}\nDeploy this script checkout’s clean committed HEAD to a local paired Linux systemd runtime.\nSetup previews by default; --apply installs it stopped. Deployment manages only an already running slave.\nDefault connection: ~/.config/st-mq/linux-deploy.json (honors XDG_CONFIG_HOME).\nSee docs/linux-deployment.md and docs/paired-deployment.md.`); return;
+    log(`Usage: node scripts/${mode === 'setup' ? 'setup' : 'deploy'}-linux.js [--connection /private/path/linux-deploy.json]${mode === 'setup' ? ' [--apply]' : ' [--stopped]'}\nDeploy this script checkout’s clean committed HEAD to a local paired Linux systemd runtime.\nSetup previews by default; --apply installs it stopped. Deployment manages a running slave by default; --stopped requires and leaves a stopped service.\nDefault connection: ~/.config/st-mq/linux-deploy.json (honors XDG_CONFIG_HOME).\nSee docs/linux-deployment.md and docs/paired-deployment.md.`); return;
   }
-  let connectionPath = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'st-mq/linux-deploy.json'), apply = false;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--connection' && args[i + 1] && !args[i + 1].startsWith('--')) connectionPath = resolve(args[++i]);
-    else if (args[i] === '--apply' && mode === 'setup' && !apply) apply = true;
-    else fail('Invalid arguments; use --help.');
-  }
+  const { connection: connectionPath, stopped, apply } = deploymentArguments(args,
+    join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'st-mq/linux-deploy.json'), { setup: mode === 'setup' });
   // Validate the connection's own privacy before parsing any installation values.
   const raw = privateFile(connectionPath, source, source);
   const c = validateConnection(JSON.parse(raw), source), runtime = c.runtime_dir;
@@ -206,7 +166,7 @@ export async function main(mode, args, dependencies = {}) {
   const environmentText = privateFile(c.environment_file, source, runtime);
   const environment = validateEnvironment(parseEnvironment(environmentText), c, source);
   privateFile(environment.STMQ_CONFIG, source, runtime);
-  if (c.token_file) privateFile(c.token_file, source, runtime);
+  if (c.token_file && !stopped) privateFile(c.token_file, source, runtime);
   if (!existsSync(c.node_path)) fail('Configured Node executable does not exist.');
   if (operatorUid === 0) fail('Run Linux setup/deployment as an ordinary deployment user, not root.');
   if (c.service_scope === 'system' && c.service_user !== operatorUser) fail('Run deployment as the configured service_user so private files retain their 0600 ownership.');
@@ -244,6 +204,10 @@ export async function main(mode, args, dependencies = {}) {
     }
     return s;
   };
+  const assertStopped = async () => {
+    const state = await assertService(false);
+    if (state.ActiveState !== 'inactive' || state.SubState !== 'dead' || Number(state.MainPID) !== 0) fail('--stopped requires a confirmed inactive service; stop it explicitly first.');
+  };
   const markerPath = join(runtime, 'deployment.json');
   if (mode === 'setup') {
     if (existsSync(unit) || (await show()).LoadState !== 'not-found') fail('The service already exists; preserve it and choose a distinct name or retire it explicitly.');
@@ -254,16 +218,16 @@ export async function main(mode, args, dependencies = {}) {
     if (!existsSync(markerPath)) fail('Run setup:linux for this managed runtime first.');
     const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
     if (!exactFields(marker, ['version', 'service', 'scope', 'unit']) || marker.version !== 1 || marker.service !== c.service_name || marker.scope !== c.service_scope || marker.unit !== sha(expectedUnit)) fail('Unsupported or mismatched managed runtime metadata; preserve it and inspect setup.');
-    await assertService();
+    if (stopped) await assertStopped(); else await assertService();
   }
   mkdirSync(runtime, { recursive: true });
   const lock = join(runtime, 'deployment.lock');
   try { mkdirSync(lock); } catch { fail('A deployment lock exists; inspect the previous operation before removing an empty lock.'); }
-  let stage, switched = false, serviceStopped = false, complete = false, phase = 'preflight';
+  let stage, switched = false, lifecycle = stopped ? 'Service confirmed stopped; no lifecycle commands requested.' : 'No lifecycle commands requested.', complete = false, phase = 'preflight';
   try {
     let identity, previous;
     if (mode === 'deploy') {
-      identity = validateStandby(await pair(c, { signal }), null, clock(), true);
+      if (!stopped) identity = validateStandby(await pair(c, { signal }), null, clock(), true);
       previous = canonical(join(runtime, 'current'));
       if (!inside(canonical(join(runtime, 'releases')), previous) || !lstatSync(join(runtime, 'current')).isSymbolicLink()) fail('The current release does not belong to this managed runtime.');
       if (await git(previous, 'status', '--porcelain')) fail('The installed release has local changes.');
@@ -289,14 +253,16 @@ export async function main(mode, args, dependencies = {}) {
     if (!existsSync(join(stage, 'dist/index.html'))) fail('The frontend build is incomplete.');
     await sourceUnchanged();
     if (await git(stage, 'rev-parse', 'HEAD') !== target || await git(stage, 'status', '--porcelain')) fail('The prepared release no longer matches the selected commit.');
-    if (mode === 'deploy') {
+    if (mode === 'deploy' && !stopped) {
       phase = 'stop'; await assertService();
       validateStandby(await pair(c, { signal }), identity, clock(), true);
+      lifecycle = 'Stop requested; outcome unconfirmed.';
       await systemctl('stop', c.service_name);
-      serviceStopped = true;
       const stopped = await show();
       if (stopped.ActiveState !== 'inactive' || Number(stopped.MainPID) !== 0) fail('The service did not confirm a complete stop.');
+      lifecycle = 'Service confirmed stopped.';
     }
+    if (mode === 'deploy' && stopped) await assertStopped();
     phase = 'install';
     pointCurrent(runtime, stage); switched = true;
     if (digestTree(join(stage, 'dist'), stage) !== proof.dist || digestTree(join(stage, 'node_modules'), stage) !== proof.dependencies) fail('Installed build verification failed.');
@@ -312,39 +278,29 @@ export async function main(mode, args, dependencies = {}) {
       if (installed.ActiveState !== 'inactive' || Number(installed.MainPID) !== 0) fail('Setup did not leave the service stopped.');
       atomicFile(markerPath, JSON.stringify({ version: 1, service: c.service_name, scope: c.service_scope, unit: sha(expectedUnit) }) + '\n');
       log(`Setup verified at ${target}. Service installed stopped; startup was not enabled. Review existing pair state, then start the service explicitly.`);
+    } else if (stopped) {
+      await assertStopped();
+      log(`Deployment verified: ${target}; service remains stopped. No stop, start or pair-status requests were sent.`);
     } else {
       phase = 'start'; await sourceUnchanged(); await assertService(false);
-      await systemctl('start', c.service_name); serviceStopped = false;
+      lifecycle = 'Start requested; outcome unconfirmed.';
+      await systemctl('start', c.service_name); lifecycle = 'Start acknowledged; inspect current service state if verification fails.';
       phase = 'synchronize'; log('Service started. Waiting for the same slave to synchronize with its master…');
-      const deadline = clock() + c.sync_timeout_seconds * 1000;
-      let nextProgress = clock() + 30000;
-      while (true) {
-        if (signal?.aborted) fail('Deployment cancelled.');
-        await assertService(true, false);
-        let status;
-        try { status = await pair(c, { signal }); } catch { /* Startup can briefly refuse HTTP. */ }
-        if (status) {
-          if (status.role === 'master' || status.canControl === true || status.vip?.owned === true || status.error != null
-            || status.role === 'protected' && status.phase !== 'initializing'
-            || status.nodeId && status.nodeId !== identity.nodeId || status.pairId && status.pairId !== identity.pairId
-            || status.peer?.nodeId && status.peer.nodeId !== identity.peer.nodeId) fail('Unexpected role, authority, identity or protected recovery after startup.');
-          if (status.sync?.state === 'error' || status.sync?.error != null) fail('Synchronization reported an error; inspect Paired computers.');
-          let ready = false;
-          try { validateStandby(status, identity, clock(), true); ready = true; } catch { /* Peer acquisition may still be starting. */ }
-          if (ready) { await assertService(); break; }
-        }
-        if (clock() >= deadline) fail('Synchronization timed out; inspect Paired computers before handover.');
-        if (clock() >= nextProgress) { log('Still waiting for standby synchronization…'); nextProgress = clock() + 30000; }
-        await sleep(1000, signal);
-      }
+      await waitForStandby({ identity, timeoutSeconds: c.sync_timeout_seconds, clock, sleep, log, signal,
+        verifyRunning: () => assertService(true, false), verifyReady: () => assertService(),
+        read: async () => {
+          try { return { pair: await pair(c, { signal }), observedAt: clock() }; }
+          catch (error) { if (signal?.aborted || !(error instanceof LinuxDeploymentError)) throw error; return null; }
+        },
+      });
       if (canonical(join(runtime, 'current')) !== stage || await git(stage, 'rev-parse', 'HEAD') !== target || await git(stage, 'status', '--porcelain')
         || digestTree(join(stage, 'dist'), stage) !== proof.dist || digestTree(join(stage, 'node_modules'), stage) !== proof.dependencies) fail('Installed source or build changed during restart.');
       log(`Deployment verified: ${target}; service running, same paired slave, no control authority, synchronization ready.`);
     }
     complete = true;
   } catch (error) {
-    const detail = error instanceof LinuxDeploymentError ? error.message : 'Operation failed; private error details suppressed.';
-    fail(`Linux ${mode} failed during ${phase}: ${detail} ${switched ? 'The current release changed.' : 'The current release was not changed.'} ${serviceStopped ? 'The service was confirmed stopped.' : 'Inspect the service state before retrying.'} No automatic rollback, role change or database reset was attempted. Deployment evidence and lock were retained.`);
+    const detail = error instanceof DeploymentSafetyError ? error.message : 'Operation failed; private error details suppressed.';
+    fail(`Linux ${mode} failed during ${phase}: ${detail} ${switched ? 'The current release changed.' : 'The current release was not changed.'} ${lifecycle} No automatic rollback, role change or database reset was attempted. Deployment evidence and lock were retained.`);
   } finally {
     if (complete) rmdirSync(lock);
   }

@@ -6,13 +6,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main } from '../scripts/deploy-ha.js';
+import { DeploymentSafetyError } from '../scripts/lib/paired-deployment.js';
 import { DeploymentTransportError } from '../scripts/lib/ha-deploy-transport.js';
 
 const version = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8')).version;
 
-function workflowFixture(t, { existingLock = false, corruptBundle = false, changedApp = false, optionsAfterRebuild,
+function workflowFixture(t, { managed = false, snapshot, buildFailure = false, lostStopResponse = false, lostStartResponse = false, startFailure = false, stopFailure = false, stopStaysRunning = false, syncTimeoutSeconds, existingLock = false, corruptBundle = false, changedApp = false, optionsAfterRebuild,
   lostRebuildResponse = false, lostRefreshResponse = false, changedRepositories = false, stateError,
-  wrongSchema = false, complete = false, initialState = 'stopped', lostDiscoveryResponse = false,
+  wrongSchema = false, complete = false, initialState = managed ? 'started' : 'stopped', lostDiscoveryResponse = false,
   lostLockResponse = false, containerStartsAtRead = Infinity, stoppedAfterRebuild = false,
   storedFileCheck, finalFileTimeout = false, sourceChangesAfterRebuild = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ha-deploy-workflow-'));
@@ -23,7 +24,7 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   mkdirSync(join(checkout, 'src'));
   mkdirSync(privateDirectory, { mode: 0o700 });
   const connectionPath = join(privateDirectory, 'connection.json');
-  writeFileSync(connectionPath, JSON.stringify({ ssh_host: 'synthetic-ha' }), { mode: 0o600 });
+  writeFileSync(connectionPath, JSON.stringify({ ssh_host: 'synthetic-ha', ...(syncTimeoutSeconds ? { sync_timeout_seconds: syncTimeoutSeconds } : {}) }), { mode: 0o600 });
   writeFileSync(join(checkout, '.gitignore'), 'dist/\n');
   writeFileSync(join(checkout, 'config.json'), JSON.stringify({ version, options: {}, schema: {} }));
   writeFileSync(join(checkout, 'package.json'), JSON.stringify({
@@ -33,6 +34,7 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   writeFileSync(join(checkout, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3 }));
   writeFileSync(join(checkout, 'build.cjs'), "const fs = require('node:fs'); fs.mkdirSync('dist', { recursive: true }); fs.writeFileSync('dist/index.html', '<!doctype html><title>Synthetic</title>');\n");
   writeFileSync(join(checkout, 'src/index.js'), 'export const synthetic = true;\n');
+  if (buildFailure) writeFileSync(join(checkout, 'build.cjs'), 'process.exit(1);\n');
   const git = (...args) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git('init', '--quiet');
   git('config', 'user.name', 'Synthetic deployment test');
@@ -61,6 +63,8 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   let sourceMoved = false;
   let pythonCode = '';
   let containerReads = 0;
+  let runtimeState = initialState, runtimeReads = 0, now = Date.now();
+  const imageId = 'sha256:' + '1'.repeat(64);
   const ssh = {
     async run(script, { input, timeoutMs } = {}) {
       events.push({ type: 'ssh', script, input, timeoutMs });
@@ -108,6 +112,7 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
         }
         return { exitCode: 0, output: '' };
       }
+      if (complete && script.startsWith('docker image inspect ')) return { exitCode: 0, output: imageId };
       if (complete && script.includes("['docker','image','ls'")) return { exitCode: 0, output: JSON.stringify(`synthetic-st-mq:${version}`) };
       if (complete && script.includes('docker run')) {
         assert.match(script, /--network none/);
@@ -137,10 +142,22 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
         appReads++;
         return {
           ...structuredClone(app),
-          state: changedApp && appReads > 1 ? 'started' : rebuilt && stoppedAfterRebuild ? 'stopped' : initialState,
+          state: managed ? runtimeState : changedApp && appReads > 1 ? 'started' : rebuilt && stoppedAfterRebuild ? 'stopped' : initialState,
           ...(rebuilt && wrongSchema ? { schema: [{ name: 'unexpected' }] } : {}),
           ...(rebuilt && optionsAfterRebuild ? { options: structuredClone(optionsAfterRebuild) } : {}),
         };
+      }
+      if (endpoint === '/addons/synthetic_st-mq/stop') {
+        assert.equal(method, 'post');
+        if (lostStopResponse) throw new DeploymentTransportError('Stop response lost; outcome unconfirmed.');
+        if (stopFailure) throw new DeploymentSafetyError('Supervisor refused Stop.');
+        runtimeState = stopStaysRunning ? 'started' : 'stopped'; return {};
+      }
+      if (endpoint === '/addons/synthetic_st-mq/start') {
+        assert.equal(method, 'post');
+        if (lostStartResponse) throw new DeploymentTransportError('Start response lost; outcome unconfirmed.');
+        if (startFailure) throw new DeploymentSafetyError('Supervisor refused Start.');
+        runtimeState = 'started'; return {};
       }
       if (endpoint === '/store') {
         storeReads++;
@@ -169,7 +186,17 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   };
   return {
     events, messages,
-    deploy: () => main(['--connection', connectionPath], {
+    deploy: () => main([...(managed ? [] : ['--stopped']), '--connection', connectionPath], {
+      clock: () => now, sleep: async () => { now += 1000; },
+      readRuntime: async (_ssh, _app, options = {}) => {
+        events.push({ type: 'runtime', options }); runtimeReads++;
+        const value = { state: 'ready', observedAt: now, container: (rebuilt ? 'b' : 'a').repeat(64), image: imageId,
+          pair: { role: 'slave', nodeId: 'synthetic-ha-node', pairId: 'synthetic-pair', canControl: false, busy: false, phase: null,
+            vip: { owned: false }, peer: { nodeId: 'synthetic-master-node', role: 'master', reachable: true, lastSeenAt: now }, sync: { state: 'ready', error: null } } };
+        const result = snapshot ? snapshot(value, runtimeReads, events) : value;
+        if (result && (options.expectedImage && result.image !== options.expectedImage || options.expectedContainer && result.container !== options.expectedContainer)) throw new DeploymentSafetyError('The HA container or running image does not match the selected deployment.');
+        return result;
+      },
       checkout,
       connect: async config => { assert.equal(config.ssh_host, 'synthetic-ha'); events.push({ type: 'connect' }); return ssh; },
       supervisor,
@@ -243,7 +270,7 @@ for (const stoppedAfterRebuild of [false, true]) {
     const fixture = workflowFixture(t, { initialState: 'error', complete: true, stoppedAfterRebuild });
     await fixture.deploy();
     const reads = fixture.events.filter(event => event.type === 'ssh' && event.script.startsWith('docker container ls '));
-    assert.equal(reads.length, stoppedAfterRebuild ? 3 : 5, 'each error-state observation requires new Docker evidence');
+    assert.equal(reads.length, 5, 'each error-state observation requires new Docker evidence');
     assert.match(fixture.messages[0], /Supervisor reports error; Docker confirms Home Energy is stopped/);
     assert.match(fixture.messages.at(-2), /App remains stopped/);
     assert.ok(!fixture.events.some(event => event.type === 'api' && /\/(start|restart|stop)$/.test(event.endpoint)));
@@ -366,7 +393,7 @@ test('Supervisor reordering saved options during rebuild still completes image v
   assert.ok(fixture.events.some(event => event.type === 'ssh' && event.script.includes('docker run')));
   assert.ok(fixture.events.some(event => event.type === 'ssh' && /rmdir \/tmp\/home-energy-deploy-synthetic_st-mq\.lock/.test(event.script)));
   assert.ok(!fixture.events.some(event => event.type === 'api' && /\/(start|restart|stop)$/.test(event.endpoint)));
-  assert.match(fixture.messages.at(-2), /Stored-file metadata and saved settings unchanged\. App remains stopped/);
+  assert.match(fixture.messages.at(-2), /Stored-file metadata and saved settings unchanged through the stopped deployment window\. App remains stopped/);
 });
 
 test('a genuine saved-options change after rebuild retains the lock without runtime commands or retry', async t => {
@@ -451,4 +478,113 @@ test('the installed schema must also match through the running Supervisor API', 
   const fixture = workflowFixture(t, { complete: true, wrongSchema: true });
   await assert.rejects(fixture.deploy(), /installed schema does not match/);
   assertRetainedFailureState(fixture.events);
+});
+
+test('managed HA deployment stops a verified slave, brackets preservation checks and restarts before cleanup', async t => {
+  const f = workflowFixture(t, { managed: true, complete: true }); await f.deploy();
+  const index = suffix => f.events.findIndex(e => e.type === 'api' && e.endpoint.endsWith(suffix));
+  const stop = index('/stop'), rebuild = index('/rebuild'), start = index('/start');
+  const snapshot = f.events.findIndex(e => e.type === 'ssh' && e.input?.toString().includes('\n snapshot(FILE_HASSIO_APPS'));
+  const verification = f.events.findLastIndex(e => e.type === 'ssh' && /^ verify\(FILE_HASSIO_APPS,.*check_files=True\)/m.test(e.input?.toString() ?? ''));
+  const cleanup = f.events.findIndex(e => e.type === 'ssh' && e.script.includes('rmdir /tmp/home-energy-deploy'));
+  assert(stop > 0 && stop < snapshot && snapshot < rebuild && rebuild < verification && verification < start && start < cleanup);
+  assert.equal(f.events.filter(e => e.endpoint?.endsWith('/stop')).length, 1);
+  assert.equal(f.events.filter(e => e.endpoint?.endsWith('/start')).length, 1);
+  assert.match(f.messages.at(-1), /Same paired slave running.*synchronization ready/);
+  assert(!f.events.some(e => e.endpoint?.includes('/pair/action')));
+});
+
+for (const patch of [{ role: 'master', canControl: true }, { busy: true }, { vip: { owned: true } }]) {
+  test(`managed HA preflight refuses unsafe authority ${Object.keys(patch).join(',')}`, async t => {
+    const f = workflowFixture(t, { managed: true, snapshot: s => ({ ...s, pair: { ...s.pair, ...patch } }) });
+    await assert.rejects(f.deploy(), /slave/);
+    assert(!f.events.some(e => e.method === 'post')); assertNoRebuild(f.events);
+  });
+}
+
+test('managed HA refuses an already stopped app unless --stopped was selected', async t => {
+  const f = workflowFixture(t, { managed: true, initialState: 'stopped' });
+  await assert.rejects(f.deploy(), /requires a running paired slave/);
+  assert(!f.events.some(e => e.type === 'runtime' || e.method === 'post'));
+});
+
+test('managed preparation failure leaves HA running and sends no lifecycle commands', async t => {
+  const f = workflowFixture(t, { managed: true, complete: true, buildFailure: true });
+  await assert.rejects(f.deploy(), /local build/);
+  assert(!f.events.some(e => e.method === 'post'));
+});
+
+test('managed HA checks role again immediately before Stop', async t => {
+  const f = workflowFixture(t, { managed: true, complete: true,
+    snapshot: (s, reads) => reads === 2 ? { ...s, pair: { ...s.pair, role: 'master', canControl: true } } : s });
+  await assert.rejects(f.deploy(), /slave/); assertRetainedFailureState(f.events);
+});
+
+test('managed HA bounds stop confirmation and never edits source or repeats Stop while the app remains running', async t => {
+  const f = workflowFixture(t, { managed: true, complete: true, stopStaysRunning: true });
+  await assert.rejects(f.deploy(), /did not confirm the app stopped/);
+  assert.equal(f.events.filter(e => e.endpoint?.endsWith('/stop')).length, 1);
+  assertNoRebuild(f.events);
+  assert(!f.events.some(e => e.input?.toString().includes('\n snapshot(FILE_HASSIO_APPS')));
+});
+
+for (const options of [{ lostStopResponse: true }, { stopFailure: true }]) {
+  test(`managed HA does not replay an uncertain or refused Stop ${Object.keys(options)[0]}`, async t => {
+    const f = workflowFixture(t, { managed: true, complete: true, ...options });
+    await assert.rejects(f.deploy(), /during stop.*Stop requested; outcome unconfirmed/);
+    assert.equal(f.events.filter(e => e.endpoint?.endsWith('/stop')).length, 1);
+    assert(!f.events.some(e => e.endpoint?.endsWith('/start'))); assertNoRebuild(f.events);
+  });
+}
+
+test('managed verification failure retains the stopped app and never starts an unverified image', async t => {
+  const f = workflowFixture(t, { managed: true, complete: true, stateError: 'files' });
+  await assert.rejects(f.deploy(), /Stored-file metadata changed.*App confirmed stopped/);
+  assert(f.events.some(e => e.endpoint?.endsWith('/stop')));
+  assert(!f.events.some(e => e.endpoint?.endsWith('/start')));
+});
+
+for (const options of [{ lostStartResponse: true }, { startFailure: true }]) {
+  test(`managed HA does not replay an uncertain or refused Start ${Object.keys(options)[0]}`, async t => {
+    const f = workflowFixture(t, { managed: true, complete: true, ...options });
+    await assert.rejects(f.deploy(), /during start.*Start requested; outcome unconfirmed/);
+    assert.equal(f.events.filter(e => e.endpoint?.endsWith('/start')).length, 1);
+    assert(!f.messages.some(s => s.startsWith('Verified '))); assert.equal(f.events.at(-1).type, 'close');
+  });
+}
+
+test('managed HA rejects a wrong running image after Start', async t => {
+  const f = workflowFixture(t, { managed: true, complete: true,
+    snapshot: (s, reads) => reads > 2 ? { ...s, image: 'sha256:' + '2'.repeat(64) } : s });
+  await assert.rejects(f.deploy(), /running image/); assert(!f.messages.some(s => s.startsWith('Verified ')));
+});
+
+test('managed HA cannot report success if synchronization regresses during final runtime verification', async t => {
+  const f = workflowFixture(t, { managed: true, complete: true,
+    snapshot: (s, reads) => reads === 4 ? { ...s, pair: { ...s.pair, sync: { state: 'syncing' } } } : s });
+  await assert.rejects(f.deploy(), /has not completed synchronization/);
+  assert(!f.messages.some(s => s.startsWith('Verified ')));
+  assert(!f.events.some(e => e.type === 'ssh' && e.script.includes('rmdir /tmp/home-energy-deploy')));
+});
+
+test('managed HA rejects a different node after Start', async t => {
+  const f = workflowFixture(t, { managed: true, complete: true,
+    snapshot: (s, reads) => reads > 2 ? { ...s, pair: { ...s.pair, nodeId: 'synthetic-other-node' } } : s });
+  await assert.rejects(f.deploy(), /identity/);
+});
+
+test('managed HA waits through ordinary startup without applying the remote clock to its local deadline', async t => {
+  const f = workflowFixture(t, { managed: true, complete: true, snapshot: (s, reads) => {
+    if (reads === 3) return null;
+    return { ...s, observedAt: s.observedAt + 3600000, pair: { ...s.pair, peer: { ...s.pair.peer, lastSeenAt: s.observedAt + 3600000 } } };
+  } });
+  await f.deploy(); assert.match(f.messages.at(-1), /synchronization ready/);
+});
+
+test('managed HA synchronization timeout leaves the started app for inspection without cleanup or promotion', async t => {
+  const f = workflowFixture(t, { managed: true, complete: true, syncTimeoutSeconds: 2,
+    snapshot: (s, reads) => reads > 2 ? { ...s, pair: { ...s.pair, sync: { state: 'syncing', error: null } } } : s });
+  await assert.rejects(f.deploy(), /Synchronization timed out/);
+  assert.equal(f.events.filter(e => e.endpoint?.endsWith('/start')).length, 1);
+  assert(!f.events.some(e => e.type === 'ssh' && e.script.includes('rmdir /tmp/home-energy-deploy')));
 });

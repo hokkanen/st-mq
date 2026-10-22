@@ -6,6 +6,10 @@ npm builds exercise staged releases, while simulated systemd and authenticated
 pair status cover user/system services, role changes, failures and synchronization.
 These tests never operate installed services. See [Linux deployment](linux-deployment.md)
 and the [paired deployment procedure](paired-deployment.md) for runtime checks.
+`test/paired-deployment.test.js`, `test/ha-deploy-workflow.test.js` and
+`test/ha-deploy-runtime.test.js` cover shared mode parsing/readiness, managed and
+stopped HA paths, lifecycle uncertainty, container/image identity and a real
+synthetic Node listener probe. No household services are used.
 `STMQ_REQUIRE_SYSTEMD_TESTS=1 node --test test/extended/linux-deployment-systemd.test.js`
 additionally exercises a real disposable user service and Linux listener ownership;
 it creates and removes only its synthetic unit, never the household service.

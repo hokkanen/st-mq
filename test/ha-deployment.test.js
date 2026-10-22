@@ -10,6 +10,8 @@ import { validateConnection, selectApp, validateDeploymentState, validateUnchang
 test('deployment accepts SSH destinations and rejects retired or unknown connection fields', () => {
   const valid = { ssh_host: 'synthetic-ha', app_slug: 'synthetic_st-mq' };
   assert.deepEqual(validateConnection(valid), valid);
+  assert.deepEqual(validateConnection({ ...valid, sync_timeout_seconds: 900 }), { ...valid, sync_timeout_seconds: 900 });
+  for (const value of [0, 86401, '900', null]) assert.throws(() => validateConnection({ ...valid, sync_timeout_seconds: value }));
   assert.deepEqual(validateConnection({ ssh_host: 'root@home-assistant.invalid' }), { ssh_host: 'root@home-assistant.invalid' });
   for (const patch of [{ url: 'http://home-assistant.invalid:8123' }, { token_path: '/private/token' }, { terminal_slug: 'synthetic_ssh' }, { ssh_host: '-oProxyCommand=false' }, { ssh_host: 'root@host;false' }, { ssh_host: 'host\nother' }, { app_slug: 'app;false' }]) {
     assert.throws(() => validateConnection({ ...valid, ...patch }));
@@ -35,6 +37,8 @@ const app = { slug: 'synthetic_st-mq', state: 'stopped', version: '0.9.5-dev.3',
 test('deployment requires a stopped app with valid identity and matching manifest version', () => {
   const manifest = { version: app.version };
   assert.doesNotThrow(() => validateDeploymentState(app, manifest));
+  assert.doesNotThrow(() => validateDeploymentState({ ...app, state: 'started' }, manifest, { running: true }));
+  assert.throws(() => validateDeploymentState(app, manifest, { running: true }), /running paired slave/);
   for (const state of ['started', 'starting', 'unknown', undefined]) assert.throws(() => validateDeploymentState({ ...app, state }, manifest), /Stop Home Energy/);
   assert.throws(() => validateDeploymentState(app, { version: '0.9.6' }), /versions differ/);
   assert.throws(() => validateDeploymentState({ ...app, repository: undefined }, manifest), /Git-backed/);
