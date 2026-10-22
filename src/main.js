@@ -1,5 +1,6 @@
 import { weatherAcquisitionIdentity } from './acquisition/weather-identity.js';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { realpathSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { backupDirectory } from './storage/backup-directory.js';
 import { createBackupCatalog } from './storage/backup-catalog.js';
@@ -576,6 +577,10 @@ export async function launch({ env = process.env, cwd = process.cwd(), source = 
   return start({ ...runtimeOptions, config: transaction.config, startupTransaction: transaction, installSignalHandlers });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+function invokedAsMain() {
+  try { return process.argv[1] && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(process.argv[1])); }
+  catch { return false; }
+}
+if (invokedAsMain()) {
   launch().catch(error => { console.error(error.message); process.exitCode = 1; });
 }
