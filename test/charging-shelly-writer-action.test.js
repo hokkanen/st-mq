@@ -7,6 +7,36 @@ import { Store } from '../src/storage/store.js';
 import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import { fixture } from './helpers/charging-joint-fixture.js';
 
+async function settleReceivedWork(f) {
+  const deadline = performance.now() + 10_000;
+  while (performance.now() < deadline) {
+    // Returning household history schedules another planning/reconciliation
+    // turn. Join that publication too before capturing a displayed token.
+    await f.settle();
+    await f.runtime.stateRefreshFlight;
+    await f.store.runWrite(() => {});
+    await new Promise(resolve => setImmediate(resolve));
+    const items = Object.values(f.runtime.chargers);
+    if (f.runtime.historyReady && f.runtime.historyFlights.size === 0
+      && !f.runtime.planningFlight && !f.runtime.stateRefreshFlight
+      && items.every(item => !item.reconcileFlight && !item.reconcileQueued && !item.reconcileAgain)
+      && f.store.canDispatch()) {
+      assert.equal(await f.runtime.chargers.charger2.adapter.waitForInputAdmission(), true);
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.fail('The fixture did not finish its received household history and native-input work');
+}
+
+function selectedIntent(f, action) {
+  const item = f.runtime.chargers.charger2, attempt = item.takeoverAttempt;
+  return attempt?.token === f.input.takeoverToken && attempt.mode === action
+    && attempt.controller === item.controller && attempt.association === f.input.association
+    && attempt.sessionId === f.input.sessionId && attempt.revision === f.before.request.revision + 1
+    && item.request.revision === attempt.revision;
+}
+
 async function readyFixture(t, action) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-shelly-writer-action-'));
   const store = new Store(join(directory, 'fixture.sqlite'));
@@ -30,11 +60,9 @@ async function readyFixture(t, action) {
   assert.equal(f.view('charger2').control.manual.kind, 'stop');
   assert.equal(f.view('charger2').control.manualCurrentA, null);
   await store.runWrite(() => {}); await store.startWriter();
-  // Complete the fixture's native inputs and reconciliation before selecting
-  // the displayed token or intercepting the action's own intent COMMIT.
-  await store.runWrite(() => {});
-  for (const item of Object.values(f.runtime.chargers)) await item.reconcileFlight;
-  await store.runWrite(() => {});
+  // Initial cache preparation is independent of the explicit action under test.
+  // Its completion must not change the selected instruction during that action.
+  await settleReceivedWork(f);
   const view = f.view('charger2'), adapter = f.runtime.chargers.charger2.adapter;
   assert.equal(view.control.takeover.available, true);
   assert.equal(adapter.snapshot().controlReady, true);
@@ -92,7 +120,7 @@ test(`Shelly ${action} cannot dispatch before its ${failed ? 'failed' : 'held'} 
   const entered = new Promise(resolve => { enter = resolve; }), resumed = new Promise(resolve => { release = resolve; });
   t.after(release);
   f.store.writer.request = async (command, args) => {
-    if (command === 'commit' && !intercepted) {
+    if (command === 'commit' && !intercepted && selectedIntent(f, action)) {
       intercepted = true; enter(); await resumed;
       if (failed) throw Object.assign(new Error('Synthetic intent COMMIT failure'), { code: 'ERR_SQLITE_ERROR', errcode: 10 });
     }
@@ -145,7 +173,7 @@ test(`Shelly ${action} releases its rolled-back takeover and admits a fresh acti
   const before = f.commands.length;
   let failedAttempt;
   f.store.writer.request = async (command, args) => {
-    if (command === 'commit' && !failedAttempt && item.takeoverAttempt?.revision === f.before.request.revision + 1) {
+    if (command === 'commit' && !failedAttempt && selectedIntent(f, action)) {
       failedAttempt = item.takeoverAttempt;
       assert.equal(failedAttempt.mode, action);
       assert.equal(failedAttempt.controller, item.controller);
@@ -167,6 +195,7 @@ test(`Shelly ${action} releases its rolled-back takeover and admits a fresh acti
 
   // A fresh displayed scope is still required. This is a new request after a
   // proven rollback, not replay of a possibly dispatched native operation.
+  await settleReceivedWork(f);
   const view = f.view('charger2'), input = { ...f.scope('charger2'), controlRevision: view.controls.revision,
     takeoverToken: view.control.takeover.token };
   if (action === 'automatic') await f.runtime.useAutomatic('charger2', input);
@@ -187,7 +216,7 @@ test(`Shelly ${action} rollback preserves a replacement takeover reservation`, a
   const before = f.commands.length;
   let original, replacement;
   f.store.writer.request = async (command, args) => {
-    if (command === 'commit' && !original && item.takeoverAttempt?.revision === f.before.request.revision + 1) {
+    if (command === 'commit' && !original && selectedIntent(f, action)) {
       original = item.takeoverAttempt;
       assert.equal(original.mode, action);
       assert.equal(original.controller, item.controller);

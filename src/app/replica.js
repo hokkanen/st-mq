@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { Store } from '../storage/store.js';
 import { readReplicaPublication, configurePublicationRoots } from '../replication/publication.js';
 import { createChartService } from './chart-service.js';
+import { derivedCacheId } from '../storage/derived-cache-anchor.js';
 import { createReplicaChartOwner, leaseReplicaCharts, continuesReplicaCharts } from './replica-chart-owner.js';
 import { createWebAccess } from './web-access.js';
 import { fireplaceView } from './fireplace.js';
@@ -208,8 +209,17 @@ export async function startReplica({ config, clock = Date.now,
           const recorded = recordedInput(store);
           const physical = await stat(publication.dbPath), fileIdentity = `${physical.dev}:${physical.ino}`;
           const continuing = continuesReplicaCharts(current, publication, fileIdentity);
+          // Constructor/setup can also write the shared derived file. Retire
+          // the preceding owner before opening any replacement writable worker.
+          if(!continuing && current) await current.chartOwner.service.retireProjection?.();
           const chartOwner = continuing ? current.chartOwner
-            : createReplicaChartOwner(store, makeChartService, { ...config.charts, clock });
+            : createReplicaChartOwner(store, makeChartService, { ...config.charts, clock, projectionCachePath:config.dbPath,
+              cacheIdentity:pairContext?.cacheIdentity?.(),
+              ...(pairContext?.derivedCacheAnchor ? {derivedCacheAnchor:(request,options={})=>{
+                if(options.isCurrent && !options.isCurrent()) return Promise.reject(new Error('The chart cache request is no longer current.'));
+                return pairContext.derivedCacheAnchor({cacheId:derivedCacheId(config.dbPath,pairContext.cacheIdentity?.()),
+                  purpose:'firewood',request},options);
+              }} : {}) });
           chartService = leaseReplicaCharts(chartOwner, store, publication.checkpoint);
           // Open the worker's file handle without computing a historical
           // overview. Existing requests can finish if a seeded file is retired.

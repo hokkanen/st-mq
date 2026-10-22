@@ -1,6 +1,7 @@
 import { storageOperationHealth, observeStorageOperation } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { forecastHousehold } from './history.js';
+import { createDerivedCacheAnchorOwner, derivedCacheId } from '../storage/derived-cache-anchor.js';
 
 const unavailable = () => Object.assign(new Error('Household history is temporarily unavailable.'), { code: 'history-unavailable' });
 
@@ -9,7 +10,7 @@ const unavailable = () => Object.assign(new Error('Household history is temporar
  * closed request resolves null; callers must also check their input generation
  * before publishing an older in-flight result. Refresh cadence belongs to the
  * runtime, while the worker reuses its source-watermarked reference index. */
-export function createHouseholdForecastService({ store } = {}) {
+export function createHouseholdForecastService({ store, cachePath = store?.path, cacheIdentity = '' } = {}) {
   storageOperationHealth.register('history-query');
   if (!store?.path || store.path === ':memory:') {
     let closed = false;
@@ -19,6 +20,7 @@ export function createHouseholdForecastService({ store } = {}) {
     };
   }
   let worker = null, active = null, queued = null, sequence = 0, closed = false;
+  const anchorFlights = new Set(), cacheId = derivedCacheId(cachePath, cacheIdentity);
   const fail = () => {
     const failed = worker;
     worker = null;
@@ -33,11 +35,19 @@ export function createHouseholdForecastService({ store } = {}) {
     request.operation = storageOperationHealth.begin('history-query');
     if (!worker) {
       try {
-        worker = new Worker(new URL('./history-worker.js', import.meta.url), { workerData: { path: store.path } });
+        worker = new Worker(new URL('./history-worker.js', import.meta.url), { workerData: { path: store.path, cachePath, cacheId } });
       } catch { fail(); return; }
       const current = worker;
       worker.on('message', message => {
         if (worker !== current) return;
+        if (message?.type === 'derived-cache-anchor') {
+          const isCurrent = () => !closed && worker === current && active?.id === message.id;
+          const owner = createDerivedCacheAnchorOwner({ store, cacheId, purpose: 'household', isCurrent });
+          const flight = Promise.resolve().then(() => isCurrent() ? owner(message.request) : null).catch(() => null)
+            .then(proof => { if (worker === current) current.postMessage({ type: 'derived-cache-anchor', requestId: message.requestId, proof }); })
+            .catch(() => {}).finally(() => anchorFlights.delete(flight));
+          anchorFlights.add(flight); return;
+        }
         if (message?.type === 'error' && message.id === null) { fail(); return; }
         if (!active || message?.id !== active.id) return;
         const completed = active;
@@ -71,7 +81,8 @@ export function createHouseholdForecastService({ store } = {}) {
       active?.resolve(null); active = null;
       queued?.resolve(null); queued = null;
       const previous = worker; worker = null;
-      return Promise.resolve(previous?.terminate()).catch(() => {}).then(() => operation?.finish('cancelled', { reason: 'cancelled' }));
+      return Promise.allSettled([Promise.resolve(previous?.terminate()), ...anchorFlights])
+        .then(() => operation?.finish('cancelled', { reason: 'cancelled' }));
     },
   };
 }

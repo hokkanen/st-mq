@@ -208,7 +208,11 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     if (['mqtt', 'providers'].includes(config.input) && config.connections.mqtt?.address) {
       commandTransport = createHeatingTransport({ canControl });
     }
-    await store.runWrite(() => { engine = new Engine({ store, config, clock, commandTransport, canControl }); });
+    await store.runWrite(() => { engine = new Engine({ store, config, clock, commandTransport, canControl,
+      cacheIdentity:pairContext?.cacheIdentity?.() }); });
+    // A missing replaceable learning checkpoint must not hold the application's
+    // status, acquisition, manual controls or restoration behind full replay.
+    engine.learningStartupPending = engine.workerLearning();
     engine.historyRecovery = historyRecovery;
     engine.runtimeTiming = runtimeTiming.status;
     // Load durable native-setting obligations before the first active dispatch.
@@ -497,7 +501,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     // Reserve HTTP before constructing a controller, connecting MQTT or ticking.
     // A duplicate launch must fail without touching equipment. API requests are
     // held by settingsReloadStatus().busy until startup has completed.
-    chartService = createChartService({ store, ...config.charts, clock, warmCache: false });
+    chartService = createChartService({ store, ...config.charts, clock, warmCache: false, projectionCachePath: config.dbPath,
+      cacheIdentity:pairContext?.cacheIdentity?.() });
     const backupCatalog = createBackupCatalog({ getConfig: () => config, clock });
     historyRecovery = createHistoryRecovery({ store, getEngine: () => engine, canControl,
       ready: () => !closed && !starting && !reloadPending && runtimeUsable,

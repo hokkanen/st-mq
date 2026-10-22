@@ -721,26 +721,33 @@ test('report deadlines do not turn continuous diagnostics into exact channels; l
   assert.equal(recorder.status().exactParameters[0].threshold, null);
 });
 
-test('open energy survives long steady operation and restart, revises history, and closes only the selected session', t => {
+test('steady positive energy closes at accepted daily boundaries, preserves the exact restart tail, and flushes only the selected session', t => {
   const { store, recorder } = fixture(t);
-  const at = 1000, period = MINUTE;
+  // Quarter-hour increments are exact binary kWh at 3 kW, keeping this test
+  // focused on acquisition/session boundaries rather than scale selection.
+  const at = 1000, period = 15*MINUTE, increments = 25*HOUR/period;
   for (const prefix of ['ev1', 'property']) recorder.recordEnergy(energy(at, at + period, 3, { prefix, device: prefix }));
   const revision = recorder.status(at + period).historyRevision;
-  for (let i = 1; i <= 25 * 60; i++) recorder.recordEnergy(energy(at + i * period, at + (i + 1) * period, 3,
-    { prefix: 'ev1', device: 'ev1' }));
-  const end = at + 1501 * period;
-  recorder.recordEnergy(energy(at + period, end, 3, { prefix: 'property', device: 'property' }));
-  assert.equal(store.observations().length, 6);
+  for (let i = 1; i <= increments; i++) for(const prefix of ['ev1','property'])
+    recorder.recordEnergy(energy(at + i * period, at + (i + 1) * period, 3, { prefix,device:prefix }));
+  const end = at + (increments+1) * period;
+  assert.equal(store.observations().length, 12,'Each stream retains its initial and accepted daily three-phase cohorts');
+  assert.equal(store.observations().filter(row=>row.raw.recorder.reason==='duration-boundary').length,6);
   assert.equal(recorder.flush(end).length, 0);
   const restarted = new Recorder(store, { clock: () => end });
   const status = restarted.status();
   assert.notEqual(status.historyRevision, revision);
   assert.equal(status.parameters.find(row => row.signal === 'ev1_energy_l1').openInterval.end, end);
+  const propertyBefore=store.observations().filter(row=>row.signal.startsWith('property_energy_'));
   const finalized = restarted.flush(end, { force: true, source: 'easee', device: 'ev1', prefix: 'ev1' });
   assert.equal(finalized.length, 3);
-  assert.ok(Math.abs(finalized.reduce((sum, row) => sum + row.value, 0) - 75) < 1e-9);
+  assert.ok(Math.abs(finalized.reduce((sum, row) => sum + row.value, 0) - 3) < 1e-9,'Only the exact remaining hour is flushed');
+  assert.ok(Math.abs(store.observations({signal:'ev1_energy_l1'}).reduce((sum,row)=>sum+row.value,0)-3*(end-at)/HOUR)<1e-9,
+    'Initial, daily and final cohorts conserve every accepted energy increment');
   assert.equal(restarted.status().parameters.find(row => row.signal === 'ev1_energy_l1').openInterval, null);
   assert.notEqual(restarted.status().parameters.find(row => row.signal === 'property_energy_l1').openInterval, null);
+  assert.deepEqual(store.observations().filter(row=>row.signal.startsWith('property_energy_')),propertyBefore,
+    'Closing the charger session never finalizes or rewrites the unrelated property tail');
   assert.equal(restarted.flush(end, { force: true, prefix: 'ev1' }).length, 0);
 });
 

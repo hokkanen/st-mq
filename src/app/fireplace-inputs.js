@@ -41,6 +41,29 @@ export function fireplaceLearningContext(store, input, revision, asOf = Infinity
       end: Math.min(row.at + FIREPLACE_HORIZON_MS, removed.get(row.id)) })).filter(range => range.end > range.start) };
 }
 
+/** Current control needs only loads whose release or exclusion can intersect
+ * its bounded working window. Reconstruction retains the full projection above.
+ * Removal ID order and its independent clock are preserved, including rollback. */
+export function fireplaceWindowContext(store, input, { from, to, revision = Number.MAX_SAFE_INTEGER,
+  asOf = Number.MAX_SAFE_INTEGER } = {}) {
+  if (![from,to,revision,asOf].every(Number.isSafeInteger) || from < 0 || to < from)
+    throw new TypeError('A bounded fireplace window and current source revision are required.');
+  const head = store.db.prepare(`SELECT id FROM active_fireplace_events WHERE input=? AND id<=? AND at<=?
+    ORDER BY id DESC LIMIT 1`).get(input, revision, asOf)?.id ?? 0;
+  const first = store.db.prepare(`SELECT at FROM active_fireplace_events WHERE input=? AND kind='load'
+    AND id<=? AND at<=? ORDER BY at,id LIMIT 1`).get(input, revision, asOf)?.at ?? null;
+  const rows = store.db.prepare(`SELECT l.id,l.at,l.kg,
+    (SELECT r.at FROM active_fireplace_events r WHERE r.input=l.input AND r.target_id=l.id
+      AND r.id<=? AND r.at<=? ORDER BY r.id LIMIT 1) removed_at
+    FROM active_fireplace_events l WHERE l.input=? AND l.kind='load' AND l.id<=?
+      AND l.at>=? AND l.at<=? ORDER BY l.at,l.id`)
+    .all(revision, asOf, input, revision, Math.max(0,from-FIREPLACE_HORIZON_MS), Math.min(to,asOf));
+  return { fireplaceRevision: head, fireplaceStartedAt: first,
+    fireplaceEvents: rows.filter(row => row.removed_at === null).map(row => ({ id:row.id, at:row.at, litAt:row.at, kg:row.kg })),
+    fireplaceExcludedRanges: rows.filter(row => row.removed_at !== null).map(row => ({ start:row.at,
+      end:Math.min(row.at+FIREPLACE_HORIZON_MS,row.removed_at) })).filter(range => range.end>range.start) };
+}
+
 export function withFireplaceInputs(sample, { fireplaceEvents = [], fireplaceStartedAt = null } = {}) {
   const end = instant(sample.timestamp);
   const start = sample.windowStart == null ? end - (sample.durationHours ?? 0.25) * HOUR : instant(sample.windowStart);

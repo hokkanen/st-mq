@@ -41,7 +41,7 @@ export function firewoodDisplay(result, payload = {}) {
   const remaining = result.remaining;
   const remainingValue = remaining?.status !== 'unavailable' && finite(remaining?.valueEuro) ? remaining.valueEuro : null;
   const remainingEnergy = remaining?.status !== 'unavailable' && finite(remaining?.kwh) ? remaining.kwh : null;
-  const statusLabel = status === 'validated' ? 'Validated model estimate' : status === 'provisional' ? 'Provisional model estimate' : 'Estimate unavailable';
+  const statusLabel = result.preparing ? 'Preparing model estimate' : status === 'validated' ? 'Validated model estimate' : status === 'provisional' ? 'Provisional model estimate' : 'Estimate unavailable';
   const evidence = result.evidence ?? {};
   const evidenceLines = [];
   if (finite(evidence.trainingBurns) || finite(evidence.validationBurns)) evidenceLines.push(`${evidence.trainingBurns ?? 0} training firing groups; ${evidence.validationBurns ?? 0} later validation groups.`);

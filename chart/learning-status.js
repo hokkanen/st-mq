@@ -153,7 +153,9 @@ export function learningDisplay(learning = {}, context = {}) {
   const adaptive = learning.adaptive ?? {}, model = adaptive.model ?? {}, health = adaptive.health ?? {};
   const validation = model.validation, p = model.parameters ?? {}, energy = model.energy ?? {};
   const status = health.status ?? learning.status;
-  const title = status === 'prior-estimates' ? 'Learning from initial estimates'
+  const title = status === 'rebuilding' ? 'Rebuilding the heating model'
+    : status === 'reconstruction-failed' ? 'Heating model rebuild needs attention'
+    : status === 'prior-estimates' ? 'Learning from initial estimates'
     : status === 'retained-previous' ? 'Keeping the previous model'
       : status === 'learning' ? 'Learning from observed temperatures' : words(status || 'Collecting observations');
   const process = 'Learning fits the temperature response from completed 15-minute intervals, preserving genuine sensor-report timing and changes in heat input. Later observations test those estimates. Temperature checks use recorded heat input; equipment-response checks predict compressor duty; forecasts saved before a cycle test the complete prediction. These checks determine which predictions planning can use. They do not observe the unexecuted alternative or prove savings.';
@@ -162,6 +164,8 @@ export function learningDisplay(learning = {}, context = {}) {
     evidence.push(detail);
     evidenceRows.push({ key: title, title, value, detail });
   };
+  if (learning.reconstruction?.reason) record('Model reconstruction',
+    status === 'reconstruction-failed' ? 'Rebuild needs attention' : 'Rebuilding', learning.reconstruction.reason);
   const basis = (title, value, detail) => {
     coefficientEvidence.push(detail);
     coefficientEvidenceRows.push({ key: title, title, value, detail });

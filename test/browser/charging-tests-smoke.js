@@ -96,7 +96,12 @@ try {
     return b.left >= a.left && b.right <= a.right && b.top >= a.top && b.bottom <= a.bottom
       && b.width >= 32 && b.height >= 32;
   })()`), true, `${selector} has an accessible clock button inside the field without a separate Choose time row`);
-  const poll = async () => { await evaluate('chargingFixture.poll()'); await pause(60); };
+  const poll = async settled => {
+    await evaluate('chargingFixture.poll()');
+    // Status rendering starts report-detail/event reads asynchronously. New
+    // evidence assertions must wait for their rendered result, not a delay.
+    if (settled) await until(settled); else await pause(60);
+  };
   const setFields = values => evaluate(`(() => {
     const form = document.getElementById('charging-test-form');
     for (const [name, value] of Object.entries(${JSON.stringify(values)})) {
@@ -1074,7 +1079,7 @@ try {
         lastExpectedCurrentA:16,lastAllocationAt:${now},reportedCurrentA:16,measuredAt:${now},expectationAt:${now},
         commandReady:false,commandBlockReason:'input-processing'}}});
   })()`);
-  await poll();
+  await poll("document.querySelector('.charging-report-timeline')?.textContent.includes('Shared charging evidence changed')");
   const allowanceText = await evaluate("document.querySelector('.charging-report-timeline').textContent");
   assert.match(allowanceText, /Shared charging evidence changed/);
   assert.match(allowanceText, /expected allowance 16 A/);

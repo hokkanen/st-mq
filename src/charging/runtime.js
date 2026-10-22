@@ -401,8 +401,9 @@ export class ChargingRuntime {
     this.readEnergy = query => readEnergy({ ...query, device: query.id === 'charger1'
       ? this.config.connections?.easee?.charger_id ?? null : this.chargers.charger2?.adapter?.association ?? null });
     this.prices = []; this.pricesInitialized = false;
-    this.historyService = store.path && store.path !== ':memory:' ? createHouseholdForecastService({ store }) : null;
-    this.historyGeneration = 0; this.historyReady = false; this.historyFlights = new Set();
+    this.historyService = store.path && store.path !== ':memory:' ? createHouseholdForecastService({ store,
+      cachePath: config.dbPath ?? store.path, cacheIdentity: engine?.cacheIdentity }) : null;
+    this.historyGeneration = 0; this.historyReady = false; this.historyFlights = new Map(); this.historyRequestedAt = null;
     this.household = []; this.historyAt = null; this.coordination = null; this.closed = false;
     this.plannerService = createChargingPlannerService();
     this.flexibilityQueue = new Set();
@@ -2643,11 +2644,14 @@ export class ChargingRuntime {
       ...(configuredBudgetCurrentA ? { configuredBudgetCurrentA } : {}) };
     const historyOptions = { now, deadlineAt, input: this.config.input, voltageV: planningVoltageV, timezone: TIME_ZONE,
       weather: this.weather, outdoorC: this.engine.latest?.outdoor_temperature?.value };
-    const selectedHistory = this.store.db.prepare('SELECT generation FROM history_selection WHERE id=1');
-    const historySelection = selectedHistory.get().generation;
-    if (historySelection !== this.historySelection) {
+    // Writer startup can replace the connection while this worker is running.
+    // Recheck selection on its current handle, never a finalized statement.
+    const selectedHistory = () => this.store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation;
+    const historySelection = selectedHistory();
+    if (historySelection !== this.historySelection || now < Math.max(this.historyAt ?? -Infinity, this.historyRequestedAt ?? -Infinity)) {
       this.historySelection = historySelection;
       this.household = []; this.historyReady = false; this.historyAt = null;
+      this.historyRequestedAt = null; this.historyGeneration++; this.historyFlights.clear();
     }
     const historyVoltage = planningVoltageV.map((value, phase) => {
       const previous = this.historyVoltage?.[phase];
@@ -2661,17 +2665,17 @@ export class ChargingRuntime {
         this.historyReady = true; this.historyAt = now; this.historyDeadline = deadlineAt;
       } else if (!this.historyFlights.has(historyKey)) {
         const generation = ++this.historyGeneration;
-        this.historyFlights.add(historyKey); this.historyError = null;
+        this.historyFlights.set(historyKey, generation); this.historyRequestedAt = now; this.historyError = null;
         void this.historyService.request(historyOptions).then(rows => {
           if (this.closed || !this.store.db.isOpen || generation !== this.historyGeneration || historyKey !== this.historyKey || !rows
-            || selectedHistory.get().generation !== historySelection) return;
+            || selectedHistory() !== historySelection || this.clock() < now) return;
           this.household = rows; this.historyReady = true; this.historyAt = now; this.historyDeadline = deadlineAt;
         }).catch(() => {
           if (this.closed || !this.store.db.isOpen || generation !== this.historyGeneration || historyKey !== this.historyKey
-            || selectedHistory.get().generation !== historySelection) return;
+            || selectedHistory() !== historySelection) return;
           this.historyError = 'household-history-unavailable'; this.historyAt = this.clock();
         }).finally(() => {
-          this.historyFlights.delete(historyKey);
+          if (this.historyFlights.get(historyKey) === generation) this.historyFlights.delete(historyKey);
           if (!this.closed && this.store.db.isOpen && generation === this.historyGeneration) this.tick({ force: true });
         });
       }
@@ -2783,7 +2787,7 @@ export class ChargingRuntime {
     const acceptResult = result => {
       if (!current() || !result) return false;
       const at = this.clock();
-      if (selectedHistory.get().generation !== historySelection || evidence !== this.planningEvidence(supply) || at < now
+      if (selectedHistory() !== historySelection || evidence !== this.planningEvidence(supply) || at < now
         || at >= chargingPlanValidUntil({ now: result.at, chargers: planningViews }, result)) {
         this.planningRequest ??= { sourceId, sourceWaiter, background, ticket: this.planningSequence };
         return false;

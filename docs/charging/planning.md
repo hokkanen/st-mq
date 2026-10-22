@@ -218,6 +218,72 @@ assumptions. Later voltage changes cannot rewrite that early-CSV basis. Measured
 energy, charging progress and billed interval energy never depend on those
 retrospective voltage assumptions.
 
+The household forecast selects at most 32 independent nights in each local-hour
+and 5 °C condition bucket, with at most 24 load patterns per entry. Its compact
+index retains 32 stable nights plus a bounded reserve for the current and prior
+two local dates. An ordinary current-hour temperature-band change can therefore
+recover the previous 32nd candidate without scanning history; advancing time
+finalizes and trims only this small reserve. Winter
+examples therefore survive summer observations. A read-only worker owns this
+derived index and its single private, compressed sidecar beside the configured
+database; paired source-file generations share that stable cache location.
+Source rows, original CSVs and recorded voltage evidence remain authoritative.
+The sidecar contains no control permission and is excluded from the authoritative
+database format. Its current algorithm, history selection, import/voltage basis,
+source cutoff and verified immutable input prefix must match before reuse. The
+parent writer registers the worker's exact read-snapshot proof before a long
+build and publishes its file digest afterwards; these tiny derived state records
+survive normal transaction-journal pruning. They grant no device authority and
+do not copy historical inputs. The previous published proof remains available
+during preparation. The sidecar is
+discardable on corruption, divergence or unsupported format, with no migration.
+
+Ordinary restart restores the compact reference and processes only subsequent
+source IDs, pending energy and newly available source/receipt clocks. Source
+changes refresh affected dates. Known overlapping energy invalidates its complete
+connected cluster, including crossings of an internal weekly processing boundary;
+incremental updates rewind that same cluster. If a destructive correction removes
+an older stable example from a previously overflowing bucket, a worker rebuild recovers an older eligible example
+which was evicted from the bounded index. Missing or rejected sidecars, changed
+history/import selection and such destructive corrections can require a full
+source reconstruction, as can catching up more than 32 changed dates after an old
+cache. Source changes are streamed, never materialized as an unbounded row array.
+Normal control and the event loop do not run that scan. Future deferred-admission
+boundaries discovered during reconstruction or new input also wake a truthful
+replacement after a historical cutoff or wall-clock rollback; routine refreshes
+do not scan archived JSON clocks.
+Forecast readiness remains separate from native protection and command authority.
+Runtime clock reversal withdraws a future-dated reference and fences older
+in-flight requests before admitting a replacement.
+
+The sidecar is replaced atomically with mode 0600, capped at 8 MiB compressed and
+32 MiB expanded, and normally written at most hourly after source changes.
+Zero charger tails may span months without new source rows. A compact proof is retained only after all three actual zero phases have
+passed complete canonical overlap/quality checks. Exact unchanged extensions
+refresh the suffix, and exact complete finalization transfers the proof to its
+three immutable row IDs. New late evidence, changed quality/identity, incomplete
+finalization, rollback and source-selection changes cannot reuse that prefix.
+Cold reconstruction also retains exact geometry proofs for recently finalized
+cohorts, bound to their three immutable phase IDs and original end. Their actual
+canonical values and quality remain unchanged, including unknown values; a
+geometry proof never grants numeric validity. Long connected conflict spans
+retain their verified unknown geometry separately, including components built
+entirely from short cohorts. Forward overlaps extend that unknown span without
+rechecking its old prefix; original pending participants must remain present or
+finalize as complete admitted cohorts. Participant removal, rollback or a newly
+left-extending source requires a fresh assessment. Numeric values never become
+valid through a conflict proof. At most 1,000 cohort proofs and 1,000 conflict
+spans are retained, only for intervals longer than one day; finalized geometry
+expires with the bounded mutable reference dates. Supported original-CSV peer
+subtraction uses the same verified native context; its conservative earliest-peer
+bound advances with the source watermark instead of rescanning native history on
+ordinary imported-reference refreshes. Other adaptive groups, including invalid zero and property groups, close at accepted
+acquisition boundaries after 24 hours, so floating-point accumulation never requires approximate prefix equivalence.
+Weather-only planning does not rewrite it. Complete reconstruction or a changed
+source interpretation publishes immediately. This bounds disk use without
+retaining every historical hourly summary or rewriting the index on each
+five-minute forecast; an unsaved recent suffix is reconstructed after restart.
+
 For unchanged intent, retain accepted periods unless an assessed replacement
 clears the monetary threshold above. The inexpensive joint assessment still checks
 service, applicable limits and continuing peer demand. An unchanged selected

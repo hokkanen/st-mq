@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../src/main.js';
 import { Engine } from '../src/app/engine.js';
+import { LiveLearning } from '../src/app/live-learning.js';
 import { loadConfig } from '../src/app/config.js';
 import { Store } from '../src/storage/store.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
@@ -32,7 +33,7 @@ function providers(onConstruct = () => {}) {
   return { automatic: false, http: { json() { throw new Error('External provider forbidden'); }, close() {} },
     devices: { get temperatures() { onConstruct(); return async () => []; }, async close() {} } };
 }
-async function fixture(t, { hold = false, fail = false } = {}) {
+async function fixture(t, { hold = false, fail = false, holdReplay = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-first-status-'));
   const config = loadConfig({ HOME: directory, XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
   config.input = 'mqtt'; config.deviceId = null;
@@ -43,10 +44,12 @@ async function fixture(t, { hold = false, fail = false } = {}) {
   config.garage.adapter = isolatedGarageAdapter(); config.garage.sender = { stateTopic: '', commandTopic: '' };
   let now = INITIAL, warm, app, store, reader, startup, server;
   const controller = new AbortController(), entered = deferred(), release = deferred();
+  const replayEntered = deferred(), releaseReplay = deferred();
   const state = { recovery: null, recoveryCommitted: false, firstTickCommitted: false,
     seedSelected: false, seedCommitted: false, rollback: false, cueCount: 0 };
   const original = { startWriter: Store.prototype.startWriter, tickSteps: Engine.prototype.tickSteps,
-    confirm: Engine.prototype.confirmTemperatureConnection, status: Engine.prototype.status, listen: Server.prototype.listen };
+    confirm: Engine.prototype.confirmTemperatureConnection, status: Engine.prototype.status, listen: Server.prototype.listen,
+    calculate: LiveLearning.prototype.calculate };
   const first = client(), resumed = client({ deferRoom: true });
   const connect = mqtt => (_address, options) => {
     if (identityConnection(options)) return idleIdentityClient();
@@ -55,7 +58,7 @@ async function fixture(t, { hold = false, fail = false } = {}) {
   t.after(async () => {
     const errors = [];
     const attempt = async operation => { try { return await operation(); } catch (error) { errors.push(error); } };
-    release.resolve(); controller.abort();
+    release.resolve(); releaseReplay.resolve(); controller.abort();
     const outcome = await attempt(() => startup);
     if (outcome?.app) app = outcome.app;
     try {
@@ -67,6 +70,7 @@ async function fixture(t, { hold = false, fail = false } = {}) {
       Engine.prototype.confirmTemperatureConnection = original.confirm;
       Engine.prototype.status = original.status;
       Server.prototype.listen = original.listen;
+      LiveLearning.prototype.calculate = original.calculate;
     }
     await attempt(() => reader?.close());
     await attempt(() => rmSync(directory, { recursive: true, force: true }));
@@ -79,6 +83,10 @@ async function fixture(t, { hold = false, fail = false } = {}) {
   assert.equal(warm.engine.recorder.latestCommitted('indoor_temperature').value, 21);
   now += 15_000;
   await warm.close(); warm = null; now = INITIAL + 60_000;
+  if (holdReplay) LiveLearning.prototype.calculate = async function (...args) {
+    replayEntered.resolve(); await releaseReplay.promise;
+    return original.calculate.apply(this, args);
+  };
   reader = new Store(config.dbPath, { readOnly: true });
   Store.prototype.startWriter = async function (...args) {
     const result = await original.startWriter.apply(this, args);
@@ -139,9 +147,25 @@ async function fixture(t, { hold = false, fail = false } = {}) {
       assert.equal(resumed.room.length, 1);
       state.cueCount++; resumed.room[0]();
     }) }).then(value => ({ app: value }), error => ({ error }));
-  return { config, state, entered, release, controller, resumed, reader, startup,
+  return { config, state, entered, release, replayEntered, releaseReplay, controller, resumed, reader, startup,
     get store() { return store; }, get server() { return server; }, setNow: value => { now = value; } };
 }
+
+test('real startup and authenticated status become usable while model replay remains unfinished', { timeout: 15_000 }, async t => {
+  const f = await fixture(t, { holdReplay: true }), result = await f.startup;
+  assert.ifError(result.error);
+  await f.replayEntered.promise;
+  const response = await fetch(`http://127.0.0.1:${f.server.address().port}/api/status`);
+  assert.equal(response.status, 200);
+  const view = await response.json();
+  assert.equal(view.learning.status, 'rebuilding');
+  assert.equal(view.learning.adaptive, null);
+  assert.equal(view.observations.upstairs.value, 21);
+  assert.equal(view.observations.upstairs.observedAt, INITIAL);
+  assert.equal(f.state.seedCommitted, true);
+  assert.equal(result.app.engine.learningStartupPending, true);
+  assert(view.charging && view.garage && view.recording && view.settings);
+});
 function recovered(f) {
   assert.equal(f.state.cueCount, 1);
   assert.deepEqual(f.state.recovery, { beforeHadView: true, latestAbsent: true,

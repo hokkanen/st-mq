@@ -52,6 +52,10 @@ test('direct circulation dispatch stays idle until a POST and shutdown saves unc
     finally { rmSync(directory, { recursive: true, force: true }); }
   });
   app = await start({ config, clock: () => now, providerOptions: fixture.providerOptions, mqttOptions: { connect } });
+  // This fixture qualifies ordinary native command teardown. Startup now also
+  // serves a truthful rebuilding view; its independent manual/expiry behavior
+  // is exercised with a held replay in the live-learning fixtures.
+  await app.engine.startupLearningFlight;
   const endpoint = `http://127.0.0.1:${app.server.address().port}`;
   const status = await (await fetch(`${endpoint}/api/status`)).json();
   assert.equal(status.heatingTests.available, true);

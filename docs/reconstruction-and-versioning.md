@@ -24,10 +24,10 @@ learning epoch. Original observations, frozen forecasts, corrections and their
 provenance keep their historical meaning throughout an upgrade.
 
 The current physical SQLite schema and the current journaled data layout have
-separate identifiers. Physical schema 33 records coefficient history with
-committed learning and retains the chronological coverage index and bounded
-journal/recovery indexes. Its journaled rows retain layout 30 and the existing
-genesis/hash interpretation. Every fresh schema-33 database uses that one current
+separate identifiers. Physical schema 34 adds indexed manual-firewood revision,
+time-window and removal-target reads to coefficient history and the chronological
+coverage and bounded journal/recovery indexes. Its journaled rows retain layout
+30 and the existing genesis/hash interpretation. Every fresh schema-34 database uses that one current
 layout. There is no older-schema runtime branch or alternate journal decoder. Strict physical-schema
 validation rejects incompatible physical schemas before writable setup. The owner's one-time
 2026-10-15 chart-index conversion exception requires verified backups and rollback,
@@ -38,7 +38,13 @@ a later schema. The owner separately approved the installation-only offline
 coefficient-history preparation on 2026-10-21 under [F1](../AGENTS.md#f1), with
 verified backups, retained source/transaction identities, external disposable
 tooling and rollback. That exception adds no runtime conversion or permission to
-convert other databases. An installed schema-32/schema-33 pair cannot mirror or
+convert other databases. For schema 34, the owner approved a further installation-only
+offline conversion on 2026-10-22 under F1: stop both paired applications, preserve
+verified backups and each node's own source rows, checkpoint, transaction and
+authority identities, refresh only physical-file publication accounting, and
+fully validate the candidates with rollback retained. The disposable tooling stays
+outside Git; this is no permission to convert other databases. Runtime startup still rejects
+other physical schemas before mutation. A pair with different physical schemas cannot mirror or
 hand over across that boundary; both roles must use the same supported schema.
 
 Given an intact committed learning journal, its saved configuration and initial
@@ -83,6 +89,14 @@ in a worker only after the immutable learning inputs and control intent commit.
 The worker preserves the complete current checkpoint, validates its journal
 boundary and source selection, and never rewinds a valid cache of the same
 interpretation. A correct cache may lag the current journal head; restart replays that tail.
+Initial reconstruction has a separate, committed dashboard readiness boundary:
+actual observations, saved choices and independently qualified safe controls do
+not wait for the model. The published learned model stays absent until the full
+controller view commits. Safe manual edits do not invalidate an intact canonical
+learning prefix; source selection, corrections, measurement boundaries and epoch
+changes still do. The subsequent control turn checks all current instructions
+and native evidence. Existing restoration duties and fixed deadlines progress
+independently of replay; model-dependent automatic economics remains unavailable.
 One active save and one replacement candidate bound pending work. A failed cache
 save retains the previous cache and all committed inputs, reports reduced restart
 acceleration, and does not roll back an already committed controller update.

@@ -13,6 +13,7 @@ import { installChartRequestProbe } from '../../scripts/lib/chart-request-browse
 import { checkEquipmentBrowser } from '../../scripts/lib/equipment-browser-checks.js';
 import { EventEmitter } from 'node:events';
 import { Store } from '../../src/storage/store.js';
+import { decodeJournalChange } from '../../src/storage/journal.js';
 import { appendLearningRecord, LEARNING_ALGORITHM } from '../../src/app/committed-learning.js';
 import { initialAdaptiveModel } from '../../src/control/adaptive-learning.js';
 import { addFireplace } from '../../src/app/fireplace.js';
@@ -448,11 +449,14 @@ try {
       writeFileSync(`var/home-energy-checks-${theme}-${width}.png`,Buffer.from(shot.data,'base64'));
     }
   }
-  // Exercise actual refresh rendering with controlled API responses. The brief
-  // clock offset bypasses only the audit refresh cache; no real data is read.
+  // Exercise the explicit refresh action with controlled API responses. A
+  // completed job is retained until the user requests another check.
   await evaluate(`(async()=>{
-    const fixture=window.energyCheckFixture={fetch:window.fetch.bind(window),now:Date.now,offset:0,requests:0};
-    fixture.response=await fixture.fetch('/api/energy-audits').then(response=>response.json());
+    const fixture=window.energyCheckFixture={fetch:window.fetch.bind(window),requests:0};
+    const range=new URLSearchParams({start:document.getElementById('energy-check-date-start').value,
+      end:document.getElementById('energy-check-date-end').value});
+    fixture.response=await fixture.fetch('/api/energy-audits?'+range).then(response=>response.json());
+    if(!Array.isArray(fixture.response.result))throw new Error('The displayed energy-check period must have completed fixture results');
     fixture.original=structuredClone(fixture.response.result);
     fixture.rows=structuredClone(fixture.original);
     window.fetch=(...args)=>{
@@ -465,16 +469,14 @@ try {
   })()`);
   const refreshEnergyChecks = async rows => {
     if(rows) await evaluate(`window.energyCheckFixture.rows=${JSON.stringify(rows)}; true`);
+    await until(`!document.getElementById('energy-audit-refresh').disabled
+      && !document.getElementById('energy-audit-content').hasAttribute('aria-busy')`);
     const previous=await evaluate('window.energyCheckFixture.requests');
-    await evaluate(`(()=>{
-      const fixture=window.energyCheckFixture;fixture.offset+=61000;
-      Date.now=()=>fixture.now()+fixture.offset;
-      document.getElementById('energy-audit-details').dispatchEvent(new Event('toggle'));
-      return true;
-    })()`);
-    await until(`window.energyCheckFixture.requests>${previous}`);
+    await evaluate("document.getElementById('energy-audit-refresh').click(); true");
+    await until(`window.energyCheckFixture.requests>${previous}
+      && !document.getElementById('energy-audit-content').hasAttribute('aria-busy')
+      && !document.getElementById('energy-audit-refresh').disabled`);
     await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
-    await evaluate('Date.now=window.energyCheckFixture.now; true');
   };
   await evaluate(`document.querySelector(${JSON.stringify(charger1Check+' .energy-check-details > summary')}).focus(); true`);
   await energyKey('\uE007');
@@ -536,7 +538,7 @@ try {
     writeFileSync(`var/home-energy-checks-details-${theme}-${width}.png`,Buffer.from(shot.data,'base64'));
   }
   await refreshEnergyChecks(await evaluate('window.energyCheckFixture.original'));
-  await evaluate("window.fetch=window.energyCheckFixture.fetch; Date.now=window.energyCheckFixture.now; delete window.energyCheckFixture; document.querySelectorAll('#energy-audit-content .energy-check-details').forEach(node=>node.open=false); true");
+  await evaluate("window.fetch=window.energyCheckFixture.fetch; delete window.energyCheckFixture; document.querySelectorAll('#energy-audit-content .energy-check-details').forEach(node=>node.open=false); true");
   if(await evaluate('document.documentElement.dataset.theme')!=='dark') await evaluate("document.getElementById('theme-toggle').click(); true");
   await command('browsingContext.setViewport',{context,viewport:{width:1440,height:1100},devicePixelRatio:1});
   await evaluate("document.getElementById('recording-details').scrollIntoView(); true");
@@ -756,11 +758,26 @@ try {
     }
     if(left==='heat_pump_power')assert.match(await evaluate("document.getElementById('chart-view-description').textContent"),/reconstruct|estimate|recorded/i);
     if (coefficientKeys.includes(left)) {
-      const tableCounts = () => app.store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()
-        .map(({ name }) => [name, app.store.db.prepare(`SELECT COUNT(*) AS count FROM "${name.replaceAll('"', '""')}"`).get().count]);
-      const before = tableCounts();
+      // Idle cache maintenance has its own journaled prefix proofs. It cannot
+      // make a coefficient read mutate source, control or coefficient history.
+      const proofKey = new RegExp(`^derived-cache-anchor:(?:household|firewood):${app.engine.config.input}:[a-f0-9]{64}$`);
+      const sourceState = () => {
+        const state = app.store.db.prepare('SELECT * FROM state ORDER BY key').all().filter(row => !proofKey.test(row.key));
+        const counts = app.store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()
+          .filter(({ name }) => !['journal_changes', 'journal_commits'].includes(name))
+          .map(({ name }) => [name, name === 'state' ? state.length
+            : app.store.db.prepare(`SELECT COUNT(*) AS count FROM "${name.replaceAll('"', '""')}"`).get().count]);
+        return { counts, state };
+      };
+      const boundary = app.store.checkpoint().sequence, before = sourceState();
       const recorded = await fetch(`${base}/api/chart?start=2026-09-07&end=2026-09-07&left=${left}`).then(response => response.json());
-      assert.deepEqual(tableCounts(), before, 'Coefficient API reads do not add stored entries');
+      assert.deepEqual(sourceState(), before, 'Coefficient API reads preserve authoritative entries and complete non-cache state');
+      for (const row of app.store.db.prepare('SELECT * FROM journal_changes WHERE sequence>? ORDER BY sequence,ordinal').all(boundary)) {
+        const change = decodeJournalChange(row);
+        assert.equal(change.table, 'state', 'Only independent derived-cache proof publication may overlap a coefficient read');
+        assert.equal(change.key.length, 1);
+        assert.match(change.key[0], proofKey);
+      }
       assert.equal(recorded.meta.modelCoefficients.basis, 'committed-coefficient-history');
       assert.equal(recorded.meta.modelCoefficients.replayedRecords, 0);
       const values = recorded.series[left].filter(point => Number.isFinite(point.y));
@@ -882,7 +899,11 @@ try {
   // Home controls use Finnish wall times even in a browser running in another zone.
   assert.equal(await evaluate("document.querySelectorAll('.controller-panels article').length"), 3);
   assert.equal(await evaluate("document.getElementById('home-control').textContent.includes('Household')"), false);
-  assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Active');
+  assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Paused');
+  assert.equal(await evaluate("document.getElementById('home-automation-pause').getAttribute('aria-pressed')"), 'true',
+    'A fresh installation starts with Home heating paused');
+  await evaluate("document.getElementById('home-heat-pump-details').open=true;document.getElementById('home-automation-automatic').click();true");
+  await until("document.getElementById('control-price').textContent==='Automatic' && document.getElementById('home-automation-automatic').getAttribute('aria-pressed')==='true'");
   assert.equal(await evaluate("document.querySelector('#settings-form, #contract-form, #override-form') === null"), true);
   assert.equal(await evaluate("document.getElementById('contract-periods').textContent.includes('2.91788')"), true);
   assert.equal(await evaluate("document.getElementById('h66-readings-details').open"), false);
@@ -897,14 +918,14 @@ try {
     document.getElementById('temporary-form').requestSubmit(); true`);
   await until("document.getElementById('temporary-message').textContent === 'Changes applied.'");
   assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Paused', 'A pause takes precedence over away mode');
-  assert.match(await evaluate("document.getElementById('temporary-overview').textContent"), /Away until.*Paused until/);
+  assert.match(await evaluate("document.getElementById('temporary-overview').textContent"), /Away until.*Resume/);
   assert.equal(app.engine.settings.occupancy.returnAt, '2026-09-09T15:00:00.000Z');
   assert.equal(app.engine.status().override.expiresAt, Date.parse('2026-09-07T15:00:00Z'));
   await command('browsingContext.reload', { context, wait: 'complete' });
   await until("document.getElementById('away-until').value === '2026-09-09T18:00'");
   assert.equal(await evaluate("document.getElementById('pause-until').value"), '2026-09-07T18:00');
   assert.equal(await evaluate("document.getElementById('temporary-details').open"), false);
-  assert.match(await evaluate("document.getElementById('temporary-overview').textContent"), /Away until.*Paused until/, 'Closed controls still show active away and pause deadlines');
+  assert.match(await evaluate("document.getElementById('temporary-overview').textContent"), /Away until.*Resume/, 'Closed controls still show active away and pause deadlines');
   assert.equal(await evaluate("document.getElementById('temporary-submit').disabled"), true);
   // Pending edits survive blur and an actual background status poll.
   await evaluate(`document.getElementById('home-heat-pump-details').open = true; document.getElementById('home-manual-override-details').open = true; document.getElementById('temporary-details').open = true;
@@ -917,14 +938,14 @@ try {
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00');
   await evaluate("document.getElementById('resume-now').click(); true");
-  await until("document.getElementById('override-status').textContent === 'Price control is not paused.'");
-  assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Away');
+  await until("document.getElementById('override-status').textContent === 'Automatic heating is active.'");
+  assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Away · Automatic');
   assert.equal(app.engine.settings.occupancy.returnAt, '2026-09-09T15:00:00.000Z', 'Resuming preserves the saved away deadline');
   assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-09-10T18:00', 'Resuming preserves an unrelated pending edit');
   assert.equal(await evaluate("document.getElementById('temporary-submit').disabled"), false);
   await evaluate("document.getElementById('home-now').click(); true");
   await until("document.getElementById('away-status').textContent === 'At home.'");
-  assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Active');
+  assert.equal(await evaluate("document.getElementById('control-price').textContent"), 'Automatic');
   assert.equal(await evaluate("document.getElementById('away-until').value"), '');
   assert.equal(app.engine.settings.occupancy.mode, 'occupied');
   // Invalid DST choices leave both settings untouched and the draft available to correct.
@@ -1098,7 +1119,7 @@ try {
     assert.equal(easee.color === shelly.color, !needsAttention, 'Provider names follow their individual availability');
     for (const bullet of result.bullets) {
       const provider = bullet.label.startsWith('Charger 2') ? shelly : easee;
-      const nativeFresh = bullet.series.startsWith('ev2_') && !bullet.series.startsWith('ev2_energy_');
+      const nativeFresh = bullet.series.startsWith('ev2_') && !(needsAttention && bullet.series.startsWith('ev2_energy_'));
       assert.equal(bullet.color, nativeFresh ? easee.color : provider.color,
         `${bullet.label}: color follows fresh measurement availability or provider-dependent capture status`);
       assert.equal(bullet.state, nativeFresh ? 'available' : provider.state,
@@ -1117,19 +1138,33 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] details').open"), true,
     'The combined electricity connection opens with the keyboard');
   await checkProviderColors(false);
-  charger2Status = { ...charger2Status, status: 'degraded', reason: 'commissioning-required' };
+  charger2Status = { ...charger2Status, controlReady: false };
+  await evaluate("window.dispatchEvent(new Event('online')); true");
+  await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === 'Available'");
+  await checkProviderColors(false);
+  await evaluate("document.querySelector('[data-provider=electricity] .provider-health .status-detail-trigger').click();true");
+  await until("document.querySelector('#status-detail-popover .status-detail-body')?.textContent.includes('Charger control requires supported live capabilities')");
+  assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"),
+    /Charger control requires supported live capabilities and native settings; reading availability is separate/i,
+    'Unavailable charging control does not hide healthy meter readings');
+  await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
+  charger2Status = { ...charger2Status, status: 'degraded', reason: 'telemetry-unavailable', recording: false,
+    readings: { ...charger2Status.readings, ev2_import_energy_counter: {
+      ...charger2Status.readings.ev2_import_energy_counter, available: false } } };
   await evaluate("window.dispatchEvent(new Event('online')); true");
   await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === 'Needs attention'");
   assert.deepEqual(JSON.parse(await electricityOverview()), { title: 'Electricity consumption',
-    source: 'Easee, Shelly EVSE', state: 'Needs attention', attention: true }, 'Charger 2 commissioning needs reach the closed source overview');
+    source: 'Easee, Shelly EVSE', state: 'Needs attention', attention: true }, 'Charger 2 telemetry failures reach the source overview');
   await checkProviderColors(true);
   await evaluate("document.querySelector('[data-provider=electricity] .provider-health .status-detail-trigger').click();true");
   assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"),
-    /Physical Charger 2 requires verified model, firmware/i, 'The commissioning requirement identifies Charger 2');
+    /Some physical Charger 2 electrical readings are missing or stale/i, 'The telemetry failure identifies Charger 2');
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();true");
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] details').open"), true,
     'Updating capture health preserves the expanded connection');
-  charger2Status = { ...charger2Status, status: 'ok', reason: 'physical-meter' };
+  charger2Status = { ...charger2Status, status: 'ok', reason: 'physical-meter', recording: true,
+    readings: { ...charger2Status.readings, ev2_import_energy_counter: {
+      ...charger2Status.readings.ev2_import_energy_counter, available: true } } };
   await evaluate("window.dispatchEvent(new Event('online')); true");
   await until("document.querySelector('[data-provider=electricity] .provider-category-state').textContent === 'Available'");
   assert.equal(await evaluate("document.querySelector('#providers > :last-child').dataset.provider"), 'main-temperatures', 'Temperature and weather feeds form the final category');

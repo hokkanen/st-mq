@@ -29,20 +29,20 @@ function project(store, from, to, now) {
   return { series: Object.fromEntries(names.map(name=>[name,envelopes[name].values()])), credits };
 }
 
-test('steady multi-day energy remains durable, visible without writes, and available after finalization', t => {
+test('positive multi-day energy closes at accepted daily boundaries and remains visible without read writes', t => {
   const { store, recorder } = fixture(t);
   for(let hour=0;hour<50;hour++) record(recorder,'ev1',start+hour*HOUR,start+(hour+1)*HOUR,[1,2,0]);
-  assert.equal(store.observations().length,3,'One initial phase cohort; no elapsed-time copies');
+  assert.equal(store.observations().length,9,'One initial cohort and two genuine accepted daily boundaries');
   const from=start+24*HOUR,to=from+HOUR,now=start+50*HOUR;
   const before=store.db.prepare('SELECT key,value,updated_at FROM state ORDER BY key').all();
   const plotted=project(store,from,to,now);
   assert(plotted.series.charger_power.some(row=>row.y===3));
   assert.equal(recordedChargingEnergy(store,{id:'charger1',start,end:now}).gridKwh,150);
   assert.deepEqual(store.db.prepare('SELECT key,value,updated_at FROM state ORDER BY key').all(),before);
-  assert.equal(store.observations().length,3);
-  assert(!project(store,from,to,to).series.charger_power.some(row=>Number.isFinite(row.y)), 'A later durable tail cannot leak into an earlier receipt cutoff');
+  assert.equal(store.observations().length,9);
+  assert(!project(store,start+49*HOUR,now,now-HOUR/2).series.charger_power.some(row=>Number.isFinite(row.y)), 'A later durable tail cannot leak into an earlier receipt cutoff');
   recorder.flush(now,{force:true});
-  assert.equal(store.observations().length,6);
+  assert.equal(store.observations().length,12);
   assert(project(store,from,to,now).series.charger_power.some(row=>row.y===3),'An interval longer than one day is still selected across a narrow viewport');
 });
 
@@ -184,4 +184,54 @@ test('live integration resumes after recovered energy without overlapping it or 
     assert(groups.some(group=>group.start===edge+60_000&&group.end===edge+120_000&&group.values.every(Number.isFinite)),
       'The next acquisition resumes without replacing recovered history or retaining an old integration cursor');
   }
+});
+
+test('actual fractional steady acquisitions bound positive groups across restart without rounding or losing energy', t => {
+  const { store } = fixture(t), step = 6 * HOUR + 60_000, powers = [0.137, 1.719, 0.00083];
+  let recorder = new Recorder(store), total = [0, 0, 0], at = start;
+  for (let sample = 0; sample < 360; sample++) {
+    const energies = powers.map(value => value * step / HOUR);
+    recorder.recordEnergy({ source: 'easee', device: 'floating-steady', prefix: 'ev1', start: at, end: at + step,
+      powers, energies, quality: [], receivedAt: at + step });
+    energies.forEach((value, phase) => { total[phase] += value; }); at += step;
+    if (sample === 180) recorder = new Recorder(store);
+  }
+  const saved = store.observations().filter(row => row.device === 'floating-steady');
+  assert(saved.length <= 3 * (2 + Math.ceil((at - start) / (24 * HOUR))), 'Steady storage grows by at most one cohort per accepted day');
+  assert(saved.every(row => row.raw.intervalEnd - row.raw.intervalStart <= 24 * HOUR + step));
+  const pending = pendingEnergyObservations(store, { now: at, prefix: 'ev1' });
+  assert(pending.every(row => JSON.parse(row.raw).intervalEnd - JSON.parse(row.raw).intervalStart < 24 * HOUR));
+  const before = recordedChargingEnergy(store, { id: 'charger1', start, end: at }).gridKwh;
+  near(before, total.reduce((sum, value) => sum + value, 0));
+  recorder.flush(at, { force: true });
+  near(recordedChargingEnergy(store, { id: 'charger1', start, end: at }).gridKwh, before);
+  assert(store.observations().filter(row => row.device === 'floating-steady').every(row => row.quality.length === 0));
+});
+
+test('ninety-day zero recorder tails remain compact across restart and close at a real feed boundary', t => {
+  const { store } = fixture(t); let recorder = new Recorder(store);
+  record(recorder, 'ev1', start - HOUR, start, [0, 0, 0]);
+  for (let day = 0; day < 90; day++) {
+    record(recorder, 'ev1', start + day * 24 * HOUR, start + (day + 1) * 24 * HOUR, [0, 0, 0]);
+    if (day === 44) recorder = new Recorder(store);
+  }
+  assert.equal(store.observations().length, 3, 'Elapsed days never manufacture zero source rows');
+  const end = start + 90 * 24 * HOUR;
+  assert(pendingEnergyObservations(store, { now: end }).every(row => JSON.parse(row.raw).intervalStart === start));
+  recorder.energyGap({ source: 'easee', device: 'synthetic-meter', prefix: 'ev1', start: end, end: end + HOUR,
+    receivedAt: end + HOUR, quality: ['acquisition-failed'] });
+  assert.equal(pendingEnergyObservations(store, { now: end + HOUR }).length, 0);
+  assert.equal(store.observations().filter(row => row.value === 0).length, 6);
+  const groups = [...recordedEnergyGroups(store, { from: start, to: end + HOUR, now: end + HOUR, input: 'providers', prefix: 'ev1' })];
+  assert(groups.some(group => group.start === start && group.end === end && group.values.every(value => value === 0)));
+  assert(groups.some(group => group.availabilityGap && group.start === end));
+});
+
+test('a single original long measurement remains intact at the accepted duration boundary', t => {
+  const { store, recorder } = fixture(t), end = start + 90 * 24 * HOUR;
+  record(recorder, 'ev1', start, end, [0.137, 1.719, 0]);
+  const rows = store.observations();
+  assert.equal(rows.length, 3);
+  assert(rows.every(row => row.raw.intervalStart === start && row.raw.intervalEnd === end && row.sourceTime === end));
+  near(recordedChargingEnergy(store, { id: 'charger1', start, end }).gridKwh, (0.137 + 1.719) * 90 * 24);
 });

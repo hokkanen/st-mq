@@ -68,8 +68,13 @@ test('service preview and apply preserve a frozen multi-day tail as history with
     signal: 'custom_feedback', unit: '%', value, sourceTime: at, receivedAt: at }, { kind: 'state' });
   point(f.master, 20, initialEnd);
   const donor = await f.donor(), duration = (END - initialEnd) / HOUR;
-  new Recorder(donor).recordEnergy({ source: 'easee', device: 'invented-meter', prefix: 'property',
-    start: initialEnd, end: END, receivedAt: END + 250, energies: [duration, 2 * duration, 3 * duration], powers: [1, 2, 3] });
+  // Recover an already captured current-format durable tail. Creating a new
+  // acquisition here would now finalize this original multi-day span; recovery
+  // must still preserve the exact frozen span, without adopting donor cursors.
+  const key=energyKey('easee','invented-meter','property'),captured=donor.getState(key);
+  Object.assign(captured,{lastEnd:END,lastReceivedAt:END+250,pending:{start:initialEnd,end:END,receivedAt:END+250,
+    energies:[duration,2*duration,3*duration],quality:[]}});
+  donor.setState(key,captured);
   point(donor, 21, END + 500);
   const donorPath = await f.snapshot(donor), beforeHash = hash(donorPath);
   const stateBefore = f.master.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:%' ORDER BY key").all();

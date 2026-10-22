@@ -11,6 +11,7 @@ import { databaseCheckpoint } from '../replication/incremental.js';
 import { peerOperation } from '../replication/coalesced.js';
 import { adoptJournalDatabase, checkpointMetadata } from '../replication/journal-publication.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
+import { createDerivedCacheAnchorOwner } from '../storage/derived-cache-anchor.js';
 import { backupDirectory } from '../storage/backup-directory.js';
 import { requireLocalBroker } from './config.js';
 import { PairManager, startupFailureDiagnostic } from './manager.js';
@@ -97,6 +98,9 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   const context = {
     canControl: () => !closed && Boolean(manager?.canControl()),
     recovering: () => Boolean(runtime?.historyRecovery?.busy()),
+    cacheIdentity: () => manager?.state?.invalid ? null : manager?.state?.value?.nodeId ?? null,
+    derivedCacheAnchor: (body,{signal}={}) => closed || closing ? Promise.reject(pairError('peer_unavailable'))
+      : manager.peer.request('derived-cache-anchor',body,{timeoutMs:10_000,signal}),
     configurationSource: configurationSource(config), runtimeConfiguration,
     // Certificate ownership is node-local installation state. These messages
     // reuse the authenticated-encrypted peer channel without entering database
@@ -203,6 +207,15 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       return web.acceptCertificate(body);
     },
     admitStorageWrite: () => runtime?.store && !runtime.store.readOnly ? runtime.store.runWrite(() => {}) : undefined,
+    derivedCacheAnchor: body => {
+      if(!body || typeof body!=='object' || Array.isArray(body)
+        || Object.keys(body).sort().join(',')!=='cacheId,purpose,request') throw pairError('peer_protocol_failed');
+      const active=runtime,owner=manager,token=controllerToken;
+      const current=()=>!closed&&!closing&&manager===owner&&!owner.stopping&&owner.canControl()
+        && runtime===active && active?.store && !active.store.readOnly && !token?.revoked;
+      if(!current()) throw pairError('not_master');
+      return createDerivedCacheAnchorOwner({store:active.store,cacheId:body.cacheId,purpose:body.purpose,isCurrent:current})(body.request);
+    },
     runStorageTask: operation => runtime?.store ? runtime.store.runStorageTask(operation) : operation(),
     managedCheckpoints: () => Boolean(runtime?.store?.walMaintenance),
     async writeLineage({ dbPath, value }) {

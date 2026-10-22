@@ -6,6 +6,25 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep the dashboard, saved heating choices and independently qualified manual
+  controls available while a missing Home model cache is reconstructed. Show
+  rebuilding explicitly, continue expiry/restoration, and wait for the complete
+  committed model before automatic heat optimisation.
+- Resume firewood comparisons from sparse, disposable thermal checkpoints and
+  household-load forecasts from a compact persisted reference. Cache loss or a
+  changed model prepares history in the background. Preserve seasonal evidence,
+  corrections and unknown overlapping energy; completed idle reads do not repeat
+  preparation or source-proof publication. Durable prefix proofs survive ordinary
+  journal trimming.
+- Keep valid idle charger energy compact across long connections. Close other
+  adaptive energy groups at accepted acquisition boundaries after a day,
+  preserving exact energy and unknown quality while bounding routine forecast
+  updates during steady or unavailable readings.
+- Bound routine manual-firewood reads with physical schema 34's revision, load
+  and removal indexes. Source rows and journal interpretation stay unchanged;
+  adopting this schema needs a coordinated backed-up installation conversion or
+  a deliberately fresh development database, with no startup migration.
+
 - Keep recent history and charging-energy reads responsive as older recordings
   accumulate, and prevent temperature-report changes from failing on a large
   database. Chart coverage seeks the selected period; retrospective firewood

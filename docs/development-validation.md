@@ -53,7 +53,7 @@ immediate confirmations while its worker runs, and resumed batching after succes
 failure and cancellation. Policy-recovery fixtures explicitly commit their donor
 and master endpoints before assessing conflicts.
 
-`test/storage-partial-indexes.test.js` separately checks physical schema 33's
+`test/storage-partial-indexes.test.js` separately checks the current physical schema's
 learning-reversal and interval-end index scope, actual query plans, interval-query
 parity and reversible access to records outside the index. Current startup tests
 reject incompatible schemas before mutation. The journaled data layout and hash
@@ -98,6 +98,11 @@ worker fixture checks saved intent and the returned view after both actions.
 With calculation deliberately held unfinished, status retains the previous
 complete model, exposes already committed control intent and permits urgent saves.
 The first startup view still waits for its own successful publication COMMIT.
+It can explicitly report model reconstruction with an absent learned model.
+Held-replay startup checks require HTTP status, saved Automatic/Pause intent,
+source-clock preservation and manual Reduction/Pause-expiry restoration to work
+before replay is released. Model exploration remains blocked, and complete replay
+must still match the supported journal after reconstruction and publication.
 
 `test/charging-shelly-system-permission.test.js` queues an older BMW report
 behind newer native readback through the real Store publication queue, both

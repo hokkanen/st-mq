@@ -13,8 +13,29 @@ import { readReplicaPublication } from '../src/replication/publication.js';
 import { replayLearningJournal, LEARNING_WINDOW_MS } from '../src/app/committed-learning.js';
 import { pairDisplay } from '../chart/pair-status.js';
 import { createAppServer } from '../src/app/server.js';
+import { derivedCacheId, matchesDerivedCacheAnchor } from '../src/storage/derived-cache-anchor.js';
 
 const W = LEARNING_WINDOW_MS, now = Date.parse('2026-01-09T12:00Z');
+
+test('a read-only paired viewer registers only derived cache proofs through its current writable peer', {timeout:30_000},async t=>{
+  const f=await fixture(t),primary=await f.open('cache-primary','master','hassio'),secondary=await f.open('cache-secondary','slave','ubuntu');
+  connect(primary,secondary);
+  await secondary.pair.synchronize(primary.pair.state.claim());
+  const source=primary.store.checkpoint(),selection=primary.store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation;
+  const cacheId=derivedCacheId('/same/configured/database.sqlite',secondary.pair.state.value.nodeId);
+  const request={operation:'pin',input:'mqtt',source,selection};
+  const body={cacheId,purpose:'firewood',request};
+  const pending=await secondary.pair.peer.request('derived-cache-anchor',body);
+  const proof=await secondary.pair.peer.request('derived-cache-anchor',{...body,
+    request:{...request,...pending,operation:'publish',digest:'a'.repeat(64)}});
+  assert(matchesDerivedCacheAnchor(primary.store.db,{cacheId,purpose:'firewood',input:'mqtt',proof}));
+  assert.equal(secondary.pair.canControl(),false,'Cache persistence grants no equipment permission');
+  await assert.rejects(primary.pair.peer.request('derived-cache-anchor',body));
+  await secondary.pair.synchronize(primary.pair.state.claim());
+  const publication=await readReplicaPublication(secondary.pair.config.snapshotDirectory);
+  const reader=new Store(publication.dbPath,{readOnly:true});
+  try{assert(matchesDerivedCacheAnchor(reader.db,{cacheId,purpose:'firewood',input:'mqtt',proof}));}finally{await reader.close();}
+});
 const command = (action, extra = {}) => ({ action, requestId: randomUUID(), confirmed: true, ...extra });
 async function until(t, check) {
   // Accepted operations own asynchronous persistence and peer work. The existing

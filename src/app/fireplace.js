@@ -3,7 +3,7 @@ import { createCoefficientGeneration, appendCoefficientEvents, publishCoefficien
 import { Worker } from 'node:worker_threads';
 import { learningJournalHead, hasLearningSampleAfter } from '../storage/store.js';
 import { LEARNING_ALGORITHM, validLearningCheckpoint } from './committed-learning.js';
-import { fireplaceLearningContext } from './fireplace-inputs.js';
+import { fireplaceLearningContext, fireplaceWindowContext } from './fireplace-inputs.js';
 import { sensorLearningContext, sensorRevision } from './sensor-inputs.js';
 import { publishLearning } from './learning-publication.js';
 import { fireplaceActive, fireplaceIntegral, fireplaceRate, FIREPLACE_HORIZON_MS } from '../domain/fireplace.js';
@@ -103,13 +103,15 @@ export function removeFireplace(store, input, payload, now = Date.now(), { maxAg
 
 export function fireplaceView(store, input, { asOf = Date.now(), revision } = {}) {
   if (!INPUTS.has(input)) return { available: false, input, revision: 0, entries: [], active: [], requiresRebuild: false, rebuild: { status: 'idle' } };
-  const source = fireplaceEvents(store, input, { revision, asOf });
-  const removals = store.db.prepare(`SELECT target_id,MIN(at) removed_at FROM active_fireplace_events AS fireplace_events
-    WHERE input=? AND kind='remove' AND id<=? AND at<=? GROUP BY target_id`).all(input, source.revision, asOf);
-  const removed = new Map(removals.map(row => [row.target_id, row.removed_at]));
-  const events = store.db.prepare(`SELECT * FROM active_fireplace_events AS fireplace_events WHERE input=? AND kind='load'
-    AND id<=? AND at<=? AND at>=? ORDER BY at DESC,id DESC`).all(input, source.revision, asOf, Math.max(0, asOf - 48 * 3_600_000))
-    .map(row => ({ ...loadEvent(row), removedAt: removed.get(row.id) ?? null,
+  const context = fireplaceWindowContext(store,input,{from:asOf,to:asOf,asOf,revision});
+  const source = { revision:context.fireplaceRevision, events:context.fireplaceEvents };
+  const events = store.db.prepare(`SELECT l.*,
+    (SELECT r.at FROM active_fireplace_events r WHERE r.input=l.input AND r.target_id=l.id
+      AND r.id<=? AND r.at<=? ORDER BY r.at,r.id LIMIT 1) removed_at
+    FROM active_fireplace_events l WHERE l.input=? AND l.kind='load'
+    AND l.id<=? AND l.at<=? AND l.at>=? ORDER BY l.at DESC,l.id DESC`)
+    .all(source.revision,asOf,input,source.revision,asOf,Math.max(0,asOf-48*3_600_000))
+    .map(row => ({ ...loadEvent(row), removedAt: row.removed_at,
       requiresRebuild: hasLearningSampleAfter(store.db, input, row.at) }));
   const rebuild = store.getState(jobKey(input)) ?? { status: 'idle', revision: source.revision };
   return { available: true, input, revision: source.revision, entries: events, lastAt: events.find(event => event.removedAt === null)?.at ?? null,

@@ -22,7 +22,7 @@ import { VoltageEstimator, voltageTelemetryAt, validateVoltageState } from '../s
 import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal as replayCommittedLearning, recordLearningContext, latestLearningControlContext, learningCheckpointDigest } from './committed-learning.js';
 import { observationTimeAdmitted } from '../domain/time-evidence.js';
 import { addFireplace, removeFireplace, fireplaceView, fireplaceRevision, FireplaceRebuildManager } from './fireplace.js';
-import { fireplaceLearningContext, withFireplaceInputs } from './fireplace-inputs.js';
+import { fireplaceLearningContext, fireplaceWindowContext, withFireplaceInputs } from './fireplace-inputs.js';
 import { evaluateThermalModel, fireplaceEvidenceReady, fireplaceGainUncertainty } from '../control/adaptive-learning.js';
 import { fireplaceActive, fireplaceInfluence, FIREPLACE_HORIZON_MS } from '../domain/fireplace.js';
 import { goodQuality } from '../control/learning.js';
@@ -178,6 +178,13 @@ export class Engine {
     return providers;
   }
   fireplaceStatus() { return fireplaceView(this.store, this.config.input, { asOf: this.clock() }); }
+  currentFireplaceContext(now) {
+    const times=(this.checkpoint?.samples ?? []).map(sample => Number.isFinite(sample.windowStart) ? sample.windowStart
+      : (typeof sample.timestamp==='number' ? sample.timestamp : Date.parse(sample.timestamp)) - LEARNING_WINDOW_MS).filter(Number.isFinite);
+    const from = Math.max(0, Math.min(now, this.cycles.active()?.startedAt ?? now,
+      ...times));
+    return fireplaceWindowContext(this.store,this.config.input,{from,to:now});
+  }
   sensorChangesStatus() {
     const connections = this.config.connections ?? {};
     const configured = (connections.equipment?.devices ?? []).filter(device => device.enabled)
@@ -397,6 +404,11 @@ export class Engine {
     if (['importing', 'rebuilding', 'catching-up'].includes(recovery?.status)) return;
     const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
     if (['pending', 'running', 'ready'].includes(job?.status) || job?.status === 'failed' && !this.fireplaceRebuild) {
+      // Source correction is explicit historical work. Reconcile historical
+      // cycle assessments before its worker can publish completion, including
+      // restart after the source event committed but its callback did not run.
+      if (job.requiresRebuild !== false && this.cycles.fireplaceContext?.fireplaceRevision !== job.revision)
+        this.cycles.correctFireplace(fireplaceLearningContext(this.store,this.config.input,job.revision),this.clock());
       const manager = this.fireplaceManager();
       if (manager.publication) return;
       manager.start();
@@ -439,7 +451,7 @@ export class Engine {
     try {
       this.pendingPlan = null;
       this.store.setState(`pending-plan:${input}`, null);
-      const context = fireplaceLearningContext(this.store, input);
+      const context = removing ? fireplaceLearningContext(this.store,input) : this.currentFireplaceContext(now);
       if (removing) {
         this.cycles.correctFireplace(context, now);
         if (!this.workerLearning() && this.checkpoint?.samples?.length) {
@@ -481,8 +493,8 @@ export class Engine {
   }
   async closeFireplace() { await Promise.all([this.fireplaceRebuild?.close(), this.heatingExplorer?.close(),
     this.heatingPlanning?.close(), this.learningCheckpointCache?.close(), this.liveLearning?.close(),
-    this.updateFlight?.catch(() => {})]); }
-  constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true }) {
+    this.updateFlight?.catch(() => {}), this.startupLearningFlight?.catch(() => {})]); }
+  constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true, cacheIdentity = null }) {
     validateVoltageState(store, config.input);
     validateHeatingTrialState(store.getState(`heating-explorer:trial:${config.input}`));
     if (store.getState(`override:${config.input}`) != null)
@@ -504,6 +516,7 @@ export class Engine {
     this.config = config;
     this.clock = clock;
     this.canControl = canControl;
+    this.cacheIdentity = cacheIdentity;
     const { backupDirectory, fullVerificationIntervalMs, ...recorderConfig } = config.recording ?? {};
     this.recorder = new Recorder(store, { config: recorderConfig, clock });
     const easeeVoltage = config.connections?.easee ?? {};
@@ -1070,7 +1083,7 @@ export class Engine {
     const deadlines = [this.settings.occupancy?.mode === 'away' ? Date.parse(this.settings.occupancy.returnAt) : NaN,
       this.automation.features.home.pause?.expiresAt,
       manual?.phase === 'preheat' ? manual.expiresAt : NaN];
-    return Math.min(...deadlines.filter(at => Number.isFinite(at)).map(at => Math.max(now,at)));
+    return Math.min(...deadlines.filter(at => Number.isFinite(at)).map(at => Math.max(now + (this.learningStartupPending && at <= now ? 1000 : 0),at)));
   }
   expireTemporary(now) {
     if (this.settings.occupancy.mode === 'away' && Date.parse(this.settings.occupancy.returnAt) <= now) {
@@ -1199,11 +1212,13 @@ export class Engine {
   updateFence() {
     const input = this.config.input, native = this.h66Status?.() ?? {}, executor = this.executor.status();
     const cycle = this.cycles.active(), currentSensorRevision = sensorRevision(this.store, input);
-    return { checkpoint: this.checkpoint, signature: JSON.stringify({
+    const learning = {
       databaseId: this.store.checkpoint().databaseId, epoch: this.store.learningEpoch(input),
       selection: this.store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation,
       fireplaceRevision: fireplaceRevision(this.store, input), sensorRevision: currentSensorRevision,
       sensorBoundaries: sensorBoundaries(this.store, input, this.clock(), { revision: currentSensorRevision }),
+    };
+    return { checkpoint: this.checkpoint, learningSignature: JSON.stringify(learning), signature: JSON.stringify({ ...learning,
       // Ordinary appends do not invalidate an intact committed model prefix.
       // Retrospective selection, measurement boundaries and control instructions
       // do; later entries are consumed incrementally without redoing that prefix.
@@ -1214,9 +1229,10 @@ export class Engine {
         executor.restorationPending, executor.pulseUntil],
     }) };
   }
-  sameUpdateFence(fence) {
+  sameUpdateFence(fence, { learningOnly = false } = {}) {
     const current = this.updateFence();
-    return fence.checkpoint === current.checkpoint && fence.signature === current.signature;
+    return fence.checkpoint === current.checkpoint && (learningOnly
+      ? fence.learningSignature === current.learningSignature : fence.signature === current.signature);
   }
   *learningSteps() {
     this.reconcileFireplace();
@@ -1228,11 +1244,14 @@ export class Engine {
   }
   async refreshLearning() {
     if (!this.workerLearning()) return this.readAdaptive(this.clock());
+    if (this.learningStartupPending)
+      throw Object.assign(new Error('The heating model is rebuilding. Retry model-dependent calculations when reconstruction finishes.'), { statusCode: 409 });
     await this.update({ learningOnly: true });
     return this.checkpoint;
   }
-  update({ isCurrent = () => true, learningOnly = false } = {}) {
+  update({ isCurrent = () => true, learningOnly = false, waitForLearning = false } = {}) {
     if (!this.workerLearning()) return this.runWrite(() => this.tick(), { isCurrent });
+    if (this.learningStartupPending && !waitForLearning) return this.updateWhileRebuilding({ isCurrent });
     if (this.updateFlight) {
       if (!learningOnly && this.updateLearningOnly) this.updateAgain = true;
       return this.updateFlight;
@@ -1244,9 +1263,13 @@ export class Engine {
         this.updateAgain = false;
         this.updateLearningOnly = learningOnly;
         const steps = learningOnly ? this.learningSteps() : this.tickSteps();
+        // During initial reconstruction, a safe manual choice cannot invalidate
+        // an intact learning prefix. The later control turn still checks the
+        // complete settings/native/intent fence before doing anything physical.
+        const sameFence = fence => this.sameUpdateFence(fence, { learningOnly: learningOnly && this.learningStartupPending });
         let step, fence, restart = false;
         const advance = value => this.runWrite(() => {
-          if (fence && !this.sameUpdateFence(fence)) { restart = true; return; }
+          if (fence && !sameFence(fence)) { restart = true; return; }
           // Admission can wait after the model worker has completed. Recheck
           // here, before resuming control, without changing journal/sample time.
           if (step?.value?.kind === 'control-ready' && this.clock() - step.value.now > 5000) {
@@ -1280,9 +1303,9 @@ export class Engine {
               try {
                 value = await this.liveLearning.calculate(job.kind === 'adaptive' ? 'replay' : job.kind,
                   job.kind === 'adaptive' ? this.learningReplayOptions(job.checkpoint) : job.options, job.checkpoint,
-                  { isCurrent: () => current() && this.sameUpdateFence(fence) });
+                  { isCurrent: () => current() && sameFence(fence) });
               } catch (error) {
-                if (current() && !this.sameUpdateFence(fence)) { restart = true; break; }
+                if (current() && !sameFence(fence)) { restart = true; break; }
                 throw error;
               }
             }
@@ -1298,6 +1321,35 @@ export class Engine {
       return copyOwnedValue(this.latestStatus);
     })().finally(() => { this.updateFlight = null; this.updateLearningOnly = false; });
     return this.updateFlight;
+  }
+  updateWhileRebuilding({ isCurrent = () => true } = {}) {
+    const current = () => !this.suspended && this.canControl() && isCurrent();
+    if (this.rebuildingUpdate) return this.rebuildingUpdate;
+    const operation = this.runWrite(() => {
+      this.preserveTickState();
+      return this.tickUpdate({ rebuilding: true });
+    }, { isCurrent: current }).then(view => {
+      // The first public view and each manual intent have their own COMMIT.
+      // Reconstructing learning is independent of that availability boundary.
+      if (current() && !this.updateFlight && !this.startupLearningFlight) {
+        this.learningStartupError = null;
+        this.startupLearningFlight = (async () => {
+          await this.update({ isCurrent, learningOnly: true, waitForLearning: true });
+          if (current()) await this.update({ isCurrent, waitForLearning: true });
+        })().catch(error => {
+          if (current()) {
+            this.learningStartupError = 'reconstruction-failed';
+            this.store.writeHealth.failure(error);
+          }
+        }).finally(() => {
+          this.startupLearningFlight = null;
+          try { this.onTemporaryChange?.(); } catch { /* Rescheduling cannot detach the joined reconstruction. */ }
+        });
+      }
+      return view;
+    });
+    this.rebuildingUpdate = operation.finally(() => { this.rebuildingUpdate = null; });
+    return this.rebuildingUpdate;
   }
   tick() {
     if (this.workerLearning()) {
@@ -1343,13 +1395,13 @@ export class Engine {
       });
     }
   }
-  tickUpdate() {
-    const steps = this.tickSteps();
+  tickUpdate(options) {
+    const steps = this.tickSteps(options);
     let step = steps.next();
     while (!step.done) step = steps.next(this.calculateLearningInline(step.value));
     return step.value;
   }
-  *tickSteps() {
+  *tickSteps({ rebuilding = false } = {}) {
     const now = this.clock(), input = this.config.input;
     this.automation.reconcileTargets();
     recordHeatPumpConfiguration(this.store, input, this.control, now);
@@ -1409,6 +1461,8 @@ export class Engine {
     const ownsPausedSettings = Boolean(manualPause || h66.pauseId);
     const ownsTemporarySettings = Boolean(priorExecutor?.manualTemporary);
     const holdManualSettings = manualHeatingHeld(priorExecutor, h66, override, now);
+    if (rebuilding) return this.rebuildingStatus({ now, observations, outlook, h66, override,
+      priorExecutor, ownsPausedSettings, ownsTemporarySettings, holdManualSettings });
     this.reconcileFireplace();
     let checkpoint = yield { kind: 'adaptive', checkpoint: this.checkpoint, now };
     if (checkpoint !== this.checkpoint && checkpoint?.journalCursor) this.persistLearningCheckpoint(checkpoint);
@@ -1461,7 +1515,7 @@ export class Engine {
     equipment.floorOverrideMode = this.floorOverrideMode(now);
     equipment.preheatAvailable &&= (!floorStatus.enabled || floorStatus.available)
       && (preheatRoomRequest(equipment, this.control).roomBoostC > 0 || floorStatus.available);
-    const fireplaceContext = fireplaceLearningContext(this.store, input);
+    const fireplaceContext = this.currentFireplaceContext(now);
     equipment.fireplaceEvents = fireplaceContext.fireplaceEvents.filter(event => event.at <= now && event.at + FIREPLACE_HORIZON_MS > now);
     equipment.fireplaceActive = fireplaceActive(equipment.fireplaceEvents, now);
     equipment.fireplaceRelevant = fireplaceInfluence(equipment.fireplaceEvents, now, {
@@ -1844,6 +1898,54 @@ export class Engine {
         controlHold,outcomes:this.cycles.outcomes(),
         parameters:this.control,background:this.store.getState('learning:health')},
       savings:{status:'estimated',explanation:'Completed-cycle differences use a modelled alternative. Daily chart timing benchmarks keep the observed energy fixed.'} };
+    if (this.learningStartupPending) this.store.afterCommit(() => {
+      this.learningStartupPending = false; this.learningStartupError = null;
+    });
+    return this.latestStatus;
+  }
+  rebuildingStatus({ now, observations, outlook, h66, override, priorExecutor,
+    ownsPausedSettings, ownsTemporarySettings, holdManualSettings }) {
+    // Never substitute a prior model for an unfinished canonical reconstruction.
+    // Existing native/manual duties have their own evidence and authority.
+    if (this.cycles.active()) this.cycles.cancel(now, 'model-rebuilding');
+    this.heatingPlanning.invalidate();
+    if (!this.dispatchPending && !this.heatingTestBusy && h66.phase !== 'test') {
+      const obligations = priorExecutor.restorationPending || priorExecutor.legacyOutstanding
+        || ['preheat', 'reduction', 'recovery'].includes(priorExecutor.phase)
+        || Object.keys(h66.obligations ?? {}).length || this.floorOverride?.status(now).outstanding
+        || priorExecutor.dhwrOutstanding && priorExecutor.pulseUntil <= now;
+      const dispatch = () => (ownsTemporarySettings || ownsPausedSettings) && !holdManualSettings
+        ? this.executor.restoreManual({ now: this.clock(), reason: 'manual-settings-ended-or-reset' })
+        : holdManualSettings ? this.executor.maintainPause(this.clock(), this.automation.features.home.pause)
+          : obligations ? this.executor.restore({ now: this.clock(), reason: 'model-rebuilding', preserveManualDhwr: true }) : null;
+      if (ownsTemporarySettings || ownsPausedSettings || holdManualSettings || obligations) {
+        this.dispatchPending = this.committedControl(dispatch)
+          .catch(() => this.runWrite(() => this.store.event('restoration-pending', { reason: 'model-rebuilding' }, this.clock()), { priority: 'control' }))
+          .catch(error => this.store.writeHealth.failure(error))
+          .finally(() => {
+            this.dispatchPending = null;
+            try { this.onTemporaryChange?.(); } catch { /* The native duty remains recorded independently. */ }
+          });
+      }
+    }
+    const status = this.learningStartupError ? 'reconstruction-failed' : 'rebuilding';
+    const reason = 'The heating model is rebuilding from recorded inputs. Automatic heat optimisation waits for the complete model.';
+    this.latestStatus = { now, input: this.config.input, environment: this.environment(),
+      runtimeTiming: this.runtimeTiming?.() ?? null, automation: this.automationStatus(), settings: this.settings,
+      heatingScenario: this.heatingExplorer.publicTrial(), observations, override, demoComfortTargetC: null,
+      decision: { action: 'normal', phase: 'normal', reasons: ['model-rebuilding'], plan: null },
+      execution: { status: this.dispatchPending ? 'pending' : 'model-rebuilding', sent: false, actual: null },
+      heatingTests: this.heatingTests(), preheatValves: this.preheatValveStatus(now), h66,
+      prices: outlook.prices, forecast: outlook.forecast, spot: outlook.spot ?? [],
+      priceStatus: outlook.priceStatus, weatherStatus: outlook.weatherStatus, providers: this.providerStatus(),
+      equipment: this.equipmentStatus(), equipmentTests: this.equipmentTestStatus(), equipmentControls: this.equipmentControlStatus(), dhwr: this.dhwrStatus(),
+      contract: this.contract(), configuredPrices: this.config.priceSettings ?? null,
+      recording: this.recorder.status(), fireplace: this.fireplaceStatus(), sensorChanges: this.sensorChangesStatus(),
+      garage: this.garage.status(now), charging: this.charging.status(now),
+      learning: { status, reconstruction: { status, reason }, adaptive: null,
+        metrics: this.cycles.metrics(null), episode: null, readiness: { ready: false, reasons: ['model-rebuilding'] },
+        controlHold: null, outcomes: this.cycles.outcomes(), parameters: this.control, background: this.store.getState('learning:health') },
+      savings: { status: 'unavailable', explanation: reason } };
     return this.latestStatus;
   }
   recordingSourceStatus(now = this.clock()) {

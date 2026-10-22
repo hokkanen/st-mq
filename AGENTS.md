@@ -114,6 +114,17 @@ paired installation adopts the new schema. The script stays outside the reposito
 and Git. This exception adds no runtime conversion, generic backfill, older-format
 reader or permission to convert other development databases.
 
+For bounded manual-firewood reads on 2026-10-22, the owner approved one further
+installation-only, offline physical-schema conversion from 33 to 34, adding only
+the four firewood indexes. Stop both paired applications, verify backups and
+exact source/journal identity parity, preserve each node's own history and
+authority, and retain rollback. Refresh only the replica's physical-file
+accounting through current publication helpers; preserve its accepted checkpoint
+and pairing state. The disposable conversion script stays outside the repository
+and Git. Journaled layout 30 and the learning algorithm remain unchanged. This
+exception adds no runtime conversion, generic migration or permission to convert
+other development databases.
+
 Use one current persisted/configuration/API contract. Unknown or retired fields
 and payload versions must fail closed at their relevant boundary, not silently
 be translated, ignored or granted authority. Genuinely missing optional current

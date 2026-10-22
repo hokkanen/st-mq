@@ -1,6 +1,9 @@
 import { readChargingRuntime, writeChargingRuntime } from '../src/charging/runtime-storage.js';
 import { withReportDatabase } from './helpers/report-database.js';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChargingRuntime } from '../src/charging/runtime.js';
@@ -1811,6 +1814,29 @@ test('recovery selection invalidates ready household forecasts and fences an old
   assert.equal(runtime.historyReady, true);
 });
 
+test('clock reversal withdraws future household forecasts and fences older same-key requests', async t => {
+  const f = fixture(), runtime = f.create(), finishes = [];
+  runtime.historyService = { request: () => new Promise(resolve => { finishes.push(resolve); }), close() {} };
+  t.after(() => runtime.close());
+  await runtime.updatePlan();
+  assert.equal(finishes.length, 1);
+  f.setNow(initialNow - 60_000); await runtime.updatePlan();
+  assert.equal(finishes.length, 2, 'Rollback supersedes an unfinished request even with the same forecast input key');
+  finishes[0]([]); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runtime.historyReady, false);
+  assert.equal(runtime.historyFlights.size, 1, 'The old completion cannot remove its newer replacement marker');
+  finishes[1]([]); await new Promise(resolve => setImmediate(resolve));
+  await runtime.planningFlight;
+  assert.equal(runtime.historyReady, true);
+  assert.equal(runtime.historyAt, f.clock());
+  f.setNow(initialNow - 120_000); await runtime.updatePlan();
+  assert.equal(finishes.length, 3, 'A ready future forecast is withdrawn immediately after another reversal');
+  assert.equal(runtime.historyReady, false);
+  finishes[2]([]); await new Promise(resolve => setImmediate(resolve));
+  await runtime.planningFlight;
+  assert.equal(runtime.historyAt, f.clock());
+});
+
 test('household forecast callbacks settle safely after the database closes before the runtime', async t => {
   for (const outcome of ['completed', 'failed']) await t.test(outcome, async t => {
     const store = new Store(':memory:');
@@ -1829,6 +1855,30 @@ test('household forecast callbacks settle safely after the database closes befor
     assert.equal(runtime.historyError, null, 'a late result cannot access finalized source statements');
     assert.equal(runtime.historyFlights.size, 0);
     assert.equal(ticks, 0, 'cleanup cannot request another control tick against the closed database');
+  });
+});
+
+test('household forecast completion rechecks the current connection after writer startup', async t => {
+  for (const outcome of ['completed', 'failed']) await t.test(outcome, async t => {
+    const directory = mkdtempSync(join(tmpdir(), 'stmq-history-writer-start-'));
+    const store = new Store(join(directory, 'fixture.sqlite'));
+    const runtime = new ChargingRuntime({ store, engine: {}, config: { input: 'mqtt', charging: {} }, clock: () => initialNow });
+    await runtime.historyService.close();
+    let finish, fail;
+    runtime.historyService = { request: () => new Promise((resolve, reject) => { finish = resolve; fail = reject; }), close() {} };
+    t.after(async () => { await runtime.close(); await store.close(); rmSync(directory, { recursive: true, force: true }); });
+    await runtime.updatePlan();
+    const initialConnection = store.db;
+    await store.startWriter();
+    assert.notEqual(store.db, initialConnection);
+    assert.equal(initialConnection.isOpen, false);
+    if (outcome === 'completed') finish([]);
+    else fail(new Error('Synthetic forecast failure after connection replacement'));
+    await new Promise(resolve => setImmediate(resolve));
+    await runtime.planningFlight;
+    assert.equal(runtime.historyReady, outcome === 'completed');
+    assert.equal(runtime.historyError, outcome === 'failed' ? 'household-history-unavailable' : null);
+    assert.equal(runtime.historyFlights.size, 0);
   });
 });
 

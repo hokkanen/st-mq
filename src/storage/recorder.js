@@ -877,8 +877,8 @@ export class Recorder {
       const reason = selectionPowers === null ? 'initial' : !sameEnergyQuality(state.lastQuality,q,
         {zeroA:state.lastPowers?.every(value=>value===0),zeroB:zero}) ? 'quality-or-availability'
         : changed ? 'learned-change' : null;
-      // Keep a newly detected transition out of the preceding steady span. With
-      // no maximum duration, blending it backwards could distort days of history.
+      // Keep a newly detected transition out of the preceding steady span;
+      // blending it backwards would distort already observed history.
       if (reason && state.pending)
         observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'power-boundary',budget));
       if (!state.pending) state.pending = {start,end,receivedAt,energies:signals.map(()=>0),quality:q,
@@ -892,7 +892,15 @@ export class Recorder {
       if (admittedAt !== undefined || state.pending.admittedAt !== undefined)
         state.pending.admittedAt = Math.max(state.pending.admittedAt ?? 0, admittedAt ?? receivedAt);
       state.lastEnd = end; state.lastReceivedAt = receivedAt;
-      if (reason) observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,reason,budget));
+      // Only complete valid zero charger tails can keep a proven unchanged
+      // prefix indefinitely. Other adaptive groups close at a genuine accepted
+      // acquisition boundary after a day. Preserve exact integrated energy,
+      // including a single original interval longer than a day; no timer
+      // creates observations or turns unknown quality into valid idle evidence.
+      const compactIdle = ['ev1', 'ev2'].includes(prefix) && validEnergyQuality(state.pending.quality)
+        && state.pending.energies.every(value => value === 0);
+      const durationBoundary = !compactIdle && state.pending.end - state.pending.start >= 24 * HOUR;
+      if (reason || durationBoundary) observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,reason ?? 'duration-boundary',budget));
       for (let i=0;i<signals.length;i++) {
         const s = this.signalState({source,device,signal:signals[i],unit:'kWh'},receivedAt);
         s.scale = state.scales[i].scale; s.lastPollAt = receivedAt; s.recordingPolicy = 'adaptive-energy';
@@ -904,7 +912,7 @@ export class Recorder {
       g.energyRevision++;
       this.store.setState(checkpointKey,state); this.store.setState(STORAGE_METRICS_KEY,g);
       this.store.setState(ADAPTIVE_BUDGET_KEY,budget);
-      return {saved:observations.length>0,reason:reason ?? 'within-threshold',observations};
+      return {saved:observations.length>0,reason:reason ?? (durationBoundary ? 'duration-boundary' : 'within-threshold'),observations};
     });
   }
 

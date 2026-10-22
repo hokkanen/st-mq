@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
+import { checkStorageRequest } from '../storage/worker-admission.js';
 import { learningJournalHead, learningJournalRows } from '../storage/store.js';
 import { learningPrefixRanges } from '../recovery/learning-prefix.js';
 import moment from 'moment-timezone';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint, thermalEvidenceReady, fireplaceEvidenceReady } from '../control/adaptive-learning.js';
 import { LEARNING_ALGORITHM, learningVersion, validLearningCheckpoint } from './committed-learning.js';
-import { fireplaceLearningContext } from './fireplace-inputs.js';
+import { fireplaceLearningContext,fireplaceWindowContext } from './fireplace-inputs.js';
 import { fireplaceIntegral, fireplaceBurnGroups, FIREPLACE_HORIZON_MS } from '../domain/fireplace.js';
 import { firewoodScenarios, advanceFirewoodPair } from '../domain/firewood-benefit.js';
 import { decodeLearningCheckpoint, withLearningCheckpointRead } from '../storage/learning-checkpoint-storage.js';
@@ -12,24 +13,50 @@ import { decodeLearningCheckpoint, withLearningCheckpointRead } from '../storage
 const HOUR = 3_600_000, DAY = 24 * HOUR, WINDOW = 15 * 60_000;
 const finite = Number.isFinite;
 const time = value => typeof value === 'number' ? value : Date.parse(value);
-const cache = new WeakMap(), MAX_CACHE_BYTES = 4 * 1024 * 1024;
+const cache = new WeakMap(), verifiedModels = new WeakMap(), MAX_CACHE_BYTES = 4 * 1024 * 1024;
+const PROJECTION_PERIOD = 7 * DAY, MAX_PREFIX_TAIL = 8 * DAY;
 const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
   algorithmVersion: row.algorithm_version, configVersion: JSON.parse(row.config_version),
   forecastVersion: row.forecast_version ? JSON.parse(row.forecast_version) : null, payload: JSON.parse(row.payload) });
 const dayAt = at => moment.tz(at, 'Europe/Helsinki').startOf('day');
 const overlap = (a, b, c, d) => Math.max(0, Math.min(b, d) - Math.max(a, c));
 
-function* sourceJournal(store, input, head, through = Infinity) {
-  let after = 0;
+function* sourceJournal(store, input, head, through = Infinity, after = 0, maximum = Infinity) {
+  let supplied=0;
   while (after < head) {
     const page = learningJournalRows(store.db, { input, after, limit: 128 });
     if (!page.length) return;
     for (const row of page) {
       if (row.id > head) return;
-      if (row.at <= through) yield row;
+      if (row.at <= through) {
+        if(supplied++>=maximum) return;
+        yield row;
+      }
     }
     after = page.at(-1).id;
+    if(supplied>=maximum) return;
   }
+}
+
+function* projectedJournal(store, input, head, after, from, through) {
+  const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
+  const query = store.db.prepare(`SELECT e.id,e.input,e.key,e.kind,e.at,e.algorithm_version,
+    COALESCE(e.config_version,s.config_version) config_version,COALESCE(e.forecast_version,s.forecast_version) forecast_version,
+    COALESCE(e.payload,s.payload) payload,e.source_entry_id
+    FROM learning_journal_entries e LEFT JOIN learning_journal_entries s ON s.id=e.source_entry_id
+    WHERE e.epoch=? AND e.input=? AND e.at>=? AND e.at<=? AND +e.id>? AND +e.id<=? ORDER BY e.id`);
+  const rows = learningPrefixRanges(store.db,input,epoch,head).flatMap(range =>
+    query.all(range.sourceEpoch,input,from,through,Math.max(after,range.after),range.through));
+  rows.sort((a,b)=>a.id-b.id);
+  yield* rows;
+}
+
+/** Idle maintenance shares the exact calculation used by requested estimates.
+ * Every turn is bounded, and completed sparse source boundaries survive restart. */
+export function maintainFirewoodProjection({ store, input, now = Date.now(), maxRows = 128, demands = [] }) {
+  if (!store.firewoodProjection) return { complete: true };
+  return withLearningCheckpointRead(store.db, () => computeFirewoodBenefit({ store,input,now,
+    range:{from:now,to:now+1},priceIntervals:[],futureIntervals:[],_build:true,_maxRows:maxRows,_demands:demands }));
 }
 
 function latestSampleAt(store, input, head, through) {
@@ -45,12 +72,12 @@ function latestSampleAt(store, input, head, through) {
 function empty(range, now, context, reason) {
   const events = context?.fireplaceEvents ?? [];
   return { summary: { status: 'unavailable', valueEuro: null, electricityAvoidedKwh: null, woodCostEuro: 0,
-    range, generatedAt: now, fireplaceRevision: context?.fireplaceRevision ?? 0,
+    range, generatedAt: now, fireplaceRevision: context?.fireplaceRevision ?? null,
     coverage: { includedMs: 0, elapsedMs: Math.max(0, Math.min(range.to, now) - range.from), missingMs: Math.max(0, Math.min(range.to, now) - range.from), firstAt: null, lastAt: null },
     priceAssumptions: { durationMs: 0, share: 0, firstAt: null, lastAt: null, timeBasis: 'included-period' },
-    loads: { count: events.filter(event => event.at >= range.from && event.at < range.to).length,
-      kg: events.filter(event => event.at >= range.from && event.at < range.to).reduce((sum, event) => sum + event.kg, 0) },
-    remaining: { kgEquivalent: fireplaceIntegral(events.filter(event => event.at <= Math.min(range.to, now)), Math.min(range.to, now), Math.min(range.to, now) + FIREPLACE_HORIZON_MS),
+    loads: { count: context?events.filter(event => event.at >= range.from && event.at < range.to).length:null,
+      kg: context?events.filter(event => event.at >= range.from && event.at < range.to).reduce((sum, event) => sum + event.kg, 0):null },
+    remaining: { kgEquivalent: context?fireplaceIntegral(events.filter(event => event.at <= Math.min(range.to, now)), Math.min(range.to, now), Math.min(range.to, now) + FIREPLACE_HORIZON_MS):null,
       status: 'unavailable', through: Math.min(range.to, now) + FIREPLACE_HORIZON_MS,
       reason: 'Residual fuel response is shown without money until paired state and fresh forecast coverage are available.' },
     estimateRange: { lowerEuro: null, upperEuro: null, lowerKwh: null, upperKwh: null },
@@ -64,36 +91,65 @@ export function getFirewoodBenefit(args) {
   if (!range || !finite(range.from) || !finite(range.to) || range.to <= range.from || !finite(now))
     throw new TypeError('A finite firewood benefit period is required');
   try { return withLearningCheckpointRead(args.store.db, () => computeFirewoodBenefit({ ...args, now })); }
-  catch {
+  catch(error) {
+    if(error.name==='AbortError') throw error;
     let context = null;
-    try { context = fireplaceLearningContext(args.store, args.input, undefined, now); } catch { /* No readable source. */ }
-    return empty(range, now, context, 'The available model or input history cannot support this estimate.');
+    try { context = args.store.firewoodProjection?.context(args.input,range.from,Math.min(range.to,now)+1)
+      ?? (!args.store.firewoodProjection ? fireplaceLearningContext(args.store,args.input,undefined,now) : null); } catch { /* No readable derived source. */ }
+    const unavailable=empty(range, now, context,args.store.firewoodProjection
+      ? 'The firewood comparison cache is unavailable. Source history has not been changed.'
+      : 'The available model or input history cannot support this estimate.');
+    if(args.store.firewoodProjection) unavailable.summary.retryable=true;
+    return unavailable;
   }
 }
 
-function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [], futureIntervals = [] }) {
+function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [], futureIntervals = [], _build = false, _maxRows = 128, _demands = [] }) {
   const through = Math.min(range.to, now);
-  const context = fireplaceLearningContext(store, input, undefined, now);
+  const projection = store.firewoodProjection;
+  const sourceHead=learningJournalHead(store.db,input);
+  if(!sourceHead||!store.db.prepare("SELECT 1 FROM active_fireplace_events WHERE input=? AND kind='load' AND at<=? LIMIT 1").get(input,now)) {
+    const context=fireplaceWindowContext(store,input,{from:Math.max(0,range.from),to:Math.max(0,Math.max(range.from,through)),asOf:now});
+    return _build?{complete:true,processed:0}:empty(range,now,context,!sourceHead
+      ?'No supported model-input history exists for this source.':'No logged fires overlap the available history.');
+  }
+  let context;
+  if(projection) {
+    const manualRows=_build?_maxRows:8;
+    let manual=projection.manual(store,input,now,{advance:true,maxRows:manualRows});
+    if(!_build&&!manual.complete&&manual.phase==='groups') manual=projection.manual(store,input,now,{advance:true,maxRows:manualRows});
+    if(!manual.complete) {
+      if(_build) return {complete:false,processed:0,stage:'firewood-source'};
+      const pending=empty(range,now,null,'The firewood comparison is preparing its source history in the background.');
+      pending.summary.preparing=true;return pending;
+    }
+    context=projection.context(input,range.from,through+1);
+  } else context=fireplaceLearningContext(store,input,undefined,now);
   if (priceIntervals.some(row => ['rateAssumption', 'assumedRates', 'ratesAssumed', 'assumed'].some(key => Object.hasOwn(row, key))))
     return empty(range, now, context, 'Price history uses unsupported rate-assumption fields.');
   const result = empty(range, now, context, 'No logged fires overlap the available history.');
-  if (through <= range.from || !context.fireplaceEvents.some(event => event.at < through)) return result;
-  const bounds = { id: learningJournalHead(store.db,input) };
+  if ((!_build && through <= range.from) || !(context.firstFireAt===undefined ? context.fireplaceEvents.some(event=>event.at<through) : finite(context.firstFireAt)&&context.firstFireAt<through)) return _build ? {complete:true,processed:0} : result;
+  const bounds = { id: sourceHead };
   const checkpointRow = store.db.prepare('SELECT value FROM state WHERE key=?').get(`adaptive:${input}`);
   const committedThrough = latestSampleAt(store, input, bounds.id, through);
   const pricedPrefix = priceIntervals.filter(row => row.start < committedThrough).map(row => ({ start: row.start,
     end: Math.min(row.end, committedThrough), price: row.price, assumedPrice: row.assumedPrice, assumptions: row.assumptions }));
   const key = createHash('sha256').update(JSON.stringify([input, range, Math.min(through, committedThrough), context.fireplaceRevision, bounds.id,
     checkpointRow?.value ?? null, pricedPrefix, LEARNING_ALGORITHM])).digest('hex');
-  if (cache.get(store.db)?.key === key) return refreshResult(cache.get(store.db), range, now, futureIntervals, context);
+  if (!_build && cache.get(store.db)?.key === key && cache.get(store.db)?.projection === projection) return refreshResult(cache.get(store.db), range, now, futureIntervals, context);
   let checkpoint = null;
-  try {
-    const saved = checkpointRow ? decodeLearningCheckpoint(store.db, JSON.parse(checkpointRow.value)) : null;
-    const tailRow = saved?.journalCursor ? store.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id=?').get(input, saved.journalCursor) : null;
-    if (tailRow && validLearningCheckpoint(saved, decode(tailRow))
-      && (saved.fireplaceRevision ?? 0) === context.fireplaceRevision) checkpoint = saved;
-  } catch { /* Damaged snapshots cannot supply authoritative model evidence. */ }
-  const firstFireAt = Math.min(...context.fireplaceEvents.filter(event => event.at < through).map(event => event.at));
+  const heldModel=verifiedModels.get(store.db);
+  if(heldModel&&heldModel.value===checkpointRow?.value&&heldModel.revision===context.fireplaceRevision) checkpoint=heldModel.checkpoint;
+  else {
+    try {
+      const saved=checkpointRow?decodeLearningCheckpoint(store.db,JSON.parse(checkpointRow.value)):null;
+      const tailRow=saved?.journalCursor?store.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id=?').get(input,saved.journalCursor):null;
+      if(tailRow&&validLearningCheckpoint(saved,decode(tailRow))&&(saved.fireplaceRevision??0)===context.fireplaceRevision)
+        checkpoint={model:saved.model,learningConfiguration:saved.learningConfiguration,configVersion:saved.configVersion};
+    } catch { /* Damaged snapshots cannot supply authoritative model evidence. */ }
+    verifiedModels.set(store.db,{value:checkpointRow?.value,revision:context.fireplaceRevision,checkpoint});
+  }
+  const firstFireAt = context.firstFireAt ?? Math.min(...context.fireplaceEvents.filter(event => event.at < through).map(event => event.at));
   let firstRow;
   for (const row of sourceJournal(store, input, bounds.id)) {
     if (row.algorithm_version === LEARNING_ALGORITHM) { firstRow = row; break; }
@@ -117,6 +173,56 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
   if (!checkpoint) assumptions.add('Uses the saved source seed or provisional model priors because a current verified checkpoint is unavailable.');
   if (invalidModel) assumptions.add('Malformed saved model parameters were rejected; the estimate uses provisional priors.');
   if (!fireplaceEvidenceReady(model)) assumptions.add('The wood response is provisional; kilograms are not converted directly to electricity or euros.');
+  const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
+  const selection = store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get()?.generation;
+  const signature = createHash('sha256').update(JSON.stringify([LEARNING_ALGORITHM, input, epoch, selection,
+    context.fireplaceRevision, model, checkpoint?.configVersion ?? null, checkpoint?.learningConfiguration ?? null,
+    Boolean(checkpoint), invalidModel, projection?.cacheId, process.versions.node, process.versions.v8, process.platform, process.arch])).digest('hex');
+  let resume = null, generation;
+  if (projection) {
+    generation = projection.generation(input,signature,store.db,bounds.id,now,_build);
+    if(generation.notReady) {const pending=empty(range,now,context,'The firewood comparison is preparing its current-model history in the background.');pending.summary.preparing=true;return pending;}
+    const last = projection.latest(input);
+    if (last && generation.head < bounds.id) {
+      const additions = learningJournalRows(store.db,{input,after:generation.head,limit:129});
+      // New backdated inputs can affect any later hypothetical thermal state.
+      // Rebuild rather than allowing record-ID reuse or a late receipt to bless
+      // the previous interpretation. Ordinary forward appends keep their prefix.
+      if (additions.length>128 || additions.some(row=>row.kind==='sample'&&row.at<last.at)) {
+        if(projection.readOnly) {const pending=empty(range,now,context,'The firewood comparison is preparing updated inputs.');pending.summary.preparing=true;return pending;}
+        projection.invalidate(input); generation=projection.generation(input,signature,store.db,bounds.id,now,_build);
+      }
+    }
+    const before = Math.min(range.from,...priceIntervals.filter(row=>finite(row.start)).map(row=>row.start));
+    if(_build) {
+      const queued=projection.requested(input);
+      if(queued!==null&&(queued-first.at<=MAX_PREFIX_TAIL||queued>committedThrough)) projection.requestedComplete(input);
+      for(const demand of _demands) {
+        // A prefix before the first input cannot exist. The first bounded tail
+        // and dates beyond the last sample also need no sparse prefix request.
+        // Otherwise an impossible demand can restart a completed archive and
+        // republish its source proof on every idle maintenance turn.
+        if(!finite(demand)||demand-first.at<=MAX_PREFIX_TAIL||demand>committedThrough) continue;
+        const prior=projection.nearest(input,demand);
+        if(!prior||demand-prior.at>MAX_PREFIX_TAIL) projection.request(input,demand);
+      }
+    }
+    const wanted=projection.requested(input);
+    resume = _build ? wanted===null?projection.latest(input):projection.nearest(input,wanted) : projection.nearest(input,before);
+    const requiredBefore=Math.min(before,committedThrough);
+    if (!_build && (resume ? requiredBefore-resume.at>MAX_PREFIX_TAIL : requiredBefore-first.at>MAX_PREFIX_TAIL)) {
+      projection.request(input,before);
+      const pending=empty(range,now,context,'The firewood comparison is preparing its current-model history in the background.');
+      pending.summary.preparing=true; return pending;
+    }
+  }
+  if(_build&&projection&&bounds.id>(resume?.cursor??0)) projection.pin(input,store.db);
+  if(projection) {
+    const beginning=resume?.at??first.at;
+    const batch=_build?learningJournalRows(store.db,{input,after:resume?.cursor??0,limit:_maxRows}):null;
+    const end=_build?Math.max(beginning,...batch.filter(row=>row.at<=through).map(row=>row.at)):through;
+    context=projection.context(input,beginning,end+1);
+  }
   let previous = null, scenarios = null, cursor = null, blocked = false;
   let includedMs = 0, firstAt = null, lastAt = null, sourceGaps = 0, unsupportedRows = 0, resetCount = 0;
   const priceAssumptions = { ...result.summary.priceAssumptions };
@@ -125,7 +231,21 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
   let lastConfiguration = first.payload.configuration, lastTargetC = first.payload.configuration.targetC ?? 21;
   const fireEvidence = [], cleanEvidence = [];
   const evidenceBurns = new Set();
-  const groups = fireplaceBurnGroups(context.fireplaceEvents);
+  const groups = context.burnGroups??fireplaceBurnGroups(context.fireplaceEvents);
+  if (resume) {
+    const saved=resume.state;
+    previous=saved.previous; cursor=saved.cursor; blocked=saved.blocked;
+    scenarios=saved.scenarios?.map((scenario,i)=>({...scenario,model:firewoodScenarios(model,{indoorC:0,reserveC:0})[i].model}));
+    ({sourceGaps,unsupportedRows,resetCount,evidenceHours,observedKwh,predictedKwh,dutyErrorHours,auxErrorKwh,lastConfiguration,lastTargetC}=saved);
+    for(const value of saved.assumptions) assumptions.add(value);
+    for(const [day,hours] of saved.evidenceDays) evidenceDays.set(day,hours);
+    fireEvidence.push(...saved.fireEvidence);cleanEvidence.push(...saved.cleanEvidence);
+    for(const id of saved.evidenceBurns) evidenceBurns.add(id);
+  }
+  const snapshot = () => ({ previous,cursor,blocked,
+    scenarios:scenarios?.map(({model,...state})=>state)??null,sourceGaps,unsupportedRows,resetCount,
+    evidenceHours,observedKwh,predictedKwh,dutyErrorHours,auxErrorKwh,lastConfiguration,lastTargetC,
+    assumptions:[...assumptions],evidenceDays:[...evidenceDays],fireEvidence,cleanEvidence,evidenceBurns:[...evidenceBurns] });
   const prices = priceIntervals.filter(row => finite(row.start) && finite(row.end) && row.end > row.start)
     .sort((a, b) => a.start - b.start);
   let priceIndex = 0;
@@ -207,7 +327,29 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
     }
     cursor = Math.min(segment.end, through);
   }
-  for (const row of sourceJournal(store, input, bounds.id, through)) {
+  let scanned=0, lastId=resume?.cursor??0, maxAt=resume?.at??first.at, nextAt=generation?.next_at??null;
+  let demanded=_build?projection.requested(input):null;
+  const rows = !_build && projection ? projectedJournal(store,input,bounds.id,resume?.cursor??0,resume?.at??Number.MIN_SAFE_INTEGER,through)
+    : sourceJournal(store,input,bounds.id,Infinity,resume?.cursor??0,_build?_maxRows:Infinity);
+  for (const row of rows) {
+    checkStorageRequest();
+    if (_build && scanned>=_maxRows) break;
+    // Preserve the existing input boundary immediately before a demanded
+    // range. Otherwise overwriting rolling progress beyond that range can
+    // make a short archive restart from zero on every maintenance turn.
+    if(_build&&demanded!==null&&lastId&&maxAt<=demanded&&row.kind==='sample'&&row.at>demanded) {
+      projection.save(input,{at:maxAt,cursor:lastId,state:snapshot()},{checkpoint:true});
+      projection.requestedComplete(input);demanded=null;
+    }
+    scanned++;lastId=row.id;
+    if(row.at>through) { nextAt=nextAt===null?row.at:Math.min(nextAt,row.at);continue; }
+    const beforeAt=maxAt;
+    if(row.kind==='sample') {
+      if(_build&&row.at<maxAt) projection.removeAfter(input,row.at,row.id);
+      maxAt=Math.max(maxAt,row.at);
+    }
+    try {
+
     if (row.algorithm_version !== LEARNING_ALGORITHM) { unsupportedRows++; if (row.at >= firstFireAt) blocked = true; continue; }
     let entry;
     try { entry = decode(row); if (entry.configVersion !== learningVersion(entry.payload.configuration)) throw new Error(); }
@@ -244,6 +386,21 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
     if (!valid) { blocked = true; sourceGaps++; }
     if (!blocked) for (const segment of segments) addSegment(segment, config, observed, at);
     previous = { at, indoorC: observed.indoorC };
+    } finally {
+      if (_build && Math.floor(beforeAt/PROJECTION_PERIOD)!==Math.floor(maxAt/PROJECTION_PERIOD))
+        projection.save(input,{at:maxAt,cursor:lastId,state:snapshot()},{checkpoint:true});
+    }
+  }
+  if (_build) {
+    if(demanded!==null&&maxAt===demanded&&lastId) {
+      projection.save(input,{at:maxAt,cursor:lastId,state:snapshot()},{checkpoint:true});
+      projection.requestedComplete(input);
+    }
+    if(scanned&&lastId) {
+      projection.save(input,{at:maxAt,cursor:lastId,state:snapshot()}, {head:bounds.id,nextAt,sourceDb:store.db});
+    }
+    if(lastId>=bounds.id&&(scanned||projection.needsPublication(input))) projection.publish(input,store.db);
+    return {complete:lastId>=bounds.id,processed:scanned,through:cursor};
   }
   if (!includedMs) return empty(range, now, context, sourceGaps || blocked
     ? 'Continuous pre-fire model inputs, weather or prices are missing.' : 'No priced model-input windows cover this period.');
@@ -303,6 +460,7 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
       : { start, end, benefitCents: null, avoidedKwh: null, status: 'unavailable', includedMs: 0, missingMs: end - start });
   }
   const reusable = { key, result, forecast: { scenarios, cursor, blocked, lastConfiguration, lastTargetC } };
+  Object.defineProperty(reusable,'projection',{value:projection});
   if (Buffer.byteLength(JSON.stringify(reusable)) <= MAX_CACHE_BYTES) cache.set(store.db, reusable);
   return refreshResult(reusable, range, now, futureIntervals, context);
 }

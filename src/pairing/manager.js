@@ -25,7 +25,7 @@ import { mqttStartupDiagnostic } from '../acquisition/startup-diagnostic.js';
 const ACTIONS = new Set(['handover', 'promote', 'check-recovery', 'recover', 'rejoin']);
 const PEER_OPERATIONS = new Set(['status', 'snapshot', 'checkpoint', 'verify-checkpoint', 'peer-anchor',
   'peer-transfer', 'peer-transfer-chunk', 'peer-ack', 'snapshot-hashes', 'snapshot-chunk',
-  'handover-prepare', 'handover-stage', 'handover-activate', 'release']);
+  'handover-prepare', 'handover-stage', 'handover-activate', 'release', 'derived-cache-anchor']);
 const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
 // A setup failure before the first write may retry bootstrap. Protection of
 // received history must never authorize replacing that history with an empty DB.
@@ -1276,6 +1276,10 @@ export class PairManager {
     if (operation === 'web-session') {
       if (!this.canControl() || !this.hooks.webSession) throw pairError('not_master');
       return this.hooks.webSession(body);
+    }
+    if(operation==='derived-cache-anchor') {
+      if(!this.canControl() || !this.hooks.derivedCacheAnchor) throw pairError('not_master');
+      return this.hooks.derivedCacheAnchor(body);
     }
     if (operation === 'https-status' || operation === 'https-get') {
       if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length)

@@ -478,3 +478,23 @@ test('smooth curves stay uncluttered and axis styles differ while price styling 
   assert(left.borderWidth < 1.8 && right.borderWidth < 1.8);
   assert.deepEqual(datasets.find(row => row.key === 'all_in_price').borderDash, [1, 3]);
 });
+
+test('preparing firewood projections are refreshed rather than retained as completed historical data', async () => {
+  let calls=0;
+  const loader=createChartLoader({now:()=>Date.parse('2026-10-22T12:00:00Z'),api:async()=>({call:++calls,firewoodBenefit:{preparing:calls===1}})});
+  const selection={startDate:'2025-01-01',endDate:'2025-01-01',left:'power'};
+  const first=await loader.load(selection), second=await loader.load(selection), third=await loader.load(selection);
+  assert.equal(first.firewoodBenefit.preparing,true);
+  assert.equal(second.call,2);
+  assert.equal(third.call,2);
+  loader.close();
+});
+
+test('temporary firewood cache failures can recover on the next historical refresh',async()=>{
+  let calls=0;
+  const loader=createChartLoader({now:()=>Date.parse('2026-10-22T12:00:00Z'),api:async()=>({call:++calls,firewoodBenefit:{retryable:calls===1}})});
+  const selection={startDate:'2026-01-01',endDate:'2026-01-01',view:'power'};
+  assert.equal((await loader.load(selection)).firewoodBenefit.retryable,true);
+  assert.equal((await loader.load(selection)).call,2);
+  assert.equal((await loader.load(selection)).call,2);
+});

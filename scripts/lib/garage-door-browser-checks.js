@@ -80,6 +80,11 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
       await press('\uE004');
       assert.equal(await evaluate(`document.querySelector('${panel}').contains(document.activeElement) || document.activeElement===document.body`), true, 'Tab cannot reach dashboard controls behind the modal');
     }
+    // Native Tab navigation can visit browser chrome. Return through the real
+    // keyboard sequence before testing activation inside the content window.
+    const contentFocused = `document.hasFocus() && document.querySelector('${panel}').contains(document.activeElement)`;
+    for (let i=0;i<12 && !await evaluate(contentFocused);i++) await press('\uE004');
+    assert.equal(await evaluate(contentFocused), true, 'Keyboard navigation returns focus to the open modal');
     assert.deepEqual(await evaluate("[...document.querySelectorAll('.controller-panels details')].map(node=>node.open)"), folds, 'Window navigation preserves dashboard folds');
     assert.equal(await evaluate(`document.querySelectorAll('${panel} .garage-door-controls .garage-door-row').length`), 2);
     assert.equal(await evaluate(`[...document.querySelectorAll('${panel} .garage-door-row')].every(r=>r.querySelectorAll('button').length===1)`), true, 'Each door offers one context-sensitive action');
@@ -175,6 +180,8 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
       assert.deepEqual(await bayStates(scope), [{ side: 'left', id: 'door2', state: 'closed' }, { side: 'right', id: 'door1', state: 'open' }]);
     }
     await evaluate(`document.querySelector('${action('door1')}').focus({preventScroll:true});true`);
+    assert.equal(await evaluate(`document.activeElement===document.querySelector('${action('door1')}')`),true,
+      'The enabled Close action receives focus before its native keyboard activation');
     await command('input.performActions', { context, actions: [{ type: 'key', id: 'garage-door-close', actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
     await until('window.equipmentUiFixture.calls.length===3');
     await until(`document.querySelector('${row('door1')} .garage-door-feedback').textContent.includes('position unconfirmed')`);

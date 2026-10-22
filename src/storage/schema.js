@@ -1,7 +1,7 @@
 import { RECOVERY_DEPENDENCY_SCHEMA } from '../recovery/dependencies.js';
 import { journalSchema } from './journal-schema.js';
 // One current physical schema. Startup never converts an existing database.
-export const SCHEMA_VERSION = 33;
+export const SCHEMA_VERSION = 34;
 // Index changes do not change journaled rows or their hash interpretation.
 // This is one current layout, not a decoder for an earlier database schema.
 export const JOURNALED_DATA_VERSION = 30;
@@ -176,6 +176,10 @@ CREATE INDEX energy_audits_device_time ON energy_audits(device,source_time,id);
 CREATE INDEX events_type_time ON events(type,at,id);
 CREATE INDEX events_type_id ON events(type,id);
 CREATE INDEX fireplace_events_input_time ON fireplace_events(input,at,id);
+CREATE INDEX fireplace_events_input_id ON fireplace_events(input,id);
+CREATE INDEX fireplace_events_kind_time ON fireplace_events(input,kind,at,id);
+CREATE INDEX fireplace_events_target_time ON fireplace_events(input,target_id,at,id);
+CREATE INDEX fireplace_events_target_id ON fireplace_events(input,target_id,id,at);
 CREATE INDEX learning_cycles_input_at ON learning_cycles(input, started_at);
 CREATE INDEX learning_entries_algorithm
           ON learning_journal_entries(epoch,input,algorithm_version,id);

@@ -2,16 +2,30 @@ import moment from 'moment-timezone';
 
 export const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
-export const HISTORY_VERSION = 'charging-household-v2-recorded-voltage';
+export const HISTORY_VERSION = 'charging-household-v3-complete-overlap-clusters';
 const MAX_PATTERNS = 24;
-const MAX_BUCKET_NIGHTS = 32;
+export const MAX_BUCKET_NIGHTS = 32;
 const finite = Number.isFinite;
 
 /** A bounded, replaceable forecast index. Source rows remain authoritative.
  * Retain recent examples separately for each hour and 5 °C condition band, so
  * a summer of new observations cannot evict the only cold-weather reference. */
 export class HouseholdReference {
-  constructor({ timezone }) { this.timezone = timezone; this.buckets = new Map(); this.legacyHours = new Set(); }
+  constructor({ timezone, mutableAfter = Infinity }) {
+    this.timezone = timezone; this.mutableAfter = mutableAfter;
+    this.buckets = new Map(); this.legacyHours = new Set(); this.evictedBuckets = new Set();
+  }
+  trim(key, bucket) {
+    const stable = [...bucket.values()].filter(entry => entry.at < this.mutableAfter).sort((a, b) => a.at - b.at);
+    while (stable.length > MAX_BUCKET_NIGHTS) {
+      const oldest = stable.shift(); bucket.delete(oldest.night); this.evictedBuckets.add(key);
+      if (oldest.priority === 0) this.legacyHours.delete(`${oldest.date}:${oldest.hour}`);
+    }
+  }
+  advance(now) {
+    this.mutableAfter = moment.tz(now, this.timezone).startOf('day').subtract(2, 'days').valueOf();
+    for (const [key, bucket] of this.buckets) this.trim(key, bucket);
+  }
   add(entry) {
     if (!entry || entry.coverageMs < 15 * 60_000 || !entry.patterns.length) return;
     const key = `${entry.hour}:${finite(entry.outdoorC) ? Math.floor(entry.outdoorC / 5) : '?'}`;
@@ -21,28 +35,35 @@ export class HouseholdReference {
     // Complete native interval records take precedence over imported snapshots.
     // Do not count overlapping imported copies or modern cohorts as extra nights.
     if (existing && (existing.priority > entry.priority || existing.priority === entry.priority && existing.at > entry.at)) return;
+    if (existing?.priority === 0) this.legacyHours.delete(`${existing.date}:${existing.hour}`);
     bucket.set(entry.night, entry);
     if (entry.priority === 0) this.legacyHours.add(`${entry.date}:${entry.hour}`);
-    if (bucket.size > MAX_BUCKET_NIGHTS) {
-      let oldest;
-      for (const value of bucket.values()) if (!oldest || value.at < oldest.at) oldest = value;
-      bucket.delete(oldest.night);
-      if (oldest.priority === 0) this.legacyHours.delete(`${oldest.date}:${oldest.hour}`);
-    }
+    this.trim(key, bucket);
   }
   removeLegacyHours(keys) {
     for (const [key, bucket] of this.buckets) {
       for (const [night, entry] of bucket) if (entry.priority === 0 && keys.has(`${entry.date}:${entry.hour}`)) bucket.delete(night);
-      if (!bucket.size) this.buckets.delete(key);
+      if (!bucket.size) { this.buckets.delete(key); this.evictedBuckets.delete(key); }
     }
+    for (const key of keys) this.legacyHours.delete(key);
   }
   removeDates(dates, priority) {
     for (const [key, bucket] of this.buckets) {
-      for (const [night, entry] of bucket) if (entry.priority === priority && dates.has(entry.date)) bucket.delete(night);
-      if (!bucket.size) this.buckets.delete(key);
+      for (const [night, entry] of bucket) if (entry.priority === priority && dates.has(entry.date)) {
+        bucket.delete(night);
+        if (entry.priority === 0) this.legacyHours.delete(`${entry.date}:${entry.hour}`);
+      }
+      if (!bucket.size) { this.buckets.delete(key); this.evictedBuckets.delete(key); }
     }
   }
-  entries() { return [...this.buckets.values()].flatMap(bucket => [...bucket.values()]); }
+  allEntries() { return [...this.buckets.values()].flatMap(bucket => [...bucket.values()]); }
+  entries() {
+    return [...this.buckets.values()].flatMap(bucket => {
+      if (bucket.size <= MAX_BUCKET_NIGHTS) return [...bucket.values()];
+      const selected = new Set([...bucket.values()].sort((a, b) => b.at - a.at).slice(0, MAX_BUCKET_NIGHTS).map(entry => entry.night));
+      return [...bucket.values()].filter(entry => selected.has(entry.night));
+    });
+  }
 }
 
 function compactPatterns(patterns) {

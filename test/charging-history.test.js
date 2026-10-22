@@ -203,6 +203,8 @@ test('multi-year reference memory is bounded by conditions and independent night
       patterns: [{ phaseCurrentA: [6, 7, 8], durationMs: HOUR }] });
   }
   assert.ok(reference.entries().length <= 7 * 24 * 32);
+  assert.ok(reference.allEntries().length <= 7 * 24 * 32, 'Direct callers retain no hidden unbounded reserve');
+  assert.ok(reference.legacyHours.size <= reference.allEntries().length);
   const forecast = predictHousehold(reference, { at: now, now, outdoorC: -15 });
   assert.ok(forecast.reference.nights <= 20);
   assert.equal(forecast.reference.noHistory, false);
@@ -265,6 +267,8 @@ test('a short native fragment replaces only its interval and retains the remaini
   let [forecast] = forecastHousehold(store, options);
   assert.ok(forecast.phaseCurrentA.every(value => Math.abs(value - 10) < 1e-10));
   assert.equal(forecast.coverageMs, HOUR);
+  assert.equal(householdReference(store, options).legacyHours.has('2026-09-14:1'), false,
+    'A removed imported entry does not leave an unbounded historical membership marker');
   store.observation({ source: 'mqtt', device: 'example-outdoor', signal: 'outdoor_temperature', value: -20,
     unit: 'degC', sourceTime: start, receivedAt: start, quality: [] });
   [forecast] = forecastHousehold(store, options);

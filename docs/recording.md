@@ -200,8 +200,17 @@ There is no time-triggered energy flush. History readers include the durable
 open interval only through its latest accepted source endpoint and after its
 receipt time. The UI identifies ongoing intervals; reads neither finalize them
 nor extrapolate through an outage. Real power/quality changes, acquisition gaps,
-session completion and shutdown finalize appropriate intervals. A charger session
-boundary closes only that charger's groups, not unrelated property or Caravan data.
+session completion and shutdown finalize appropriate intervals. An adaptive group
+other than complete valid zero charger energy also closes at the first genuine
+accepted acquisition boundary reaching 24 hours. This preserves its exact integrated energy and all
+three phase clocks together; no timer creates observations or subdivides a
+single original measurement interval. Duration boundaries add at most about
+1,095 phase rows per year per steady three-phase stream, alongside initial,
+adaptive-change and physical-boundary cohorts. Complete valid zero charger tails remain compact without a duration limit;
+invalid zero and zero property groups close at the same accepted daily boundary.
+An existing long pending interval retains its entire original span on adoption;
+its first reassessment may revisit that span once before subsequent groups are
+bounded. A charger session boundary closes only that charger's groups, not unrelated property or Caravan data.
 Open and finalized intervals share overlap, quality and source-identity checks;
 long intervals are not dropped or cut off by an arbitrary history duration limit.
 
@@ -2678,7 +2687,7 @@ representation change needs current-schema validation and an intentional fresh
 development database when incompatible; no cleanup should add a migration or
 silently remove evidence.
 
-Current physical schema 33 retains a chronological coverage index for seeking
+Current physical schema 34 retains a chronological coverage index for seeking
 the next boundary in one source/device/signal stream. Charts retain the original
 recovery selection, equal-start ID precedence and full successor timestamps,
 including boundaries beyond the drawn range. They do not materialize all retained
@@ -2699,16 +2708,31 @@ Fireplace rebuild-existence checks seek each selected epoch/prefix by sample tim
 an empty result cannot walk all samples belonging to another input environment.
 Household forecast refreshes also seek source and receipt clocks independently
 when checking for newly available inputs, deduplicating rows that advance both.
-Initial household-reference construction still reconstructs retained conditions;
-its worker keeps foreground persistence available, but its completion cost is
-not independent of the retained history.
-Firewood counterfactual calculation still needs its earlier common thermal state;
-its journal reads use bounded pages and indexed sample endpoints instead of
-sorting or aggregating the complete journal in one storage turn. This does not
-make the complete counterfactual calculation independent of retained fire history.
+Household-reference construction after losing its disposable cache reconstructs
+retained conditions in a worker. Ordinary restart restores the compact reference
+and reads its new suffix; current and recent dates retain a small mutable reserve
+so temperature-band changes cannot require a full historical reconstruction.
+Firewood comparisons resume both thermal alternatives and their validation
+accumulators from sparse, disposable checkpoints. A missing checkpoint or changed
+current model reports preparing while bounded background turns reconstruct it.
+Full reconstruction remains history-dependent; routine requests do not wait for
+that archive traversal. Manual-firewood control and status use schema 34's indexed
+time windows and independent removal-target lookups. Retrospective source
+corrections still reconcile the affected historical learning and assessments.
 
-The index is not created by a chart request or by opening an incompatible database.
-For this index only, the owner approved a one-time controlled installation upgrade
+Derived caches contain no actuation permission and cannot replace source history.
+Small journaled prefix-proof records preserve cache lineage across transaction
+journal pruning. A worker pins its exact read snapshot while that prefix can be
+verified, writes its disposable file, and publishes its digest through the current
+writer. Source-selection changes, damaged cache bodies and unverified restored
+branches fail cache reuse closed. Rejected publication supplies no anchored prefix
+proof; an independently verified retained source prefix remains usable. Paired read-only chart workers request
+only these bounded proof records through their authenticated writable peer; they
+never mutate a replica or acquire equipment authority. Local node identity keeps
+two hosts with identical configured paths from sharing proof ownership.
+
+The chronological chart-coverage index is not created by a chart request or by opening an incompatible database.
+For this chronological chart-coverage index only, the owner approved a one-time controlled installation upgrade
 on 2026-10-15, preserving all table rows, journal/checkpoint identity and learning
 history, with verified backups, strict current validation and rollback. This adds
 no general migration or startup repair. Journaled data layout 30 and its genesis/hash interpretation are unchanged;
@@ -2720,6 +2744,14 @@ receipt. The earlier index exception does not authorize later installed conversi
 Schema 33 adds the current coefficient-history tables; any specifically approved
 installation preparation is an external controlled operation under its own
 foundation exception. Incompatible files are rejected before writable startup.
+
+For schema 34's four manual-firewood indexes, the owner approved an
+installation-only offline conversion on 2026-10-22 under F1. Both paired apps
+remain stopped during adoption. Verify backups, exact source/journal parity,
+unchanged accepted history and authority, physical-file publication accounting
+and rollback before starting the saved slave and master. The disposable script
+stays outside Git; no runtime conversion or other development-database upgrade
+is supported.
 
 ## History CLI backups and exports
 

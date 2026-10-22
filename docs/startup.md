@@ -95,6 +95,20 @@ Routine validation checks the indexed transaction checkpoint and current control
 state, without scanning historical observations or all learning entries. Invalid
 or externally unjournaled changes fail closed with `database_journal_invalid`;
 malformed WAL headers retain the original files and report an integrity failure.
+
+After those database and authority gates, a file-backed live runtime publishes
+its first committed dashboard view independently of Home model reconstruction.
+The view reports **Rebuilding the heating model**, with no provisional learned
+model, until canonical replay and a complete controller update commit. Actual
+measurements retain their original clocks. Recording, Garage and charging,
+management, saved Automatic/Pause choices and independently qualified manual
+controls remain available. Existing heating expiry and restoration duties continue
+on the ordinary minute/deadline scheduler while replay runs; model-dependent
+economic decisions and model exploration wait for reconstruction. A rebuild
+failure remains visible without replacing measurements or manufacturing readiness.
+A later controller service turn retries it. A valid saved checkpoint still loads
+in the worker and replays only its committed tail. Losing that replaceable cache
+can require a full journal replay, whose completion time grows with history.
 Historical integrity and row-by-row continuity audits use the optional independent
 [full verifier](sqlite-journal.md), which never grants control authority.
 Charging runtime and snapshot verification share the same validators, so handover

@@ -30,6 +30,61 @@ async function fixture(t) {
   return { store, engine, advance: (milliseconds = WINDOW) => { now += milliseconds; } };
 }
 
+async function rebuildingFixture(t) {
+  const f = await fixture(t), { engine } = f;
+  const entered = deferred(), release = deferred();
+  engine.learningStartupPending = true;
+  engine.liveLearning = new LiveLearning({ store: f.store, input: 'mqtt' });
+  const calculate = engine.liveLearning.calculate.bind(engine.liveLearning);
+  engine.liveLearning.calculate = async (...args) => { entered.resolve(); await release.promise; return calculate(...args); };
+  const commands = [];
+  engine.executor.commandTransport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) },
+    async publish(command) { commands.push(command); return { status: 'mqtt', sent: true }; }, async close() {} };
+  await engine.update(); await entered.promise; await engine.initializeCommittedStatus();
+  return { ...f, commands, release: async () => { release.resolve(); await engine.startupLearningFlight?.catch(() => {}); } };
+}
+
+test('missing model reconstruction keeps committed status and Automatic/Pause available without exposing a prior model', { timeout: 10_000 }, async t => {
+  const f = await rebuildingFixture(t), { engine, store } = f;
+  try {
+    const view = engine.status();
+    assert.equal(view.learning.status, 'rebuilding');
+    assert.equal(view.learning.adaptive, null);
+    assert(view.recording && view.garage && view.charging && view.observations);
+    for (const enabled of [true, false]) {
+      const edited = await engine.setAutomation({ feature: 'home', enabled });
+      assert.equal(edited.automation.home.enabled, enabled);
+      assert.equal(edited.learning.adaptive, null);
+      assert.equal(store.getState('automation:mqtt').features.home.enabled, enabled);
+    }
+    await assert.rejects(engine.refreshLearning(), { statusCode: 409 });
+    assert.equal(engine.checkpoint, undefined, 'An unfinished replay cannot publish a prior checkpoint');
+    assert.equal(f.commands.length, 0, 'Enabling Automatic does not execute economics while rebuilding');
+  } finally { await f.release(); }
+  assert.equal(engine.learningStartupPending, false);
+  assert(engine.status().learning.adaptive?.journalCursor > 0);
+  assert.deepEqual(engine.checkpoint, replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false }));
+});
+
+test('manual reduction and its Pause expiry restore native duty while canonical replay remains held', { timeout: 10_000 }, async t => {
+  const f = await rebuildingFixture(t), { engine, store } = f;
+  try {
+    await store.runWrite(() => engine.setTemporary({ pauseUntil: new Date(START + 60_000).toISOString() }));
+    const result = await engine.testHeating({ command: 'reduction' });
+    assert.equal(result.status, 'mqtt');
+    assert.equal(engine.executor.status().manualRequested?.phase, 'reduction');
+    await engine.update(); await engine.dispatchPending;
+    assert.equal(engine.executor.status().manualRequested?.phase, 'reduction', 'A valid manual Pause choice remains in force');
+    f.advance(61_000);
+    await engine.update(); await engine.dispatchPending;
+    assert.equal(engine.executor.status().legacyOutstanding, false);
+    assert.equal(engine.executor.status().manualRequested, null);
+    assert.equal(engine.automationStatus().home.enabled, true, 'Pause expiry restores saved Automatic intent');
+    assert.equal(engine.status().learning.adaptive, null);
+    assert(f.commands.length >= 2, 'Manual reduction and its normal restoration both reached the transport');
+  } finally { await f.release(); }
+});
+
 test('Automatic and Pause return a complete view after a live control edit', async t => {
   const { store, engine } = await fixture(t);
   await engine.update();

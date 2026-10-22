@@ -156,15 +156,20 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
 export async function checkEquipmentBrowser({ evaluate, command, context, until, garageDoorsOnly = false, caravanOnly = false, dashboardHeightsOnly = false, setReducedMotion }) {
   const settle = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
   const refresh = async () => {
-    const count = await evaluate('window.equipmentUiFixture.responses');
+    const before = await evaluate('({responses:window.equipmentUiFixture.responses,rendered:window.equipmentUiFixture.renderedStatuses})');
     await evaluate("window.dispatchEvent(new Event('online'));true");
-    await until(`window.equipmentUiFixture.responses > ${count}`); await settle();
+    // The mocked fetch returns before its consumer renders. Connection text
+    // changes for both full status renders and delivery-only observations.
+    await until(`window.equipmentUiFixture.responses > ${before.responses}
+      && window.equipmentUiFixture.renderedStatuses > ${before.rendered}`); await settle();
   };
   await evaluate(`(() => {
     const at = Date.parse('2026-09-07T11:00:00Z');
     const reading = (label,value,unit,observedAt=at) => ({label,value,unit,observedAt,stale:false});
-    const fixture = window.equipmentUiFixture = {fetch:window.fetch.bind(window),calls:[],responses:0,now:at,lastResult:null,heatingResult:null,status:{},
-      brokers:{primary:{connected:true,ready:true},ha:{connected:true,ready:true}},originalHash:location.hash,openDetails:[...document.querySelectorAll('.controller-panels details[open]')].map(node=>node.id)};
+    const fixture = window.equipmentUiFixture = {fetch:window.fetch.bind(window),calls:[],responses:0,renderedStatuses:0,now:at,lastResult:null,heatingResult:null,status:{},
+      brokers:{primary:{connected:true,ready:true},ha:{connected:true,ready:true}},originalTheme:window.homeEnergyTheme.current,originalHash:location.hash,openDetails:[...document.querySelectorAll('.controller-panels details[open]')].map(node=>node.id)};
+    fixture.renderObserver=new MutationObserver(()=>{fixture.renderedStatuses++;});
+    fixture.renderObserver.observe(document.getElementById('connection'),{childList:true,characterData:true,subtree:true});
     const temperature=(source,value)=>({source,value,observedAt:at,stale:false});
     fixture.observations={indoor:temperature('indoor-average',20.8),upstairs:temperature('mqtt-temperature',21.2),
       downstairs:temperature('mqtt-temperature',20.4),bedroom:temperature('shelly-mqtt',20.8),
@@ -189,7 +194,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     ].map(([signal,value,unit])=>[signal,{value,unit,sourceTime:at,receivedAt:at,available:true,quality:[]}]));
     fixture.dhwr={active:false,durationMinutes:10,actualOn:false,confirmed:false,requestedAt:null,commandTopic:'invented/dhwr/set',feedback:{configured:true,available:true,
       state:reading('Switch',0,'state'),power:reading('Live power',0,'W')}};
-    fixture.response = base => { if(fixture.dhwr.feedback.basis==='power') { const feedback=fixture.dhwr.feedback,power=feedback.power; feedback.state=power?{...power,value:power.value>0?1:0,unit:'state'}:null; fixture.dhwr.actualOn=feedback.available&&power&&!power.stale?power.value>0:null; } return ({...base,...fixture.status,now:fixture.now,observations:{...base.observations,...fixture.observations,...fixture.status.observations},providers:{...base.providers,temperatures:{source:'mqtt-temperature',status:'ok',lastSuccessAt:at},outdoor:{source:'fmi',status:'ok',lastSuccessAt:at},easee:{status:'ok',currentReadings:{property:{qualityIssues:[],lastSuccessAt:at},charger:{qualityIssues:[],lastSuccessAt:at}},deviceTransports:{charger:'ocpp',property:'stream'},localOcpp:{configured:true,connected:true,available:true,setup:{state:'ready',endpointSource:'configured'}}},'shelly-evse':{enabled:true,status:'ok',connected:true,recording:true,maxAgeMs:300000,readings:fixture.chargerReadings,...fixture.chargerStatus,mqttStatus:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at},topics:[{role:'Charger status',topic:'invented/evse/events/rpc',direction:'subscribe'},{role:'RPC requests',topic:'invented/evse/rpc',direction:'publish'}]}},equipment:{configured:true,connected:true,brokers:fixture.brokers,devices:fixture.devices,topicGroups:[
+    fixture.response = base => { if(fixture.dhwr.feedback.basis==='power') { const feedback=fixture.dhwr.feedback,power=feedback.power; feedback.state=power?{...power,value:power.value>0?1:0,unit:'state'}:null; fixture.dhwr.actualOn=feedback.available&&power&&!power.stale?power.value>0:null; } return ({...base,...fixture.status,now:fixture.now,observations:{...base.observations,...fixture.observations,...fixture.status.observations},providers:{...base.providers,market:{source:'entsoe',status:'ok',lastSuccessAt:at},weather:{source:'fmi',status:'ok',lastSuccessAt:at},temperatures:{source:'mqtt-temperature',status:'ok',lastSuccessAt:at},outdoor:{source:'fmi',status:'ok',lastSuccessAt:at},easee:{status:'ok',currentReadings:{property:{qualityIssues:[],lastSuccessAt:at},charger:{qualityIssues:[],lastSuccessAt:at}},deviceTransports:{charger:'ocpp',property:'stream'},localOcpp:{configured:true,connected:true,available:true,setup:{state:'ready',endpointSource:'configured'}}},'shelly-evse':{enabled:true,status:'ok',connected:true,recording:true,maxAgeMs:300000,readings:fixture.chargerReadings,...fixture.chargerStatus,mqttStatus:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at},topics:[{role:'Charger status',topic:'invented/evse/events/rpc',direction:'subscribe'},{role:'RPC requests',topic:'invented/evse/rpc',direction:'publish'}]}},equipment:{configured:true,connected:true,brokers:fixture.brokers,devices:fixture.devices,topicGroups:[
       {id:'temperatures',label:'Temperature feeds',topics:[{role:'Upstairs',topic:'invented/home/upstairs/temperature',direction:'subscribe'}]},
       {id:'vehicle:bmw',vehicleFeedId:'bmw',label:'BMW',broker:'ha',topics:[{role:'Timestamped vehicle readings',topic:'invented/vehicles/bmw',direction:'subscribe'}]},
       {id:'vehicle:tesla',vehicleFeedId:'tesla',label:'TeslaMate',broker:'ha',topics:[{role:'Vehicle subscription',topic:'invented/teslamate/cars/1/#',direction:'subscribe'}]}
@@ -743,7 +748,8 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:temperatures:home\"] code').textContent"), 'invented/home/upstairs/temperature', 'Configured feeds remain after equipment removal');
     assert.doesNotMatch(await evaluate("document.getElementById('equipment-check-message').textContent"), /No MQTT devices configured/, 'Other configured MQTT feeds prevent a false empty state');
   } finally {
-    await evaluate("document.querySelector('#status-detail-popover .status-detail-close')?.click();window.fetch=window.equipmentUiFixture.fetch;history.replaceState(null,'',location.pathname+location.search+window.equipmentUiFixture.originalHash);for(const d of document.querySelectorAll('.controller-panels details'))d.open=window.equipmentUiFixture.openDetails.includes(d.id);delete window.equipmentUiFixture;window.dispatchEvent(new Event('online'));true");
+    await evaluate("document.querySelector('#status-detail-popover .status-detail-close')?.click();window.equipmentUiFixture.renderObserver.disconnect();window.fetch=window.equipmentUiFixture.fetch;window.homeEnergyTheme.setTheme(window.equipmentUiFixture.originalTheme);history.replaceState(null,'',location.pathname+location.search+window.equipmentUiFixture.originalHash);for(const d of document.querySelectorAll('.controller-panels details'))d.open=window.equipmentUiFixture.openDetails.includes(d.id);delete window.equipmentUiFixture;window.dispatchEvent(new Event('online'));true");
+    assert.equal(await evaluate('document.documentElement.dataset.theme===window.homeEnergyTheme.current'), true, 'Equipment cleanup restores the theme through its public controller');
     await command('browsingContext.setViewport',{context,viewport:{width:1440,height:1100},devicePixelRatio:1});
   }
 }

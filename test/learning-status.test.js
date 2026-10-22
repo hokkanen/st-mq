@@ -3,6 +3,17 @@ import assert from 'node:assert/strict';
 import { learningDisplay, modelCoefficientDescriptions, h66Control, h66ReadingValue, h66ReadingStatus, h66HomeSummary, h66EquipmentSummary } from '../chart/learning-status.js';
 import { initialAdaptiveModel, thermalEvidenceReady } from '../src/control/adaptive-learning.js';
 
+test('unfinished reconstruction displays its readiness limit without inventing learned coefficients',()=>{
+  const reason='The heating model is rebuilding from recorded inputs. Automatic heat optimisation waits for the complete model.';
+  const learning={status:'rebuilding',adaptive:null,reconstruction:{status:'rebuilding',reason}};
+  const display=learningDisplay(learning);
+  assert.equal(display.title,'Rebuilding the heating model');
+  assert(display.evidenceRows.some(row=>row.key==='Model reconstruction' && /waits for the complete model/.test(row.detail)));
+  assert.deepEqual(modelCoefficientDescriptions(learning),[]);
+  const failed=learningDisplay({...learning,status:'reconstruction-failed'});
+  assert.equal(failed.title,'Heating model rebuild needs attention');
+});
+
 test('a failed model cache save is distinct from stopped recording and stays quiet when healthy', () => {
   const failed = learningDisplay({ checkpointCache: { status: 'failed', error: 'Save failed' } });
   const row = failed.evidenceRows.find(item => item.key === 'Model restart cache');

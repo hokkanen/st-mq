@@ -109,11 +109,17 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     to: document.getElementById('comparison-range-form').dataset.endDate,
     results: document.getElementById('timing-benefit').textContent,
   })`);
-  const chooseDate = async date => {
+  const chooseDate = async (date, { deferred = false } = {}) => {
     const before = await chartRange();
+    const loadedRange = () => evaluate("JSON.stringify(document.getElementById('comparison-range-form').dataset)");
+    const beforeLoaded = deferred ? await loadedRange() : null;
     await evaluate(`document.getElementById('comparison-date-start').value=${JSON.stringify(date)}; document.getElementById('comparison-date-start').dispatchEvent(new Event('change')); true`);
     await evaluate(`document.getElementById('comparison-date-end').value=${JSON.stringify(date)}; document.getElementById('comparison-date-end').dispatchEvent(new Event('change')); true`);
-    await waitComparison(date);
+    assert.deepEqual(await evaluate("['start','end'].map(field=>document.getElementById('comparison-date-'+field).value)"), [date,date]);
+    if (deferred) {
+      assert.equal(await evaluate("document.getElementById('comparison-content').hidden"), true);
+      assert.equal(await loadedRange(), beforeLoaded, 'Changing collapsed comparison dates defers loading');
+    } else await waitComparison(date);
     assert.equal(await chartRange(), before, 'Comparison dates leave the chart selection and displayed range unchanged');
   };
   const key = value => command('input.performActions', { context, actions: [{ type: 'key', id: 'timing-keyboard',
@@ -154,7 +160,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
         && inputs.every(node => node.getBoundingClientRect().height >= 40);
     })()`), true, 'Comparison date fields stay aligned and usable across display sizes');
     assert.equal(await evaluate(`(() => {
-      const inset = innerWidth <= 640 ? 16 : 24;
+      const inset = 12;
       const left = node => node.getBoundingClientRect().left;
       const panelLeft = left(document.getElementById('comparison-toggle')) + inset;
       return ['#comparison-content', '.timing-intro', '.comparison-range-controls', '.timing-devices', '.timing-explanations > summary']
@@ -169,12 +175,13 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     })()`), true, 'Comparison contents share an inset below their outer header, and opened inner content adds one further level');
     assert.equal(await evaluate(`(() => {
       const sections = ['#comparison-toggle', '#recording-details > summary'].map(css => document.querySelector(css));
+      const sectionMarkers = sections.map(node => getComputedStyle(node, '::before'));
       const chartNotes = ['#chart-legend-panel > summary', '.chart-notes-disclosure > summary'].map(css => document.querySelector(css));
       const markers = chartNotes.map(node => getComputedStyle(node, '::before'));
-      return getComputedStyle(sections[0]).display === 'flex'
-        && getComputedStyle(sections[1]).display === 'list-item'
-        && getComputedStyle(sections[0], '::before').content.includes('▼')
-        && parseFloat(getComputedStyle(sections[0], '::before').fontSize) > 0
+      return sections.every(node => getComputedStyle(node).display === 'flex')
+        && sectionMarkers.every(marker => marker.content !== 'none' && marker.clipPath !== 'none'
+          && parseFloat(marker.width) > 0 && parseFloat(marker.height) > 0)
+        && ['content', 'width', 'height', 'clipPath'].every(property => sectionMarkers[0][property] === sectionMarkers[1][property])
         && ['fontSize', 'fontWeight', 'lineHeight', 'color'].every(property => getComputedStyle(sections[0])[property] === getComputedStyle(sections[1])[property])
         && Math.abs(sections[0].getBoundingClientRect().left - sections[1].getBoundingClientRect().left) < 1
         && chartNotes.every(node => node.getBoundingClientRect().left >= sections[0].getBoundingClientRect().left + 8)
@@ -336,13 +343,14 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await evaluate(`window.timingFoldFixture = {
     section: document.getElementById('timing-details'), button: document.querySelector(${JSON.stringify(toggle)})
   }; true`);
-  await chooseDate('2026-09-06');
+  await chooseDate('2026-09-06', { deferred: true });
   await checkOpen(false);
   await scrollTo(toggle);
   await capture('home-energy-timing-folded-desktop');
   await evaluate(`document.querySelector(${JSON.stringify(toggle)}).focus(); true`);
   await key('\uE007');
   await until(expanded);
+  await waitComparison('2026-09-06');
   await key(' ');
   await until(`!${expanded}`);
   await key('\uE007');
@@ -603,12 +611,13 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await capture('home-energy-timing-period-rates-mobile');
   await tap(toggle);
   await until(`!${expanded}`);
-  await chooseDate('2026-09-07');
+  await chooseDate('2026-09-07', { deferred: true });
   await checkOpen(false);
-  assert.equal(await evaluate("document.querySelector('.timing-period-rates') === null && document.querySelector('.timing-rate-explanation') === null"), true,
-    'Known-rate dates remove obsolete explanations about assumed contract rates');
   await tap(toggle);
   await until(expanded);
+  await waitComparison('2026-09-07');
+  assert.equal(await evaluate("document.querySelector('.timing-period-rates') === null && document.querySelector('.timing-rate-explanation') === null"), true,
+    'Known-rate dates remove obsolete explanations about assumed contract rates');
   await switchComparison('model');
   await evaluate(`document.querySelector(${JSON.stringify(`${detail('charger')} > summary`)}).focus(); true`);
   // Wait for a real background status poll while the reader leaves the fold open.
@@ -638,11 +647,11 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await switchComparison('model');
   await command('browsingContext.reload', { context, wait: 'complete' });
   await until("document.getElementById('history')?.dataset.ready === 'true'");
-  await waitComparison('2026-09-07');
-  await checkComparison('model');
   await checkOpen(false);
   await tap(toggle);
   await until(expanded);
+  await waitComparison('2026-09-07');
+  await checkComparison('model');
   await checkFits();
   await switchComparison('timing');
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
@@ -650,10 +659,14 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   // Exercise all three populated cards together, including Fireplace, with an
   // invented API result. The simulation remains isolated from household data.
   await evaluate(`window.comparisonFixtureFetch = window.fetch;
+    window.comparisonFixtureProbeActive = window.chartRequestProbe.active;
+    window.comparisonFixtureResponses = 0;
+    window.chartRequestProbe.active = true;
     window.fetch = async (...args) => {
       const response = await window.comparisonFixtureFetch(...args);
       if (new URL(args[0], location.href).pathname !== '/api/chart') return response;
       const data = await response.clone().json();
+      window.comparisonFixtureResponses++;
       data.firewoodBenefit = { status: 'provisional', valueEuro: 0.65, electricityAvoidedKwh: 3.1,
         range: data.range, generatedAt: data.now, woodCostEuro: 0,
         coverage: { elapsedMs: data.range.to - data.range.from, includedMs: data.range.to - data.range.from,
@@ -665,6 +678,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     await chooseDate('2026-09-05');
     await switchComparison('model');
     await evaluate(`document.querySelectorAll('#timing-benefit details').forEach(fold => fold.open = false); true`);
+    assert.ok(await evaluate('window.comparisonFixtureResponses > 0'), 'The populated fixture intercepts the current chart transport');
     assert.match(await text(`${card('firewood')} .timing-amount`), /€0.65/);
     for (const width of [1440, 1024, 844, 390, 320]) {
       await command('browsingContext.setViewport', { context, viewport: { width, height: 1100 }, devicePixelRatio: 1 });
@@ -691,7 +705,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
       }
     }
   } finally {
-    await evaluate('window.fetch = window.comparisonFixtureFetch; delete window.comparisonFixtureFetch; true');
+    await evaluate('window.fetch = window.comparisonFixtureFetch; window.chartRequestProbe.active = window.comparisonFixtureProbeActive; delete window.comparisonFixtureFetch; delete window.comparisonFixtureProbeActive; delete window.comparisonFixtureResponses; true');
   }
   // Restore the provider chart used by the broader smoke test after the
   // isolated historical layout fixture.

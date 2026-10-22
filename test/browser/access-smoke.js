@@ -157,6 +157,14 @@ try {
     await evaluate(`document.getElementById('token').value=${JSON.stringify(credential)};document.getElementById('auth').requestSubmit();true`);
     await until("document.body.dataset.authenticated === 'true'");
   };
+  const logout = async () => {
+    const previousDocument = await evaluate('performance.timeOrigin');
+    await evaluate("document.getElementById('web-logout').click();true");
+    // Logout first locks the old document, then reloads it. The next sign-in
+    // must target the new document rather than the briefly visible old form.
+    await until(`performance.timeOrigin !== ${previousDocument} && document.readyState === 'complete'
+      && document.body.dataset.authenticated === 'false' && !document.getElementById('auth').hidden`);
+  };
   const settle = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const capture = async (name, selector) => {
     const geometry = await evaluate(`(() => {
@@ -425,8 +433,7 @@ try {
   assert.match(await evaluate("document.getElementById('error').textContent"), /Unsupported voltage estimate state/);
   assert.equal(await evaluate("document.body.dataset.accessRole"), 'family');
   assert.equal(await evaluate("document.getElementById('pairing-reset').disabled"), true, 'Recovery does not give family users admin access');
-  await evaluate("document.getElementById('web-logout').click();true");
-  await until("document.body.dataset.authenticated === 'false' && !document.getElementById('auth').hidden");
+  await logout();
   await login('synthetic-browser-rotated-admin-access-token');
   await until("!document.getElementById('pairing-reset').disabled");
   assert.equal(await evaluate("[...document.querySelectorAll('[data-write-control]')].flatMap(node => node.matches('button,input,select,textarea') ? [node] : [...node.querySelectorAll('button,input,select,textarea')]).every(node => node.disabled)"), true,
@@ -569,8 +576,7 @@ try {
   assert.equal(await evaluate("sessionStorage.getItem('stmq-token')"), null, 'A new tab signs in from its protected cookie');
   assert.equal((await send('Network.getCookies', { urls: [httpsUrl] })).cookies.find(value => value.name === remembered.name).expires,
     remembered.expires, 'New tabs and polling do not renew the original expiry');
-  await evaluate("document.getElementById('web-logout').click();true");
-  await until("document.body.dataset.authenticated === 'false' && !document.getElementById('auth').hidden");
+  await logout();
   assert.equal((await send('Network.getCookies', { urls: [httpsUrl] })).cookies.some(value => value.name === remembered.name), false);
   await evaluate("document.getElementById('remember-login').click();true");
   await login('synthetic-browser-rotated-admin-access-token');

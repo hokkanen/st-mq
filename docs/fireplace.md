@@ -144,11 +144,53 @@ overhead, counted once, plus source events, cycle records and longer journal ver
 identifiers. Raw learning-window payloads remained unchanged. Different control-cycle
 or source-segment density changes this estimate; it is not a guaranteed 5 MB cap.
 
-The visibility and savings additions store no new interval or daily database rows.
-Chart inputs, coefficient histories and paired savings are calculated in a read-only
-worker with bounded caches. They add computation, not another annual savings-history
-table. Model publication and fireplace corrections invalidate cached estimates,
-including completed historical views.
-Clock-only refreshes reuse the completed paired calculation and refresh elapsed
-coverage and any fresh forecast separately. A new committed model or input prefix
-requires a new calculation; the first large-history request can take longer.
+The authoritative database stores no new interval or daily firewood savings rows.
+Paired savings are reconstructed in the read-only chart worker. A private disposable
+`temporary-firewood-projection` directory beside the installation database retains
+sparse paired-state checkpoints and compact corrected burn-group boundaries. Actual
+wood amounts and removals are read from the indexed source events for each window.
+It is separate from backups, mirroring and control authority. It contains private
+household-derived data and must receive the same access protection as the database.
+Removing it never removes source events, learning inputs or the model.
+
+Each numerical checkpoint is taken at an existing completed-input boundary, roughly
+weekly, and includes the exact thermal states and electrical-validation accumulators.
+The four model bodies are shared by the current calculation rather than repeated in
+every saved state. Individually addressed compressed bodies are limited to 4 MiB
+expanded, with at most 16 MiB of retained compressed numerical bodies and a 20 MiB
+SQLite page ceiling for the whole disposable file. Old points may be evicted;
+requested missing points are rebuilt in the background. These ceilings are cache
+budgets, not source-history retention limits or guarantees that every historical
+period remains immediately cached.
+
+Fixed-period requests resume before their first requested/price boundary and process
+at most an eight-day warmup tail. They preserve the original source segments, price
+boundaries, unknown periods and independent with/without-fire policies. A missing,
+corrupt, evicted or invalidated prefix returns an explicit preparing state instead
+of synchronously reading the archive. The UI continues showing other chart data and
+refreshes the estimate after preparation. Idle maintenance reads at most 128 journal
+entries per turn, yields between turns and persists resumable progress. It works
+also when the recent raw-chart cache is disabled. Small manual-source projections
+can prepare within the same bounded request; larger ones continue in maintenance.
+The resident chart worker owns cache writes; archive workers and retired replica
+views only read it. Completed idle maintenance does not repeat preparation or
+source-proof publication. Private LRU timestamps may refresh at most once per
+five minutes for an accessed checkpoint; they do not write source history. Background
+source-proof requests have a short bounded wait and retry backoff, so an unavailable
+peer cannot hold an ordinary chart request for the peer connection timeout.
+
+Checkpoints bind the current numerical model, supported algorithm, source selection,
+fireplace revision, local cache identity and numerical runtime. They require a
+matching source transaction proof. A small source-owned pending/published cache
+anchor binds the compact cache catalog and preserves that proof across normal
+transaction-journal pruning. It contains no derived heating state and grants no
+control authority. A rewind, divergent source or missing matching proof cannot
+bless old results. Frozen read-only histories can use their retained source proof
+without a writable owner. Forward learning appends catch up from the retained prefix. A changed model
+or correction can require a complete background reconstruction because earlier heat
+continues to affect both thermal states. Earlier coefficients are never presented
+as a current-model answer. This necessary reconstruction still scales with retained
+inputs; routine chart requests do not wait for it. Clock-only refreshes reuse the
+completed paired calculation and update elapsed coverage and the fresh forecast
+separately. A cache failure leaves the estimate unavailable without changing source
+history or granting control authority.

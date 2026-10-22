@@ -1,3 +1,5 @@
+import { FirewoodProjectionCache } from './firewood-projection-cache.js';
+import { maintainFirewoodProjection } from './firewood-benefit.js';
 import { DEFAULT_CHART_CACHE } from '../domain/chart-cache.js';
 import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
@@ -26,6 +28,51 @@ import { storageStep, admittedReader, setStorageMaintenance, releaseStorageLease
 const db = admittedReader(storageStep(() => new DatabaseSync(workerData.dbPath, { readOnly: true })), { batchRows: 192 });
 db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE;');
 const store = { db, path: workerData.dbPath };
+let anchorRequestSequence=0;
+let currentChartRequestId=null,projectionWritable=Boolean(workerData.projectionWritable);
+function requestDerivedAnchor(request) {
+  // Keep the exact source snapshot, but release writer admission before the
+  // owner commits its small pin/publication record through the normal writer.
+  releaseStorageLease();
+  const response=new SharedArrayBuffer(16*1024),state=new Int32Array(response,0,2);
+  const requestId=++anchorRequestSequence;
+  parentPort.postMessage({type:'derived-cache-anchor',operationId:currentChartRequestId,requestId,request,response});
+  const deadline=performance.now()+350;
+  while(Atomics.load(state,0)===0) {
+    const remaining=deadline-performance.now();
+    if(remaining<=0) {
+      if(Atomics.compareExchange(state,0,0,-2)===0) {
+        parentPort.postMessage({type:'derived-cache-anchor-cancel',requestId});
+        throw new Error('The firewood comparison proof is taking longer than its background turn.');
+      }
+      break;
+    }
+    Atomics.wait(state,0,0,remaining);
+  }
+  if(Atomics.load(state,0)!==1) throw new Error('The derived firewood proof reply exceeded its bound.');
+  const result=JSON.parse(new TextDecoder().decode(new Uint8Array(response,8,Atomics.load(state,1))));
+  if(result.error) throw Object.assign(new Error(result.error),{code:result.code});
+  return result.proof;
+}
+function openFirewoodProjection() {
+  if(store.firewoodProjection&&!store.firewoodProjection.failed&&store.firewoodProjection.current()) return;
+  if(store.firewoodProjection&&!store.firewoodProjection.failed) store.firewoodProjection.close();
+  try {store.firewoodProjection=new FirewoodProjectionCache(workerData.projectionCachePath??workerData.dbPath,{anchor:workerData.anchorAvailable?requestDerivedAnchor:null,readOnly:!projectionWritable,cacheId:workerData.projectionCacheId});}
+  catch {store.firewoodProjection={failed:true,manual(){if(projectionWritable) throw new Error('Firewood comparison cache unavailable');return {complete:false};}};}
+}
+openFirewoodProjection();
+let firewoodMaintenanceInput=0;
+function maintainFirewood(now,inputs=[],demands=[],inputClocks={}) {
+  if(!inputs.length) return {complete:true};
+  openFirewoodProjection();
+  const input=inputs[firewoodMaintenanceInput++%inputs.length];
+  try {
+    return maintainFirewoodProjection({store,input,now:inputClocks[input]??now,
+      demands:demands.filter(value=>value.input===input).map(value=>value.from)});
+  }
+  catch {return {complete:true,failed:true};}
+}
+
 const contexts = new Map();
 const cache = new Map(); let cacheBytes = 0;
 let settings = workerData.settings ?? DEFAULT_CHART_CACHE;
@@ -121,8 +168,15 @@ function sourceCoverageFingerprint(args,range) {
   }
   return JSON.stringify(spans);
 }
-parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: configuration }) => {
+parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: configuration,retireProjection }) => {
+  if(retireProjection) {
+    projectionWritable=false;
+    if(store.firewoodProjection&&!store.firewoodProjection.failed) store.firewoodProjection.close();
+    store.firewoodProjection=null;openFirewoodProjection();
+    parentPort.postMessage({type:'projection-retired'});return;
+  }
   if (configuration) { configure(configuration); return; }
+  currentChartRequestId=id;
   setStorageMaintenance(operation === 'maintain');
   setStorageRequestActive(operation !== 'maintain');
   const onProgress = progress => { checkStorageRequest(); parentPort.postMessage({ id, progress }); };
@@ -140,7 +194,11 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
           return sourceCache?.maintain(args.now, 256);
         } finally { db.exec('ROLLBACK'); }
       });
-      parentPort.postMessage({ id, cacheStatus: { ...sourceCache?.status(), complete: status?.complete === true } });
+      const firewood=args.skipFirewood?{complete:true,retrying:true}:maintainFirewood(args.now,args.inputs,args.demands,args.inputClocks);
+      // A preparing response cannot remain a completed historical response-cache
+      // hit after its derived prefix has become available.
+      for(const [key,entry] of cache) if(entry.result.firewoodBenefit?.preparing||entry.result.firewoodBenefit?.retryable) {cache.delete(key);cacheBytes-=entry.bytes;}
+      parentPort.postMessage({ id, cacheStatus: { ...sourceCache?.status(), complete: (!settings.cacheDays || status?.complete === true) && firewood.complete, firewood } });
       parentPort.postMessage({ id, result: { ready: sourceCache?.ready ?? false } }); return;
     }
     db.exec('BEGIN');
@@ -149,6 +207,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
     if (['pin', 'pin-archive'].includes(operation)) {
       parentPort.postMessage({ id, result: { ready: true } }); return;
     }
+    openFirewoodProjection();
     // Acquisition checkpoints and rolling recorder metrics update frequently.
     // They do not invalidate a completed historical plot. New observations,
     // availability spans, forecast fetches and completed imports do.
@@ -189,7 +248,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
     // Constant readings extend bounded energy tails and confirmation spans.
     // Renew only affected plots, preserving unrelated historical caches and the
     // live clock bucket when source evidence itself has not changed.
-    if(entry&&(entry.version !== currentVersion || entry.bucket !== bucket || entry.receiptFingerprint !== receipts || entry.pendingEnergyFingerprint!==pendingEnergyFingerprint(args,range)
+    if(entry&&(entry.result.firewoodBenefit?.preparing || entry.result.firewoodBenefit?.retryable || entry.version !== currentVersion || entry.bucket !== bucket || entry.receiptFingerprint !== receipts || entry.pendingEnergyFingerprint!==pendingEnergyFingerprint(args,range)
       ||entry.sourceCoverageFingerprint!==sourceCoverageFingerprint(args,range))) {
       cache.delete(key);cacheBytes-=entry.bytes;entry=null;
     }

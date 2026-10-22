@@ -12,9 +12,50 @@ import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
 import { decodeLearningCheckpoint, withLearningCheckpointRead } from '../src/storage/learning-checkpoint-storage.js';
 import { readCoefficientCoverage, readCoefficientEvents } from '../src/storage/coefficient-history.js';
+import { addFireplace, removeFireplace } from '../src/app/fireplace.js';
+import { updateAdaptiveLearning } from '../src/control/adaptive-learning.js';
 
 const WINDOW = 900_000, start = Date.parse('2026-01-01T00:00:00Z');
 const pause = () => new Promise(resolve => setTimeout(resolve, 10));
+
+test('bounded engine firewood context includes ISO-normalized fitting samples without input segments',async t=>{
+  const store=new Store(':memory:'),now=start+16*86_400_000;
+  const load=addFireplace(store,'mqtt',{requestId:'synthetic-working-window-fire',kg:6},start+86_400_000);
+  const engine=new Engine({store,config:{input:'mqtt',settings:{}},clock:()=>now});
+  t.after(async()=>{engine.beginShutdown({restore:false});await engine.closeFireplace();await engine.charging.close();
+    await engine.garage.close({restore:false});await engine.executor.close({restore:false});await store.close();});
+  const sample={timestamp:start,indoorC:21,outdoorC:0,phase:'normal',regime:'occupied',quality:[],thermalCompressorDuty:1,thermalAuxKw:0};
+  engine.checkpoint=updateAdaptiveLearning(null,sample,{now,config:engine.control});
+  assert.equal(typeof engine.checkpoint.samples[0].timestamp,'string');
+  assert.equal(engine.checkpoint.samples[0].inputSegments,undefined);
+  assert.equal(engine.checkpoint.samples[0].windowStart,undefined);
+  assert(engine.currentFireplaceContext(now).fireplaceEvents.some(event=>event.id===load.id),
+    'Earlier heat affecting the retained fitting state cannot be dropped just because source timestamps are ISO strings');
+});
+
+test('restart reconciles old completed-cycle corrections before allowing the source rebuild to finish', async t => {
+  const store = new Store(':memory:');
+  const old = addFireplace(store,'mqtt',{requestId:'synthetic-old-cycle-fire',kg:6},start);
+  store.cycle('mqtt',{id:'synthetic-old-cycle',status:'completed',startedAt:start,endedAt:start+3_600_000,
+    assessment:{profitCents:12,recoveryErrorCents:0,basis:'modelled'}});
+  const removed=removeFireplace(store,'mqtt',{requestId:'synthetic-old-cycle-remove',id:old.id},start+1_800_000);
+  store.setState('fireplace:rebuild:mqtt',{status:'pending',revision:removed.revision,sensorRevision:0,
+    epoch:store.learningEpoch('mqtt'),requestedAt:start+1_800_000,affectedAt:start,requiresRebuild:true});
+  // The source event is committed; simulate losing the dashboard callback.
+  const engine=new Engine({store,config:{input:'mqtt',settings:{}},clock:()=>start+365*86_400_000});
+  let started=false;
+  engine.fireplaceRebuild={publication:null,start(){
+    const cycle=JSON.parse(store.db.prepare('SELECT payload FROM learning_cycles WHERE input=?').get('mqtt').payload);
+    assert.equal(cycle.assessment.profitCents,null);
+    assert.equal(cycle.assessment.basis,'unassessed-corrected-fireplace-history');
+    started=true;
+  },takeReady(){return null;},async close(){},beginShutdown(){}};
+  t.after(async()=>{engine.beginShutdown({restore:false});await engine.closeFireplace();await engine.charging.close();
+    await engine.garage.close({restore:false});await engine.executor.close({restore:false});await store.close();});
+  assert.equal(engine.currentFireplaceContext(start+365*86_400_000).fireplaceExcludedRanges.length,0);
+  engine.reconcileFireplace();
+  assert(started);
+});
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-fireplace-engine-'));
   const path = join(directory, 'invented.sqlite'), store = new Store(path);

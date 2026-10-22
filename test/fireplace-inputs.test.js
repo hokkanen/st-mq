@@ -2,10 +2,40 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { addFireplace, removeFireplace } from '../src/app/fireplace.js';
-import { fireplaceLearningContext, withFireplaceInputs, fireplaceEpisodeAffected } from '../src/app/fireplace-inputs.js';
+import { fireplaceLearningContext, fireplaceWindowContext, withFireplaceInputs, fireplaceEpisodeAffected } from '../src/app/fireplace-inputs.js';
 import { fireplaceIntegral } from '../src/domain/fireplace.js';
 
 const start = Date.UTC(2026, 0, 1), HOUR = 3_600_000;
+
+test('current fireplace window preserves full projection heat and clock-reversed removals with indexed bounded reads', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  for (let day = 0; day < 400; day++) addFireplace(store,'mqtt',{requestId:`synthetic-old-${day}`,kg:4},start+day*24*HOUR);
+  const now = start+401*24*HOUR;
+  const recent = addFireplace(store,'mqtt',{requestId:'synthetic-recent',kg:8},now-HOUR);
+  removeFireplace(store,'mqtt',{requestId:'synthetic-clock-reversed',id:recent.id},start);
+  const retained = addFireplace(store,'mqtt',{requestId:'synthetic-current',kg:6},now);
+  const queries = [];
+  const facade = { db: { prepare(sql) { const statement = store.db.prepare(sql); return {
+    get(...args) { queries.push({sql,args}); return statement.get(...args); },
+    all(...args) { queries.push({sql,args}); return statement.all(...args); },
+  }; } } };
+  const from=now-2*HOUR, to=now+HOUR;
+  const window = fireplaceWindowContext(facade,'mqtt',{from,to,asOf:to});
+  const full = fireplaceLearningContext(store,'mqtt',undefined,to);
+  assert.equal(window.fireplaceRevision,retained.id);
+  assert.equal(window.fireplaceStartedAt,start);
+  assert(!window.fireplaceEvents.some(event=>event.id===recent.id), 'A removal outside the clock window still retracts its target');
+  for (const at of [from,now,now+HOUR]) {
+    const sample={timestamp:at,windowStart:at-HOUR,durationHours:1};
+    assert.deepEqual(withFireplaceInputs(sample,window),withFireplaceInputs(sample,full));
+  }
+  assert(window.fireplaceEvents.length < 8, 'Control carries the relevant release tail rather than the manual archive');
+  const plans=queries.flatMap(({sql,args})=>store.db.prepare('EXPLAIN QUERY PLAN '+sql).all(...args).map(row=>row.detail));
+  for (const index of ['fireplace_events_input_id','fireplace_events_kind_time','fireplace_events_target_id'])
+    assert(plans.some(detail=>detail.includes(index)),index);
+  const beforeRemoval=fireplaceWindowContext(store,'mqtt',{from,to,revision:recent.id,asOf:to});
+  assert(beforeRemoval.fireplaceEvents.some(event=>event.id===recent.id),'Earlier source revisions retain the original load');
+});
 
 test('ignition splits preserve electrical energy and source samples while integrating delayed heat', () => {
   const sample = { timestamp: start + HOUR, windowStart: start, durationHours: 1,
