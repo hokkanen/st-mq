@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Add an interactive Ubuntu installer for standalone and paired operation, with
+  whole-file private configuration, prerequisite and broker provisioning,
+  restricted VIP helpers and optional reviewed HA setup over SSH. Start and
+  enable the installed service, preserve current history and authority, and
+  verify application readiness before reporting success.
+
 - Standardize deployment paths and service names on `st-mq`. Linux setup examples
   generate private files with resolved home paths, Node executable and `$USER`
   for system scope. Document fresh setup and routine updates, and keep the

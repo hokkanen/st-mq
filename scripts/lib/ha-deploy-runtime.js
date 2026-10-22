@@ -31,6 +31,7 @@ try {
    pair.peer={};for(const key of ['nodeId','role','reachable','lastSeenAt'])pair.peer[key]=p.peer?.[key];
    pair.sync={state:p.sync?.state,error:p.sync?.error==null?null:'present'};
    pair.recovery={state:p.recovery?.state,pendingRelease:Boolean(p.recovery?.pendingRelease)};
+   pair.actions={promote:p.actions?.promote===true};
    console.log(JSON.stringify({state:'ready',pair,observedAt:Date.now()}));
   }
  }

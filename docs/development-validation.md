@@ -1,5 +1,27 @@
 # Development validation
 
+Linux installer configuration, broker authentication, prerequisite provisioning,
+HA configuration and orchestration are covered by the `test/linux-setup*.test.js`
+files. Fixtures use synthetic configuration and private temporary directories;
+terminal tests use a real disposable PTY to check hidden paste, cancellation and
+editor handoff. Privileged provisioning commands are injected in these tests.
+
+Run the real installer, staged build and simulated application under a disposable
+user systemd unit with:
+
+```sh
+STMQ_REQUIRE_SYSTEMD_TESTS=1 node --test test/extended/linux-setup-native.test.js
+```
+
+This requires a clean committed checkout, a running user systemd manager and
+network access for locked npm dependencies. Authentication and lingering are
+replaced in this fixture; it never changes root services or household state.
+It checks real startup, authenticated status, listener ownership, managed and
+stopped deployments, and preservation of private configuration and database
+identity. Testing root package/helper installation additionally requires a
+reviewed Ubuntu installation with sudo; the disposable test does not establish
+that result.
+
 Linux setup/deployment boundaries are covered by
 `node --test test/linux-deployment.test.js`: disposable Git repositories and real
 npm builds exercise staged releases, while simulated systemd and authenticated

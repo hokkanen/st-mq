@@ -33,8 +33,9 @@ when using an alias. For example, an already configured alias can be verified
 with `ssh -T home-assistant 'true'`. `ssh_host` also accepts a destination such as
 `root@home-assistant.example.invalid`; use an SSH config alias for custom ports.
 
-Create a private connection file outside the checkout, for example
-`~/.config/st-mq/ha-deployment/connection.json`:
+The [Linux setup wizard](linux-deployment.md) saves the default private HA
+deployment connection when SSH setup is selected. For separate HA deployment,
+create `${XDG_CONFIG_HOME:-$HOME/.config}/st-mq/ha-deploy.json`:
 
 ```json
 {
@@ -50,12 +51,10 @@ app's local `SUPERVISOR_TOKEN`; that credential is never downloaded to Ubuntu.
 This environment requirement is documented by the
 [SSH app](https://github.com/hassio-addons/addon-ssh/blob/main/ssh/DOCS.md#running-the-ha-command-or-supervisor-api-non-interactively).
 
-The default connection file is `$XDG_CONFIG_HOME/st-mq/ha-deploy.json`, or
-`~/.config/st-mq/ha-deploy.json` when that environment variable is unset. To use
-the example location above:
+Deployment reads that default connection automatically:
 
 ```sh
-npm run deploy:ha -- --connection "$HOME/.config/st-mq/ha-deployment/connection.json"
+npm run deploy:ha
 ```
 
 If more than one matching app is installed, add `app_slug` with its exact slug

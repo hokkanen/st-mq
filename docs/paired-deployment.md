@@ -4,9 +4,11 @@ Use one clean, committed source checkout for both computers. The tools deploy it
 committed HEAD, including unpublished local commits, without pushing Git or
 publishing a release.
 
-For initial commissioning, follow [pair setup](pairing.md). Install the Linux
-runtime with [Linux setup](linux-deployment.md), and configure SSH using
-[HA deployment](ha-deployment.md).
+For initial installation, install HA's matching `st-mq` app, then run
+`bash scripts/setup-linux.sh` from the Linux checkout and choose **pair**.
+The [Linux wizard](linux-deployment.md#set-up-a-linuxha-pair) installs the Linux
+service and VIP helper, prepares pairing and optionally configures HA through
+SSH. See [pair operation](pairing.md) for authority, commissioning and recovery.
 
 ## Before updating
 
@@ -43,9 +45,9 @@ This prepares the build, verifies Linux is a slave, stops only its application
 service, installs the release, starts it and waits for synchronization. HA keeps
 running as master. The command refuses a Linux master.
 
-If Linux was just set up stopped, explicitly start it and verify synchronization
-as described in [Linux setup](linux-deployment.md#set-up-the-service-once) first.
-Setup already installs the selected commit; deploying it again is optional.
+The setup wizard already installs the selected commit and verifies startup;
+deploying it again is optional. Complete any reported pending HA configuration
+or initial role selection before using the paired update sequence.
 
 ## Hand over, then update HA
 
@@ -80,8 +82,8 @@ npm run deploy:ha -- --stopped
 ```
 
 This requires an already stopped target and leaves it stopped. It sends no
-stop/start or pair-status requests and does not verify runtime readiness. Linux
-still requires its managed runtime and persistent service. HA may be standalone.
+application Stop/Start or pair-status requests and does not verify runtime readiness. Linux
+still requires its managed runtime and persistent service; either target may be standalone.
 An explicit later start requires its own role and compatibility review.
 
 ## Restore roles and verify

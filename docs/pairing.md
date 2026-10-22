@@ -17,6 +17,19 @@ synchronization. The `pair` section owns peer synchronization, snapshot storage
 and freshness settings; pair mode never reads the `mirror` section. Neither
 section has an `enabled` flag.
 
+For a Linux–HA installation, install HA's matching `st-mq` app, then run the
+[Linux setup wizard](linux-deployment.md) and choose **pair**:
+
+```sh
+bash scripts/setup-linux.sh
+```
+
+The wizard accepts the private configuration as one file, installs the Linux
+service, broker prerequisites and VIP helper, and prepares matching pair
+settings. Optional SSH access lets it configure HA as part of the reviewed
+installation. The sections below describe the pairing contract, commissioning
+and operation.
+
 ## Before enabling pairing
 
 Run the same ST-MQ release on both machines. Both need their own working local
@@ -77,8 +90,10 @@ and [Git update](https://github.com/home-assistant/supervisor/blob/2026.09.3/sup
 
 ## Configuration
 
-Store settings in each installation's private configuration. These invented
-addresses and interface name are examples and must be replaced:
+The setup wizard prepares these settings in each installation's private
+configuration. For manual configuration, the following is a reference; its
+invented addresses, interface and token must be replaced. Omitted storage paths
+select each computer's local defaults:
 
 ```json
 {
@@ -95,8 +110,6 @@ addresses and interface name are examples and must be replaced:
     "peer_url": "http://192.0.2.20:1244",
     "listen_host": "192.0.2.10",
     "port": 1244,
-    "directory": "/var/lib/st-mq/pairing",
-    "snapshot_directory": "/var/lib/st-mq/pair-snapshots",
     "stale_seconds": 180,
     "interval_seconds": 60,
     "timeout_seconds": 3600,
@@ -127,14 +140,15 @@ HA interface and preserving HA's existing storage. Normal imports merge:
 omitting a field does not clear its saved value. The same guidance appears in
 HA's Configuration form and ST-MQ's Configuration disclosure.
 
-Generate a fresh random pairing token of at least 32 characters with a password
-manager or a script that writes directly to the private configuration. Do not
-use the example token. Private directories use mode `0700` and private files
-use `0600`.
+For a new pair, the wizard generates a fresh shared token when none is supplied.
+Manual setup needs a fresh random pairing token of at least 32 characters,
+stored directly in the private configuration. Do not use the example token.
+Private directories use mode `0700` and private files use `0600`.
 
 Pair mode has no configured role. Fresh installations without existing local
-history start as read-only slaves. After completing setup on both, use **Promote this
-computer to master** on exactly one computer to establish the first master. Confirm
+history start as read-only slaves. Select the first master explicitly in the
+wizard, or after completing configuration on both use **Promote this computer
+to master** on exactly one computer. Confirm
 that no other computer is controlling the equipment; the other computer stays
 a slave and receives verified snapshots. Opening the dashboard or restarting
 never automatically promotes either computer. Existing local history starts in
@@ -238,14 +252,16 @@ the application; changing only `STMQ_DATABASE_DIR` does not redirect a saved
 master's `activeDbPath`. A promoted master can store its database inside the pair
 directory as `master-<epoch>.sqlite`.
 
-For the example systemd installation, choose unused locations beneath its
-writable `/var/lib/st-mq` directory. Add or update these entries in
-`/etc/st-mq.env`, which the supplied unit loads:
+For an installation using the wizard's default paths, edit
+`${XDG_CONFIG_HOME:-$HOME/.config}/st-mq/linux-runtime.env`. Choose unused
+locations beneath `$HOME/.local/share/st-mq`. Generate the three resolved
+assignments below, then replace their existing entries in that private file:
 
 ```sh
-STMQ_DATABASE_DIR=/var/lib/st-mq/fresh-1/database
-STMQ_PAIR_DIR=/var/lib/st-mq/fresh-1/pairing
-STMQ_PAIR_SNAPSHOT_DIR=/var/lib/st-mq/fresh-1/pair-snapshots
+printf "STMQ_DATABASE_DIR='%s'\nSTMQ_PAIR_DIR='%s'\nSTMQ_PAIR_SNAPSHOT_DIR='%s'\n" \
+  "$HOME/.local/share/st-mq/fresh-1/database" \
+  "$HOME/.local/share/st-mq/fresh-1/pairing" \
+  "$HOME/.local/share/st-mq/fresh-1/pair-snapshots"
 ```
 
 Keep this environment file private. For a different unit, use its configured
@@ -254,7 +270,7 @@ entries. Reload systemd if changing the unit itself. Use the actual service
 name/account, and ensure the selected parent directory is writable by that
 account. For a shell-launched checkout, use the equivalent
 environment on its usual start command, with an unused location such as
-`$PWD/var/fresh-1` instead of `/var/lib/st-mq/fresh-1`. The three variables override
+`$PWD/var/fresh-1`. The three variables override
 any saved `pair.directory` and `pair.snapshot_directory` configuration. Keep the
 old directories intact; choose another suffix if `fresh-1` has already been used.
 
@@ -308,6 +324,13 @@ The broker's own listener must leave `VIP:1883` free. A normal HA/Ubuntu setup i
 | External fixed HA clients and Ubuntu's `mqtt.ha` | HA fixed address, host port `1885` |
 | Ubuntu ST-MQ and its frontend upstream | `127.0.0.1:1883` |
 
+The Linux setup wizard applies the fixed port `1885` when installing a new HA
+Mosquitto broker, preserving its other port mappings. It refuses an existing
+HA mapping that occupies host port `1883`; existing broker network settings
+are not silently changed. A standard HA configuration import derives Linux's
+separate `mqtt.ha` route from the actual host-port mapping and fixed peer
+address. Existing explicit Linux routes remain configuration-owned.
+
 Publish HA Mosquitto's container port 1883 as host port 1885, after checking that
 the host port is free. Bind Ubuntu Mosquitto's listener to loopback instead of
 all host addresses. A wildcard listener or Docker port publication on host 1883
@@ -353,42 +376,24 @@ gratuitous ARP. Its policy must be a regular file owned by root and not writable
 by group or other users. Network changes require host networking privileges;
 the ordinary unprivileged service cannot acquire an address by itself.
 
-On Ubuntu, install `iproute2` and `iputils-arping`. The restricted helper runs
-as a separate systemd service with only the network capabilities it needs.
-The application account accesses its Unix socket; the main service keeps
-`NoNewPrivileges=true` and does not use `sudo` to change addresses.
+On Ubuntu, the [Linux setup wizard](linux-deployment.md) installs `iproute2`,
+`iputils-arping`, the public helper code and generated systemd units into
+root-owned locations. It selects a trusted Node executable, creates the private
+policy from the reviewed interface/address/prefix, and enables
+`st-mq-vip.socket`. No separate helper installation commands are needed.
 
-From the checkout, install the helper's public code and units into root-owned
-locations. Run these commands as the non-root application account (`$USER`).
-The helper requires a root-owned Node installation at `/usr/bin/node`:
+The restricted helper runs on demand as `st-mq-vip.service`, with only the
+network capabilities it needs. Its socket admits root and the application
+account's primary group. The application remains unprivileged, keeps
+`NoNewPrivileges=true` and does not use `sudo` to change addresses. The private
+policy directory has mode `0700` and its policy mode `0600`; these are separate
+from the application's private configuration directory.
 
-```sh
-sudo install -d -m 0755 /usr/local/lib/st-mq/scripts /usr/local/lib/st-mq/src/pairing
-sudo install -o root -g root -m 0644 package.json /usr/local/lib/st-mq/package.json
-sudo install -o root -g root -m 0644 scripts/pair-vip.js /usr/local/lib/st-mq/scripts/pair-vip.js
-sudo install -o root -g root -m 0644 src/pairing/vip.js /usr/local/lib/st-mq/src/pairing/
-sudo install -o root -g root -m 0644 deploy/st-mq-vip.service /etc/systemd/system/
-awk -v group="$(id -gn "$USER")" '/^SocketGroup=/{ $0 = "SocketGroup=" group } {print}' deploy/st-mq-vip.socket |
-  sudo tee /etc/systemd/system/st-mq-vip.socket > /dev/null
-sudo chown root:root /etc/systemd/system/st-mq-vip.socket
-sudo chmod 0644 /etc/systemd/system/st-mq-vip.socket
-```
-
-Create the root-owned policy file shown above with mode `0600`, using the same
-interface, address and prefix as this machine's pairing settings. Its separate
-private directory, `/etc/st-mq-vip`, must be owned by root with mode `0700`.
-It does not change the ownership or permissions of the application's private
-configuration directory. Then enable the socket:
-
-```sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now st-mq-vip.socket
-```
-
-The service is started on demand. Its socket admits only root and the application
-account's primary group, and its policy restricts requests to the configured
-address. Update the installed helper code with ST-MQ releases; it must not point to a checkout that
-the unprivileged application user can modify.
+Linux deployment refreshes the installed public helper during the stopped
+update window, preserving its policy, socket group and current address
+ownership. The privileged service executes root-owned installed code rather
+than a writable checkout. Use setup to review installation or network-policy
+changes.
 
 The Home Assistant app uses host networking and `NET_ADMIN`/`NET_RAW` for
 this feature. Its broker still runs on the same Home Assistant host, and the

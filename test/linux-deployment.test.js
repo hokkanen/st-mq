@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { main, LinuxDeploymentError, validateConnection, validateEnvironment, parseEnvironment, serviceText,
-  privateFile, readPair, canonical, checkoutRoot } from '../scripts/lib/linux-deployment.js';
+  privateFile, readPair, canonical, checkoutRoot, validateInstalledRuntime } from '../scripts/lib/linux-deployment.js';
 
 import { validateStandby } from '../scripts/lib/paired-deployment.js';
 
@@ -38,7 +38,7 @@ function fixture(t, scope = 'user') {
   writeFileSync(join(source, 'package-lock.json'), JSON.stringify({ name: 'synthetic-deployment', version: '1.0.0', lockfileVersion: 3, packages: { '': { name: 'synthetic-deployment', version: '1.0.0' } } }));
   git(source, 'add', '.'); git(source, 'commit', '-m', 'Synthetic initial source');
   const unit = join(root, 'units', c.service_name), calls = [], logs = [];
-  const state = { active: false, pid: 0, onCommand: null, onPair: null, now: 100000, waiting: 0, pairCalls: 0 };
+  const state = { active: false, pid: 0, onCommand: null, onPair: null, now: 100000, waiting: 0, pairCalls: 0, authCalls: 0, helperCalls: [], leaseChecks: 0, leaseClosed: 0 };
   const status = () => ({ role: 'slave', nodeId: 'synthetic-node', pairId: 'synthetic-pair', canControl: false, busy: false, phase: null,
     vip: { owned: false }, peer: { nodeId: 'synthetic-master', role: 'master', reachable: true, lastSeenAt: state.now }, sync: { state: 'ready', error: null } });
   const run = async (exe, args, options) => {
@@ -48,7 +48,7 @@ function fixture(t, scope = 'user') {
       if (a[0] === 'show') return [`LoadState=${existsSync(unit) ? 'loaded' : 'not-found'}`, `ActiveState=${state.active ? 'active' : 'inactive'}`,
         `SubState=${state.active ? 'running' : 'dead'}`, `MainPID=${state.pid}`, 'Transient=no', `FragmentPath=${unit}`, 'DropInPaths=', 'NeedDaemonReload=no',
         `WorkingDirectory=${join(c.runtime_dir, 'current')}`, `ExecStart={ path=${c.node_path} ; argv[]=${c.node_path} ${join(c.runtime_dir, 'current/src/main.js')} ; }`,
-        `User=${c.service_user ?? ''}`].join('\n');
+        `User=${c.service_user ?? ''}`, ...Object.entries(state.showPatch ?? {}).map(([key, value]) => `${key}=${value}`)].join('\n');
       if (a[0] === 'stop') { state.active = false; state.pid = 0; }
       if (a[0] === 'start') { state.active = true; state.pid = 12345; }
       return '';
@@ -62,11 +62,14 @@ function fixture(t, scope = 'user') {
     return runCommand(exe, args, options);
   };
   const deps = { source, run, operatorUid: 1000, operatorUser: 'synthetic', log: s => logs.push(s), unitPath: () => unit, clock: () => state.now,
+    authenticate: async () => { state.authCalls++; },
+    lease: () => ({ assertValid: () => { state.leaseChecks++; }, close: async () => { state.leaseClosed++; } }),
+    refreshHelper: async options => { state.helperCalls.push(options.source); },
     sleep: async () => { state.now += 1000; }, pair: async () => { state.pairCalls++; return state.onPair ? state.onPair(status()) : status(); } };
   const invoke = (mode, extra = []) => main(mode, ['--connection', connection, ...extra], deps);
   const setup = async () => { await invoke('setup', ['--apply']); state.active = true; state.pid = 1234; };
   const update = () => { writeFileSync(join(source, 'src/main.js'), 'process.exitCode=0;\n'); git(source, 'add', 'src/main.js'); git(source, 'commit', '-m', 'Synthetic next revision'); };
-  return { root, source, secrets, data, configPath, c, env, unit, calls, logs, state, connection, saveConnection, status, invoke, setup, update };
+  return { root, source, secrets, data, configPath, c, env, unit, calls, logs, state, connection, saveConnection, status, invoke, setup, update, deps };
 }
 
 test('connection and environment boundaries reject unknown formats, overlap, ambiguous targets and unsafe paths', t => {
@@ -112,7 +115,7 @@ test('real current configuration preflight is read-only and rejects runtime-loca
 test('CLI help resolves its own source from an unrelated working directory', async t => {
   const f = fixture(t);
   const output = await runCommand(process.execPath, [join(checkoutRoot, 'scripts/setup-linux.js'), '--help'], { cwd: f.data });
-  assert.match(output, /committed HEAD/); assert.match(output, /--apply/);
+  assert.match(output, /secrets\.json/); assert.match(output, /--dry-run/);
 });
 
 test('setup previews without mutation, applies stopped and disabled, and refuses to overwrite a service', async t => {
@@ -246,6 +249,85 @@ test('Linux --stopped updates an inactive managed runtime without status or life
   assert(!f.calls.some(call => call.includes('stop') || call.includes('start')));
   assert.equal(git(join(f.c.runtime_dir, 'current'), 'rev-parse', 'HEAD'), git(f.source, 'rev-parse', 'HEAD'));
   assert(f.logs.some(s => s.includes('service remains stopped')));
+});
+
+test('installed-runtime ownership validation is read-only and checks unit, metadata and artifact proofs', async t => {
+  const f = fixture(t); await f.setup(); f.calls.length = 0;
+  const options = { source: f.source, run: f.deps.run, unitPath: () => f.unit };
+  const before = readFileSync(f.connection), markerPath = join(f.c.runtime_dir, 'deployment.json'), marker = readFileSync(markerPath);
+  const current = await validateInstalledRuntime(f.c, options);
+  assert.equal(current.release, realpathSync(join(f.c.runtime_dir, 'current')));
+  assert.equal(current.revision, git(f.source, 'rev-parse', 'HEAD')); assert.equal(current.service.MainPID, '1234');
+  assert.ok(f.calls.some(call => call.some(arg => String(arg).endsWith('linux-deployment-process.js'))));
+  assert.ok(!f.calls.some(call => call.includes('stop') || call.includes('start') || call.includes('ci')));
+  assert.deepEqual(readFileSync(f.connection), before); assert.equal(existsSync(join(f.c.runtime_dir, 'deployment.lock')), false);
+  writeFileSync(markerPath, JSON.stringify({ ...JSON.parse(marker), scope: 'system' }));
+  await assert.rejects(validateInstalledRuntime(f.c, options), /mismatched managed runtime metadata/); writeFileSync(markerPath, marker);
+  const unit = readFileSync(f.unit); writeFileSync(f.unit, Buffer.concat([unit, Buffer.from('\n# unreviewed change\n')]));
+  await assert.rejects(validateInstalledRuntime(f.c, options), /persistent service/); writeFileSync(f.unit, unit);
+  for (const patch of [{ DropInPaths: '/synthetic/override.conf' }, { NeedDaemonReload: 'yes' }, { Transient: 'yes' }, { MainPID: '0' }]) {
+    f.state.showPatch = patch; await assert.rejects(validateInstalledRuntime(f.c, options), /persistent service/);
+  }
+  f.state.showPatch = {};
+  writeFileSync(join(current.release, 'dist/index.html'), 'unreviewed-frontend');
+  await assert.rejects(validateInstalledRuntime(f.c, options), /prepared release proof/);
+  assert.equal(readFileSync(join(f.data, 'database.sqlite'), 'utf8'), 'synthetic-retained-history');
+});
+test('installed-runtime preflight checks process ownership when active and fully stopped state when inactive', async t => {
+  const f = fixture(t); await f.setup();
+  const options = { source: f.source, run: f.deps.run, unitPath: () => f.unit };
+  f.state.onCommand = (_exe, args) => { if (args.some(arg => /linux-deployment-process\.js$/.test(arg))) throw new LinuxDeploymentError('Listener ownership failed.'); };
+  await assert.rejects(validateInstalledRuntime(f.c, options), /Listener ownership failed/);
+  f.state.onCommand = null; f.state.active = false; f.state.pid = 0;
+  assert.equal((await validateInstalledRuntime(f.c, options)).service.ActiveState, 'inactive');
+  await assert.rejects(validateInstalledRuntime(f.c, { ...options, state: 'running' }), /persistent service/);
+  f.state.showPatch = { ActiveState: 'activating', SubState: 'start' };
+  await assert.rejects(validateInstalledRuntime(f.c, options), /neither a confirmed running application nor fully stopped/);
+});
+test('paired deployment authenticates once and refreshes verified helper code after stopping', async t => {
+  const f = fixture(t); await f.setup(); f.update(); const old = realpathSync(join(f.c.runtime_dir, 'current'));
+  f.deps.refreshHelper = async ({ source }) => {
+    assert.equal(f.state.active, false); assert.equal(realpathSync(join(f.c.runtime_dir, 'current')), old);
+    assert.equal(git(source, 'rev-parse', 'HEAD'), git(f.source, 'rev-parse', 'HEAD'));
+    assert.ok(existsSync(join(source, '.git/linux-deployment-proof.json'))); f.state.helperCalls.push(source);
+  };
+  await f.invoke('deploy');
+  assert.equal(f.state.authCalls, 1); assert.equal(f.state.leaseClosed, 1); assert.equal(f.state.helperCalls.length, 1);
+  assert.equal(f.state.helperCalls[0], realpathSync(join(f.c.runtime_dir, 'current'))); assert.ok(f.state.leaseChecks > 0);
+});
+test('standalone user deployment needs no privilege authentication or VIP helper', async t => {
+  const f = fixture(t); f.env.STMQ_TOPOLOGY = 'standalone';
+  writeFileSync(f.c.environment_file, Object.entries(f.env).map(([key, value]) => `${key}='${value}'`).join('\n'), { mode: 0o600 });
+  f.deps.status = async () => ({ topology: 'standalone', role: 'master' });
+  await f.setup(); f.update(); await f.invoke('deploy');
+  assert.equal(f.state.authCalls, 0); assert.equal(f.state.helperCalls.length, 0); assert.equal(f.state.pairCalls, 0);
+});
+test('lost privilege lease aborts before Stop and always closes its renewal', async t => {
+  const f = fixture(t); await f.setup(); f.update(); let expired = false;
+  f.state.onCommand = (exe, args) => { if (exe === 'npm' && args.includes('build')) expired = true; };
+  f.deps.lease = () => ({ assertValid: () => { if (expired) throw new LinuxDeploymentError('Privilege authorization expired.'); },
+    close: async () => { f.state.leaseClosed++; } });
+  await assert.rejects(f.invoke('deploy'), /Privilege authorization expired/);
+  assert.equal(f.state.active, true); assert.equal(f.calls.some(call => call.includes('stop')), false); assert.equal(f.state.leaseClosed, 1);
+});
+test('helper refresh failure leaves the selected service stopped and previous release intact', async t => {
+  const f = fixture(t); await f.setup(); f.update(); const previous = realpathSync(join(f.c.runtime_dir, 'current'));
+  f.deps.refreshHelper = async () => { throw new LinuxDeploymentError('VIP-helper refresh was not confirmed.'); };
+  await assert.rejects(f.invoke('deploy'), /failed during helper.*VIP-helper refresh was not confirmed/);
+  assert.equal(f.state.active, false); assert.equal(realpathSync(join(f.c.runtime_dir, 'current')), previous);
+  assert.equal(f.calls.some(call => call.includes('start')), false); assert.equal(f.state.leaseClosed, 1);
+});
+test('an external start during helper refresh prevents publishing the prepared release', async t => {
+  for (const stopped of [false, true]) {
+    const f = fixture(t); await f.setup(); f.update(); const previous = realpathSync(join(f.c.runtime_dir, 'current'));
+    if (stopped) { f.state.active = false; f.state.pid = 0; }
+    f.calls.length = 0;
+    f.deps.refreshHelper = async () => { f.state.active = true; f.state.pid = 9999; };
+    await assert.rejects(f.invoke('deploy', stopped ? ['--stopped'] : []), /requires a confirmed inactive service/);
+    assert.equal(realpathSync(join(f.c.runtime_dir, 'current')), previous); assert.equal(f.state.active, true);
+    assert.equal(f.calls.some(call => call.includes('start')), false);
+    assert.equal(f.calls.filter(call => call.includes('stop')).length, stopped ? 0 : 1);
+  }
 });
 
 test('Linux --stopped refuses a running service without stopping it', async t => {

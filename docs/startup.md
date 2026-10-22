@@ -1,7 +1,15 @@
 # Standalone startup and troubleshooting
 
 For Home Assistant installation and saved app options, see [the setup guide](../DOCS.md).
-The shell commands below are for standalone Linux. In Home Assistant, start,
+For an installed Linux service, use the [setup wizard](linux-deployment.md):
+
+```sh
+bash scripts/setup-linux.sh
+```
+
+It installs prerequisites, accepts `secrets.json` as one file, configures
+standalone or paired operation, and verifies startup. The foreground commands
+below are for development and manually managed operation. In Home Assistant, start,
 stop and restart the installed `st-mq` app under **Settings → Apps** and read its **Logs**
 tab. Restarting Home Assistant Core alone does not restart the ST-MQ app.
 
@@ -157,10 +165,12 @@ electricity rates and the admin/family access policy.
 | `STMQ_H66_DEVICE` | Exact H66 topic prefix; enables H66 alongside a configured MQTT broker |
 | `STMQ_H66_VERIFICATION` | Optional JSON path with verified register scaling/evidence |
 
-For a persistent paired Linux standby, use the repository's
-[Linux setup and deployment tools](linux-deployment.md). Setup generates a service
-from explicit installation paths and leaves it stopped; deployment manages its
-standby lifecycle. Run only one application instance against each set of writable
+For a persistent Linux installation, use the repository's
+[Linux setup and deployment tools](linux-deployment.md). The wizard generates
+private installation files, installs and starts the service, and enables boot
+startup. It also prepares pairing and the restricted VIP helper when selected.
+Deployment updates the managed runtime in standalone or paired mode.
+Run only one application instance against each set of writable
 state directories. Independent standalone development can use `npm start` with
 its own configuration and state directories.
 
@@ -184,15 +194,15 @@ configuration file identified by the page, then check and review it. Restart the
 application after validation succeeds. If the problem is an environment override,
 correct the service or shell environment before restarting.
 
-The private key directory uses a writable `STMQ_DATA_DIR` when configured, so
-the supplied systemd service's `PrivateTmp` setting does not hide it. If that
-directory is unavailable, recovery falls back to temporary storage; a service
-with private temporary storage then requires access through its mount namespace.
+The private key directory uses a writable `STMQ_DATA_DIR` when configured. If
+that directory is unavailable, recovery falls back to temporary storage. A
+custom service using private temporary storage then requires access through
+its mount namespace.
 
 For a remote Linux installation, forward its recovery port through SSH, for example:
 
 ```sh
-ssh -N -L 1234:127.0.0.1:1234 user@linux-host
+ssh -N -L 1234:127.0.0.1:1234 "$USER@linux-host.example.invalid"
 ```
 
 Then open `http://127.0.0.1:1234` on your own computer and use the key read through

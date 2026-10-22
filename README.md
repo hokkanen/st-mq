@@ -42,18 +42,20 @@ Follow [Home Assistant setup](DOCS.md) for installation, saved options, ingress,
 backups and MQTT integration. Home Assistant Container has no app manager; use
 standalone ST-MQ alongside it.
 
-For standalone Linux, use Node.js **22.19 or newer**:
+For a standalone or paired installation on Ubuntu, run the setup wizard:
 
 ```sh
-git clone --branch v0.9.5-dev.4 https://github.com/hokkanen/st-mq.git
+git clone https://github.com/hokkanen/st-mq.git
 cd st-mq
-npm ci
-npm run build
-npm start
+bash scripts/setup-linux.sh
 ```
 
-Open `http://127.0.0.1:1234`. See [standalone startup](docs/startup.md) for
-environment variables, systemd, UI development and port-conflict recovery.
+Setup installs prerequisites, accepts a complete `secrets.json` from a password
+manager or file, configures services and pairing, and verifies startup. It offers
+a minimal starter for fresh installations. See [Linux installation](docs/linux-deployment.md)
+for the wizard, defaults and optional HA configuration. For development or manual
+foreground operation with Node.js **22.19 or newer**, see
+[standalone startup](docs/startup.md).
 
 Shared defaults live in `config.json.options`. Keep credentials, private device
 identifiers and sparse installation overrides outside the checkout, normally in
@@ -131,13 +133,14 @@ tag alone does not change that branch or update an installed app. See
 Supervisor checks and their installation limits. Both
 [`npm run deploy:linux`](docs/linux-deployment.md) and
 [`npm run deploy:ha`](docs/ha-deployment.md) deploy this checkout's committed HEAD.
-By default they verify a running synchronized slave, prepare the update, stop it,
-deploy, restart it and wait for synchronization. Both accept `-- --stopped` to
+For a pair, they verify a running synchronized slave, prepare the update, stop it,
+deploy, restart it and wait for synchronization. Linux also supports a managed
+standalone runtime. Both accept `-- --stopped` to
 require an already stopped target and leave it stopped without lifecycle commands.
 Neither command changes pair roles or publishes a release.
 
-For initial Linux service installation, `npm run setup:linux` previews the service;
-add `-- --apply` to install it stopped. Runtime code stays separate from development
+For initial Linux installation, `bash scripts/setup-linux.sh` runs the setup wizard
+and installs the selected commit. Runtime code stays separate from development
 and household state. Follow the [paired deployment guide](docs/paired-deployment.md)
 to update both computers using explicit handovers.
 

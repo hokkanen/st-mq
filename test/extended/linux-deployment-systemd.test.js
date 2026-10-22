@@ -49,7 +49,7 @@ server.listen(Number(process.env.STMQ_PORT),'127.0.0.1');process.on('SIGTERM',()
     const result = await runCommand(exe, args, options);
     if (exe === 'systemctl' && args.includes('show')) observations.push(result);
     return result;
-  } };
+  }, authenticate: async () => {}, lease: () => ({ assertValid() {}, async close() {} }), refreshHelper: async () => {} };
   try { await main('setup', ['--connection', connection, '--apply'], dependencies); }
   catch (error) { t.diagnostic(observations.join('\n')); throw error; }
   assert.equal(await runCommand('systemctl', ['--user', 'show', service, '--property=ActiveState', '--value']), 'inactive');

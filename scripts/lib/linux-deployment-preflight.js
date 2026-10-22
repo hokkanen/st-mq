@@ -10,9 +10,9 @@ try {
   const environment = parseEnvironment(readFileSync(environmentFile, 'utf8'));
   const { loadConfig } = await import(pathToFileURL(join(release, 'src/app/config.js')));
   const config = loadConfig({ ...process.env, ...environment }, release);
-  if (config.topology !== 'pair' || config.addon) throw new Error();
+  if (!['pair', 'standalone'].includes(config.topology) || config.addon) throw new Error();
   for (const value of [config.dataDir, config.databaseDir, config.dbPath, config.pair.directory,
-    config.pair.snapshotDirectory, config.pair.sourceDirectory, config.pair.snapshotExportDirectory]) {
+    ...(config.topology === 'pair' ? [config.pair.snapshotDirectory, config.pair.sourceDirectory, config.pair.snapshotExportDirectory] : [])].filter(Boolean)) {
     if (!isAbsolute(value)) throw new Error();
     for (const boundary of [runtime, source]) {
       const path = relative(canonical(boundary), canonical(value));
