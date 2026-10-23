@@ -630,6 +630,13 @@ try {
   assert.match(await evaluate("document.querySelector('#recording-backup-list > li').textContent"),/Waiting for the full verifier/);
   await evaluate(`copies.copies[0].recheck={state:'complete',startedAt:${now-1000},finishedAt:${now}}; panel.refreshCopies({force:true})`); await settle();
   assert.match(await evaluate("document.querySelector('#recording-backup-list > li').textContent"),/Full check passed.*file state/);
+  await evaluate(`copies.copies[0].recheck={state:'error',error:'database_schema_mismatch',startedAt:${now-1000},finishedAt:${now}}; panel.refreshCopies({force:true})`); await settle();
+  await evaluate("document.querySelector('#recording-backup-list .recording-backup-actions button:first-child').click()"); await settle();
+  assert.match(await evaluate("document.querySelector('#recording-backup-list > li').textContent"),/Download sent.*confirm it was saved/);
+  assert.match(await evaluate("document.querySelector('#recording-backup-list > li').children[3].textContent"),
+    /Full check failed.*database schema does not match.*current-schema backup/,
+    'A successful download receipt cannot hide the reason a saved copy failed verification');
+  assert.equal(await evaluate("document.querySelector('#recording-backup-list > li').children[3].dataset.tone"),'warning');
   await evaluate("failCatalog=true; panel.refreshCopies({force:true,scan:true})"); await settle();
   assert.match(await evaluate("document.getElementById('recording-backup-catalogStatus').textContent"),/Could not refresh.*last successful list.*1 min ago/);
   assert.equal(await evaluate("document.querySelectorAll('#recording-backup-list > li').length"),3,'A failed list refresh retains previous metadata');

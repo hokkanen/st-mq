@@ -1686,6 +1686,9 @@ the list folded. Restart does not claim that a previously checked copy was
 rechecked. A check
 never imports history or grants control authority. **Download** transfers the
 selected file; **Review history** opens the existing source review before recovery.
+The reason for a failed check stays beside its result when a download receipt is
+shown; transferring a copy does not establish that its contents are compatible
+or verified.
 The folder and file inventory, verification and downloads require admin access.
 Verification and downloads of existing copies remain available on a read-only
 server. Recovery and saving a new local copy retain their active-master checks.

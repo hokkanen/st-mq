@@ -255,15 +255,15 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
         ? 'Verified during creation · verification time not recorded.' : 'No creation check is recorded.';
       verification.textContent = check?.state === 'complete'
         ? `Full check passed${validTime(check.finishedAt) ? ` ${recordingEvidenceTime(check.finishedAt, now())}` : ' · completion time unknown'}. This check applies to that file state in the current application run.`
-        : check?.state === 'error' ? `Full check failed${validTime(check.finishedAt) ? ` · ${recordingEvidenceTime(check.finishedAt, now())}` : ''}. ${creation}`
+        : check?.state === 'error' ? `Full check failed${validTime(check.finishedAt) ? ` · ${recordingEvidenceTime(check.finishedAt, now())}` : ''}. ${backupCheckFailure(check)} ${creation}`
           : check?.state === 'changed' ? `Previous check no longer applies to this file. ${creation}`
             : ['queued', 'running'].includes(check?.state) ? `${creation} A full check is in progress.`
               : `${creation} No later check is available in this application run.`;
       if (copyActivities.has(item.id)) activity.textContent = receipt.text;
       else if (check) activity.textContent = ['queued', 'running'].includes(check.state) ? `${check.state === 'queued' ? 'Waiting for the full verifier' : 'Checking the complete copy'}${validTime(check.startedAt) ? ` · requested ${recordingEvidenceTime(check.startedAt, now())}` : ''}`
-        : check.state === 'error' ? backupCheckFailure(check)
-          : check.state === 'changed' ? 'The file changed during the check. Its current contents are not verified.' : '';
+        : check.state === 'changed' ? 'The file changed during the check. Its current contents are not verified.' : '';
       else activity.textContent = '';
+      verification.dataset.tone = ['error', 'changed'].includes(check?.state) ? 'warning' : 'neutral';
       activity.dataset.tone = ['error', 'changed'].includes(check?.state) ? 'warning' : 'neutral';
       for (const [index, label] of ['Download', 'Verify', 'Review history from'].entries()) actions.children[index].setAttribute('aria-label', `${label} ${item.filename}`);
       actions.children[0].disabled = !downloadBackup || !adminCatalog() || receipt?.kind === 'download' && receipt.pending === true;

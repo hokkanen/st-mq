@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep a saved copy's verification failure reason visible during and after a
+  download, independently of its transfer receipt.
+
 - Detach the Garage adapter without opening an empty transaction, so a settling
   recording save cannot interrupt controller shutdown or paired handover.
 

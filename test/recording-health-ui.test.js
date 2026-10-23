@@ -1290,7 +1290,8 @@ test('a failed saved-copy recheck supersedes creation evidence and reaches colla
   const row = view.element('recording-backup-list').children[0];
   assert.match(row.children[3].textContent, /Full check failed.*Verified during creation/);
   assert.doesNotMatch(row.children[3].textContent, /No later check is available/);
-  assert.match(row.children[4].textContent, /schema does not match/);
+  assert.match(row.children[3].textContent, /schema does not match/);
+  assert.equal(row.children[3].dataset.tone, 'warning');
   assert.equal(view.element('recording-health-badge').hidden, false);
   assert.match(view.element('recording-backup-state').textContent, /check needs attention/);
   assert.equal(view.element('recording-backup-card').dataset.tone, 'warning');
