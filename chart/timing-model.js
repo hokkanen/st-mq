@@ -100,11 +100,16 @@ export function timingDisplay(key, result = {}, payload = {}) {
       : 'The difference is less than half a cent. The sign shows cheaper (+) or dearer (−) timing.'
     : null;
 
+  const metered = recorded && sources.some(source => source.key === 'measured');
+  const onlyMetered = metered && sources.every(source => source.key === 'measured');
+
   const energyExplanation = available
     ? reconstructed
       ? 'Energy for space heating and domestic hot water is reconstructed from recorded equipment operation and dated nominal powers. The Home model comparison instead uses a temperature-dependent electrical estimate for completed space-heating cycles, so its energy and cost need not match this timing view. Model predictions and requested modes cannot fill missing equipment evidence. Whole-house power is not used.'
       : recorded
-        ? `Energy is estimated from the original recorded electrical intervals${energyBasis === 'recorded-and-legacy' ? ' and older phase-current samples' : ''}. Cumulative meter checks do not revise this history.`
+        ? `${onlyMetered ? 'Energy comes from native charger meter increments over the original recorded intervals.'
+          : metered ? 'Energy combines native charger meter increments and power-based estimates over their original recorded intervals.'
+            : 'Energy is estimated from the original recorded electrical intervals.'}${energyBasis === 'recorded-and-legacy' ? ' Older phase-current samples also contribute estimates.' : ''}${metered ? ' Estimated phase allocation preserves the measured total. This comparison does not independently verify meter accuracy.' : ''} Cumulative meter checks do not revise this history.`
         : 'Uses the recorded sources below; estimates are not direct energy measurements.'
     : reconstructed
       ? 'Needs recorded compressor activity, verified auxiliary output and dated nominal powers. Model predictions and requested modes cannot fill missing equipment evidence. Whole-house power is not used.'
@@ -119,6 +124,7 @@ export function timingDisplay(key, result = {}, payload = {}) {
       : 'Dates show the first and last contributing power samples.';
   const sourceDetails = sources.map(source => ({ ...source, ...timingSources[source.key],
     ...(reconstructed && source.key === 'observed' ? { explanation: 'Uses recorded compressor activity, verified auxiliary output and dated nominal compressor, circulation and auxiliary powers. Energy is estimated, not separately metered.' } : {}),
+    ...(charger && recorded && source.key === 'measured' ? { explanation: 'Uses native charger meter increments over their recorded intervals. The three-phase sum preserves measured meter energy; individual phase allocation can be estimated. This comparison does not independently verify meter accuracy.' } : {}),
     percentage: timingPercent(source.share), dates: span(source.firstAt, source.lastAt, dateBasis) }));
   const auxiliary = result.evidence ?? {};
   const auxiliaryNotes = [];

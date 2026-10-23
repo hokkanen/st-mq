@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep native charger meter increments distinct from power-based energy estimates
+  in Charging comparisons, including mixed evidence. Update chart-explorer help
+  and name retained-history stages during complete inventory measurements.
+
 - Bind Linux setup and HA setup promotion requests to the freshly reviewed
   computer identity required by the current pairing API.
 

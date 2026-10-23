@@ -53,8 +53,9 @@ test('charger 2 chart power and timing sum three phase energies, including durab
   assert(power.series.charger2_power.some(row=>row.y===null && row.x>=start+10*MINUTE && row.x<start+12*MINUTE));
   const timing=[];
   addRecordedEnergy({store,range:{from:start,to:start+HOUR},now:start+HOUR,input:'providers',envelopes:{},
-    timing:{addEnergy:(charger,from,to,kwh)=>timing.push({charger,from,to,kwh})}});
+    timing:{addEnergy:(charger,from,to,kwh,evidence)=>timing.push({charger,from,to,kwh,evidence})}});
   assert(timing.every(row=>row.charger==='charger2'));
+  assert(timing.every(row=>row.evidence.key==='measured'), 'Native meter increments retain their measured total in timing evidence');
   near(timing.reduce((sum,row)=>sum+row.kwh,0),2.4);
   const tooltip=(key,point)=>historyTooltipLabel({dataset:{key,label:key,unit:'kWh'},parsed:{x:point.x,y:point.y},raw:point});
   assert.match(tooltip('charger2_power',first),/measured meter energy summed from three phases/);
@@ -76,7 +77,9 @@ test('incomplete charger phase history leaves derived total power unavailable',t
     raw:{intervalStart:start,intervalEnd:start+HOUR,basis:'native-meter-counter-phase-allocation'}});
   const result=getChartData({store,input:'providers',startDate:'2026-08-19',endDate:'2026-08-19',now:start+HOUR,left:'power'});
   assert(result.series.charger2_power.every(point=>point.y===null));
-  assert.equal(result.timingBenefit.charger2.energyKwh,null);
+  const summary=getChartData({store,input:'providers',startDate:'2026-08-19',endDate:'2026-08-19',now:start+HOUR,
+    view:'power',summaryOnly:true});
+  assert.equal(summary.timingBenefit.charger2.energyKwh,null);
 });
 
 test('Charger 1 energy checks show recorded totals, session coverage and an honest empty state',()=>{

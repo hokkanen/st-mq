@@ -153,7 +153,7 @@ export class DailyTimingBenchmark {
           auxiliaryUnknownMs: details.auxiliaryUnknownMs, auxiliaryUnknownShare: share(details.auxiliaryUnknownMs) },
         priceAssumptions: { ...details.priceAssumptions, share: share(details.priceAssumptions.durationMs) },
         scope: name,
-        basis: charging(name) ? 'Estimated physical charger electricity; permitted v0.7.5 Charger 1 imports use phase-current snapshots' : 'Reconstructed compressor and auxiliary electricity using recorded equipment states and dated nominal powers; no whole-property subtraction',
+        basis: charging(name) ? 'Physical charger electricity retains its recorded meter or estimate basis; permitted v0.7.5 Charger 1 imports use phase-current snapshots' : 'Reconstructed compressor and auxiliary electricity using recorded equipment states and dated nominal powers; no whole-property subtraction',
         explanation: 'Recorded energy at its actual times versus the same energy at each whole Finnish day’s average all-in price. Timing comparison, not proven controller savings.' }];
     }));
     const parts = [result.charger1,result.charger2], sum = path => parts.reduce((total, part) => total + (path(part) ?? 0),0);

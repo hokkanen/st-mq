@@ -177,6 +177,24 @@ test('recorded charger intervals retain their estimated energy basis and origina
   assert.doesNotMatch(display.coverageExplanation, /30 minutes|modelled power/);
 });
 
+test('charger meter totals remain distinct from power estimates in individual and mixed timing scopes', () => {
+  const evidence = keys => ({ energyBasis: 'recorded-intervals', timeBasis: 'recorded-interval-time',
+    sources: keys.map(key => ({ key, durationMs: hour / keys.length, share: 1 / keys.length, firstAt: from, lastAt: from + hour })) });
+  const measured = timingDisplay('charger2', { ...result, evidence: evidence(['measured']) }, payload);
+  assert.equal(measured.basis, 'Meter-based');
+  assert.match(measured.energyExplanation, /native charger meter increments/);
+  assert.match(measured.sources[0].explanation, /preserves measured meter energy/);
+  assert.match(measured.sources[0].explanation, /does not independently verify meter accuracy/);
+  assert.doesNotMatch(measured.energyExplanation, /Energy is estimated/);
+  const mixed = timingDisplay('charger', { ...result, evidence: evidence(['recorded', 'measured']) }, payload);
+  assert.equal(mixed.basis, 'Mixed basis');
+  assert.match(mixed.energyExplanation, /combines native charger meter increments and power-based estimates/);
+  assert.equal(mixed.sources.length, 2);
+  assert.match(mixed.sources.find(source => source.key === 'recorded').explanation, /energy remain estimates/);
+  assert.equal(mixed.amount, measured.amount, 'Evidence classification never changes the monetary comparison');
+  assert.equal(mixed.coverageLabel, measured.coverageLabel);
+});
+
 test('mixed charger history explains interval energy and the bounded legacy snapshot hold separately', () => {
   const display = timingDisplay('charger', { ...result, evidence: {
     energyBasis: 'recorded-and-legacy', timeBasis: 'mixed-recorded-time',

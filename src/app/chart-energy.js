@@ -79,7 +79,8 @@ export function addRecordedEnergy({store,range,now,input,envelopes,timing,voltag
       if (energyLine && end >= range.from && end <= Math.min(range.to,now)) energyLine.add(end,value,phaseMetadata);
     }
     if (['ev1','ev2'].includes(prefix) && complete) timing.addEnergy(prefix === 'ev1' ? 'charger1' : 'charger2',start,end,total,
-      { key: input === 'simulated' ? 'simulated' : 'recorded', energyBasis: 'recorded-intervals' });
+      { key: input === 'simulated' ? 'simulated'
+        : group.basis === 'native-meter-counter-phase-allocation' ? 'measured' : 'recorded', energyBasis: 'recorded-intervals' });
   };
   const groups = queryContext ? queryContext.energyGroups(stats, prefix)
     : recordedEnergyGroups(store,{from:range.from,to:range.to,now,input,prefix},stats);

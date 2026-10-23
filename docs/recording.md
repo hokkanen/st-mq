@@ -1863,6 +1863,10 @@ choice. It offers Home / Garage / Total; Charging offers Charger 1 / Charger 2 /
 Total for timing comparisons. Returning to Home preserves its selected comparison
 method. Combined Charging results identify an unavailable charger contribution;
 fully observed idle time remains excluded without being labelled missing.
+Charging source labels distinguish native meter increments from power-integrated
+energy estimates. Native increments keep their measured total even when phase
+allocation is estimated. Mixed periods show both sources separately; time shares
+do not establish meter accuracy or change the energy and cost calculation.
 Unavailable Garage evidence claims neither an estimate nor an electrical source.
 Their details folds expand independently for
 cost operands, included energy, sources, timestamps and coverage. Shared
