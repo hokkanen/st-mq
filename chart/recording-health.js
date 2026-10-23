@@ -301,6 +301,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     const reasons = { 'folder-unavailable': 'The backup folder could not be read.', 'entry-limit': 'The folder scan reached its entry limit.',
       'copy-limit': `The list reached its limit${Number.isSafeInteger(catalog?.limit) ? ` of ${catalog.limit} copies` : ''}.`,
       'unavailable-copies': 'Some saved copies could not be listed.', 'reset-folder-unavailable': 'Some reset archives could not be listed.',
+      'unavailable-archives': 'Some reset archives are incomplete or could not be validated. Keep them intact and check their original storage location.',
       'unavailable-protected-copies': 'Some protected copies could not be listed.', 'changed-copies': 'Some files changed while the list was checked.',
       'metadata-unavailable': 'Some copy metadata could not be read.' };
     const reasonCopy = (catalog?.reasons ?? []).map(reason => reasons[reason]).filter(Boolean).join(' ');

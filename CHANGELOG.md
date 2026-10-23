@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Explain when reset archives prevent a complete backup listing and retain the
+  instruction to preserve those archives for inspection.
+
 - Explain admin-only history tools in Recording details and keep an unread
   database-verification schedule unknown instead of claiming it is disabled.
   Describe database-copy receipts, derived-cache proofs and remembered browser

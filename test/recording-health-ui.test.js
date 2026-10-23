@@ -158,6 +158,15 @@ test('a stale catalog preserves its original check date and explicitly dates the
   assert.doesNotMatch(view.element('recording-backup-catalogStatus').textContent, /limit of 100/);
 });
 
+test('an incomplete reset archive list explains the validation problem without claiming usable backups', async () => {
+  const view = panelFixture(async () => savedCatalog({ complete: false, reasons: ['unavailable-archives'] }));
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'admin' } });
+  await view.panel.refreshCopies({ force: true });
+  assert.match(view.element('recording-backup-catalogStatus').textContent,
+    /Listing is incomplete.*reset archives are incomplete or could not be validated.*Keep them intact/);
+  assert.match(view.element('recording-backup-state').textContent, /1 saved copy listed/);
+});
+
 test('a rejected verification keeps its safe receipt through health and catalog refreshes until a newer action', async () => {
   let fail = true;
   const view = panelFixture(async path => {
