@@ -100,7 +100,7 @@ try {
     const fixture = status => {
       const f = garageFixture; f.reads++;
       status.readOnly = f.readOnly; status.input = 'providers';
-      status.garage = { settings: { enabled: true }, mode: f.mode, normalTargetC: f.normalTargetC, awayTargetC: 5,
+      status.garage = { settings: { enabled: true }, readOnly: f.readOnly, mode: f.mode, normalTargetC: f.normalTargetC, awayTargetC: 5,
         requestedTargetC: f.targetC, effectiveTargetC: f.fallback ? 16 : f.protection === 'active' ? Math.max(f.targetC, f.minimumC) : f.targetC,
         targetConfirmed: f.confirmed && !f.offline, controlAvailable: !f.offline,
         controlReason: f.offline ? 'The heat-pump controller connection is unavailable.' : null,
@@ -229,7 +229,7 @@ try {
   await evaluate(`document.querySelector('#garage-regulation-temperature .status-detail-trigger').focus()`);
   await keyPress('Enter');
   assert.match(await evaluate(`document.getElementById('status-detail-popover').textContent`),
-    /different source.*not an independent room measurement/i);
+    /protection sender’s rear feed.*not an independent room measurement/i);
   await keyPress('Escape');
   await evaluate(`garageFixture.sensorAgeMs = 180000; garageFixture.poll()`);
   await until(`document.getElementById('garage-regulation-temperature').textContent === 'Unavailable'`);
@@ -456,6 +456,23 @@ try {
   assert.equal(Number.parseFloat(await evaluate(`document.getElementById('garage-protection-configured-marginC').textContent`)), 1.5);
   assert.equal(Number.parseFloat(await evaluate(`document.getElementById('garage-protection-reported-marginC').textContent`)), 1.5);
   assert.equal(await evaluate(`garageFixture.calls.length`), 3);
+  await evaluate(`const nativeFetch = globalThis.fetch; globalThis.fetch = async (...args) => {
+    const response = await nativeFetch(...args);
+    if (new URL(args[0], location.href).pathname !== '/api/status') return response;
+    const status = await response.json(), p = status.garage.protection;
+    p.available = false; p.sender.available = false; p.sender.recorded = true;
+    p.sender.protection = { available: true, active: false, minTargetC: 0, reason: 'pipe-reserve-available', locations: p.locations };
+    return new Response(JSON.stringify(status), { status: response.status, headers: response.headers });
+  }; garageFixture.uncertain = false; garageFixture.poll()`);
+  await until(`document.getElementById('garage-protection-status').textContent === 'Recorded monitoring'`);
+  assert.equal(await evaluate(`document.getElementById('garage-pipe-rear').textContent`), '5 °C · recorded');
+  assert.equal(await evaluate(`document.getElementById('garage-reserve-rear').textContent`), '6 kJ/m · recorded');
+  assert.equal(await evaluate(`document.getElementById('garage-mode-normal').disabled`), true);
+  for (const width of [320, 390, 768, 1440]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 1200, deviceScaleFactor: 1, mobile: false });
+    await screenshot(`garage-recorded-protection-${width}`);
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
+  }
   assert.doesNotMatch(await evaluate(`document.getElementById('garage-control').textContent`), /\b(?:Pill|Gen\s?[34])\b/i);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'garage-manual-browser-smoke-passed', artifacts,

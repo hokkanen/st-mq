@@ -209,6 +209,10 @@ pending confirmation until controller readback confirms the target; polling
 refreshes that feedback without implying the compressor is running.
 
 Read-only replicas display recorded evidence without granting device control.
+The freeze-protection fold retains the recorded sender's air and pipe estimates,
+reserve, minimum and reason, explicitly labelled as recorded. Uncertain pipe
+history remains unavailable; a saved protection report does not establish current
+pipe safety, live confirmation or command authority.
 
 **Normal/Away selection** is a continuous history of saved application intent,
 not heat-pump readback or proof of operation. Immutable `garage-intent` events

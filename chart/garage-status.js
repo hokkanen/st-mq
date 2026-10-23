@@ -21,13 +21,16 @@ function protectionDisplay(garage) {
   const temperatureFallback = ['sensor-stale', 'sensor-range'].includes(control?.status);
   const regulating = ['active', 'frost-rescue'].includes(control?.status);
   const rescue = active && control?.frostRescue === true;
-  const sender = protection.sender?.available === true ? protection.sender.protection : null;
+  const recorded = garage.readOnly === true && protection.sender?.recorded === true;
+  const sender = protection.sender?.available === true || recorded ? protection.sender.protection : null;
   const minimum = sender?.available === true && finite(sender.minTargetC) ? sender.minTargetC : null;
   const selected = garage.requestedTargetC, effective = garage.effectiveTargetC;
   const raised = active && regulating && finite(selected) && minimum !== null && minimum > selected && effective === minimum;
-  const label = fallback ? 'Fallback heating' : !available ? 'Unavailable' : rescue ? 'Heat/On rescue'
+  const label = recorded && sender?.available === true
+    ? sender.active === true ? 'Recorded protection active' : 'Recorded monitoring'
+    : fallback ? 'Fallback heating' : !available ? 'Unavailable' : rescue ? 'Heat/On rescue'
     : temperatureFallback ? 'Fallback heating' : raised ? 'Minimum target active' : active ? 'Protection active' : 'Monitoring';
-  let explanation = fallback
+  let explanation = recorded ? 'Protection readings are from the recorded sender report. Current protection and heating operation are unknown.' : fallback
     ? 'The configured protection feed is unavailable. The controller requests Heat and power On with its native 16 °C thermostat fallback.'
     : !available ? 'Freeze protection is unavailable. Air temperature alone does not establish pipe protection.'
       : rescue ? 'The controller requests Heat and power On for protection. This enables heating; it does not mean the compressor is running.'
@@ -53,8 +56,8 @@ function protectionDisplay(garage) {
   })[sender.reason] || 'The sender has not reported a protection reason.'
     : 'The sender’s detailed report is unavailable. Controller protection status is reported separately.';
   return { protection: label, protectionState: !available || active || fallback || temperatureFallback ? 'attention' : 'available',
-    protectionDetail: explanation, protectionReason: reason,
-    protectionMinimum: minimum === null ? 'Unavailable' : minimum === 0 ? 'No minimum' : number(minimum),
+    protectionDetail: explanation, protectionReason: recorded && sender ? `Recorded report: ${reason}` : reason,
+    protectionMinimum: minimum === null ? 'Unavailable' : `${minimum === 0 ? 'No minimum' : number(minimum)}${recorded ? ' · recorded' : ''}`,
     protectionEffective: fallback || temperatureFallback ? `${number(effective)} · native fallback` : number(effective) };
 }
 
@@ -80,7 +83,7 @@ export function renderGarage(document, status = {}) {
   set('garage-control-mode', display.mode);
   set('garage-requested-label', readOnly ? 'Recorded room target' : 'Room target');
   detail('garage-requested', display.target, 'Garage room target',
-    `${display.mode}. ${display.confirmation}. The saved selection has no expiry. A target is a request, not measured room temperature.`, garage.targetConfirmed !== true);
+    `${readOnly ? 'Recorded selection. Live confirmation is unavailable' : display.mode + '. ' + display.confirmation}. The saved selection has no expiry. A target is a request, not measured room temperature.`, garage.targetConfirmed !== true);
   const devices = status.equipment?.devices ?? [];
   const temperatureDevice = devices.find(device => device.enabled !== false && device.readings?.garage_temperature);
   const rear = garage.observations?.rear;
@@ -135,7 +138,7 @@ export function renderGarage(document, status = {}) {
   if (regulationRow) regulationRow.hidden = !lastSensor;
   detail('garage-regulation-temperature', sensorAvailable ? number(sensor.sensorTemperatureC) : 'Unavailable', 'Garage regulation input',
     'Temperature input reported by the heat-pump controller for local room regulation. '
-      + 'It can come from a different source than the Garage rear sensor and is not an independent room measurement. '
+      + 'It uses the protection sender’s rear feed and is not an independent room measurement. '
       + (finite(reportedTemperature) ? `Last reported input: ${number(reportedTemperature)}. ` : 'No temperature input has been reported. ')
       + (finite(reportedAge) && reportedAge >= 0 ? `Reported sensor age including time since the controller report: ${Math.floor(reportedAge / 1000)} seconds. ` : 'Sensor age is unavailable. ')
       + 'The input becomes unavailable after 180 seconds without a fresh report.'
@@ -177,17 +180,18 @@ export function renderGarage(document, status = {}) {
       unknown: 'Waiting for fresh local protection settings.' })[configuration?.status] || 'Waiting for fresh local protection settings.');
   document.getElementById('garage-protection-settings-status')?.classList.toggle('stale', !readOnly && configuration?.status === 'mismatch');
   for (const location of ['rear', 'front']) {
-    const pipe = garage.protection?.locations?.[location];
+    const recorded = readOnly && garage.protection?.sender?.recorded === true;
+    const pipe = recorded ? garage.protection.sender.protection?.locations?.[location] : garage.protection?.locations?.[location];
     const reading = garage.observations?.[location];
     const senderFresh = garage.protection?.sender?.available === true;
-    const senderAir = senderFresh && finite(pipe?.airC), air = senderAir ? pipe.airC : reading?.value;
-    set(`garage-protection-${location}`, finite(air) ? `${number(air)}${!senderAir && reading?.stale !== false ? ' · stale' : ''}` : 'Unavailable');
-    const known = senderFresh && pipe && pipe.uncertain !== true && finite(pipe.estimatedC);
-    set(`garage-pipe-${location}`, known ? number(pipe.estimatedC) : 'Unavailable');
+    const senderAir = (senderFresh || recorded) && finite(pipe?.airC), air = senderAir ? pipe.airC : reading?.value;
+    set(`garage-protection-${location}`, finite(air) ? `${number(air)}${recorded ? ' · recorded' : !senderAir && reading?.stale !== false ? ' · stale' : ''}` : 'Unavailable');
+    const known = (senderFresh || recorded) && pipe && pipe.uncertain !== true && finite(pipe.estimatedC);
+    set(`garage-pipe-${location}`, known ? `${number(pipe.estimatedC)}${recorded ? ' · recorded' : ''}` : 'Unavailable');
     set(`garage-reserve-${location}`, known && finite(pipe.remainingKjPerM) && pipe.remainingKjPerM >= 0
-      ? pipe.remainingKjPerM > 0 && pipe.remainingKjPerM < 0.01 ? '<0.01 kJ/m'
-        : `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(pipe.remainingKjPerM)} kJ/m` : 'Unavailable');
-    set(`garage-pipe-${location}-status`, !senderFresh ? 'Waiting for a fresh protection report.'
+      ? pipe.remainingKjPerM > 0 && pipe.remainingKjPerM < 0.01 ? `<0.01 kJ/m${recorded ? ' · recorded' : ''}`
+        : `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(pipe.remainingKjPerM)} kJ/m${recorded ? ' · recorded' : ''}` : 'Unavailable');
+    set(`garage-pipe-${location}-status`, recorded ? `${pipe?.uncertain ? 'Temperature history was uncertain. ' : ''}Recorded sender report; live protection is unknown.` : !senderFresh ? 'Waiting for a fresh protection report.'
       : pipe?.uncertain ? 'Temperature history is uncertain; reserve is not established.' : words(pipe?.reason));
   }
   const warning = garageHeatingWarning(status);

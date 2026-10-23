@@ -19,7 +19,7 @@ test('garage device regulation does not hide the reason application controls are
 function fixture() {
   const ids = ['garage-mode-normal', 'garage-mode-away', 'garage-mode-normal-target', 'garage-mode-away-target',
     'garage-target-form', 'garage-normal-target', 'garage-target-submit', 'garage-heating-message', 'garage-warming-warning',
-    'garage-control-mode', 'garage-current-room', 'garage-target-confirmation', 'garage-heating-operation', 'garage-current-mode',
+    'garage-control-mode', 'garage-requested', 'garage-current-room', 'garage-target-confirmation', 'garage-heating-operation', 'garage-current-mode',
     'garage-regulation-temperature', 'garage-regulation-reading', 'garage-readings-details', 'garage-protection-summary',
     'garage-heating-status', 'garage-control-detail', 'garage-protection-status', 'garage-protection-detail',
     'garage-protection-selected-target', 'garage-protection-minimum-target', 'garage-protection-effective-target',
@@ -418,7 +418,7 @@ test('regulation input retains its own source and age separately from rear tempe
   f.panel.update({ ...f.initial, garage });
   assert.equal(f.nodes.get('garage-regulation-temperature').textContent, 'Unavailable');
   assert.equal(f.nodes.get('garage-protection-rear').textContent, '5 °C · stale');
-  assert.match(f.detailText('garage-regulation-temperature'), /different source than the Garage rear sensor.*not an independent room measurement.*190 seconds/);
+  assert.match(f.detailText('garage-regulation-temperature'), /protection sender’s rear feed.*not an independent room measurement.*190 seconds/);
   garage.adapter.control.sensorAgeMs = 140_000; f.panel.update({ ...f.initial, garage });
   assert.equal(f.nodes.get('garage-regulation-temperature').textContent, '0 °C');
   assert.equal(f.nodes.get('garage-regulation-reading').hidden, false);
@@ -462,4 +462,32 @@ test('recorded protection parameters cannot claim fresh confirmation', () => {
   assert.equal(f.nodes.get('garage-protection-configured-approved').textContent, 'Approved');
   assert.match(f.nodes.get('garage-protection-settings-status').textContent, /Recorded settings; live confirmation is unavailable/);
   assert.deepEqual(f.requests, []);
+});
+
+
+test('read-only Garage preserves recorded protection evidence without live safety or command claims', () => {
+  const f = fixture();
+  const sender = { recorded: true, readOnly: true, available: false, observedAt: now - 60_000,
+    protection: { available: true, active: false, minTargetC: 0, reason: 'pipe-reserve-available',
+      locations: { rear: { airC: 6, estimatedC: 5.5, remainingKjPerM: 0, uncertain: false },
+        front: { airC: 4, estimatedC: 3.5, remainingKjPerM: 2, uncertain: true } } } };
+  const garage = { ...f.initial.garage, recorded: true, readOnly: true, targetConfirmed: false,
+    protection: { available: false, sender } };
+  f.panel.update({ ...f.initial, readOnly: true, role: 'slave', garage });
+  assert.equal(f.nodes.get('garage-protection-status').textContent, 'Recorded monitoring');
+  assert.equal(f.nodes.get('garage-protection-minimum-target').textContent, 'No minimum · recorded');
+  assert.equal(f.nodes.get('garage-protection-rear').textContent, '6 °C · recorded');
+  assert.equal(f.nodes.get('garage-pipe-rear').textContent, '5.5 °C · recorded');
+  assert.equal(f.nodes.get('garage-reserve-rear').textContent, '0 kJ/m · recorded');
+  assert.equal(f.nodes.get('garage-pipe-front').textContent, 'Unavailable');
+  assert.match(f.nodes.get('garage-pipe-rear-status').textContent, /Recorded.*live protection is unknown/);
+  assert.match(f.nodes.get('garage-protection-reason').textContent, /Recorded.*sufficient pipe reserve/);
+  assert.match(f.detailText('garage-requested'), /Recorded selection.*Live confirmation is unavailable/);
+  assert.doesNotMatch(f.detailText('garage-requested'), /Waiting for.*confirmation/);
+  assert.equal(f.nodes.get('garage-mode-normal').disabled, true);
+  assert.deepEqual(f.requests, []);
+  // A stale live report cannot borrow the recorded-view treatment.
+  f.panel.update({ ...f.initial, garage: { ...f.initial.garage, protection: { available: false, sender } } });
+  assert.equal(f.nodes.get('garage-protection-status').textContent, 'Unavailable');
+  assert.equal(f.nodes.get('garage-pipe-rear').textContent, 'Unavailable');
 });
