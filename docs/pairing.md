@@ -551,6 +551,10 @@ receiver inactive. The handover log records the failed stage and bounded,
 privacy-safe leaf diagnostics; a local cleanup failure is not reported as a
 peer protocol mismatch. Preserve both databases before recovery: the source may
 contain final restoration and recording commits beyond the receiver's checkpoint.
+An incomplete handover marker does not itself prevent explicit promotion when
+the backend permits it. Confirm that the previous master is stopped or isolated
+and preserve the newer source history before choosing which computer to promote.
+Active local operations still block promotion; no automatic promotion is added.
 
 ### MQTT source identity across computers
 

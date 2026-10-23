@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep explicit promotion available after an interrupted handover when the backend
+  admits it. A retained role-change marker no longer disables recovery forever;
+  active operations and the stopped-or-isolated-master confirmation still apply.
+
 - Restore breathing room inside outer cards and windows while retaining smaller
   nested fold indentation. Adjust both spacing levels for narrower screens.
   Energy cost comparisons now initially select Last 7 days, matching Energy checks.

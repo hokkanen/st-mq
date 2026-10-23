@@ -1413,3 +1413,26 @@ test('a synchronous receipt transport failure cannot prevent later automatic con
   await actions.update(primary()); assert(actions.snapshot().pending);
   await actions.update(primary()); assert.equal(actions.snapshot().pending, null); assert.equal(reads, 2);
 });
+
+test('a retained handover marker permits explicitly admitted recovery promotion but never bypasses an active operation', async () => {
+  for (const [role, phase] of [['slave', 'prepared'], ['slave', 'staged'], ['protected', 'stopping'], ['protected', 'released']]) {
+    const view = standby({ role, peer: { reachable: false }, transition: { kind: 'handover', phase } });
+    assert.equal(pairActionAllowed(view, 'promote'), true, `${role}/${phase}`);
+    assert.match(pairActionHelp(view).promote, /previous master must be stopped or isolated/);
+    assert.doesNotMatch(pairActionHelp(view).promote, /Wait for the current operation/);
+    const { document, $ } = fixture(); let confirmations = 0, writes = 0;
+    const panel = createPairPanel({ document, requestId: () => id, now: () => now,
+      confirm: message => { confirmations++; assert.match(message, /stopped or isolated/); return false; },
+      request: async () => { writes++; } });
+    await panel.update(view);
+    assert.equal($('pairing-promote').disabled, false);
+    assert.equal($('pairing-promote-verification').disabled, false);
+    assert.equal(await panel.run('promote'), false, 'Cancellation cannot acquire authority');
+    assert.equal(confirmations, 1); assert.equal(writes, 0);
+    for (const blocked of [{ busy: true }, { uiOperation: { state: 'running' } }, { actions: { promote: false } }]) {
+      await panel.update({ ...view, ...blocked });
+      assert.equal($('pairing-promote').disabled, true);
+      assert.equal(pairActionAllowed({ ...view, ...blocked }, 'promote'), false);
+    }
+  }
+});

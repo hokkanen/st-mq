@@ -1487,6 +1487,10 @@ paired runtime tests read the original handover receipt through the new master,
 repeat after origin restart and reject a misrouted POST before any new action.
 The authority tests inject nested local shutdown failures, retain final source
 writes beyond the receiver checkpoint and check bounded privacy-safe diagnostics.
+UI and browser checks retain explicit promotion for an admitted interrupted
+handover while active operations remain blocked. A real paired fixture stops the
+original master, explicitly promotes its prepared receiver and verifies retained
+history, cleared transition and sole control authority.
 These fixtures never acquire household authority or reproduce the original
 installation's hidden shutdown exception. Backend reset
 tests exercise actual storage and runtime behavior separately from these UI fixtures.

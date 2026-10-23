@@ -95,8 +95,12 @@ export function isPairManagementRequest(path, body, status) {
 export function pairActionAllowed(view, action) {
   if (!view || view.busy || view.uiOperation?.state === 'running' || view.actions?.[action] !== true) return false;
   if (action === 'reset') return ['master', 'slave', 'protected'].includes(view.role) && validResetToken(view.reset?.token);
+  // The backend can explicitly admit recovery promotion after an interrupted
+  // handover. Its retained transition must not permanently disable that action.
+  if (action === 'promote') return ['slave', 'protected'].includes(view.role) && (!view.transition
+    || view.transition.kind === 'handover' && (view.role === 'slave'
+      ? ['prepared', 'staged'].includes(view.transition.phase) : ['stopping', 'released'].includes(view.transition.phase)));
   if (view.transition) return false;
-  if (action === 'promote') return ['slave', 'protected'].includes(view.role);
   if (view.role !== 'master') return false;
   if (action === 'recover') return view.recovery?.donorRole === 'protected' && checkedPreview(view) && !emptyPreview(view);
   if (action === 'rejoin') return view.recovery?.donorRole === 'protected'
@@ -344,7 +348,7 @@ export function pairActionHelp(view) {
           : view?.peer?.role === 'master' ? 'The other computer also reports master. Resolve the role conflict before handing over control.'
             : view?.role === 'master' && view?.canControl !== true ? 'Handover is unavailable until this master’s local readiness is confirmed.'
               : 'The other computer must be a ready slave before control can be handed over.'),
-    promote: wait ?? (view?.actions?.promote === true ? startupProblem(view) ? 'Correct the setup described above, then retry. No online slave is required. Confirm that any previous master is stopped or isolated.'
+    promote: (!pairActionAllowed(view, 'promote') ? wait : null) ?? (view?.actions?.promote === true ? startupProblem(view) ? 'Correct the setup described above, then retry. No online slave is required. Confirm that any previous master is stopped or isolated.'
       : view.bootstrapPending ? view?.peer?.reachable === true && view.peer.role === 'master'
         ? 'The other computer reports that it is master. Keep this computer as a slave while its first snapshot arrives.'
         : 'First setup: choose one master. Confirm that the other computer is not already master before promoting this one. No online slave is required.'

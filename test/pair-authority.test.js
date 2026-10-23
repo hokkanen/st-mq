@@ -1446,3 +1446,19 @@ for (const verifyWithFullSnapshot of [false, true]) test(`protected rejoin publi
   assert.equal(publication.sourceStartedAt, frozen.sourceStartedAt);
   assert.equal(donor.state.value.role, 'slave'); assert.equal(donor.canControl(), false);
 });
+
+test('explicit promotion recovers a prepared receiver after its previous master is stopped', async t => {
+  const root = await fixture(t), source = await manager(t, root, 'stopped-origin');
+  const target = await manager(t, root, 'prepared-receiver', { role: 'slave' }); connect(source, target);
+  await target.synchronize(source.state.claim());
+  await target.handlePeer('handover-prepare', { claim: source.state.claim(), token: randomUUID(), ocpp: null, mqtt: null });
+  assert.equal(target.state.value.transition.phase, 'prepared');
+  assert.equal(target.status().actions.promote, true);
+  assert.equal(target.canControl(), false);
+  await source.close();
+  await target.action('promote', command());
+  assert.equal(target.state.value.role, 'master'); assert.equal(target.canControl(), true);
+  assert.equal(target.state.value.transition, null); assert.equal(source.canControl(), false);
+  const db = new DatabaseSync(target.state.value.activeDbPath, { readOnly: true });
+  try { assert.equal(db.prepare('SELECT value FROM observations').get().value, 20); } finally { db.close(); }
+});

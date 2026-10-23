@@ -577,6 +577,13 @@ try {
   assert.equal(actions.length, beforeConfirmation, 'A reconnect to the new master sends no reverse handover');
   assert(receiptReads.some(read => read.nodeId === originalNode && read.requestId === originalRequest));
   assert.equal(await evaluate("document.getElementById('pairing-retry') === null"), true, 'There is no action-resubmission button');
+  pair = { ...standby('slave'), peer: { reachable: false }, transition: { kind: 'handover', phase: 'prepared' } };
+  await until(`!${$('pairing-promote')}.hidden && !${$('pairing-promote')}.disabled && ${$('instance-role')}.textContent === 'Pair · Role change'`);
+  assert.match(await evaluate(`${$('pairing-promote-help')}.textContent`), /previous master must be stopped or isolated/);
+  pair = { ...pair, busy: true };
+  await until(`${$('pairing-promote')}.disabled`);
+  pair = { ...pair, busy: false };
+  await until(`!${$('pairing-promote')}.disabled`);
   pair = master({ transition: { kind: 'handover', phase: 'quiescing' }, canControl: false });
   await until(`${$('instance-role')}.textContent === 'Pair · Role change'`);
   assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true, 'Role-change progress remains visible when folded');
