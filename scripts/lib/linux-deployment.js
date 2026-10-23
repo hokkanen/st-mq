@@ -5,7 +5,7 @@ import { dirname, join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { homedir, userInfo } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { runCommand } from './deployment-command.js';
-import { acquireDeploymentLock, ownsDeploymentLock, releaseDeploymentLock } from './deployment-lock.js';
+import { acquireDeploymentLock, deploymentLockPath, ownsDeploymentLock, releaseDeploymentLock } from './deployment-lock.js';
 import { authenticateSudo, startSudoLease, refreshPairHelper, pairHelperNeedsRefresh } from './linux-setup-platform.js';
 import { DeploymentSafetyError, deploymentArguments, synchronizationTimeout, validateStandby, waitForStandby } from './paired-deployment.js';
 
@@ -316,7 +316,7 @@ export async function main(mode, args, dependencies = {}) {
   }
   mkdirSync(runtime, { recursive: true });
   const ownedLock = operationLock ?? acquireDeploymentLock(runtime);
-  if (!ownsDeploymentLock(ownedLock, runtime)) fail('The installation lock is not owned by this operation.');
+  if (!ownsDeploymentLock(ownedLock, runtime)) fail(`The installation lock at ${JSON.stringify(deploymentLockPath(ownedLock))} is not owned by this operation.`);
   let stage, switched = false, lifecycle = stopped ? 'Service confirmed stopped; no lifecycle commands requested.' : 'No lifecycle commands requested.', complete = false, phase = 'preflight';
   try {
     let identity, previous;
@@ -423,7 +423,7 @@ export async function main(mode, args, dependencies = {}) {
     complete = true;
   } catch (error) {
     const detail = error instanceof DeploymentSafetyError ? error.message : 'Operation failed; private error details suppressed.';
-    fail(`Linux ${mode} failed during ${phase}: ${detail} ${switched ? 'The current release changed.' : 'The current release was not changed.'} ${lifecycle} No automatic rollback, role change or database reset was attempted. Deployment evidence and lock were retained.`);
+    fail(`Linux ${mode} failed during ${phase}: ${detail} ${switched ? 'The current release changed.' : 'The current release was not changed.'} ${lifecycle} No automatic rollback, role change or database reset was attempted. Deployment evidence and lock were retained. Inspect the lock at ${JSON.stringify(deploymentLockPath(ownedLock))}.`);
   } finally {
     if (complete && !operationLock) releaseDeploymentLock(ownedLock, runtime);
   }

@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { DeploymentSafetyError, deploymentArguments, synchronizationTimeout, validateStandby, waitForStandby } from './lib/paired-deployment.js';
 import { runCommand } from './lib/deployment-command.js';
 import { readHARuntime } from './lib/ha-deploy-runtime.js';
+import { acquireRemoteDeploymentLock, remoteDeploymentLockPath } from './lib/deployment-lock.js';
 import { connectSSH, validateSSHHost, shellQuote, DeploymentTransportError } from './lib/ha-deploy-transport.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -162,7 +163,7 @@ export async function main(args, { checkout = root, connect = connectSSH, superv
   const manifest = JSON.parse(git('show', target + ':config.json'));
   const local = mkdtempSync(join(tmpdir(), 'st-mq-deploy-'));
   const remote = '/tmp/st-mq-deploy-' + randomBytes(10).toString('hex');
-  let ssh, phase = 'SSH connection';
+  let ssh, lockPath, phase = 'SSH connection';
   let remoteChangesPossible = false, rebuildSubmitted = false, rebuildCompleted = false;
   let lifecycle = 'No lifecycle commands requested.';
   const abortTransport = () => { void ssh?.close().catch(() => {}); };
@@ -226,9 +227,8 @@ PY`));
     phase = 'remote lock';
     // Mark before submission: a lost response cannot prove the lock was not created.
     remoteChangesPossible = true;
-    const lock = await ssh.run(`umask 077\nif mkdir /tmp/st-mq-deploy-${app.slug}.lock; then exit 0; fi\nif test -e /tmp/st-mq-deploy-${app.slug}.lock; then exit 73; fi\nexit 74`);
-    if (lock.exitCode === 73) throw new DeploymentError('A deployment lock already exists. Confirm the previous deployment and any Supervisor rebuild have finished, then remove only the empty deployment lock before retrying');
-    if (lock.exitCode !== 0) throw new DeploymentError('Could not create the remote deployment lock');
+    lockPath = remoteDeploymentLockPath(app.slug);
+    await acquireRemoteDeploymentLock(ssh, app.slug);
     phase = 'remote workspace';
     await execute(`umask 077\nmkdir ${remote}`);
     const upload = async (bytes, path, progress = false) => {
@@ -381,7 +381,7 @@ PY`));
     }
     // Only deployment-owned temporary files are removed, after all checks pass.
     phase = 'cleanup';
-    await execute(`docker exec hassio_supervisor rm -f ${remote}-step.py ${remote}-before.json ${remote}.bundle && rm -rf ${remote} && rmdir /tmp/st-mq-deploy-${app.slug}.lock`);
+    await execute(`docker exec hassio_supervisor rm -f ${remote}-step.py ${remote}-before.json ${remote}.bundle && rm -rf ${remote} && rmdir ${lockPath}`);
     log(`Verified ${target.slice(0, 12)}: ${checked.sourceFiles} source files, ${checked.frontendFiles} frontend files, ${checked.architecture}. Supervisor schema and defaults match. Stored-file metadata and saved settings unchanged through the stopped deployment window. ${stopped ? 'App remains stopped.' : 'Same paired slave running; no control authority; synchronization ready.'}`);
     if (stopped) log('Start the app explicitly when ready. Incompatible saved fields require configuration recovery; deployment does not remove them.');
   } catch (error) {
@@ -389,7 +389,7 @@ PY`));
     const rebuildStatus = rebuildCompleted ? 'Supervisor confirmed rebuild completion, but deployment verification or cleanup did not finish'
       : rebuildSubmitted ? 'the submitted rebuild may still be running' : 'no rebuild was submitted by this run';
     const outcome = remoteChangesPossible
-      ? `${lifecycle} No automatic rollback or lifecycle retry was attempted. Inspect HA before retrying; ${rebuildStatus}. Any created remote deployment files and lock are retained.`
+      ? `${lifecycle} No automatic rollback or lifecycle retry was attempted. Inspect HA before retrying; ${rebuildStatus}. Any created remote deployment files and lock are retained. Lock location on HA in the SSH app: ${JSON.stringify(lockPath)}. Any created workspace is at ${JSON.stringify(remote)}.`
       : 'No remote changes were attempted by this run; no deployment lock, files or rebuild were created or submitted.';
     throw new DeploymentError(`${detail}Deployment stopped during ${phase}. ${outcome}`);
   } finally { signal?.removeEventListener('abort', abortTransport); await ssh?.close(); rmSync(local, { recursive: true, force: true }); }

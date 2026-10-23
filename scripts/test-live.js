@@ -26,15 +26,16 @@ try {
     lockPath = join(directory, 'run.lock');
     try { lock = openSync(lockPath, 'wx', 0o600); }
     catch (error) {
-      if (error.code !== 'EEXIST') throw new Error('Live-test lock could not be created');
+      if (error.code !== 'EEXIST') throw new Error(`Live-test lock could not be created at ${JSON.stringify(lockPath)}. Check directory permissions and storage availability.`);
       let pid;
       try { pid = JSON.parse(readFileSync(lockPath, 'utf8')).pid; } catch { /* Unknown locks are not removed. */ }
       let stale = false;
       if (Number.isSafeInteger(pid) && pid > 0) {
         try { process.kill(pid, 0); } catch (probe) { stale = probe.code === 'ESRCH'; }
       }
-      if (!stale) throw new Error('Another live test is running, or its lock needs inspection');
-      unlinkSync(lockPath); lock = openSync(lockPath, 'wx', 0o600);
+      if (!stale) throw new Error(`Another live test is running, or its lock at ${JSON.stringify(lockPath)} needs inspection. Confirm the previous runner has finished before removing its lock file.`);
+      try { unlinkSync(lockPath); lock = openSync(lockPath, 'wx', 0o600); }
+      catch { throw new Error(`The stale live-test lock could not be replaced at ${JSON.stringify(lockPath)}. Inspect its ownership and directory permissions.`); }
     }
     writeFileSync(lock, JSON.stringify({ pid: process.pid }));
     const state = readLiveState(directory), at = Date.now();

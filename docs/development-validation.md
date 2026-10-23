@@ -28,6 +28,12 @@ npm builds exercise staged releases, while simulated systemd and authenticated
 pair status cover user/system services, role changes, failures and synchronization.
 These tests never operate installed services. See [Linux deployment](linux-deployment.md)
 and the [paired deployment procedure](paired-deployment.md) for runtime checks.
+`test/deployment-lock.test.js` checks exact canonical paths, quoted unusual
+characters, missing permissions, replaced/nonempty locks and shared HA refusal
+codes. Setup/deployment fixtures verify that the locations survive error wrappers,
+uncertain SSH replies and failed cleanup, with no replay or lock removal on refusal.
+The live-test lock fixture blocks the runner before any provider worker can start;
+it never reads installation credentials or sends live provider requests.
 Service-preflight cases check specific mismatch diagnostics, suppression of raw
 service values and rejection before building, locking or changing the runtime.
 User-bus discovery checks preserve explicit session settings and reject missing,

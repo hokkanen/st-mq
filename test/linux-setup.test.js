@@ -100,7 +100,8 @@ test('unowned runtime is rejected before stop or configuration replacement', asy
   const f = fixture(t, { existing: true, installed: true });
   const original = readFileSync(f.secrets);
   f.deps.validateInstallation = async () => { throw Error('private-unrelated-process-detail'); };
-  await assert.rejects(main(['--connection', f.connectionPath], f.deps), error => !error.message.includes('private-unrelated-process-detail'));
+  await assert.rejects(main(['--connection', f.connectionPath], f.deps), error => !error.message.includes('private-unrelated-process-detail')
+    && error.message.includes(JSON.stringify(join(f.runtime, 'deployment.lock'))));
   assert.equal(f.events.includes('stop'), false); assert.deepEqual(readFileSync(f.secrets), original);
   assert.ok(existsSync(join(f.runtime, 'deployment.lock')));
 });
@@ -262,4 +263,10 @@ test('wizard reviews and starts an existing stopped HA broker without requesting
   };
   assert.equal((await main(['--connection', f.connectionPath], f.deps)).state, 'peer-pending');
   assert.ok(f.transcript.some(line => line.includes('Start the existing stopped HA MQTT broker')));
+});
+
+test('an existing wizard lock names its exact location and blocks installation without removing it', async t => {
+  const f = fixture(t); mkdirSync(f.runtime); const path = join(f.runtime, 'deployment.lock'); mkdirSync(path);
+  await assert.rejects(main(['--connection', f.connectionPath], f.deps), error => error.message.includes(JSON.stringify(path)) && /lock exists/.test(error.message));
+  assert(existsSync(path)); assert(!f.events.includes('setup')); assert(!f.events.includes('stop'));
 });

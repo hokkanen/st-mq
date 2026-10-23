@@ -319,7 +319,8 @@ test('dirty source and installed source are rejected; existing locks are not rem
   await assert.rejects(f.invoke('deploy'), /source checkout clean/); rmSync(join(f.source, 'untracked'));
   writeFileSync(join(f.c.runtime_dir, 'current/src/main.js'), 'synthetic-local-edit');
   await assert.rejects(f.invoke('deploy'), /local changes/);
-  await assert.rejects(f.invoke('deploy'), /lock exists/);
+  await assert.rejects(f.invoke('deploy'), error => /lock exists/.test(error.message)
+    && error.message.includes(JSON.stringify(join(f.c.runtime_dir, 'deployment.lock'))));
 });
 
 test('modified installed frontend is rejected before building or stopping the standby', async t => {

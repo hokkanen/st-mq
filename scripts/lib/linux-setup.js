@@ -15,7 +15,7 @@ import { setupDefaults, setupEnvironment, environmentText, minimalConfiguration,
   snapshotPrivate, unchangedPrivate, writePrivate, saveReviewedPrivate } from './linux-setup-config.js';
 import { validateVip } from '../../src/pairing/vip.js';
 import { requireLocalBroker } from '../../src/pairing/config.js';
-import { acquireDeploymentLock, releaseDeploymentLock } from './deployment-lock.js';
+import { acquireDeploymentLock, deploymentLockPath, releaseDeploymentLock } from './deployment-lock.js';
 import { BrokerProbeError, brokerOrigin, canProvisionBroker, linuxHAMqttRoute, newBrokerCredentials, probeMQTTBroker, verifySetupBrokers } from './linux-setup-broker.js';
 
 const fail = message => { throw new DeploymentSafetyError(message); };
@@ -351,7 +351,7 @@ export async function main(args = [], dependencies = {}) {
   } catch (error) {
     const detail = error instanceof DeploymentSafetyError ? error.message : 'Setup failed; private error details suppressed.';
     if (workspace) io.log('Private draft retained at ' + workspace);
-    throw new DeploymentSafetyError(`Setup failed during ${phase}: ${detail} No automatic rollback, role reset or uncertain-operation retry was attempted. Inspect that stage before rerunning setup.`);
+    throw new DeploymentSafetyError(`Setup failed during ${phase}: ${detail} No automatic rollback, role reset or uncertain-operation retry was attempted. Inspect that stage before rerunning setup.${operationLock ? ` The Linux deployment lock is retained at ${JSON.stringify(deploymentLockPath(operationLock))}.` : ''}`);
   } finally {
     try { await ha?.close(); }
     finally {

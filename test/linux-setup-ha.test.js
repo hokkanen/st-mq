@@ -14,7 +14,7 @@ const app = { slug: 'synthetic_st-mq', repository: 'synthetic', version: '0.9.5-
 const pair = { nodeId: 'synthetic-node', pairId: 'synthetic-pair', bootstrapPending: true, canControl: false,
   role: 'slave', busy: false, phase: null, error: null, actions: { promote: true }, vip: { owned: false }, peer: { role: 'slave' } };
 
-function fixture({ state = app.state, raw = app.options, broker = true, brokerNetwork, fail, afterInfo, runtimePair = pair } = {}) {
+function fixture({ state = app.state, raw = app.options, broker = true, brokerNetwork, fail, afterInfo, runtimePair = pair, lockExitCode = 0, cleanupExitCode = 0 } = {}) {
   let remote = { ...structuredClone(app), state }, options = structuredClone(raw), closed = 0, now = 0;
   let installedBroker = broker, brokerInfo = { slug: 'core_mosquitto', state: 'stopped', options: { logins: [], unrelated: 'retain' },
     network: brokerNetwork ?? { '1883/tcp': broker ? 1885 : 1883, '8883/tcp': 8883, '1884/tcp': null } };
@@ -32,7 +32,9 @@ function fixture({ state = app.state, raw = app.options, broker = true, brokerNe
     }
     if (script.startsWith('docker container ls')) return { exitCode: 0, output: '' };
     if (script.startsWith('docker exec -i ')) return { exitCode: 0, output: '{"submitted":true}' };
-    if (script.startsWith('umask 077') || script.startsWith('rmdir ')) return { exitCode: 0, output: '' };
+    if (script.includes('if mkdir') && script.includes('.lock')) return { exitCode: lockExitCode, output: 'synthetic-private-command-detail' };
+    if (script.startsWith('rmdir ')) return { exitCode: cleanupExitCode, output: 'synthetic-private-command-detail' };
+    if (script.startsWith('umask 077')) return { exitCode: 0, output: '' };
     throw new Error('unexpected shell command');
   } };
   const api = async (path, method = 'get', timeout, body) => {
@@ -343,4 +345,39 @@ test('saved installed schema must match this checkout before configuration or pa
     { encoding: 'utf8', cwd: directory, env: { ...process.env, PYTHONPATH: directory } }));
   assert.deepEqual(run({ controller: { topology: 'str?' } }), { ok: true, options: {} });
   assert.deepEqual(run({ controller: { topology: 'str' } }), { ok: false });
+});
+
+for (const lockExitCode of [73, 74]) test(`HA setup preserves actionable lock refusal ${lockExitCode} before changing app settings`, async () => {
+  const f = fixture({ lockExitCode }), session = await f.connect();
+  await assert.rejects(session.backupAndApply({ options: {} }), error => {
+    assert(error.message.includes(JSON.stringify('/tmp/st-mq-deploy-synthetic_st-mq.lock')));
+    assert.match(error.message, /on HA in the SSH app/);
+    assert.match(error.message, lockExitCode === 73 ? /lock already exists/ : /Could not create/);
+    assert.equal(error.uncertain, false); assert.equal(error.changed, false);
+    assert.doesNotMatch(error.message, /synthetic-private-command-detail|did not confirm a submitted operation/); return true;
+  });
+  assert.deepEqual(f.submitted, []); await session.close();
+  assert(!f.shell.some(call => call.script.startsWith('rmdir ')));
+});
+
+test('HA setup lost lock and cleanup responses retain the exact location without replaying or exposing SSH details', async () => {
+  for (const stage of ['acquire', 'cleanup']) {
+    const f = fixture({ fail: ({ script }) => stage === 'acquire' ? script?.includes('if mkdir') : script?.startsWith('rmdir ') });
+    const session = await f.connect();
+    if (stage === 'cleanup') await session.backupAndApply({ options: {} });
+    await assert.rejects(stage === 'acquire' ? session.backupAndApply({ options: {} }) : session.close(), error => {
+      assert(error.message.includes(JSON.stringify('/tmp/st-mq-deploy-synthetic_st-mq.lock')));
+      assert.match(error.message, /not confirmed/); assert.equal(error.uncertain, true);
+      assert.doesNotMatch(error.message, /synthetic-private-network-detail/); return true;
+    });
+    if (stage === 'acquire') await session.close();
+    assert.equal(f.shell.filter(call => stage === 'acquire' ? call.script.includes('if mkdir') : call.script.startsWith('rmdir ')).length, 1);
+  }
+});
+
+test('HA setup confirmed cleanup failure names its SSH-app lock and closes the session', async () => {
+  const f = fixture({ cleanupExitCode: 1 }), session = await f.connect();
+  await session.backupAndApply({ options: {} });
+  await assert.rejects(session.close(), error => error.message.includes(JSON.stringify('/tmp/st-mq-deploy-synthetic_st-mq.lock')) && /could not be removed/.test(error.message));
+  assert.equal(f.closed, 1);
 });

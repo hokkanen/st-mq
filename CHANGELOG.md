@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Name the exact lock location in Linux setup/deployment, HA setup/deployment and
+  live-test runner errors. Keep HA lock refusals visible through setup, distinguish
+  existing locks from creation failures, and identify retained locks and workspaces
+  after uncertain operations without exposing command output or removing locks.
+
 - Keep explicit promotion available after an interrupted handover when the backend
   admits it. A retained role-change marker no longer disables recovery forever;
   active operations and the stopped-or-isolated-master confirmation still apply.

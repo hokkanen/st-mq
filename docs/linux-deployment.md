@@ -253,6 +253,10 @@ service commands. Setup's explicit first-master selection is separate from
 deployment. Retained code does not provide a database rollback.
 
 An empty `runtime_dir/deployment.lock` prevents overlapping runtime operations.
+Linux setup and deployment errors report its exact, quoted absolute path,
+including ownership, cleanup and retained-lock failures. Creation and permissions
+failures are distinguished from an existing lock. No lock is removed automatically
+to get past a deployment refusal.
 Failures retain the lock and prepared releases. Confirm the previous command
 and its children have finished before removing only that empty lock with `rmdir`.
 HA operations use their own retained remote lock. Inactive releases are not

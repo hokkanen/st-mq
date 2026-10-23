@@ -210,7 +210,11 @@ noninteractive SSH without an inherited multiplexed session. This avoids browser
 terminal state and does not attach to an unrelated SSH session.
 
 A directory named `/tmp/st-mq-deploy-<app-slug>.lock` in the SSH app prevents
-overlapping runs. After confirming that the previous deployment process and
+overlapping runs. HA setup and deployment share this lock and report its exact
+path and SSH-app location when acquisition, cleanup or confirmation fails.
+Uncertain deployment errors also name any possibly retained workspace. A
+creation failure is not reported as proof that a previous lock exists.
+After confirming that the previous deployment process and
 Supervisor rebuild have finished, remove that empty directory with `rmdir`
 before retrying. Never remove it while a deployment is running.
 

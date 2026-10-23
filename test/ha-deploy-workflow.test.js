@@ -14,7 +14,7 @@ const version = JSON.parse(readFileSync(new URL('../config.json', import.meta.ur
 function workflowFixture(t, { managed = false, snapshot, buildFailure = false, lostStopResponse = false, lostStartResponse = false, startFailure = false, stopFailure = false, stopStaysRunning = false, syncTimeoutSeconds, existingLock = false, corruptBundle = false, changedApp = false, optionsAfterRebuild,
   lostRebuildResponse = false, lostRefreshResponse = false, changedRepositories = false, stateError,
   wrongSchema = false, complete = false, initialState = managed ? 'started' : 'stopped', lostDiscoveryResponse = false,
-  lostLockResponse = false, containerStartsAtRead = Infinity, stoppedAfterRebuild = false,
+  lostLockResponse = false, lockExitCode, containerStartsAtRead = Infinity, stoppedAfterRebuild = false,
   storedFileCheck, finalFileTimeout = false, sourceChangesAfterRebuild = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ha-deploy-workflow-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -82,7 +82,7 @@ function workflowFixture(t, { managed = false, snapshot, buildFailure = false, l
       }
       if (script.includes('if mkdir') && script.includes('.lock')) {
         if (lostLockResponse) throw new DeploymentTransportError('SSH connection lost; the submitted operation may still be running');
-        return { exitCode: existingLock ? 73 : 0, output: '' };
+        return { exitCode: lockExitCode ?? (existingLock ? 73 : 0), output: '' };
       }
       if (/^umask 077\nmkdir \/tmp\/st-mq-deploy-[a-f0-9]+$/.test(script)) return { exitCode: 0, output: '' };
       if (input !== undefined && script.includes('sha256sum')) {
@@ -258,6 +258,8 @@ test('lost lock response retains possible remote changes without implying a rebu
     assert.match(error.message, /Deployment stopped during remote lock/);
     assert.match(error.message, /no rebuild was submitted by this run/);
     assert.match(error.message, /files and lock are retained/);
+    assert(error.message.includes(JSON.stringify('/tmp/st-mq-deploy-synthetic_st-mq.lock')));
+    assert.match(error.message, /on HA in the SSH app/);
     assert.doesNotMatch(error.message, /No remote changes were attempted/);
     return true;
   });
@@ -290,12 +292,23 @@ for (const containerStartsAtRead of [1, 2, 3, 4, 5]) {
 
 test('an existing deployment lock prevents remote workspace creation, uploads and rebuild', async t => {
   const fixture = workflowFixture(t, { existingLock: true });
-  await assert.rejects(fixture.deploy(), /deployment lock already exists/);
+  await assert.rejects(fixture.deploy(), error => /deployment lock already exists/.test(error.message)
+    && error.message.includes(JSON.stringify('/tmp/st-mq-deploy-synthetic_st-mq.lock')));
   const lockIndex = fixture.events.findIndex(event => event.type === 'ssh' && event.script.includes('if mkdir'));
   assert.notEqual(lockIndex, -1);
   assert.deepEqual(fixture.events.slice(lockIndex + 1).map(event => event.type), ['close']);
   assertNoRebuild(fixture.events);
   assertRetainedFailureState(fixture.events);
+});
+
+test('remote lock creation failure names the SSH-app location without claiming an existing lock', async t => {
+  const fixture = workflowFixture(t, { lockExitCode: 74 });
+  await assert.rejects(fixture.deploy(), error => {
+    assert.match(error.message, /Could not create the remote deployment lock/);
+    assert(error.message.includes(JSON.stringify('/tmp/st-mq-deploy-synthetic_st-mq.lock')));
+    assert.doesNotMatch(error.message, /lock already exists/); return true;
+  });
+  assertNoRebuild(fixture.events); assertRetainedFailureState(fixture.events);
 });
 
 test('a corrupted uploaded bundle prevents source replacement and rebuild', async t => {

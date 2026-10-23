@@ -5,6 +5,7 @@ import { connectSSH, DeploymentTransportError } from './ha-deploy-transport.js';
 import { readHARuntime } from './ha-deploy-runtime.js';
 import { ownsApplicationListener } from './deployment-process.js';
 import { DeploymentSafetyError } from './paired-deployment.js';
+import { acquireRemoteDeploymentLock, remoteDeploymentLockPath } from './deployment-lock.js';
 import { mergeOptions, parseOptions, validateOptionFields } from '../../src/app/configuration-source.js';
 
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -165,9 +166,10 @@ export async function connectSetupHA(connection, { connect = connectSSH, supervi
     throw new HASetupError('HA setup discovery failed. Inspect the installed app, Supervisor permissions and private configuration.');
   }
   const original = clone(app); let expectedOptions = clone(raw), changed = false, uncertain = false, failed = false, lock = false, backupPath = null;
+  const lockPath = remoteDeploymentLockPath(app.slug);
   const active = () => {
-    if (signal?.aborted) throw new HASetupError('HA setup was cancelled. Inspect the confirmed setup state before retrying.', { changed, uncertain, backupPath });
-    if (failed) throw new HASetupError('The HA setup session has failed. Inspect HA before opening another session.', { changed, uncertain, backupPath });
+    if (signal?.aborted) throw new HASetupError(`HA setup was cancelled. Inspect the confirmed setup state before retrying.${lock ? ` Its lock location is ${JSON.stringify(lockPath)} on HA in the SSH app.` : ''}`, { changed, uncertain, backupPath });
+    if (failed) throw new HASetupError(`The HA setup session has failed. Inspect HA before opening another session. Its lock location is ${JSON.stringify(lockPath)} on HA in the SSH app.`, { changed, uncertain, backupPath });
   };
   const mutation = async action => {
     active();
@@ -175,7 +177,7 @@ export async function connectSetupHA(connection, { connect = connectSSH, supervi
     try { return await action(); }
     catch (error) {
       failed = true; uncertain = true;
-      throw new HASetupError('HA setup did not confirm a submitted operation. Inspect HA before retrying; no operation was replayed.', { changed, uncertain, backupPath });
+      throw new HASetupError(`HA setup did not confirm a submitted operation. Inspect HA before retrying; no operation was replayed.${lock ? ` Its lock is retained at ${JSON.stringify(lockPath)} on HA in the SSH app.` : ''}`, { changed, uncertain, backupPath });
     }
   };
   const current = async () => {
@@ -201,11 +203,20 @@ export async function connectSetupHA(connection, { connect = connectSSH, supervi
   };
   const acquire = async () => {
     if (lock) return;
-    await mutation(async () => {
-      const result = await ssh.run(`umask 077\nmkdir /tmp/st-mq-deploy-${app.slug}.lock`, { timeoutMs: 15000 });
-      if (result.exitCode !== 0) throw new HASetupError('Another setup or deployment owns the HA lock.');
+    active();
+    const changedBefore = changed;
+    changed = true;
+    try {
+      await acquireRemoteDeploymentLock(ssh, app.slug);
       lock = true;
-    });
+    } catch (error) {
+      failed = true;
+      uncertain = !(error instanceof DeploymentSafetyError);
+      if (!uncertain) changed = changedBefore;
+      throw new HASetupError(error instanceof DeploymentSafetyError ? error.message
+        : `HA lock acquisition was not confirmed at ${JSON.stringify(lockPath)} in the SSH app. Inspect it before retrying; no operation was replayed.`,
+      { changed, uncertain, backupPath });
+    }
   };
   const prepareBroker = async brokerOptions => {
     if (!object(brokerOptions) || !object(mqtt.app?.options)) throw new HASetupError('The HA broker settings are unavailable or invalid.', { changed, backupPath });
@@ -326,8 +337,10 @@ export async function connectSetupHA(connection, { connect = connectSSH, supervi
     async close() {
       try {
         if (lock && !failed && !signal?.aborted) {
-          const result = await ssh.run(`rmdir /tmp/st-mq-deploy-${app.slug}.lock`, { timeoutMs: 15000 });
-          if (result.exitCode !== 0) throw new HASetupError('HA setup completed, but its lock could not be removed. Inspect HA before retrying.', { changed, backupPath });
+          let result;
+          try { result = await ssh.run(`rmdir ${lockPath}`, { timeoutMs: 15000 }); }
+          catch { throw new HASetupError(`HA setup lock removal was not confirmed at ${JSON.stringify(lockPath)} in the SSH app. Inspect it before retrying.`, { changed, uncertain: true, backupPath }); }
+          if (result.exitCode !== 0) throw new HASetupError(`HA setup completed, but its lock at ${JSON.stringify(lockPath)} in the SSH app could not be removed. Inspect it before retrying.`, { changed, backupPath });
           lock = false;
         }
       } finally { signal?.removeEventListener('abort', abort); await ssh.close(); }
