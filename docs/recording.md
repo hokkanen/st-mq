@@ -1675,6 +1675,16 @@ Export dates, original reset-start dates, protected snapshot dates and filesyste
 modification times have different labels. An interrupted reset retains its original
 date when resumed; this date is not the later verification or snapshot clock.
 
+Read-only discovery accepts completed current-format reset archives relocated
+under the configured archive root, preserving their original manifest paths as
+provenance. Reset resumption still requires its original archive location and
+trusted configuration. Relocation adds no format conversion or permission to
+recover history. Archives recording that no portable backup could be made are
+described separately as preserved source history, with the recorded reason;
+they neither count as usable copies nor make an otherwise complete list
+unconfirmed. Listing does not open or verify their raw databases. Invalid,
+unfinished or unsafe archives still make discovery incomplete.
+
 Listing does not recheck a file's integrity. **Verified during creation** describes
 exporter or reset-publication evidence, not the bytes today; the exact creation-check
 time is not recorded. **Verify** checks the

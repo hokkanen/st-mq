@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Discover relocated completed reset archives without rewriting their manifests
+  or relaxing reset-resumption checks. Describe preserved raw history without
+  portable backups separately so it does not produce a false incomplete listing.
+
 - Keep a saved copy's verification failure reason visible during and after a
   download, independently of its transfer receipt.
 

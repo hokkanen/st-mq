@@ -9,6 +9,7 @@ import { createBackupCatalog, listBackupCatalog, publicBackupCatalog } from '../
 import { createResetArchive, resumeResetArchive } from '../src/pairing/reset-storage.js';
 import { SnapshotRepository } from '../src/pairing/snapshots.js';
 import { PairManager } from '../src/pairing/manager.js';
+import { storageOperationHealth } from '../src/storage/operation-health.js';
 import { backupLocation } from '../src/storage/backup-directory.js';
 
 const time = Date.parse('2026-10-11T06:00:00Z');
@@ -63,6 +64,37 @@ test('catalog reads actual export time off-thread and preserves separately chang
   for (const key of ['path', 'fingerprint', 'digest', 'checkpoint']) assert.equal(Object.hasOwn(publicRow, key), false);
   assert.deepEqual(await readFile(path), before);
   assert.deepEqual(await readdir(f.directory), [name(1)]);
+});
+
+test('relocated raw-only reset archives do not make saved-copy listing unconfirmed or become portable donors', async t => {
+  const f = await fixture(t), saved = await f.save(); f.close();
+  const originalCopy = await readFile(saved);
+  await writeFile(f.config.dbPath, 'synthetic unsupported raw database');
+  const requestId = randomUUID(), state = { role: 'master', everWritten: true, activeDbPath: f.config.dbPath };
+  const plan = await createResetArchive({ config: f.config, state, mode: 'fresh', requestId, clock: f.clock });
+  await resumeResetArchive(plan, { config: f.config, mode: 'fresh', requestId });
+  const manifest = await readFile(join(plan.archiveDirectory, 'reset.json'));
+  const movedRoot = join(f.root, 'relocated-backups'); await rename(f.directory, movedRoot);
+  const config = { ...f.config, recording: { backupDirectory: movedRoot } };
+  const movedManifest = join(movedRoot, 'reset-archives', plan.archiveDirectory.split('/').at(-1), 'reset.json');
+  const rejected = JSON.parse(manifest); rejected.version = 1;
+  await writeFile(movedManifest, JSON.stringify(rejected));
+  assert.equal((await listBackupCatalog(config, { clock: f.clock })).complete, false);
+  const before = storageOperationHealth.status().coverage.find(row => row.kind === 'backup-catalog');
+  await writeFile(movedManifest, manifest);
+  const catalog = await listBackupCatalog(config, { clock: f.clock });
+  assert.equal(catalog.complete, true); assert.deepEqual(catalog.reasons, []);
+  assert.equal(catalog.copies.length, 1, 'Preserved incompatible history is never counted as a portable backup');
+  assert.deepEqual(catalog.preservedArchives, [{ createdAt: plan.createdAt, relocated: true, reasons: ['invalid-database'] }]);
+  const publicCatalog = publicBackupCatalog(catalog);
+  assert(!JSON.stringify(publicCatalog).includes(plan.archiveDirectory));
+  assert(!JSON.stringify(publicCatalog).includes(f.config.pair.directory));
+  assert.deepEqual(await readFile(join(movedRoot, name(1))), originalCopy);
+  assert.deepEqual(await readFile(movedManifest), manifest);
+  const after = storageOperationHealth.status().coverage.find(row => row.kind === 'backup-catalog');
+  assert.equal(after.lastResult.outcome, 'completed');
+  assert.equal(after.day.unconfirmed, before.day.unconfirmed, 'A completed relocated inventory adds no unconfirmed operation');
+  assert.deepEqual(after.day.lastProblem, before.day.lastProblem, 'Earlier incident evidence remains retained');
 });
 
 test('future exporter time stays unknown and a bounded list explicitly reports partial discovery', async t => {

@@ -5,7 +5,7 @@ import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, s
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
-import { archiveRoot, createResetArchive, listResetBackups, resumeResetArchive, selectResetDatabase } from '../src/pairing/reset-storage.js';
+import { archiveRoot, createResetArchive, listResetBackups, resumeResetArchive, scanResetBackups, selectResetDatabase } from '../src/pairing/reset-storage.js';
 
 async function file(path, bytes) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -77,6 +77,9 @@ test('reset archives produce separate verified portable backups including commit
   assert.deepEqual(available.map(item => item.path).sort(), result.recoveryBackups.map(item => item.path).sort());
   assert(available.every(item => /^[a-f0-9]{64}$/.test(item.id) && item.kind === 'reset'));
   assert.equal(new Set(available.map(item => item.id)).size, 2);
+  const limited = await scanResetBackups(config, { maxCopies: 1 });
+  assert.equal(limited.copies.length, 1); assert.equal(limited.complete, false);
+  assert(limited.reasons.includes('copy-limit'));
   assert.deepEqual(await listResetBackups({ ...config, pair: {} }), available,
     'standalone can select completed reset backups after changing topology');
 });
@@ -93,6 +96,82 @@ test('incompatible and corrupt databases remain intact with explicit unavailable
   assert.deepEqual(await readFile(archived(plan, retired)), original);
   assert.equal(await readFile(archived(plan, config.dbPath), 'utf8'), 'database bytes');
   assert.deepEqual(await listResetBackups(config), []);
+});
+
+async function relocateArchive(config, plan, root) {
+  const relocated = { ...config, recording: { backupDirectory: join(root, 'relocated-backups') } };
+  await mkdir(relocated.recording.backupDirectory, { recursive: true });
+  await rename(plan.archiveRoot, archiveRoot(relocated));
+  return { config: relocated, directory: join(archiveRoot(relocated), plan.archiveDirectory.split('/').at(-1)) };
+}
+
+test('read-only discovery recognizes relocated preserved history without opening incompatible databases or permitting reset resume', async t => {
+  const { root, config, create } = await fixture(t);
+  const retired = join(config.pair.directory, 'retired.sqlite');
+  const db = new DatabaseSync(retired);
+  db.exec('CREATE TABLE unsupported_records (value); PRAGMA user_version=1'); db.close();
+  const original = await readFile(retired);
+  const plan = await create('fresh'); await resume(plan, config);
+  const manifest = await readFile(join(plan.archiveDirectory, 'reset.json'));
+  const moved = await relocateArchive(config, plan, root);
+  const result = await scanResetBackups(moved.config);
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.reasons, []);
+  assert.deepEqual(result.copies, []);
+  assert.deepEqual(result.preservedArchives, [{ createdAt: plan.createdAt, relocated: true,
+    reasons: ['incompatible-database', 'invalid-database'] }]);
+  assert.deepEqual(await readFile(join(moved.directory, 'reset.json')), manifest);
+  const retiredEntry = plan.entries.find(entry => entry.source === retired);
+  assert.deepEqual(await readFile(join(moved.directory, retiredEntry.destination)), original);
+  await assert.rejects(resumeResetArchive(moved.directory, { config: moved.config, requestId: plan.requestId, mode: plan.mode }),
+    { code: 'pair_reset_unsafe_storage' });
+  assert.deepEqual(await readFile(join(moved.directory, 'reset.json')), manifest, 'A refused resume never rewrites provenance');
+});
+
+test('relocated completed current-format copies remain discoverable with current physical paths and unchanged manifests', async t => {
+  const { root, config, create } = await fixture(t);
+  await walFixture(root, config.dbPath, 'relocated-current-copy');
+  const plan = await create('fresh'), saved = await resume(plan, config);
+  const manifest = await readFile(join(plan.archiveDirectory, 'reset.json'));
+  const bytes = await readFile(saved.recoveryBackups[0].path);
+  const moved = await relocateArchive(config, plan, root);
+  const result = await scanResetBackups(moved.config);
+  assert.equal(result.complete, true); assert.deepEqual(result.reasons, []);
+  assert.equal(result.copies.length, 1); assert.deepEqual(result.preservedArchives, []);
+  assert.equal(result.copies[0].path, join(moved.directory, plan.recoveryBackups[0].destination));
+  assert.deepEqual(await readFile(result.copies[0].path), bytes);
+  assert.deepEqual(await readFile(join(moved.directory, 'reset.json')), manifest);
+  await assert.rejects(resumeResetArchive(moved.directory, { config: moved.config, requestId: plan.requestId, mode: plan.mode }),
+    { code: 'pair_reset_unsafe_storage' });
+  const renamed = join(dirname(moved.directory), `${new Date(plan.createdAt).toISOString().replace(/[:.]/g, '-')}-${randomUUID()}`);
+  await rename(moved.directory, renamed);
+  const renamedResult = await scanResetBackups(moved.config);
+  assert.equal(renamedResult.complete, false); assert.deepEqual(renamedResult.copies, []);
+  await rename(renamed, moved.directory);
+  for (const change of [value => { value.complete = false; }, value => { value.version = 1; },
+    value => { value.unrecognizedField = true; }, value => { value.recoveryBackups[0].destination = '../escape.sqlite'; }]) {
+    const edited = JSON.parse(manifest); change(edited);
+    await writeFile(join(moved.directory, 'reset.json'), JSON.stringify(edited));
+    const refused = await scanResetBackups(moved.config);
+    assert.equal(refused.complete, false); assert(refused.reasons.includes('unavailable-archives'));
+    assert.deepEqual(refused.copies, []); assert.deepEqual(refused.preservedArchives, []);
+  }
+});
+
+test('a missing portable sibling cannot leave a partial archive advertised as a donor', async t => {
+  const { root, config, state, create } = await fixture(t);
+  await walFixture(root, config.dbPath, 'configured');
+  const active = join(config.pair.directory, 'active.sqlite');
+  await walFixture(root, active, 'active'); state.activeDbPath = active;
+  const plan = await create('fresh'), result = await resume(plan, config);
+  assert.equal(result.recoveryBackups.length, 2);
+  const manifest = await readFile(join(plan.archiveDirectory, 'reset.json'));
+  const missing = result.recoveryBackups[1].path;
+  await rename(missing, `${missing}.retained`);
+  const scan = await scanResetBackups(config);
+  assert.equal(scan.complete, false); assert(scan.reasons.includes('unavailable-archives'));
+  assert.deepEqual(scan.copies, []); assert.deepEqual(scan.preservedArchives, []);
+  assert.deepEqual(await readFile(join(plan.archiveDirectory, 'reset.json')), manifest);
 });
 
 test('retry verifies a published backup left before its manifest acknowledgement and refuses a changed copy', async t => {

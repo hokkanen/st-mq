@@ -62,7 +62,7 @@ async function metadata(copies) {
 /** One bounded inventory for health, explicit backup actions and history recovery.
  * Metadata discovery is never a current integrity or household-identity check. */
 async function performBackupCatalog(config, { clock = Date.now, maxEntries = 4096, maxCopies = 100 } = {}) {
-  const directory = backupDirectory(config), reasons = new Set(), candidates = [];
+  const directory = backupDirectory(config), reasons = new Set(), candidates = [], preservedArchives = [];
   for (const entry of await names(directory, maxEntries, reasons, true)) {
     if (!DATABASE_EXPORT_NAME.test(entry.name)) continue;
     if (!entry.isFile()) { reasons.add('unavailable-copies'); continue; }
@@ -77,6 +77,7 @@ async function performBackupCatalog(config, { clock = Date.now, maxEntries = 409
   try {
     const reset = await scanResetBackups(config, { maxEntries, maxCopies });
     reset.reasons.forEach(reason => reasons.add(reason));
+    preservedArchives.push(...reset.preservedArchives);
     for (const copy of reset.copies) {
       const info = await standalone(copy.path);
       candidates.push({ ...copy, id: idFor(copy.path), filename: basename(copy.path), fingerprint: backupFingerprint(info) });
@@ -136,7 +137,7 @@ async function performBackupCatalog(config, { clock = Date.now, maxEntries = 409
       : `${copy.kind === 'protected' ? 'Protected copy' : 'Saved backup'} · ${new Date(copy.createdAt ?? copy.fileModifiedAt).toISOString()}` }));
   available.sort((a, b) => (b.createdAt ?? b.fileModifiedAt) - (a.createdAt ?? a.fileModifiedAt));
   return { directory, location: backupLocation(config), checkedAt: clock(), complete: reasons.size === 0,
-    limit: maxCopies, reasons: [...reasons], copies: available };
+    limit: maxCopies, reasons: [...reasons], preservedArchives, copies: available };
 }
 
 export function publicBackupCatalog(catalog) {

@@ -305,6 +305,16 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
       'unavailable-protected-copies': 'Some protected copies could not be listed.', 'changed-copies': 'Some files changed while the list was checked.',
       'metadata-unavailable': 'Some copy metadata could not be read.' };
     const reasonCopy = (catalog?.reasons ?? []).map(reason => reasons[reason]).filter(Boolean).join(' ');
+    const preserved = catalog?.preservedArchives ?? [];
+    const archiveReasons = { 'incompatible-database': 'incompatible source database',
+      'invalid-database': 'invalid source database', 'history-unavailable': 'no identifiable source database' };
+    const preservedReasons = [...new Set(preserved.flatMap(archive => archive.reasons))]
+      .map(reason => archiveReasons[reason]).filter(Boolean).join('; ');
+    const relocated = preserved.filter(archive => archive.relocated).length;
+    const preservedCopy = preserved.length ? ` ${preserved.length} completed reset archive${preserved.length === 1 ? '' : 's'} ${preserved.length === 1 ? 'records' : 'record'} preserved source history without a portable backup.`
+      + (preservedReasons ? ` Recorded reasons: ${preservedReasons}.` : '')
+      + (relocated ? ` ${relocated} archive${relocated === 1 ? ' is' : 's are'} in a different folder from the recorded origin.` : '')
+      + ' This listing does not verify the raw files.' : '';
     const incomplete = catalog?.complete === false ? ` Listing is incomplete. ${reasonCopy ? `${reasonCopy} ` : ''}Other copies may exist.` : '';
     const removedCheck = catalog?.recheck && !catalog.copies.some(copy => copy.id === catalog.recheck.sourceId)
       ? ` The latest checked file is no longer listed${['queued', 'running'].includes(catalog.recheck.state) ? '; its full check is still in progress' : ''}. Refresh or inspect the backup folder before using it.` : '';
@@ -312,7 +322,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     const failedAttempt = validTime(failedAt) ? ` Last list refresh failed ${recordingEvidenceTime(failedAt, now())}.` : '';
     set('recording-backup-catalogStatus', !adminCatalog() ? 'Admin access is required to list individual backup files.'
       : catalogPhase === 'failed' || catalog?.stale ? `Could not refresh the list.${catalog ? ' The last successful list is still shown. ' : ' '}${checked}${failedAttempt}${incomplete}${removedCheck}`
-        : catalogPhase === 'loading' ? `Checking saved copies… ${checked}` : catalog ? `${checked}${incomplete}${removedCheck}${catalog.copies.length === 0 ? ' No copies were found in the managed locations.' : ''}` : 'Open Backups to check saved copies.');
+        : catalogPhase === 'loading' ? `Checking saved copies… ${checked}` : catalog ? `${checked}${incomplete}${removedCheck}${preservedCopy}${catalog.copies.length === 0 ? ' No portable copies were found in the managed locations.' : ''}` : 'Open Backups to check saved copies.');
     $('recording-backup-refresh').disabled = !adminCatalog() || catalogPending;
   }
   async function refreshCopies({ force = false, scan = false } = {}) {

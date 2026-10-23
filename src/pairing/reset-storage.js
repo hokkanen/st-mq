@@ -435,9 +435,9 @@ export async function scanResetBackups(config, { maxEntries = 4096, maxCopies = 
   const root = join(await configuredDirectory(dirname(configuredRoot)), basename(configuredRoot));
   await safeParents(root);
   const info = await present(root);
-  if (!info) return { copies: [], complete: true, reasons: [] };
+  if (!info) return { copies: [], preservedArchives: [], complete: true, reasons: [] };
   if (!info.isDirectory() || info.isSymbolicLink()) throw failure('pair_reset_unsafe_storage');
-  const result = [];
+  const result = [], preservedArchives = [];
   const names = [];
   let examined = 0, complete = true;
   const reasons = new Set();
@@ -456,25 +456,40 @@ export async function scanResetBackups(config, { maxEntries = 4096, maxCopies = 
       const manifest = join(archiveDirectory, MANIFEST), info = await lstat(manifest);
       if (!info.isFile() || info.isSymbolicLink() || info.size > 16 * 1024 * 1024) throw failure();
       const plan = JSON.parse(await readFile(manifest, 'utf8'));
-      validatePlan(plan, archiveDirectory);
-      if (!plan.complete || plan.archiveRoot !== root) { complete = false; reasons.add('unavailable-archives'); continue; }
+      // Discovery only reads completed current-format artifacts. Their original
+      // absolute paths remain provenance after relocation; no original path is
+      // opened or translated. Reset resumption below still binds to its actual
+      // archive location and trusted configuration before moving any files.
+      if (typeof plan?.archiveDirectory !== 'string'
+        || basename(plan.archiveDirectory) !== name) throw failure('pair_reset_unsafe_storage');
+      validatePlan(plan, plan.archiveDirectory);
+      if (!plan.complete) { complete = false; reasons.add('unavailable-archives'); continue; }
+      const copies = [];
       for (const item of plan.recoveryBackups) {
         if (item.status !== 'complete') continue;
         const path = join(archiveDirectory, item.destination);
         await safeParents(dirname(path));
         const info = await lstat(path);
         if (!info.isFile() || info.isSymbolicLink() || info.size !== item.bytes) throw failure();
-        result.push({ id: createHash('sha256').update(`${plan.requestId}/${item.destination}`).digest('hex'), path,
+        copies.push({ id: createHash('sha256').update(`${plan.requestId}/${item.destination}`).digest('hex'), path,
           label: `Reset archive · ${new Date(plan.createdAt).toISOString()} · ${basename(item.destination)}`,
           createdAt: plan.createdAt, fileModifiedAt: info.mtimeMs, bytes: item.bytes, kind: 'reset', digest: item.digest,
           verification: { state: 'verified-when-created', at: null } });
-        if (result.length > maxCopies) {
-          return { copies: result.slice(0, maxCopies), complete: false, reasons: [...reasons, 'copy-limit'] };
+        if (result.length + copies.length > maxCopies) {
+          return { copies: [...result, ...copies].slice(0, maxCopies), preservedArchives,
+            complete: false, reasons: [...reasons, 'copy-limit'] };
         }
       }
+      // A failed file check must not leave earlier members of this inspected
+      // archive published. The explicit copy limit above still bounds the scan.
+      result.push(...copies);
+      if (!copies.length) preservedArchives.push({ createdAt: plan.createdAt,
+        relocated: plan.archiveDirectory !== archiveDirectory,
+        reasons: plan.recoveryBackups.length
+          ? [...new Set(plan.recoveryBackups.map(item => item.reason))].sort() : ['history-unavailable'] });
     } catch { complete = false; reasons.add('unavailable-archives'); /* An invalid archive never becomes a donor. */ }
   }
-  return { copies: result, complete, reasons: [...reasons] };
+  return { copies: result, preservedArchives, complete, reasons: [...reasons] };
 }
 
 /** Current-format reset copies remain directly usable by offline callers. */

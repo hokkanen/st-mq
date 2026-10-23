@@ -789,6 +789,13 @@ Corrupt or incompatible source databases remain byte-for-byte in the original
 archive. They are neither converted nor repaired; the reset result reports that
 a recovery backup is unavailable and why. No identifiable database likewise
 reports unavailable history. This does not prevent a deliberate fresh reset.
+Completed current-format archives can be discovered read-only after moving them
+under the configured archive root with their archive directory names unchanged.
+Their recorded absolute paths remain unchanged provenance; discovery uses only
+validated relative portable-backup paths inside the present archive. Archives
+without portable backups are described as preserved source history, not recovery
+donors. This does not permit resuming a reset from a relocated archive: retry
+still requires the original location and matching trusted configuration.
 Storage or publication failures leave reset protected and incomplete for explicit
 retry instead of claiming a completed backup. Keep mode uses a separate
 copy of the selected database; the archived copy stays inactive. On the same

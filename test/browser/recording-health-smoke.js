@@ -244,7 +244,7 @@ window.setPerformance = state => {
   renderStatus(payload);
 };
 window.failRefresh = false; window.failInventory = false; window.requestCount = 0; window.catalogRequests = 0; window.failCatalog = false;
-window.copies = {directory:'/synthetic/recording/backups',checkedAt:${now-60000},complete:true,limit:100,reasons:[],copies:[
+window.copies = {directory:'/synthetic/recording/backups',checkedAt:${now-60000},complete:true,limit:100,reasons:[],preservedArchives:[{createdAt:${now-86400_000},relocated:true,reasons:['incompatible-database']}],copies:[
 {id:'backup:synthetic',kind:'backup',filename:'stmq-2026-10-06T12-00-00-000Z.sqlite',createdAt:${now-86400_000},fileModifiedAt:${now-86400_000},bytes:4096000,verification:{state:'verified-when-created',at:null}},
 {id:'reset:synthetic',kind:'reset',filename:'reset-recording-backup.sqlite',createdAt:${now-2*86400_000},fileModifiedAt:${now-2*86400_000},bytes:4096000,verification:{state:'not-checked',at:null}},
 {id:'protected:synthetic',kind:'protected',filename:'protected-pairing-copy.sqlite',createdAt:null,fileModifiedAt:${now-3*86400_000},bytes:4096000,verification:{state:'verified-when-created',at:null}}]};
@@ -512,6 +512,7 @@ try {
       await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=true)");
       await settle(); await checkLayout(`${width}/${theme}/expanded`); await capture(`expanded-${width}-${theme}`);
       assert.equal(await evaluate("document.querySelectorAll('#recording-backup-list > li').length"),3,'Backups lists individual saved copies');
+      assert.match(await evaluate("document.getElementById('recording-backup-catalogStatus').textContent"),/completed reset archive.*without a portable backup.*incompatible source database/);
       assert.match(await evaluate("document.getElementById('recording-backup-folder').textContent"),/synthetic\/recording\/backups/);
       await evaluate("setDetailedSources(); document.getElementById('recording-recording-card').open=true");
       await settle(); await checkLayout(`${width}/${theme}/source-details`);

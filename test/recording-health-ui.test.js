@@ -60,7 +60,7 @@ test('recording separates completed updates, attempted source checks, observed c
 });
 
 const savedCatalog = (overrides = {}) => ({ directory: '/synthetic/recording/backups', checkedAt: now - 60000,
-  complete: true, limit: 100, reasons: [], copies: [{ id: 'backup:synthetic', kind: 'backup', filename: 'stmq-synthetic.sqlite',
+  complete: true, limit: 100, reasons: [], preservedArchives: [], copies: [{ id: 'backup:synthetic', kind: 'backup', filename: 'stmq-synthetic.sqlite',
     label: 'Saved copy', createdAt: now - 86400_000, fileModifiedAt: now - 120000, bytes: 2048,
     verification: { state: 'verified-when-created', at: null } }], ...overrides });
 
@@ -165,6 +165,25 @@ test('an incomplete reset archive list explains the validation problem without c
   assert.match(view.element('recording-backup-catalogStatus').textContent,
     /Listing is incomplete.*reset archives are incomplete or could not be validated.*Keep them intact/);
   assert.match(view.element('recording-backup-state').textContent, /1 saved copy listed/);
+});
+
+test('completed relocated raw archives are explained separately from usable copies and remain admin-only', async () => {
+  const catalog = savedCatalog({ copies: [], preservedArchives: [{ createdAt: now - 86400_000,
+    relocated: true, reasons: ['incompatible-database'] }] });
+  const view = panelFixture(async () => catalog);
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'admin' } });
+  await view.panel.refreshCopies({ force: true });
+  const text = view.element('recording-backup-catalogStatus').textContent;
+  assert.match(text, /1 completed reset archive.*preserved source history without a portable backup/);
+  assert.match(text, /Recorded reasons: incompatible source database/);
+  assert.match(text, /1 archive is in a different folder from the recorded origin/);
+  assert.match(text, /does not verify the raw files/);
+  assert.doesNotMatch(text, /Listing is incomplete/);
+  assert.equal(view.element('recording-backup-list').children.length, 0);
+  assert.match(view.element('recording-backup-state').textContent, /0 saved copies/);
+  view.panel.update({ recordingHealth: health(), webAccess: { role: 'family' } });
+  assert.doesNotMatch(view.element('recording-backup-catalogStatus').textContent, /completed reset archive|incompatible source/);
+  assert.match(view.element('recording-backup-catalogStatus').textContent, /Admin access/);
 });
 
 test('a rejected verification keeps its safe receipt through health and catalog refreshes until a newer action', async () => {
