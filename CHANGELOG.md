@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep the learned Home comfort reference visible while a heating plan is being
+  calculated, and remove repeated wording in its paused-learning explanation.
+  Label saved circulation Stop receipts on a slave as recorded requests instead
+  of implying that the slave is waiting for live equipment feedback.
+
 - Wait for routine standby synchronization in Linux and Home Assistant deployment
   preflight and before stopping, with a timeout and continuous safety checks.
   Also wait if synchronization resumes during HA's final readiness check.

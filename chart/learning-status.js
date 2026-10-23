@@ -249,11 +249,13 @@ export function learningDisplay(learning = {}, context = {}) {
     const available = finite(value) && (key === 'indoorTemperature' || metric.count > 0);
     const reference = adaptive.comfortReference;
     const referenceState = adaptive.comfortLearning;
+    const pauseReason = words(referenceState?.reason ?? referenceState?.status)
+      .replace(/^Learning paused:\s*/i, '').replace(/\.+$/, '');
     const referenceSupport = key === 'indoorTemperature' ? [
       reference?.provisional ? 'Provisional reference: fewer than 24 hours supported by verified heating. Occupied reduction is limited to the smaller of the configured drop and 0.5 °C.' : '',
       finite(reference?.evidenceHours ?? referenceState?.evidenceHours) ? `${number(reference?.evidenceHours ?? referenceState.evidenceHours, 1)} supported hours.` : '',
       reference?.updatedAt ? `Latest supporting evidence: ${new Date(reference.updatedAt).toLocaleString('en-GB', { timeZone: 'Europe/Helsinki' })} Finnish time.` : '',
-      referenceState?.status && referenceState.status !== 'learning' ? `Learning paused: ${words(referenceState.reason ?? referenceState.status)}.` : '',
+      referenceState?.status && referenceState.status !== 'learning' ? `Learning paused: ${pauseReason}.` : '',
     ].filter(Boolean).join(' ') : '';
     const basis = key !== 'indoorTemperature'
       ? learning.reconstruction === 'snapshot' && !learning.metrics

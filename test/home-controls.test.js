@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activeRates, finnishDateTime, homePolicyValues, homeIndoorEstimate, homeReferenceSummary, priceControlState, rateRows, temporaryValues } from '../chart/home-controls.js';
+import { activeRates, finnishDateTime, homePolicyValues, homeIndoorEstimate, homeReferenceValue, homeReferenceSummary, priceControlState, rateRows, temporaryValues } from '../chart/home-controls.js';
 
 test('date controls display Finnish wall time across winter, summer and midnight', () => {
   const original = process.env.TZ;
@@ -119,4 +119,16 @@ test('reference summary distinguishes bootstrap, weather-inferred evidence and v
   assert.equal(homeReferenceSummary(status({ provisional: false, confidence: 'provisional-heating-demand-baseline' })), 'Provisional normal temperature');
   assert.equal(homeReferenceSummary(status({ provisional: false, confidence: 'observed-heating-baseline' })), 'Learned normal temperature');
   assert.equal(homeReferenceSummary({ learning: { adaptive: { comfortLearning: { status: 'heating-demand-unavailable' } } } }), 'Waiting for heating demand');
+});
+
+test('published normal reference stays visible during planning without inventing unknown values', () => {
+  const status = { decision: { reasons: ['heating-planning-in-progress'] },
+    settings: { comfort: { targetC: null } },
+    learning: { adaptive: { comfortReference: { targetC: 21.4 } } } };
+  assert.equal(homeReferenceValue(status), 21.4);
+  assert.equal(homeReferenceValue({ ...status, settings: { comfort: { targetC: 20 } } }), 20);
+  assert.equal(homeReferenceValue({ ...status, decision: { comfort: { targetC: 22 } } }), 22);
+  assert.equal(homeReferenceValue({}), undefined);
+  assert.equal(homeReferenceValue({ learning: { adaptive: { comfortReference: { targetC: NaN } } } }), undefined);
+  assert.equal(homeReferenceValue({ decision: { comfort: { targetC: 0 } } }), 0);
 });

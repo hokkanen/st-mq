@@ -122,6 +122,12 @@ export function homeIndoorEstimate(status = {}, { formatTime = value => new Date
     detail: `${sensor} is unavailable. Its temperature movement is estimated from the other rooms while keeping the configured weights.${uncertainty}${anchor} This estimate supports bounded control; learning and recorded measured temperatures retain the gap.` };
 }
 
+/** The published learned reference remains available while planning is pending. */
+export function homeReferenceValue(status = {}) {
+  return [status.decision?.comfort?.targetC, status.settings?.comfort?.targetC,
+    status.learning?.adaptive?.comfortReference?.targetC].find(Number.isFinite);
+}
+
 export function homeReferenceSummary(status = {}) {
   const reference = status.learning?.adaptive?.comfortReference;
   const state = status.learning?.adaptive?.comfortLearning;

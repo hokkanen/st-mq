@@ -127,6 +127,13 @@ try {
       status.settings.preheatRoomBoostC = 5;
       status.settings.comfort.maxDropC = 1.5;
       status.settings.comfort.maxRiseC = 1.5;
+      if (homeFixture.planningReference) {
+        status.demoComfortTargetC = null;
+        status.decision = { action: 'normal', phase: 'normal', reasons: ['heating-planning-in-progress'] };
+        status.settings.comfort.targetC = null;
+        status.learning.adaptive = { ...status.learning.adaptive, comfortReference: {
+          targetC: 21.4, confidence: 'observed-heating-baseline', provisional: false } };
+      }
       if (homeFixture.estimatedIndoor) {
         status.observations.indoor = { value: null, stale: true };
         status.observations.indoorControl = { value: 20.4, stale: false, estimated: true,
@@ -155,6 +162,10 @@ try {
         active: false, actualOn: null, confirmed: false, feedback: { configured: true, available: false } };
       if (homeFixture.circulationStopAt != null) Object.assign(status.dhwr, {
         stopRequestedAt: homeFixture.circulationStopAt, requestedAt: homeFixture.circulationStopAt });
+      if (homeFixture.replica) {
+        status.readOnly = true;
+        status.dhwr = { ...status.dhwr, confirmed: false, actualOn: null };
+      }
       status.h66 = { ...status.h66, manualPreheat: homeFixture.manualPhase === 'preheat' ? { confirmed: true } : null, connected: true, brokerConnected: true, enabled: true,
         readings: Object.fromEntries(Object.entries({ '2201': 1, '0203': 20, '0212': 45,
           '0208': 55, '1A01': 1, '1A07': 0, '3104': 0, '1A20': 0 })
@@ -171,6 +182,11 @@ try {
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
   await until(`globalThis.homeFixture?.poll && document.getElementById('home-savings-strategy')?.textContent === 'Balanced'`);
   await evaluate(`document.getElementById('home-heat-pump-details').open = true`);
+  await evaluate(`homeFixture.planningReference = true; await homeFixture.poll()`);
+  await until(`document.getElementById('reference').textContent === '21.4 °C'`);
+  assert.equal(await evaluate(`document.getElementById('reference-source').textContent`), 'Learned normal temperature',
+    'An unfinished plan retains the published learned comfort reference');
+  await evaluate(`homeFixture.planningReference = false; await homeFixture.poll()`);
   assert.equal(await evaluate(`document.getElementById('home-preferences-details').open`), false,
     'Permanent preferences start folded');
   assert.equal(await evaluate(`document.querySelector('#home-automation-pause > span').textContent`), 'Paused');
@@ -467,6 +483,10 @@ try {
   await send('Page.reload');
   await until(`document.getElementById('dhwr-message').textContent === 'Circulation stopped · device confirmed.'`);
   assert.match(await evaluate(`document.getElementById('heating-test-message').textContent`), /Reduced heating requested/);
+  await evaluate(`homeFixture.replica = true; await homeFixture.poll()`);
+  await until(`document.getElementById('dhwr-message').textContent === 'Recorded circulation stop request. Live confirmation is unavailable on this computer.'`);
+  assert.equal(await evaluate(`document.getElementById('test-circulation').disabled`), true,
+    'Replica stops report saved intent without pretending to wait for local device feedback');
   assert.deepEqual(errors, [], 'Production monitor runs without browser exceptions');
   console.log(`Home controls browser checks passed. Synthetic screenshots: ${artifacts}`);
 } finally {

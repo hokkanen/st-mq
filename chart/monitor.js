@@ -21,7 +21,7 @@ import './charging-setup.css';
 import { createHistoryChart } from './history-chart.js';
 import { fetchChartResponse } from './chart-request.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
-import { activeRates, rateRows, temporaryValues, priceControlState, renderHomePolicy, homeIndoorEstimate, homeReferenceSummary } from './home-controls.js';
+import { activeRates, rateRows, temporaryValues, priceControlState, renderHomePolicy, homeIndoorEstimate, homeReferenceValue, homeReferenceSummary } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, h66ReadingGroups, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderRecordingOverview, recordingOverviewRefresh } from './recording.js';
 import { createEnergyChecksRefresh } from './energy-check-refresh.js';
@@ -509,7 +509,11 @@ function renderHeatingTests(s) {
       if (s.dhwr?.requestedAt > circulationStopAt) {
         circulationStopAt = undefined; circulationStopConfirmed = false;
       }
-      if (s.dhwr?.restorationPending) $('dhwr-message').textContent = 'Stopping circulation. Restoration is still pending.';
+      if (isReadOnlyReplica(s) && (s.dhwr?.restorationPending || actionReceiptRecent(circulationStopAt, s.now)))
+        $('dhwr-message').textContent = s.dhwr?.restorationPending
+          ? 'Recorded circulation restoration is pending. Check the master for current progress.'
+          : 'Recorded circulation stop request. Live confirmation is unavailable on this computer.';
+      else if (s.dhwr?.restorationPending) $('dhwr-message').textContent = 'Stopping circulation. Restoration is still pending.';
       else if (circulationStopPending(s, circulationStopAt)) $('dhwr-message').textContent = 'Stop sent. Waiting for a new device report to verify the request.';
       else if (actionReceiptRecent(circulationStopAt, s.now)) {
         circulationStopConfirmed ||= s.dhwr?.confirmed === true && s.dhwr?.actualOn === false;
@@ -951,7 +955,7 @@ function render(s) {
     title: 'Hot-water circulation', detail: `${dhwr.summary}. ${dhwr.state.detail}\n\n${dhwr.request}. Electrical feedback does not confirm water flow.` });
   $('dhwr-note').textContent = dhwr.summaryNote;
   $('dhwr').classList.toggle('stale', dhwr.attention);
-  const reference = s.decision.comfort?.targetC ?? s.settings?.comfort?.targetC;
+  const reference = homeReferenceValue(s);
   $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C` : replica ? 'Unavailable' : 'Learning';
   $('reference').dataset.empty = !s.demoComfortTargetC && !Number.isFinite(reference);
   $('reference-source').textContent = s.demoComfortTargetC ? 'Demo reference only' : replica && !Number.isFinite(reference) ? 'No recorded normal temperature' : homeReferenceSummary(s);

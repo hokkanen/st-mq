@@ -192,6 +192,15 @@ test('initial and partially fitted models do not claim overall temperature readi
   assert.match(partial.coefficients.find(row => row.key === 'hydronicCPerKwh').detail, /slow reserve before it reaches indoor air/);
 });
 
+test('normal-reference pause explanations have one prefix and sentence ending', () => {
+  for (const reason of ['Learning paused: a contributing observation is unavailable.', 'a contributing observation is unavailable']) {
+    const display = learningDisplay({ adaptive: { baselineC: 21.4,
+      comfortLearning: { status: 'waiting-for-observations', reason } } });
+    assert.match(display.metrics[3].evidence, /Learning paused: a contributing observation is unavailable\.$/);
+    assert.doesNotMatch(display.metrics[3].evidence, /paused: Learning paused|\.\./);
+  }
+});
+
 test('Home explains retained intervals, held sensor readings and provisional normal temperature', () => {
   const display = learningDisplay({ adaptive: { baselineC: 21.2, health: { usableSamples: 96, phaseSamples: { normal: 96 } },
     comfortReference: { confidence: 'provisional-heating-demand-baseline' } } });
