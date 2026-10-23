@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve read-only Home plan and Fireplace windows during unchanged slave
+  pairing polls, and keep the recorded-plan explanation visible between updates.
+
 - Keep the learned Home comfort reference visible while a heating plan is being
   calculated, and remove repeated wording in its paused-learning explanation.
   Label saved circulation Stop receipts on a slave as recorded requests instead

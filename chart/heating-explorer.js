@@ -452,7 +452,11 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
         if (dialog.open) render(actions.snapshot());
       }
     },
-    tick() { if (dialog.open) actions.tick(); },
+    tick() {
+      if (!dialog.open) return;
+      if (!status || isReadOnlyReplica(status) || status.input === 'offline') renderRecorded();
+      else actions.tick();
+    },
     clear() { close(); actions.clear(); controlsSnapshot = undefined; renderedResult = undefined; },
   };
 }

@@ -1117,7 +1117,7 @@ async function refreshPairing() {
     historyRecovery.update({ ...lastStatus, webAccess });
     renderInstanceRole(document, lastStatus);
     if (dashboardStatusReceived && isReadOnlyReplica(lastStatus)) {
-      garageDoors.close(); fireplacePanel.close(); heatingExplorer.clear();
+      if (changed) { garageDoors.close(); fireplacePanel.close(); heatingExplorer.clear(); }
       renderReplicaStatus(document, lastStatus, { formatTime: time });
     }
     if (changed && dashboardStatusReceived) await refresh({ forceChart: true });

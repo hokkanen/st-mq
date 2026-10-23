@@ -151,6 +151,7 @@ try {
         } else { data.previewId = null; data.snapshotId += '-' + (++explorerFixture.generation); explorerFixture.stale = false; }
         return Response.json(data);
       }
+      if (path === '/api/pair' && explorerFixture.pair) return Response.json(explorerFixture.pair);
       if (body) throw new Error('Unexpected mutation in heating explorer fixture: ' + path);
       const response = await nativeFetch(input, options);
       if (path !== '/api/status') return response;
@@ -172,11 +173,16 @@ try {
         if (planner.role === 'slave') value.lastDecision = {payload: {phase: 'normal'}};
       }
       if (explorerFixture.recorded) value.input = 'offline';
+      if (explorerFixture.pair) {
+        value.topology = 'pair'; value.pair = structuredClone(explorerFixture.pair);
+        value.role = explorerFixture.pair.role; value.readOnly = !explorerFixture.pair.canControl;
+      }
       return Response.json(value);
     };
     const nativeInterval = globalThis.setInterval;
     globalThis.setInterval = (callback, delay, ...args) => {
       if (delay === 15000 && callback.toString().includes('background')) explorerFixture.poll = callback;
+      if (delay === 3000) explorerFixture.pairPoll = callback;
       return nativeInterval(callback, delay, ...args);
     };
   ` });
@@ -372,6 +378,23 @@ try {
   assert.equal(await evaluate(`document.getElementById('heating-explorer-dialog').open`),true,'A recorded plan stays readable across polling');
   assert.match(await evaluate(`document.getElementById('heating-explorer-message').textContent`),/Recorded history only/);
   assert.equal(await evaluate(`explorerFixture.requests.length`),beforeRecorded,'Recorded view does not request live simulation');
+  await pause(1200);
+  assert.match(await evaluate(`document.getElementById('heating-explorer-message').textContent`), /Recorded history only/,
+    'The one-second display tick preserves the recorded explanation');
+  await evaluate(`document.getElementById('heating-explorer-close').click(); explorerFixture.recorded=false;
+    explorerFixture.pair = { role:'slave',canControl:false,nodeId:'synthetic-viewer',pairId:'synthetic-pair',
+      transition:null,webAccess:{role:'family',source:'password'} }; await explorerFixture.poll();
+    document.getElementById('home-planned-change').click(); await explorerFixture.pairPoll()`);
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-dialog').open`), true,
+    'Unchanged slave management polls preserve the recorded plan window');
+  assert.match(await evaluate(`document.getElementById('heating-explorer-message').textContent`), /Saved decision from local history/);
+  await evaluate(`document.getElementById('heating-explorer-close').click();
+    document.getElementById('fireplace-shortcut').click(); await explorerFixture.pairPoll()`);
+  assert.equal(await evaluate(`document.getElementById('fireplace-dialog').open`), true,
+    'Unchanged slave management polls preserve the read-only fireplace window');
+  await evaluate(`explorerFixture.pair.role='protected'; await explorerFixture.pairPoll()`);
+  assert.equal(await evaluate(`document.getElementById('fireplace-dialog').open`), false,
+    'An actual authority transition still closes stale windows');
   assert.deepEqual(errors, [], 'Production dashboard has no browser exceptions');
   console.log(`Heating explorer browser checks passed. Synthetic screenshots: ${artifacts}`);
 } finally {
