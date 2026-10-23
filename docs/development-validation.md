@@ -30,6 +30,10 @@ These tests never operate installed services. See [Linux deployment](linux-deplo
 and the [paired deployment procedure](paired-deployment.md) for runtime checks.
 Service-preflight cases check specific mismatch diagnostics, suppression of raw
 service values and rejection before building, locking or changing the runtime.
+User-bus discovery checks preserve explicit session settings and reject missing,
+unowned or unsafe default bus paths. Run the disposable systemd test below with
+`env -u DBUS_SESSION_BUS_ADDRESS -u XDG_RUNTIME_DIR` to cover a terminal without
+session variables through setup, running deployment and stopped deployment.
 `test/linux-vip-helper.test.js` checks conditional helper refresh using isolated
 installation files and simulated systemd metadata. Deployment tests cover the
 password-free user-service path, authentication before Stop for helper changes,

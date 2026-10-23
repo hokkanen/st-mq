@@ -101,6 +101,20 @@ export function servicePath(c) {
   return join(c.service_scope === 'user' ? join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd/user') : '/etc/systemd/system', c.service_name);
 }
 
+// Non-login terminals can lack both bus variables even while this account's
+// persistent user manager is running. Use only its existing, owned local bus;
+// explicit session settings remain authoritative and no manager is started.
+export function userServiceEnvironment({ env = process.env, uid = process.getuid?.(), stat = lstatSync } = {}) {
+  if (env.DBUS_SESSION_BUS_ADDRESS || env.XDG_RUNTIME_DIR || !Number.isInteger(uid) || uid < 0) return env;
+  const runtime = `/run/user/${uid}`;
+  try {
+    const directory = stat(runtime), bus = stat(join(runtime, 'bus'));
+    if (directory.isDirectory() && directory.uid === uid && !(directory.mode & 0o077)
+      && bus.isSocket() && bus.uid === uid) return { ...env, XDG_RUNTIME_DIR: runtime };
+  } catch { /* Leave unavailable managers to the normal command/query checks. */ }
+  return env;
+}
+
 function digestTree(root, boundary = root) {
   const hashes = [];
   function walk(path) {
@@ -166,12 +180,14 @@ function serviceInspector(c, { run = runCommand, unitPath = servicePath, signal 
   const command = (exe, args, options = {}) => run(exe, args, { signal, ...options });
   const systemctl = (...args) => {
     const options = { timeout: 120000, acceptedExitCodes: args[0] === 'show' ? [0, 1] : [0] };
-    return c.service_scope === 'user' ? command('systemctl', ['--user', ...args], options)
+    return c.service_scope === 'user' ? command('systemctl', ['--user', ...args], { ...options, env: userServiceEnvironment() })
       : command('sudo', ['-n', 'systemctl', ...args], options);
   };
   const show = async () => {
     const output = await systemctl('show', c.service_name, '--property=LoadState,ActiveState,SubState,MainPID,Transient,FragmentPath,DropInPaths,NeedDaemonReload,WorkingDirectory,ExecStart,User');
-    return Object.fromEntries(output.split('\n').filter(Boolean).map(line => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1)]; }));
+    const properties = Object.fromEntries(output.split('\n').filter(Boolean).map(line => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1)]; }));
+    if (!properties.LoadState) fail(`Could not query the ${c.service_scope} systemd manager. Check that its bus is available to this terminal before retrying.`);
+    return properties;
   };
   const assertService = async (active = true, listenerReady = active) => {
     const s = await show();

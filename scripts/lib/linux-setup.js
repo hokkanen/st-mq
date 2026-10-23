@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { DeploymentSafetyError, validateStandby } from './paired-deployment.js';
 import { runCommand } from './deployment-command.js';
-import { main as runtimeOperation, checkoutRoot, parseEnvironment, validateConnection, validateInstalledRuntime, readPair, readLocalStatus, validateStandalone, servicePath } from './linux-deployment.js';
+import { main as runtimeOperation, checkoutRoot, parseEnvironment, validateConnection, validateInstalledRuntime, readPair, readLocalStatus, validateStandalone, servicePath, userServiceEnvironment } from './linux-deployment.js';
 import { inspectPlatform, authenticateSudo, startSudoLease, provisionLinux } from './linux-setup-platform.js';
 import { connectSetupHA, HASetupUnavailableError, prepareConfigurationForHost } from './linux-setup-ha.js';
 import { createSetupTerminal } from './linux-setup-terminal.js';
@@ -230,7 +230,7 @@ export async function main(args = [], dependencies = {}) {
     }
     const checkedRun = (...args) => { lease?.assertValid(); return run(...args); };
     const service = (...a) => connection.service_scope === 'user'
-      ? checkedRun('systemctl', ['--user', ...a], { signal, timeout: 120000, acceptedExitCodes: a[0] === 'show' ? [0, 1] : [0] })
+      ? checkedRun('systemctl', ['--user', ...a], { signal, timeout: 120000, acceptedExitCodes: a[0] === 'show' ? [0, 1] : [0], env: userServiceEnvironment({ env, uid }) })
       : checkedRun('sudo', ['-n', 'systemctl', ...a], { signal, timeout: 120000, acceptedExitCodes: a[0] === 'show' ? [0, 1] : [0] });
     const needsPrivilege = true; // System units, helpers or user-service lingering require reviewed root operations.
     io.log(`Operation: ${topology}; input: ${config.input}.`);

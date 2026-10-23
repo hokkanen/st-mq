@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Find the existing user systemd bus for Linux setup and deployment from terminals
+  without session variables. Report an unavailable manager separately from service
+  mismatches, preserving explicit session settings and all deployment checks.
+
 - Identify the failed Linux deployment service checks instead of reporting one
   generic mismatch, while keeping private service values out of errors.
 

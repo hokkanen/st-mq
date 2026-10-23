@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { main, LinuxDeploymentError, validateConnection, validateEnvironment, parseEnvironment, serviceText,
-  privateFile, readPair, canonical, checkoutRoot, validateInstalledRuntime } from '../scripts/lib/linux-deployment.js';
+  privateFile, readPair, canonical, checkoutRoot, validateInstalledRuntime, userServiceEnvironment } from '../scripts/lib/linux-deployment.js';
 
 import { validateStandby } from '../scripts/lib/paired-deployment.js';
 import { PairManager } from '../src/pairing/manager.js';
@@ -101,6 +101,26 @@ test('standby evidence requires identity, recent peer contact, non-control and s
     { peer: { ...p.peer, reachable: false } }, { peer: { ...p.peer, lastSeenAt: f.state.now - 16000 } }, { sync: { state: 'syncing' } },
     { error: 'synthetic-error' }, { bootstrapPending: true }]) assert.throws(() => validateStandby({ ...p, ...patch }, null, f.state.now, true));
   assert.throws(() => validateStandby({ ...p, nodeId: 'other' }, p, f.state.now), /identity/);
+});
+
+test('user systemd commands discover only the current account bus when session variables are absent', () => {
+  const env = { PATH: '/synthetic/bin' }, uid = 1001, paths = [];
+  const directory = { uid, mode: 0o40700, isDirectory: () => true };
+  const bus = { uid, isSocket: () => true };
+  const stat = path => { paths.push(path); return path.endsWith('/bus') ? bus : directory; };
+  assert.deepEqual(userServiceEnvironment({ env, uid, stat }), { PATH: env.PATH, XDG_RUNTIME_DIR: '/run/user/1001' });
+  assert.deepEqual(paths, ['/run/user/1001', '/run/user/1001/bus']);
+  assert.deepEqual(env, { PATH: '/synthetic/bin' }, 'Discovery must not modify the caller environment');
+  for (const explicit of [{ ...env, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/synthetic/bus' }, { ...env, XDG_RUNTIME_DIR: '/synthetic/runtime' }]) {
+    assert.equal(userServiceEnvironment({ env: explicit, uid, stat: () => assert.fail('Explicit session settings must be preserved') }), explicit);
+  }
+  for (const [dir, socket] of [
+    [{ ...directory, uid: 1002 }, bus], [{ ...directory, mode: 0o40755 }, bus],
+    [{ ...directory, isDirectory: () => false }, bus], [directory, { ...bus, uid: 1002 }],
+    [directory, { ...bus, isSocket: () => false }],
+  ]) assert.equal(userServiceEnvironment({ env, uid, stat: path => path.endsWith('/bus') ? socket : dir }), env);
+  assert.equal(userServiceEnvironment({ env, uid, stat: () => { throw new Error('Missing manager'); } }), env);
+  assert.equal(userServiceEnvironment({ env, uid: -1, stat: () => assert.fail('No current UID') }), env);
 });
 
 test('real current configuration preflight is read-only and rejects runtime-local history paths', async t => {
@@ -217,6 +237,25 @@ test('service preflight identifies every mismatch without exposing raw values or
   rmSync(f.unit); await reject('unit file missing');
   writeFileSync(f.unit, unit);
   assert.equal(readFileSync(join(f.data, 'database.sqlite'), 'utf8'), 'synthetic-retained-history');
+});
+
+test('unavailable systemd query is reported before installation checks or mutations', async t => {
+  for (const scope of ['user', 'system']) {
+    const f = fixture(t, scope); await f.setup();
+    const runner = f.deps.run, current = realpathSync(join(f.c.runtime_dir, 'current'));
+    for (const response of ['', 'synthetic-private-query-failure', 'ActiveState=active', 'LoadState=']) {
+      f.calls.length = 0;
+      f.deps.run = async (exe, args, options) => {
+        if ((exe === 'systemctl' || exe === 'sudo') && args.includes('show')) { f.calls.push([exe, ...args]); return response; }
+        return runner(exe, args, options);
+      };
+      await assert.rejects(f.invoke('deploy'), error => error.message.includes(`Could not query the ${scope} systemd manager`)
+        && !error.message.includes('persistent service') && !error.message.includes('synthetic-private-query-failure'));
+      assert(!f.calls.some(call => call.includes('stop') || call.includes('start') || call.includes('ci')));
+      assert.equal(existsSync(join(f.c.runtime_dir, 'deployment.lock')), false);
+      assert.equal(realpathSync(join(f.c.runtime_dir, 'current')), current);
+    }
+  }
 });
 
 test('master and unknown role are rejected before building or stopping', async t => {

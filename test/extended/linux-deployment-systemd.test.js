@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { main, readPair } from '../../scripts/lib/linux-deployment.js';
+import { main, readPair, userServiceEnvironment } from '../../scripts/lib/linux-deployment.js';
 
 test('native user systemd setup, listener ownership and deployment use only a disposable synthetic app', {
   skip: process.env.STMQ_REQUIRE_SYSTEMD_TESTS !== '1', timeout: 90000,
@@ -15,10 +15,11 @@ test('native user systemd setup, listener ownership and deployment use only a di
   const root = mkdtempSync(join(tmpdir(), 'linux-systemd-'));
   const service = 'synthetic-linux-deployment-' + randomUUID() + '.service';
   const unit = `/run/user/${process.getuid()}/systemd/user/${service}`;
+  const systemctl = (...args) => runCommand('systemctl', ['--user', ...args], { env: userServiceEnvironment() });
   t.after(async () => {
-    try { await runCommand('systemctl', ['--user', 'stop', service]); } catch { /* It might never have loaded. */ }
+    try { await systemctl('stop', service); } catch { /* It might never have loaded. */ }
     if (existsSync(unit)) rmSync(unit);
-    try { await runCommand('systemctl', ['--user', 'daemon-reload']); } catch { /* Preserve original test failure. */ }
+    try { await systemctl('daemon-reload'); } catch { /* Preserve original test failure. */ }
     rmSync(root, { recursive: true, force: true });
   });
   const source = join(root, 'source checkout'), privateDir = join(root, 'private'), data = join(root, 'data'), runtime = join(root, 'runtime with spaces');
@@ -54,10 +55,10 @@ server.listen(Number(process.env.STMQ_PORT),'127.0.0.1');process.on('SIGTERM',()
   refreshHelper: async () => assert.fail('Current helper must not be refreshed') };
   try { await main('setup', ['--connection', connection, '--apply'], dependencies); }
   catch (error) { t.diagnostic(observations.join('\n')); throw error; }
-  assert.equal(await runCommand('systemctl', ['--user', 'show', service, '--property=ActiveState', '--value']), 'inactive');
+  assert.equal(await systemctl('show', service, '--property=ActiveState', '--value'), 'inactive');
   // Verify the generated syntax with the host's native systemd parser.
-  await runCommand('systemd-analyze', ['--user', 'verify', unit]);
-  await runCommand('systemctl', ['--user', 'start', service]);
+  await runCommand('systemd-analyze', ['--user', 'verify', unit], { env: userServiceEnvironment() });
+  await systemctl('start', service);
   for (let attempt = 0; ; attempt++) {
     try { await readPair(c); break; } catch (error) {
       if (attempt > 30) {
@@ -73,8 +74,8 @@ server.listen(Number(process.env.STMQ_PORT),'127.0.0.1');process.on('SIGTERM',()
   assert.notEqual(realpathSync(join(runtime, 'current')), old);
   assert.equal(readFileSync(join(data, 'retained'), 'utf8'), 'synthetic-history');
   assert.equal((await readPair(c)).role, 'slave');
-  await runCommand('systemctl', ['--user', 'stop', service]);
+  await systemctl('stop', service);
   writeFileSync(join(source, 'revision'), 'synthetic-stopped-update'); git('add', 'revision'); git('commit', '-m', 'Synthetic stopped update');
   await main('deploy', ['--connection', connection, '--stopped'], dependencies);
-  assert.equal(await runCommand('systemctl', ['--user', 'show', service, '--property=ActiveState', '--value']), 'inactive');
+  assert.equal(await systemctl('show', service, '--property=ActiveState', '--value'), 'inactive');
 });

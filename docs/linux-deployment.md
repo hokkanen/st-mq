@@ -165,6 +165,16 @@ Use `systemctl --user` and `journalctl --user` for an existing user-scope
 installation. Private logs can contain installation details; keep them out of
 public issues.
 
+Setup and deployment locate the existing account-owned bus under `/run/user/<uid>`
+when both `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR` are absent. They preserve
+explicit session settings and do not create or start a user manager. If the bus
+is unavailable, log in with an active user systemd session before retrying.
+For manual `systemctl --user` commands in a terminal missing both variables, use:
+
+```sh
+XDG_RUNTIME_DIR="/run/user/$(id -u)" systemctl --user status st-mq.service
+```
+
 ## Deploy a later commit
 
 From the clean, committed source checkout:
