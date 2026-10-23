@@ -186,7 +186,7 @@ try {
     if (await evaluate('document.documentElement.dataset.theme') !== theme) await evaluate("document.getElementById('theme-toggle').click(); true");
     await until(`document.documentElement.dataset.theme === '${theme}'`);
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${width}px ${theme}: no horizontal overflow`);
-    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'All visible surfaces use one small inset');
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Card padding and nested indentation remain independent');
     assert.equal(await evaluate(`${$('instance-role')}.checkVisibility()`), true, 'Role is visible beside the operating mode');
     assert.equal(await evaluate(`${$('pairing-panel')}.nextElementSibling.contains(${$('events')})`), true, 'Paired computers sits immediately above Event log');
     const height = await evaluate(`${$('pairing-panel')}.getBoundingClientRect().height`);

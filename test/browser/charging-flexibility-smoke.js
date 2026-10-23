@@ -70,7 +70,7 @@ try {
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: code });
   };
   const screenshot = async name => {
-    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Visible surfaces use one small inset');
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Card padding and nested indentation remain independent');
     const result = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(result.data, 'base64'));
   };

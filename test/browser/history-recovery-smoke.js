@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../../src/main.js';
 import { loadConfig } from '../../src/app/config.js';
+import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 
 const directory = await mkdtemp(join(tmpdir(), 'history-recovery-browser-'));
 const screenshots = await mkdtemp(join(tmpdir(), 'history-recovery-screenshots-'));
@@ -53,12 +54,13 @@ try {
       if (request.url === '/api/pair/action' && request.method === 'POST') {
         const chunks = []; for await (const chunk of request) chunks.push(chunk);
         const body = JSON.parse(Buffer.concat(chunks).toString()); requests.push(body);
+        assert.equal(body.nodeId, peer.nodeId, 'Recovery retains the computer identity confirmed by the user');
         assert.equal(body.action, 'rejoin'); assert.equal(body.confirmed, true);
         assert.equal(body.previewId, peer.recovery.preview.previewId); assert.equal(body.discardUnrecovered, undefined);
         peer = { ...peer, peer: { ...peer.peer, role: 'slave', reason: undefined }, actions: { 'check-recovery': true, recover: false, rejoin: false },
           recovery: { ...peer.recovery, state: 'resolved', report: { status: 'no-recovery-needed', imported: 0, model: { status: 'unchanged' } } },
           uiOperation: { id: body.requestId, action: 'rejoin', state: 'complete' } };
-        return json(202, { status: peer });
+        return json(202, peer);
       }
       if (request.url === '/api/database-verification' && request.method === 'GET') verificationReads++;
       if (request.url === '/api/database-export' && request.method === 'POST') {
@@ -149,6 +151,7 @@ try {
     for (const width of [1440, 390, 320]) for (const theme of ['dark', 'light']) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: width === 320 ? 568 : 900, deviceScaleFactor: 1, mobile: false });
       await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
+      assert.deepEqual(await evaluate(`(${uiSpacingFailures.toString()})()`), [], `${name}: card and window padding stays separate from nested folds`);
       if (name === 'revision-review') await evaluate(`${$('history-recovery-review')}.scrollIntoView({block:'end'});true`);
       assert.equal(await evaluate("(() => { const b=document.querySelector('.history-recovery-body'); return b.scrollWidth <= b.clientWidth; })()"), true, `${name} fits the dialog`);
       await capture(`${name}-${width}-${theme}`);
@@ -351,7 +354,7 @@ try {
   assert(finishExport); finishExport();
   await until(`${$('database-export-message')}.textContent.includes('Database copy saved on the server')`);
   assert.equal(await evaluate(`${$('database-export-progress')}.hidden`), true);
-  topology = 'pair'; peer = { role: 'master', canControl: true, busy: false, peer: { reachable: true, role: 'slave' }, vip: { owned: true },
+  topology = 'pair'; peer = { nodeId: '22222222-2222-4222-8222-222222222222', role: 'master', canControl: true, busy: false, peer: { reachable: true, role: 'slave' }, vip: { owned: true },
     actions: { 'check-recovery': true, recover: false, rejoin: false }, recovery: { state: 'ready', donorRole: 'slave', preview } };
   recovery.sources.unshift({ id: 'peer', kind: 'peer', label: 'Paired computer', available: true });
   await send('Page.reload'); await until(`${$('pairing-panel')} && !${$('pairing-panel')}.hidden`);

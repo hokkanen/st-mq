@@ -1748,7 +1748,8 @@ A compact count and inventory action introduce the catalogue. Inventory issues
 remain visible as a counted disclosure, with their explanations inside it. Counting
 and selection guidance has its own fold. Adaptive measurements similarly keep a
 short count above their recording guide and measurement table. Recording details
-uses the [shared 12 px horizontal inset](ui-layout.md) at every viewport width.
+uses the [shared responsive spacing](ui-layout.md), keeping outer card padding
+separate from the smaller nested fold steps.
 Plain nested disclosures own their margin; health-card rows own their content
 padding without another group margin. The shared border stays continuous and
 table disclosures retain their cell alignment. Measurements use their stacked

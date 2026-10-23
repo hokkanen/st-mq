@@ -213,6 +213,7 @@ try {
     })()`), true, 'Activity strips stay below the plot and aligned after theme/viewport changes');
   };
   const checkRecordingHierarchy = async () => {
+    const inset = await evaluate("Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-inset'))");
     const folds = JSON.parse(await evaluate(`JSON.stringify(Array.from(document.querySelectorAll(
       '#recording-overview-details, .recording-data-group, [data-dataset-id="weather-snapshots"], [data-dataset-id="journal-context"], [data-dataset-id="state-settings"], .recording-storage-accounting'
     ), fold => {
@@ -227,7 +228,7 @@ try {
         assert.equal(fold.hiddenByEmpty, true, `${fold.label} is deliberately grouped inside a folded empty-dataset disclosure`);
         continue;
       }
-      assert.ok(fold.indent >= (fold.dataset ? 12 : 0), `${fold.label} keeps its place in the recording hierarchy (${fold.indent}px)`);
+      assert.ok(fold.indent >= (fold.dataset ? inset : 0), `${fold.label} keeps its place in the recording hierarchy (${fold.indent}px)`);
     }
   };
   await command('browsingContext.navigate', { context, url: base, wait: 'complete' });

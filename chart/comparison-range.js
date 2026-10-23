@@ -33,8 +33,8 @@ export function createComparisonRange({ api, document = globalThis.document, now
     onClose() { ++generation; loader.cancel(); root.setAttribute('aria-busy', 'false'); } });
   const start = $('comparison-date-start'), end = $('comparison-date-end');
   const form = $('comparison-range-form'), message = $('comparison-range-status'), retry = $('comparison-range-retry');
-  let selection = comparisonPeriod('today', now());
-  let activePreset = 'today', initialized = false, closed = false;
+  let selection = comparisonPeriod('week', now());
+  let activePreset = 'week', initialized = false, closed = false;
   let status, loaded, revision, recordingRevision, generation = 0, deferredForce = false;
   const listeners = [];
   function listen(node, event, handler) {

@@ -285,13 +285,13 @@ try {
       assert.equal(area.labels.length, 3, 'Both areas keep three current heating readings');
     }
     assert.equal(balance[0].columns, balance[1].columns, 'Both heating summaries use the same responsive layout');
-    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'All visible surfaces use one small inset');
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Card padding and nested indentation remain independent');
     const margins = await evaluate(`['temporary-details', 'home-preferences-details']
       .map(id => { const style = getComputedStyle(document.getElementById(id));
         return [style.marginInlineStart, style.marginTop, style.borderTopWidth]; })`);
     assert(margins.every(row => JSON.stringify(row) === JSON.stringify(margins[0])),
       'Home preferences use matching nested indentation, spacing and dividers');
-    assert.equal(margins[0][0], '12px');
+    assert.equal(margins[0][0], width <= 480 ? '8px' : width <= 800 ? '10px' : '12px');
     assert.equal(await evaluate(`document.getElementById('indoor-age').textContent`), 'Partly estimated · Bedroom');
     assert.equal(await evaluate(`document.getElementById('indoor').textContent.includes('20.4 °C')`), true);
     assert.equal(await evaluate(`document.getElementById('home-room-references')`), null);

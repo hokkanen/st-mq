@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Restore breathing room inside outer cards and windows while retaining smaller
+  nested fold indentation. Adjust both spacing levels for narrower screens.
+  Energy cost comparisons now initially select Last 7 days, matching Energy checks.
+
 - Confirm paired operations automatically with read-only requests to the original
   computer after reconnecting or reloading. Remove the action-resubmission button
   and reject actions reaching the wrong computer, preventing an unintended reverse

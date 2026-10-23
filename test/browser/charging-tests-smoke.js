@@ -112,7 +112,7 @@ try {
     }
   })()`);
   const screenshot = async (name, selector, { preserveScroll = false, viewport = false } = {}) => {
-    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Visible surfaces use one small inset');
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Card padding and nested indentation remain independent');
     // Fixed-position dialogs must be captured at document scroll zero: Chrome
     // otherwise clips background content at the dialog's document coordinates.
     await evaluate(`${viewport ? `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'});` : 'window.scrollTo(0, 0);'} ${preserveScroll ? '' : `document.querySelector(${JSON.stringify(selector)}).scrollTop = 0;`} true`);

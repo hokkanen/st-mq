@@ -7,6 +7,7 @@ import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { recoveryPage } from '../../src/app/configuration-recovery-page.js';
+import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 
 const directory = await mkdtemp(join(tmpdir(), 'stmq-recovery-browser-'));
 const screenshots = process.env.STMQ_RECOVERY_SCREENSHOT_DIR;
@@ -132,6 +133,7 @@ try {
           }).map(node=>node.id||node.tagName),reviewWidth:box.width};
     })()`);
     layouts.push({ name, ...geometry });
+    assert.deepEqual(await evaluate(`(${uiSpacingFailures.toString()})()`), [], `${name}: outer panels retain responsive padding`);
     assert(geometry.pageWidth <= geometry.viewport + 1, `${name}: document fits the viewport`);
     assert.deepEqual(geometry.escapes, [], `${name}: controls, paths and values remain inside viewport`);
     if (screenshots) {

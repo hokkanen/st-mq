@@ -368,7 +368,7 @@ try {
   assert.equal(requests.filter(item => item.action === 'restore-identity').length, beforeRestore + 1, 'Explicit fence confirmation restores exactly once');
   if (screenshots) await mkdir(screenshots, { recursive: true });
   const captureLayout = async (name, { details = false, anonymous = false } = {}) => {
-    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Visible surfaces use one small inset');
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Card padding and nested indentation remain independent');
     await evaluate(`document.getElementById('connections-details').open=true;document.getElementById('secure-web-access-details').open=true;
       for(const id of ['setup','network','update'])document.getElementById('secure-web-access-'+id+'-details').open=${details};true`);
     for (const theme of ['light', 'dark']) for (const width of [320, 390, 1440]) {

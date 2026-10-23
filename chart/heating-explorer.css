@@ -10,17 +10,17 @@ button.home-planned-change:focus-visible { outline: 2px solid var(--focus); outl
 .heating-explorer-dialog h3 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -.1px; }
 .heating-explorer-dialog h4 { margin: 0; font-size: 12px; font-weight: 600; }
 .heating-explorer-dialog button { min-height: 40px; margin: 0; }
-.heating-explorer-header { position: sticky; top: 0; z-index: 3; display: flex; justify-content: space-between; gap: 20px; padding: 26px var(--ui-inset) 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.heating-explorer-header { position: sticky; top: 0; z-index: 3; display: flex; justify-content: space-between; gap: 20px; padding: 26px var(--ui-surface-inset) 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .heating-explorer-header h2 { margin: 0; font-size: 24px; letter-spacing: -.65px; }
 .heating-explorer-header .heating-explorer-eyebrow { margin: 0 0 8px; font-size: 10px; text-transform: uppercase; letter-spacing: 1.4px; color: var(--muted); }
 .heating-explorer-header #heating-explorer-intro { margin-bottom: 0; }
 .heating-explorer-close.secondary-button { width: 36px; min-height: 36px; height: 36px; flex: none; padding: 0; font-size: 25px; color: var(--muted); }
-.heating-explorer-snapshot { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px var(--ui-inset); background: var(--surface-soft); border-block: 1px solid var(--border); font-size: 10px; color: var(--muted); }
+.heating-explorer-snapshot { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px var(--ui-surface-inset); background: var(--surface-soft); border-block: 1px solid var(--border); font-size: 10px; color: var(--muted); }
 .heating-explorer-snapshot button { font-size: 10px; min-height: 34px; padding: 6px 10px; white-space: nowrap; }
-.heating-explorer-dialog .heating-explorer-message { margin: 0; padding: 14px var(--ui-inset); color: var(--muted); }
+.heating-explorer-dialog .heating-explorer-message { margin: 0; padding: 14px var(--ui-surface-inset); color: var(--muted); }
 .heating-explorer-message:empty { display: none; }
 .heating-explorer-message[data-error="true"] { color: var(--error-text); background: var(--error-bg); }
-.heating-explorer-section { margin: 0 var(--ui-inset); padding: 22px 0; border-bottom: 1px solid var(--border); }
+.heating-explorer-section { margin: 0 var(--ui-surface-inset); padding: 22px 0; border-bottom: 1px solid var(--border); }
 #heating-explorer-comparison-section, #heating-explorer-form { scroll-margin-top: 155px; }
 .heating-explorer-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .heating-explorer-section-heading > .muted { font-size: 10px; }
@@ -62,7 +62,7 @@ button.home-planned-change:focus-visible { outline: 2px solid var(--focus); outl
 .heating-explorer-metric strong { display: block; margin-top: 8px; font-size: 24px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
 .heating-explorer-metric small { display: block; margin-top: 8px; font-size: 10px; line-height: 1.5; color: var(--muted); }
 .heating-explorer-note { border-left: 2px solid var(--notice-border); padding: 10px var(--ui-inset); font-size: 11px; line-height: 1.65; color: var(--muted); background: var(--surface-soft); }
-#heating-explorer-context { margin: 20px var(--ui-inset) 0; }
+#heating-explorer-context { margin: 20px var(--ui-surface-inset) 0; }
 .heating-explorer-chart { margin: 20px 0; padding: 14px var(--ui-inset); border: 1px solid var(--border); border-radius: 8px; }
 .heating-explorer-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
 .heating-explorer-chart figcaption { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 8px 12px 0; color: var(--muted); font-size: 10px; }
@@ -76,15 +76,15 @@ button.home-planned-change:focus-visible { outline: 2px solid var(--focus); outl
 .heating-explorer-table thead th { color: var(--muted); font-size: 10px; font-weight: 500; }
 .heating-explorer-application { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
 .heating-explorer-application button { margin-top: 5px; font-size: 11px; }
-.heating-explorer-footnotes { padding: 18px var(--ui-inset) 24px; }
+.heating-explorer-footnotes { padding: 18px var(--ui-surface-inset) 24px; }
 .heating-explorer-footnotes ul { padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.7; }
 .heating-explorer-footnotes p { font-size: 11px; color: var(--muted); }
 @media (max-width: 650px) {
   .heating-explorer-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); border-radius: 10px; }
-  .heating-explorer-header { padding: 20px var(--ui-inset) 16px; gap: 10px; }
+  .heating-explorer-header { padding: 20px var(--ui-surface-inset) 16px; gap: 10px; }
   .heating-explorer-header h2 { font-size: 22px; }
-  .heating-explorer-snapshot { padding: 10px var(--ui-inset); align-items: flex-start; flex-wrap: wrap; gap: 6px; }
-  .heating-explorer-section { margin: 0 var(--ui-inset); padding: 20px 0; }
+  .heating-explorer-snapshot { padding: 10px var(--ui-surface-inset); align-items: flex-start; flex-wrap: wrap; gap: 6px; }
+  .heating-explorer-section { margin: 0 var(--ui-surface-inset); padding: 20px 0; }
   .heating-explorer-constraints { grid-template-columns: 1fr; }
   .heating-explorer-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto; grid-auto-flow: row; gap: 16px 12px; }
   .heating-explorer-metrics { grid-template-columns: 1fr; gap: 8px; }
@@ -94,9 +94,9 @@ button.home-planned-change:focus-visible { outline: 2px solid var(--focus); outl
   .heating-explorer-section-heading { align-items: flex-start; }
   .heating-explorer-timeline { gap: 6px; }
   .heating-explorer-timeline li { flex-basis: 110px; padding: 10px var(--ui-inset); }
-  .heating-explorer-dialog .heating-explorer-message { padding: 12px var(--ui-inset); }
-  .heating-explorer-footnotes { padding-inline: var(--ui-inset); }
-  #heating-explorer-context { margin-inline: var(--ui-inset); }
+  .heating-explorer-dialog .heating-explorer-message { padding: 12px var(--ui-surface-inset); }
+  .heating-explorer-footnotes { padding-inline: var(--ui-surface-inset); }
+  #heating-explorer-context { margin-inline: var(--ui-surface-inset); }
   .home-plan-open { font-size: 0; gap: 0; }
 }
 @media (prefers-reduced-motion: reduce) { .heating-explorer-dialog * { scroll-behavior: auto; } }

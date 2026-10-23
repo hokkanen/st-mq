@@ -6,7 +6,7 @@
 .recording-health-badge[hidden] { display: none; }
 .recording-status[data-tone="warning"] { border-color: var(--stale); }
 .recording-status[data-tone="critical"] { border-color: var(--error-text); }
-.recording-status-overview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: center; gap: 16px 24px; padding: 14px var(--ui-inset); }
+.recording-status-overview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: center; gap: 16px 24px; padding: 14px var(--ui-surface-inset); }
 .recording-status-reading { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; min-width: 0; color: var(--text); text-decoration: none; }
 .recording-status-label { color: var(--muted); font-size: 11px; line-height: 1.5; }
 .recording-status-reading strong { font-size: 14px; font-weight: 550; line-height: 1.5; overflow-wrap: anywhere; }
@@ -17,7 +17,7 @@
 .recording-status-details { color: var(--muted); font-size: 11px; line-height: 1.5; padding: 10px 0; text-underline-offset: 3px; }
 .recording-status-reading:hover strong, .recording-status-details:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .recording-status a:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; border-radius: 3px; }
-.recording-status-notices:has(> :not([hidden])) { padding: 12px var(--ui-inset); border-top: 1px solid var(--border); background: var(--surface-soft); }
+.recording-status-notices:has(> :not([hidden])) { padding: 12px var(--ui-surface-inset); border-top: 1px solid var(--border); background: var(--surface-soft); }
 .recording-status-issues { display: grid; gap: 8px; list-style: none; padding: 0; margin: 0; }
 .recording-status-issue { display: flex; align-items: baseline; gap: 8px; line-height: 1.6; }
 .recording-status-issue::before { content: '!'; flex: 0 0 16px; text-align: center; font-weight: 650; color: var(--stale); }
@@ -30,14 +30,14 @@
 .recording-status-issues:not([hidden]) + .recording-status-freshness:not([hidden]) { margin-top: 10px; }
 @media (max-width: 800px) {
   .recording-status { margin-bottom: 16px; }
-  .recording-status-overview { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 20px; padding: 14px var(--ui-inset); align-items: start; }
+  .recording-status-overview { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 20px; padding: 14px var(--ui-surface-inset); align-items: start; }
   .recording-status-details { grid-column: 1 / -1; justify-self: start; padding: 2px 0; }
-  .recording-status-notices:has(> :not([hidden])) { padding: 12px var(--ui-inset); }
+  .recording-status-notices:has(> :not([hidden])) { padding: 12px var(--ui-surface-inset); }
 }
 @media (max-width: 480px) {
-  .recording-status-overview { gap: 12px 16px; padding: 12px var(--ui-inset); }
+  .recording-status-overview { gap: 12px 16px; padding: 12px var(--ui-surface-inset); }
   .recording-status-reading strong { font-size: 13px; }
-  .recording-status-notices:has(> :not([hidden])) { padding: 10px var(--ui-inset); }
+  .recording-status-notices:has(> :not([hidden])) { padding: 10px var(--ui-surface-inset); }
 }
 /* Recording details uses one hierarchy: status, retained data, history tools. */
 .recording-health { margin: 0 0 24px; }

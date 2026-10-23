@@ -96,17 +96,19 @@ test('comparison shortcuts use Finnish calendar dates, inclusive weeks and compl
   ]) assert.deepEqual(comparisonPeriod(preset, Date.parse(at)), { startDate: dates[0], endDate: dates[1] }, `${preset} at ${at}`);
 });
 
-test('the first status sets Finnish dates and later midnight polls preserve the selected period', async t => {
+test('comparisons default to seven Finnish dates and later midnight polls preserve the selected period', async t => {
   const f = fixture(); t.after(() => f.controller.close());
+  assert.equal(f.start.value, '2026-09-21'); assert.equal(f.end.value, '2026-09-27');
+  assert.equal(f.get('comparison-period-week').getAttribute('aria-pressed'), 'true');
   const first = f.controller.refresh({ now: Date.parse('2026-09-27T21:30:00Z') });
   await tick();
-  assert.equal(f.start.value, '2026-09-28'); assert.equal(f.end.value, '2026-09-28');
+  assert.equal(f.start.value, '2026-09-22'); assert.equal(f.end.value, '2026-09-28');
   assert.equal(new URL(f.requests[0].path, 'http://fixture.invalid').searchParams.get('summary'), '1');
   reply(f.requests[0]); await first;
   await f.controller.refresh({ now: Date.parse('2026-09-28T21:30:00Z') });
   assert.equal(f.requests.length, 1);
-  assert.equal(f.start.value, '2026-09-28'); assert.equal(f.end.value, '2026-09-28');
-  assert.match(f.message.textContent, /^2026-09-28 · Finnish time$/);
+  assert.equal(f.start.value, '2026-09-22'); assert.equal(f.end.value, '2026-09-28');
+  assert.match(f.message.textContent, /^2026-09-22 – 2026-09-28 · Finnish time$/);
 
   f.preset('week'); await tick(); reply(f.requests[1]); await tick();
   assert.equal(f.start.value, '2026-09-23'); assert.equal(f.end.value, '2026-09-29');
@@ -216,9 +218,9 @@ test('same-date refreshes show measured stage progress and preserve stale eviden
   const replacement = f.controller.refresh({ now: NOW, fireplace: { revision: 2 } }); await tick();
   assert.equal(f.form.dataset.state, 'loading');
   assert.equal(f.root.dataset.stale, 'true');
-  assert.match(f.message.textContent, /Showing 2026-09-27 until ready/);
+  assert.match(f.message.textContent, /Showing 2026-09-21 – 2026-09-27 until ready/);
   f.requests[1].onProgress({ stage: 'reading-energy', completed: 1, total: 4 });
-  assert.match(f.message.textContent, /Reading energy 25%.*Showing 2026-09-27 until ready/);
+  assert.match(f.message.textContent, /Reading energy 25%.*Showing 2026-09-21 – 2026-09-27 until ready/);
   f.requests[1].onProgress({ stage: 'preparing-summary' });
   assert.match(f.message.textContent, /Calculating comparisons/);
   assert.doesNotMatch(f.message.textContent, /%/);
@@ -301,15 +303,15 @@ test('failed period requests identify retained results and retry replaces them o
   const f = fixture(); t.after(() => f.controller.close());
   const first = f.controller.refresh({ now: NOW }); await tick(); reply(f.requests[0], 1); await first;
   f.preset('month'); await tick();
-  assert.match(f.message.textContent, /Loading 2026-08-01 – 2026-08-31.*Showing 2026-09-27 until ready/);
+  assert.match(f.message.textContent, /Loading 2026-08-01 – 2026-08-31.*Showing 2026-09-21 – 2026-09-27 until ready/);
   assert.equal(f.root.dataset.stale, 'true'); assert.equal(f.root.getAttribute('aria-busy'), 'true');
   f.requests[1].reject(new Error('Fixture unavailable')); await tick();
   assert.equal(f.form.dataset.state, 'error'); assert.equal(f.retry.hidden, false);
-  assert.match(f.message.textContent, /Unable to load 2026-08-01 – 2026-08-31: Fixture unavailable.*Showing 2026-09-27/);
-  assert.match(f.root.textContent, /€1.00/); assert.equal(f.form.dataset.startDate, '2026-09-27');
+  assert.match(f.message.textContent, /Unable to load 2026-08-01 – 2026-08-31: Fixture unavailable.*Showing 2026-09-21 – 2026-09-27/);
+  assert.match(f.root.textContent, /€1.00/); assert.equal(f.form.dataset.startDate, '2026-09-21');
   f.retry.emit('click'); await tick();
   assert.equal(f.requests.length, 3); assert.equal(f.form.dataset.state, 'loading');
-  assert.match(f.message.textContent, /Showing 2026-09-27 until ready/);
+  assert.match(f.message.textContent, /Showing 2026-09-21 – 2026-09-27 until ready/);
   reply(f.requests[2], 6); await tick();
   assert.equal(f.form.dataset.state, 'ready'); assert.equal(f.retry.hidden, true);
   assert.equal(f.root.dataset.stale, 'false'); assert.equal(f.root.getAttribute('aria-busy'), 'false');

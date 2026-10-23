@@ -129,9 +129,9 @@ try {
     requestAnimationFrame(frame);
   })`);
   const checkIndentation = async () => {
-    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'All visible surfaces use one small inset');
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Card padding and nested indentation remain independent');
     assert.deepEqual(await evaluate(`(() => {
-      const inset = 12;
+      const inset = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-inset'));
       const left = node => node.getBoundingClientRect().left;
       const panelLeft = left(document.getElementById('comparison-toggle')) + inset;
       const failures = [];

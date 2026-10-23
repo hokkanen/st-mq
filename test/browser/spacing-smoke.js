@@ -86,10 +86,14 @@ try {
     assert.deepEqual(await evaluate(`(${uiSpacingFailures.toString()})()`), [], label);
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'), true, `${label}: page fits`);
   };
-  for (const width of [320, 390, 640, 641, 768, 1440]) for (const theme of ['dark', 'light']) {
+  for (const width of [320, 360, 390, 480, 481, 640, 641, 768, 800, 801, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)};true`);
     await check(`${width}/${theme}/expanded`);
+    if ([320, 390, 1440].includes(width)) {
+      const shot = await send('Page.captureScreenshot', { format: 'png' });
+      await writeFile(join(directory, `spacing-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
+    }
     if (width === 320 || width === 1440) {
       for (const { index, id } of dialogs) {
         await evaluate(`document.querySelectorAll('dialog')[${index}].showModal();true`);
@@ -99,6 +103,21 @@ try {
       }
     }
     coverage.push({ width, theme, folds: folds.length, dialogs: width === 320 || width === 1440 ? dialogs.length : 0 });
+  }
+  // Guard against repeating the original regression, or undoing the good part.
+  for (const width of [320, 768, 1440]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+    await evaluate("document.querySelector('#home-control').style.paddingInline='var(--ui-inset)';true");
+    assert((await evaluate(`(${uiSpacingFailures.toString()})()`)).some(failure => failure.rule === 'card/window padding'),
+      `${width}: the small fold step cannot replace outside card padding`);
+    await evaluate("document.querySelector('#home-control').style.removeProperty('padding-inline');document.getElementById('temporary-details').style.marginInlineStart='24px';true");
+    assert((await evaluate(`(${uiSpacingFailures.toString()})()`)).some(failure => failure.rule === 'one disclosure step'),
+      `${width}: roomy outer padding cannot become nested fold indentation`);
+    await evaluate("document.getElementById('temporary-details').style.marginInlineStart='';document.getElementById('temporary-details').style.paddingInlineStart='var(--ui-inset)';true");
+    assert((await evaluate(`(${uiSpacingFailures.toString()})()`)).some(failure => failure.rule === 'one disclosure step'),
+      `${width}: a nested level cannot add both margin and padding`);
+    await evaluate("document.getElementById('temporary-details').style.paddingInlineStart='';true");
+    await check(`${width}/regression-guards-restored`);
   }
   // Every static fold can close/reopen without changing its horizontal step.
   await evaluate("document.querySelectorAll('details').forEach(n=>n.open=false);true");

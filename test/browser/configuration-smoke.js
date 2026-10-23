@@ -121,7 +121,7 @@ try {
     assert.equal(applyRequests(), before, 'Cancel never applies configuration');
   };
   const capture = async name => {
-    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Visible surfaces use one small inset');
+    assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Card padding and nested indentation remain independent');
     await evaluate("document.getElementById('settings-review').scrollIntoView({block:'start',behavior:'instant'});true");
     await settle();
     const geometry = await evaluate(`(() => {

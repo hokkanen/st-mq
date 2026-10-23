@@ -246,19 +246,22 @@ fences are covered by `test/energy-check-refresh.test.js`. Date-scoped checks
 include complete meter/session boundaries, empty selections, DST days, concurrent
 different periods, explicit refresh and the absence of automatic completed-job
 rechecks. The recording-health browser fixture checks every nested disclosure's
-12 px inset, including widths either side of responsive layout breakpoints,
-compact inventory issues and their focus retention, independent energy date
-controls, and mobile counter-only storage explanations. Storage UI regressions
+responsive inset separately from outer card padding, including widths either
+side of responsive layout breakpoints, compact inventory issues and their focus
+retention, independent energy date controls, and mobile counter-only storage
+explanations. Storage UI regressions
 keep queued, background and local-task failures separate and label past-day
 fallback when the selected period is unavailable. The model-verification
 browser fixture also renders all History tools and recorded-data job states at
 320, 390, 768 and 1440 pixels in both themes.
 
 `node test/browser/dashboard-refresh-smoke.js` runs the complete built dashboard
-against a disposable simulation. It checks initial render, repeat status updates,
-role changes, advancing standby snapshots, energy refresh and reload. It asserts
-that the dashboard error banner stays hidden as well as checking uncaught browser
-exceptions: errors handled inside the dashboard refresh path must fail validation.
+against a disposable simulation. It checks matching seven-day defaults for cost
+comparisons and Energy checks, lazy comparison requests, initial render, repeat
+status updates, role changes, advancing standby snapshots, energy refresh and
+reload. It asserts that the dashboard error banner stays hidden as well as
+checking uncaught browser exceptions: errors handled inside the dashboard refresh
+path must fail validation.
 
 
 Run checks from the repository root. Ordinary tests, browser fixtures, container

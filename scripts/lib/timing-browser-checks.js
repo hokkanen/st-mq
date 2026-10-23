@@ -160,7 +160,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
         && inputs.every(node => node.getBoundingClientRect().height >= 40);
     })()`), true, 'Comparison date fields stay aligned and usable across display sizes');
     assert.equal(await evaluate(`(() => {
-      const inset = 12;
+      const inset = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-inset'));
       const left = node => node.getBoundingClientRect().left;
       const panelLeft = left(document.getElementById('comparison-toggle')) + inset;
       return ['#comparison-content', '.timing-intro', '.comparison-range-controls', '.timing-devices', '.timing-explanations > summary']
@@ -649,7 +649,9 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   await checkOpen(false);
   await tap(toggle);
   await until(expanded);
-  await waitComparison('2026-09-07');
+  await waitComparison('2026-09-01', '2026-09-07');
+  assert.equal(await evaluate("document.getElementById('comparison-period-week').getAttribute('aria-pressed')"), 'true',
+    'Reloading comparisons starts with Last 7 days');
   await checkComparison('model');
   await checkFits();
   await switchComparison('timing');
