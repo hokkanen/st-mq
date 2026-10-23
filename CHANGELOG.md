@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Mark held chart range edges and freshness endpoints as display boundaries,
+  preserving the original reading time instead of implying a new measurement.
+
 - Keep native charger meter increments distinct from power-based energy estimates
   in Charging comparisons, including mixed evidence. Update chart-explorer help
   and name retained-history stages during complete inventory measurements.

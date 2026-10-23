@@ -142,7 +142,7 @@ export function historyTooltipLabel(item) {
     const sensors = temperatureAttentionDetails(raw.attentionSensors, at => dateTime.format(at), { now: raw.intervalEnd ?? raw.x });
     details.push(`using last known readings${sensors ? `: ${sensors}` : ''}`);
   }
-  if (raw.carriedForward && Number.isFinite(raw.observedAt)) details.push(`last recorded ${dateTime.format(raw.observedAt)}`);
+  if ((raw.carriedForward || raw.displayBoundary) && Number.isFinite(raw.observedAt)) details.push(`last recorded ${dateTime.format(raw.observedAt)}`);
   const value = historyValueLabel(key, raw.componentValue ?? item.parsed.y, item.dataset.unit);
   return `${item.dataset.label}: ${value}${details.length ? ` · ${details.join(' · ')}` : ''}`;
 }

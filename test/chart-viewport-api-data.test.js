@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { chartRange, chartRequestRange, getChartData } from '../src/app/chart-data.js';
 import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
+import { historyTooltipLabel } from '../chart/history-tooltips.js';
 
 import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { addFireplace } from '../src/app/fireplace.js';
@@ -14,6 +15,35 @@ function observation(store, signal, value, at, extra = {}) {
   store.observation({ source: 'synthetic-chart', device: 'synthetic-room', signal, value,
     unit: 'degC', sourceTime: at, receivedAt: at, quality: [], ...extra });
 }
+
+test('calendar-edge scalar holds retain their source clock and cannot appear as new measurements', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const observedAt = from - 4 * MINUTE;
+  for (const signal of ['supply_temperature', 'heating_integral']) {
+    observation(store, signal, 12, observedAt);
+    observation(store, signal, 14, from + MINUTE);
+  }
+  observation(store, 'solar_radiation', 100, observedAt, { unit: 'W/m²' });
+  for (const [view, signal] of [['heating_water', 'supply_temperature'], ['heating_water', 'heating_integral'], ['weather', 'solar_radiation']]) {
+    const result = getChartData({ store, ...args, view });
+    const edge = result.series[signal]?.find(point => point.x === from);
+    assert(edge, `${signal} retains its existing calendar-edge value`);
+    assert.equal(edge.displayBoundary, true, signal);
+    assert.equal(edge.observedAt, observedAt, signal);
+    assert.equal(edge.interpolated, false, signal);
+    const unit = signal === 'heating_integral' ? '°min' : signal === 'solar_radiation' ? 'W/m²' : '°C';
+    const item = { dataset: { key: signal, label: signal, unit }, parsed: edge, raw: edge };
+    const label = historyTooltipLabel(item);
+    assert.match(label, /held display boundary; not a measurement/);
+    assert.match(label, /last recorded/);
+  }
+  const solar = getChartData({ store, ...args, view: 'weather' }).series.solar_radiation;
+  const expiry = solar.find(point => point.x === observedAt + 30 * MINUTE);
+  assert.equal(expiry?.displayBoundary, true, 'An expiry endpoint is also a display hold');
+  assert.equal(expiry?.observedAt, observedAt);
+  assert(solar.some(point => point.x === observedAt + 30 * MINUTE + 1 && point.y === null),
+    'Provenance changes cannot extend the existing freshness limit');
+});
 
 test('viewport requires an exact nonempty subset of the immutable calendar selection, including DST', () => {
   for (const [startDate, hours] of [['2026-03-29', 23], ['2026-10-25', 25]]) {

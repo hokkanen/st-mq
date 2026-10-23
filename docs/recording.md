@@ -962,6 +962,9 @@ edges and explicit gaps survive in step mode. Interpolated viewport boundaries
 carry the preceding source value separately so the browser can display a held
 step at the edge without retaining the interpolated value or fetching again.
 Null boundaries remain null even when that preceding value is known.
+Held scalar edges and freshness-expiry endpoints are also display boundaries,
+with their original source time retained. They do not create new measurement
+markers; their tooltip identifies the held value and its last recorded time.
 
 Runtime readings and native cumulative counters appear as individual hollow
 points without connecting lines; a reading does not prove a value throughout the

@@ -181,11 +181,12 @@ class HistoryLine {
       if (this.boundedHold) {
         const expires = previous.x + this.gap;
         if (this.clipEdges) {
-          const held = { ...previous, displayBoundary: true, observedAt: previous.x, interpolated: false };
+          const held = { ...previous, displayBoundary: true, observedAt: previous.observedAt ?? previous.x, interpolated: false };
           for (const boundary of [this.envelope.from, this.envelope.to])
             if (boundary > previous.x && boundary <= expires) this.envelope.add(boundary, previous.y, held);
           this.envelope.add(expires, previous.y, held);
-        } else this.envelope.add(Math.max(this.envelope.from, expires), previous.y, previous);
+        } else this.envelope.add(Math.max(this.envelope.from, expires), previous.y,
+          { ...previous, displayBoundary: true, observedAt: previous.observedAt ?? previous.x, interpolated: false });
       }
       this.envelope.add(Math.max(this.envelope.from, previous.x + (this.boundedHold ? this.gap : 0) + 1), null);
       this.envelope.add(x - 1, null);
@@ -204,7 +205,8 @@ class HistoryLine {
           ...(!this.stepped ? { heldValue: previous.y } : {}) });
       }
     } else if (!this.observationsOnly && !this.clipEdges && x >= this.envelope.from && previous?.x < this.envelope.from && (covered || x - previous.x <= this.gap))
-      this.envelope.add(this.envelope.from, previous.y, previous);
+      this.envelope.add(this.envelope.from, previous.y,
+        { ...previous, displayBoundary: true, observedAt: previous.observedAt ?? previous.x, interpolated: false });
     this.envelope.add(x, y, metadata); this.previous = { ...metadata, x, y };
     if (this.activity) this.activityScope = activityScope;
   }
@@ -946,8 +948,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const finishHeldLines = () => {
     for (const name of ['auxiliary_power', 'solar_radiation', ...DOOR_SIGNALS]) if (lines[name]?.previous) {
       const line = lines[name], previous = line.previous, nowEnd = Math.min(now, range.to), end = Math.min(nowEnd, previous.x + line.gap);
-      const metadata = DOOR_SIGNALS.includes(name) ? { ...previous, displayBoundary: true,
-        observedAt: previous.observedAt ?? previous.x, interpolated: false } : previous;
+      const metadata = { ...previous, displayBoundary: true,
+        observedAt: previous.observedAt ?? previous.x, interpolated: false };
       if (previous.x < range.from && end >= range.from) envelopes[name].add(range.from, previous.y, metadata);
       if (previous.x < end) envelopes[name].add(end, previous.y, metadata);
       if (end < nowEnd) envelopes[name].add(end + 1, null);
@@ -1002,8 +1004,10 @@ export function getChartData({ store, input = 'offline', contract = null, market
   flushTelemetry(Math.min(now, range.to));
   for (const name of LEARNING) if (lines[name]?.previous) {
     const previous = lines[name].previous, end = Math.min(now, range.to);
-    if (previous.x < range.from) envelopes[name].add(range.from, previous.y);
-    if (previous.x < end) envelopes[name].add(end, previous.y);
+    const metadata = { ...previous, displayBoundary: true,
+      observedAt: previous.observedAt ?? previous.x, interpolated: false };
+    if (previous.x < range.from) envelopes[name].add(range.from, previous.y, metadata);
+    if (previous.x < end) envelopes[name].add(end, previous.y, metadata);
   }
   finishHeldLines();
   if (input !== 'simulated' && envelopes.solar_radiation)
