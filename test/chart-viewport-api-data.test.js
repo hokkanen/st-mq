@@ -116,9 +116,10 @@ test('a viewport between scalar readings clips their original line and clearly i
   observation(store, 'operating_mode', 1, start, { unit: 'state' });
   observation(store, 'operating_mode', 2, start + 8 * MINUTE, { unit: 'state' });
   const linear = getChartData({ store, ...args, left: 'integral', viewFrom, viewTo });
-  const edges = linear.series.indoor_temperature.filter(point => !point.displayContext);
+  const room = getChartData({ store, ...args, left: 'indoor_temperature', viewFrom, viewTo });
+  const edges = room.series.indoor_temperature.filter(point => !point.displayContext);
   assert.deepEqual(edges.map(point => [point.x, point.y]), [[viewFrom, 21], [viewTo, 22]]);
-  assert.deepEqual(linear.series.indoor_temperature.filter(point => point.displayContext).map(point => [point.x, point.y]),
+  assert.deepEqual(room.series.indoor_temperature.filter(point => point.displayContext).map(point => [point.x, point.y]),
     [[start, 20], [start + 8 * MINUTE, 24]], 'Original source knots remain available to cubic display');
   assert.deepEqual(linear.series.heating_integral.map(point => point.y), [-80, -60]);
   assert.deepEqual(edges.map(point => point.heldValue), [20, 20],
@@ -129,7 +130,7 @@ test('a viewport between scalar readings clips their original line and clearly i
     && point.observedAt === start && point.nextObservedAt === start + 8 * MINUTE));
   for (const left of ['temperatures', 'indoor_temperature']) {
     const temperatures = getChartData({ store, ...args, left, viewFrom, viewTo });
-    assert.deepEqual(temperatures.series.indoor_temperature, linear.series.indoor_temperature,
+    assert.deepEqual(temperatures.series.indoor_temperature, room.series.indoor_temperature,
       'A room temperature must retain the same interpolated display boundaries on either axis');
   }
   const stepped = getChartData({ store, ...args, left: 'operating_mode', viewFrom, viewTo });
@@ -137,7 +138,7 @@ test('a viewport between scalar readings clips their original line and clearly i
   assert(stepped.series.operating_mode.every(point => point.displayBoundary && !point.interpolated));
   assert(stepped.series.operating_mode.every(point => !Object.hasOwn(point, 'heldValue')),
     'Existing step boundaries need no alternate display value');
-  assert.equal(stepped.meta.lastReadings.indoor_temperature.x, start + 8 * MINUTE,
+  assert.equal(room.meta.lastReadings.indoor_temperature.x, start + 8 * MINUTE,
     'Boundary interpolation never replaces an original observation timestamp');
 });
 
@@ -153,8 +154,9 @@ test('clipped scalar context cannot bridge missing readings or extend past selec
   observation(store, 'outdoor_temperature', 5, from + 24 * HOUR - MINUTE);
   observation(store, 'outdoor_temperature', 6, from + 24 * HOUR + MINUTE);
   const missing = getChartData({ store, ...args, left: 'operating_mode', viewFrom: start + 2 * MINUTE, viewTo: start + 4 * MINUTE });
-  assert(missing.series.indoor_temperature.filter(point => !point.displayContext).every(point => point.y === null));
-  assert(missing.series.indoor_temperature.filter(point => !point.displayContext).every(point => point.heldValue === 20),
+  const missingRoom = getChartData({ store, ...args, left: 'indoor_temperature', viewFrom: start + 2 * MINUTE, viewTo: start + 4 * MINUTE });
+  assert(missingRoom.series.indoor_temperature.filter(point => !point.displayContext).every(point => point.y === null));
+  assert(missingRoom.series.indoor_temperature.filter(point => !point.displayContext).every(point => point.heldValue === 20),
     'Retaining a finite preceding value does not fill a clip bounded by an invalid next reading');
   assert(missing.series.operating_mode.every(point => point.y === null));
   const gap = getChartData({ store, ...args, viewFrom: start + 2 * HOUR, viewTo: start + 2 * HOUR + MINUTE });

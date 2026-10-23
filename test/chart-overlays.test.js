@@ -31,6 +31,19 @@ test('isolated zero states remain inspectable without an invented duration or fi
   assert.match(activityIntervalLabel(descriptor, point), /Closed \(0\).*recorded sample; duration unknown/);
 });
 
+test('activity inspection distinguishes years and repeated Finnish autumn hours', () => {
+  const descriptor = { key: 'contact', values: { 0: 'Closed' } };
+  const label = (start, end = start) => activityIntervalLabel(descriptor, {
+    start: Date.parse(start), end: Date.parse(end), value: 0, pointOnly: start === end,
+  });
+  assert.match(label('2025-10-25T00:00:00Z'), /2025/);
+  assert.match(label('2026-10-25T00:00:00Z'), /2026/);
+  const transition = label('2026-10-25T00:30:00Z', '2026-10-25T01:30:00Z');
+  assert.match(transition, /2026.*03:30 GMT\+3.*2026.*03:30 GMT\+2/);
+  const newYear = label('2025-12-31T21:30:00Z', '2025-12-31T22:30:00Z');
+  assert.match(newYear, /2025.*2026/);
+});
+
 test('cursor geometry scales CSS pixels and only activates on visible bands', () => {
   const input = { chart: { width: 800, height: 400, chartArea: { left: 50, right: 750, top: 20, bottom: 340 } },
     canvasRect: { left: 100, top: 100, width: 400, height: 200 }, panelRect: { left: 80, top: 60 },

@@ -56,7 +56,7 @@ view('control', 'Control requests & operation', 'Home controls & diagnostics', '
   ['controller_phase', 'heating_pump_active', 'operatingMode', 'compressorHome', 'dhwr', 'dhwr_active', 'heat_savings_active',
     ...FLOOR_PREHEAT_SIGNALS, 'alarm_active'],
   ['model_indoor_temperature', 'controller_phase', 'heating_pump_active', 'operatingMode', 'compressorHome']);
-view('settings', 'Temperature settings', 'Home controls & diagnostics', 'Recorded temperature settings, shown as smooth curves. Interpolation is for display; settings change at their recorded times.', '', [],
+view('settings', 'Temperature settings', 'Home controls & diagnostics', 'Recorded temperature settings. Display interpolation does not change the recorded time of a setting change.', '', [],
   ['room_setting', 'heating_curve', 'maximum_supply_setting', 'heat_stop_setting', 'tariff_reduction_setting', 'dhw_start_setting', 'dhw_stop_setting'], ['operatingMode'],
   ['room_setting', 'heating_curve', 'maximum_supply_setting']);
 view('room_influence', 'Room influence', 'Home controls & diagnostics', 'The recorded room-influence factor with indoor temperature context.', 'factor', ['room_influence'], home, [], ['room_influence', 'model_indoor_temperature']);
@@ -77,7 +77,7 @@ view('firewood', 'Firewood additions', 'Fireplace', 'Manually recorded fuel addi
 view('fireplace_release', 'Modeled fireplace release', 'Fireplace', 'Delayed fuel-equivalent release from corrected additions. This is a model input, not measured heat output.', 'kg/h', ['model_fireplace_release'], home, ['fireplace'], ['model_fireplace_release', 'model_indoor_temperature', 'fireplace']);
 view('fireplace_energy', 'Firewood electricity avoided', 'Fireplace', 'Retrospective daily model estimates of electricity avoided. Inspect points for evidence and provisional status.', 'kWh/day', ['firewood_electricity_avoided'], home, [], ['firewood_electricity_avoided']);
 view('fireplace_cost', 'Firewood electricity cost avoided', 'Fireplace', 'Retrospective daily model estimates with wood cost set to zero. These are distinct from timing comparisons.', '€/day', ['firewood_savings'], home, [], ['firewood_savings']);
-view('learning_temperatures', 'Saved temperatures & control', 'Home learning', 'Original indoor, outdoor and comfort-reference inputs with saved control phase and valve feedback. Optional ROOM boost is a requested temperature increase, not measured warming.', 'Δ°C', ['model_room_boost'], saved,
+view('learning_temperatures', 'Saved temperatures & control', 'Home learning', 'Original indoor, outdoor and comfort-reference inputs with saved control phase and GPIO output feedback. Optional ROOM boost is a requested temperature increase, not measured warming.', 'Δ°C', ['model_room_boost'], saved,
   ['model_controller_phase', 'model_valve_override'], [...saved, 'model_controller_phase', 'model_valve_override']);
 view('learning_heat', 'Saved hydronic heat input', 'Home learning', 'Saved estimated thermal input from compressor and auxiliary heating together. This is not electrical power or metered heat.', 'kW thermal', ['model_hydronic_heat'], saved, ['model_controller_phase', 'model_valve_override'], ['model_hydronic_heat', 'model_indoor_temperature']);
 view('learning_duty', 'Saved compressor duty', 'Home learning', 'The fraction of each saved interval attributed to compressor space heating.', '%', ['model_compressor_duty'], saved, ['model_controller_phase'], ['model_compressor_duty']);

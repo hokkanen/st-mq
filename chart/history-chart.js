@@ -431,7 +431,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       : 'Display tails carry the last reading to now; these extensions are not new measurements.');
     if (datasets.some(dataset => !dataset.hidden && dataset.chartEvidence?.needsAttention)) notes.push('Some saved temperatures include last known readings. Inspect the point for source times and excluded learning evidence.');
     if (replicaSnapshotKey(status) !== null) notes.push('Read-only slave: the vertical time marker is the master snapshot time.');
-    if (aggregated) notes.push('At long ranges, lighter activity segments indicate the occupied fraction of a display interval, not an exact continuous state.');
+    if (aggregated) notes.push('At long ranges, activity segments fill the occupied fraction of a display interval, not an exact continuous state.');
     for (const warning of payload.meta?.warnings ?? []) if (typeof warning === 'string') notes.push(warning.replaceAll('_', ' '));
     $('chart-notes').textContent = [...new Set(notes)].join(' ');
   }

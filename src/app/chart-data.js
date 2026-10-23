@@ -462,7 +462,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     ...selectedView.tracks.filter(name => Object.hasOwn(HISTORY_AXIS_BY_KEY, name))])]
     : HISTORY_AXIS_BY_KEY[left].signals;
   const names = summaryOnly ? [] : projecting ? _priceProjection ? ['all_in_price', 'spot_price'] : _relatedSignals ?? leftNames
-    : [...new Set([...(selectedView ? [] : [...TEMPERATURES, 'model_indoor_temperature', 'outdoor_forecast']),
+    : [...new Set([...(selectedView || leftNames.length === 1 ? [] : [...TEMPERATURES, 'model_indoor_temperature', 'outdoor_forecast']),
       'all_in_price', 'spot_price', ...leftNames])];
   const powerNames = ['property_power', 'auxiliary_power', 'charger_power', 'charger2_power'].filter(name => names.includes(name));
   const phaseNames = ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)).filter(name => names.includes(name));

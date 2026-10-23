@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Include the year when inspecting chart activity, identify saved floor-control
+  evidence as GPIO output feedback, and keep settings and aggregated-activity
+  explanations accurate with the selected display options.
+  Individual-series charts skip unrelated temperature history while preserving
+  the selected readings and price context.
+
 - Explain future Fireplace selections without a false cache failure, distinguish
   unavailable estimates from provisional ones, and show comparison loading stages
   while keeping retained results visibly stale through failed refreshes.

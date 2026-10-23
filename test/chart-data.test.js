@@ -588,13 +588,13 @@ test('all right-axis history stays present; bad readings and long gaps remain br
     put(store, 'outdoor_temperature', -4, from + 10 * HOUR);
     put(store, 'heating_integral', -200, from + HOUR, { unit: 'degree-minutes' });
     put(store, 'indoor_temperature', 98, now + MINUTE);
-    const result = get(store, { left: 'integral' });
+    const result = get(store, { left: 'temperatures' });
     assert.equal(result.series.indoor_temperature[0].y, 20);
     assert(result.series.indoor_temperature.some(point => point.y === null));
     assert(!result.series.indoor_temperature.some(point => point.y === 98));
     assert.equal(result.series.garage_temperature[0].y, 12);
     assert.equal(result.series.outdoor_temperature[0].y, -4);
-    assert.equal(result.series.heating_integral[0].y, -200);
+    assert.equal(get(store, { left: 'integral' }).series.heating_integral[0].y, -200);
   } finally { store.close(); }
 });
 
@@ -867,7 +867,7 @@ test('native scalar readings remain authoritative when CSV history is imported l
     writeFileSync(easeePath, `unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3\n${from / 1000},2,2,2,4,5,6\n${from / 1000},3,3,3,5,6,7\n`);
     await importCsv(store, stmqPath, { kind: 'stmq' });
     await importCsv(store, easeePath, { kind: 'easee' });
-    for (const left of ['power', 'phases', 'integral']) {
+    for (const left of ['power', 'phases', 'temperatures']) {
       const single = get(store, { left, contract, points: 2000 });
       const long = get(store, { left, contract, points: 2000, endDate: '2026-01-24' });
       assert.equal(single.series.indoor_temperature[0].y, 23, `${left}: newest native temperature wins`);
@@ -895,12 +895,12 @@ test('live charts recover old unchanged readings and expose original timestamps 
     put(store, 'garage_temperature', 13, from - HOUR);
     put(store, 'heating_integral', -200, recordedAt, { unit: 'degree-minutes' });
     const count = store.db.prepare('SELECT count(*) AS total FROM observations').get().total;
-    for (const left of ['power', 'phases', 'integral']) {
+    for (const left of ['power', 'phases', 'temperatures']) {
       const result = get(store, { left });
       const projected = historySeriesAt(result, now);
       for (const key of ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'outdoor_temperature',
         ...(left === 'power' ? ['property_power', 'charger_power'] : left === 'phases'
-          ? ['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)) : ['heating_integral'])]) {
+          ? ['property', 'ev1'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)) : [])]) {
         assert.equal(projected[key][0].x, from, `${key} starts at the chosen day`);
         assert.equal(projected[key].at(-1).x, now, `${key} reaches now`);
         assert.equal(projected[key].at(-1).observedAt, key === 'garage_temperature' ? from - HOUR : recordedAt);

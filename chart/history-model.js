@@ -210,7 +210,7 @@ export function historyStateLabel(key, value) {
   if (key === 'garage_frost_available') return value === 1 ? 'Available' : value === 0 ? 'Unavailable' : 'Unknown';
   if (key === 'garage_frost_active') return value === 1 ? 'Protection override' : value === 0 ? 'No override' : 'Unknown';
   if (['compressor_active', 'garage_compressor_active', 'heating_pump_active', 'alarm_active'].includes(key)) return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;
-  if (key === 'model_valve_override') return ['Normal valve mode', 'Pooled override confirmed', 'Partial override', 'Unconfirmed override'][value] ?? 'Unknown valve mode';
+  if (key === 'model_valve_override') return ['Normal GPIO output mode', 'Pooled GPIO override confirmed', 'Partial GPIO override', 'Unconfirmed GPIO override'][value] ?? 'Unknown GPIO output mode';
   if (key === 'dhwr_request') return value === 1 ? 'On requested' : value === 0 ? 'Off requested' : `Unknown (${value})`;
   if (['dhwr_active', 'heat_savings_active', 'garage_native_defrost'].includes(key) || FLOOR_PREHEAT_SIGNALS.includes(key))
     return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;

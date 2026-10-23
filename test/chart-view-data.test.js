@@ -42,6 +42,20 @@ test('view combines grouped recorded quantities and interpreted garage temperatu
   assert.deepEqual(store.observations({ limit: 100 }), before);
 });
 
+test('individual series omit undisplayed temperature context without changing the subject or prices', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  put(store, 'garage_temperature', 8);
+  put(store, 'indoor_temperature', 21);
+  put(store, 'room_setting', 20);
+  const named = query(store, { view: 'settings' });
+  const individual = query(store, { left: 'room_setting' });
+  assert.deepEqual(Object.keys(individual.series).sort(), ['all_in_price', 'room_setting', 'spot_price']);
+  for (const key of Object.keys(individual.series)) assert.deepEqual(individual.series[key], named.series[key], key);
+  const temperature = query(store, { left: 'garage_temperature' });
+  assert.deepEqual(Object.keys(temperature.series).sort(), ['all_in_price', 'garage_temperature', 'spot_price']);
+  assert.equal(temperature.series.garage_temperature.find(point => point.x === start).y, 8);
+});
+
 test('named electrical view and individual power explorer retain coherent phase snapshots', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   seedVoltage(store, start);

@@ -227,8 +227,9 @@ test('as-of charts cannot borrow future compact source or periodic confirmations
   const result=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+8*MINUTE,left:'compressor_active'});
   assert.deepEqual(result.shading.compressorHome,[{start,end:start+5*MINUTE,value:1}]);
   for(const signal of ['compressor_active','indoor_temperature']) {
-    assert.ok(result.series[signal].some(row=>row.x===start+5*MINUTE&&row.y===null));
-    assert.ok(result.series[signal].every(row=>row.y===null||row.x<start+5*MINUTE));
+    const selected=signal==='compressor_active'?result:getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+8*MINUTE,left:signal});
+    assert.ok(selected.series[signal].some(row=>row.x===start+5*MINUTE&&row.y===null));
+    assert.ok(selected.series[signal].every(row=>row.y===null||row.x<start+5*MINUTE));
   }
   const heating=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+8*MINUTE,view:'control'});
   assert.deepEqual(heating.shading.heating_pump_active,[{start,end:start+5*MINUTE,value:1}]);

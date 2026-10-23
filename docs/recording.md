@@ -1043,8 +1043,9 @@ button instead of the search field, keeping the touch keyboard closed until
 search is selected. The window stays centered on phones and in fullscreen.
 Toggling a legend item or refreshing the current view preserves the legend's
 scroll position; selecting a different view starts its legend at the top.
-An individual-series chart plots the selected series, plus the globally
-controlled electricity prices. Categorical series use
+An individual-series chart queries and returns only its selected subject and
+the globally controlled electricity prices, without reading unrelated temperature
+context. Categorical series use
 an activity row; selecting a sparse series does not manufacture missing history.
 
 The chart icon button beside the selection button opens a view with both date

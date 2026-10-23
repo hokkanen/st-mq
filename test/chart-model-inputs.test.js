@@ -78,9 +78,10 @@ test('current imported model inputs use saved segment values and source labels w
     startDate: '2026-09-08', left: 'model_outdoor_temperature' });
   assert(chart.series.model_outdoor_temperature.some(row => row.y === 4));
   assert.equal(chart.meta.modelInputs.records, 1);
-  assert.deepEqual(chart.series.model_indoor_temperature.map(row => [row.y, row.inputSource]), [[20, 'Imported history']]);
-  assert.deepEqual(chart.series.downstairs_temperature, []);
-  assert.deepEqual(chart.series.bedroom_temperature, []);
+  assert.deepEqual(Object.keys(chart.series).sort(), ['all_in_price', 'model_outdoor_temperature', 'spot_price']);
+  const average = getChartData({ store, input: 'offline', now: start + 30 * MINUTE,
+    startDate: '2026-09-08', left: 'model_indoor_temperature' });
+  assert.deepEqual(average.series.model_indoor_temperature.map(row => [row.y, row.inputSource]), [[20, 'Imported history']]);
 });
 
 test('the default Average indoor is the saved model input and missing sensors cannot change average membership', t => {
@@ -94,7 +95,7 @@ test('the default Average indoor is the saved model input and missing sensors ca
   put(store, start + 15 * MINUTE, sample(0, 15, [segment(0, 15)], { indoorC: 20.25 }), 'mqtt');
   put(store, start + 30 * MINUTE, sample(15, 30, [segment(15, 30)], { indoorC: null, quality: ['missing'] }), 'mqtt');
   store.setState('adaptive:mqtt', { indoorC: 29, configuration: { indoorSensorWeights: { indoor_temperature: 1 } } });
-  for (const left of ['power', 'phases', 'temperatures', 'indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature']) {
+  for (const left of ['power', 'phases', 'temperatures', 'model_indoor_temperature']) {
     const chart = getChartData({ ...args, left });
     assert.deepEqual(chart.series.model_indoor_temperature.map(row => [row.x, row.y]),
       [[start + 15 * MINUTE, 20.25], [start + 30 * MINUTE, null]]);
@@ -104,7 +105,7 @@ test('the default Average indoor is the saved model input and missing sensors ca
     assert.equal(average.borderColor, '#81ca99');
     assert.deepEqual(historySeriesAt(chart).model_indoor_temperature, chart.series.model_indoor_temperature,
       'The last accepted average does not become a claimed live input during a missing window');
-    assert.equal(chart.series.indoor_temperature[0].y, 23);
+    if (left !== 'model_indoor_temperature') assert.equal(chart.series.indoor_temperature[0].y, 23);
   }
 });
 
@@ -260,8 +261,8 @@ test('combined thermal input and actual valve modes preserve saved treatment evi
   assert(result.series.model_hydronic_heat.some(row => row.y === 0));
   assert(result.series.model_hydronic_heat.filter(row => row.x >= start + 15 * MINUTE).every(row => row.y === null));
   for (const value of [1, 2, 3]) assert(result.series.model_valve_override.some(row => row.y === value));
-  assert.equal(historyStateLabel('model_valve_override', 1), 'Pooled override confirmed');
-  assert.equal(historyStateLabel('model_valve_override', 2), 'Partial override');
-  assert.equal(historyStateLabel('model_valve_override', 3), 'Unconfirmed override');
+  assert.equal(historyStateLabel('model_valve_override', 1), 'Pooled GPIO override confirmed');
+  assert.equal(historyStateLabel('model_valve_override', 2), 'Partial GPIO override');
+  assert.equal(historyStateLabel('model_valve_override', 3), 'Unconfirmed GPIO override');
   assert.doesNotMatch(JSON.stringify(result), /private-treatment/);
 });

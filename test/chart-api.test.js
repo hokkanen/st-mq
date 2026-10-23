@@ -220,7 +220,7 @@ test('every catalogue axis works, including historical meter references without 
   }
 });
 
-test('chart defaults to today in Finland and includes shared right-axis data for every left axis', async t => {
+test('chart defaults to today in Finland and scopes individual series to their subject and prices', async t => {
   const { base, headers, store, now } = await fixture(t);
   store.observation({ source: 'mqtt-temperature', device: 'fixture-room', signal: 'indoor_temperature',
     value: 21.3, unit: 'degC', sourceTime: now - 3600000, receivedAt: now, quality: [] });
@@ -232,8 +232,13 @@ test('chart defaults to today in Finland and includes shared right-axis data for
     assert.equal(chart.range.endDate, '2026-09-07');
     assert.equal(chart.range.from, Date.parse('2026-09-06T21:00:00Z'));
     assert.equal(chart.range.to, Date.parse('2026-09-07T21:00:00Z'));
-    assert.equal(chart.series.indoor_temperature.some(p => p.y === 21.3), true);
-    for (const signal of ['all_in_price', 'spot_price', 'outdoor_temperature', 'garage_temperature']) assert.ok(Array.isArray(chart.series[signal]));
+    for (const signal of ['all_in_price', 'spot_price']) assert.ok(Array.isArray(chart.series[signal]));
+    if (left === 'integral') {
+      assert.deepEqual(Object.keys(chart.series).sort(), ['all_in_price', 'heating_integral', 'spot_price']);
+    } else {
+      assert.equal(chart.series.indoor_temperature.some(p => p.y === 21.3), true);
+      for (const signal of ['outdoor_temperature', 'garage_temperature']) assert.ok(Array.isArray(chart.series[signal]));
+    }
     assert.equal(JSON.stringify(chart).includes('connections'), false);
   }
 });

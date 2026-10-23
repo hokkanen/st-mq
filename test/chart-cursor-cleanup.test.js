@@ -92,7 +92,7 @@ for (const failure of ['prepare', 'prime', 'processing']) test(`scalar cursors c
     && sql.includes('FROM active_import_rows r JOIN active_imports'), 'observe', originalError, false);
   const coverage = trackedDatabase(imports.facade, sql => sql.includes('FROM transitions t LEFT JOIN active_observations'), 'observe', originalError, false);
   assert.throws(() => getChartData({ store: { db: coverage.facade }, input: 'offline',
-    now: day.to, startDate: '2026-01-01', endDate: '2026-01-15', left: 'indoor_temperature' }), error => error === originalError);
+    now: day.to, startDate: '2026-01-01', endDate: '2026-01-15', left: 'temperatures' }), error => error === originalError);
   for (const stream of [tracker, imports, coverage]) assert.equal(stream.pending.size, 0);
   assert(tracker.counts().closed >= (failure === 'prepare' ? 2 : 3));
   assert.ok(imports.counts().opened >= 1, 'The CSV merge is exercised alongside native scalar acquisition');

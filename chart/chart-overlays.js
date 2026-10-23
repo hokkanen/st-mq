@@ -2,7 +2,7 @@ import { SIGNAL_INFO } from '../src/domain/history-series.js';
 
 const garageCompressorColor = SIGNAL_INFO.garage_compressor_active.color;
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki',
-  day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset' });
+  year: 'numeric', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset' });
 
 /** Categorical evidence occupies its own time-aligned rows. Requests, native
  * reports and model windows remain separate even when their intervals overlap. */

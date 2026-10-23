@@ -35,7 +35,8 @@ function meaning(signal, info) {
   if (signal.includes('forecast')) return [`forecast:${info.unit}`, 'Weather forecast'];
   if (['controller_phase', 'dhwr_request'].includes(signal)) return [`state:${signal}`, 'Recorded control request'];
   if (info.unit === 'state' || info.unit === 'code') return [`state:${signal}`, 'Recorded state'];
-  if (info.unit === '°C') return ['temperature', /setting|setpoint|curve/.test(signal) ? 'Recorded temperature setting' : 'Recorded temperature'];
+  if (info.unit === '°C') return ['temperature', info.kind === 'Estimated' ? 'Recorded temperature estimate'
+    : /setting|setpoint|curve/.test(signal) ? 'Recorded temperature setting' : 'Recorded temperature'];
   if (info.unit === 'kW') return ['electrical-power', info.kind === 'Calculated' ? 'Calculated electrical power' : 'Recorded electrical power'];
   if (info.unit === 'A') return ['phase-current', 'Recorded current / interval estimate'];
   if (info.unit === '%') return [signal === 'caravan_humidity' ? 'relative-humidity' : 'equipment-output', 'Recorded measurement'];
@@ -76,8 +77,8 @@ export function explorerActivityTrack(key) {
             : key === 'garage_external_enabled' ? [[0, 'Disabled', 'muted'], [1, 'Enabled', color]]
     : ['controller_phase', 'model_controller_phase'].includes(key)
           ? [[0, 'Normal', 'reference'], [1, 'Preheat', 'auxiliary'], [2, 'Reduction', 'heatOff'], [3, 'Recovery', 'learning']]
-          : key === 'model_valve_override' ? [[0, 'Normal valve mode', 'reference'], [1, 'Override confirmed', color],
-            [2, 'Partial override', 'auxiliary'], [3, 'Unconfirmed override', 'muted', 'unknown']]
+          : key === 'model_valve_override' ? [[0, 'Normal GPIO output mode', 'reference'], [1, 'GPIO override confirmed', color],
+            [2, 'Partial GPIO override', 'auxiliary'], [3, 'Unconfirmed GPIO override', 'muted', 'unknown']]
             : key === 'operating_mode' ? [[0, 'Off', 'muted'], [1, 'Auto', 'indoor'], [2, 'Compressor only', 'outdoor'],
               [3, 'Auxiliary only', 'auxiliary'], [4, 'Hot water only', 'compressorDhw']]
               : key === 'caravan_dehumidifier_state' ? Object.entries(CARAVAN_DEHUMIDIFIER_STATES).map(([value, label]) =>
