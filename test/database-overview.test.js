@@ -361,6 +361,11 @@ test('current operational checkpoints stay distinct from retained measurements a
     [`equipment:dehumidifier-temperature-control:v1:${marker}`, 'state-caravan-temperature-control'],
     [`equipment:caravan-power-timing:v1:${marker}:identity:route`, 'state-caravan-power-timing'],
     ['pair:mqtt-source-context', 'state-pair-mqtt'],
+    ['backup:metadata', 'state-backup'],
+    ['storage:backup-health', 'state-backup'],
+    [`derived-cache-anchor:household:providers:${marker}`, 'state-derived-cache'],
+    [`derived-cache-anchor:firewood:providers:${marker}`, 'state-derived-cache'],
+    ['web:remembered-sessions', 'state-web-sessions'],
   ];
   for (const [key] of registrations) {
     store.setState(key, { value: marker });
@@ -370,7 +375,7 @@ test('current operational checkpoints stay distinct from retained measurements a
   const overview = getDatabaseOverview({ store, now: at }), rows = items(overview);
   assert.equal(overview.catalogueComplete, true);
   for (const [, id] of registrations) {
-    assert.equal(rows.get(id).count, 1, id);
+    assert.equal(rows.get(id).count, registrations.filter(([, category]) => category === id).length, id);
     assert.equal(rows.get(id).retention, 'current', id);
     assert.equal(rows.get(id).countLabel, 'current entries', id);
     assert.equal(rows.get(id).dateBasis, 'last updates', id);

@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Explain admin-only history tools in Recording details and keep an unread
+  database-verification schedule unknown instead of claiming it is disabled.
+  Describe database-copy receipts, derived-cache proofs and remembered browser
+  sessions in the recorded-data inventory without exposing their contents.
+
 - Add an interactive Ubuntu installer for standalone and paired operation, with
   whole-file private configuration, prerequisite and broker provisioning,
   restricted VIP helpers and optional reviewed HA setup over SSH. Start and

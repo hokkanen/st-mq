@@ -6,6 +6,26 @@ const idle = { state: 'idle', intervalMs: 0, activity: { active: null, queued: [
 const admin = { webAccess: { role: 'admin' } };
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
+test('family access and unfetched verification schedules remain explicit unknowns', async () => {
+  const view = fixture();
+  view.panel.update({ webAccess: { role: 'family' } });
+  assert.equal(view.requests.length, 0);
+  assert.match(view.element('database-verification-status').textContent, /Admin access is required/);
+  assert.doesNotMatch(view.element('database-verification-status').textContent, /Loading/);
+  assert.doesNotMatch(view.element('database-verification-schedule').textContent, /disabled/);
+  view.panel.update(admin);
+  assert.match(view.element('database-verification-schedule').textContent, /not known/);
+  view.requests[0].resolve({ ...idle, intervalMs: 86400000 }); await settle();
+  assert.match(view.element('database-verification-schedule').textContent, /every 24 hours/);
+  view.panel.update({ webAccess: { role: 'family' } });
+  assert.equal(view.element('database-verification-activity').textContent, '');
+  view.panel.update(admin);
+  assert.match(view.element('database-verification-schedule').textContent, /not known/);
+  view.requests[1].resolve(idle); await settle();
+  assert.match(view.element('database-verification-schedule').textContent, /disabled/);
+  view.panel.close();
+});
+
 test('verification failures distinguish incompatible data, integrity damage, differing checkpoints and interruption', async () => {
   for (const [state, error, expected] of [
     ['error', 'database_schema_mismatch', /schema does not match/],
@@ -212,7 +232,7 @@ test('losing access or closing a verification panel fences in-flight status resp
   view.requests[1].resolve({ ...idle, state: 'running', progress: { processed: 100 } });
   await poll;
   assert.equal(view.button.disabled, true);
-  assert.match(view.element('database-verification-status').textContent, /No full verification completed/);
+  assert.match(view.element('database-verification-status').textContent, /Admin access is required/);
   assert.equal(view.timers.size, 0);
   view.panel.update(admin);
   view.panel.close();

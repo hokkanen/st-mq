@@ -2544,7 +2544,7 @@ processes and uncoordinated tasks remain outside this scheduler.
 
 The dedicated writer uses `synchronous=FULL`, disables automatic checkpoints and
 requests PASSIVE checkpoints through the background lane. When SQLite supports
-status-only inspection, a request is eligible at 50 outstanding frames or after
+status-only inspection, a request is eligible at 1,000 outstanding frames or after
 five seconds of observed remaining work, checked every 250 ms. These are triggers,
 not hard frame or wall-time bounds: queue waits and pinned read snapshots can let
 frames accumulate. Without status-only inspection, the supported SQLite runtime

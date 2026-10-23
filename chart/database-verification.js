@@ -59,6 +59,12 @@ export function bindDatabaseVerification({ document, request, formatTime = value
     if (notice && now() - notice.at >= ACTION_RECEIPT_MS) notice = null;
     const disabled = !admin || !state || starting || ['running', 'queued'].includes(state?.state);
     if (button.disabled !== disabled) button.disabled = disabled;
+    if (!admin) {
+      setText(detail, 'Admin access is required to inspect or run database verification on this computer.');
+      setText(schedule, 'Verification schedule is not available with this access.');
+      setText(activity, '');
+      return;
+    }
     const result = state?.lastResult;
     const description = !state ? notice || readFailure ? '' : 'Loading verification status…'
       : state?.state === 'queued' ? 'Full verification is waiting for another check to finish. You can leave this page.'
@@ -68,8 +74,9 @@ export function bindDatabaseVerification({ document, request, formatTime = value
         : ['error', 'interrupted'].includes(state?.state) ? verificationFailureText(state)
           : state?.state === 'unavailable' ? 'Verification status is unavailable. Reconnect to check the result.' : 'No full verification completed for this database in this application run.';
     setText(detail, [notice?.message, readFailure, description && `${readFailure ? 'Last received status: ' : ''}${description}`].filter(Boolean).join(' '));
-    setText(schedule, state?.intervalMs > 0 ? `Scheduled every ${state.intervalMs / 3_600_000} hours${state.nextAt ? ` · next check ${formatTime(state.nextAt)}` : ''}.`
-      : 'Scheduled checks are disabled. Enable them in recording configuration.');
+    setText(schedule, !state || !Number.isFinite(state.intervalMs) ? 'Verification schedule is not known.'
+      : state.intervalMs > 0 ? `Scheduled every ${state.intervalMs / 3_600_000} hours${state.nextAt ? ` · next check ${formatTime(state.nextAt)}` : ''}.`
+        : 'Scheduled checks are disabled. Enable them in recording configuration.');
     setText(activity, verificationActivityText(state?.activity, formatTime));
   }
   function scheduleRefresh() {
@@ -119,7 +126,7 @@ export function bindDatabaseVerification({ document, request, formatTime = value
   }
   render();
   return { update(status) { const wasAdmin = admin; admin = status?.webAccess?.role === 'admin';
-      if (wasAdmin && !admin) { revision++; refreshing = starting = false; clearTimer(timer); }
+      if (wasAdmin && !admin) { reset(); }
       render(); if (admin && !wasAdmin) void refresh(); },
     reset() { reset(); void refresh(); },
     clear() { admin = false; reset(); },
