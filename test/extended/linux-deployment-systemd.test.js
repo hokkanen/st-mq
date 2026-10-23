@@ -49,7 +49,9 @@ server.listen(Number(process.env.STMQ_PORT),'127.0.0.1');process.on('SIGTERM',()
     const result = await runCommand(exe, args, options);
     if (exe === 'systemctl' && args.includes('show')) observations.push(result);
     return result;
-  }, authenticate: async () => {}, lease: () => ({ assertValid() {}, async close() {} }), refreshHelper: async () => {} };
+  }, authenticate: async () => assert.fail('Current user-service deployment must not authenticate sudo'),
+  lease: () => assert.fail('No privilege renewal expected'), helperNeedsRefresh: async () => false,
+  refreshHelper: async () => assert.fail('Current helper must not be refreshed') };
   try { await main('setup', ['--connection', connection, '--apply'], dependencies); }
   catch (error) { t.diagnostic(observations.join('\n')); throw error; }
   assert.equal(await runCommand('systemctl', ['--user', 'show', service, '--property=ActiveState', '--value']), 'inactive');

@@ -181,8 +181,8 @@ checks the running standalone application instead.
 
 Preparation builds the exact committed HEAD in `runtime_dir/releases` while the
 installed application remains available. After a confirmed complete stop, the
-command switches `current`, verifies source and build artifacts, refreshes the
-owned pair helper when applicable, starts the same service and verifies runtime
+command refreshes the owned pair helper only when needed, switches `current`,
+verifies source and build artifacts, starts the same service and verifies runtime
 readiness. Pair mode also waits for the same slave, master and successful
 synchronization. Prepared releases remain available for inspection.
 
@@ -199,9 +199,16 @@ working directory. For example:
 node "$HOME/st-mq/scripts/deploy-linux.js"
 ```
 
-For system scope or a paired helper refresh, deployment requests sudo
-authentication through sudo itself and renews it only while the reviewed
-operation is active. Deployment does not prompt for application credentials.
+User-scope deployments skip sudo and leave the restricted VIP helper running
+when its installed public code, service definitions, ownership, permissions and
+loaded systemd state match the prepared release. A helper update requests sudo
+authentication after preparation and before stopping the application; the helper
+is verified again before publishing the release. Missing or unverifiable helper
+state cannot select the skip path. Its private policy and address ownership remain
+unchanged. System-scope deployments still require sudo for application lifecycle
+commands, even when the helper is current. Sudo owns password entry and its
+credential cache is renewed only while the reviewed privileged operation is
+active. Deployment does not prompt for application credentials.
 
 ### Deploy an already stopped service
 

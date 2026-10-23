@@ -6,8 +6,8 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createConnection } from 'node:net';
 import { EventEmitter } from 'node:events';
-import { inspectPlatform, trustedNode, authenticateSudo, provisionLinux, platformPackages, stockBrokerConfiguration, startSudoLease } from '../scripts/lib/linux-setup-platform.js';
-import { installProvisioning, validateProvisionRequest, vipServiceText, vipSocketText } from '../scripts/lib/linux-setup-root.js';
+import { inspectPlatform, trustedNode, authenticateSudo, provisionLinux, platformPackages, stockBrokerConfiguration, startSudoLease, vipServiceText, vipSocketText } from '../scripts/lib/linux-setup-platform.js';
+import { installProvisioning, validateProvisionRequest } from '../scripts/lib/linux-setup-root.js';
 import { runCommand } from '../scripts/lib/deployment-command.js';
 import { installSetupDependencies } from '../scripts/lib/linux-setup-bootstrap.js';
 

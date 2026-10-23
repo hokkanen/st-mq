@@ -42,7 +42,7 @@ function fixture(t, scope = 'user') {
   writeFileSync(join(source, 'package-lock.json'), JSON.stringify({ name: 'synthetic-deployment', version: '1.0.0', lockfileVersion: 3, packages: { '': { name: 'synthetic-deployment', version: '1.0.0' } } }));
   git(source, 'add', '.'); git(source, 'commit', '-m', 'Synthetic initial source');
   const unit = join(root, 'units', c.service_name), calls = [], logs = [];
-  const state = { active: false, pid: 0, onCommand: null, onPair: null, now: 100000, waiting: 0, pairCalls: 0, authCalls: 0, helperCalls: [], leaseChecks: 0, leaseClosed: 0 };
+  const state = { active: false, pid: 0, onCommand: null, onPair: null, now: 100000, waiting: 0, pairCalls: 0, authCalls: 0, helperCalls: [], leaseChecks: 0, leaseClosed: 0, helperOutdated: true };
   const status = () => ({ role: 'slave', nodeId: 'synthetic-node', pairId: 'synthetic-pair', canControl: false, busy: false, phase: null,
     vip: { owned: false }, peer: { nodeId: 'synthetic-master', role: 'master', reachable: true, lastSeenAt: state.now }, sync: { state: 'ready', error: null } });
   const run = async (exe, args, options) => {
@@ -68,7 +68,8 @@ function fixture(t, scope = 'user') {
   const deps = { source, run, operatorUid: 1000, operatorUser: 'synthetic', log: s => logs.push(s), unitPath: () => unit, clock: () => state.now,
     authenticate: async () => { state.authCalls++; },
     lease: () => ({ assertValid: () => { state.leaseChecks++; }, close: async () => { state.leaseClosed++; } }),
-    refreshHelper: async options => { state.helperCalls.push(options.source); },
+    helperNeedsRefresh: async () => state.helperOutdated,
+    refreshHelper: async options => { state.helperCalls.push(options.source); state.helperOutdated = false; },
     sleep: async () => { state.now += 1000; }, pair: async () => { state.pairCalls++; return state.onPair ? state.onPair(status()) : status(); } };
   const invoke = (mode, extra = []) => main(mode, ['--connection', connection, ...extra], deps);
   const setup = async () => { await invoke('setup', ['--apply']); state.active = true; state.pid = 1234; };
@@ -293,11 +294,62 @@ test('paired deployment authenticates once and refreshes verified helper code af
   f.deps.refreshHelper = async ({ source }) => {
     assert.equal(f.state.active, false); assert.equal(realpathSync(join(f.c.runtime_dir, 'current')), old);
     assert.equal(git(source, 'rev-parse', 'HEAD'), git(f.source, 'rev-parse', 'HEAD'));
-    assert.ok(existsSync(join(source, '.git/linux-deployment-proof.json'))); f.state.helperCalls.push(source);
+    assert.ok(existsSync(join(source, '.git/linux-deployment-proof.json'))); f.state.helperCalls.push(source); f.state.helperOutdated = false;
   };
   await f.invoke('deploy');
   assert.equal(f.state.authCalls, 1); assert.equal(f.state.leaseClosed, 1); assert.equal(f.state.helperCalls.length, 1);
   assert.equal(f.state.helperCalls[0], realpathSync(join(f.c.runtime_dir, 'current'))); assert.ok(f.state.leaseChecks > 0);
+});
+test('current paired user helper skips sudo, privilege renewal and helper refresh in both deployment modes', async t => {
+  for (const stopped of [false, true]) {
+    const f = fixture(t); await f.setup(); f.update(); f.state.helperOutdated = false;
+    if (stopped) { f.state.active = false; f.state.pid = 0; }
+    f.calls.length = 0;
+    f.deps.lease = () => { assert.fail('No sudo renewal expected'); };
+    f.deps.helperNeedsRefresh = async ({ source }) => {
+      assert.equal(git(source, 'rev-parse', 'HEAD'), git(f.source, 'rev-parse', 'HEAD'));
+      assert.ok(existsSync(join(source, '.git/linux-deployment-proof.json'))); return false;
+    };
+    await f.invoke('deploy', stopped ? ['--stopped'] : []);
+    assert.equal(f.state.authCalls, 0); assert.equal(f.state.helperCalls.length, 0);
+    assert.equal(f.calls.some(call => call[0] === 'sudo'), false);
+    assert.equal(f.state.active, !stopped);
+    assert.equal(f.calls.filter(call => call.includes('stop')).length, stopped ? 0 : 1);
+    assert.equal(f.calls.filter(call => call.includes('start')).length, stopped ? 0 : 1);
+  }
+});
+test('system service still authenticates when its paired helper is current', async t => {
+  const f = fixture(t, 'system'); await f.setup(); f.update(); f.state.helperOutdated = false;
+  await f.invoke('deploy');
+  assert.equal(f.state.authCalls, 1); assert.equal(f.state.leaseClosed, 1); assert.equal(f.state.helperCalls.length, 0);
+  assert.ok(f.calls.some(call => call[0] === 'sudo' && call.includes('stop')));
+});
+test('helper update authenticates only after preparing the release and before Stop; rejection preserves the running app', async t => {
+  const f = fixture(t); await f.setup(); f.update(); const previous = realpathSync(join(f.c.runtime_dir, 'current'));
+  f.calls.length = 0;
+  f.deps.authenticate = async () => {
+    assert.equal(f.state.active, true); assert.ok(f.calls.some(call => call[0] === 'npm' && call.includes('build')));
+    assert.equal(f.calls.some(call => call.includes('stop')), false);
+    throw new LinuxDeploymentError('Privilege authentication was not completed.');
+  };
+  await assert.rejects(f.invoke('deploy'), /Privilege authentication was not completed/);
+  assert.equal(f.state.active, true); assert.equal(realpathSync(join(f.c.runtime_dir, 'current')), previous);
+  assert.equal(f.state.helperCalls.length, 0); assert.equal(f.state.leaseClosed, 0);
+});
+test('a changed helper after the skip decision blocks release publication without a late sudo request', async t => {
+  const f = fixture(t); await f.setup(); f.update(); f.state.helperOutdated = false;
+  const previous = realpathSync(join(f.c.runtime_dir, 'current'));
+  f.state.onCommand = (exe, args) => { if (exe === 'systemctl' && args.includes('stop')) f.state.helperOutdated = true; };
+  await assert.rejects(f.invoke('deploy'), /VIP-helper verification failed/);
+  assert.equal(f.state.active, false); assert.equal(realpathSync(join(f.c.runtime_dir, 'current')), previous);
+  assert.equal(f.state.authCalls, 0); assert.equal(f.state.helperCalls.length, 0);
+});
+test('an unconfirmed helper refresh blocks release publication', async t => {
+  const f = fixture(t); await f.setup(); f.update(); const previous = realpathSync(join(f.c.runtime_dir, 'current'));
+  f.deps.refreshHelper = async () => {};
+  await assert.rejects(f.invoke('deploy'), /VIP-helper verification failed/);
+  assert.equal(f.state.active, false); assert.equal(realpathSync(join(f.c.runtime_dir, 'current')), previous);
+  assert.equal(f.state.authCalls, 1); assert.equal(f.state.leaseClosed, 1);
 });
 test('standalone user deployment needs no privilege authentication or VIP helper', async t => {
   const f = fixture(t); f.env.STMQ_TOPOLOGY = 'standalone';

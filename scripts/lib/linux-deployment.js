@@ -6,7 +6,7 @@ import { homedir, userInfo } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { runCommand } from './deployment-command.js';
 import { acquireDeploymentLock, ownsDeploymentLock, releaseDeploymentLock } from './deployment-lock.js';
-import { authenticateSudo, startSudoLease, refreshPairHelper } from './linux-setup-platform.js';
+import { authenticateSudo, startSudoLease, refreshPairHelper, pairHelperNeedsRefresh } from './linux-setup-platform.js';
 import { DeploymentSafetyError, deploymentArguments, synchronizationTimeout, validateStandby, waitForStandby } from './paired-deployment.js';
 
 export const checkoutRoot = fileURLToPath(new URL('../../', import.meta.url));
@@ -233,7 +233,7 @@ export function validateStandalone(status) {
 
 export async function main(mode, args, dependencies = {}) {
   const { source = checkoutRoot, run = runCommand, log = console.log, pair = readPair, status = readLocalStatus,
-    authenticate = authenticateSudo, lease = startSudoLease, refreshHelper = refreshPairHelper,
+    authenticate = authenticateSudo, lease = startSudoLease, refreshHelper = refreshPairHelper, helperNeedsRefresh = pairHelperNeedsRefresh,
     clock = Date.now, operatorUid = process.getuid?.(), operatorUser = userInfo().username, sleep = (ms, signal) => new Promise((yes, no) => {
       const abort = () => { clearTimeout(timer); no(new LinuxDeploymentError('Deployment cancelled.')); };
       const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); yes(); }, ms);
@@ -262,7 +262,7 @@ export async function main(mode, args, dependencies = {}) {
   const inspector = serviceInspector(c, { run: command, unitPath, signal });
   const { systemctl, show, assertService, assertStopped, unit, expectedUnit } = inspector;
   try {
-  if (mode === 'deploy' && !operationLock && (c.service_scope === 'system' || paired)) {
+  if (mode === 'deploy' && !operationLock && c.service_scope === 'system') {
     await authenticate({ signal }); privilegeLease = lease({ run, signal });
   }
   const target = await git(source, 'rev-parse', 'HEAD');
@@ -315,6 +315,16 @@ export async function main(mode, args, dependencies = {}) {
     if (!existsSync(join(stage, 'dist/index.html'))) fail('The frontend build is incomplete.');
     await sourceUnchanged();
     if (await git(stage, 'rev-parse', 'HEAD') !== target || await git(stage, 'status', '--porcelain')) fail('The prepared release no longer matches the selected commit.');
+    let refreshNeeded = false;
+    if (mode === 'deploy' && paired) {
+      phase = 'helper verification';
+      refreshNeeded = await helperNeedsRefresh({ source: stage, nodePath: c.node_path, run: command, signal });
+      if (refreshNeeded && !privilegeLease && !operationLock) {
+        log('The restricted VIP helper needs an update; requesting sudo before stopping the application.');
+        await authenticate({ signal }); privilegeLease = lease({ run, signal });
+      }
+      await sourceUnchanged();
+    }
     if (mode === 'deploy' && !stopped) {
       phase = 'stop'; await assertService();
       if (paired) validateStandby(await pair(c, { signal }), identity, clock(), true);
@@ -328,8 +338,11 @@ export async function main(mode, args, dependencies = {}) {
     if (mode === 'deploy' && stopped) await assertStopped();
     if (mode === 'deploy' && paired) {
       phase = 'helper'; privilegeLease?.assertValid();
-      await refreshHelper({ source: stage, nodePath: c.node_path, run: command, signal, log });
+      if (refreshNeeded) await refreshHelper({ source: stage, nodePath: c.node_path, run: command, signal, log });
+      else log('The installed restricted VIP helper is current; no helper update or restart needed.');
       await assertStopped();
+      if (await helperNeedsRefresh({ source: stage, nodePath: c.node_path, run: command, signal }))
+        fail('VIP-helper verification failed; inspect its installation before retrying.');
     }
     phase = 'install';
     pointCurrent(runtime, stage); switched = true;

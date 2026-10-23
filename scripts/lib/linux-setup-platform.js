@@ -10,6 +10,15 @@ import { validateVip } from '../../src/pairing/vip.js';
 const fail = message => { throw new DeploymentSafetyError(message); };
 export const platformPackages = ['ca-certificates', 'curl', 'xz-utils', 'git', 'python3', 'openssh-client', 'iproute2', 'iputils-arping'];
 export const managedBrokerText = '# Managed by st-mq Linux setup.\nlistener 1883 127.0.0.1\nallow_anonymous false\npassword_file /etc/mosquitto/st-mq-passwords\n';
+export const helperSourceFiles = ['scripts/pair-vip.js', 'src/pairing/vip.js'];
+const quote = value => '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"') + '"';
+export function vipServiceText(nodePath) {
+  return `[Unit]\nDescription=st-mq restricted virtual IP helper\nRequires=st-mq-vip.socket\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nGroup=root\nExecStart=${quote(nodePath)} /usr/local/lib/st-mq/scripts/pair-vip.js --serve\nNoNewPrivileges=true\nCapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW\nAmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW\nProtectSystem=strict\nProtectHome=true\nPrivateTmp=true\nRestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_PACKET\nRestrictSUIDSGID=true\nLockPersonality=true\nMemoryDenyWriteExecute=false\n`;
+}
+export function vipSocketText(group) {
+  return `[Unit]\nDescription=st-mq virtual IP control socket\n\n[Socket]\nListenStream=/run/st-mq-vip/socket\nSocketMode=0660\nSocketUser=root\nSocketGroup=${group}\nDirectoryMode=0755\nRemoveOnStop=true\n\n[Install]\nWantedBy=sockets.target\n`;
+}
+
 export function stockBrokerConfiguration({ rootDir = '/', readFile = readFileSync, exists = existsSync, readdir = readdirSync,
   stat = lstatSync, requireRootOwnership = rootDir === '/' } = {}) {
   const path = name => join(rootDir, name);
@@ -141,6 +150,55 @@ export async function provisionLinux({ source, nodePath, user, group, vip = null
     if (result.ok !== true) fail('Privileged installation result was not confirmed; inspect services before retrying.');
     return { nodePath: executable };
   } finally { rmSync(temporary, { recursive: true, force: true }); }
+}
+
+// Read only public helper artifacts and systemd metadata; the root-only VIP policy stays private.
+export async function pairHelperNeedsRefresh({ source, nodePath, run = runCommand, signal,
+  readFile = readFileSync, stat = lstatSync } = {}) {
+  const executable = trustedNode(nodePath);
+  if (!executable) fail('VIP-helper verification requires a trusted root-owned Node installation.');
+  const expected = new Map([
+    ['/usr/local/lib/st-mq/package.json', Buffer.from('{"type":"module"}\n')],
+    ...helperSourceFiles.map(name => ['/usr/local/lib/st-mq/' + name, readFile(join(source, name))]),
+    ['/etc/systemd/system/st-mq-vip.service', Buffer.from(vipServiceText(executable))],
+  ]);
+  try {
+    const socketPath = '/etc/systemd/system/st-mq-vip.socket';
+    const socketText = readFile(socketPath, 'utf8');
+    const group = /^SocketGroup=([a-z_][a-z0-9_-]*)$/m.exec(socketText)?.[1];
+    if (!group) return true;
+    expected.set(socketPath, Buffer.from(vipSocketText(group)));
+    for (const [filename, contents] of expected) {
+      let current = filename;
+      while (true) {
+        const info = stat(current);
+        if (info.isSymbolicLink() || info.uid !== 0 || (info.mode & 0o022)) return true;
+        if (current === filename ? !info.isFile() || info.gid !== 0 || (info.mode & 0o7777) !== 0o644 : !info.isDirectory()) return true;
+        if (current === '/') break;
+        current = dirname(current);
+      }
+      if (!readFile(filename).equals(contents)) return true;
+    }
+    for (const name of ['st-mq-vip.service', 'st-mq-vip.socket']) {
+      const output = await run('systemctl', ['show', name,
+        '--property=LoadState,FragmentPath,DropInPaths,NeedDaemonReload,ActiveState,SubState,UnitFileState'],
+      { signal, timeout: 10000, acceptedExitCodes: [0, 1] });
+      const state = Object.fromEntries(output.split('\n').map(line => {
+        const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1)];
+      }));
+      if (state.LoadState !== 'loaded' || state.FragmentPath !== '/etc/systemd/system/' + name
+        || state.DropInPaths !== '' || state.NeedDaemonReload !== 'no') return true;
+      if (name.endsWith('.socket')) {
+        if (state.ActiveState !== 'active' || state.SubState !== 'listening' || state.UnitFileState !== 'enabled') return true;
+      } else if (!(state.ActiveState === 'active' && state.SubState === 'running'
+        || state.ActiveState === 'inactive' && state.SubState === 'dead')) return true;
+    }
+    return false;
+  } catch {
+    if (signal?.aborted) fail('Deployment cancelled during VIP-helper verification.');
+    // Missing, unreadable or uncertain installation state must never skip privileged verification.
+    return true;
+  }
 }
 
 // Deployment refreshes public helper code only. Existing policy, group and address ownership remain untouched.

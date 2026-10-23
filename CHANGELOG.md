@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Skip sudo and unnecessary virtual-IP helper restarts during user-service Linux
+  deployments when the installed helper matches the prepared release. Request
+  authentication before stopping the application when a helper update is needed;
+  system-service deployments retain their existing privilege requirements.
+
 - Explain when reset archives prevent a complete backup listing and retain the
   instruction to preserve those archives for inspection.
   Keep the storage outcome summary separate from slow-operation timings; an

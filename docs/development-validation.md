@@ -28,6 +28,11 @@ npm builds exercise staged releases, while simulated systemd and authenticated
 pair status cover user/system services, role changes, failures and synchronization.
 These tests never operate installed services. See [Linux deployment](linux-deployment.md)
 and the [paired deployment procedure](paired-deployment.md) for runtime checks.
+`test/linux-vip-helper.test.js` checks conditional helper refresh using isolated
+installation files and simulated systemd metadata. Deployment tests cover the
+password-free user-service path, authentication before Stop for helper changes,
+system-service privileges and refusal to publish after helper drift or failed
+verification. These checks never authenticate sudo or restart installed helpers.
 `test/paired-deployment.test.js`, `test/ha-deploy-workflow.test.js` and
 `test/ha-deploy-runtime.test.js` cover shared mode parsing/readiness, managed and
 stopped HA paths, lifecycle uncertainty, container/image identity and a real

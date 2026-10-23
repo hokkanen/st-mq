@@ -7,12 +7,11 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { runCommand } from './deployment-command.js';
 import { DeploymentSafetyError } from './paired-deployment.js';
-import { trustedNode, platformPackages, managedBrokerText, stockBrokerConfiguration } from './linux-setup-platform.js';
+import { trustedNode, platformPackages, managedBrokerText, stockBrokerConfiguration, vipServiceText, vipSocketText, helperSourceFiles } from './linux-setup-platform.js';
 import { validateVip } from '../../src/pairing/vip.js';
 
 const fail = message => { throw new DeploymentSafetyError(message); };
 const account = value => typeof value === 'string' && /^[a-z_][a-z0-9_-]*$/.test(value) && value !== 'root';
-const quote = value => '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"') + '"';
 const exact = (object, keys) => object && typeof object === 'object' && !Array.isArray(object)
   && Object.keys(object).length === keys.length && keys.every(key => Object.hasOwn(object, key));
 
@@ -34,13 +33,6 @@ export function validateProvisionRequest(request) {
       fail('Invalid privileged broker credentials.');
   }
   return request;
-}
-
-export function vipServiceText(nodePath) {
-  return `[Unit]\nDescription=st-mq restricted virtual IP helper\nRequires=st-mq-vip.socket\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nGroup=root\nExecStart=${quote(nodePath)} /usr/local/lib/st-mq/scripts/pair-vip.js --serve\nNoNewPrivileges=true\nCapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW\nAmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW\nProtectSystem=strict\nProtectHome=true\nPrivateTmp=true\nRestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_PACKET\nRestrictSUIDSGID=true\nLockPersonality=true\nMemoryDenyWriteExecute=false\n`;
-}
-export function vipSocketText(group) {
-  return `[Unit]\nDescription=st-mq virtual IP control socket\n\n[Socket]\nListenStream=/run/st-mq-vip/socket\nSocketMode=0660\nSocketUser=root\nSocketGroup=${group}\nDirectoryMode=0755\nRemoveOnStop=true\n\n[Install]\nWantedBy=sockets.target\n`;
 }
 
 // rootDir is used only by isolated tests. The executable entry point always uses '/'.
@@ -84,8 +76,7 @@ export async function installProvisioning(input, { rootDir = '/', run = runComma
     writeFileSync(temporary, contents, { mode, flag: 'wx' }); if (!fixture) chownSync(temporary, 0, gid);
     renameSync(temporary, destination); return true;
   };
-  const helperFiles = ['scripts/pair-vip.js', 'src/pairing/vip.js'];
-  const publicCode = Object.fromEntries(helperFiles.map(name => {
+  const publicCode = Object.fromEntries(helperSourceFiles.map(name => {
     const filename = join(request.source, name);
     if (realpathSync(filename) !== filename || !lstatSync(filename).isFile()) fail('Helper source must contain regular current files.');
     return [name, readFileSync(filename)];
