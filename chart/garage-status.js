@@ -142,7 +142,8 @@ export function renderGarage(document, status = {}) {
       + (finite(reportedTemperature) ? `Last reported input: ${number(reportedTemperature)}. ` : 'No temperature input has been reported. ')
       + (finite(reportedAge) && reportedAge >= 0 ? `Reported sensor age including time since the controller report: ${Math.floor(reportedAge / 1000)} seconds. ` : 'Sensor age is unavailable. ')
       + 'The input becomes unavailable after 180 seconds without a fresh report.'
-      + (adapter.connected !== true ? ' The heat-pump controller is not connected.' : ''), !sensorAvailable);
+      + (readOnly ? ' This is a recorded input; live controller connection and freshness are unknown.'
+        : adapter.connected !== true ? ' The heat-pump controller is not connected.' : ''), !sensorAvailable);
   set('garage-target-confirmation', readOnly ? 'Recorded selection · live confirmation unavailable' : display.confirmation);
   set('garage-mode-normal-target', display.normalTarget);
   set('garage-mode-away-target', display.awayTarget);

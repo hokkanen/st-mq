@@ -438,6 +438,17 @@ test('never-observed regulation input is hidden and an observed input remains ex
   assert.match(f.detailText('garage-regulation-temperature'), /Last reported input: 6 °C.*31 seconds.*not connected/);
 });
 
+test('recorded regulation input cannot diagnose a live controller disconnection', () => {
+  const f = fixture();
+  f.panel.update({ ...f.initial, readOnly: true, role: 'slave', garage: { ...f.initial.garage,
+    adapter: { connected: null, control: { sensorTemperatureC: 6, sensorAgeMs: 1000 } } } });
+  const detail = f.detailText('garage-regulation-temperature');
+  assert.match(detail, /Last reported input: 6 °C/);
+  assert.match(detail, /recorded input; live controller connection and freshness are unknown/);
+  assert.doesNotMatch(detail, /controller is not connected/);
+  assert.equal(f.nodes.get('garage-regulation-temperature').textContent, 'Unavailable');
+});
+
 test('a garage receipt records its own target and cannot masquerade as a newer selection', async () => {
   const f = fixture(), message = f.nodes.get('garage-heating-message');
   await f.trigger('garage-mode-normal');
