@@ -1,6 +1,6 @@
 import { releaseStorageLease, checkStorageRequest } from '../storage/worker-admission.js';
 import { recordedEnergyGroups, recordedEnergyStart } from '../storage/energy-history.js';
-import { createVoltageReader } from '../storage/voltage.js';
+import { createChartVoltageReader } from './chart-voltage-cache.js';
 
 // Reuse source interpretation within an immutable chart request. The worker may
 // retain a bounded context only while selection/import revisions, pending energy
@@ -11,7 +11,10 @@ export function createChartQueryContext({ store, range, now, input, maxEnergyGro
   let energy = null, energyStats = null, attempted = false;
   const options = { from: range.from, to: range.to, now, input };
   return {
-    voltageReader: createVoltageReader(store, { input, now, pageRows: 192 }),
+    voltageReader: createChartVoltageReader(store, { input, now, pageRows: 192 }),
+    // Energy groups are voltage-independent. A reused context starts a fresh
+    // immutable voltage reader for each chart, preserving its actual as-of clock.
+    resetVoltage(at) { this.voltageReader = createChartVoltageReader(store, { input, now: at, pageRows: 192 }); },
     energyStart(prefix) {
       if (!starts.has(prefix)) starts.set(prefix, recordedEnergyStart(store, prefix, input, now));
       return starts.get(prefix);

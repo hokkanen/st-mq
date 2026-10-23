@@ -20,6 +20,8 @@ import { ENERGY_SIGNALS, HISTORY_AXIS_BY_KEY, MODEL_COEFFICIENT_INFO } from '../
 import { createChartQueryContext } from './chart-query-context.js';
 import { buildHeatingSavings } from './garage-reporting.js';
 import { ChartSourceCache } from './chart-source-cache.js';
+import { ChartVoltageCache } from './chart-voltage-cache.js';
+import { VOLTAGE_SIGNALS } from '../storage/voltage.js';
 import { storageStep, admittedReader, setStorageMaintenance, releaseStorageLease, setStorageRequestActive, checkStorageRequest } from '../storage/worker-admission.js';
 
 // A separate read-only SQLite connection keeps reconstruction off the control
@@ -80,6 +82,7 @@ let settings = workerData.settings ?? DEFAULT_CHART_CACHE;
 let cacheLimitBytes;
 const sourceCache = workerData.resident ? new ChartSourceCache(db) : null;
 store.chartSource = sourceCache;
+const voltageCache = new ChartVoltageCache(store);
 function configure(value) {
   settings = value; cacheLimitBytes = Math.floor(value.cacheBytes * (workerData.resident ? 0.32 : 0.1));
   sourceCache?.configure({ days: value.cacheDays, maxBytes: Math.floor(value.cacheBytes * 0.45) });
@@ -91,13 +94,13 @@ const heads = db.prepare(`SELECT (SELECT MAX(id) FROM observations) observations
   (SELECT MAX(id) FROM learning_journal_entries) journal,
   (SELECT generation FROM history_selection WHERE id=1) selection,
   (SELECT COUNT(*) FROM active_imports WHERE status='complete') imports`);
-const changes = db.prepare(`SELECT id,source_time,received_at,signal,
+const changes = db.prepare(`SELECT id,source_time,received_at,signal,source,device,unit,
   CASE WHEN signal IN ('property_energy_l1','property_energy_l2','property_energy_l3',
     'ev1_energy_l1','ev1_energy_l2','ev1_energy_l3','ev2_energy_l1','ev2_energy_l2','ev2_energy_l3','caravan_energy')
     THEN json_extract(raw,'$.intervalStart') END AS interval_start FROM observations WHERE id>? ORDER BY id LIMIT 4097`);
 const journalChanges = db.prepare('SELECT id,at FROM learning_journal_entries WHERE id>? ORDER BY id LIMIT 4097');
 const pendingReceipts = db.prepare(`SELECT MIN(received_at) AS next FROM active_observations
-  WHERE received_at>? AND (source_time<? OR signal GLOB 'voltage_estimate_*'
+  WHERE received_at>? AND signal NOT GLOB 'voltage_estimate_*' AND (source_time<?
     OR signal IN ('property_energy_l1','property_energy_l2','property_energy_l3',
       'ev1_energy_l1','ev1_energy_l2','ev1_energy_l3','ev2_energy_l1','ev2_energy_l2','ev2_energy_l3','caravan_energy')
       AND json_extract(raw,'$.intervalStart')<?)`);
@@ -120,13 +123,13 @@ function invalidateChangedRanges() {
   const journals = journalHead === null ? [] : journalChanges.all(journalHead);
   if (rows.length > 4096 || journals.length > 4096) { cache.clear(); contexts.clear(); cacheBytes = 0; }
   else {
-    const affected = entry => rows.some(row => row.signal.startsWith('voltage_estimate_')
-      || row.source_time < entry.range.to + (entry.detail ? 3 * 3_600_000 : 0)
-      || row.interval_start !== null && row.interval_start < entry.range.to)
+    const affected = entry => rows.some(row => VOLTAGE_SIGNALS.includes(row.signal)
+      ? voltageCache.affects(entry.voltage, row)
+      : row.source_time < entry.range.to + (entry.detail ? 3 * 3_600_000 : 0)
+        || row.interval_start !== null && row.interval_start < entry.range.to)
       || entry.learningHistory && journals.some(row => row.at < entry.range.to);
     for (const [key, entry] of cache) if (affected(entry)) { cache.delete(key); cacheBytes -= entry.bytes; }
-    for (const [key, entry] of contexts) if (rows.some(row => row.signal.startsWith('voltage_estimate_')
-      || ENERGY_SIGNALS.includes(row.signal) && (row.source_time < entry.range.to
+    for (const [key, entry] of contexts) if (rows.some(row => ENERGY_SIGNALS.includes(row.signal) && (row.source_time < entry.range.to
         || row.interval_start !== null && row.interval_start < entry.range.to))) contexts.delete(key);
   }
   observationHead = current.observations ?? 0; journalHead = current.journal ?? 0;
@@ -255,7 +258,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
     // Constant readings extend bounded energy tails and confirmation spans.
     // Renew only affected plots, preserving unrelated historical caches and the
     // live clock bucket when source evidence itself has not changed.
-    if(entry&&(chartAssessmentPending(entry.result) || entry.version !== currentVersion || entry.bucket !== bucket || entry.receiptFingerprint !== receipts || entry.pendingEnergyFingerprint!==pendingEnergyFingerprint(args,range)
+    if(entry&&(chartAssessmentPending(entry.result) || entry.version !== currentVersion || entry.bucket !== bucket || entry.receiptFingerprint !== receipts || !voltageCache.matches(entry.voltage,args.now) || entry.pendingEnergyFingerprint!==pendingEnergyFingerprint(args,range)
       ||entry.sourceCoverageFingerprint!==sourceCoverageFingerprint(args,range))) {
       cache.delete(key);cacheBytes-=entry.bytes;entry=null;
     }
@@ -299,7 +302,9 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
           contexts.set(contextKey, context);
         }
       }
+      context.value.resetVoltage(args.now);
       result = getChartData({ ...args, store, onProgress, _queryContext: context.value });
+      const voltage = voltageCache.capture(context.value.voltageReader, { ...args, range });
       const sourceFingerprint=sourceCoverageFingerprint(args,range);
       releaseStorageLease();
       onProgress({ stage: 'preparing-response' });
@@ -309,7 +314,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       while (cache.size && (cache.size >= 128 || cacheBytes + bytes > cacheLimitBytes)) {
         const first = cache.keys().next().value; cacheBytes -= cache.get(first).bytes; cache.delete(first);
       }
-      if (bytes <= cacheLimitBytes) { entry = { learningHistory: chartNeedsLearningHistory(args), result, prepared, bytes, range, bucket, version: currentVersion, detail: result.meta.detail, receiptFingerprint: receipts, pendingEnergyFingerprint:pendingFingerprint,
+      if (bytes <= cacheLimitBytes) { entry = { learningHistory: chartNeedsLearningHistory(args), voltage, result, prepared, bytes, range, bucket, version: currentVersion, detail: result.meta.detail, receiptFingerprint: receipts, pendingEnergyFingerprint:pendingFingerprint,
         sourceCoverageFingerprint:sourceFingerprint }; cache.set(key, entry); cacheBytes += bytes; }
     }
     releaseStorageLease();

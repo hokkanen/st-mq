@@ -1216,6 +1216,13 @@ period; late overlapping energy, voltage, source coverage, imports and recovery
 changes still invalidate affected results. Receipt-clock checks follow the selected
 period: readings arriving during a queued request do not discard unrelated finished
 dates, while delayed evidence inside that period becomes visible at its actual receipt.
+Voltage dependencies follow their causal publication clock, the later of source
+and receipt time. Updates after a finished selection do not evict its drawing.
+Imported current history additionally follows the first usable retrospective
+estimate: missing-to-known transitions and corrections to that basis refresh it.
+Future source/receipt admission remains visible without another database write.
+Shared energy groups survive voltage-only changes; each new chart calculation
+uses a fresh voltage reader at its own request clock.
 Each cached selection owns its dependency revision. Opening another view cannot
 discard it, and live weather forecasts do not expire completed dates. Historical
 solar still follows the archived weather receipts eligible for its selected period.

@@ -976,6 +976,16 @@ covers cache bounds, late responses, absence of navigation prediction, stream pa
 reuse. Keep the existing chart provenance, gap, extrema, recovery, voltage,
 temperature-geometry and accounting tests alongside these checks.
 
+`test/chart-voltage-cache.test.js` checks unchanged closed-date cache hits in
+resident and archive workers, physical/simulated input separation, causal native
+voltage, partial/first retrospective estimates, corrections and both future clocks
+without new writes. Mixed-update sequences compare each result with uncached
+series and shading; voltage-reader renewal retains the same bounded energy groups.
+`node scripts/benchmarks/chart-voltage-cache.js --days 35 --runs 3` measures day,
+week and 22-day retries after voltage updates. Add `--baseline /path/to/source`
+for matched old/new evidence and geometry comparisons. It uses only synthetic
+data and does not establish household or Raspberry Pi timings.
+
 `test/comparison-range.test.js` checks independent comparison dates, source
 revision fencing and retained cards. Collapsed panels defer reads and forced
 refreshes, closing aborts unfinished work, and reopening either reuses a valid

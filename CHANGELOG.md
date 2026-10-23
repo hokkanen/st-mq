@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve completed historical chart caches through unrelated voltage updates.
+  Relevant causal voltage, first usable retrospective estimates and corrected
+  history still refresh results; voltage changes reuse recorded energy groups.
+
 - Preserve read-only Home plan and Fireplace windows during unchanged slave
   pairing polls, and keep the recorded-plan explanation visible between updates.
 
