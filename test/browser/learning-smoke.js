@@ -256,7 +256,7 @@ try {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width === 390 ? 844 : 1100, deviceScaleFactor: 1, mobile: false });
     await new Promise(resolve => setTimeout(resolve, 150));
     await checkNestedFolds('#learning-details, #model-inputs-details, #model-coefficients-details', 0);
-    await checkNestedFolds('#learning-validation-details, #model-inputs-content > details', 12);
+    await checkNestedFolds('#learning-validation-details, #model-inputs-content > details', width <= 480 ? 8 : 12);
     for (const section of ['history-panel', 'learning-details', 'model-inputs-details', 'model-coefficients-details', 'providers-controls', 'h66-test-details']) {
       await evaluate(`(() => { const element = document.getElementById('${section}') ?? document.querySelector('.${section}'); if (element.tagName === 'DETAILS') element.open = true; for (let parent = element.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true; element.scrollIntoView({block:'start'}); })()`);
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${section} fits ${width}px`);

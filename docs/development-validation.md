@@ -1,5 +1,12 @@
 # Development validation
 
+`test/replica-viewer.test.js` checks that Home status decodes its saved learning
+checkpoint once per verified snapshot and retains only the display fields.
+Returned data is detached; a new snapshot reads and validates its own checkpoint,
+including unsupported-model rejection. The complete learning history remains in
+the database. A warm display cache does not establish bounded first-read cost
+for larger histories or installed-device performance.
+
 Linux installer configuration, broker authentication, prerequisite provisioning,
 HA configuration and orchestration are covered by the `test/linux-setup*.test.js`
 files. Fixtures use synthetic configuration and private temporary directories;

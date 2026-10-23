@@ -253,6 +253,33 @@ test('replica infers the primary input from the Home journal and ignores unsuppo
   assert.equal(digest(publication.dbPath), publication.digest);
 });
 
+test('Home status decodes learning once per verified generation and returns detached display data', async t => {
+  const directory = fixture(t);
+  let publication = snapshot(directory, 'first-home-display');
+  recordLearningModels(publication);
+  const { app, request } = await viewer(t, directory, () => publication);
+  const reads = new Map(), getState = Store.prototype.getState;
+  t.mock.method(Store.prototype, 'getState', function(key) {
+    if (key === 'adaptive:mqtt') reads.set(this.path, (reads.get(this.path) ?? 0) + 1);
+    return getState.call(this, key);
+  });
+  const first = app.status(), expected = structuredClone(first.learning);
+  first.learning.adaptive.model.parameters.lossPerHour = 999;
+  first.learning.adaptive.comfortReference.targetC = -999;
+  assert.deepEqual(app.status().learning, expected, 'A caller cannot change the retained display projection');
+  assert.deepEqual((await request('/api/status')).body.learning, expected);
+  assert.equal(reads.get(publication.dbPath), 1, 'Repeated direct and HTTP reads reuse only this generation');
+  const previous = publication;
+  publication = snapshot(directory, 'next-home-display');
+  recordLearningModels(publication, { matching: false });
+  const next = (await request('/api/status')).body;
+  assert.equal(next.learning.adaptive, null, 'An unsupported replacement never inherits the earlier model');
+  assert.equal(reads.get(previous.dbPath), 1);
+  assert.equal(reads.get(publication.dbPath), 1);
+  assert.equal(digest(previous.dbPath), previous.digest);
+  assert.equal(digest(publication.dbPath), publication.digest);
+});
+
 test('replica does not substitute priors for missing, unsupported or post-publication model checkpoints', async t => {
   const directory = fixture(t);
   let publication = snapshot(directory, 'no-models');

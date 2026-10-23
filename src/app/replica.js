@@ -55,6 +55,20 @@ function homeLearningSnapshot(snapshot, checkpoint, now) {
       : 'No compatible saved Home model is available at this snapshot boundary.' };
 }
 
+/** A verified generation cannot change its model. Retain only display fields,
+ * rather than decoding the complete learning history on every status poll. */
+function homeDisplayState(snapshot) {
+  if (!snapshot) return { value: null, error: null };
+  if (!snapshot.homeDisplayState) {
+    const saved = snapshotState(snapshot, `adaptive:${snapshot.input}`);
+    const fields = ['algorithmVersion', 'model', 'health', 'baselineC', 'comfortReference',
+      'journalCursor', 'learningConfiguration', 'cursor', 'measurementEpochAt'];
+    snapshot.homeDisplayState = { ...saved, value: saved.value == null ? null
+      : Object.fromEntries(fields.map(key => [key, saved.value[key]])) };
+  }
+  return structuredClone(snapshot.homeDisplayState);
+}
+
 /** Show the master's saved charging decision at its own projection boundary.
  * Neither the viewer clock nor copied ownership can schedule charger actions. */
 function chargingSnapshot(snapshot) {
@@ -271,7 +285,7 @@ export async function startReplica({ config, clock = Date.now,
     }
     const state = lastError ? 'error' : !publication ? 'waiting'
       : Math.max(now - publication.verifiedAt, now - publication.sourceAt) > staleAfterMs ? 'stale' : 'ready';
-    const homeState = snapshotState(snapshot, `adaptive:${snapshot?.input}`);
+    const homeState = homeDisplayState(snapshot);
     const checkpoint = homeState.value;
     const learningConfig = checkpoint?.learningConfiguration ?? {};
     const boundaries = snapshot ? sensorBoundaries(snapshot.store, snapshot.input, snapshot.publication.sourceAt) : {};

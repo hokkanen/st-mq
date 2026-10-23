@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Reuse a compact recorded Home-model display within each verified slave
+  snapshot, avoiding repeated decoding of its complete learning history for
+  dashboard status. New snapshots still validate their own model and evidence.
+
 - Preserve completed historical chart caches through unrelated voltage updates.
   Relevant causal voltage, first usable retrospective estimates and corrected
   history still refresh results; voltage changes reuse recorded energy groups.
