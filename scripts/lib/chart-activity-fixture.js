@@ -48,11 +48,18 @@ export function seedChartActivityCatalogueFixture(store) {
         } else if (['controller_phase', 'dhwr_request'].includes(row.signal)) {
           store.observation({ source: 'controller', device: 'providers', signal: row.signal, value, unit: row.unit,
             sourceTime: at, receivedAt: at, quality: ['requested'], raw: { expiresAt: end } });
-        } else for (const [time, reading, quality] of [[at, value, []], [end, null, ['missing']]])
-          recorder.record({ source: ['compressor_active', 'operating_mode', 'dhw_routing', 'heating_pump_active', 'alarm_active', 'alarm_code'].includes(row.signal)
-            ? 'husdata-h66' : 'synthetic-chart', device: 'invented-catalogue-fixture', signal: row.signal,
+        } else for (const [time, reading, quality] of [[at, value, []], [end, null, ['missing']]]) {
+          // Match producer contracts: H66 and the native tariff relay have no
+          // periodic metadata. Uniform artificial deadlines hid missing readers.
+          const h66 = ['compressor_active', 'operating_mode', 'dhw_routing', 'heating_pump_active', 'alarm_active', 'alarm_code'].includes(row.signal);
+          const door = row.signal.includes('door');
+          const source = h66 ? 'husdata-h66' : row.signal === 'heat_savings_active' || row.signal === 'dhwr_active' ? 'shelly-mqtt'
+            : row.signal.startsWith('floor_') ? 'sonoff-floor' : row.signal.startsWith('garage_') && !door ? 'garage-adapter' : 'mqtt-equipment';
+          recorder.record({ source, device: 'invented-catalogue-fixture', signal: row.signal,
             value: reading, unit: row.unit, sourceTime: time, receivedAt: time, quality,
-            raw: { reportIntervalMs: 2000, verified: true, usableForControl: true } });
+            raw: h66 ? { verified: true, usableForControl: true } : row.signal === 'heat_savings_active' ? { timeBasis: 'mqtt-live-status' }
+              : door ? { eventOnly: true } : { reportIntervalMs: 2000, verified: true, usableForControl: true } });
+        }
       }
       store.appendLearningJournal('providers', { kind: 'sample', at: end, algorithmVersion: LEARNING_ALGORITHM,
         payload: { value: { sensorInputVersion: 1, timestamp: end, windowStart: at, windowEnd: end,

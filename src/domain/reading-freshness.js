@@ -2,6 +2,7 @@
 // defaults are shared by acquisition, recording, learning and presentation;
 // changing learning validity still requires a new algorithm version.
 export const H66_MAX_AGE_MS = 5 * 60_000;
+export const DEFAULT_SOURCE_MAX_AGE_MS = 5 * 60_000;
 export const OUTDOOR_MAX_AGE_MS = 30 * 60_000;
 export const PROVIDER_CURRENT_ATTENTION_MS = 30 * 60_000;
 export const PROVIDER_TEMPERATURE_ATTENTION_MS = 2 * 60 * 60_000;

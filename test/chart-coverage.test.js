@@ -8,6 +8,69 @@ import { createChartLoader, historySeriesAt } from '../chart/history-model.js';
 import { recordingChangedForSelection } from '../chart/history-chart.js';
 
 const MINUTE=60_000,HOUR=60*MINUTE;
+
+for(const signal of ['garage_door1_open','garage_door2_open']) test(`${signal}: delayed contact recovery cannot backdate availability`,t=>{
+  const {store,recorder,date,start}=fixture(t);
+  const put=(sourceMinute,receivedMinute)=>recorder.record({source:'mqtt-equipment',device:'invented-door',signal,
+    value:0,unit:'state',sourceTime:start+sourceMinute*MINUTE,receivedAt:start+receivedMinute*MINUTE,
+    quality:[],raw:{eventOnly:true,timeBasis:'mqtt-live-status'}});
+  put(0,0);
+  recorder.recordFailure({source:'mqtt-equipment',device:'invented-door',signal,unit:'state',at:start+MINUTE});
+  put(1.5,2);
+  for(const selection of [{startDate:date,endDate:date}, {startDate:'2026-01-01',endDate:date}]) {
+    const result=getChartData({store,input:'mqtt',now:start+4*HOUR,left:signal,...selection});
+    assert.deepEqual(result.shading[signal],[{start,end:start+MINUTE,value:0},{start:start+2*MINUTE,end:start+4*HOUR,value:0}]);
+    assert.ok(result.series[signal].some(row=>row.x===start+2*MINUTE&&row.observedAt===start+1.5*MINUTE));
+  }
+  const gap=getChartData({store,input:'mqtt',now:start+4*HOUR,left:signal,startDate:date,endDate:date,
+    viewFrom:start+1.6*MINUTE,viewTo:start+1.9*MINUTE});
+  assert.deepEqual(gap.shading[signal],[]);
+});
+
+for (const [source,signal,unit] of [['shelly-mqtt','heat_savings_active','state'],
+  ['mqtt-equipment','heat_savings_active','state'],['husdata-h66','alarm_active','state'],['husdata-h66','alarm_code','code']]) {
+  for (const value of [0,1]) test(`${source}/${signal}=${value}: unchanged native confirmations fill day, long and zoomed bars`,t=>{
+    const {store,recorder,date,start}=fixture(t),first=start-24*HOUR,last=start+24*HOUR;
+    for(let at=first;at<=last;at+=4*MINUTE) recorder.record({source,device:'invented-native',signal,
+      value,unit,sourceTime:at,receivedAt:at,quality:[],raw:{timeBasis:'mqtt-live-status'}});
+    assert.equal(store.observations().length,1,'Confirmations extend coverage without duplicating state observations');
+    const before=store.db.prepare('SELECT total_changes() n').get().n;
+    for(const points of [100,800,2000]) for(const selection of [{startDate:date,endDate:date},
+      {startDate:'2026-01-01',endDate:date},
+      {startDate:date,endDate:date,viewFrom:start+5*HOUR,viewTo:start+5*HOUR+MINUTE}]) {
+      const result=getChartData({store,input:'mqtt',now:last+HOUR,left:signal,points,...selection});
+      assert.deepEqual(result.shading[signal],[{start:Math.max(first,result.range.from),end:Math.min(last+5*MINUTE,result.range.to),value}]);
+      assert.ok(result.series[signal].filter(row=>row.y!==null).every(row=>row.sourceCoverage&&row.observedAt===first));
+    }
+    assert.equal(store.db.prepare('SELECT total_changes() n').get().n,before,'Chart reads do not mutate recorded evidence');
+  });
+
+  test(`${signal}: real gaps, failure and same-value recovery retain exact source boundaries`,t=>{
+    const {store,recorder,date,start}=fixture(t);
+    const put=minute=>recorder.record({source,device:'invented-native',signal,value:0,unit,
+      sourceTime:start+minute*MINUTE,receivedAt:start+minute*MINUTE,quality:[],raw:{timeBasis:'mqtt-live-status'}});
+    put(0);put(4);put(12);
+    recorder.recordFailure({source,device:'invented-native',signal,unit,at:start+13*MINUTE});
+    put(14);recorder.flush(start+22*MINUTE);
+    const result=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+22*MINUTE,left:signal});
+    assert.deepEqual(result.shading[signal],[{start,end:start+9*MINUTE,value:0},
+      {start:start+12*MINUTE,end:start+13*MINUTE,value:0},{start:start+14*MINUTE,end:start+19*MINUTE,value:0}]);
+    const earlier=getChartData({store,input:'mqtt',startDate:date,endDate:date,now:start+3*MINUTE,left:signal});
+    assert.deepEqual(earlier.shading[signal],[{start,end:start+3*MINUTE,value:0}],'Future compact confirmations do not extend an earlier as-of view');
+  });
+
+  test(`${signal}: committed unchanged reports refresh the open dashboard chart`,t=>{
+    const {store,recorder,date,start}=fixture(t);
+    const put=minute=>recorder.record({source,device:'invented-native',signal,value:0,unit,
+      sourceTime:start+minute*MINUTE,receivedAt:start+minute*MINUTE,quality:[],raw:{timeBasis:'mqtt-live-status'}});
+    put(0);recorder.flush(start,{force:true});const before=recorder.status(start);
+    put(1);recorder.flush(start+MINUTE,{force:true});const after=recorder.status(start+MINUTE);
+    assert.equal(store.observations().length,1);
+    assert.equal(before.historyRevision,after.historyRevision);
+    assert.notEqual(before.sourceReportRevision,after.sourceReportRevision);
+    assert.equal(recordingChangedForSelection({startDate:date,endDate:date,left:signal},date,before,after),true);
+  });
+}
 function fixture(t) {
   const store=new Store(':memory:');t.after(()=>store.close());
   const recorder=new Recorder(store),date='2026-01-15';

@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
+import { H66_MAX_AGE_MS, OUTDOOR_MAX_AGE_MS, DEFAULT_SOURCE_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { INDOOR_SIGNALS, HELD_TEMPERATURE_SIGNALS, INDOOR_ATTENTION_MS } from '../domain/indoor-sensors.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { isRecordedDataset } from './recorded-datasets.js';
 import { validEnergyQuality } from './energy-history.js';
-import { recordingPolicy, recordingStreamKey as keyOf } from '../domain/recording-policy.js';
+import { recordingPolicy, recordingStreamKey as keyOf, hasSourceReportCoverage } from '../domain/recording-policy.js';
 import { VOLTAGE_RECORDING_FLOOR_V, VOLTAGE_SIGNALS, voltageRecordingStatus } from './voltage.js';
 import { recordedTransport } from '../domain/recording-source.js';
 import { ADAPTIVE_BUDGET_KEY, initialAdaptiveBudget as initialBudget, readAdaptiveBudget } from './adaptive-recording-budget.js';
@@ -139,7 +139,7 @@ const semanticQuality = raw => Object.fromEntries(['usableForControl','verified'
 const sourceAge = o => voltageEstimate(o) ? Infinity
   : o.source === 'mqtt-equipment' && o.unit === 'state' && (o.eventOnly || o.raw?.eventOnly) ? Infinity
   : temperatureReportMaxAge(o) ?? (HELD_TEMPERATURE_SIGNALS.includes(o.signal) ? Infinity : o.source === 'husdata-h66' ? H66_MAX_AGE_MS
-  : /temperature$/.test(o.signal) ? OUTDOOR_MAX_AGE_MS : o.signal === 'solar_radiation' ? 6 * HOUR : 5 * MINUTE);
+  : /temperature$/.test(o.signal) ? OUTDOOR_MAX_AGE_MS : o.signal === 'solar_radiation' ? 6 * HOUR : DEFAULT_SOURCE_MAX_AGE_MS);
 
 const DIAGNOSTIC_QUALITY = new Set(['missing', 'invalid-value', 'invalid-numeric', 'invalid-unit', 'invalid-payload',
   'retained', 'source-time-unknown', 'future-source-time', 'out-of-order-source-time', 'conflicting-duplicate',
@@ -1086,10 +1086,7 @@ export class Recorder {
     // every fast power acquisition. Device identifiers stay out of the revision.
     const temperatureReportRevision = JSON.stringify(states.filter(s=>s.reportPolicy && s.signal!=='dhwr_active')
       .map(s=>[s.signal,s.lastSourceTime,s.coverageId,s.status]).sort((a,b)=>a[0].localeCompare(b[0])||a[2]-b[2]));
-    const sourceReportRevision = JSON.stringify(states.filter(s=>
-      ['husdata-h66','simulation'].includes(s.source) && ['compressor_active','dhw_routing','operating_mode','auxiliary_output'].includes(s.signal)
-      || ['controller-estimate','simulation'].includes(s.source) && s.signal==='auxiliary_power'
-      || ['mqtt-equipment','simulation'].includes(s.source) && s.signal==='dhwr_active')
+    const sourceReportRevision = JSON.stringify(states.filter(hasSourceReportCoverage)
       .map(s=>[s.source,s.signal,s.lastSourceTime,s.coverageId,s.status])
       .sort((a,b)=>a[0].localeCompare(b[0])||a[1].localeCompare(b[1])||a[3]-b[3]));
     const latestCoverage = this.store.db.prepare('SELECT source_time FROM recorder_coverage WHERE id=?');

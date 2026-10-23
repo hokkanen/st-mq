@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Fill tariff-control relay feedback and heat-pump alarm bars from recorded
+  unchanged confirmations. Preserve actual outages and source expiry, and refresh
+  open charts when these confirmations arrive without a state change.
+  Keep delayed Garage door recovery reports from filling earlier unavailable
+  periods while retaining their original observation times.
+
 - Read the slave's recorded Home-model display directly from compact metadata,
   including on its first request. Resolve current references without loading
   historical fitting bodies; complete checkpoint loading and verification retain

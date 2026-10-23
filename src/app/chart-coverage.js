@@ -1,17 +1,28 @@
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
-import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
+import { H66_MAX_AGE_MS, DEFAULT_SOURCE_MAX_AGE_MS } from '../domain/reading-freshness.js';
+import { H66_COVERAGE_SIGNALS, EQUIPMENT_FEEDBACK_SIGNALS, EVENT_CONTACT_SIGNALS } from '../domain/recording-policy.js';
 import { selectedCoverageSpan, nextCoverageStart, nextCoverageId, coverageWindow } from '../storage/coverage-history.js';
 
-// Keep confirmed-state projection and worker cache freshness on the same signals.
-export const H66_CHART_COVERAGE_SIGNALS = Object.freeze([
-  'compressor_active', 'heating_pump_active', 'dhw_routing', 'operating_mode', 'auxiliary_output',
-]);
+// Projection and cache invalidation must select exactly the same source spans.
+// These fixed deadlines match the recorder; absent device metadata is not an
+// event-only promise. Other equipment supplies its explicit reporting policy.
+export const CHART_SOURCE_COVERAGE_SQL = `(
+  json_extract(o.raw,'$.reportIntervalMs')>0
+  OR c.source IN ('husdata-h66','simulation') AND c.signal IN (${H66_COVERAGE_SIGNALS.map(signal=>`'${signal}'`).join(',')})
+  OR c.source='controller-estimate' AND c.signal='auxiliary_power'
+  OR c.source IN ('mqtt-equipment','shelly-mqtt') AND c.signal IN (${EQUIPMENT_FEEDBACK_SIGNALS.map(signal=>`'${signal}'`).join(',')})
+  OR c.source='mqtt-equipment' AND c.signal IN (${EVENT_CONTACT_SIGNALS.map(signal=>`'${signal}'`).join(',')}) AND json_extract(o.raw,'$.eventOnly')=1)`;
 function sourceReportAge(row,raw) {
-  if (['husdata-h66','simulation'].includes(row.source) && H66_CHART_COVERAGE_SIGNALS.includes(row.signal)
+  if (['husdata-h66','simulation'].includes(row.source) && H66_COVERAGE_SIGNALS.includes(row.signal)
     || row.source==='controller-estimate' && row.signal==='auxiliary_power') return H66_MAX_AGE_MS;
-  if (row.source!=='mqtt-equipment' || row.signal!=='dhwr_active') return null;
+  if (!['mqtt-equipment','shelly-mqtt'].includes(row.source)) return null;
+  if (row.source==='mqtt-equipment' && EVENT_CONTACT_SIGNALS.includes(row.signal) && raw.eventOnly===true) return Infinity;
+  if (row.signal==='heat_savings_active') return DEFAULT_SOURCE_MAX_AGE_MS;
+  if (row.signal!=='dhwr_active') return null;
   return raw.eventOnly===true ? Infinity : Number.isFinite(raw.maxAgeMs)&&raw.maxAgeMs>0 ? raw.maxAgeMs : null;
 }
+
+export const chartReportAge = (row,raw) => temperatureReportMaxAge({raw}) ?? sourceReportAge(row,raw);
 
 /** Availability has an acquisition clock, distinct from the measurement clock.
  * A failed request must break a line when it failed, not overwrite the last
@@ -71,20 +82,14 @@ function* confirmedReportRows(store,{from,to,input,signals,now=to}) {
       AND ${input==='simulated' ? "(c.source='simulation' OR c.source='controller-estimate' AND c.device='simulated')"
         : "c.source<>'simulation' AND NOT(c.source='controller-estimate' AND c.device='simulated')"}
       AND o.received_at<=?
-      AND (json_extract(o.raw,'$.reportIntervalMs')>0
-        OR c.source IN ('husdata-h66','simulation') AND c.signal IN (${H66_CHART_COVERAGE_SIGNALS.map(signal=>`'${signal}'`).join(',')})
-        OR c.source='controller-estimate' AND c.signal='auxiliary_power'
-        OR c.source='mqtt-equipment' AND c.signal='dhwr_active')
-      AND (c.status<>'fresh' OR c.source_time+COALESCE(json_extract(o.raw,'$.reportIntervalMs'),
-        CASE WHEN c.source='mqtt-equipment' THEN json_extract(o.raw,'$.maxAgeMs') ELSE ${H66_MAX_AGE_MS} END)
-        +COALESCE(json_extract(o.raw,'$.reportGraceMs'),0)>=? OR json_extract(o.raw,'$.eventOnly')=1)
+      AND ${CHART_SOURCE_COVERAGE_SQL}
     ORDER BY c.start_at,c.id`;
   const pending=[];
   const ordered=()=>pending.sort((a,b)=>a.source_time-b.source_time||a.id-b.id);
-  for (const row of store.db.prepare(sql).iterate(...window.params,now,...wanted,Math.min(to,now),now,from)) {
+  for (const row of store.db.prepare(sql).iterate(...window.params,now,...wanted,Math.min(to,now),now)) {
     ordered();
     while(pending.length&&pending[0].source_time<row.start_at) yield pending.shift();
-    const raw=JSON.parse(row.raw),periodicAge=temperatureReportMaxAge({raw}),age=periodicAge??sourceReportAge(row,raw);
+    const raw=JSON.parse(row.raw),periodicAge=temperatureReportMaxAge({raw}),age=chartReportAge(row,raw);
     if (age===null) continue;
     const next=row.next_start??Infinity;
     if (next<from) continue;

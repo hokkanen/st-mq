@@ -865,7 +865,16 @@ export function getChartData({ store, input = 'offline', contract = null, market
     if (COUNTER_SIGNALS.includes(row.signal) && row.coverage) continue;
     // Periodic reports have their own explicit availability projection, including
     // unchanged spans beginning before the normal three-hour context query.
-    if (!row.coverage && row.import_id == null && row.report_interval_ms>0 && !COUNTER_SIGNALS.includes(row.signal)) continue;
+    if (!row.coverage && row.import_id == null && !COUNTER_SIGNALS.includes(row.signal)) {
+      if (row.report_interval_ms>0) continue;
+      // A contact received while availability was unknown is admitted only at
+      // recovery. Its compact coverage retains the original observation clock;
+      // drawing the raw source point would backdate that recovery into the gap.
+      if (row.source==='mqtt-equipment' && DOOR_SIGNALS.includes(row.signal)) {
+        const raw=chartRaw(row);
+        if (raw?.eventOnly===true && raw?.recorder) continue;
+      }
+    }
     if (row.imported) {
       if (time !== null && time !== row.source_time) flushTime();
       time = row.source_time;

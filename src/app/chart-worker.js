@@ -9,12 +9,10 @@ import { readCheckpoint, matchingCheckpoint } from '../storage/journal.js';
 import { getChartData, chartRequestRange } from './chart-data.js';
 import { getHeatingBenefit } from './chart-heating-benefit.js';
 import { pendingEnergyObservations } from '../storage/pending-energy.js';
-import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
-import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { CHART_VIEW_BY_KEY } from '../domain/chart-views.js';
 import { CHARGING_ALLOWANCE_SIGNALS } from '../charging/allowance-history.js';
 import { CHARGING_ALLOWANCE_SERIES } from './chart-charging-allowances.js';
-import { H66_CHART_COVERAGE_SIGNALS } from './chart-coverage.js';
+import { CHART_SOURCE_COVERAGE_SQL, chartReportAge } from './chart-coverage.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
 import { ENERGY_SIGNALS, HISTORY_AXIS_BY_KEY, MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
 import { createChartQueryContext } from './chart-query-context.js';
@@ -139,17 +137,15 @@ const pendingEnergyFingerprint = (args,range) => JSON.stringify(pendingEnergyObs
   .filter(row=>row.source_time>range.from&&JSON.parse(row.raw).intervalStart<range.to));
 const latestSourceCoverage=db.prepare(`SELECT c.*,o.raw,o.source_time AS observed_at FROM state s
   JOIN active_recorder_coverage c ON c.id=json_extract(s.value,'$.coverageId')
-  JOIN active_observations o ON o.id=c.observation_id WHERE s.key LIKE 'recorder:signal:%' AND (
-    json_extract(o.raw,'$.reportIntervalMs')>0 OR c.source IN ('husdata-h66','simulation') AND c.signal IN (${H66_CHART_COVERAGE_SIGNALS.map(signal=>`'${signal}'`).join(',')})
-    OR c.source='controller-estimate' AND c.signal='auxiliary_power'
-    OR c.source IN ('mqtt-equipment','shelly-mqtt') AND c.signal='dhwr_active') ORDER BY c.id`);
+  JOIN active_observations o ON o.id=c.observation_id WHERE s.key LIKE 'recorder:signal:%'
+    AND ${CHART_SOURCE_COVERAGE_SQL} ORDER BY c.id`);
 function sourceCoverageFingerprint(args,range) {
   const spans=[];
   for(const row of latestSourceCoverage.iterate()) {
     if ((args.input==='simulated')!==(row.source==='simulation'||row.source==='controller-estimate'&&row.device==='simulated')
       ||row.status!=='fresh'||row.start_at>=range.to||row.start_at>args.now) continue;
-    const raw=JSON.parse(row.raw),age=temperatureReportMaxAge({raw})??(row.signal==='dhwr_active'
-      ? raw.eventOnly===true ? Infinity : raw.maxAgeMs : H66_MAX_AGE_MS);
+    const raw=JSON.parse(row.raw),age=chartReportAge(row,raw);
+    if(age===null) continue;
     const confirmed=row.end_at<=args.now?row.source_time:row.observed_at;
     const end=Math.min(range.to,confirmed+age);
     if(end>Math.max(range.from,row.start_at)) spans.push([row.id,end,row.end_at<=args.now]);

@@ -1139,6 +1139,14 @@ Activity bars use original state intervals projected during the existing history
 passes, independently of scalar first/last/min/max reduction. `/api/chart`
 provides those intervals in `shading[signal]` for every requested state/code
 series. The browser never reconstructs them from reduced numeric points.
+Native tariff relay feedback and H66 alarm states/codes use their compact
+recorder confirmations and existing five-minute source validity even though
+their observations have no periodic-report metadata. Explicit failures end
+coverage immediately; unchanged recovery starts a separate interval. Projection,
+worker-cache invalidation and dashboard report revisions include these streams.
+Event-only Garage contacts use recorded availability boundaries without an
+age-based expiry. A delayed recovery report retains its original source time
+but cannot fill the preceding unavailable period.
 Adjacent equal states coalesce; more than twice the requested bucket count
 switches to bounded per-state duration summaries. Open-ended alarm codes retain
 at most 32 individual summary categories plus an explicitly mixed-code category.

@@ -1762,6 +1762,14 @@ observations, phase ties and bounded code summaries. It verifies original
 occupied durations independently of scalar reduction and confirms chart reads
 perform no writes. The chart worker/transport and storage-priority suites retain
 coverage for concurrent recording, control priority, cancellation and snapshots.
+The complete catalogue fixture follows actual source formats: H66 states/codes
+and native tariff relay feedback carry no invented periodic-report metadata.
+`test/chart-coverage.test.js` also checks unchanged native relay/alarm reports
+across day, long and zoomed selections, exact outages, expiry, earlier as-of
+reads and dashboard revisions. `test/dhwr-native-chart-cache.test.js` verifies
+worker-cache renewal without new observations and reuse of completed history.
+Delayed event-only contact recovery also retains its unavailable interval and
+original observation time in day, long and zoomed views.
 
 Run `node test/browser/chart-performance-smoke.js --indicators-only` for actual
 Chart.js/indicator rendering through the production HTTP/history worker route.

@@ -1,6 +1,18 @@
 import { ENERGY_SIGNALS, SIGNAL_INFO } from './history-series.js';
 import { HELD_TEMPERATURE_SIGNALS } from './indoor-sensors.js';
 
+// Fixed-age and event-only source confirmations without periodic metadata.
+// Keep chart projection and dashboard report revisions on the same streams.
+export const H66_COVERAGE_SIGNALS = Object.freeze(['compressor_active', 'heating_pump_active',
+  'dhw_routing', 'operating_mode', 'auxiliary_output', 'alarm_active', 'alarm_code']);
+export const EQUIPMENT_FEEDBACK_SIGNALS = Object.freeze(['dhwr_active', 'heat_savings_active']);
+export const EVENT_CONTACT_SIGNALS = Object.freeze(['garage_door1_open', 'garage_door2_open']);
+export const hasSourceReportCoverage = ({source,signal}) =>
+  ['husdata-h66','simulation'].includes(source) && H66_COVERAGE_SIGNALS.includes(signal)
+  || ['controller-estimate','simulation'].includes(source) && signal==='auxiliary_power'
+  || ['mqtt-equipment','shelly-mqtt','simulation'].includes(source) && EQUIPMENT_FEEDBACK_SIGNALS.includes(signal)
+  || source==='mqtt-equipment' && EVENT_CONTACT_SIGNALS.includes(signal);
+
 // Recording policy describes the writer, independently of chart/model roles.
 // Freshness/report cadence never selects a numeric sampling policy.
 const LIVE_ONLY = new Set(['caravan_active', 'caravan_power', 'caravan_current',
