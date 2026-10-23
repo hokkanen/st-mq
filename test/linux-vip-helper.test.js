@@ -42,7 +42,10 @@ test('current protected helper is verified without sudo or any mutation, includi
   assert.equal(await f.inspect(), false);
   f.states['st-mq-vip.service'].ActiveState = 'inactive'; f.states['st-mq-vip.service'].SubState = 'dead';
   assert.equal(await f.inspect(), false);
-  assert.equal(f.calls.length, 4);
+  f.states['st-mq-vip.service'].ActiveState = 'active'; f.states['st-mq-vip.service'].SubState = 'running';
+  f.states['st-mq-vip.socket'].SubState = 'running';
+  assert.equal(await f.inspect(), false);
+  assert.equal(f.calls.length, 6);
 });
 
 test('each public helper artifact must match; missing or unreadable artifacts require refresh', async t => {
@@ -106,7 +109,7 @@ test('systemd drift, inactive socket and unavailable metadata require refresh', 
       assert.equal(await f.inspect(), true); f.states[name] = original;
     }
   }
-  for (const patch of [{ ActiveState: 'inactive', SubState: 'dead' }, { UnitFileState: 'disabled' }]) {
+  for (const patch of [{ ActiveState: 'inactive', SubState: 'dead' }, { SubState: 'unknown' }, { UnitFileState: 'disabled' }]) {
     const original = f.states['st-mq-vip.socket']; f.states['st-mq-vip.socket'] = { ...original, ...patch };
     assert.equal(await f.inspect(), true); f.states['st-mq-vip.socket'] = original;
   }

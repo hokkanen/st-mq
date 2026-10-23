@@ -189,7 +189,7 @@ export async function pairHelperNeedsRefresh({ source, nodePath, run = runComman
       if (state.LoadState !== 'loaded' || state.FragmentPath !== '/etc/systemd/system/' + name
         || state.DropInPaths !== '' || state.NeedDaemonReload !== 'no') return true;
       if (name.endsWith('.socket')) {
-        if (state.ActiveState !== 'active' || state.SubState !== 'listening' || state.UnitFileState !== 'enabled') return true;
+        if (state.ActiveState !== 'active' || !['listening', 'running'].includes(state.SubState) || state.UnitFileState !== 'enabled') return true;
       } else if (!(state.ActiveState === 'active' && state.SubState === 'running'
         || state.ActiveState === 'inactive' && state.SubState === 'dead')) return true;
     }
