@@ -172,6 +172,51 @@ test('system service adapter installs a persistent unit and uses explicit privil
   assert(f.calls.some(call => call[0] === 'sudo' && call[1] === '-n' && call[2] === 'install'));
   assert(f.calls.some(call => call[0] === 'sudo' && call[2] === 'systemctl' && call[3] === 'stop'));
   assert.equal(f.calls.some(call => call[0] === 'sudo' && call.includes('-u')), false, 'Private application reads remain under the deployment/service account');
+  f.state.showPatch = { User: 'synthetic-private-service-user' };
+  await assert.rejects(f.invoke('deploy'), error => /service user differs from configuration/.test(error.message)
+    && !error.message.includes('synthetic-private-service-user'));
+});
+
+test('service preflight identifies every mismatch without exposing raw values or changing the installation', async t => {
+  const f = fixture(t); await f.setup();
+  const unit = readFileSync(f.unit), current = realpathSync(join(f.c.runtime_dir, 'current'));
+  const marker = readFileSync(join(f.c.runtime_dir, 'deployment.json'));
+  const cases = [
+    [{ LoadState: 'synthetic-private-value' }, 'LoadState is not loaded'],
+    [{ Transient: 'yes' }, 'persistent unit not confirmed'],
+    [{ FragmentPath: '/synthetic-private-value/unit.service' }, 'FragmentPath differs'],
+    [{ DropInPaths: '/synthetic-private-value/override.conf' }, 'unexpected service drop-ins'],
+    [{ NeedDaemonReload: 'yes' }, 'daemon reload not confirmed current'],
+    [{ WorkingDirectory: '/synthetic-private-value' }, 'WorkingDirectory differs'],
+    [{ ExecStart: 'synthetic-private-value' }, 'ExecStart Node executable differs'],
+    [{ ExecStart: `{ path=${f.c.node_path} ; argv[]=synthetic-private-value ; }` }, 'ExecStart application entrypoint differs'],
+    [{ ActiveState: 'inactive' }, 'ActiveState is not active'],
+    [{ SubState: 'auto-restart' }, 'SubState is not running'],
+    [{ MainPID: '0' }, 'running MainPID not confirmed'],
+    [{ MainPID: 'synthetic-private-value' }, 'running MainPID not confirmed'],
+  ];
+  const reject = async expected => {
+    f.calls.length = 0;
+    await assert.rejects(f.invoke('deploy'), error => {
+      assert(error instanceof LinuxDeploymentError);
+      assert(error.message.includes(expected), error.message);
+      assert(!error.message.includes('synthetic-private-value'), 'Untrusted service values must stay private');
+      return true;
+    });
+    assert(!f.calls.some(call => call.includes('stop') || call.includes('start') || call.includes('daemon-reload') || call.includes('ci')));
+    assert.equal(existsSync(join(f.c.runtime_dir, 'deployment.lock')), false);
+    assert.equal(realpathSync(join(f.c.runtime_dir, 'current')), current);
+    assert.deepEqual(readFileSync(join(f.c.runtime_dir, 'deployment.json')), marker);
+  };
+  for (const [patch, expected] of cases) { f.state.showPatch = patch; await reject(expected); }
+  f.state.showPatch = { ActiveState: 'inactive', SubState: 'dead', MainPID: '0' };
+  await assert.rejects(f.invoke('deploy'), /ActiveState is not active; SubState is not running; running MainPID not confirmed/);
+  f.state.showPatch = {};
+  writeFileSync(f.unit, Buffer.concat([unit, Buffer.from('\n# synthetic-private-value\n')]));
+  await reject('unit file differs');
+  rmSync(f.unit); await reject('unit file missing');
+  writeFileSync(f.unit, unit);
+  assert.equal(readFileSync(join(f.data, 'database.sqlite'), 'utf8'), 'synthetic-retained-history');
 });
 
 test('master and unknown role are rejected before building or stopping', async t => {

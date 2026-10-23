@@ -28,6 +28,8 @@ npm builds exercise staged releases, while simulated systemd and authenticated
 pair status cover user/system services, role changes, failures and synchronization.
 These tests never operate installed services. See [Linux deployment](linux-deployment.md)
 and the [paired deployment procedure](paired-deployment.md) for runtime checks.
+Service-preflight cases check specific mismatch diagnostics, suppression of raw
+service values and rejection before building, locking or changing the runtime.
 `test/linux-vip-helper.test.js` checks conditional helper refresh using isolated
 installation files and simulated systemd metadata. Deployment tests cover the
 password-free user-service path, authentication before Stop for helper changes,

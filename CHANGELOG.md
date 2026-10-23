@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Identify the failed Linux deployment service checks instead of reporting one
+  generic mismatch, while keeping private service values out of errors.
+
 - Separate chart drawing from assessment requests so live model checkpoints do
   not reconstruct unchanged historical plots. Assessment results and evidence
   still refresh after model changes and corrections.

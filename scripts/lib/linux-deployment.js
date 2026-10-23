@@ -175,12 +175,26 @@ function serviceInspector(c, { run = runCommand, unitPath = servicePath, signal 
   };
   const assertService = async (active = true, listenerReady = active) => {
     const s = await show();
-    if (!existsSync(unit) || readFileSync(unit, 'utf8') !== expectedUnit || s.LoadState !== 'loaded' || s.Transient !== 'no'
-      || s.FragmentPath !== unit || s.DropInPaths || s.NeedDaemonReload !== 'no' || s.WorkingDirectory !== join(runtime, 'current')
-      || !s.ExecStart?.includes(`path=${c.node_path} ;`) || !s.ExecStart?.includes(join(runtime, 'current/src/main.js'))
-      || c.service_scope === 'system' && s.User !== c.service_user
-      || active && (s.ActiveState !== 'active' || s.SubState !== 'running' || !(Number(s.MainPID) > 0)))
-      fail('The persistent service does not match this installation or is not running.');
+    // Report failed checks, never raw unit contents or systemd values: those
+    // may contain private paths, command arguments or unreviewed overrides.
+    const failures = [];
+    if (!existsSync(unit)) failures.push('unit file missing');
+    else if (readFileSync(unit, 'utf8') !== expectedUnit) failures.push('unit file differs from the configured installation');
+    if (s.LoadState !== 'loaded') failures.push('LoadState is not loaded');
+    if (s.Transient !== 'no') failures.push('persistent unit not confirmed');
+    if (s.FragmentPath !== unit) failures.push('FragmentPath differs from the expected unit file');
+    if (s.DropInPaths) failures.push('unexpected service drop-ins');
+    if (s.NeedDaemonReload !== 'no') failures.push('systemd daemon reload not confirmed current');
+    if (s.WorkingDirectory !== join(runtime, 'current')) failures.push('WorkingDirectory differs from the configured runtime');
+    if (!s.ExecStart?.includes(`path=${c.node_path} ;`)) failures.push('ExecStart Node executable differs from configuration');
+    if (!s.ExecStart?.includes(join(runtime, 'current/src/main.js'))) failures.push('ExecStart application entrypoint differs from configuration');
+    if (c.service_scope === 'system' && s.User !== c.service_user) failures.push('service user differs from configuration');
+    if (active) {
+      if (s.ActiveState !== 'active') failures.push('ActiveState is not active');
+      if (s.SubState !== 'running') failures.push('SubState is not running');
+      if (!(Number(s.MainPID) > 0)) failures.push('running MainPID not confirmed');
+    }
+    if (failures.length) fail(`The persistent service does not match this installation or is not running: ${failures.join('; ')}.`);
     if (listenerReady) await command(c.node_path, [fileURLToPath(new URL('./linux-deployment-process.js', import.meta.url)),
       s.MainPID, c.node_path, join(runtime, 'current'), c.status_url], { timeout: 10000 });
     return s;
