@@ -1,3 +1,4 @@
+import { garageIntent } from './helpers/garage-intent.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
@@ -68,6 +69,8 @@ test('every state/code catalogue entry supplies its own authoritative bar interv
           payload: { value: currentHomeSample({ timestamp: start + MINUTE, windowStart: start, indoorC: 21,
             quality: [], phase: 'normal', floorOverrideMode: 'off', outdoorC: 5,
             thermalCompressorDuty: 0, thermalAuxKw: 0 }) } });
+      } else if (row.signal==='garage_away_mode') {
+        garageIntent(store,start,{input:'simulated',mode:'normal'});
       } else for (const at of [start, start + MINUTE]) {
         store.observation({ source: ['controller_phase', 'dhwr_request'].includes(row.signal) ? 'controller' : 'simulation',
           device: 'simulated', signal: row.signal, unit: row.unit, value: row.signal === 'dhwr_request' ? 1 : 0,

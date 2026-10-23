@@ -18,11 +18,21 @@ test('explorer exposes every supported history once and resolves a bounded catal
 });
 
 test('explorer searches original labels and canonical identifiers with explicit history meanings', () => {
+  assert.equal(EXPLORER_SERIES_BY_KEY.garage_away_mode.basis, 'Saved application intent');
   assert.equal(filterExplorerSeries('pump interpreted')[0].signal, 'garage_native_indoor_temperature');
   assert.equal(filterExplorerSeries('property_energy_l2')[0].basis, 'Recording-interval energy');
   assert.equal(filterExplorerSeries('garage native energy counter')[0].signal, 'garage_native_energy');
   assert.equal(filterExplorerSeries('secret api token').length, 0);
   assert.equal(filterExplorerSeries('   ').length, EXPLORER_SERIES.length);
+});
+
+test('Garage activity details preserve the selection clock and distinguish adopted readback from condensed history', () => {
+  const track = explorerActivityTrack('garage_away_mode');
+  const selectedAt = Date.parse('2026-10-20T12:34:00Z');
+  assert.match(track.intervalDetail({ selectedAt, intentBasis: 'dashboard-selection' }), /20 Oct 2026.*15:34.*saved intent/);
+  assert.match(track.intervalDetail({ selectedAt, intentBasis: 'adopted-readback' }), /Normal baseline adopted from reported target/);
+  assert.match(track.intervalDetail({ selectedAt, intentRecordedAt: selectedAt + 86400000 }), /scope recorded 21 Oct 2026/);
+  assert.match(track.intervalDetail({ aggregated: true }), /source details condensed/);
 });
 
 test('compatible comparisons respect units, temporal basis and physical meaning', () => {

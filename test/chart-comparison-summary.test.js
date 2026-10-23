@@ -9,7 +9,7 @@ import { seedChartPerformanceFixture, CHART_PERFORMANCE_CONTRACT } from '../scri
 const HOUR = 3_600_000, now = Date.parse('2026-10-26T12:00:00Z');
 const summaryKeys = ['range', 'now', 'input', 'timingBenefit', 'heatingBenefit', 'heatingSavings', 'firewoodBenefit'];
 
-test('comparison accounting equals the full chart through DST, gaps, incomplete prices and input selection', t => {
+test('comparison accounting is separate from drawings through DST, gaps, incomplete prices and input selection', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const fixture = seedChartPerformanceFixture(store, { days: 3, now });
   recordHeatPumpConfiguration(store, 'providers', { heatPumpCompressorKw: 2, circulationKw: 0.1, auxRatedKw: 9 }, fixture.start);
@@ -27,7 +27,9 @@ test('comparison accounting equals the full chart through DST, gaps, incomplete 
   for (const input of ['providers', 'offline', 'simulated']) for (const contract of [null, CHART_PERFORMANCE_CONTRACT]) {
     const args = { store, now, input, contract, view: 'power', startDate: '2026-10-24', endDate: '2026-10-26', points: 100 };
     const full = getChartData(args), summary = getChartData({ ...args, summaryOnly: true });
-    for (const key of summaryKeys) assert.deepEqual(summary[key], full[key], `${input}: ${key}`);
+    for (const key of ['range','now','input']) assert.deepEqual(summary[key], full[key], `${input}: ${key}`);
+    for (const key of summaryKeys.slice(3)) { assert(!Object.hasOwn(full,key)); assert(Object.hasOwn(summary,key)); }
+    if(input==='providers'&&contract) assert.equal(summary.heatingBenefit.valueEuro,0.75);
     assert.deepEqual(summary.meta.priceAssumptions, full.meta.priceAssumptions);
     assert.deepEqual(summary.series, {}); assert.deepEqual(summary.shading, {});
     assert.equal(summary.meta.returnedPoints, 0);
@@ -63,4 +65,16 @@ test('summary requests reject detail, ambiguous and unsupported shapes at browse
     assert.throws(() => chartQuery({ ...base, ...changes }));
     assert.throws(() => chartRequestRange({ ...base, ...changes }));
   }
+});
+
+test('ordinary overviews do not read assessments, reconstruct unrelated heating, or prepare firewood models',t=>{
+  const store=new Store(':memory:');t.after(()=>store.close());
+  const facade={db:{prepare(sql){
+    assert(!/active_learning_cycles|adaptive:|coefficient_generations/.test(sql),`No assessment read: ${sql.slice(0,80)}`);
+    return store.db.prepare(sql);
+  }}};
+  const data=getChartData({store:facade,input:'providers',now,view:'voltage_estimates',startDate:'2026-10-25',endDate:'2026-10-25'});
+  for(const key of summaryKeys.slice(3)) assert(!Object.hasOwn(data,key));
+  assert.equal(data.meta.heatPumpEnergy,null);
+  assert.equal(data.meta.firewoodOutcomes,null);
 });

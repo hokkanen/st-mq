@@ -1,3 +1,4 @@
+import { garageIntent } from './helpers/garage-intent.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -136,13 +137,13 @@ test('held readings do not need new observation rows and a stale tick is not ref
   assert.equal((await f.status()).recording.state, 'source-unavailable');
 });
 
-test('old saved Garage selection raises no source warning while expired pump readback still does', async t => {
+test('Garage intent is not an acquisition stream and expired pump readback still warns', async t => {
   const f = fixture(), store = new Store(':memory:');
   t.after(() => store.close());
   const recorder = new Recorder(store, { clock: f.now });
-  recorder.record({ source: 'stmq', device: 'fixture-pump', signal: 'garage_away_mode', value: 0,
-    unit: 'state', sourceTime: start, receivedAt: start, quality: ['good'],
-    raw: { requested: true, usableForControl: false } });
+  garageIntent(store,start,{mode:'normal'});
+  recorder.record({source:'mqtt-temperature',device:'invented-indoor',signal:'indoor_temperature',value:20,
+    unit:'degC',sourceTime:start,receivedAt:start,quality:['good']});
   f.engine.recordingSourceStatus = now => recorder.sourceStatus(now);
   f.advance(2 * 60 * MINUTE); f.engine.latestStatus.now = f.now();
   const healthy = await f.status();

@@ -210,6 +210,26 @@ refreshes that feedback without implying the compressor is running.
 
 Read-only replicas display recorded evidence without granting device control.
 
+**Normal/Away selection** is a continuous history of saved application intent,
+not heat-pump readback or proof of operation. Immutable `garage-intent` events
+record the active input, configured adapter route and confirmed equipment scope,
+with a transactionally updated history head. Only changes to that scope or its
+selection append an event. Polling, feed loss and restart neither renew the
+original selection clock nor expire the saved choice. The activity inspector
+shows that original clock and identifies a Normal baseline adopted from fresh
+readback separately from a dashboard selection.
+
+Disabling Garage, changing its configured adapter route, or confirming different
+equipment ends the previous interval. An unknown or unmatched scope stays blank;
+reenabling the same equipment can retain its saved choice with the original
+clock. Changing an Away preset or a reporting limit does not rewrite an active
+selection. Native observations retain their own reporting expiry independently.
+The first recorded scope starts when this representation is established, even
+when an existing saved choice has an older selection time. Earlier scalar edits
+and unrecorded scope history are not backfilled or treated as continuous intent.
+The events use the current journal and existing event/state storage; no schema
+conversion, historical repair or device command is needed to draw them.
+
 Heating control shows matching mode cards followed by heat-pump compressor
 activity, effective target and independent freeze protection. The saved target
 stays in the overview and mode buttons; it does not need a second summary row.
@@ -250,12 +270,13 @@ The state legend entries describe separate facts:
 
 ### Recorded Garage series
 
-These are the 19 current Garage history signals. Actual stored rows depend on
-configured sources and received evidence; unsupported/missing readings are not
-invented. Current adapter/sender snapshots and command events are separate from
-these time series.
+These are the 19 current Garage chart series. Eighteen use acquisition evidence;
+the saved selection is projected from scoped intent events. Actual stored rows
+depend on configured sources and received evidence; unsupported/missing readings
+are not invented. Current adapter/sender snapshots and command receipts remain
+separate from these projections.
 
-| Database signal | Meaning |
+| Chart signal | Meaning |
 | --- | --- |
 | `garage_temperature` | Rear air temperature |
 | `garage_temperature_2` | Front air temperature |
@@ -263,7 +284,7 @@ these time series.
 | `garage_door2_open` | Door 2 open/closed |
 | `garage_room_target` | Heat-pump controller's saved room target |
 | `garage_effective_target` | Heat-pump controller's effective target including protection |
-| `garage_away_mode` | Saved Normal/Away selection |
+| `garage_away_mode` | Continuous saved Normal/Away intent within recorded scope |
 | `garage_external_enabled` | Heat-pump controller's local room regulation enabled |
 | `garage_frost_available` | Heat-pump controller's protection feed available |
 | `garage_frost_active` | Heat-pump controller's frost override active |

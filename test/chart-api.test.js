@@ -53,8 +53,11 @@ test('comparison summaries use the authenticated chart worker and keep cache ent
   const summary = await fetch(path + '&summary=1', { headers }).then(response => response.json());
   assert.equal(summary.meta.summaryOnly, true);
   assert.deepEqual(summary.series, {});
-  for (const key of ['range', 'timingBenefit', 'heatingBenefit', 'heatingSavings', 'firewoodBenefit'])
-    assert.deepEqual(summary[key], full[key], key);
+  assert.deepEqual(summary.range, full.range);
+  for (const key of ['timingBenefit', 'heatingBenefit', 'heatingSavings', 'firewoodBenefit']) {
+    assert(!Object.hasOwn(full, key), `${key} is not part of a drawing response`);
+    assert(Object.hasOwn(summary, key));
+  }
   const again = await fetch(path + '&summary=1', { headers }).then(response => response.json());
   assert.equal(again.meta.cacheHit, true);
   const plot = await fetch(path, { headers }).then(response => response.json());

@@ -146,6 +146,32 @@ test('equipment identity changes discard authority and bootstrap only from fresh
   assert.equal(f.runtime.status().normalTargetC, 9); assert.equal(f.publications.at(-1).targetC, 9);
 });
 
+test('intent history survives restart without renewal and closes equipment or configured-route boundaries before readback', async t => {
+  const f = fixture(t);
+  const events = () => f.store.events().filter(row => row.type === 'garage-intent');
+  assert.equal(events().at(-1).payload.selection.basis, 'adopted-readback');
+  await f.runtime.setHeating({ mode: 'away' });
+  const selected = events().at(-1), before = events();
+  f.at(GARAGE_TEST_AT + 86_400_000);
+  const restarted = f.recreate();
+  assert.deepEqual(events(), before, 'A stale adapter and restart do not renew saved intent');
+  assert.equal(events().at(-1).payload.selection.selectedAt, selected.at);
+  restarted.setAdapter({ status: () => ({ targetIdentity: 'c'.repeat(64), control: null }) });
+  assert.equal(events().at(-1).payload.selection, null, 'Known different equipment closes history even without control readback');
+  assert.equal(f.publications.length, 1, 'Recording the boundary sends no device command');
+  const boundary = events().at(-1);
+  // Recreating the runtime must not briefly restore the older equipment's choice
+  // before the replacement can provide fresh control data.
+  const recreated = new GarageRuntime({ engine: f.engine, store: f.store, config: f.config, clock: f.now });
+  assert.deepEqual(events().at(-1), boundary);
+  f.at(f.now() + 1000);
+  f.config.garage.adapter = { ...f.config.garage.adapter, commandTopic: 'test/replacement/command' };
+  new GarageRuntime({ engine: f.engine, store: f.store, config: f.config, clock: f.now });
+  assert.equal(events().at(-1).payload.selection, null);
+  assert.notEqual(events().at(-1).payload.adapterKey, boundary.payload.adapterKey);
+  assert.equal(recreated.selection.mode, 'away', 'Old durable state is retained separately, without granting the new scope intent');
+});
+
 test('current settings reject price automation and expiring modes', async t => {
   const f = fixture(t);
   assert.throws(() => garageSettings({ savingsStrategy: 'balanced' }), /Unknown/);

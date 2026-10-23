@@ -436,3 +436,83 @@ test('dense bar projection yields storage admission to the real committing write
   assert.equal(store.getState('synthetic-chart-control-1'), true);
   assert.equal(store.writeQueueStatus().pending, 0);
 });
+
+test('model publications refresh assessments without rebuilding completed historical drawings', async t => {
+  const {store,service}=fixture(t,{warmCache:false});
+  const drawing={...args,view:'power'}, assessment={...drawing,summaryOnly:true};
+  const cycle={id:'synthetic-cache-cycle',status:'completed',startedAt:now-25*3600000,endedAt:now-24*3600000,
+    assessment:{basis:'estimated-space-heating-execution-and-reference',profitCents:125,uncertaintyCents:5}};
+  store.cycle('providers',cycle);
+  const plot=await service.query(drawing);
+  const first=await service.query(assessment);
+  assert.equal(first.heatingBenefit.valueEuro,1.25);
+  assert(!Object.hasOwn(plot,'heatingBenefit'));
+  store.setState('adaptive:providers',{checkpointDigest:'synthetic-next-model'});
+  store.cycle('providers',{...cycle,assessment:{...cycle.assessment,profitCents:-50}});
+  const progress=[],same=await service.query(drawing,{onProgress:x=>progress.push(x.stage)});
+  assert.equal(same.meta.cacheHit,true);
+  assert.equal(same.meta.contentRevision,plot.meta.contentRevision);
+  assert.deepEqual(same.series,plot.series);
+  assert(!progress.includes('preparing-chart'),'No historical reconstruction on a drawing cache hit');
+  const updated=await service.query(assessment);
+  assert.notEqual(updated.meta.cacheHit,true,'The new model is still an assessment dependency');
+  assert.equal(updated.heatingBenefit.valueEuro,-0.5);
+  assert.notEqual(updated.meta.contentRevision,first.meta.contentRevision,'Assessment revisions include their results');
+  store.setState('fireplace:rebuild:providers',{status:'running',revision:1,sensorRevision:0});
+  assert.equal((await service.query(drawing)).meta.cacheHit,true,'Assessment job progress cannot reconstruct original drawing evidence');
+  // A correction remains authoritative for both response purposes.
+  store.db.prepare("INSERT INTO recovery_exclusions(generation,table_name,record_key) VALUES('synthetic-correction','cycle_assessments',?)").run(cycle.id);
+  store.db.prepare("UPDATE history_selection SET generation='synthetic-correction' WHERE id=1").run();
+  assert.notEqual((await service.query(drawing)).meta.cacheHit,true);
+  assert.equal((await service.query(assessment)).heatingBenefit.valueEuro,null);
+});
+
+test('assessment-valued firewood series still depend on model checkpoints',async t=>{
+  const {store,service}=fixture(t,{warmCache:false});
+  const selection={...args,view:'fireplace_energy'};
+  const original=await service.query(selection);
+  assert.equal((await service.query(selection)).meta.cacheHit,true);
+  store.setState('adaptive:providers',{checkpointDigest:'synthetic-new-fit'});
+  const changed=await service.query(selection);
+  assert.notEqual(changed.meta.cacheHit,true);
+  assert.deepEqual(changed.series,original.series,'Missing evidence stays missing; no fitted result is invented');
+});
+
+test('late Garage scope boundaries refresh only admitted intent history and retained read-only snapshots',async t=>{
+  const {store,service}=fixture(t,{warmCache:false});
+  const {garageIntent}=await import('./helpers/garage-intent.js');
+  garageIntent(store,now-2*86400000,{mode:'normal'});
+  const selection={...args,left:'garage_away_mode',view:undefined};
+  const before=await service.query(selection);
+  const unrelated={...args,left:'garage_native_indoor_temperature',view:undefined};
+  await service.query(unrelated);
+  assert(before.shading.garage_away_mode.some(row=>row.value===0));
+  assert.equal((await service.query(selection)).meta.cacheHit,true);
+  garageIntent(store,now-86400000,{mode:null,identity:'c'});
+  const next=await service.query(selection);
+  assert.notEqual(next.meta.cacheHit,true);
+  assert.equal((await service.query(unrelated)).meta.cacheHit,true,'An intent-only change does not rebuild native-reading history');
+  assert(next.shading.garage_away_mode.every(row=>row.end<=now-86400000));
+  assert.deepEqual((await service.query({...selection,now:now-86400000-1})).shading.garage_away_mode.at(-1)?.value,0,
+    'A later boundary cannot enter an earlier as-of request');
+});
+
+test('committed learning inputs still refresh named and grouped historical drawing references',async t=>{
+  const {store,service}=fixture(t,{warmCache:false});
+  const {currentHomeSample}=await import('./helpers/home-learning-fixture.js');
+  const {LEARNING_ALGORITHM}=await import('../src/app/committed-learning.js');
+  const selections=[{...args,view:'power'},{...args,view:undefined,left:'power'}];
+  for(const selection of selections) {
+    const before=await service.query(selection);
+    assert(!before.series.model_indoor_temperature.some(point=>Number.isFinite(point.y)));
+  }
+  const at=now-86400000;
+  store.appendLearningJournal('providers',{kind:'sample',at,algorithmVersion:LEARNING_ALGORITHM,
+    payload:{value:currentHomeSample({timestamp:at,indoorC:21.5,outdoorC:4,phase:'normal',regime:'heating',
+      solarRadiationWm2:0,thermalCompressorDuty:0.5,thermalAuxKw:0,targetC:21,quality:[]}),configuration:{}}});
+  for(const selection of selections) {
+    const after=await service.query(selection);
+    assert.notEqual(after.meta.cacheHit,true);
+    assert(after.series.model_indoor_temperature.some(point=>point.y===21.5));
+  }
+});

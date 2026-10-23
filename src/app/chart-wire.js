@@ -2,15 +2,14 @@ import { createHash } from 'node:crypto';
 
 /** Prepare once on the history worker. Timing/cache diagnostics and the moving
  * display clock cannot turn unchanged chart geometry into a different revision.
- * Comparison summaries have their own UI and are outside the drawing revision. */
+ * Drawing and assessment responses have distinct content and cache entries.
+ * Assessment revisions include their numerical results and evidence. */
 export function prepareChartResponse(result) {
-  const { now, meta, timingBenefit, heatingBenefit, heatingSavings, firewoodBenefit, ...content } = result;
+  const { now, meta, ...content } = result;
   const { elapsedMs, cacheHit, contentRevision, ...meaning } = meta;
-  const drawing = JSON.stringify(content);
-  const summaries = JSON.stringify({ timingBenefit, heatingBenefit, heatingSavings, firewoodBenefit });
-  const body = summaries.length > 2 ? drawing.slice(0, -1) + ',' + summaries.slice(1) : drawing;
+  const body = JSON.stringify(content);
   const metadata = JSON.stringify(meaning);
-  const revision = createHash('sha256').update(drawing).update(metadata).digest('hex');
+  const revision = createHash('sha256').update(body).update(metadata).digest('hex');
   result.meta.contentRevision = revision;
   return { body, metadata, revision, bytes: Buffer.byteLength(body) + Buffer.byteLength(metadata) };
 }

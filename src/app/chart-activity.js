@@ -1,6 +1,7 @@
 // Display-only reduction of chronological state intervals. The original journal,
 // observations and scalar envelopes are never changed by this projection.
 const same = (a, b) => a.value === b.value && a.reason === b.reason && a.allowanceA === b.allowanceA
+  && a.scopeRevision === b.scopeRevision && a.selectedAt === b.selectedAt
   && a.sampled === b.sampled && a.mixed === b.mixed
   && (a.phases === b.phases || a.phases?.length === b.phases?.length
     && a.phases?.every((phase, index) => phase === b.phases[index]));

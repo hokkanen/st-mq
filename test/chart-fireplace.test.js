@@ -168,14 +168,15 @@ test('chart API uses all-in price history and agrees between the card and daily 
       spotCtPerKwh: 10, unit: 'c/kWh', vatIncluded: false, source: 'synthetic' }] } };
   const euro = getChartData({ ...args, left: 'firewood_savings' });
   const kwh = getChartData({ ...args, left: 'firewood_electricity_avoided' });
-  assert(euro.firewoodBenefit.valueEuro > 0);
-  assert.equal(euro.series.firewood_savings[0].y, euro.firewoodBenefit.valueEuro);
-  assert.equal(kwh.series.firewood_electricity_avoided[0].y, euro.firewoodBenefit.electricityAvoidedKwh);
-  assert.equal(euro.firewoodBenefit.coverage.includedMs, 8 * HOUR);
+  const summary = getChartData({ ...args, view:'power', summaryOnly:true });
+  assert(summary.firewoodBenefit.valueEuro > 0);
+  assert.equal(euro.series.firewood_savings[0].y, summary.firewoodBenefit.valueEuro);
+  assert.equal(kwh.series.firewood_electricity_avoided[0].y, summary.firewoodBenefit.electricityAvoidedKwh);
+  assert.equal(summary.firewoodBenefit.coverage.includedMs, 8 * HOUR);
   assert(euro.series.firewood_savings[0].partial, 'Elapsed selection also includes earlier hours without supported fire history');
 });
 
-test('historical worker caches refresh on model publication and fireplace corrections without new telemetry', async t => {
+test('historical fuel drawings retain cache on model publication and refresh fireplace corrections', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'chart-fireplace-'));
   const store = new Store(join(directory, 'synthetic.sqlite'));
   const service = createChartService({ store });
@@ -185,7 +186,7 @@ test('historical worker caches refresh on model publication and fireplace correc
   assert.equal((await service.query(args)).series.firewood_load[0].y, 8);
   assert.equal((await service.query(args)).meta.cacheHit, true);
   store.setState('adaptive:providers', { checkpointDigest: 'synthetic-new-model' });
-  assert.notEqual((await service.query(args)).meta.cacheHit, true);
+  assert.equal((await service.query(args)).meta.cacheHit, true, 'A fitted model is not a manual fuel drawing dependency');
   assert.equal((await service.query(args)).meta.cacheHit, true);
   removeFireplace(store, 'providers', { requestId: 'synthetic-cache-remove', id: load.id }, args.now);
   assert.equal((await service.query(args)).series.firewood_load.length, 0);

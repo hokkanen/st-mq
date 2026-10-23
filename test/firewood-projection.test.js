@@ -205,7 +205,7 @@ test('real chart maintenance leaves source proofs and sidecar unchanged for firs
   t.after(()=>service.close());
   // Finnish midnight precedes this fixture's first UTC sample. A completed
   // projection must not keep replaying it to seek an impossible earlier point.
-  await service.query({input:'mqtt',now:f.args.now,startDate:'2026-01-01',left:'model_coefficient_heat_loss'});
+  await service.query({input:'mqtt',now:f.args.now,startDate:'2026-01-01',view:'power',summaryOnly:true});
   await until(()=>service.cacheStatus().resident?.firewood?.complete&&!service.cacheStatus().resident.firewood.failed,
     'The real owner should publish its completed comparison');
   const anchor=f.source.db.prepare("SELECT value FROM state WHERE key GLOB 'derived-cache-anchor:firewood:*'").get();

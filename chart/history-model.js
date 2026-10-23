@@ -1,3 +1,4 @@
+import { chartAssessmentPending } from '../src/domain/chart-response.js';
 import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
 import { FLOOR_PREHEAT_SIGNALS } from '../src/domain/floor-circuits.js';
 import { stackPowerSeries } from './power-stack.js';
@@ -411,7 +412,7 @@ export function createChartLoader({ api, now = Date.now, maxEntries = 6, maxReco
     // Production reads supply exact decoded bytes from the stream worker;
     // direct data callers use a conservative vertex allocation estimate.
     const bytes = chartResponseSize(data) ?? weight * 1024;
-    if (data.firewoodBenefit?.preparing || data.firewoodBenefit?.retryable || request.refreshRequested || maxEntries <= 0 || weight > maxRecords || bytes > maxBytes) return;
+    if (chartAssessmentPending(data) || request.refreshRequested || maxEntries <= 0 || weight > maxRecords || bytes > maxBytes) return;
     cache.set(request.path, { data, at: now(), weight, bytes }); cacheWeight += weight; cacheBytes += bytes;
     while (cache.size > maxEntries || cacheWeight > maxRecords || cacheBytes > maxBytes) forget(cache.keys().next().value);
   }

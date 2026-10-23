@@ -497,7 +497,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
   }
   assert.match(await text(`${detail('charger')} .timing-source[data-source="recorded"]`), /saved interval/i);
   assert.match(await text(`${detail('charger')} .timing-source[data-source="currents"]`), /historical per-phase voltage/i);
-  const coverage = JSON.parse(await evaluate(`fetch('/api/chart?start=2026-09-05&end=2026-09-05').then(response => response.json()).then(data => JSON.stringify(data.timingBenefit.charger.coverageDetails))`));
+  const coverage = JSON.parse(await evaluate(`fetch('/api/chart?start=2026-09-05&end=2026-09-05&view=power&summary=1').then(response => response.json()).then(data => JSON.stringify(data.timingBenefit.charger.coverageDetails))`));
   assert.equal(coverage.chargingMs, 6 * 3_600_000);
   assert.equal(coverage.idleMs, 6 * 3_600_000);
   assert.equal(coverage.missingPowerMs, 36 * 3_600_000);

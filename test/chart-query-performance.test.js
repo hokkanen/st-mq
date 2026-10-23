@@ -102,7 +102,7 @@ test('chart loading emits truthful stage progress and keeps output independent o
     assert(rows.every((row, index) => row.total === DAY && row.completed >= (rows[index - 1]?.completed ?? 0)
       && row.completed <= row.total));
   }
-  assert.equal(progress.at(-1).stage, 'preparing-summary', 'Traversal completion is not falsely labelled whole-load completion');
+  assert.equal(progress.at(-1).stage, 'preparing-chart', 'Drawing preparation does not claim assessment work or whole-load completion');
   assert(!Object.hasOwn(progress.at(-1), 'total'));
 });
 

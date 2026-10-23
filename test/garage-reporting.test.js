@@ -135,7 +135,7 @@ test('chart resolution and read-only worker preserve observed garage timing with
   const store = new Store(join(directory, 'example.sqlite')), service = createChartService({ store });
   t.after(async () => { await service.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   energy(store, range.from, range.from + MINUTE);
-  const args = { input: 'providers', now, startDate: range.startDate };
+  const args = { input: 'providers', now, startDate: range.startDate, view: 'power', summaryOnly: true };
   const before = store.db.prepare('SELECT COUNT(*) n FROM observations').get().n;
   const results = [100, 2000].map(points => getChartData({ ...args, store, points }));
   assert.deepEqual(results[0].heatingSavings.garage, results[1].heatingSavings.garage);

@@ -1,3 +1,4 @@
+import { seedGarageIntent } from '../../scripts/lib/garage-intent-fixture.js';
 // Isolated synthetic app and Chrome profile; never reads household configuration.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -66,13 +67,13 @@ try {
   // Each frame is a bounded current-journal transaction.
   for (let index = 0; index < 180; index++) app.store.transaction(() => {
       const at = now - (180 - index) * 60_000;
+      if(index===0||index===70) seedGarageIntent(app.store,at,index<70?'away':'normal','simulated');
       for (const [signal, value, unit] of [
         ['garage_temperature_2', 12 + Math.sin(index / 16) * .6, 'degC'],
         ['garage_native_indoor_temperature', 14 + Math.sin(index / 18), 'degC'],
         ['garage_compressor_frequency', index % 50 < 35 ? 24 + index % 17 : 0, 'Hz'],
         ['garage_compressor_active', index % 50 < 35 ? 1 : 0, 'state'],
         ['garage_native_power', index % 50 < 35 ? 1 : 0, 'state'],
-        ['garage_away_mode', index < 70 ? 1 : 0, 'state'],
         ['garage_room_target', index < 70 ? 5 : 12, 'degC'],
         ['garage_effective_target', index < 70 ? 5 : 12, 'degC'],
         ['garage_frost_available', 1, 'state'],

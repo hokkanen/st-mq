@@ -94,7 +94,7 @@ test('CSV before voltage history uses the first usable estimates without changin
   const compact = query(store, 'power', { now, startDate: '2026-08-01' });
   assert.equal(at(compact.series.charger_power, start), 6.85);
   store.snapshot({ kind: 'market', source: 'fixture', fetchedAt: start, payload: pricing.market });
-  const timing = query(store, 'power', { ...pricing, now }).timingBenefit.charger1;
+  const timing = getChartData({store,...base,...pricing,now,view:'power',summaryOnly:true}).timingBenefit.charger1;
   near(timing.energyKwh, 3.425);
   assert.deepEqual(timing.evidence.sources.map(source => source.key), ['retrospective-currents']);
   const tooltip = historyTooltipLabel({ dataset: { key: 'charger_power', label: 'Charger 1', unit: 'kW' },
@@ -181,6 +181,7 @@ test('current-derived chart power and charging timing use the same voltage bound
   assert.equal(at(result.series.charger_power, start), 6.6);
   assert.equal(at(result.series.charger_power, start + 15 * MINUTE), 7.5);
   assert.equal(at(result.series.charger_power, start + 30 * MINUTE), 0);
-  near(result.timingBenefit.charger1.energyKwh, 3.525);
+  const assessment=getChartData({store,...base,...pricing,view:'power',summaryOnly:true});
+  near(assessment.timingBenefit.charger1.energyKwh, 3.525);
   assert.equal(result.series.charger_power.find(point => point.x === start + 15 * MINUTE).observedAt, start);
 });

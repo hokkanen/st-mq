@@ -182,10 +182,14 @@ test('read-only worker and compact range reconstruct the same priced energy with
     left: 'heat_pump_power', market: prices, contract, points: 100 };
   const direct = getChartData({ ...args, store }), threaded = await service.query(args);
   assert.deepEqual(threaded.series, direct.series);
-  assert.deepEqual(threaded.timingBenefit, direct.timingBenefit);
-  near(direct.timingBenefit.heatPump.energyKwh, 3.04);
-  assert.equal(direct.timingBenefit.heatPump.coverage, 1);
-  const evidence = direct.timingBenefit.heatPump.evidence;
+  assert(!Object.hasOwn(threaded,'timingBenefit'));
+  const {left,...selection}=args;
+  const assessment=getChartData({...selection,store,view:'power',summaryOnly:true});
+  const threadedAssessment=await service.query({...selection,view:'power',summaryOnly:true});
+  assert.deepEqual(threadedAssessment.timingBenefit,assessment.timingBenefit);
+  near(assessment.timingBenefit.heatPump.energyKwh, 3.04);
+  assert.equal(assessment.timingBenefit.heatPump.coverage, 1);
+  const evidence = assessment.timingBenefit.heatPump.evidence;
   assert.equal(evidence.energyBasis, 'reconstructed-equipment');
   assert.equal(evidence.timeBasis, 'recorded-interval-time');
   near(evidence.sources[0].energyKwh, 3.04);
@@ -193,19 +197,20 @@ test('read-only worker and compact range reconstruct the same priced energy with
     firstAt: start, lastAt: start + HOUR, share: 1 }]);
   assert.equal(evidence.auxiliaryAssumedMs, 0);
   assert.equal(evidence.auxiliaryUnknownMs, 0);
-  const excluded = getChartData({ ...args, store, market: null });
+  const excluded = getChartData({ ...selection, store, view:'power',summaryOnly:true, market: null });
   assert.equal(excluded.timingBenefit.heatPump.value, null);
   assert.equal(excluded.timingBenefit.heatPump.coverageDetails.powerMs, HOUR);
   assert.equal(excluded.timingBenefit.heatPump.coverageDetails.incompletePriceMs, HOUR);
   assert.equal(excluded.timingBenefit.heatPump.coverageDetails.missingPowerMs, 0);
   assert.ok(direct.series.heat_pump_power.some(row => row.y === 6.08));
-  for (const extra of [{ left: 'learning_profit', points: 2000 }, { endDate: '2026-02-15', points: 100 }]) {
-    const result = getChartData({ ...args, ...extra, store });
-    assert.deepEqual(result.timingBenefit, direct.timingBenefit);
+  for (const period of [{ points: 2000 }, { endDate: '2026-02-15', points: 100 }]) {
+    const result = getChartData({ ...selection, ...period, store,view:'power',summaryOnly:true });
+    assert.deepEqual(result.timingBenefit, assessment.timingBenefit);
   }
   recordHeatPumpConfiguration(store, 'mqtt', { ...config, heatPumpCompressorKw: 4 }, start + 15 * MINUTE);
   const changed = await service.query(args);
-  near(changed.timingBenefit.heatPump.energyKwh, 3.29);
+  const changedAssessment=await service.query({...selection,view:'power',summaryOnly:true});
+  near(changedAssessment.timingBenefit.heatPump.energyKwh, 3.29);
   assert.notDeepEqual(changed.series.heat_pump_power, direct.series.heat_pump_power, 'Configuration-only changes invalidate the worker cache');
 });
 

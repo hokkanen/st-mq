@@ -79,7 +79,13 @@ export function historyTooltipLabel(item) {
   }
   else if (/^garage_pipe_(rear|front)_temperature$/.test(key)) details.push('local frost-protection pipe estimate; not a direct measurement');
   else if (['garage_room_target', 'garage_effective_target'].includes(key)) details.push('Heat-pump controller target readback; not measured room temperature');
-  else if (key === 'garage_away_mode') details.push('saved mode choice; not confirmation of heating');
+  else if (key === 'garage_away_mode') {
+    details.push('saved identity-bound intent; not device readback or confirmation of heating');
+    if (Number.isFinite(raw.selectedAt)) details.push(`selected ${dateTime.format(raw.selectedAt)}`);
+    if (raw.intentRecordedAt > raw.selectedAt) details.push(`scope recorded ${dateTime.format(raw.intentRecordedAt)}`);
+    if (raw.intentBasis === 'adopted-readback') details.push('Normal baseline adopted from reported target');
+    else if (raw.intentBasis === 'retained-intent') details.push('retained saved choice; original selection clock preserved');
+  }
   else if (key === 'garage_native_energy') details.push('cumulative native meter counter; not interval consumption');
   else if (/^voltage_estimate_l[123]$/.test(key)) {
     details.push('saved smoothed voltage estimate; not a live measurement');

@@ -110,8 +110,10 @@ test('heating card receives the same total on every chart axis and resolution, i
   const args = { store, input: 'providers', now, startDate: date, endDate: date };
   for (const [left, points] of [['power', 100], ['integral', 800], ['learning_profit', 2000]]) {
     const chart = getChartData({ ...args, left, points });
-    assert.deepEqual(chart.heatingBenefit, summary(store));
-    assert.equal(chart.heatingBenefit.valueEuro, 1.25);
+    assert(!Object.hasOwn(chart,'heatingBenefit'));
+    const assessment=getChartData({...args,view:'power',summaryOnly:true,points});
+    assert.deepEqual(assessment.heatingBenefit,summary(store));
+    assert.equal(assessment.heatingBenefit.valueEuro,1.25);
   }
 });
 
@@ -120,7 +122,7 @@ test('historical worker cache follows assessment edits without telemetry and ign
   const store = new Store(join(directory, 'synthetic.sqlite'));
   const service = createChartService({ store });
   t.after(async () => { await service.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
-  const args = { input: 'providers', now, startDate: date, endDate: date };
+  const args = { input: 'providers', now, startDate: date, endDate: date, view:'power', summaryOnly:true };
   const cycle = save(store, 'cache-assessment');
   assert.equal((await service.query(args)).heatingBenefit.valueEuro, 1.25);
   assert.equal((await service.query(args)).meta.cacheHit, true);
@@ -129,14 +131,14 @@ test('historical worker cache follows assessment edits without telemetry and ign
   assert.equal((await service.query(args)).meta.cacheHit, true);
   store.cycle('providers', { ...cycle, assessment: { ...cycle.assessment, profitCents: -50 } });
   let result = await service.query(args);
-  assert.equal(result.meta.cacheHit, true, 'Updated comparison reuses unchanged chart geometry');
+  assert.equal(result.meta.cacheHit, true, 'Updated comparison reuses unchanged timing evidence');
   assert.equal(result.heatingBenefit.valueEuro, -0.5);
   assert.equal(result.heatingSavings.home.model.valueEuro, -0.5);
   assert.equal((await service.query(args)).meta.cacheHit, true);
   store.cycle('providers', { ...cycle, assessment: { ...cycle.assessment, profitCents: null,
     basis: 'unassessed-corrected-fireplace-history' } });
   result = await service.query(args);
-  assert.equal(result.meta.cacheHit, true, 'Updated comparison reuses unchanged chart geometry');
+  assert.equal(result.meta.cacheHit, true, 'Updated comparison reuses unchanged timing evidence');
   assert.equal(result.heatingBenefit.valueEuro, null);
   assert.equal(result.heatingBenefit.counts.unassessed, 1);
 });

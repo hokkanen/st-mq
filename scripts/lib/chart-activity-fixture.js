@@ -1,3 +1,4 @@
+import { seedGarageIntent } from './garage-intent-fixture.js';
 import { Recorder } from '../../src/storage/recorder.js';
 import { Store } from '../../src/storage/store.js';
 import { EXPLORER_SERIES } from '../../chart/series-explorer.js';
@@ -42,7 +43,9 @@ export function seedChartActivityCatalogueFixture(store) {
       const at = ACTIVITY_FIXTURE_FROM + i * 1000, end = at + 999;
       for (const row of states) {
         const value = values[row.signal] ?? 0;
-        if (['controller_phase', 'dhwr_request'].includes(row.signal)) {
+        if(row.signal==='garage_away_mode') {
+          seedGarageIntent(store,at,'normal');seedGarageIntent(store,end,null);
+        } else if (['controller_phase', 'dhwr_request'].includes(row.signal)) {
           store.observation({ source: 'controller', device: 'providers', signal: row.signal, value, unit: row.unit,
             sourceTime: at, receivedAt: at, quality: ['requested'], raw: { expiresAt: end } });
         } else for (const [time, reading, quality] of [[at, value, []], [end, null, ['missing']]])

@@ -1,6 +1,9 @@
 import { HISTORY_AXES, SIGNAL_INFO, ENERGY_SIGNALS, CARAVAN_DEHUMIDIFIER_STATES, SESSION_CHECK_INFO, MODEL_INPUT_INFO,
   MODEL_COEFFICIENT_INFO } from '../src/domain/history-series.js';
 
+const intentTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', year:'numeric',
+  month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hourCycle:'h23', timeZoneName:'shortOffset' });
+
 const definitions = { ...SIGNAL_INFO, ...SESSION_CHECK_INFO, ...MODEL_INPUT_INFO,
   ...MODEL_COEFFICIENT_INFO };
 const descriptions = {
@@ -18,6 +21,7 @@ const descriptions = {
 };
 
 function meaning(signal, info) {
+  if (signal === 'garage_away_mode') return ['saved-garage-intent', 'Saved application intent'];
   if (ENERGY_SIGNALS.includes(signal) || signal === 'garage_energy') return ['recording-interval-energy', 'Recording-interval energy'];
   if (signal.endsWith('_counter') || signal === 'garage_native_energy') return ['cumulative-energy', 'Cumulative meter counter'];
   if (signal.endsWith('_hours')) return ['cumulative-runtime', 'Cumulative runtime counter'];
@@ -94,6 +98,9 @@ export function explorerActivityTrack(key) {
     description: 'A nonzero code was recorded; inspect the bar for its value.' });
   legend.push({ label: 'Unknown', color: 'muted', pattern: 'blank', description: 'No known state recorded.' });
   return { key, signal: key, label: row.label, detail, color,
+    ...(key === 'garage_away_mode' ? { intervalDetail: interval => Number.isFinite(interval.selectedAt)
+      ? `Selected ${intentTime.format(interval.selectedAt)} · saved intent${interval.intentRecordedAt > interval.selectedAt ? ` · scope recorded ${intentTime.format(interval.intentRecordedAt)}` : ''}${interval.intentBasis === 'adopted-readback' ? ' · Normal baseline adopted from reported target' : ''}`
+      : 'Saved intent · source details condensed at this resolution' } : {}),
     values: Object.fromEntries(states.map(([value, label]) => [value, label])),
     colors: Object.fromEntries(states.map(([value, , stateColor]) => [value, stateColor])),
     patterns: Object.fromEntries(states.filter(([, , , pattern]) => pattern).map(([value, , , pattern]) => [value, pattern])),

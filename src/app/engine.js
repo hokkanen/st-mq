@@ -41,6 +41,7 @@ import { lastIndoorReading, indoorReadingUsable, indoorReadingAttention, indoorR
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { indoorStatusMetadata, outdoorReadingStatus, temperatureBoundaryStatus, rememberOutdoorReading } from './temperature-status.js';
+import { garageIntentKey, validateGarageIntent } from '../garage/intent-history.js';
 import { GarageRuntime } from '../garage/runtime.js';
 import { validateGarageAdapterSnapshot } from '../garage/contract.js';
 import { validateGarageModeState } from '../garage/room-temperature.js';
@@ -502,6 +503,7 @@ export class Engine {
     validateSettings(config.settings);
     validateGarageAdapterSnapshot(store.getState(`garage:adapter:${config.input}`));
     validateGarageModeState(store.getState(`garage:mode:${config.input}`));
+    validateGarageIntent(store.getState(garageIntentKey(config.input)));
     validateGarageSenderSnapshot(store.getState(`garage:sender:${config.input}`));
     const savedGarageSettings = store.getState(`garage:configuration:${config.input}`);
     if (savedGarageSettings != null) garageSettings(savedGarageSettings);

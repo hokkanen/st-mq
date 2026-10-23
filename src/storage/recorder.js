@@ -149,14 +149,11 @@ const DIAGNOSTIC_QUALITY = new Set(['missing', 'invalid-value', 'invalid-numeric
 /** Explain the recorded acquisition and its current deadline without writing a
  * new observation, extending coverage, or changing historical classification. */
 function recordingFreshness(state, coverage, now) {
-  // A saved application choice is durable intent, not a periodically reporting
-  // device. This affects diagnostics only; it never extends recorded coverage.
-  const savedSelection = state.source === 'stmq' && state.signal === 'garage_away_mode' && state.unit === 'state';
   const eventOnly = state.source === 'mqtt-equipment' && state.unit === 'state' && state.eventOnly === true;
   const periodicAge = temperatureReportMaxAge({ raw: state.reportPolicy });
   const interval = /_energy_l[123]$/.test(state.signal) || state.signal === 'caravan_energy';
   const held = !interval && periodicAge === null && HELD_TEMPERATURE_SIGNALS.includes(state.signal);
-  const maximumAge = interval || savedSelection ? null : sourceAge({ ...state, raw: state.reportPolicy });
+  const maximumAge = interval ? null : sourceAge({ ...state, raw: state.reportPolicy });
   const maxAgeMs = Number.isFinite(maximumAge) ? maximumAge : null;
   const sourceObservedAt = Number.isFinite(coverage?.source_time) ? coverage.source_time
     : Number.isFinite(state.lastSourceTime) ? state.lastSourceTime : null;
@@ -180,10 +177,10 @@ function recordingFreshness(state, coverage, now) {
   if (status === 'stale' && !reasons.length) reasons.push('invalid-quality');
   if (status === 'fresh' && interval) status = 'recorded-interval';
   if (status === 'fresh' && held) status = age > INDOOR_ATTENTION_MS ? 'held-attention' : 'held';
-  if (status === 'fresh' && (eventOnly || savedSelection)) status = 'last-reported';
+  if (status === 'fresh' && eventOnly) status = 'last-reported';
   return { status, reasons: [...new Set(reasons)], sourceObservedAt, maxAgeMs,
     savedValueAt: state.last?.sourceTime ?? null, lastAcceptedSourceAt: state.lastSourceTime,
-    ageBasis: savedSelection ? 'saved-selection' : interval ? 'completed-interval' : eventOnly ? 'event-only' : periodicAge !== null ? 'periodic-report' : 'source-observation',
+    ageBasis: interval ? 'completed-interval' : eventOnly ? 'event-only' : periodicAge !== null ? 'periodic-report' : 'source-observation',
     ...(periodicAge !== null ? { reportIntervalMs: state.reportPolicy.reportIntervalMs,
       reportGraceMs: state.reportPolicy.reportGraceMs ?? 0 } : {}),
     ...(held ? { attentionAfterMs: INDOOR_ATTENTION_MS } : {}) };

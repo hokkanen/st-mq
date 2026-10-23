@@ -1,3 +1,4 @@
+import { garageIntent } from './helpers/garage-intent.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
@@ -94,36 +95,16 @@ test('recording diagnostics distinguish H66 expiry, held temperatures, and compl
   assert.equal(energy.status,'recorded-interval');assert.equal(energy.maxAgeMs,null);
 });
 
-test('saved Garage selection has no reporting deadline and diagnostics preserve its original evidence',t=>{
+test('durable Garage intent creates no acquisition stream and native readback keeps its deadline', t => {
   const {store,put,recorder}=fixture(t);
-  const selection={source:'stmq',signal:'garage_away_mode',unit:'state',
-    raw:{requested:true,commandId:'fixture-selection',usableForControl:false}};
-  put(0,1000,selection);
-  put(1,2000,selection);
+  garageIntent(store,1000,{mode:'normal'});garageIntent(store,2000,{mode:'away'});
   put(1,2000,{source:'garage-adapter',signal:'garage_native_power',unit:'state'});
-  put(1,2000,{source:'synthetic',signal:'garage_away_mode',unit:'state'});
-  const before=store.db.prepare('SELECT key,value FROM state ORDER BY key').all();
-  const coverage=store.db.prepare('SELECT * FROM recorder_coverage').all();
-  const observations=store.observations();
-  const later=2000+7*24*HOUR;
+  const before=store.checkpoint(),later=2000+7*24*HOUR;
   for(const view of [recorder.sourceStatus(later),recorder.status(later),new Recorder(store).sourceStatus(later)]) {
-    const row=view.exactParameters.find(row=>row.source==='stmq');
-    assert.equal(row.freshness.status,'last-reported');
-    assert.equal(row.freshness.ageBasis,'saved-selection');
-    assert.equal(row.freshness.maxAgeMs,null);
-    assert.equal(row.freshness.sourceObservedAt,2000);
-    assert.equal(row.freshness.savedValueAt,2000);
-    assert.equal(row.lastPollAt,2000);
-    assert.deepEqual(row.freshness.reasons,[]);
-    assert(view.exactParameters.filter(row=>row.source!=='stmq').every(row=>row.freshness.status==='stale'),
-      'native readback and other producers retain their deadlines');
+    assert(!view.exactParameters.some(row=>row.signal==='garage_away_mode'));
+    assert.equal(view.exactParameters.find(row=>row.signal==='garage_native_power').freshness.status,'stale');
   }
-  assert.deepEqual(store.db.prepare('SELECT key,value FROM state ORDER BY key').all(),before);
-  assert.deepEqual(store.db.prepare('SELECT * FROM recorder_coverage').all(),coverage);
-  assert.deepEqual(store.observations(),observations,'health reads do not invent reports or extend history');
-  recorder.recordFailure({...selection,device:'fixture-house',at:later});
-  assert.equal(recorder.sourceStatus(later).exactParameters.find(row=>row.source==='stmq').freshness.status,'failed',
-    'durable intent does not hide an explicitly failed acquisition');
+  assert.deepEqual(store.checkpoint(),before);
 });
 
 test('recording diagnostic failure reasons are safe and distinguish time rollback from measurement age',t=>{

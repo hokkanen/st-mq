@@ -1,3 +1,4 @@
+import { addGarageIntent } from './chart-garage-intent.js';
 import { NATIVE_CHART_RAW_SIGNALS } from './chart-observations.js';
 import { selectedHistoryPredicate } from '../storage/schema.js';
 import { DailyTimingBenchmark } from './daily-timing-benchmark.js';
@@ -430,7 +431,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   onProgress, summaryOnly = false, _queryContext, _relatedTimes, _relatedSignals, _priceProjection }) {
   const started = performance.now();
   const { range, selection, detail } = chartRequestRange({ startDate, endDate, now, viewFrom, viewTo, summaryOnly, view, left });
-  const projecting = Array.isArray(_relatedTimes), drawingOnly = detail || projecting;
+  const projecting = Array.isArray(_relatedTimes), drawingOnly = !summaryOnly || projecting;
   const selectedView = view !== undefined && Object.hasOwn(CHART_VIEW_BY_KEY, view) ? CHART_VIEW_BY_KEY[view] : null;
   if (view !== undefined && left !== undefined) throw new TypeError('Choose either a chart view or a historical series.');
   if (view !== undefined && !selectedView) throw new TypeError('Unknown chart view');
@@ -527,7 +528,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const currentPowerHistory = new Map();
   const learningMetadata = {};
   const requested = new Set(projecting && _priceProjection ? ['spot_price']
-    : [...names.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !VOLTAGE_SIGNALS.includes(name) && !CHARGING_ALLOWANCE_SERIES.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['caravan_energy', 'caravan_power', 'property_power', 'property_current_max', 'charger2_power', 'heat_pump_power', 'outdoor_forecast', 'solar_forecast', 'all_in_price', ...ENERGY_SIGNALS].includes(name)),
+    : [...names.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !VOLTAGE_SIGNALS.includes(name) && !CHARGING_ALLOWANCE_SERIES.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['garage_away_mode', 'caravan_energy', 'caravan_power', 'property_power', 'property_current_max', 'charger2_power', 'heat_pump_power', 'outdoor_forecast', 'solar_forecast', 'all_in_price', ...ENERGY_SIGNALS].includes(name)),
       ...(aggregatePhases ? PHASES : []),
       ...(!projecting ? ['garage_compressor_active', 'spot_price', 'requested_heat_mode', 'auxiliary_output', ...H66_SIGNALS] : []),
       ...(names.includes('auxiliary_power') ? ['auxiliary_output'] : [])]);
@@ -965,12 +966,13 @@ export function getChartData({ store, input = 'offline', contract = null, market
     return { series: Object.fromEntries(names.map(name => [name, envelopes[name].values()])),
       rawRows, energyRows: recordedEnergy.rows };
   }
+  addGarageIntent({ store, input, range, now, envelope: envelopes.garage_away_mode, activity: activities.garage_away_mode });
   const chargingSessions = addChargingSessionChecks({ store, range, now, envelopes });
   const modelInputs = addModelInputs({ store, range, now, input, envelopes,
     indoorLine: detail ? lines.model_indoor_temperature : undefined, activities });
   const modelCoefficients = addModelCoefficients({ store, range, now, input, envelopes });
   const fireplaceInputs = addFireplaceInputs({ store, range, now, input, envelopes, shading });
-  const needsFirewood = !detail || selectedHas(FIREWOOD_OUTCOME_NAMES);
+  const needsFirewood = selectedHas(FIREWOOD_OUTCOME_NAMES);
   const firewood = needsFirewood ? selectedFirewood({ store, input, range: firewoodRange, now,
     priced, market, weather, contract, simulated, detail }) : null;
   const firewoodOutcomes = firewood ? addFirewoodOutcomes({ result: firewood, range: firewoodRange, now, envelopes }) : null;
@@ -1073,9 +1075,9 @@ export function getChartData({ store, input = 'offline', contract = null, market
     .filter(name => lines[name]?.previous).map(name => [name, { ...lines[name].previous }]));
   if (selectedHas(LEARNING)) warnings.push('Learning history records estimates when assessed. Gaps mean no recorded estimate; auxiliary recovery metrics exclude cycles whose auxiliary state was unknown.');
   const operatingModes = modeHistory.values();
-  onProgress?.({ stage: 'preparing-summary' });
+  onProgress?.({ stage: 'preparing-chart' });
   return { range, now, input, ...(view === undefined ? { left } : { view }), series, shading, operatingModes,
-    ...(detail ? { selection } : comparisonSummaries({ store, input, range, now, timing, priced, firewood })),
+    ...(detail ? { selection } : {}),
     meta: { ...(detail ? { detail: true } : {}), ...(relatedSampling ? { relatedSampling } : {}), ...(chargingAllowances ? { chargingAllowances } : {}),
     ...(propertyHighestPhase ? { propertyHighestPhase: { aggregated: propertyHighestPhase.buckets !== null } } : {}),
     warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',

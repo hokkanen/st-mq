@@ -51,7 +51,7 @@ test('detail inside a three-year selection reveals original samples with bounded
   assert.equal(detail.range.from, viewFrom); assert.equal(detail.range.to, viewTo);
   assert.equal(detail.meta.detail, true);
   for (const key of ['timingBenefit', 'heatingBenefit', 'firewoodBenefit']) {
-    assert(Object.hasOwn(overview, key));
+    assert(!Object.hasOwn(overview, key), 'Drawing overviews do not contain comparison totals');
     assert(!Object.hasOwn(detail, key), 'A detail response cannot replace selected-period totals');
   }
   assert.equal(detail.meta.firewoodOutcomes, null);

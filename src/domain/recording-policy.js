@@ -72,7 +72,7 @@ const names = {
   garage_native_energy: 'Garage native energy counter',
   garage_room_target: 'Garage saved room target', garage_effective_target: 'Garage effective room target',
   garage_external_enabled: 'Garage local temperature regulation enabled', garage_frost_active: 'Garage frost protection active',
-  garage_frost_available: 'Garage frost protection available', garage_away_mode: 'Requested Garage Away mode',
+  garage_frost_available: 'Garage frost protection available',
   garage_pipe_rear_temperature: 'Rear pipe temperature estimate',
   garage_pipe_front_temperature: 'Front pipe temperature estimate',
   learning_profit: 'Space-heating benefit after recovery', learning_aux_profit: 'Space-heating benefit with auxiliary recovery',

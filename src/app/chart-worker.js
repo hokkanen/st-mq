@@ -1,3 +1,5 @@
+import { chartAssessmentPending } from '../domain/chart-response.js';
+import { chartNeedsAssessment, chartNeedsLearningHistory, chartSignals } from './chart-dependencies.js';
 import { FirewoodProjectionCache } from './firewood-projection-cache.js';
 import { maintainFirewoodProjection } from './firewood-benefit.js';
 import { DEFAULT_CHART_CACHE } from '../domain/chart-cache.js';
@@ -60,7 +62,6 @@ function openFirewoodProjection() {
   try {store.firewoodProjection=new FirewoodProjectionCache(workerData.projectionCachePath??workerData.dbPath,{anchor:workerData.anchorAvailable?requestDerivedAnchor:null,readOnly:!projectionWritable,cacheId:workerData.projectionCacheId});}
   catch {store.firewoodProjection={failed:true,manual(){if(projectionWritable) throw new Error('Firewood comparison cache unavailable');return {complete:false};}};}
 }
-openFirewoodProjection();
 let firewoodMaintenanceInput=0;
 function maintainFirewood(now,inputs=[],demands=[]) {
   if(!inputs.length) return {complete:true};
@@ -122,7 +123,7 @@ function invalidateChangedRanges() {
     const affected = entry => rows.some(row => row.signal.startsWith('voltage_estimate_')
       || row.source_time < entry.range.to + (entry.detail ? 3 * 3_600_000 : 0)
       || row.interval_start !== null && row.interval_start < entry.range.to)
-      || journals.some(row => row.at < entry.range.to);
+      || entry.learningHistory && journals.some(row => row.at < entry.range.to);
     for (const [key, entry] of cache) if (affected(entry)) { cache.delete(key); cacheBytes -= entry.bytes; }
     for (const [key, entry] of contexts) if (rows.some(row => row.signal.startsWith('voltage_estimate_')
       || ENERGY_SIGNALS.includes(row.signal) && (row.source_time < entry.range.to
@@ -171,8 +172,9 @@ function sourceCoverageFingerprint(args,range) {
 parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: configuration,retireProjection }) => {
   if(retireProjection) {
     projectionWritable=false;
+    const opened=Boolean(store.firewoodProjection);
     if(store.firewoodProjection&&!store.firewoodProjection.failed) store.firewoodProjection.close();
-    store.firewoodProjection=null;openFirewoodProjection();
+    store.firewoodProjection=null;if(opened) openFirewoodProjection();
     parentPort.postMessage({type:'projection-retired'});return;
   }
   if (configuration) { configure(configuration); return; }
@@ -197,7 +199,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       const firewood=args.skipFirewood?{complete:true,retrying:true}:maintainFirewood(args.now,args.inputs,args.demands);
       // A preparing response cannot remain a completed historical response-cache
       // hit after its derived prefix has become available.
-      for(const [key,entry] of cache) if(entry.result.firewoodBenefit?.preparing||entry.result.firewoodBenefit?.retryable) {cache.delete(key);cacheBytes-=entry.bytes;}
+      for(const [key,entry] of cache) if(chartAssessmentPending(entry.result)) {cache.delete(key);cacheBytes-=entry.bytes;}
       parentPort.postMessage({ id, cacheStatus: { ...sourceCache?.status(), complete: (!settings.cacheDays || status?.complete === true) && firewood.complete, firewood } });
       parentPort.postMessage({ id, result: { ready: sourceCache?.ready ?? false } }); return;
     }
@@ -207,7 +209,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
     if (['pin', 'pin-archive'].includes(operation)) {
       parentPort.postMessage({ id, result: { ready: true } }); return;
     }
-    openFirewoodProjection();
+    if (chartNeedsAssessment(args)) openFirewoodProjection();
     // Acquisition checkpoints and rolling recorder metrics update frequently.
     // They do not invalidate a completed historical plot. New observations,
     // availability spans, forecast fetches and completed imports do.
@@ -217,20 +219,25 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
     if (sourceCache?.ready && sourceCache.head !== store.chartHead
       && store.chartHead - sourceCache.head <= 256) sourceCache.maintain(args.now, 256);
     const {range,detail}=chartRequestRange(args);
-    const selectedSignals = CHART_VIEW_BY_KEY[args.view]?.leftSignals ?? HISTORY_AXIS_BY_KEY[args.left ?? 'power']?.signals ?? [];
+    const selectedSignals = chartSignals(args);
+    const assessments = chartNeedsAssessment(args);
     const coefficientSelection = selectedSignals.some(key => Object.hasOwn(MODEL_COEFFICIENT_INFO, key));
     const coefficientRevision = coefficientSelection ? db.prepare(`SELECT group_concat(g.id||':'||g.cursor) revision
       FROM coefficient_selection s JOIN coefficient_generations g ON g.id=s.generation`).get().revision : null;
     const currentVersion = JSON.stringify({ coefficientRevision, providers: providerFingerprint(args, range), state: db.prepare(`SELECT
       (SELECT generation FROM history_selection WHERE id=1) recoverySelection,
+      CASE WHEN ? THEN (SELECT MAX(id) FROM active_events WHERE type='garage-intent' AND at<=?
+        AND json_extract(payload,'$.input')=?) END garageIntent,
       (SELECT MAX(id) FROM active_fireplace_events AS fireplace_events) fireplaceRevision,
-      (SELECT group_concat(CASE WHEN json_valid(value) THEN json_extract(value,'$.checkpointDigest') ELSE 'invalid' END)
+      (SELECT CASE WHEN ? THEN group_concat(CASE WHEN json_valid(value) THEN json_extract(value,'$.checkpointDigest') ELSE 'invalid' END) END
         FROM state WHERE key IN ('adaptive:mqtt','adaptive:providers','adaptive:simulated')) adaptiveModels,
-      (SELECT group_concat(value) FROM state WHERE key IN ('fireplace:rebuild:mqtt','fireplace:rebuild:providers','fireplace:rebuild:simulated')) fireplaceRebuilds,
+      CASE WHEN ? THEN (SELECT group_concat(value) FROM state WHERE key IN ('fireplace:rebuild:mqtt','fireplace:rebuild:providers','fireplace:rebuild:simulated')) END fireplaceRebuilds,
       (SELECT MAX(id) FROM active_events AS events WHERE type='heat-pump-power-config') heatPowerConfig,
       (SELECT MAX(id) FROM active_energy_audits AS energy_audits) energyAudits,
       (SELECT MAX(id) FROM active_events AS events WHERE type='charging-session-check') chargingSessionChecks,
-      (SELECT COUNT(*) FROM active_imports AS imports WHERE status='complete' AND completed_at<=?) imports`).get(args.now) });
+      (SELECT COUNT(*) FROM active_imports AS imports WHERE status='complete' AND completed_at<=?) imports`).get(
+        Number(selectedSignals.includes('garage_away_mode')), Math.min(args.now, range.to), args.input ?? 'offline',
+        Number(assessments), Number(assessments), args.now) });
     // Historical views survive second-by-second clock movement. Current/future
     // views renew within fifteen seconds, preserving acquisition timestamps.
     // A queued request's clock can precede newly committed telemetry. Only
@@ -248,14 +255,14 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
     // Constant readings extend bounded energy tails and confirmation spans.
     // Renew only affected plots, preserving unrelated historical caches and the
     // live clock bucket when source evidence itself has not changed.
-    if(entry&&(entry.result.firewoodBenefit?.preparing || entry.result.firewoodBenefit?.retryable || entry.version !== currentVersion || entry.bucket !== bucket || entry.receiptFingerprint !== receipts || entry.pendingEnergyFingerprint!==pendingEnergyFingerprint(args,range)
+    if(entry&&(chartAssessmentPending(entry.result) || entry.version !== currentVersion || entry.bucket !== bucket || entry.receiptFingerprint !== receipts || entry.pendingEnergyFingerprint!==pendingEnergyFingerprint(args,range)
       ||entry.sourceCoverageFingerprint!==sourceCoverageFingerprint(args,range))) {
       cache.delete(key);cacheBytes-=entry.bytes;entry=null;
     }
     // Cycle records can be corrected without a new telemetry or journal row.
     // Recheck their compact selected-period aggregate, retaining history cache
     // hits for unrelated recorder/checkpoint writes and active observation tapes.
-    if (entry && !entry.result.meta.detail) {
+    if (entry && args.summaryOnly) {
       const benefit = getHeatingBenefit({ ...args, store, range: entry.result.range });
       if (heatingFingerprint(entry.result.heatingBenefit) !== heatingFingerprint(benefit)) {
         entry.result = { ...entry.result, heatingBenefit: benefit, heatingSavings: buildHeatingSavings({
@@ -302,7 +309,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       while (cache.size && (cache.size >= 128 || cacheBytes + bytes > cacheLimitBytes)) {
         const first = cache.keys().next().value; cacheBytes -= cache.get(first).bytes; cache.delete(first);
       }
-      if (bytes <= cacheLimitBytes) { entry = { result, prepared, bytes, range, bucket, version: currentVersion, detail: result.meta.detail, receiptFingerprint: receipts, pendingEnergyFingerprint:pendingFingerprint,
+      if (bytes <= cacheLimitBytes) { entry = { learningHistory: chartNeedsLearningHistory(args), result, prepared, bytes, range, bucket, version: currentVersion, detail: result.meta.detail, receiptFingerprint: receipts, pendingEnergyFingerprint:pendingFingerprint,
         sourceCoverageFingerprint:sourceFingerprint }; cache.set(key, entry); cacheBytes += bytes; }
     }
     releaseStorageLease();

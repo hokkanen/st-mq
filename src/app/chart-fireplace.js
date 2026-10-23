@@ -92,5 +92,6 @@ export function addFirewoodOutcomes({ result, range, now, envelopes }) {
     for (const [key, value] of [['firewood_savings', bucket.cents / 100], ['firewood_electricity_avoided', bucket.kwh]])
       envelopes[key]?.add(bucket.start, available ? value : null, metadata);
   }
-  return { days: days.size, basis: 'retrospective-firewood-counterfactual', status: result.summary?.status ?? 'unavailable' };
+  return { days: days.size, basis: 'retrospective-firewood-counterfactual', status: result.summary?.status ?? 'unavailable',
+    preparing: result.summary?.preparing === true, retryable: result.summary?.retryable === true };
 }

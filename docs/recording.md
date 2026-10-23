@@ -1157,14 +1157,29 @@ Tooltips identify clipped interpolated/held scalar boundaries as display points.
 
 `/api/chart` optionally accepts both `viewFrom` and `viewTo` as integer UTC
 milliseconds within the selected `start`/`end` dates. A detail response has the
-queried `range`, the full calendar `selection`, and `meta.detail: true`. It omits
-`timingBenefit`, `heatingBenefit` and `firewoodBenefit`; existing cost comparisons
-continue to describe the full selection. Daily firewood outcome points still use
+queried `range`, the full calendar `selection`, and `meta.detail: true`.
+All ordinary chart responses, including overviews, contain drawing data without
+assessment totals. `/api/chart?view=power&summary=1` requests the independent
+full-selection assessment response (`meta.summaryOnly: true`), containing
+`timingBenefit`, `heatingBenefit`, `heatingSavings` and `firewoodBenefit`.
+Its cache and content revision include numerical results and their evidence.
+Daily firewood outcome points still use
 their whole-day calculation. Necessary source context can be read around a
 viewport. Temperature series retain at most eight neighbouring vertices on each
 side, marked `displayContext`, so fetched detail uses real source knots for cubic
 tangents. The visible viewport remains fixed; these neighbours do not become
 extra observations or extend the selected dates. Other series remain clipped.
+
+Ordinary historical drawings do not open or prepare firewood assessments, read
+cycle assessment totals, or depend on the live model checkpoint digest. New
+source history, selected corrections, recovery selection, relevant configuration
+and committed learning history still invalidate affected drawings. Explicit
+assessment-valued firewood series retain their model and correction dependencies;
+learning-input and coefficient series retain their committed learning dependencies.
+Assessment requests independently refresh after checkpoint changes, and recheck
+selected cycle corrections on cache hits. Preparing or retryable assessments and
+outcome drawings cannot remain cached as completed responses. This separation
+does not permit serving an old assessment merely because its plot is unchanged.
 
 Fine detail can arrive later than the gesture, and some reconstructed series
 still require an earlier journal prefix. The current view stays available during

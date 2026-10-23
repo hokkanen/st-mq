@@ -6,6 +6,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Separate chart drawing from assessment requests so live model checkpoints do
+  not reconstruct unchanged historical plots. Assessment results and evidence
+  still refresh after model changes and corrections.
+- Show continuous, equipment-scoped Garage Normal/Away intent across later days.
+  Preserve the original selection time, distinguish saved intent from device
+  readback, and leave unrecorded or disabled scopes blank.
+
 - Include the year when inspecting chart activity, identify saved floor-control
   evidence as GPIO output feedback, and keep settings and aggregated-activity
   explanations accurate with the selected display options.

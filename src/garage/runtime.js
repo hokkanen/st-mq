@@ -1,3 +1,4 @@
+import { recordGarageIntent } from './intent-history.js';
 import { createHash } from 'node:crypto';
 import { garageSettings } from './settings.js';
 import { validateGarageNativeSetting } from './native-settings.js';
@@ -32,7 +33,14 @@ export class GarageRuntime {
     const saved = validateGarageModeState(store.getState(this.keys.mode));
     this.selection = saved?.adapterKey === this.adapterKey ? saved : null;
     this.closed = false; this.busy = false; this.writeLifetime = new AbortController();
-    store.setState(`garage:configuration:${this.input}`, this.settings);
+    store.transaction(() => {
+      store.setState(`garage:configuration:${this.input}`, this.settings);
+      this.recordIntent();
+    });
+  }
+  recordIntent(targetIdentity, basis, now = this.clock()) {
+    return recordGarageIntent({ store: this.store, input: this.input, enabled: this.settings.enabled,
+      adapterKey: this.adapterKey, targetIdentity, selection: this.selection, basis, now });
   }
   setAdapter(adapter) { this.adapter = adapter; this.sync(); }
   setSender(sender) { this.sender = sender; }
@@ -42,7 +50,15 @@ export class GarageRuntime {
   }
   senderChanged(snapshot) { this.store.setState(this.keys.sender, snapshot); }
   sync(now = this.clock()) {
+    return this.store.transaction(() => {
+      const selection = this.selection, changed = this.identityChanged;
+      this.store.afterRollback(() => { this.selection = selection; this.identityChanged = changed; });
+      return this.syncIntent(now);
+    });
+  }
+  syncIntent(now) {
     const adapter = this.adapter?.status(now), control = adapter?.control;
+    if (adapter?.targetIdentity) this.recordIntent(adapter.targetIdentity, undefined, now);
     if (!adapter?.targetIdentity || !control || !validGarageTarget(control.targetC)) return;
     if (this.selection && this.selection.targetIdentity !== adapter.targetIdentity) {
       // Keep the earlier record until an explicit selection replaces it. It is
@@ -55,6 +71,7 @@ export class GarageRuntime {
         mode: 'normal', normalTargetC: control.targetC, awayTargetC: this.settings.awayTargetC,
         changedAt: now, warmingWarning: null };
       this.store.setState(this.keys.mode, this.selection);
+      this.recordIntent(adapter.targetIdentity, 'adopted-readback', now);
     }
     if (this.lastEffectiveTargetC !== undefined && control.effectiveTargetC > this.lastEffectiveTargetC)
       this.warn(this.lastEffectiveTargetC, control.effectiveTargetC, now);
@@ -103,18 +120,14 @@ export class GarageRuntime {
         warmingWarning: previous?.warmingWarning ?? null };
       await this.runWrite(() => {
         const previousSelection = structuredClone(this.selection), previousIdentityChanged = this.identityChanged;
-        const observations = this.engine.ingestionCheckpoint();
         this.store.afterRollback(() => {
           this.selection = previousSelection; this.identityChanged = previousIdentityChanged;
-          this.engine.restoreIngestionCheckpoint(observations);
         });
         this.store.setState(this.keys.mode, next);
         this.store.event('garage-mode-changed', { mode: input.mode, targetC, previousTargetC: fromC ?? null,
           commandId: result.commandId, status: result.status }, now);
         this.selection = next; this.identityChanged = false;
-        this.engine.ingest({ source: 'stmq', device: adapter.targetIdentity, signal: 'garage_away_mode',
-          value: input.mode === 'away' ? 1 : 0, unit: 'state', sourceTime: now, receivedAt: now, quality: ['good'],
-          raw: { requested: true, commandId: result.commandId, usableForControl: false } });
+        this.recordIntent(adapter.targetIdentity, 'dashboard-selection', now);
         this.warn(fromC, targetC, now);
       }, { priority: 'control' });
 

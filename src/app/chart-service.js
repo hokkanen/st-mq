@@ -1,3 +1,4 @@
+import { chartNeedsAssessment } from './chart-dependencies.js';
 import { DEFAULT_CHART_CACHE } from '../domain/chart-cache.js';
 import { createDerivedCacheAnchorOwner,derivedCacheId } from '../storage/derived-cache-anchor.js';
 import { storageOperationHealth } from '../storage/operation-health.js';
@@ -186,7 +187,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
       }
       if (wire !== undefined && !['json', 'ndjson'].includes(wire)) throw new TypeError('Invalid chart response format');
     } catch (error) { return Promise.reject(error); }
-    if(operation==='chart'&&projectionWritable) {
+    if(operation==='chart'&&projectionWritable&&chartNeedsAssessment(args)) {
       projectionInputs.add(args.input??'offline');projectionRequested=true;
       const from=chartRequestRange(args).range.from,key=`${args.input??'offline'}:${from}`;
       projectionDemands.delete(key);projectionDemands.set(key,{input:args.input??'offline',from});

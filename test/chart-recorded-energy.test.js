@@ -324,7 +324,8 @@ test('recorded intervals crossing Finnish midnight contribute to each selected d
     interval(store, day.to - 2 * MINUTE, day.to + 3 * MINUTE, [0.1, 0.2, 0.2]);
     const market = { fetchedAt: day.from, intervals: [{ start: day.from, end: day.to, spotCtPerKwh: 20, unit: 'c/kWh', vatIncluded: false }] };
     const result = getChartData({ store, now: day.to + HOUR, input: 'providers', startDate: '2026-09-08', endDate: '2026-09-08', left: 'power', contract: rates, market });
-    near(result.timingBenefit.charger1.energyKwh, 0.2);
+    const summary=getChartData({store,now:day.to+HOUR,input:'providers',startDate:'2026-09-08',endDate:'2026-09-08',view:'power',summaryOnly:true,contract:rates,market});
+    near(summary.timingBenefit.charger1.energyKwh, 0.2);
     near(result.series.charger_power.find(row => row.y !== null)?.y, 6);
   } finally { store.close(); }
 });
@@ -367,15 +368,18 @@ test('retired native scalar power is unavailable and audit counters cannot chang
     const market = { fetchedAt: day.from, intervals: [{ start: day.from, end: day.to, spotCtPerKwh: 20, unit: 'c/kWh', vatIncluded: false }] };
     const options = { store, now: day.to, input: 'providers', startDate: '2026-09-08', endDate: '2026-09-08', left: 'power', contract: rates, market };
     const before = getChartData(options);
-    near(before.timingBenefit.charger1.energyKwh, 0.5);
-    assert.equal(before.timingBenefit.charger1.evidence.energyBasis, 'recorded-intervals');
-    assert.equal(before.timingBenefit.charger1.evidence.timeBasis, 'recorded-interval-time');
-    assert.deepEqual(before.timingBenefit.charger1.evidence.sources.map(source => [source.key, source.share]),
+    const {left,...period}=options;
+    const summary=getChartData({...period,view:'power',summaryOnly:true});
+    near(summary.timingBenefit.charger1.energyKwh, 0.5);
+    assert.equal(summary.timingBenefit.charger1.evidence.energyBasis, 'recorded-intervals');
+    assert.equal(summary.timingBenefit.charger1.evidence.timeBasis, 'recorded-interval-time');
+    assert.deepEqual(summary.timingBenefit.charger1.evidence.sources.map(source => [source.key, source.share]),
       [['recorded', 1]]);
     store.energyAudit({ source: 'easee', device: 'invented-property', signal: 'property_import_energy_counter', sourceTime: start, receivedAt: start, value: 900 });
     store.energyAudit({ source: 'easee', device: 'invented-property', signal: 'property_import_energy_counter', sourceTime: start + 5 * MINUTE, receivedAt: start + 5 * MINUTE, value: 1900 });
     const after = getChartData(options);
-    assert.deepEqual(after.timingBenefit, before.timingBenefit);
+    assert(!Object.hasOwn(after,'timingBenefit'));
+    assert.deepEqual(getChartData({...period,view:'power',summaryOnly:true}).timingBenefit,summary.timingBenefit);
     assert.deepEqual(after.series, before.series);
   } finally { store.close(); }
 });

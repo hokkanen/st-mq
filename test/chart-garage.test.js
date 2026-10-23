@@ -53,7 +53,7 @@ test('Garage targets and pipe estimates retain original deadlines and reject unk
   const recorder = new Recorder(store), at = range.from + MINUTE;
   const signals = ['garage_room_target', 'garage_effective_target',
     'garage_pipe_rear_temperature', 'garage_pipe_front_temperature', 'garage_native_power',
-    'garage_external_enabled', 'garage_frost_active', 'garage_frost_available', 'garage_away_mode'];
+    'garage_external_enabled', 'garage_frost_active', 'garage_frost_available'];
   const isTemperature = signal => /(_target|_temperature)$/.test(signal);
   for (const signal of signals) {
     const unit = isTemperature(signal) ? 'degC' : 'state';
