@@ -24,6 +24,38 @@ function fixture(t, options = {}) {
   return { ...f, engine, store, config, runtime, recreate };
 }
 
+test('detaching the Garage adapter during a pending save needs no transaction or new intent', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'garage-detach-writer-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const f = fixture(t, { path: join(directory, 'history.sqlite') });
+  const before = structuredClone(f.runtime.selection);
+  const events = f.store.db.prepare('SELECT COUNT(*) AS count FROM events').get().count;
+  await f.store.startWriter();
+  const request = f.store.writer.request.bind(f.store.writer);
+  let release, committing;
+  const reached = new Promise(resolve => { committing = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  f.store.writer.request = async (method, ...args) => {
+    if (method === 'commit') { committing(); await gate; }
+    return request(method, ...args);
+  };
+  const pending = f.store.runWrite(() => f.store.setState('synthetic-pending-save', true));
+  try {
+    await reached;
+    assert.equal(f.store.writePending, true);
+    assert.doesNotThrow(() => f.runtime.setAdapter(null), 'Shutdown detachment must not compete with a settling save');
+    assert.equal(f.runtime.adapter, null);
+    assert.deepEqual(f.runtime.selection, before, 'Detaching retains equipment-bound intent');
+  } finally {
+    release(); await pending; f.store.writer.request = request;
+    await f.store.close();
+  }
+  const db = new DatabaseSync(join(directory, 'history.sqlite'), { readOnly: true });
+  try { assert.equal(db.prepare('SELECT COUNT(*) AS count FROM events').get().count, events,
+    'A disconnected adapter cannot manufacture a new Garage intent event'); }
+  finally { db.close(); }
+});
+
 test('selection receipts require a committed action and survive restart and later native settings', async t => {
   const f = fixture(t);
   assert.equal(f.runtime.status().selectionReceipt, null, 'Adopting a reported baseline is not a dashboard action');

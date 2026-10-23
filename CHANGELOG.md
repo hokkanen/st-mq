@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Detach the Garage adapter without opening an empty transaction, so a settling
+  recording save cannot interrupt controller shutdown or paired handover.
+
 - Mark held chart range edges and freshness endpoints as display boundaries,
   preserving the original reading time instead of implying a new measurement.
 

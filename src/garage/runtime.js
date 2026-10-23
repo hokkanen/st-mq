@@ -50,6 +50,9 @@ export class GarageRuntime {
   }
   senderChanged(snapshot) { this.store.setState(this.keys.sender, snapshot); }
   sync(now = this.clock()) {
+    // Detachment only removes live evidence. With no adapter there is no
+    // readback or intent to persist, including while another save is settling.
+    if (!this.adapter) return;
     return this.store.transaction(() => {
       const selection = this.selection, changed = this.identityChanged;
       this.store.afterRollback(() => { this.selection = selection; this.identityChanged = changed; });
