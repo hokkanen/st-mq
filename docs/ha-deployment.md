@@ -71,6 +71,11 @@ unknown fields are rejected.
    **Master**. Use explicit dashboard handover first if HA is master. The default
    command refuses a stopped app, a master, unavailable authority, protected
    recovery, or a role transition.
+   Ordinary `waiting`/`syncing` on that same safe slave is allowed to finish,
+   with a bounded wait before preparation and again immediately before Stop.
+   Every check retains fresh master, role, authority, VIP and container/image
+   requirements; missing status and actual synchronization errors still fail
+   immediately. Each wait uses `sync_timeout_seconds` and reports progress.
 3. Run `npm run deploy:ha`, optionally selecting `--connection`. The installed
    app version must match `config.json`; use Supervisor's ordinary update flow
    first when they differ. Local frontend preparation happens while HA runs.
@@ -87,6 +92,9 @@ unknown fields are rejected.
    waits for the same HA node to remain slave, without control authority, and
    synchronize with the same master. Fresh peer clocks are assessed on the
    originating computer; the local synchronization deadline defaults to 15 minutes.
+   If ordinary synchronization resumes during the final readiness check, it waits
+   under the same strict running-standby checks and timeout instead of declaring
+   a deployment failure from that single observation.
 
 The status probe runs inside the selected app container. It uses the current
 application configuration to authenticate locally; web tokens remain inside that

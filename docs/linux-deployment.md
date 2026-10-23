@@ -189,6 +189,14 @@ of control authority before preparation and immediately before Stop. It refuses
 a paired master; do not hand over or promote concurrently. Standalone deployment
 checks the running standalone application instead.
 
+If that same safe slave is in ordinary `waiting`/`syncing`, the checks before
+preparation and immediately before Stop wait for readiness, each bounded by
+`sync_timeout_seconds`. Progress is reported while the current service keeps
+running. Every observation must still establish the same identity, fresh
+reachable master, idle slave, no VIP and no control authority. Missing status,
+identity or authority changes, recovery and synchronization errors cause immediate
+refusal. A timeout before Stop leaves the installed service running.
+
 Preparation builds the exact committed HEAD in `runtime_dir/releases` while the
 installed application remains available. After a confirmed complete stop, the
 command refreshes the owned pair helper only when needed, switches `current`,

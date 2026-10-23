@@ -274,6 +274,37 @@ test('a role change during preparation refuses the stop and retains the original
   assert.equal(f.calls.some(call => call.includes('stop')), false);
 });
 
+for (const phase of [1, 2]) {
+  test(`Linux waits for periodic synchronization at pre-stop checkpoint ${phase}`, async t => {
+    const f = fixture(t); await f.setup(); f.update();
+    f.state.onPair = p => f.state.pairCalls === phase ? { ...p, sync: { state: 'syncing' } } : p;
+    await f.invoke('deploy');
+    assert(f.logs.some(s => s.includes('Deployment verified')));
+    assert.equal(f.calls.filter(call => call.includes('stop')).length, 1);
+    assert.equal(f.calls.filter(call => call.includes('start')).length, 1);
+  });
+
+  test(`Linux synchronization timeout at pre-stop checkpoint ${phase} retains the running release`, async t => {
+    const f = fixture(t); await f.setup(); f.update(); f.saveConnection({ sync_timeout_seconds: 2 });
+    const old = realpathSync(join(f.c.runtime_dir, 'current'));
+    f.state.onPair = p => f.state.pairCalls >= phase ? { ...p, sync: { state: 'syncing' } } : p;
+    await assert.rejects(f.invoke('deploy'), /Synchronization timed out/);
+    assert.equal(f.state.active, true); assert.equal(realpathSync(join(f.c.runtime_dir, 'current')), old);
+    assert(!f.calls.some(call => call.includes('stop') || call.includes('start')));
+  });
+}
+
+test('Linux rechecks source after waiting immediately before Stop', async t => {
+  const f = fixture(t); await f.setup(); f.update();
+  f.state.onPair = p => {
+    if (f.state.pairCalls === 2) return { ...p, sync: { state: 'syncing' } };
+    if (f.state.pairCalls === 3) writeFileSync(join(f.source, 'untracked'), 'synthetic-change-during-wait');
+    return p;
+  };
+  await assert.rejects(f.invoke('deploy'), /Source or environment changed/);
+  assert.equal(f.state.active, true); assert(!f.calls.some(call => call.includes('stop')));
+});
+
 test('build failure leaves the old service running without disclosing child output', async t => {
   const f = fixture(t); await f.setup(); f.update();
   f.state.onCommand = (exe, args) => { if (exe === 'npm' && args.includes('build')) throw new Error('synthetic-private-output'); };

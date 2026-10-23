@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { runCommand } from './deployment-command.js';
 import { acquireDeploymentLock, deploymentLockPath, ownsDeploymentLock, releaseDeploymentLock } from './deployment-lock.js';
 import { authenticateSudo, startSudoLease, refreshPairHelper, pairHelperNeedsRefresh } from './linux-setup-platform.js';
-import { DeploymentSafetyError, deploymentArguments, synchronizationTimeout, validateStandby, waitForStandby } from './paired-deployment.js';
+import { DeploymentSafetyError, deploymentArguments, synchronizationTimeout, waitForStandby, waitForSynchronizedStandby } from './paired-deployment.js';
 
 export const checkoutRoot = fileURLToPath(new URL('../../', import.meta.url));
 export class LinuxDeploymentError extends DeploymentSafetyError {}
@@ -320,9 +320,13 @@ export async function main(mode, args, dependencies = {}) {
   let stage, switched = false, lifecycle = stopped ? 'Service confirmed stopped; no lifecycle commands requested.' : 'No lifecycle commands requested.', complete = false, phase = 'preflight';
   try {
     let identity, previous;
+    const readyStandby = () => waitForSynchronizedStandby({ identity,
+      timeoutSeconds: c.sync_timeout_seconds, clock, sleep, log, signal,
+      verifyRunning: () => assertService(),
+      read: async () => ({ pair: await pair(c, { signal }), observedAt: clock() }) });
     if (mode === 'deploy') {
       if (!stopped) {
-        if (paired) identity = validateStandby(await pair(c, { signal }), null, clock(), true);
+        if (paired) identity = await readyStandby();
         else validateStandalone(await status(c, { signal }));
       }
       const installed = await validateInstalledRuntime(c, { source, run: command, unitPath, signal, state: stopped ? 'stopped' : 'running' });
@@ -356,9 +360,10 @@ export async function main(mode, args, dependencies = {}) {
       await sourceUnchanged();
     }
     if (mode === 'deploy' && !stopped) {
-      phase = 'stop'; await assertService();
-      if (paired) validateStandby(await pair(c, { signal }), identity, clock(), true);
-      else validateStandalone(await status(c, { signal }));
+      phase = 'stop';
+      if (paired) await readyStandby();
+      else { await assertService(); validateStandalone(await status(c, { signal })); }
+      await sourceUnchanged();
       lifecycle = 'Stop requested; outcome unconfirmed.';
       await systemctl('stop', c.service_name);
       const stopped = await show();

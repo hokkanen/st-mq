@@ -6,7 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import { DeploymentSafetyError, deploymentArguments, synchronizationTimeout, validateStandby, waitForStandby } from './lib/paired-deployment.js';
+import { DeploymentSafetyError, deploymentArguments, synchronizationTimeout, waitForStandby, waitForSynchronizedStandby } from './lib/paired-deployment.js';
 import { runCommand } from './lib/deployment-command.js';
 import { readHARuntime } from './lib/ha-deploy-runtime.js';
 import { acquireRemoteDeploymentLock, remoteDeploymentLockPath } from './lib/deployment-lock.js';
@@ -179,11 +179,6 @@ export async function main(args, { checkout = root, connect = connectSSH, superv
     let app = await api(`/addons/${selected.slug}/info`);
     if (app.slug !== selected.slug) throw new DeploymentError('Supervisor returned a different app identity');
     validateDeploymentState(app, manifest, { running: !stopped, ...(stopped && ['stopped', 'error'].includes(app.state) ? await readStoppedEvidence(ssh, app, { always: true }) : {}) });
-    let initialRuntime, identity;
-    if (!stopped) {
-      initialRuntime = await readRuntime(ssh, app);
-      identity = validateStandby(initialRuntime?.pair, null, initialRuntime?.observedAt, true);
-    }
     if (app.state === 'error') log('Supervisor reports error; Docker confirms the st-mq app is stopped. Continuing with fresh container checks.');
     const readUnchangedApp = async (options = {}) => {
       const current = await api(`/addons/${app.slug}/info`);
@@ -191,6 +186,16 @@ export async function main(args, { checkout = root, connect = connectSSH, superv
       validateUnchangedApp(current, app, { ...options, ...(options.running || options.checkState === false ? {} : await readStoppedEvidence(ssh, current, { always: true })) });
       return current;
     };
+    let initialRuntime, identity;
+    const readyStandby = () => waitForSynchronizedStandby({ identity,
+      timeoutSeconds: config.sync_timeout_seconds, clock, sleep, log, signal,
+      verifyRunning: () => readUnchangedApp({ running: true }),
+      read: async () => {
+        const observed = await readRuntime(ssh, app, { expectedContainer: initialRuntime?.container, expectedImage: initialRuntime?.image });
+        initialRuntime ??= observed;
+        return observed;
+      } });
+    if (!stopped) identity = await readyStandby();
     const execute = async (script, timeoutMs = 30000) => {
       const result = await ssh.run(script, { timeoutMs });
       if (result.exitCode !== 0) throw new DeploymentError(`Remote command exited with status ${result.exitCode}; inspect the terminal or Supervisor locally`);
@@ -271,9 +276,7 @@ PY`));
     };
     if (!stopped) {
       phase = 'stop';
-      const before = await readUnchangedApp({ running: true });
-      const observed = await readRuntime(ssh, before, { expectedContainer: initialRuntime.container, expectedImage: initialRuntime.image });
-      validateStandby(observed?.pair, identity, observed?.observedAt, true);
+      await readyStandby();
       if (git('rev-parse', 'HEAD') !== target || git('status', '--porcelain')) throw new DeploymentError('Checkout changed before stopping the slave.');
       lifecycle = 'Stop requested; outcome unconfirmed.';
       await api(`/addons/${app.slug}/stop`, 'post', 120);
@@ -373,9 +376,9 @@ PY`));
           return snapshot;
         },
         verifyReady: async () => {
-          await verifyRunning(true);
-          const snapshot = await readRuntime(ssh, app, { expectedContainer: runningContainer, expectedImage: imageId });
-          validateStandby(snapshot?.pair, identity, snapshot?.observedAt, true);
+          await waitForSynchronizedStandby({ identity, timeoutSeconds: config.sync_timeout_seconds, clock, sleep, log, signal,
+            verifyRunning: () => verifyRunning(true),
+            read: () => readRuntime(ssh, app, { expectedContainer: runningContainer, expectedImage: imageId }) });
         },
       });
     }

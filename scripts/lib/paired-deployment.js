@@ -33,6 +33,29 @@ export function validateStandby(pair, identity, now = Date.now(), ready = false)
   return pair;
 }
 
+// A running standby may be between ordinary periodic checkpoints. Unlike startup,
+// this wait never tolerates unavailable status, lost peers or initializing roles.
+export async function waitForSynchronizedStandby({ read, verifyRunning, identity,
+  timeoutSeconds, clock = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), log = () => {}, signal }) {
+  const deadline = clock() + synchronizationTimeout(timeoutSeconds) * 1000;
+  let pinned = identity, nextProgress = clock();
+  while (true) {
+    if (signal?.aborted) unsafe('Deployment cancelled.');
+    await verifyRunning();
+    const snapshot = await read();
+    if (signal?.aborted) unsafe('Deployment cancelled.');
+    if (!snapshot || !Number.isFinite(snapshot.observedAt)) unsafe('Invalid pair status observation.');
+    const status = validateStandby(snapshot.pair, pinned, snapshot.observedAt);
+    pinned ??= { nodeId: status.nodeId, pairId: status.pairId, peer: { nodeId: status.peer.nodeId } };
+    if (status.sync?.error != null || !['ready', 'waiting', 'syncing'].includes(status.sync?.state))
+      unsafe('Synchronization reported an error or unknown state; inspect Paired computers.');
+    if (status.sync.state === 'ready') return status;
+    if (clock() >= deadline) unsafe('Synchronization timed out; inspect Paired computers before continuing deployment.');
+    if (clock() >= nextProgress) { log('Waiting for the running standby to finish synchronization…'); nextProgress = clock() + 30000; }
+    await sleep(1000, signal);
+  }
+}
+
 export async function waitForStandby({ read, verifyRunning, verifyReady = async () => {}, identity,
   timeoutSeconds, clock = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), log = () => {}, signal }) {
   const deadline = clock() + synchronizationTimeout(timeoutSeconds) * 1000;

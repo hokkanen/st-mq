@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Wait for routine standby synchronization in Linux and Home Assistant deployment
+  preflight and before stopping, with a timeout and continuous safety checks.
+  Also wait if synchronization resumes during HA's final readiness check.
+
 - Discover relocated completed reset archives without rewriting their manifests
   or relaxing reset-resumption checks. Describe preserved raw history without
   portable backups separately so it does not produce a false incomplete listing.

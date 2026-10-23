@@ -45,6 +45,15 @@ This prepares the build, verifies Linux is a slave, stops only its application
 service, installs the release, starts it and waits for synchronization. HA keeps
 running as master. The command refuses a Linux master.
 
+Before preparation and immediately before Stop, both deployers wait if the same
+safe running slave is between ordinary synchronization checkpoints. Each wait is
+bounded by `sync_timeout_seconds` (default 900 seconds) and reports progress.
+The slave must retain its identity, reachable fresh master, idle role, no VIP and
+no control authority on every check. Missing status, identity or authority
+changes, recovery and synchronization errors cause refusal immediately; they
+are not retried as ordinary synchronization. A timeout before Stop leaves the
+application running and requires inspection before another deployment attempt.
+
 The setup wizard already installs the selected commit and verifies startup;
 deploying it again is optional. Complete any reported pending HA configuration
 or initial role selection before using the paired update sequence.

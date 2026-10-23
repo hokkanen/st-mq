@@ -572,12 +572,41 @@ test('managed HA rejects a wrong running image after Start', async t => {
   await assert.rejects(f.deploy(), /running image/); assert(!f.messages.some(s => s.startsWith('Verified ')));
 });
 
-test('managed HA cannot report success if synchronization regresses during final runtime verification', async t => {
+test('managed HA waits if ordinary synchronization resumes during final runtime verification', async t => {
   const f = workflowFixture(t, { managed: true, complete: true,
     snapshot: (s, reads) => reads === 4 ? { ...s, pair: { ...s.pair, sync: { state: 'syncing' } } } : s });
-  await assert.rejects(f.deploy(), /has not completed synchronization/);
-  assert(!f.messages.some(s => s.startsWith('Verified ')));
-  assert(!f.events.some(e => e.type === 'ssh' && e.script.includes('rmdir /tmp/st-mq-deploy')));
+  await f.deploy();
+  assert(f.messages.some(s => s.startsWith('Verified ')));
+  assert.equal(f.events.filter(e => e.endpoint?.endsWith('/stop')).length, 1);
+  assert.equal(f.events.filter(e => e.endpoint?.endsWith('/start')).length, 1);
+});
+
+for (const phase of [1, 2]) {
+  test(`managed HA waits for ordinary synchronization ${phase === 1 ? 'before preparation' : 'immediately before Stop'}`, async t => {
+    const f = workflowFixture(t, { managed: true, complete: true,
+      snapshot: (s, reads) => reads === phase ? { ...s, pair: { ...s.pair, sync: { state: 'syncing' } } } : s });
+    await f.deploy();
+    assert.match(f.messages.at(-1), /synchronization ready/);
+    const stop = f.events.findIndex(e => e.endpoint?.endsWith('/stop'));
+    assert.equal(f.events.slice(0, stop).filter(e => e.type === 'runtime').length, 3);
+    assert.equal(f.events.filter(e => e.endpoint?.endsWith('/stop')).length, 1);
+  });
+
+  test(`managed HA synchronization timeout at pre-stop checkpoint ${phase} never stops or rebuilds`, async t => {
+    const f = workflowFixture(t, { managed: true, complete: true, syncTimeoutSeconds: 2,
+      snapshot: (s, reads) => reads >= phase ? { ...s, pair: { ...s.pair, sync: { state: 'syncing' } } } : s });
+    await assert.rejects(f.deploy(), /Synchronization timed out/);
+    assert(!f.events.some(e => ['/stop', '/start', '/rebuild'].some(action => e.endpoint?.endsWith(action))));
+    if (phase === 1) assert(!f.events.some(e => e.type === 'ssh' && e.script.includes('if mkdir')));
+  });
+}
+
+test('managed HA rejects a replaced container while waiting before Stop', async t => {
+  const f = workflowFixture(t, { managed: true, complete: true, snapshot: (s, reads) => reads === 2
+    ? { ...s, pair: { ...s.pair, sync: { state: 'syncing' } } }
+    : reads === 3 ? { ...s, container: 'c'.repeat(64) } : s });
+  await assert.rejects(f.deploy(), /container or running image/);
+  assert(!f.events.some(e => e.endpoint?.endsWith('/stop')));
 });
 
 test('managed HA rejects a different node after Start', async t => {
