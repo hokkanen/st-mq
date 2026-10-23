@@ -361,7 +361,7 @@ try{
  while(true){const{done,value}=await reader.read();if(done)break;bytes+=value.byteLength;if(bytes>1048576){await reader.cancel();throw Error();}chunks.push(Buffer.from(value));}
  const pair=JSON.parse(Buffer.concat(chunks).toString('utf8')),expected=${JSON.stringify(expectedIdentity)};
  if(pair.nodeId!==expected.nodeId||config.pair?.pairId!==expected.pairId||pair.actions?.promote!==true||pair.error!==null||${mode === 'bootstrap' ? 'pair.bootstrapPending!==true' : "pair.role!=='protected'"}||pair.canControl!==false||!['slave','protected'].includes(pair.role)||pair.busy!==false||pair.phase!==null||pair.vip?.owned!==false||pair.peer?.role==='master')throw Error();
- const result=await fetch(origin+'/api/pair/action',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({action:'promote',requestId:${JSON.stringify(requestId)},confirmed:true}),redirect:'error',signal:AbortSignal.timeout(5000)});
+ const result=await fetch(origin+'/api/pair/action',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({action:'promote',nodeId:expected.nodeId,requestId:${JSON.stringify(requestId)},confirmed:true}),redirect:'error',signal:AbortSignal.timeout(5000)});
  console.log(JSON.stringify({submitted:result.status===202}));
 }catch{console.log(JSON.stringify({submitted:false}));}
 `;

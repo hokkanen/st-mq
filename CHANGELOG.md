@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Bind Linux setup and HA setup promotion requests to the freshly reviewed
+  computer identity required by the current pairing API.
+
 - Name the exact lock location in Linux setup/deployment, HA setup/deployment and
   live-test runner errors. Keep HA lock refusals visible through setup, distinguish
   existing locks from creation failures, and identify retained locks and workspaces

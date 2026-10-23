@@ -11,7 +11,7 @@ import { DeploymentTransportError } from '../scripts/lib/ha-deploy-transport.js'
 const app = { slug: 'synthetic_st-mq', repository: 'synthetic', version: '0.9.5-dev.4', state: 'started',
   options: { controller: { input: 'mqtt', topology: 'pair' }, mqtt: { address: 'mqtt://core-mosquitto', user: 'synthetic-user', pw: 'synthetic-private-secret' },
     pair: { pair_id: 'synthetic-pair', token: 'synthetic-pair-token-12345678901234567890' } } };
-const pair = { nodeId: 'synthetic-node', pairId: 'synthetic-pair', bootstrapPending: true, canControl: false,
+const pair = { nodeId: '11111111-1111-4111-8111-111111111111', pairId: 'synthetic-pair', bootstrapPending: true, canControl: false,
   role: 'slave', busy: false, phase: null, error: null, actions: { promote: true }, vip: { owned: false }, peer: { role: 'slave' } };
 
 function fixture({ state = app.state, raw = app.options, broker = true, brokerNetwork, fail, afterInfo, runtimePair = pair, lockExitCode = 0, cleanupExitCode = 0 } = {}) {
@@ -287,7 +287,9 @@ test('promotion probe runs against an authenticated live disposable listener and
 let count=0;const server=createServer(async(req,res)=>{
  if(req.headers.authorization!=='Bearer '+process.env.SYNTHETIC_TOKEN){res.writeHead(401);res.end('{}');return;}
  if(req.method==='GET'){res.setHeader('content-type','application/json');res.end(process.env.SYNTHETIC_PAIR);return;}
- let bytes='';for await(const chunk of req)bytes+=chunk;const action=JSON.parse(bytes);if(action.action==='promote'&&action.confirmed===true)count++;
+ let bytes='';for await(const chunk of req)bytes+=chunk;const action=JSON.parse(bytes),pair=JSON.parse(process.env.SYNTHETIC_PAIR);
+ if(action.nodeId!==pair.nodeId||!Object.keys(action).every(key=>['action','nodeId','requestId','confirmed'].includes(key))){res.writeHead(409);res.end('{}');return;}
+ if(action.action==='promote'&&action.confirmed===true)count++;
  res.writeHead(202);res.end('{}');console.log(JSON.stringify({submitted:count}));
 });server.listen(0,'127.0.0.1',()=>console.log(JSON.stringify({port:server.address().port})));process.on('SIGTERM',()=>server.close(()=>process.exit(0)));`);
   const env = { ...process.env, SYNTHETIC_TOKEN: 'synthetic-private-auth-token', SYNTHETIC_PAIR: JSON.stringify(pair) };

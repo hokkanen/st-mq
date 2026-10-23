@@ -34,6 +34,9 @@ codes. Setup/deployment fixtures verify that the locations survive error wrapper
 uncertain SSH replies and failed cleanup, with no replay or lock removal on refusal.
 The live-test lock fixture blocks the runner before any provider worker can start;
 it never reads installation credentials or sends live provider requests.
+Setup promotion tests verify the current `nodeId` request boundary, including
+the emitted HA program against an authenticated disposable listener and the Linux
+producer against the real paired application API. Neither test operates equipment.
 Service-preflight cases check specific mismatch diagnostics, suppression of raw
 service values and rejection before building, locking or changing the runtime.
 User-bus discovery checks preserve explicit session settings and reject missing,

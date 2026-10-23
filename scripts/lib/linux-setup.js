@@ -439,6 +439,6 @@ export async function localPromotion(connection, identity, { signal, protectedIn
   const token = connection.token_file ? readFileSync(connection.token_file, 'utf8').trim() : '';
   const response = await fetchImpl(connection.status_url + '/api/pair/action', { method: 'POST', redirect: 'error',
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
-    body: JSON.stringify({ action: 'promote', confirmed: true, requestId: randomUUID() }), signal: AbortSignal.any([signal ?? new AbortController().signal, AbortSignal.timeout(10000)]) });
+    body: JSON.stringify({ action: 'promote', nodeId: identity.nodeId, confirmed: true, requestId: randomUUID() }), signal: AbortSignal.any([signal ?? new AbortController().signal, AbortSignal.timeout(10000)]) });
   if (response.status !== 202) fail('Initial promotion was not acknowledged. Inspect Paired computers before retrying.');
 }

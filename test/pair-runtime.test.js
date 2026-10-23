@@ -15,6 +15,7 @@ import { pairDisplay } from '../chart/pair-status.js';
 import { createAppServer } from '../src/app/server.js';
 import { derivedCacheId, matchesDerivedCacheAnchor } from '../src/storage/derived-cache-anchor.js';
 import { PairManager } from '../src/pairing/manager.js';
+import { localPromotion } from '../scripts/lib/linux-setup.js';
 
 const W = LEARNING_WINDOW_MS, now = Date.parse('2026-01-09T12:00Z');
 
@@ -57,6 +58,18 @@ test('a read-only paired viewer registers only derived cache proofs through its 
   try{assert(matchesDerivedCacheAnchor(reader.db,{cacheId,purpose:'firewood',input:'mqtt',proof}));}finally{await reader.close();}
 });
 const command = (action, extra = {}) => ({ action, requestId: randomUUID(), confirmed: true, ...extra });
+test('Linux setup promotion uses the reviewed node identity at the real pairing API boundary', async t => {
+  const f = await fixture(t), app = await f.open('setup-promotion', 'slave', 'ubuntu');
+  const identity = app.status(); let verified = 0;
+  await localPromotion({ status_url: url(app) }, identity, {
+    verify: async () => { verified++; },
+    read: async () => (await fetch(`${url(app)}/api/pair`, { signal: t.signal })).json(),
+    signal: t.signal,
+  });
+  await until(t, () => app.status().uiOperation?.state === 'complete');
+  assert.equal(verified, 1); assert.equal(app.status().uiOperation.nodeId, identity.nodeId);
+  assert.equal(app.status().role, 'master'); assert.equal(app.pair.canControl(), true);
+});
 async function until(t, check) {
   // Accepted operations own asynchronous persistence and peer work. The existing
   // per-test deadline bounds this wait; a polling count cannot declare them done.

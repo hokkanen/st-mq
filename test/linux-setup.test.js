@@ -141,6 +141,7 @@ test('explicit first-master action supports bootstrap and reviewed protected sta
       verify: async () => {},
       read: async () => identity, fetchImpl: async (url, init) => { request = JSON.parse(init.body); return { status: 202 }; } });
     assert.equal(request.action, 'promote'); assert.equal(request.confirmed, true);
+    assert.equal(request.nodeId, identity.nodeId);
   }
 });
 test('first-master action rejects existing authority, busy state, missing action and competing master', async () => {
