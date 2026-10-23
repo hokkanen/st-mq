@@ -305,3 +305,15 @@ test('charging scope selects each charger or combined comparison without substit
   assert.equal(chargingTimingDisplay(data, 'charger2').available, false);
   assert.throws(() => chargingTimingDisplay(data, 'unknown'), RangeError);
 });
+
+test('combined charging labels a missing contribution without treating proven idle as missing', () => {
+  const total = { ...chargerResult, value: 1.2,
+    coverageDetails: { ...chargerResult.coverageDetails, coverageBasis: 'charger-time' } };
+  const data = { ...payload, timingBenefit: { charger1: chargerResult, charger: total } };
+  assert.equal(chargingTimingDisplay(data).qualification, 'Partial total · Charger 2 unavailable');
+  data.timingBenefit.charger2 = { value: null, coverageDetails: {
+    elapsedMs: 10 * hour, includedMs: 0, powerMs: 10 * hour, chargingMs: 0, idleMs: 10 * hour, missingPowerMs: 0 } };
+  assert.equal(chargingTimingDisplay(data).qualification, null);
+  data.timingBenefit.charger2.coverageDetails.missingPowerMs = hour;
+  assert.equal(chargingTimingDisplay(data).qualification, 'Partial total · Charger 2 unavailable');
+});

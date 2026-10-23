@@ -1838,7 +1838,11 @@ cannot replace the refreshed results.
 align in three columns when space allows and stack on narrow screens.
 Heating starts on **Home** and **Model estimate**, restoring a saved **Timing cost**
 choice. It offers Home / Garage / Total; Charging offers Charger 1 / Charger 2 /
-Total for timing comparisons. Their details folds expand independently for
+Total for timing comparisons. Returning to Home preserves its selected comparison
+method. Combined Charging results identify an unavailable charger contribution;
+fully observed idle time remains excluded without being labelled missing.
+Unavailable Garage evidence claims neither an estimate nor an electrical source.
+Their details folds expand independently for
 cost operands, included energy, sources, timestamps and coverage. Shared
 explanations appear in **How these comparisons work**. The folds support keyboard and
 touch and keep their state across chart refreshes and date changes.

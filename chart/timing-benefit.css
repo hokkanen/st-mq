@@ -28,6 +28,9 @@
   .comparison-range-fields .date-range input { width: 100%; padding-left: 6px; padding-right: 26px; background-position: right 5px center; }
   .comparison-shortcuts { width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+@media (max-width: 360px) {
+  .comparison-range-fields .date-range input { font-size: 11px; padding-right: 22px; background-position: right 3px center; }
+}
 
 /* Keep scope and comparison controls together above each result. */
 .timing-device { container-type: inline-size; }

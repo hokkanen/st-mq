@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep Home's comparison method when visiting Garage or Total, identify missing
+  charger contributions in combined timing results, avoid claiming an estimate
+  for unavailable Garage evidence, and fit comparison dates on narrow screens.
+
 - Skip sudo and unnecessary virtual-IP helper restarts during user-service Linux
   deployments when the installed helper matches the prepared release. Request
   authentication before stopping the application when a helper update is needed;

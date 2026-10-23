@@ -23,10 +23,9 @@ export function createTimingBenefit(root) {
   function chooseScope(event) {
     if (closed) return;
     heatingScope = event.currentTarget.dataset.scope;
-    if (heatingScope !== 'home') heatingMode = 'timing';
     render(latestPayload);
     const display = cards.get('heatPump').display;
-    modeStatus.textContent = `${heatingScope}: ${display.amount ?? 'Unavailable'}${display.qualification ? `, ${display.qualification}` : ''}.`;
+    modeStatus.textContent = `Heating (${event.currentTarget.textContent}): ${display.amount ?? 'Unavailable'}${display.qualification ? `, ${display.qualification}` : ''}.`;
   }
 
   function chooseMode(event) {
@@ -358,7 +357,8 @@ export function createTimingBenefit(root) {
   function render(payload) {
     if (closed) return;
     latestPayload = payload;
-    const displays = [heatingScopeDisplay(payload, heatingScope, heatingMode), chargingTimingDisplay(payload, chargingScope),
+    const effectiveHeatingMode = heatingScope === 'home' ? heatingMode : 'timing';
+    const displays = [heatingScopeDisplay(payload, heatingScope, effectiveHeatingMode), chargingTimingDisplay(payload, chargingScope),
       firewoodDisplay(payload?.firewoodBenefit, payload)];
     const visibleAssumedRates = displays.some(display => display.assumedRates);
     const periodAssumedRates = Boolean(payload?.meta?.priceAssumptions?.used);
@@ -370,13 +370,13 @@ export function createTimingBenefit(root) {
     for (const button of chargingButtons) button.setAttribute('aria-pressed', String(button.dataset.chargingScope === chargingScope));
     for (const button of scopeButtons) button.setAttribute('aria-pressed', String(button.dataset.scope === heatingScope));
     for (const button of modeButtons) {
-      button.setAttribute('aria-pressed', String(button.dataset.mode === heatingMode));
+      button.setAttribute('aria-pressed', String(button.dataset.mode === effectiveHeatingMode));
       button.disabled = heatingScope !== 'home' && button.dataset.mode === 'model';
       button.title = button.disabled ? 'The heating model estimate applies to Home only.' : '';
     }
     for (const display of displays) {
       const card = cards.get(display.key);
-      const modelHeating = display.key === 'heatPump' && heatingMode === 'model';
+      const modelHeating = display.key === 'heatPump' && effectiveHeatingMode === 'model';
       const cardFingerprint = JSON.stringify({ display, modelHeating });
       if (cardFingerprint === card.fingerprint) continue;
       card.fingerprint = cardFingerprint; card.display = display;

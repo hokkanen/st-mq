@@ -20,7 +20,7 @@ export function heatingScopeDisplay(payload, scope = 'home', mode = 'model') {
   const missing = (result.missingScopes ?? []).map(key => names[key]).join(' and ');
   display.qualification = partial ? scope === 'total'
     ? `Partial total${missing ? ` · ${missing} unavailable` : ' · some intervals excluded'}` : 'Some intervals excluded'
-    : result.provisional ? 'Provisional estimate' : null;
+    : display.available && result.provisional ? 'Provisional estimate' : null;
   display.unavailableReason = ({
     'no-elapsed-time': 'No elapsed time in this selection',
     'incomplete-daily-prices': 'Full-day prices missing',
@@ -30,7 +30,7 @@ export function heatingScopeDisplay(payload, scope = 'home', mode = 'model') {
     'incompatible-period-or-basis': 'The reporting periods or assessment methods are not comparable.',
     'missing-component': 'No supported contributions are available for this period.',
   })[result.reason] ?? display.unavailableReason;
-  display.basis = scope === 'garage' ? result.sourceQuality === 'simulated-electrical' ? 'Simulated electrical intervals' : result.sourceQuality === 'verified-electrical' ? 'Verified electrical intervals' : 'Provisional electrical intervals' : 'Separate Home and Garage comparisons';
+  display.basis = scope === 'garage' ? result.sourceQuality === 'unavailable' ? null : result.sourceQuality === 'simulated-electrical' ? 'Simulated electrical intervals' : result.sourceQuality === 'verified-electrical' ? 'Verified electrical intervals' : 'Provisional electrical intervals' : 'Separate Home and Garage comparisons';
   display.energyExplanation = scope === 'garage'
     ? 'Compares recorded electricity timing with the same energy spread evenly over each day. It does not attribute savings to Garage control. Uses only dedicated garage electricity intervals with qualified units and intraday timing. Compressor frequency, runtime and coarse counter totals do not count as recorded energy. Native accuracy remains provisional unless independently checked.'
     : 'Adds Home and Garage timing amounts for the same Finnish dates. Each system uses its own included daily energy and the same full-day all-in price benchmark. Home operation estimates retain their qualification.';

@@ -190,5 +190,11 @@ export function timingDisplay(key, result = {}, payload = {}) {
 export function chargingTimingDisplay(payload, scope = 'total') {
   if (!['charger1', 'charger2', 'total'].includes(scope)) throw new RangeError('Choose Charger 1, Charger 2 or Total.');
   const key = scope === 'total' ? 'charger' : scope;
-  return { ...timingDisplay(key, payload?.timingBenefit?.[key], payload), key: 'charger', name: 'Charging', scope };
+  const display = timingDisplay(key, payload?.timingBenefit?.[key], payload);
+  if (scope === 'total' && display.available) {
+    const missing = ['charger1', 'charger2'].map(id => timingDisplay(id, payload?.timingBenefit?.[id], payload))
+      .filter(component => !component.available && !component.noChargingDetected).map(component => component.name);
+    display.qualification = missing.length ? `Partial total · ${missing.join(' and ')} unavailable` : null;
+  }
+  return { ...display, key: 'charger', name: 'Charging', scope };
 }

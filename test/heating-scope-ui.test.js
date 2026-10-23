@@ -84,6 +84,16 @@ test('Garage missing daily prices and future time retain the useful diagnosis', 
   }
 });
 
+test('unavailable Garage intervals do not claim a provisional estimate or electrical source', () => {
+  const payload = data({ garageTiming: { ...timing('garage'), value: null,
+    provisional: true, sourceQuality: 'unavailable', reason: 'no-qualified-electrical-intervals' } });
+  const display = heatingScopeDisplay(payload, 'garage', 'timing');
+  assert.equal(display.available, false);
+  assert.equal(display.qualification, null);
+  assert.equal(display.basis, null);
+  assert.match(display.unavailableReason, /No qualified garage electricity intervals/);
+});
+
 test('Heating Total preserves assumed-rate share, affected dates and included system-time denominator', () => {
   const payload = data({ homeTiming: { ...timing('home'), assumedPrices: true,
     priceAssumptions: { durationMs: 24 * HOUR, share: 1, firstAt: from, lastAt: range.to, timeBasis: 'included-time' } } });

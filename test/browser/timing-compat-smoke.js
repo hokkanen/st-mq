@@ -70,6 +70,7 @@ const fixture = `<!doctype html><html><head><meta charset="utf-8"><meta name="vi
       window.flushResizeDeliveries = () => pendingResizeDeliveries.splice(0).forEach(deliver => deliver());
     }
     localStorage.clear();
+    for (const id of ['comparison-date-start', 'comparison-date-end']) document.getElementById(id).value = '2026-10-23';
     window.comparisonPayload = ${JSON.stringify(payload)};
     window.comparisonPanel = createTimingBenefit(document.getElementById('timing-benefit'));
     window.comparisonDisclosure = createComparisonDisclosure({
@@ -152,6 +153,10 @@ try {
     })()`), [], 'Outer content shares one inset; nested headers align with their peers and opened bodies add one inset');
   };
   const checkVisibleCards = async (amounts = ['€3.50', '€2.00', '€1.25']) => {
+    assert.deepEqual(await evaluate(`['comparison-date-start', 'comparison-date-end'].filter(id => {
+      const input = document.getElementById(id);
+      return input.scrollWidth > input.clientWidth + 1;
+    })`), [], 'Both complete comparison dates fit without text scrolling');
     assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.timing-device')).map(card => {
       const overview = card.querySelector('.timing-device-overview'), fold = card.querySelector('details');
       return { name: card.querySelector('h3').textContent,
@@ -296,6 +301,13 @@ try {
       await evaluate("document.querySelectorAll('#timing-benefit details > summary').forEach(summary => summary.click())");
       await settle();
     }
+    await evaluate(`document.querySelector('[data-mode="model"]').click();
+      document.querySelector('[data-scope="garage"]').click();`);
+    assert.equal(await evaluate("document.querySelector('[data-mode=\"model\"]').disabled && document.querySelector('[data-mode=\"timing\"]').getAttribute('aria-pressed') === 'true'"), true,
+      'Garage selects its timing comparison while Home model mode remains saved');
+    await evaluate("document.querySelector('[data-scope=\"total\"]').click();document.querySelector('[data-scope=\"home\"]').click()");
+    assert.equal(await evaluate("document.querySelector('[data-mode=\"model\"]').getAttribute('aria-pressed')"), 'true',
+      'Returning Home restores the selected model comparison');
     await evaluate(`const mode = document.querySelector('[data-mode="timing"]');
       document.querySelector('.timing-device-detail').open = true; mode.focus(); mode.click();
       comparisonPayload.firewoodBenefit.valueEuro = 2.25; comparisonPanel.render(comparisonPayload);`);
