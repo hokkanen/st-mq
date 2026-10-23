@@ -66,6 +66,15 @@ Prepared cache bodies do not replace the immutable journal, configuration, seeds
 or recovery contribution/decision ledger. Reverting or restoring a recovery still
 selects preserved source history and rebuilds only genuinely affected learning.
 
+The slave dashboard reads a compact recorded-model display, not a working
+checkpoint. At the pinned publication boundary it validates the current storage
+manifest and resolves every fitting/episode reference through the digest index,
+then returns only the displayed model, references, evidence and configuration.
+It does not fetch or hydrate prepared sample bodies. Displaying those saved
+values is not a body-integrity or reconstruction check: complete hydration still
+validates every referenced body's digest and normalized contents, and explicit
+full verification retains its complete checks. No history is removed or replaced.
+
 In memory, the Engine owns a detached recursively immutable checkpoint. Its
 canonical digest can be reused only for that exact owned graph; loaded, foreign
 or mutable checkpoints still receive complete validation. New journal input or

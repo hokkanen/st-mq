@@ -253,15 +253,20 @@ test('replica infers the primary input from the Home journal and ignores unsuppo
   assert.equal(digest(publication.dbPath), publication.digest);
 });
 
-test('Home status decodes learning once per verified generation and returns detached display data', async t => {
+test('cold Home status reads only display metadata once per verified generation and returns detached data', async t => {
   const directory = fixture(t);
   let publication = snapshot(directory, 'first-home-display');
   recordLearningModels(publication);
   const { app, request } = await viewer(t, directory, () => publication);
   const reads = new Map(), getState = Store.prototype.getState;
   t.mock.method(Store.prototype, 'getState', function(key) {
-    if (key === 'adaptive:mqtt') reads.set(this.path, (reads.get(this.path) ?? 0) + 1);
+    assert.notEqual(key, 'adaptive:mqtt', 'Cold status must not hydrate learning history');
     return getState.call(this, key);
+  });
+  const display = Store.prototype.getLearningCheckpointDisplay;
+  t.mock.method(Store.prototype, 'getLearningCheckpointDisplay', function(key) {
+    reads.set(this.path, (reads.get(this.path) ?? 0) + 1);
+    return display.call(this, key);
   });
   const first = app.status(), expected = structuredClone(first.learning);
   first.learning.adaptive.model.parameters.lossPerHour = 999;
@@ -302,6 +307,50 @@ test('replica does not substitute priors for missing, unsupported or post-public
       'Home compatibility does not hide valid Garage intent; post-publication intent is excluded');
     assert.equal(digest(publication.dbPath), publication.digest);
   }
+});
+
+test('recorded Home metadata refreshes with its publication and survives viewer restart without hydration', async t => {
+  const directory = fixture(t);
+  let publication = snapshot(directory, 'home-display-original');
+  recordLearningModels(publication);
+  const { app, request } = await viewer(t, directory, () => publication);
+  const first = (await request('/api/status')).body.learning;
+  assert.equal(first.adaptive.model.parameters.lossPerHour, .031);
+  publication = snapshot(directory, 'home-display-corrected');
+  recordLearningModels(publication);
+  const writer = new Store(publication.dbPath);
+  const value = writer.getState('adaptive:mqtt');
+  value.model.parameters.lossPerHour = .044;
+  value.comfortReference.targetC = 22;
+  writer.setState('adaptive:mqtt', value);
+  writer.close();
+  publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;
+  const changed = (await request('/api/status')).body;
+  assert.equal(changed.sync.generation, publication.generation);
+  assert.equal(changed.learning.adaptive.model.parameters.lossPerHour, .044);
+  assert.equal(changed.learning.adaptive.comfortReference.targetC, 22);
+  assert.equal(first.adaptive.model.parameters.lossPerHour, .031);
+  await app.close();
+  const restarted = await viewer(t, directory, () => publication);
+  assert.deepEqual((await restarted.request('/api/status')).body.learning, changed.learning);
+});
+
+test('missing Home display dependencies leave independent recorded observations readable', async t => {
+  const directory = fixture(t), publication = snapshot(directory, 'home-display-missing');
+  recordLearningModels(publication);
+  const writer = new Store(publication.dbPath);
+  const compact = JSON.parse(writer.db.prepare('SELECT value FROM state WHERE key=?').get('adaptive:mqtt').value);
+  writer.transaction(() => writer.db.prepare('DELETE FROM learning_checkpoint_samples WHERE digest=?').run(compact.sampleRefs[0]));
+  writer.close();
+  publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;
+  const { request } = await viewer(t, directory, () => publication);
+  const { status, body } = await request('/api/status');
+  assert.equal(status, 200);
+  assert.equal(body.learning.adaptive, null);
+  assert.match(body.learning.error, /saved data in this section is unavailable/);
+  assert.equal(body.observations.upstairs.value, 21);
+  assert.equal(body.readOnly, true);
+  assert.equal(digest(publication.dbPath), publication.digest);
 });
 
 test('replica refuses server-side database saves without changing the verified snapshot', async t => {

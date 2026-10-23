@@ -1,11 +1,15 @@
 # Development validation
 
-`test/replica-viewer.test.js` checks that Home status decodes its saved learning
-checkpoint once per verified snapshot and retains only the display fields.
-Returned data is detached; a new snapshot reads and validates its own checkpoint,
-including unsupported-model rejection. The complete learning history remains in
-the database. A warm display cache does not establish bounded first-read cost
-for larger histories or installed-device performance.
+`test/learning-checkpoint-display.test.js` checks the recorded-model metadata
+reader: exact display parity, detached results, current manifest rejection,
+missing references, indexed bounded reference batches and concurrent replacement
+at one read boundary. It forbids prepared-body reads even on the first request.
+The complete checkpoint reader and full verification still reject damaged sample
+bodies; reading recorded metadata does not claim that verification.
+`test/replica-viewer.test.js` checks cold and warm direct/HTTP status, publication
+changes and unsupported models without hydrating fitting history. Complete
+learning history remains in the database. Synthetic timings do not qualify
+larger production workloads or particular installed hardware.
 
 Linux installer configuration, broker authentication, prerequisite provisioning,
 HA configuration and orchestration are covered by the `test/linux-setup*.test.js`

@@ -27,7 +27,7 @@ import { storageOperationHealth } from './operation-health.js';
 import { WriteQueue, sqliteContention } from './write-queue.js';
 import { readAdaptiveBudget } from './adaptive-recording-budget.js';
 import { readStorageMetrics } from './recording-metrics.js';
-import { encodeLearningCheckpoint, decodeLearningCheckpoint, validateLearningCheckpointStorage,
+import { encodeLearningCheckpoint, decodeLearningCheckpoint, learningCheckpointDisplay, validateLearningCheckpointStorage,
   validateLearningCheckpointSample, withLearningCheckpointRead } from './learning-checkpoint-storage.js';
 import { registerJournalFunctions } from './journal-codec.js';
 import { initializeJournal, installJournal, validateCheckpoint, readCheckpoint, checkpointAt,
@@ -700,6 +700,16 @@ export class Store {
       return key.startsWith('adaptive:') ? decodeLearningCheckpoint(this.db, value) : value;
     };
     return key.startsWith('adaptive:') ? withLearningCheckpointRead(this.db, read) : read();
+  }
+
+  /** A recorded display is deliberately separate from a complete checkpoint. */
+  getLearningCheckpointDisplay(key) {
+    label(key, 'key');
+    if (!key.startsWith('adaptive:')) throw new TypeError('A learning checkpoint key is required');
+    return withLearningCheckpointRead(this.db, () => {
+      const row = this.db.prepare('SELECT value FROM state WHERE key = ?').get(key);
+      return learningCheckpointDisplay(this.db, row ? JSON.parse(row.value) : null);
+    });
   }
 
   setState(key, value) {

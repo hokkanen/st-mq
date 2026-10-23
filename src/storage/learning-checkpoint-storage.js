@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto';
 export const LEARNING_CHECKPOINT_STORAGE_VERSION = 1;
 export const MAX_LEARNING_CHECKPOINT_REFERENCES = 65_536;
 const LOOKUP_BATCH = 128;
+const DISPLAY_FIELDS = ['algorithmVersion', 'model', 'health', 'baselineC', 'comfortReference',
+  'journalCursor', 'learningConfiguration', 'cursor', 'measurementEpochAt'];
 const DIGEST = /^[a-f0-9]{64}$/;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const own = (value, key) => Object.hasOwn(value, key);
@@ -142,6 +144,23 @@ export function validateLearningCheckpointStorage(db, checkpoint, { references =
   compactReferences(checkpoint);
   if (references) decodeLearningCheckpoint(db, checkpoint);
   return checkpoint;
+}
+
+/** Read recorded model metadata without hydrating its fitting history. This is
+ * not a working/replay checkpoint or a full body-integrity verification. Match
+ * the current manifest and its dependency closure at the caller's read boundary;
+ * complete hydration and explicit full verification retain body validation. */
+export function learningCheckpointDisplay(db, checkpoint) {
+  if (checkpoint === null) return null;
+  const compact = normalize(checkpoint);
+  const references = learningCheckpointSampleReferences(compact);
+  return withLearningCheckpointRead(db, () => {
+    batches(references, (batch, placeholders) => {
+      if (db.prepare(`SELECT digest FROM learning_checkpoint_samples WHERE digest IN (${placeholders})`).all(...batch).length !== batch.length)
+        fail(true);
+    });
+    return Object.fromEntries(DISPLAY_FIELDS.map(key => [key, compact[key]]));
+  });
 }
 
 export function decodeLearningCheckpoint(db, checkpoint) {

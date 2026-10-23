@@ -22,7 +22,7 @@ import { readChargingRuntime } from '../charging/runtime-storage.js';
 import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
 import { CHARGER_DEFINITIONS } from '../charging/model.js';
 import { validateTargetState, validateTargetSelection } from '../charging/target.js';
-import { replicaReadModel, snapshotState } from './replica-read-model.js';
+import { replicaReadModel } from './replica-read-model.js';
 import { matchingCheckpoint } from '../storage/journal.js';
 import { ReplicaCheckpointMismatchError, captureReplicaReadRefusalPhase } from './replica-errors.js';
 
@@ -60,11 +60,11 @@ function homeLearningSnapshot(snapshot, checkpoint, now) {
 function homeDisplayState(snapshot) {
   if (!snapshot) return { value: null, error: null };
   if (!snapshot.homeDisplayState) {
-    const saved = snapshotState(snapshot, `adaptive:${snapshot.input}`);
-    const fields = ['algorithmVersion', 'model', 'health', 'baselineC', 'comfortReference',
-      'journalCursor', 'learningConfiguration', 'cursor', 'measurementEpochAt'];
-    snapshot.homeDisplayState = { ...saved, value: saved.value == null ? null
-      : Object.fromEntries(fields.map(key => [key, saved.value[key]])) };
+    try {
+      snapshot.homeDisplayState = { value: snapshot.store.getLearningCheckpointDisplay(`adaptive:${snapshot.input}`), error: null };
+    } catch {
+      snapshot.homeDisplayState = { value: null, error: 'The saved data in this section is unavailable in this snapshot.' };
+    }
   }
   return structuredClone(snapshot.homeDisplayState);
 }
