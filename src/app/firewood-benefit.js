@@ -101,6 +101,13 @@ export function getFirewoodBenefit(args) {
   const { range, now = Date.now() } = args;
   if (!range || !finite(range.from) || !finite(range.to) || range.to <= range.from || !finite(now))
     throw new TypeError('A finite firewood benefit period is required');
+  // Future selections need neither source replay nor a derived-cache query with
+  // reversed bounds. They cannot have an elapsed estimate or residual forecast.
+  if (now <= range.from) {
+    const result = empty(range, now, null, 'no-elapsed-time');
+    result.summary.remaining = null;
+    return result;
+  }
   try { return withLearningCheckpointRead(args.store.db, () => computeFirewoodBenefit({ ...args, now })); }
   catch(error) {
     if(error.name==='AbortError') throw error;

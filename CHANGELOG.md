@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Explain future Fireplace selections without a false cache failure, distinguish
+  unavailable estimates from provisional ones, and show comparison loading stages
+  while keeping retained results visibly stale through failed refreshes.
+
 - Keep Home's comparison method when visiting Garage or Total, identify missing
   charger contributions in combined timing results, avoid claiming an estimate
   for unavailable Garage evidence, and fit comparison dates on narrow screens.

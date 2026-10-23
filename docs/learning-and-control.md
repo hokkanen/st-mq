@@ -706,8 +706,10 @@ days, including clock changes. Positive means cheaper timing; negative means
 dearer timing. This mathematical comparison is not causal controller savings.
 
 Original observations are integrated before chart decimation. Valid three-phase
-charger acquisitions can supply older EV estimates; a dedicated heat-pump power
-series is required for the heat-pump comparison. Power is held for at most 30
+charger acquisitions can supply older EV estimates. Home timing reconstructs
+electricity from recorded compressor activity, verified auxiliary output and
+dated nominal equipment powers; it is not a dedicated meter reading. Garage
+requires qualified dedicated electrical intervals. Older EV power samples are held for at most 30
 minutes between observations. Missing intervals are excluded and coverage is
 shown. A day without complete all-in prices is unavailable. Today's incomplete
 energy, partial history and telemetry gaps produce provisional results, not a

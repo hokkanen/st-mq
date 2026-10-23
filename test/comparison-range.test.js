@@ -53,7 +53,7 @@ function fixture({ open = true } = {}) {
   document.getElementById = id => elements.get(id);
   elements.get('comparison-toggle').setAttribute('aria-expanded', String(open));
   const requests = [];
-  const api = (path, { signal }) => new Promise((resolve, reject) => requests.push({ path, signal, resolve, reject }));
+  const api = (path, { signal, onProgress }) => new Promise((resolve, reject) => requests.push({ path, signal, onProgress, resolve, reject }));
   const controller = createComparisonRange({ api, document, now: () => NOW });
   const get = id => elements.get(id);
   return { controller, requests, document, get, root: get('timing-benefit'), form: get('comparison-range-form'),
@@ -207,6 +207,41 @@ test('source corrections and explicit refresh invalidate an identical pending pe
   reply(f.requests[2], 5); await forced;
   reply(f.requests[1], 7); reply(f.requests[0], 9); await Promise.all([first, correction]);
   assert.match(f.root.textContent, /€5.00/); assert.doesNotMatch(f.root.textContent, /€7.00|€9.00/);
+});
+
+test('same-date refreshes show measured stage progress and preserve stale evidence after failure', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  const first = f.controller.refresh({ now: NOW, fireplace: { revision: 1 } });
+  await tick(); reply(f.requests[0], 1); await first;
+  const replacement = f.controller.refresh({ now: NOW, fireplace: { revision: 2 } }); await tick();
+  assert.equal(f.form.dataset.state, 'loading');
+  assert.equal(f.root.dataset.stale, 'true');
+  assert.match(f.message.textContent, /Showing 2026-09-27 until ready/);
+  f.requests[1].onProgress({ stage: 'reading-energy', completed: 1, total: 4 });
+  assert.match(f.message.textContent, /Reading energy 25%.*Showing 2026-09-27 until ready/);
+  f.requests[1].onProgress({ stage: 'preparing-summary' });
+  assert.match(f.message.textContent, /Calculating comparisons/);
+  assert.doesNotMatch(f.message.textContent, /%/);
+  f.requests[1].reject(new Error('Synthetic read failure')); await replacement;
+  assert.equal(f.form.dataset.state, 'error');
+  assert.equal(f.root.dataset.stale, 'true');
+  assert.equal(f.root.getAttribute('aria-busy'), 'false');
+  assert.equal(f.retry.hidden, false);
+  assert.match(f.root.textContent, /€1.00/);
+  f.retry.emit('click'); await tick(); reply(f.requests[2], 2); await tick();
+  assert.equal(f.root.dataset.stale, 'false');
+  assert.equal(f.form.dataset.state, 'ready');
+});
+
+test('late progress from a cancelled comparison cannot change the newer result', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  const first = f.controller.refresh({ now: NOW }); await tick();
+  f.preset('month'); await tick(); reply(f.requests[1], 2); await tick();
+  const text = f.message.textContent;
+  f.requests[0].onProgress({ stage: 'reading-energy', completed: 3, total: 4 });
+  assert.equal(f.message.textContent, text);
+  assert.equal(f.form.dataset.state, 'ready');
+  reply(f.requests[0]); await first;
 });
 
 for (const [period, nextHistoryRevision] of [['year', 4], ['previous-year', 5]]) {

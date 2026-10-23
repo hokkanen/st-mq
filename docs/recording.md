@@ -1825,7 +1825,12 @@ midnight until the reader chooses again. A comparison-date change does not move
 the chart, and chart navigation does not change comparisons. While loading or
 after a failed request, the status identifies the dates of any retained results;
 failed requests offer Retry. The section uses its own cancellable request cache
-and the current chart API's unreduced comparison calculations, with ordinary
+and shows the current loading stage, with percentages only for measurable source
+traversal. Retained results stay marked stale during replacement and after a
+failed refresh, including when the dates have not changed. Future Fireplace
+selections report that no time has elapsed without starting model-history work
+or claiming a remaining forecast. Requests use the current chart API's unreduced
+comparison calculations, with ordinary
 short/live and long/historical refresh intervals. A summary request skips chart
 geometry, property-energy drawing and coefficient/input projections. It still
 uses original charger intervals and the same heating and firewood assessments;

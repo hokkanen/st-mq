@@ -51,7 +51,7 @@ export function createComparisonRange({ api, document = globalThis.document, now
     form.dataset.state = state;
     message.textContent = text;
     root.setAttribute('aria-busy', String(state === 'loading'));
-    root.dataset.stale = String(Boolean(loaded && !sameDates(selection, loaded)));
+    root.dataset.stale = String(Boolean(loaded && (state !== 'ready' || !sameDates(selection, loaded))));
     retry.hidden = state !== 'error';
   }
   async function refresh(nextStatus = status, { force = false } = {}) {
@@ -77,11 +77,22 @@ export function createComparisonRange({ api, document = globalThis.document, now
     if (!longRange && selection.endDate >= today && recordingRevision !== undefined && nextRecording !== recordingRevision) force = true;
     recordingRevision = nextRecording;
     const requested = { ...selection }, requestGeneration = ++generation;
-    if (!sameDates(requested, loaded) || form.dataset.state === 'error') {
+    const retained = () => loaded ? ` Showing ${periodLabel(loaded)} until ready.` : '';
+    if (force || !sameDates(requested, loaded) || form.dataset.state === 'error') {
       setState('loading', `Loading ${periodLabel(requested)}…${loaded ? ` Showing ${periodLabel(loaded)} until ready.` : ''}`);
     }
     try {
-      const payload = await loader.load({ ...requested, view: 'power', points: 100, summaryOnly: true }, { force, today });
+      const payload = await loader.load({ ...requested, view: 'power', points: 100, summaryOnly: true }, { force, today,
+        onProgress(progress) {
+          if (closed || requestGeneration !== generation || !sameDates(requested, selection)) return;
+          const stage = { queued: 'Waiting for history worker', 'preparing-chart': 'Preparing comparison',
+            'reading-history': 'Reading history', 'reading-energy': 'Reading energy',
+            'preparing-summary': 'Calculating comparisons', 'preparing-response': 'Preparing result',
+            downloading: 'Receiving comparison' }[progress.stage] ?? 'Loading comparison';
+          const measured = Number.isFinite(progress.completed) && Number.isFinite(progress.total)
+            && progress.total > 0 && progress.completed >= 0 && progress.completed <= progress.total;
+          setState('loading', `Loading ${periodLabel(requested)} · ${stage}${measured ? ` ${Math.floor(progress.completed / progress.total * 100)}%.` : '…'}${retained()}`);
+        } });
       if (closed || requestGeneration !== generation || !sameDates(requested, selection)) return;
       view.render(payload);
       loaded = requested;

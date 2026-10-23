@@ -76,7 +76,11 @@ export function firewoodDisplay(result, payload = {}) {
     loadExplanation: 'Heat from earlier additions can continue into this selection. Mistaken additions are excluded using their recorded corrections.',
     assumptions: Array.isArray(result.assumptions) ? result.assumptions.filter(value => typeof value === 'string') : [],
     evidence: evidenceLines,
-    statusExplanation: status === 'validated'
+    statusExplanation: !available
+      ? result.preparing
+        ? 'The model comparison is being prepared. No supported electricity-cost estimate is available yet.'
+        : 'No supported electricity-cost estimate is available for these dates. Recorded wood and any residual fuel response below do not establish electricity savings.'
+      : status === 'validated'
       ? 'The response has passed the required model checks. This remains an estimate of an unobserved alternative.'
       : 'Initial or incompletely validated response assumptions remain in use. This estimate does not establish metered savings or authorize heating reductions.',
     remaining: remaining ? {

@@ -9,6 +9,21 @@ import { getFirewoodBenefit } from '../src/app/firewood-benefit.js';
 import { advanceFirewoodPair, firewoodScenarios } from '../src/domain/firewood-benefit.js';
 
 const HOUR = 3_600_000, WINDOW = HOUR / 4, start = Date.UTC(2026, 0, 1);
+
+test('future firewood selections need no history/cache read and claim no residual forecast', () => {
+  for (const from of [start, start + HOUR]) {
+    const store = { get db() { assert.fail('A future selection must not read learning history'); },
+      get firewoodProjection() { assert.fail('A future selection must not query the projection'); } };
+    const { summary, intervals } = getFirewoodBenefit({ store, input: 'providers', now: start,
+      range: { from, to: from + HOUR } });
+    assert.equal(summary.reason, 'no-elapsed-time');
+    assert.equal(summary.valueEuro, null);
+    assert.equal(summary.coverage.elapsedMs, 0);
+    assert.equal(summary.remaining, null);
+    assert.equal(summary.retryable, undefined);
+    assert.deepEqual(intervals, []);
+  }
+});
 function fixture(t, { hours = 48, input = 'mqtt', price = 20, gapAt = null, seed = null, dhw = false, config = {} } = {}) {
   const store = new Store(':memory:'); t.after(() => store.close());
   const load = addFireplace(store, input, { requestId: 'invented-fire', kg: 8 }, start);

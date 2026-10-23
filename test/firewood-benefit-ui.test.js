@@ -15,6 +15,16 @@ const estimate = { status: 'provisional', valueEuro: 1.25, electricityAvoidedKwh
   coverage: { elapsedMs: 12 * HOUR, includedMs: 6 * HOUR, missingMs: 6 * HOUR, firstAt: from + HOUR, lastAt: from + 8 * HOUR },
   estimateRange: { lowerEuro: -0.25, upperEuro: 2.5 }, assumptions: ['Synthetic scenario assumption.'] };
 
+test('unavailable and preparing Fireplace results do not describe a provisional estimate as present', () => {
+  for (const preparing of [false, true]) {
+    const display = firewoodDisplay({ status: 'unavailable', preparing }, payload);
+    assert.equal(display.available, false);
+    assert.match(display.statusExplanation, /No supported electricity-cost estimate is available/);
+    assert.doesNotMatch(display.statusExplanation, /assumptions remain in use|This estimate does/);
+    if (preparing) assert.match(display.statusExplanation, /being prepared/);
+  }
+});
+
 // Current API evidence for the UI-only money/focus fixtures. One included hour
 // per physical scope; aggregate comparisons sum the included and elapsed times.
 function timing(value, scope = 'home') {
