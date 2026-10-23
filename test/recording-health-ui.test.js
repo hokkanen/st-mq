@@ -601,6 +601,20 @@ test('checkpoint failures stay distinct from confirmed saves, and stale or missi
   assert.match(storageSchedulingView(value, { now }).checkpointPolicy, /unavailable/);
 });
 
+test('successful outcomes do not describe slow monitored operations as problem-free', () => {
+  const observer = createStorageOperationHealth({ clock: () => now, monotonic: () => 0 });
+  observer.begin('history-query').finish('completed');
+  const history = performanceHistory();
+  Object.assign(history.windows.day, { failedJobs: 0, postCommitFailures: 0,
+    queueDelay: { count: 1, meanMs: 22500, p95Ms: 22500, maxMs: 22500 } });
+  const value = health({ operations: observer.status(), recording: { history } });
+  const summary = storageProblemSummary(value, { now });
+  assert.equal(summary.problems, false);
+  assert.match(summary.outcome, /No recorded failures, refusals or unconfirmed outcomes.*Review timings separately/);
+  assert.doesNotMatch(summary.outcome, /No problems/);
+  assert.equal(storagePerformanceView(value, 'day', { now }).queue.worst, '22.5 s');
+});
+
 test('storage performance names run coverage and separates queue, transaction, commit and unsuccessful operations', () => {
   const value = health({ recording: { history: performanceHistory() } });
   const view = storagePerformanceView(value, 'day', { now });

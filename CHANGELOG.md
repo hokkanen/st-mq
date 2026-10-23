@@ -8,6 +8,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 - Explain when reset archives prevent a complete backup listing and retain the
   instruction to preserve those archives for inspection.
+  Keep the storage outcome summary separate from slow-operation timings; an
+  absence of recorded failures does not establish responsive operation.
 
 - Explain admin-only history tools in Recording details and keep an unread
   database-verification schedule unknown instead of claiming it is disabled.

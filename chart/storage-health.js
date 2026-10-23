@@ -200,7 +200,8 @@ function historySummary(writer, operations) {
   return { problems, incidents, undatedProblems: [...writer.undatedProblems, ...operations.undatedProblems],
     label: problems ? `Earlier problems${incidents.length ? ` · ${incidents[0].date}` : ' · date unavailable'}` : '',
     outcome: problems ? 'Problems were observed in this period. Current activity is shown separately.'
-      : known ? 'No problems observed in the monitored period.' : 'No problems reported in the available evidence; coverage is incomplete.',
+      : known ? 'No recorded failures, refusals or unconfirmed outcomes in this period. Review timings separately.'
+        : 'No failures, refusals or unconfirmed outcomes reported in the available evidence; coverage is incomplete. Review timings separately.',
   };
 }
 
