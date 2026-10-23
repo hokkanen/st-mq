@@ -24,7 +24,8 @@ async function fixture(t,{locked=true,rejectAck=false,connack=true,manualClient=
  t.signal.throwIfAborted();
  const directory=mkdtempSync(join(tmpdir(),'stmq-readiness-native-offline-'));
  const store=new Store(join(directory,'current.sqlite')),writer=new DatabaseSync(store.path);
- let lockHeld=false,allowed=true,reader,closing=null,client;
+ let lockHeld=false,allowed=true,reader,closing=null,client,setupComplete=false;
+ const pendingConnacks=[];
  const counters={connects:0,subscriptions:0,subacks:0,subscriptionCallbacks:0,publishPackets:0},streams=[];
  const config={input:'mqtt',deviceId:'synthetic-readiness-device',h66:{writeEnabled:false,readbackTimeoutMs:1000},garage:{enabled:false},
   charging:{vehicles:{bmw:{mqttTopic:'fixture/startup/vehicle'}}},
@@ -37,7 +38,13 @@ async function fixture(t,{locked=true,rejectAck=false,connack=true,manualClient=
    const stream=new Duplex({read(){},write(chunk,_encoding,done){parser.parse(chunk);done();}});streams.push(stream);
    parser.on('error',()=>{});
    parser.on('packet',p=>{
-    if(p.cmd==='connect'){counters.connects++;if(connack)queueMicrotask(()=>stream.push(packet.generate({cmd:'connack',returnCode:0,sessionPresent:false})));}
+    if(p.cmd==='connect'){
+     counters.connects++;
+     if(connack){
+      const acknowledge=()=>stream.push(packet.generate({cmd:'connack',returnCode:0,sessionPresent:false}));
+      if(setupComplete)queueMicrotask(acknowledge);else pendingConnacks.push(acknowledge);
+     }
+    }
     if(p.cmd==='subscribe'){
      counters.subscriptions+=p.subscriptions.length;
      queueMicrotask(()=>{counters.subacks+=p.subscriptions.length;stream.push(packet.generate({cmd:'suback',messageId:p.messageId,granted:p.subscriptions.map(()=>rejectAck?128:1)}));});
@@ -61,8 +68,14 @@ async function fixture(t,{locked=true,rejectAck=false,connack=true,manualClient=
   await engine.garage.close({restore:false});await engine.charging.close();await engine.closeFireplace();await engine.executor.close({restore:false});
   writer.close();store.close();rmSync(directory,{recursive:true,force:true});t.signal.removeEventListener('abort',cancelled);
  });
- if(locked){writer.exec('BEGIN IMMEDIATE');lockHeld=true;}
  reader=await startMqtt({engine,store,config,connect,canControl:()=>allowed});
+ // Construction establishes integration state before native subscriptions.
+ // Hold the real CONNACK until that setup has completed, then acquire the
+ // competing writer before releasing any native subscription callbacks.
+ assert.equal(counters.subscriptions,0);
+ if(locked){writer.exec('BEGIN IMMEDIATE');lockHeld=true;}
+ setupComplete=true;
+ for(const acknowledge of pendingConnacks.splice(0))queueMicrotask(acknowledge);
  const acked=()=>counters.subscriptions>0&&counters.subscriptions===counters.subacks&&counters.subscriptions===counters.subscriptionCallbacks;
  const connectedEvents=()=>store.db.prepare("SELECT count(*) AS n FROM events WHERE type='mqtt-connected'").get().n;
  return{store,writer,engine,reader,counters,streams,client:()=>client,acked,connectedEvents,unlock,close};

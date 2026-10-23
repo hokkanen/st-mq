@@ -794,6 +794,9 @@ their owned gates release before manager cleanup even if a fake SDK ignores abor
 
 `test/mqtt-startup-readiness-diagnostic.test.js` drives real MQTT.js protocol
 packets through an owned in-memory stream and holds a real synthetic SQLite writer.
+The fixture holds CONNACK until integration construction finishes, then acquires
+the competing writer before releasing CONNACK. This isolates subscription
+admission from synchronous setup while retaining real native callbacks and locks.
 It distinguishes delivered SUBACK callbacks from Store commit admission using the
 actual twenty-second wall timer, and covers close, transport loss, absent CONNACK,
 rejected grants, unknown queue evidence and stale callbacks after replacement.

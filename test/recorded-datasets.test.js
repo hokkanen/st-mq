@@ -43,8 +43,10 @@ test('both garage probes stop at their recorded two-minute deadline in chart cov
     source: 'shelly-mqtt', device: 'garage', signal, value, unit: 'degC', sourceTime: now, receivedAt: now,
     quality: [], raw: { reportIntervalMs: 30_000, reportGraceMs: 90_000, timeBasis: 'mqtt-live-status' },
   });
-  const chart = getChartData({ store, input: 'mqtt', now: now + 600_000, startDate: '2026-09-14', endDate: '2026-09-14', left: 'garage_temperature_2' });
   for (const [signal, value] of [['garage_temperature', 11], ['garage_temperature_2', 12]]) {
+    const chart = getChartData({ store, input: 'mqtt', now: now + 600_000, startDate: '2026-09-14', endDate: '2026-09-14', left: signal });
+    const other = signal === 'garage_temperature' ? 'garage_temperature_2' : 'garage_temperature';
+    assert.equal(Object.hasOwn(chart.series, other), false, 'A single-series request does not include the other probe');
     const points = chart.series[signal];
     assert(points.some(point => point.y === value), `${signal} remains plottable`);
     assert(points.some(point => point.x === now + 120_000 && point.y === null), `${signal} has an exact expiry gap`);
