@@ -4,7 +4,7 @@ import { checkedRecoverySource, emptyRecoverySource } from '../src/recovery/sour
 const actions = ['check-recovery', 'recover', 'handover', 'promote', 'rejoin', 'reset'];
 const validResetToken = value => typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
 const resetModes = ['keep', 'fresh'];
-const pendingKey = 'stmq-pair-pending-v1';
+const pendingKey = 'stmq-pair-pending';
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const validPreviewId = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const presentationClockAhead = (time, now) => time > now + 60_000;
@@ -39,6 +39,8 @@ export const pairIssueCode = view => (view?.uiOperation?.state === 'error' ? vie
 export function pairIssueHelp(view) {
   const code = pairIssueCode(view);
   return {
+    handover_shutdown_failed: 'This computer could not finish stopping its controller. Control remains protected. Review its handover log before explicitly restoring a master.',
+    action_interrupted: 'The operation was interrupted by a restart. Review the current computer roles before starting another operation.',
     journal_peer_format_incompatible: 'A pending delivery uses an unsupported format. Preserve the database and staging files. Complete and acknowledge that delivery with its matching application before updating both computers together. Do not reset history to clear this error.',
     journal_history_expired: 'This operation requires recent transaction history that is no longer retained. Configured-peer catch-up uses its durable shared anchor; review the reported operation before retrying.',
     vip_helper_unavailable: 'The virtual-IP helper is unavailable. Check that the address-helper socket service is running on this computer and that its socket path matches the pair configuration.',
@@ -87,7 +89,7 @@ export function pairAllowsControl(status) {
 
 export function isPairManagementRequest(path, body, status) {
   return path === '/api/pair/action' && status?.topology === 'pair'
-    && actions.includes(body?.action) && uuid.test(body?.requestId ?? '');
+    && actions.includes(body?.action) && uuid.test(body?.nodeId ?? '') && uuid.test(body?.requestId ?? '');
 }
 
 export function pairActionAllowed(view, action) {
@@ -364,7 +366,9 @@ function makeRequestId() {
 function restoredOperation(storage) {
   try {
     const body = JSON.parse(storage?.getItem(pendingKey) ?? 'null');
-    if (!actions.includes(body?.action) || !uuid.test(body?.requestId ?? '')) return null;
+    if (!actions.includes(body?.action) || !uuid.test(body?.requestId ?? '') || !uuid.test(body?.nodeId ?? '')) return null;
+    if (Object.keys(body).some(key => !['action', 'nodeId', 'requestId', 'confirmed', 'verifyWithFullSnapshot',
+      'mode', 'resetToken', 'restorationConfirmed', 'previewId', 'discardUnrecovered'].includes(key))) return null;
     if (body.verifyWithFullSnapshot !== undefined && typeof body.verifyWithFullSnapshot !== 'boolean') return null;
     if (body.action !== 'check-recovery' && body.confirmed !== true) return null;
     if (body.action === 'reset' && (!resetModes.includes(body.mode) || !validResetToken(body.resetToken) || (body.mode === 'fresh' && body.restorationConfirmed !== true))) return null;
@@ -372,7 +376,7 @@ function restoredOperation(storage) {
     if (body.action === 'rejoin' && (body.discardUnrecovered !== undefined && body.discardUnrecovered !== true
       || body.previewId !== undefined && !validPreviewId(body.previewId)
       || body.discardUnrecovered === true && !validPreviewId(body.previewId))) return null;
-    return { action: body.action, requestId: body.requestId,
+    return { action: body.action, nodeId: body.nodeId, requestId: body.requestId,
       ...(body.verifyWithFullSnapshot === true ? { verifyWithFullSnapshot: true } : {}),
       ...(body.action !== 'check-recovery' ? { confirmed: true } : {}),
       ...(body.action === 'reset' ? { mode: body.mode, resetToken: body.resetToken, ...(body.mode === 'fresh' ? { restorationConfirmed: true } : {}) } : {}),
@@ -382,67 +386,98 @@ function restoredOperation(storage) {
   } catch { return null; }
 }
 
-/** An uncertain action is retried only by the user, with its original durable request ID. */
+/** Submit once; reconnects only read the outcome on the original computer. */
 export function createPairActions({ request, storage, confirm = message => confirmAction({ document: globalThis.document, title: 'Confirm computer change', message, action: 'Confirm change' }),
   requestId = makeRequestId, onChange = () => {}, afterMutation = () => {} }) {
   let view = null, available = false, busy = false, pending = restoredOperation(storage), error = Boolean(pending);
-  let message = pending ? 'A previous operation was not confirmed. Recheck the same request after this computer reconnects.' : '';
+  let confirmation = null;
+  let message = pending ? 'Confirming the previous operation with its original computer…' : '';
   const snapshot = () => ({ view, available, busy, pending, message, error });
   const notify = () => onChange(snapshot());
   const persist = () => { try { if (pending) storage?.setItem(pendingKey, JSON.stringify(pending)); else storage?.removeItem(pendingKey); } catch {} };
-  function acceptStatus(next) {
-    view = next; available = true;
-    const durable = pending && next.recentActions?.find(operation => operation.requestId === pending.requestId);
-    const resetReceipt = pending?.action === 'reset' && next.reset?.lastResult?.requestId === pending.requestId
-      && next.reset.lastResult.mode === pending.mode ? next.reset.lastResult : null;
-    const operation = next.uiOperation?.id === pending?.requestId ? next.uiOperation
-      : durable ? { ...durable, id: durable.requestId }
-        : resetReceipt ? { id: resetReceipt.requestId, state: 'complete' } : null;
-    if (pending && operation?.id === pending.requestId && ['complete', 'error'].includes(operation.state)) {
-      error = operation.state === 'error';
-      message = error ? pairIssueHelp(next) || (next.recovery?.pendingRelease
+  function finish(operation, next = view) {
+    if (!pending || (operation?.requestId ?? operation?.id) !== pending.requestId
+      || (operation.action ?? operation.name) !== pending.action
+      || !['complete', 'error', 'unknown'].includes(operation.state)) return;
+    error = operation.state !== 'complete';
+    message = operation.state === 'unknown'
+      ? 'The original computer has no saved result. The outcome remains unconfirmed; confirmation will continue automatically.'
+      : error ? pairIssueHelp({ error: operation.errorCode ?? operation.error }) || (next?.recovery?.pendingRelease
         ? 'Mirroring completion is unconfirmed. Verify the saved request with the other computer.'
         : 'The operation could not finish. Review the current computer roles and operation status before trying again.')
         : pending.action === 'check-recovery' ? mirrorComparison(next) || emptyPreview(next)
           ? 'Source check complete. Review the result in the history window.' : 'Source check complete. Review the source before recovering in the history window.'
           : 'Operation completed. Current computer roles are shown below.';
-      pending = null; persist();
-    }
+    if (operation.state !== 'unknown') { pending = null; persist(); }
+  }
+  function acceptStatus(next, updateView = true) {
+    if (updateView) { view = next; available = true; }
+    if (!pending) return;
+    const reset = pending.action === 'reset' && next.reset?.lastResult?.requestId === pending.requestId
+      && next.reset.lastResult.mode === pending.mode ? next.reset.lastResult : null;
+    // An explicit reset replaces the node identity; its durable receipt still
+    // confirms that reset without authorizing any further operation.
+    if (reset) { finish({ requestId: reset.requestId, action: 'reset', state: 'complete' }, next); return; }
+    if (next.nodeId !== pending.nodeId) return;
+    const durable = next.recentActions?.find(operation => operation.requestId === pending.requestId);
+    const operation = next.uiOperation?.id === pending.requestId ? next.uiOperation : durable;
+    finish(operation, next);
+  }
+  function confirmPending() {
+    if (!pending || !available || busy) return Promise.resolve();
+    if (confirmation) return confirmation;
+    const original = pending;
+    confirmation = (async () => {
+      // Assign the in-flight promise before even a synchronous transport failure.
+      await Promise.resolve();
+      try {
+        const result = await request(`/api/pair/action?nodeId=${original.nodeId}&requestId=${original.requestId}`);
+        if (pending !== original) return;
+        if (result?.nodeId !== original.nodeId || result?.requestId !== original.requestId
+          || !['running', 'complete', 'error', 'unknown'].includes(result.state)
+          || result.state !== 'unknown' && result.action !== original.action) throw new Error('Unconfirmed operation');
+        finish({ ...result, action: original.action });
+        if (pending && result.state === 'running') { error = false; message = 'The original operation is still running. Its result updates automatically.'; }
+      } catch {
+        if (pending === original) {
+          error = true;
+          message = 'The operation’s outcome is unconfirmed. Confirmation resumes automatically when its original computer reconnects.';
+        }
+      } finally { confirmation = null; notify(); }
+    })();
+    return confirmation;
   }
   async function send(body) {
-    if (busy || !available || !view || (body && pending)) return false;
-    if (body && !pairActionAllowed(view, body.action)) return false;
+    if (busy || !available || !view || pending) return false;
+    if (!body || !uuid.test(body.nodeId ?? '') || !pairActionAllowed(view, body.action)) return false;
     busy = true; notify();
-    if (body) {
-      const confirmation = body.action === 'rejoin' && view.recovery?.pendingRelease?.requestId === body.requestId ? null : pairConfirmation(body.action, { discardUnrecovered: body.discardUnrecovered,
-        noRecoveryNeeded: emptyPreview(view),
-        mode: body.mode, donorBytes: view.recovery?.donorBytes,
-        verifyWithFullSnapshot: body.verifyWithFullSnapshot === true,
-        incremental: Boolean(view.recovery?.preview?.incremental || view.recovery?.retainedStorage === 'journal-branch'),
-        bootstrapPending: view.bootstrapPending && !(view.peer?.reachable === true && view.peer.role === 'master') });
-      let accepted = !confirmation;
-      try { if (confirmation) accepted = await confirm(confirmation); } catch { /* A blocked dialog is a cancelled action. */ }
-      if (!accepted || !available || !pairActionAllowed(view, body.action)) { busy = false; notify(); return false; }
-      if (body.action === 'reset' && (body.resetToken !== view.reset?.token || (view.reset?.pendingMode && view.reset.pendingMode !== body.mode) || (body.mode === 'keep' && view.reset?.keepBlockedReason))) {
-        busy = false; error = true; message = 'This computer’s pairing state changed. Review the current status before resetting it.'; notify(); return false;
-      }
-      if (!matchesRelease(view, body) && ((body.previewId && body.previewId !== view.recovery?.preview?.previewId)
-          || (body.discardUnrecovered && !checkedPreview(view))
-          || (body.action === 'rejoin' && !body.discardUnrecovered && view.recovery?.state !== 'complete'
-            && !(emptyPreview(view) && body.previewId === view.recovery.preview.previewId)))) {
-        busy = false; error = true; message = 'The recovery preview changed. Review the current check before confirming again.'; notify(); return false;
-      }
-      pending = body; persist();
+    const confirmation = body.action === 'rejoin' && view.recovery?.pendingRelease?.requestId === body.requestId ? null : pairConfirmation(body.action, { discardUnrecovered: body.discardUnrecovered,
+      noRecoveryNeeded: emptyPreview(view),
+      mode: body.mode, donorBytes: view.recovery?.donorBytes,
+      verifyWithFullSnapshot: body.verifyWithFullSnapshot === true,
+      incremental: Boolean(view.recovery?.preview?.incremental || view.recovery?.retainedStorage === 'journal-branch'),
+      bootstrapPending: view.bootstrapPending && !(view.peer?.reachable === true && view.peer.role === 'master') });
+    let accepted = !confirmation;
+    try { if (confirmation) accepted = await confirm(confirmation); } catch { /* A blocked dialog is a cancelled action. */ }
+    if (!accepted || !available || view.nodeId !== body.nodeId || !pairActionAllowed(view, body.action)) { busy = false; notify(); return false; }
+    if (body.action === 'reset' && (body.resetToken !== view.reset?.token || (view.reset?.pendingMode && view.reset.pendingMode !== body.mode) || (body.mode === 'keep' && view.reset?.keepBlockedReason))) {
+      busy = false; error = true; message = 'This computer’s pairing state changed. Review the current status before resetting it.'; notify(); return false;
     }
-    if (!pending) { busy = false; notify(); return false; }
+    if (!matchesRelease(view, body) && ((body.previewId && body.previewId !== view.recovery?.preview?.previewId)
+        || (body.discardUnrecovered && !checkedPreview(view))
+        || (body.action === 'rejoin' && !body.discardUnrecovered && view.recovery?.state !== 'complete'
+          && !(emptyPreview(view) && body.previewId === view.recovery.preview.previewId)))) {
+      busy = false; error = true; message = 'The recovery preview changed. Review the current check before confirming again.'; notify(); return false;
+    }
+    pending = body; persist();
     error = false; message = 'Waiting for this operation’s confirmed result…'; notify();
     let saved = false;
     try {
       const result = await request('/api/pair/action', pending);
-      const status = result?.status ?? null;
+      const status = uuid.test(result?.nodeId ?? '') ? result : null;
       // A matching receipt can arrive through polling before this response.
       // Keep that confirmed result and its roles instead of an older reply.
-      if (pending && status) acceptStatus(status);
+      if (pending && status) acceptStatus(status, false);
       if (pending) message = 'Operation accepted. Waiting for its completion; status updates automatically.';
       saved = true;
     } catch (failure) {
@@ -454,18 +489,18 @@ export function createPairActions({ request, storage, confirm = message => confi
           ? failure.message : failure.status === 401 ? 'Reconnect with your password, then try again.'
           : failure.status === 409 ? 'The role, recovery preview or readiness changed. Refresh the status and check again.'
             : 'The operation was not accepted. Check this computer’s role and readiness before retrying.';
-      } else { error = true; message = 'Operation not confirmed. After this computer reconnects, recheck the same request to avoid starting it twice.'; }
+      } else { error = true; message = 'Operation not confirmed. Its saved outcome will be checked automatically after reconnection.'; }
     } finally { busy = false; notify(); }
     if (saved) await afterMutation();
     return saved;
   }
   return { snapshot,
-    update(next) { if (next) acceptStatus(next); else { view = null; available = false; } notify(); },
-    unavailable() { available = false; notify(); }, retry: () => send(),
+    update(next) { if (next) acceptStatus(next); else { view = null; available = false; } notify(); return confirmPending(); },
+    unavailable() { available = false; notify(); },
     run(action, options = {}) {
       if (busy || pending || !available || !actions.includes(action) || !pairActionAllowed(view, action)) return Promise.resolve(false);
       if (action === 'reset' && (!resetModes.includes(options.mode) || (options.mode === 'fresh' && options.restorationConfirmed !== true) || (view.reset?.pendingMode && view.reset.pendingMode !== options.mode) || (options.mode === 'keep' && view.reset?.keepBlockedReason))) return Promise.resolve(false);
-      return send({ action, ...(action === 'reset' ? { mode: options.mode, resetToken: view.reset.token, ...(options.mode === 'fresh' ? { restorationConfirmed: true } : {}) } : {}), requestId: action === 'rejoin' && view.recovery?.pendingRelease ? view.recovery.pendingRelease.requestId : requestId(), ...(action !== 'check-recovery' ? { confirmed: true } : {}),
+      return send({ action, nodeId: view.nodeId, ...(action === 'reset' ? { mode: options.mode, resetToken: view.reset.token, ...(options.mode === 'fresh' ? { restorationConfirmed: true } : {}) } : {}), requestId: action === 'rejoin' && view.recovery?.pendingRelease ? view.recovery.pendingRelease.requestId : requestId(), ...(action !== 'check-recovery' ? { confirmed: true } : {}),
         ...((action === 'rejoin' && savedRelease(view) ? view.recovery.pendingRelease.verifyWithFullSnapshot : options.verifyWithFullSnapshot) === true && action !== 'reset' ? { verifyWithFullSnapshot: true } : {}),
         ...(action === 'recover' ? { previewId: view.recovery.preview.previewId } : {}),
         ...(action === 'rejoin' && savedRelease(view) ? {
@@ -615,8 +650,6 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     $('pairing-reset-receipt').textContent = showReceipt ? [receipt.mode === 'keep' ? 'Pairing reset; local history kept protected.' : 'Started fresh as a slave.',
       backupSummary, unavailableSummary, `Archive: ${receipt.archiveDirectory}. Archives are kept until you manually delete them.`].filter(Boolean).join(' ') : '';
     $('pairing-reset-receipt').dataset.tone = unavailableCount > 0 || backupCount === null ? 'attention' : 'neutral';
-    $('pairing-retry').hidden = !state.pending || (state.view.uiOperation?.id === state.pending.requestId && state.view.uiOperation.state === 'running');
-    $('pairing-retry').disabled = !state.available || state.busy;
     renderVerification(state);
   }
   for (const action of ['handover', 'promote', 'rejoin']) $(`pairing-${action}`).addEventListener('click', () => {
@@ -642,7 +675,6 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     resetDialog.close();
     void controller.run('reset', { mode, ...(mode === 'fresh' ? { restorationConfirmed } : {}) });
   });
-  $('pairing-retry').addEventListener('click', () => { void controller.retry(); });
   render(controller.snapshot());
   return controller;
 }

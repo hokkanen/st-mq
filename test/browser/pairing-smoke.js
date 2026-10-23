@@ -20,10 +20,12 @@ import { buildCharger, CHARGER_DEFINITIONS } from '../../src/charging/model.js';
 const directory = mkdtempSync(join(tmpdir(), 'stmq-pairing-browser-'));
 const screenshots = mkdtempSync(join(tmpdir(), 'stmq-pairing-screenshots-'));
 const now = Date.now(), previewId = 'a'.repeat(64), resetToken = 'b'.repeat(64);
+const receiptReads = [];
+let confirmationResult = null;
 const actions = [], pending = new Map(), errors = [], prompts = [], measurements = [];
 const preview = { previewId, status: 'checked', tables: [{ name: 'observations', count: 21 }], model: { status: 'not-assessed' } };
 const master = (overrides = {}) => {
-  const view = { role: 'master', canControl: true, busy: false,
+  const view = { nodeId: '22222222-2222-4222-8222-222222222222', role: 'master', canControl: true, busy: false,
     peer: { reachable: true, role: 'slave', lastSeenAt: now }, vip: { owned: true, ready: true },
     mqttFrontend: { listening: true, ready: true, connections: 3, error: null },
     recovery: { state: 'idle' }, reset: { token: resetToken }, ...overrides };
@@ -83,6 +85,12 @@ try {
       }
       if (failedReads.has(path)) return json(503, { error: 'Synthetic read unavailable' });
       if (request.url === '/favicon.ico') { response.writeHead(204); response.end(); return; }
+      if (path === '/api/pair/action' && request.method === 'GET') {
+        const query = new URL(request.url, 'http://127.0.0.1').searchParams;
+        receiptReads.push({ nodeId: query.get('nodeId'), requestId: query.get('requestId') });
+        return json(200, confirmationResult ?? { nodeId: query.get('nodeId'), requestId: query.get('requestId'),
+          action: pair.uiOperation?.action, state: pair.uiOperation?.state ?? 'unknown' });
+      }
       if (request.url === '/api/pair' && request.method === 'GET') return json(200, topology === 'pair' ? pair : null);
       if (request.url === '/api/history-recovery' && request.method === 'GET') return json(200, {
         available: pair.canControl === true, readOnly: pair.canControl !== true, busy: pair.busy === true,
@@ -108,11 +116,11 @@ try {
             reset: { token: resetToken, lastResult: { requestId: body.requestId, mode: body.mode, completedAt: now, archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset',
               backupCount: 1, unavailableCount: 0, unavailableReasons: [] } },
             actions: { promote: true, reset: true }, uiOperation: { id: body.requestId, action: 'reset', state: 'complete' } };
-          return json(200, { status: pair });
+          return json(200, pair);
         }
         pair = { ...pair, busy: true, uiOperation: { id: body.requestId, action: body.action, state: 'running' },
           recovery: { ...pair.recovery, state: body.action === 'check-recovery' ? 'checking' : 'recovering' } };
-        return json(202, request.url === '/api/pair/action' ? { status: pair } : { available: true, busy: true, readOnly: false, peer: pair, sources: [{ id: 'peer', kind: 'peer', label: 'Paired computer' }], preview: pair.recovery.preview ?? null, operations: [], job: { id: body.requestId, requestId: body.requestId, kind: body.action === 'check-recovery' ? 'check' : body.action, status: 'running', source: { id: 'peer' } } });
+        return json(202, request.url === '/api/pair/action' ? pair : { available: true, busy: true, readOnly: false, peer: pair, sources: [{ id: 'peer', kind: 'peer', label: 'Paired computer' }], preview: pair.recovery.preview ?? null, operations: [], job: { id: body.requestId, requestId: body.requestId, kind: body.action === 'check-recovery' ? 'check' : body.action, status: 'running', source: { id: 'peer' } } });
       }
       assert.equal(request.method, 'GET', 'No other fixture mutations are allowed');
       const result = await fetch(`${pair.role === 'master' ? upstream : readOnlyUpstream}${request.url}`, { signal: AbortSignal.timeout(10_000) });
@@ -558,12 +566,23 @@ try {
   await evaluate(`${$('provider-overview-state')}.querySelector('.status-detail-trigger').click(); true`);
   assert.match(await evaluate("document.querySelector('#status-detail-popover .status-detail-body').textContent"), /this computer/);
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click(); true");
+  const originalNode = '22222222-2222-4222-8222-222222222222';
+  const originalRequest = '44444444-4444-4444-8444-444444444444';
+  const beforeConfirmation = actions.length;
+  pair = master({ nodeId: '33333333-3333-4333-8333-333333333333' });
+  confirmationResult = { nodeId: originalNode, requestId: originalRequest, action: 'handover', state: 'complete' };
+  await evaluate(`sessionStorage.setItem('stmq-pair-pending', JSON.stringify({nodeId:${JSON.stringify(originalNode)},requestId:${JSON.stringify(originalRequest)},action:'handover',confirmed:true})); true`);
+  await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${proxy.address().port}`, wait: 'complete' });
+  await until(`sessionStorage.getItem('stmq-pair-pending') === null && ${$('pairing-message')}.textContent.includes('Operation completed')`);
+  assert.equal(actions.length, beforeConfirmation, 'A reconnect to the new master sends no reverse handover');
+  assert(receiptReads.some(read => read.nodeId === originalNode && read.requestId === originalRequest));
+  assert.equal(await evaluate("document.getElementById('pairing-retry') === null"), true, 'There is no action-resubmission button');
   pair = master({ transition: { kind: 'handover', phase: 'quiescing' }, canControl: false });
   await until(`${$('instance-role')}.textContent === 'Pair · Role change'`);
   assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true, 'Role-change progress remains visible when folded');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'pairing-browser-smoke-passed', measurements, screenshots,
-    checked: ['actual built dashboard', 'all topology and role headers', 'mode-specific synchronization panels and read-only controls', 'role beside operating mode', 'compact desktop/mobile dark/light layout',
+    checked: ['automatic original-node confirmation after reconnecting to a different master', 'no recheck button or reverse handover', 'actual built dashboard', 'all topology and role headers', 'mode-specific synchronization panels and read-only controls', 'role beside operating mode', 'compact desktop/mobile dark/light layout',
       'placement above events', 'keyboard disclosure', 'poll preserves disclosure', 'secondary read failures preserve local pairing evidence', 'older failed reads cannot erase newer status', 'local status failure and recovery', 'failed/running checks never enable recovery',
       'successful preview unlocks recovery', 'skip and completed recovery confirmations explain retained inactive original',
       'recovery sends checked identity', 'closed progress and failures', 'matching protected/slave layout without master controls', 'actual immutable ReplicaViewer projection',

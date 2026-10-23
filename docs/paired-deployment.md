@@ -55,6 +55,8 @@ or initial role selection before using the paired update sequence.
    review the confirmation and complete it. Wait for **Linux Master** and
    **HA Slave**. An accepted request is not a completed handover. Existing
    readiness checks must succeed; the tools do not override them.
+   Lost responses are resolved automatically by reading the original computer's
+   operation receipt. Do not submit another handover to confirm the first one.
 2. From the same clean source checkout, run:
 
    ```sh

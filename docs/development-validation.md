@@ -1477,7 +1477,15 @@ and the retained archive receipt. Both choices are checked at desktop and 320-pi
 widths in light and dark themes. The access suite checks that only administrators
 can open reset controls, including synthetic click attempts by family users.
 Pairing UI unit tests additionally fence stale reset confirmations, preserve an
-uncertain request across reloads and omit unrecognized error details. Backend reset
+uncertain request across reloads and omit unrecognized error details. They verify
+automatic read-only receipt resolution after a shared-address change, origin loss,
+overlapping polls, unknown results and changes during confirmation. The real
+paired runtime tests read the original handover receipt through the new master,
+repeat after origin restart and reject a misrouted POST before any new action.
+The authority tests inject nested local shutdown failures, retain final source
+writes beyond the receiver checkpoint and check bounded privacy-safe diagnostics.
+These fixtures never acquire household authority or reproduce the original
+installation's hidden shutdown exception. Backend reset
 tests exercise actual storage and runtime behavior separately from these UI fixtures.
 
 Stop any remaining disposable browser processes and remove their profiles afterward. Screenshots

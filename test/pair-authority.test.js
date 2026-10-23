@@ -164,6 +164,37 @@ test('graceful handover commits final snapshot, demotion survives restart and la
   assert.equal(db.prepare('SELECT value FROM observations').get().value, 20); db.close();
 });
 
+test('a local shutdown failure preserves newer source history and reports bounded leaves instead of a peer protocol error', async t => {
+  const root = await fixture(t), diagnostics = [];
+  const source = await manager(t, root, 'shutdown-source', { hooks: { stopControl: async ({ restore }) => {
+    if (!restore) return;
+    const store = new Store(source.state.value.activeDbPath);
+    store.event('synthetic-final-shutdown-write', {}, 300); await store.close();
+    const leaf = Object.assign(Error('synthetic private credential and household values'), {
+      stack: `Error: synthetic private values\n    at close (${new URL('../src/main.js', import.meta.url).href}:123:9)` });
+    throw new AggregateError([new AggregateError([leaf], 'synthetic private aggregate')], 'synthetic private root');
+  } } });
+  source.reportHandoverFailure = value => { diagnostics.push(value); };
+  const target = await manager(t, root, 'shutdown-target', { role: 'slave' }); connect(source, target);
+  await target.synchronize(source.state.claim());
+  const accepted = target.state.value.accepted.checkpoint;
+  const request = command();
+  await assert.rejects(source.action('handover', request), { code: 'handover_shutdown_failed' });
+  assert.equal(source.state.value.role, 'protected'); assert.equal(source.canControl(), false);
+  assert.equal(target.state.value.role, 'slave'); assert.equal(target.canControl(), false);
+  assert.equal(target.state.value.transition.phase, 'prepared');
+  const db = new DatabaseSync(source.state.value.activeDbPath, { readOnly: true });
+  try {
+    assert(db.prepare('SELECT sequence FROM journal_meta').get().sequence > accepted.sequence);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM events WHERE type='synthetic-final-shutdown-write'").get().n, 1);
+  } finally { db.close(); }
+  assert.deepEqual(diagnostics, [{ event: 'paired-handover-failed', stage: 'stop-control', failures: [
+    { reason: 'runtime_failed', location: 'src/main.js:123:9' },
+  ] }]);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /private|credential|household|aggregate/);
+  assert.equal(source.state.value.actions.at(-1).error, 'handover_shutdown_failed');
+});
+
 test('former preferred master restarts as slave and catches up after completed normal handover', async t => {
   const root = await fixture(t), original = await manager(t, root, 'hassio', { platform: 'hassio' });
   const successor = await manager(t, root, 'ubuntu', { role: 'slave' }); connect(original, successor);

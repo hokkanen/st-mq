@@ -106,6 +106,7 @@ function connect(a, b) {
 }
 const url = app => `http://127.0.0.1:${app.server.address().port}`;
 async function apiAction(t, app, body) {
+  body.nodeId ??= app.status().nodeId;
   const response = await fetch(`${url(app)}/api/pair/action`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: t.signal });
   assert.equal(response.status, 202);
   const accepted = await response.json(); assert.equal(accepted.uiOperation.id, body.requestId);
@@ -204,7 +205,7 @@ test('pair HTTP refusals preserve authored busy and missing-restoration causes b
   const f = await fixture(t), app = await f.open('refusals', 'slave', 'ubuntu');
   const post = async input => {
     const response = await fetch(`${url(app)}/api/pair/action`, { method: 'POST',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodeId: app.status().nodeId, ...input }) });
     assert.equal(response.status, 409);
     return response.json();
   };
@@ -246,10 +247,10 @@ test('pair HTTP boundary never marks raw errors or uncertain statuses as authore
 test('pair requests distinguish shutdown and stopped instances from running operations', async t => {
   const f = await fixture(t), app = await f.open('closing', 'slave', 'ubuntu');
   const closed = app.close();
-  assert.throws(() => app.requestAction(command('promote')), error =>
+  assert.throws(() => app.requestAction(command('promote', { nodeId: app.status().nodeId })), error =>
     error.statusCode === 409 && /shutting down/.test(error.publicMessage) && !/already running/.test(error.publicMessage));
   await closed;
-  assert.throws(() => app.requestAction(command('promote')), error =>
+  assert.throws(() => app.requestAction(command('promote', { nodeId: app.status().nodeId })), error =>
     error.statusCode === 409 && /has stopped/.test(error.publicMessage) && !/already running/.test(error.publicMessage));
   await f.close(app);
 });
@@ -325,15 +326,53 @@ test('full application handover switches controller/viewer, preserves durable ro
   assert.equal(a.engine, undefined); assert.equal(b.engine.config.input, 'mqtt');
   assert.equal(b.store.latestObservation('indoor_temperature').value, 20);
   assert.deepEqual(f.sourceSeedAttempts.get('b'), [false], 'a handover recipient must bring the final verified source seed');
+  const receiptPath = `/api/pair/action?nodeId=${handover.nodeId}&requestId=${handover.requestId}`;
+  const stateBeforeRead = b.pair.state.value;
+  const receipt = await (await fetch(`${url(b)}${receiptPath}`)).json();
+  assert.deepEqual(receipt, { nodeId: handover.nodeId, requestId: handover.requestId, action: 'handover', state: 'complete' });
+  assert.equal(b.pair.state.value, stateBeforeRead, 'Reading an origin receipt cannot start another operation or change authority');
+  const misrouted = await fetch(`${url(b)}/api/pair/action`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(handover) });
+  assert.equal(misrouted.status, 409);
+  assert.equal(b.pair.canControl(), true); assert.equal(a.pair.canControl(), false);
+  assert.equal(b.pair.state.value.actions.some(item => item.requestId === handover.requestId), false);
   await apiAction(t, a, handover);
   await a.pair.poll();
   assert.equal(a.pair.state.value.role, 'slave', 'intentional Hassio demotion does not automatically take control back');
   await f.close(a); const restarted = await f.open('a', 'master', 'hassio'); connect(restarted, b);
   assert.equal(restarted.pair.state.value.role, 'slave'); assert.equal(restarted.engine, undefined);
+  assert.deepEqual(await (await fetch(`${url(b)}${receiptPath}`)).json(), receipt,
+    'The original durable outcome remains readable through the new master after origin restart');
   await restarted.pair.synchronize(b.pair.state.claim()); assert.equal(restarted.pair.sync.state, 'ready');
   await apiAction(t, b, command('handover', { verifyWithFullSnapshot: true }));
   assert.equal(restarted.pair.canControl(), true); assert.equal(b.pair.canControl(), false);
   assert.equal(b.engine, undefined); assert.equal(restarted.store.latestObservation('indoor_temperature').value, 20);
+});
+
+test('operation receipt reads report running, unknown and unavailable outcomes without submitting an action', async t => {
+  const f = await fixture(t), app = await f.open('receipt-reader', 'slave', 'ubuntu');
+  const nodeId = app.status().nodeId, requestId = randomUUID();
+  const query = (node, request = requestId) => fetch(`${url(app)}/api/pair/action?nodeId=${node}&requestId=${request}`);
+  const before = app.pair.state.value;
+  assert.deepEqual(await (await query(nodeId)).json(), { nodeId, requestId, state: 'unknown' });
+  assert.equal(app.pair.state.value, before);
+  let finish;
+  app.pair.action = async () => new Promise(resolve => { finish = resolve; });
+  const input = command('check-recovery', { nodeId, requestId });
+  assert.equal((await fetch(`${url(app)}/api/pair/action`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) })).status, 202);
+  await until(t, () => finish);
+  assert.deepEqual(await (await query(nodeId)).json(), { nodeId, requestId, state: 'running', action: 'check-recovery' });
+  finish({ ok: true }); await until(t, () => app.status().uiOperation.state === 'complete');
+  const failureId = randomUUID();
+  app.pair.action = async () => { throw Object.assign(Error('synthetic private cleanup error'), { code: 'handover_shutdown_failed' }); };
+  const failed = command('handover', { nodeId, requestId: failureId });
+  assert.equal((await fetch(`${url(app)}/api/pair/action`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(failed) })).status, 202);
+  await until(t, () => app.status().uiOperation.state === 'error');
+  assert.deepEqual(await (await query(nodeId, failureId)).json(), { nodeId, requestId: failureId,
+    action: 'handover', state: 'error', errorCode: 'handover_shutdown_failed' });
+  assert.equal((await query(randomUUID())).status, 503);
+  assert.equal(app.status().uiOperation.state, 'error');
+  for (const fields of ['', '?nodeId=invalid&requestId='+requestId, `?nodeId=${nodeId}&requestId=${requestId}&path=private`])
+    assert.equal((await fetch(`${url(app)}/api/pair/action${fields}`)).status, 409);
 });
 
 test('outage promotion, returning Hassio, manual gap recovery and exact rejoin run through real app lifecycle', async t => {

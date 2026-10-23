@@ -74,6 +74,7 @@ function requestPeer(url, { method, body, headers, signal }, agents) {
 }
 
 const PUBLIC_ERRORS = new Set(['peer_unavailable', 'peer_authentication_failed', 'peer_message_too_large',
+  'handover_shutdown_failed', 'action_interrupted',
   'peer_protocol_failed', 'peer_replay', 'peer_busy', 'not_master', 'protected_history', 'invalid_claim',
   'invalid_action', 'snapshot_unavailable', 'snapshot_failed', 'verification_failed', 'integrity_failed',
   'lineage_mismatch', 'authority_changed', 'recovery_required', 'invalid_transition', 'transfer_incomplete',

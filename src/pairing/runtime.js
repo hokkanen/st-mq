@@ -15,10 +15,11 @@ import { createDerivedCacheAnchorOwner } from '../storage/derived-cache-anchor.j
 import { backupDirectory } from '../storage/backup-directory.js';
 import { requireLocalBroker } from './config.js';
 import { PairManager, startupFailureDiagnostic } from './manager.js';
+import { publicPairError } from './peer.js';
 import { ocppHandoverHooks } from './ocpp.js';
 import { MqttFrontend } from './mqtt-frontend.js';
 import { createMqttSourceContext } from './mqtt-source-context.js';
-import { pairError } from './state.js';
+import { NODE_PATTERN, pairError } from './state.js';
 import { archiveRoot, createResetArchive, resumeResetArchive, selectResetDatabase } from './reset-storage.js';
 import { resetRestorationStatus } from './reset-safety.js';
 
@@ -85,6 +86,18 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     } });
   const operations = new Map(), handlers = new Map();
   const runtimeConfiguration = next => inheritConfigurationSnapshot(next, { ...next, role: 'master', dbPath: primaryPath });
+  function localActionStatus({ nodeId, requestId }) {
+    const accepted = operations.get(requestId);
+    if (nodeId !== manager.state?.value?.nodeId && accepted?.nodeId !== nodeId)
+      throw requestError('This request belongs to another computer.');
+    const operation = accepted ?? manager.state.value.actions.find(item => item.requestId === requestId);
+    const reset = manager.state.value.resetReceipt;
+    const errorCode = operation?.errorCode ?? operation?.error;
+    return { nodeId, requestId, state: operation?.state ?? (reset?.requestId === requestId ? 'complete' : 'unknown'),
+      ...(operation ? { action: operation.action ?? operation.name,
+        ...(operation.state === 'error' ? { errorCode: RESET_ERRORS.has(errorCode) ? errorCode : publicPairError({ code: errorCode }) } : {}) } : {}),
+      ...(reset?.requestId === requestId ? { action: 'reset' } : {}) };
+  }
   function resetStatus() {
     const state = manager.state?.value;
     const token = createHash('sha256').update(JSON.stringify([resetSession, state?.nodeId, state?.epoch, state?.role,
@@ -128,9 +141,18 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
         ...(latestOperation ? { uiOperation: { ...latestOperation,
           ...(job?.requestId === latestOperation.id && job.progress ? { progress: job.progress } : {}) } } : {}) };
     },
+    async actionStatus(input) {
+      if (!input || Object.keys(input).some(key => !['nodeId', 'requestId'].includes(key))
+        || !NODE_PATTERN.test(input.nodeId ?? '') || !NODE_PATTERN.test(input.requestId ?? ''))
+        throw requestError('Choose an operation and its original computer.');
+      if (input.nodeId === manager.state?.value?.nodeId || operations.get(input.requestId)?.nodeId === input.nodeId)
+        return localActionStatus(input);
+      if (closed || closing) throw requestError('This computer is reconnecting.');
+      return manager.peer.request('action-status', input, { timeoutMs: 5000 });
+    },
     requestAction(input) {
       if (!input || typeof input !== 'object' || Array.isArray(input)
-        || Object.keys(input).some(key => !['action', 'requestId', 'confirmed', 'previewId', 'discardUnrecovered',
+        || Object.keys(input).some(key => !['action', 'nodeId', 'requestId', 'confirmed', 'previewId', 'discardUnrecovered',
           'mode', 'resetToken', 'restorationConfirmed', 'verifyWithFullSnapshot'].includes(key))
         || ('verifyWithFullSnapshot' in input && (typeof input.verifyWithFullSnapshot !== 'boolean' || input.action === 'reset'))
         || (input.action !== 'reset' && ['mode', 'resetToken', 'restorationConfirmed'].some(key => key in input))
@@ -147,10 +169,13 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
         throw requestError('Confirm that temporary equipment changes have been resolved before starting fresh.');
       const previous = operations.get(input.requestId);
       if (previous && !(previous.action === 'rejoin' && input.action === 'rejoin' && previous.state === 'error')) {
-        if (previous.action !== input.action || previous.mode !== input.mode) throw requestError('This request ID belongs to another action.');
+        if (previous.nodeId !== input.nodeId || previous.action !== input.action || previous.mode !== input.mode)
+          throw requestError('This request ID belongs to another action or computer.');
         latestOperation = previous;
         return context.status();
       }
+      if (!NODE_PATTERN.test(input.nodeId ?? '') || input.nodeId !== manager.state?.value?.nodeId)
+        throw requestError('The computer changed. Review its role before starting a new operation.');
       const receipt = manager.state?.value?.resetReceipt;
       if (receipt?.requestId === input.requestId) {
         if (input.action !== 'reset' || input.mode !== receipt.mode) throw requestError('This request ID belongs to another action.');
@@ -163,7 +188,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       if (context.recovering() || [...operations.values()].some(value => value.state === 'running'))
         throw requestError('A paired operation is already running.');
       if (input.action === 'reset') assertReset(input);
-      const operation = { id: input.requestId, action: input.action, ...(input.mode ? { mode: input.mode } : {}), state: 'running', startedAt: clock() };
+      const operation = { id: input.requestId, nodeId: input.nodeId, action: input.action, ...(input.mode ? { mode: input.mode } : {}), state: 'running', startedAt: clock() };
       operations.set(input.requestId, operation); latestOperation = operation;
       // Let the acceptance response leave the current listener before a handover
       // closes that listener and reopens the read-only view on the same port.
@@ -175,7 +200,8 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
           if (result?.ok === false) operation.error = 'This operation did not complete. Review the current state before starting another action.';
         }, error => {
           operation.state = 'error'; operation.finishedAt = clock();
-          if (input.action === 'reset') operation.errorCode = RESET_ERRORS.has(error?.code) ? error.code : 'pair_reset_failed';
+          operation.errorCode = input.action === 'reset' ? RESET_ERRORS.has(error?.code) ? error.code : 'pair_reset_failed'
+            : publicPairError(error);
           operation.error = error?.publicMessage ?? 'The paired operation did not complete. Check its status and retry when ready.';
         }).finally(() => {
           while (operations.size > 64) {
@@ -189,6 +215,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     },
   };
   const hooks = {
+    actionStatus: localActionStatus,
     webSession: body => {
       if (!manager.canControl() || !runtime?.webAccess?.sessions) throw pairError('not_master');
       return runtime.webAccess.sessions.perform(body);

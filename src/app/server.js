@@ -265,6 +265,13 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (settingsReloadStatus().stopping) return json(503, { error: 'The application is shutting down.' });
           return json(202, pairContext.requestAction(input));
         }
+        if (url.pathname === '/api/pair/action' && req.method === 'GET') {
+          if (!pairContext) return json(409, { error: 'Paired operation is not configured.' });
+          const input = Object.fromEntries(url.searchParams);
+          const result = await pairContext.actionStatus(input);
+          if (!stillAuthorized()) return;
+          return json(200, result);
+        }
         // These jobs write only this computer's disposable verification progress.
         // Standby operation has no main-database or device-command authority.
         if (url.pathname === '/api/model-reconstruction' && req.method === 'GET') {

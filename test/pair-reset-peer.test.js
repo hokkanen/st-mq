@@ -38,7 +38,7 @@ test('keep reset preserves an interrupted seed as evidence and starts a new peer
   const previousSeed = await app.pair.exportPeerSeed();
   const previous = await peerOperation('anchor', { dbPath: app.store.path });
   const sourceBytes = await readFile(previous.pending.sourcePath), spoolBytes = await readFile(previous.pending.path);
-  app.requestAction({ action: 'reset', mode: 'keep', requestId: randomUUID(), confirmed: true, resetToken: app.status().reset.token });
+  app.requestAction({ action: 'reset', nodeId: app.status().nodeId, mode: 'keep', requestId: randomUUID(), confirmed: true, resetToken: app.status().reset.token });
   for (let i = 0; i < 1000 && app.status().uiOperation.state === 'running'; i++) await new Promise(resolve => setTimeout(resolve, 10));
   const result = app.status().uiOperation;
   assert.equal(result.state, 'complete', result.error);

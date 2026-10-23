@@ -531,9 +531,26 @@ reports separately, including OCPP.
 
 The dashboard may briefly reconnect while its runtime changes. An accepted
 request is not yet a completed handover: wait for the confirmed role. If the
-response is lost, **Recheck the same request** uses its original identifier;
-it does not create another promotion or handover. A browser reload retains
-that pending identifier. It never retries a promotion automatically.
+response is lost, the dashboard automatically reads the saved outcome from the
+computer that received the original request. Its identifier and originating
+computer survive a browser reload. Reconnecting through the shared address to
+the new master uses the encrypted peer channel to read that original receipt;
+it never resubmits the action or starts another handover or promotion. While the
+original computer is unreachable, the outcome remains explicitly unconfirmed
+and confirmation resumes automatically when it reconnects. A missing saved result
+also remains unconfirmed; it never clears the pending request or authorizes a retry.
+
+Management POSTs require the intended computer's `nodeId`. A request reaching
+another computer is rejected before an operation is created. Administrators can
+read an outcome with `GET /api/pair/action?nodeId=<origin>&requestId=<request>`;
+this query changes no roles, history or device state. Current role and sync
+status are displayed separately from the historical operation receipt.
+
+An unsuccessful local controller shutdown keeps the source protected and the
+receiver inactive. The handover log records the failed stage and bounded,
+privacy-safe leaf diagnostics; a local cleanup failure is not reported as a
+peer protocol mismatch. Preserve both databases before recovery: the source may
+contain final restoration and recording commits beyond the receiver's checkpoint.
 
 ### MQTT source identity across computers
 

@@ -23,7 +23,7 @@ import { learningVersion } from '../app/committed-learning.js';
 import { mqttStartupDiagnostic } from '../acquisition/startup-diagnostic.js';
 
 const ACTIONS = new Set(['handover', 'promote', 'check-recovery', 'recover', 'rejoin']);
-const PEER_OPERATIONS = new Set(['status', 'snapshot', 'checkpoint', 'verify-checkpoint', 'peer-anchor',
+const PEER_OPERATIONS = new Set(['status', 'action-status', 'snapshot', 'checkpoint', 'verify-checkpoint', 'peer-anchor',
   'peer-transfer', 'peer-transfer-chunk', 'peer-ack', 'snapshot-hashes', 'snapshot-chunk',
   'handover-prepare', 'handover-stage', 'handover-activate', 'release', 'derived-cache-anchor']);
 const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -79,16 +79,35 @@ export function peerFailureDiagnostic(error, operation) {
       ? { sqliteCode: error.errcode } : {}) };
 }
 
+/** Bounded shutdown leaves retain source locations without provider messages. */
+export function operationFailureDiagnostics(error) {
+  const failures = [], seen = new Set();
+  const visit = (value, depth) => {
+    if (failures.length >= 8 || seen.size >= 32 || seen.has(value)) return;
+    seen.add(value);
+    if (depth < 4 && Array.isArray(value?.errors) && value.errors.length) {
+      for (const child of value.errors.slice(0, 8)) visit(child, depth + 1);
+    } else {
+      const { reason, location } = startupFailureDiagnostic(value, value?.code ?? 'runtime_failed');
+      failures.push({ reason, ...(location ? { location } : {}) });
+    }
+  };
+  visit(error, 0);
+  return failures;
+}
+
 /** Node-local authority is deliberately never part of the mirrored application DB. */
 export class PairManager {
   constructor({ config, hooks = {}, clock = Date.now, vip, peer, state, snapshots, announcements,
     reportStartupFailure = diagnostic => console.error(JSON.stringify(diagnostic)),
-    reportPeerFailure = diagnostic => console.error(JSON.stringify(diagnostic)) }) {
+    reportPeerFailure = diagnostic => console.error(JSON.stringify(diagnostic)),
+    reportHandoverFailure = diagnostic => console.error(JSON.stringify(diagnostic)) }) {
     this.config = config;
     configurePublicationRoots(config.snapshotDirectory, [config.directory,
       config.databasePath ? dirname(config.databasePath) : null]);
     this.hooks = hooks;
     this.reportStartupFailure = reportStartupFailure;
+    this.reportHandoverFailure = reportHandoverFailure;
     this.clock = clock;
     this.state = state ?? new PairState({ ...config, clock });
     this.vip = vip ?? new VirtualIP(config.vip);
@@ -971,25 +990,32 @@ export class PairManager {
       if (!this.canControl() || value.epoch !== claim.epoch) throw pairError('authority_changed');
       return { transition: { kind: 'handover', phase: 'stopping', token, peerNodeId: remote.nodeId } };
     });
+    let stage = 'stop-control';
     try {
       // Graceful restoration is allowed until it is flushed. Authority-loss
       // demotion can still synchronously revoke the gate during this await.
       await this.hooks.stopControl?.({ restore: true });
       this.activeAllowed = false;
+      stage = 'release-address';
       await this.releaseTransport();
       this.controlReleased = true;
       if (this.state.value.role !== 'master') throw pairError('authority_changed');
+      stage = 'final-checkpoint';
       const metadata = await this.exportCheckpoint();
       const dbPath = await this.journalSource();
       const verification = verifyWithFullSnapshot ? await this.fullVerification(dbPath, metadata.checkpoint) : null;
+      stage = 'stage-peer';
       await this.peer.request('handover-stage', { token, metadata, verification }, { timeoutMs: this.config.timeoutMs });
+      stage = 'release-authority';
       await this.serialized(() => this.state.update({ role: 'protected', reason: 'handover_released',
         transition: { kind: 'handover', phase: 'released', token, peerNodeId: remote.nodeId, generation: metadata.generation } }));
+      stage = 'activate-peer';
       const activated = await this.peer.request('handover-activate', { token }, { timeoutMs: this.config.timeoutMs });
       if (activated.role !== 'master' || activated.accepted?.generation !== metadata.generation) throw pairError('invalid_transition');
       // The peer accepted the exact final copy. There is no independent history
       // left to recover; normal lineage gating can now follow its new branch.
       if (this.state.value.role !== 'protected' || this.state.value.transition?.token !== token) throw pairError('authority_changed');
+      stage = 'adopt-replica';
       const publication = await adoptJournalDatabase({ directory: this.config.snapshotDirectory,
         dbPath, metadata, signal: this.abort.signal });
       await this.state.update({ role: 'slave', reason: null, transition: null, everWritten: false, activeDbPath: null, accepted: {
@@ -997,16 +1023,21 @@ export class PairManager {
         sequence: metadata.sequence, nodeId: metadata.claim.nodeId } });
       this.sync = { state: 'ready', sourceAt: publication.sourceAt, verifiedAt: publication.verifiedAt,
         bytes: publication.bytes, lastSuccessAt: this.clock(), error: null, transferredBytes: publication.transferredBytes };
+      stage = 'start-replica';
       await this.startReplica();
       this.nextSyncAt = 0;
     } catch (error) {
+      const code = stage === 'stop-control' && publicPairError(error) === 'peer_protocol_failed'
+        ? 'handover_shutdown_failed' : publicPairError(error);
+      try { void Promise.resolve(this.reportHandoverFailure({ event: 'paired-handover-failed', stage,
+        failures: operationFailureDiagnostics(error) })).catch(() => {}); } catch { /* Reporting cannot grant authority. */ }
       this.activeAllowed = false;
       this.hooks.revokeControl?.();
       await this.state.update({ role: 'protected', reason: 'interrupted_handover' });
       await this.hooks.stopControl?.({ restore: false }).catch(() => {});
       await this.releaseTransport().catch(() => {});
       await this.startReplica();
-      throw error;
+      throw pairError(code);
     }
   }
 
@@ -1272,6 +1303,12 @@ export class PairManager {
 
   async handlePeer(operation, body) {
     if (this.closed || this.stopping) throw pairError('stopped');
+    if (operation === 'action-status') {
+      if (!body || Object.keys(body).some(key => !['nodeId', 'requestId'].includes(key))
+        || !NODE_PATTERN.test(body.nodeId ?? '') || !NODE_PATTERN.test(body.requestId ?? '')
+        || !this.hooks.actionStatus) throw pairError('invalid_request_id');
+      return this.hooks.actionStatus(body);
+    }
     if ((this.state.invalid || this.state.value.reset) && !['status', 'https-status'].includes(operation)) throw pairError('protected_history');
     if (operation === 'web-session') {
       if (!this.canControl() || !this.hooks.webSession) throw pairError('not_master');

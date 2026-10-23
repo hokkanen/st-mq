@@ -7,8 +7,9 @@ import { isReadOnlyReplica, replicaDisplay, chartObservationTime } from '../char
 
 const now = Date.parse('2026-09-12T12:00:00Z');
 const id = '11111111-1111-4111-8111-111111111111';
+const nodeId = '22222222-2222-4222-8222-222222222222';
 const previewId = 'a'.repeat(64);
-const primary = (overrides = {}) => ({ role: 'master', canControl: true, busy: false,
+const primary = (overrides = {}) => ({ nodeId, role: 'master', canControl: true, busy: false,
   peer: { reachable: true, role: 'slave' }, vip: { owned: true, ready: true },
   mqttFrontend: { listening: true, ready: true, connections: 0, error: null },
   recovery: { state: 'idle' }, actions: { 'check-recovery': true, recover: false, handover: true, promote: false, rejoin: false }, ...overrides });
@@ -40,15 +41,19 @@ test('snapshot presentation tolerates peer clock uncertainty without negative ag
   assert.match(pairDisplay(standby({ sync: { sourceAt: now + 60001, verifiedAt: now + 60001 } }), { now }).syncStat, /clock ahead/);
 });
 
-test('optional full verification stays attached to an uncertain pairing request across reload', async () => {
-  const saved = new Map(), sent = [];
-  const storage = { getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) };
+test('optional verification stays saved while reload confirms the original operation without resubmission', async () => {
+  const storage = memoryStorage(), sent = [];
   const first = createPairActions({ storage, requestId: () => id, confirm: () => true,
     request: async (_path, body) => { sent.push(body); throw new Error('disconnected'); } });
   first.update(primary()); await first.run('handover', { verifyWithFullSnapshot: true });
-  const second = createPairActions({ storage, request: async (_path, body) => { sent.push(body); return { status: operation(primary(), 'complete', 'handover') }; } });
-  second.update(primary()); await second.retry();
-  assert.equal(sent[0].verifyWithFullSnapshot, true); assert.deepEqual(sent[1], sent[0]);
+  const second = createPairActions({ storage, request: async (path, body) => {
+    assert.equal(path, `/api/pair/action?nodeId=${nodeId}&requestId=${id}`); assert.equal(body, undefined);
+    return { nodeId, requestId: id, action: 'handover', state: 'complete' };
+  } });
+  assert.deepEqual(second.snapshot().pending, sent[0]);
+  await second.update(primary());
+  assert.equal(sent.length, 1); assert.equal(sent[0].verifyWithFullSnapshot, true);
+  assert.equal(second.snapshot().pending, null);
 });
 
 test('pairing verification choices belong to their action and disclose the interruption before confirmation', async () => {
@@ -56,7 +61,7 @@ test('pairing verification choices belong to their action and disclose the inter
     const { document, $ } = fixture(), requests = [], confirmations = [];
     const panel = createPairPanel({ document, now: () => now,
       confirm: message => { confirmations.push(message); return true; },
-      request: async (_path, body) => { requests.push(body); return { status: operation(action === 'handover' ? primary() : standby(), 'complete', action) }; } });
+      request: async (_path, body) => { requests.push(body); return operation(action === 'handover' ? primary() : standby(), 'complete', action); } });
     panel.update(action === 'handover' ? primary() : standby());
     const select = $(`pairing-${action}-verification`);
     assert.equal(select.disabled, false);
@@ -110,10 +115,10 @@ test('handover mismatch remains visible in the collapsed alert and operation mes
   assert.match($('pairing-message').textContent, /same current build/);
   assert.match(pairActionHelp(view).handover, /same current build/);
   assert.equal(view.canControl, true);
-  assert.match(pairIssueHelp({ uiOperation: { action: 'handover', state: 'error', errorCode: view.error } }), /same current build/);
+  assert.match(pairIssueHelp({ uiOperation: { nodeId, action: 'handover', state: 'error', errorCode: view.error } }), /same current build/);
   panel.update(view);
   assert.match($('pairing-message').textContent, /same current build/);
-  panel.update(primary({ uiOperation: { action: 'handover', state: 'error', errorCode: view.error } }));
+  panel.update(primary({ uiOperation: { nodeId, action: 'handover', state: 'error', errorCode: view.error } }));
   assert.match($('pairing-message').textContent, /same current build/);
 });
 
@@ -174,7 +179,7 @@ test('remote database failures keep the active master summary while their source
     primary({ peer: { reachable: true, role: 'slave', sync: { state: 'error', error } } }),
     primary({ peer: { reachable: true, role: 'protected' }, recovery: { state: 'error', donorRole: 'protected', error } }),
     primary({ error, peer: { reachable: true, role: 'protected' },
-      uiOperation: { action: 'check-recovery', state: 'error', errorCode: error },
+      uiOperation: { nodeId, action: 'check-recovery', state: 'error', errorCode: error },
       recovery: { state: 'error', donorRole: 'protected', error } }),
   ]) {
     const { document, $ } = fixture();
@@ -264,7 +269,7 @@ test('a standalone authority loser remains readable and its chart stops at autho
 });
 
 test('the read-only POST exception is limited to known pair operations in pair topology', () => {
-  const status = { role: 'slave', topology: 'pair', pair: standby() }, body = { action: 'promote', requestId: id };
+  const status = { role: 'slave', topology: 'pair', pair: standby() }, body = { nodeId, action: 'promote', requestId: id };
   assert.equal(isPairManagementRequest('/api/pair/action', body, status), true);
   for (const path of ['/api/temporary', '/api/settings/reload', '/api/pair/action/other', '/api/pair'])
     assert.equal(isPairManagementRequest(path, body, status), false);
@@ -332,7 +337,7 @@ test('management capability flags are restricted by role, transition, operation 
 
 test('force promotion requires explicit confirmation and never becomes an automatic retry', async () => {
   const requests = [], confirmations = [];
-  const actions = createPairActions({ requestId: () => id, request: async (...args) => { requests.push(args); return { status: operation(primary()) }; },
+  const actions = createPairActions({ requestId: () => id, request: async (...args) => { requests.push(args); return operation(primary()); },
     confirm: text => { confirmations.push(text); return false; } });
   actions.update(standby({ role: 'protected' }));
   assert.equal(await actions.run('promote'), false);
@@ -379,7 +384,7 @@ test('an asynchronous accepted operation stays pending until its matching comple
   const first = actions.run('check-recovery');
   assert.equal(await actions.run('check-recovery'), false);
   assert.equal(bodies.length, 1);
-  resolve({ status: operation(primary(), 'running') });
+  resolve(operation(primary(), 'running'));
   assert.equal(await first, true);
   assert.equal(actions.snapshot().pending.requestId, id, 'HTTP 202 is not a completion');
   assert.match(actions.snapshot().message, /Waiting for its completion/);
@@ -393,31 +398,27 @@ test('an asynchronous accepted operation stays pending until its matching comple
 test('confirmed recovery sends the exact checked preview identity and server confirmation field', async () => {
   let body, confirmation;
   const actions = createPairActions({ requestId: () => id, confirm: text => { confirmation = text; return true; },
-    request: async (path, payload) => { assert.equal(path, '/api/pair/action'); body = payload; return { status: operation(primary(), 'running', 'recover') }; } });
+    request: async (path, payload) => { assert.equal(path, '/api/pair/action'); body = payload; return operation(primary(), 'running', 'recover'); } });
   actions.update(checked());
   assert.equal(await actions.run('recover'), true);
-  assert.deepEqual(body, { action: 'recover', requestId: id, confirmed: true, previewId });
+  assert.deepEqual(body, { nodeId, action: 'recover', requestId: id, confirmed: true, previewId });
   assert.match(confirmation, /Existing master data wins/);
 });
 
-test('an uncertain promotion survives a reload and rechecks the original request after the machine became primary', async () => {
+test('an uncertain promotion automatically reads its original result after reload without promoting again', async () => {
   const storage = memoryStorage(), requests = [];
   const first = createPairActions({ storage, requestId: () => id, confirm: () => true, request: async (path, body) => {
     requests.push(body); throw new TypeError('synthetic private transport details');
   } });
-  first.update(standby());
-  assert.equal(await first.run('promote'), false);
-  assert.doesNotMatch(first.snapshot().message, /private/);
-  const restored = createPairActions({ storage, requestId: () => { throw new Error('must reuse the original ID'); },
-    confirm: () => { throw new Error('already confirmed'); }, request: async (path, body) => {
-      requests.push(body); return { status: operation(primary(), 'complete', 'promote') };
-    } });
-  assert.equal(requests.length, 1, 'restoring a browser tab never automatically promotes');
-  restored.update(primary());
-  assert.equal(await restored.run('handover'), false, 'an unconfirmed action must be resolved first');
-  assert.equal(await restored.retry(), true);
-  assert.deepEqual(requests[1], requests[0]);
-  assert.equal(restored.snapshot().pending, null);
+  first.update(standby()); assert.equal(await first.run('promote'), false);
+  const restored = createPairActions({ storage, confirm: () => { throw new Error('No new action'); }, request: async (path, body) => {
+    assert.equal(body, undefined); assert.equal(path, `/api/pair/action?nodeId=${nodeId}&requestId=${id}`);
+    return { nodeId, requestId: id, action: 'promote', state: 'complete' };
+  } });
+  assert.equal(requests.length, 1);
+  await restored.update(primary());
+  assert.equal(requests.length, 1); assert.equal(restored.snapshot().pending, null);
+  assert.match(restored.snapshot().message, /Operation completed/);
 });
 
 test('a durable completion resolves an uncertain operation after the server has restarted', async () => {
@@ -453,7 +454,7 @@ test('rejected actions clear pending IDs, and asynchronous failures expose only 
   assert.equal(actions.snapshot().pending, null);
   assert.match(actions.snapshot().message, /readiness changed/);
   assert.doesNotMatch(actions.snapshot().message, /private/);
-  const accepted = createPairActions({ requestId: () => id, request: async () => ({ status: operation(primary(), 'running') }) });
+  const accepted = createPairActions({ requestId: () => id, request: async () => (operation(primary(), 'running')) });
   accepted.update(primary()); await accepted.run('check-recovery');
   accepted.update({ ...operation(primary(), 'error'), error: 'private error' });
   assert.equal(accepted.snapshot().pending, null);
@@ -472,7 +473,7 @@ test('pair action refusals show only marked authored messages and retain uncerta
     assert.equal(await actions.run('check-recovery'), false);
     assert.equal(actions.snapshot().message, reason);
     assert.equal(actions.snapshot().pending, null);
-    assert.equal(storage.getItem('stmq-pair-pending-v1'), null);
+    assert.equal(storage.getItem('stmq-pair-pending'), null);
   }
   for (const status of [408, 429, 503]) {
     const storage = memoryStorage();
@@ -482,8 +483,8 @@ test('pair action refusals show only marked authored messages and retain uncerta
     actions.update(primary());
     assert.equal(await actions.run('check-recovery'), false);
     assert.equal(actions.snapshot().pending.requestId, id);
-    assert.equal(JSON.parse(storage.getItem('stmq-pair-pending-v1')).requestId, id);
-    assert.match(actions.snapshot().message, /recheck the same request/i);
+    assert.equal(JSON.parse(storage.getItem('stmq-pair-pending')).requestId, id);
+    assert.match(actions.snapshot().message, /checked automatically/i);
     assert.doesNotMatch(actions.snapshot().message, /private/);
   }
 });
@@ -502,7 +503,7 @@ test('matching durable pair receipts outrank delayed rejection, transport failur
     actions.update(receipt);
     const confirmed = actions.snapshot();
     assert.equal(confirmed.pending, null);
-    if (reply === 'accepted') resolve({ status: operation(primary(), 'running') });
+    if (reply === 'accepted') resolve(operation(primary(), 'running'));
     else reject(Object.assign(new Error('A delayed refusal must not replace the durable result'), {
       status: reply === 'rejected' ? 409 : 503, code: 'pair_action_rejected',
     }));
@@ -511,7 +512,7 @@ test('matching durable pair receipts outrank delayed rejection, transport failur
     assert.equal(actions.snapshot().error, state === 'error');
     assert.equal(actions.snapshot().view, receipt, 'A delayed reply cannot replace newer roles or recovery evidence');
     assert.equal(actions.snapshot().pending, null);
-    assert.equal(storage.getItem('stmq-pair-pending-v1'), null);
+    assert.equal(storage.getItem('stmq-pair-pending'), null);
     assert.equal(refreshed, 1);
   }
 });
@@ -724,7 +725,7 @@ test('skip recovery requires its own warning and sends the exact checked preview
   const sent = [], warnings = [];
   let accept = false;
   const controller = createPairActions({ requestId: () => id, confirm: message => { warnings.push(message); return accept; },
-    request: async (path, body) => { sent.push(body); return { status: operation(primary(), 'running', 'rejoin') }; } });
+    request: async (path, body) => { sent.push(body); return operation(primary(), 'running', 'rejoin'); } });
   controller.update(checked());
   assert.equal(await controller.run('rejoin'), false);
   assert.equal(sent.length, 0);
@@ -733,7 +734,7 @@ test('skip recovery requires its own warning and sends the exact checked preview
   assert.match(warnings[0], /never reused automatically/);
   accept = true;
   assert.equal(await controller.run('rejoin'), true);
-  assert.deepEqual(sent[0], { action: 'rejoin', requestId: id, confirmed: true, discardUnrecovered: true, previewId });
+  assert.deepEqual(sent[0], { nodeId, action: 'rejoin', requestId: id, confirmed: true, discardUnrecovered: true, previewId });
 });
 
 test('checked empty protected history offers plain resume, preserves verification failure, and sends no discard consent', async () => {
@@ -741,12 +742,12 @@ test('checked empty protected history offers plain resume, preserves verificatio
     recovery: { state: 'ready', donorRole: 'protected', preview: source } };
   const sent = [], warnings = [];
   const actions = createPairActions({ requestId: () => id, confirm: message => { warnings.push(message); return true; },
-    request: async (_path, body) => { sent.push(body); return { status: operation(primary(), 'running', 'rejoin') }; } });
+    request: async (_path, body) => { sent.push(body); return operation(primary(), 'running', 'rejoin'); } });
   actions.update(view);
   assert.equal(pairActionAllowed(view, 'recover'), false, 'even a stale positive server capability cannot show empty recovery');
   assert.equal(await actions.run('recover'), false);
   assert.equal(await actions.run('rejoin', { verifyWithFullSnapshot: true }), true);
-  assert.deepEqual(sent, [{ action: 'rejoin', requestId: id, confirmed: true, previewId, verifyWithFullSnapshot: true }]);
+  assert.deepEqual(sent, [{ nodeId, action: 'rejoin', requestId: id, confirmed: true, previewId, verifyWithFullSnapshot: true }]);
   assert.match(warnings[0], /No additional history needs recovery.*Verify the other computer.*transaction checkpoint is confirmed/);
   assert.match(warnings[0], /Full history verification is selected/);
   assert.doesNotMatch(warnings[0], /skip|discard|unmatched|divergent|retained|must be complete/i);
@@ -771,25 +772,27 @@ test('an empty resume cancelled by a changed source cannot turn into an unconfir
   assert.match(actions.snapshot().message, /preview changed/);
 });
 
-test('empty resume preserves preview and full verification through browser reload and a saved release retry', async () => {
+test('empty resume retains consent across reload and only explicitly retries an acknowledged saved release', async () => {
   const storage = memoryStorage(), sent = [];
   const view = { ...checked(), recovery: { state: 'ready', donorRole: 'protected', preview: emptyPreview() } };
   const first = createPairActions({ storage, requestId: () => id, confirm: () => true,
     request: async (_path, body) => { sent.push(body); throw new TypeError('response lost'); } });
   first.update(view); await first.run('rejoin', { verifyWithFullSnapshot: true });
-  const second = createPairActions({ storage, request: async (_path, body) => { sent.push(body); return { status: operation(primary(), 'complete', 'rejoin') }; } });
-  second.update(primary()); assert.equal(await second.retry(), true);
-  assert.deepEqual(sent[1], sent[0]); assert.equal(sent[1].previewId, previewId); assert.equal(sent[1].discardUnrecovered, undefined);
+  const second = createPairActions({ storage, request: async (_path, body) => {
+    assert.equal(body, undefined); return { nodeId, requestId: id, action: 'rejoin', state: 'error' };
+  } });
+  assert.deepEqual(second.snapshot().pending, sent[0]); await second.update(primary());
+  assert.equal(sent.length, 1); assert.equal(second.snapshot().pending, null);
   const third = createPairActions({ requestId: () => { throw Error('Use original request'); }, confirm: () => { throw Error('Already confirmed'); },
-    request: async (_path, body) => { sent.push(body); return { status: operation(primary(), 'complete', 'rejoin') }; } });
+    request: async (_path, body) => { sent.push(body); return operation(primary(), 'complete', 'rejoin'); } });
   third.update(primary({ recovery: { state: 'ready', donorRole: 'protected', preview: { ...preview(), previewId: 'b'.repeat(64) },
     pendingRelease: { requestId: id, previewId, discardUnrecovered: false, verifyWithFullSnapshot: true } }, actions: { rejoin: true } }));
-  assert.equal(await third.run('rejoin'), true); assert.deepEqual(sent[2], sent[0]);
+  assert.equal(await third.run('rejoin'), true); assert.deepEqual(sent[1], sent[0]);
 });
 
 test('malformed saved empty-resume consent cannot be translated into an authorized request', () => {
   for (const fields of [{ previewId: 'invalid' }, { previewId, discardUnrecovered: false }, { previewId, discardUnrecovered: 'false' }]) {
-    const storage = memoryStorage(); storage.setItem('stmq-pair-pending-v1', JSON.stringify({ action: 'rejoin', requestId: id, confirmed: true, ...fields }));
+    const storage = memoryStorage(); storage.setItem('stmq-pair-pending', JSON.stringify({ nodeId, action: 'rejoin', requestId: id, confirmed: true, ...fields }));
     assert.equal(createPairActions({ storage, request: async () => {} }).snapshot().pending, null);
   }
 });
@@ -799,7 +802,7 @@ test('uncertain or unsupported-only inventories cannot silently resume without r
     { ...emptyPreview(), sourceSummary: { checkedAt: now, categories: [] } }, { ...emptyPreview(), incremental: { records: 0 } }]) {
     const view = { ...checked(), recovery: { state: 'ready', donorRole: 'protected', preview: source } };
     const sent = [];
-    const actions = createPairActions({ confirm: () => true, request: async (_path, body) => { sent.push(body); return { status: operation(primary(), 'complete', 'rejoin') }; } });
+    const actions = createPairActions({ confirm: () => true, request: async (_path, body) => { sent.push(body); return operation(primary(), 'complete', 'rejoin'); } });
     actions.update(view); await actions.run('rejoin');
     assert.equal(sent[0].discardUnrecovered, true);
     assert.doesNotMatch(pairActionHelp(view).rejoin, /No additional history|Verify the other computer and bring it/);
@@ -821,22 +824,21 @@ test('a replaced preview cancels recovery or discard confirmation before sending
   }
 });
 
-test('an uncertain skip request retains its discard consent and preview across reloads, while normal rejoin needs neither', async () => {
+test('an uncertain skip keeps its consent for confirmation without automatically resending it', async () => {
   const storage = memoryStorage(), sent = [];
   const first = createPairActions({ storage, requestId: () => id, confirm: () => true,
     request: async (path, body) => { sent.push(body); throw new TypeError('response lost'); } });
   first.update(checked()); await first.run('rejoin');
-  const restored = createPairActions({ storage, request: async (path, body) => { sent.push(body); return { status: operation(primary(), 'complete', 'rejoin') }; } });
-  restored.update(primary());
-  assert.equal(await restored.retry(), true);
-  assert.deepEqual(sent[1], sent[0]);
-  assert.equal(sent[1].discardUnrecovered, true);
-  assert.equal(sent[1].previewId, previewId);
+  const restored = createPairActions({ storage, request: async (_path, body) => {
+    assert.equal(body, undefined); return { nodeId, requestId: id, action: 'rejoin', state: 'complete' };
+  } });
+  assert.equal(restored.snapshot().pending.discardUnrecovered, true);
+  assert.equal(restored.snapshot().pending.previewId, previewId);
+  await restored.update(primary()); assert.equal(sent.length, 1); assert.equal(restored.snapshot().pending, null);
   const normal = createPairActions({ requestId: () => id, confirm: () => true,
-    request: async (path, body) => { sent.push(body); return { status: operation(primary(), 'complete', 'rejoin') }; } });
+    request: async (path, body) => { sent.push(body); return operation(primary(), 'complete', 'rejoin'); } });
   normal.update(primary({ recovery: { state: 'complete', donorRole: 'protected' }, actions: { rejoin: true } }));
-  await normal.run('rejoin');
-  assert.deepEqual(sent[2], { action: 'rejoin', requestId: id, confirmed: true });
+  await normal.run('rejoin'); assert.deepEqual(sent[1], { nodeId, action: 'rejoin', requestId: id, confirmed: true });
 });
 
 test('skipped recovery reports describe inactive retained history without claiming a rebuild', () => {
@@ -1026,14 +1028,14 @@ test('an uncertain release remains verifiable after peer became slave and browse
     const recovery = { state: discardUnrecovered ? 'ready' : 'complete', donorRole: 'protected',
       preview: { previewId, counts: { missing: 12 }, model: { status: 'rebuild-required' } },
       pendingRelease: { requestId: id, discardUnrecovered, ...(discardUnrecovered ? { previewId } : {}) } };
-    const saved = { action: 'rejoin', requestId: id, confirmed: true,
+    const saved = { nodeId, action: 'rejoin', requestId: id, confirmed: true,
       ...(discardUnrecovered ? { discardUnrecovered: true, previewId } : {}) };
-    storage.setItem('stmq-pair-pending-v1', JSON.stringify(saved));
+    storage.setItem('stmq-pair-pending', JSON.stringify(saved));
     const view = primary({ recovery, actions: { rejoin: true, handover: false, 'check-recovery': false },
       recentActions: [{ requestId: id, name: 'rejoin', state: 'error' }] });
     const controller = createPairActions({ storage, requestId: () => { throw Error('Must reuse saved release identity'); },
       confirm: () => { throw Error('Saved release already has confirmation'); },
-      request: async (path, body) => { requests.push(body); return { status: operation(primary(), 'complete', 'rejoin') }; } });
+      request: async (path, body) => { requests.push(body); return operation(primary(), 'complete', 'rejoin'); } });
     controller.update(view);
     assert.equal(controller.snapshot().pending, null, 'durable error clears the browser request receipt');
     assert.match(controller.snapshot().message, /completion is unconfirmed.*Verify the saved request/);
@@ -1130,7 +1132,7 @@ test('reset remains a management action on each role but requires current server
   for (const overrides of [{ actions: { reset: false } }, { reset: {} }, { reset: { token: 'synthetic invalid review' } },
     { busy: true }, { uiOperation: { state: 'running' } }])
     assert.equal(pairActionAllowed(resettable(overrides), 'reset'), false);
-  assert.equal(isPairManagementRequest('/api/pair/action', { action: 'reset', requestId: id }, { topology: 'pair' }), true);
+  assert.equal(isPairManagementRequest('/api/pair/action', { nodeId, action: 'reset', requestId: id }, { topology: 'pair' }), true);
   assert.match(pairConfirmation('reset', { mode: 'keep' }), /database and saved settings remain intact/);
   assert.match(pairConfirmation('reset', { mode: 'fresh' }), /Archives are kept until you manually delete/);
   assert.doesNotMatch(pairConfirmation('reset', { mode: 'fresh' }), /permanently delete|automatically promote/i);
@@ -1139,24 +1141,24 @@ test('reset remains a management action on each role but requires current server
 test('fresh reset requires explicit restoration acknowledgement and carries the reviewed token', async () => {
   const sent = [], confirmations = [];
   const controller = createPairActions({ requestId: () => id, confirm: message => { confirmations.push(message); return true; },
-    request: async (path, body) => { sent.push(body); return { status: operation(standby(), 'complete', 'reset') }; } });
+    request: async (path, body) => { sent.push(body); return operation(standby(), 'complete', 'reset'); } });
   controller.update(resettable());
   assert.equal(await controller.run('reset', { mode: 'fresh' }), false);
   assert.equal(await controller.run('reset', { mode: 'unrecognized', restorationConfirmed: true }), false);
   assert.equal(sent.length, 0);
   assert.equal(confirmations.length, 0);
   assert.equal(await controller.run('reset', { mode: 'fresh', restorationConfirmed: true }), true);
-  assert.deepEqual(sent, [{ action: 'reset', requestId: id, confirmed: true, mode: 'fresh', resetToken, restorationConfirmed: true }]);
+  assert.deepEqual(sent, [{ nodeId, action: 'reset', requestId: id, confirmed: true, mode: 'fresh', resetToken, restorationConfirmed: true }]);
   assert.match(confirmations[0], /Local recording and control stop/);
 });
 
 test('keep reset preserves the database without claiming authority or requiring fresh-start consent', async () => {
   let body, message;
   const controller = createPairActions({ requestId: () => id, confirm: text => { message = text; return true; },
-    request: async (path, data) => { body = data; return { status: operation(resettable(), 'complete', 'reset') }; } });
+    request: async (path, data) => { body = data; return operation(resettable(), 'complete', 'reset'); } });
   controller.update(resettable());
   assert.equal(await controller.run('reset', { mode: 'keep' }), true);
-  assert.deepEqual(body, { action: 'reset', requestId: id, confirmed: true, mode: 'keep', resetToken });
+  assert.deepEqual(body, { nodeId, action: 'reset', requestId: id, confirmed: true, mode: 'keep', resetToken });
   assert.match(message, /stays in Protected recovery/);
   assert.match(message, /other computer are unchanged/);
 });
@@ -1175,25 +1177,22 @@ test('reset confirmation is cancelled when the authority token changes or the co
   }
 });
 
-test('an uncertain fresh reset reuses the exact consent and request after a reload', async () => {
+test('an uncertain fresh reset reads its receipt without repeating the archive operation', async () => {
   const storage = memoryStorage(), sent = [];
   const first = createPairActions({ storage, requestId: () => id, confirm: () => true,
     request: async (path, body) => { sent.push(body); throw new TypeError('response lost'); } });
-  first.update(resettable());
-  await first.run('reset', { mode: 'fresh', restorationConfirmed: true });
-  const restored = createPairActions({ storage, confirm: () => { throw Error('Already confirmed'); },
-    request: async (path, body) => { sent.push(body); return { status: operation(standby(), 'complete', 'reset') }; } });
-  restored.update(standby({ reset: { token: 'c'.repeat(64) } }));
-  assert.equal(await restored.retry(), true);
-  assert.equal(sent.length, 2);
-  assert.deepEqual(sent[1], sent[0]);
-  assert.equal(restored.snapshot().pending, null);
+  first.update(resettable()); await first.run('reset', { mode: 'fresh', restorationConfirmed: true });
+  const restored = createPairActions({ storage, request: async (path, body) => {
+    assert.equal(body, undefined); return { nodeId, requestId: id, action: 'reset', state: 'complete' };
+  } });
+  await restored.update(standby({ reset: { token: 'c'.repeat(64) } }));
+  assert.equal(sent.length, 1); assert.equal(restored.snapshot().pending, null);
 });
 
 test('incomplete saved reset consent is rejected, and an interrupted reset can only resume the same mode', async () => {
   for (const fields of [{ mode: 'fresh', resetToken }, { mode: 'old', resetToken, restorationConfirmed: true }, { mode: 'keep', resetToken: 'bad' }]) {
     const storage = memoryStorage();
-    storage.setItem('stmq-pair-pending-v1', JSON.stringify({ action: 'reset', requestId: id, confirmed: true, ...fields }));
+    storage.setItem('stmq-pair-pending', JSON.stringify({ nodeId, action: 'reset', requestId: id, confirmed: true, ...fields }));
     assert.equal(createPairActions({ storage, request: async () => {} }).snapshot().pending, null);
   }
   const controller = createPairActions({ confirm: () => true, request: async () => { throw Error('Wrong reset mode'); } });
@@ -1247,13 +1246,13 @@ test('reset failures explain known recovery steps without displaying arbitrary e
     ['pair_reset_history_unavailable', /database could not be identified/],
     ['pair_reset_restoration_required', /outstanding temporary equipment changes/],
     ['pair_reset_failed', /Existing files remain preserved/]]) {
-    const view = resettable({ uiOperation: { action: 'reset', state: 'error', errorCode, error: 'secret unrelated detail' } });
+    const view = resettable({ uiOperation: { nodeId, action: 'reset', state: 'error', errorCode, error: 'secret unrelated detail' } });
     assert.match(pairIssueHelp(view), message);
     assert.match(pairDisplay(view).summary, message);
     assert.equal(pairDisplay(view).error, true);
     assert.doesNotMatch(JSON.stringify(pairDisplay(view)), /secret unrelated detail/);
   }
-  assert.doesNotMatch(pairIssueHelp(resettable({ uiOperation: { action: 'reset', state: 'error', errorCode: 'private unknown detail' } })), /private unknown detail/);
+  assert.doesNotMatch(pairIssueHelp(resettable({ uiOperation: { nodeId, action: 'reset', state: 'error', errorCode: 'private unknown detail' } })), /private unknown detail/);
 });
 
 
@@ -1275,7 +1274,7 @@ test('a restarted interrupted reset remains visible instead of suggesting ordina
 test('unreadable old pairing state blocks keep-history but still permits explicitly confirmed fresh archival', async () => {
   const view = resettable({ reset: { token: resetToken, keepBlockedReason: 'invalid_pair_state' } });
   const sent = [];
-  const controller = createPairActions({ confirm: () => true, request: async (path, body) => { sent.push(body); return { status: operation(standby(), 'complete', 'reset') }; } });
+  const controller = createPairActions({ confirm: () => true, request: async (path, body) => { sent.push(body); return operation(standby(), 'complete', 'reset'); } });
   controller.update(view);
   assert.equal(await controller.run('reset', { mode: 'keep' }), false);
   assert.equal(sent.length, 0);
@@ -1322,5 +1321,95 @@ test('durable reset receipt resolves a pending browser request after server rest
   assert.equal(restored.snapshot().pending, null);
   assert.equal(restored.snapshot().error, false);
   assert.match(restored.snapshot().message, /Operation completed/);
-  assert.equal(storage.getItem('stmq-pair-pending-v1'), null);
+  assert.equal(storage.getItem('stmq-pair-pending'), null);
+});
+
+test('a dashboard reconnect to the new master confirms the origin without a reverse handover', async () => {
+  const storage = memoryStorage(), writes = [], reads = [];
+  const otherNode = '33333333-3333-4333-8333-333333333333';
+  const original = createPairActions({ storage, requestId: () => id, confirm: () => true,
+    request: async (path, body) => { writes.push(body); throw Error('lost handover response'); } });
+  original.update(primary()); await original.run('handover');
+  let reconnects = 0;
+  const restored = createPairActions({ storage, confirm: () => { throw Error('No new authority'); },
+    request: async (path, body) => {
+      reads.push(path); assert.equal(body, undefined);
+      assert.equal(path, `/api/pair/action?nodeId=${nodeId}&requestId=${id}`);
+      if (++reconnects === 1) throw Error('origin offline');
+      return { nodeId, requestId: id, action: 'handover', state: 'complete' };
+    } });
+  // Even a colliding receipt on the newly serving node cannot confirm the
+  // original request. Only a read routed to the original node may do that.
+  const newMaster = operation(primary({ nodeId: otherNode }), 'complete', 'handover');
+  await restored.update(newMaster);
+  assert.equal(restored.snapshot().pending.nodeId, nodeId);
+  assert.match(restored.snapshot().message, /unconfirmed.*automatically/);
+  assert.equal(await restored.run('handover'), false);
+  await restored.update(newMaster);
+  assert.equal(restored.snapshot().pending, null);
+  assert.equal(restored.snapshot().view.nodeId, otherNode);
+  assert.equal(restored.snapshot().view.role, 'master');
+  assert.equal(writes.length, 1); assert.equal(reads.length, 2);
+});
+
+test('confirmation joins overlapping polls and keeps unknown or mismatched results honest', async () => {
+  for (const result of [
+    { nodeId, requestId: id, state: 'unknown' },
+    { nodeId: '33333333-3333-4333-8333-333333333333', requestId: id, action: 'handover', state: 'complete' },
+    { nodeId, requestId: id, action: 'promote', state: 'complete' },
+  ]) {
+    const storage = memoryStorage();
+    storage.setItem('stmq-pair-pending', JSON.stringify({ nodeId, action: 'handover', requestId: id, confirmed: true }));
+    let release, requests = 0;
+    const actions = createPairActions({ storage, request: async (_path, body) => {
+      assert.equal(body, undefined); requests++; return new Promise(resolve => { release = () => resolve(result); });
+    } });
+    const first = actions.update(primary()), second = actions.update(primary());
+    await Promise.resolve();
+    assert.equal(requests, 1); release(); await Promise.all([first, second]);
+    assert.match(actions.snapshot().message, /unconfirmed/);
+    assert.notEqual(actions.snapshot().pending, null, 'Missing or mismatched evidence cannot release an uncertain request');
+    assert.equal(await actions.run('handover'), false);
+  }
+});
+
+test('a computer change during confirmation cancels the operation and retired saved requests cannot be restored', async () => {
+  let answer, writes = 0;
+  const actions = createPairActions({ confirm: () => new Promise(resolve => { answer = resolve; }),
+    request: async () => { writes++; } });
+  actions.update(primary()); const sending = actions.run('handover');
+  actions.update(primary({ nodeId: '33333333-3333-4333-8333-333333333333' })); answer(true);
+  assert.equal(await sending, false); assert.equal(writes, 0);
+  for (const saved of [{ action: 'handover', requestId: id, confirmed: true },
+    { nodeId, action: 'handover', requestId: id, confirmed: true, retiredOwner: true }]) {
+    const storage = memoryStorage(); storage.setItem('stmq-pair-pending', JSON.stringify(saved));
+    assert.equal(createPairActions({ storage }).snapshot().pending, null);
+  }
+});
+
+test('a delayed acceptance cannot replace roles observed after reconnecting to the new master', async () => {
+  let accept;
+  const otherNode = '33333333-3333-4333-8333-333333333333';
+  const actions = createPairActions({ requestId: () => id, confirm: () => true,
+    request: async (_path, body) => body ? new Promise(resolve => { accept = resolve; })
+      : { nodeId, requestId: id, action: 'handover', state: 'complete' } });
+  actions.update(primary()); const sending = actions.run('handover');
+  await Promise.resolve();
+  const newMaster = primary({ nodeId: otherNode }); await actions.update(newMaster);
+  accept(operation(primary(), 'running', 'handover')); await sending;
+  assert.equal(actions.snapshot().view, newMaster);
+  await actions.update(newMaster); assert.equal(actions.snapshot().pending, null);
+});
+
+test('a synchronous receipt transport failure cannot prevent later automatic confirmation', async () => {
+  const storage = memoryStorage();
+  storage.setItem('stmq-pair-pending', JSON.stringify({ nodeId, action: 'handover', requestId: id, confirmed: true }));
+  let reads = 0;
+  const actions = createPairActions({ storage, request: (_path, body) => {
+    assert.equal(body, undefined);
+    if (++reads === 1) throw Error('offline');
+    return { nodeId, requestId: id, action: 'handover', state: 'complete' };
+  } });
+  await actions.update(primary()); assert(actions.snapshot().pending);
+  await actions.update(primary()); assert.equal(actions.snapshot().pending, null); assert.equal(reads, 2);
 });

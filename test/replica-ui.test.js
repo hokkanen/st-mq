@@ -350,7 +350,7 @@ test('read-only request guard blocks every mutation including saved exports but 
   }
   const status = { role: 'slave', topology: 'pair', pair: { role: 'protected' } };
   assert.doesNotThrow(() => assertDashboardWrite('/api/pair/action', {
-    action: 'promote', requestId: '11111111-1111-4111-8111-111111111111', confirmed: true }, status));
+    action: 'promote', nodeId: '22222222-2222-4222-8222-222222222222', requestId: '11111111-1111-4111-8111-111111111111', confirmed: true }, status));
   assert.throws(() => assertDashboardWrite('/api/pair/action', { action: 'unknown' }, status), { status: 403 });
   assert.doesNotThrow(() => assertDashboardWrite('/api/settings/reload', {}, { role: 'master' }));
 });

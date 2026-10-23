@@ -182,6 +182,8 @@ test('family garage-door permission verifies the configured device and exact cov
 
 test('family denies exports and every remaining write before any operation is dispatched', async t => {
   const f = await fixture(t);
+  assert.equal((await f.call('/api/pair/action?nodeId=synthetic&requestId=synthetic')).status, 403,
+    'Reading administrative operation receipts is also admin-only');
   for (const path of ['/api/database-export', '/api/settings/preview', '/api/settings/reload', '/api/settings', '/api/contract',
     '/api/pair/action', '/api/sensor-changes', '/api/sensor-changes/revert', '/api/sensor-changes/retry-rebuild',
     '/api/garage/native', '/api/equipment/recheck', '/api/equipment/switch', '/api/equipment/dehumidifier',

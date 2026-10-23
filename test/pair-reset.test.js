@@ -35,7 +35,7 @@ async function fixture(t) {
   }, async close(app) { await app.close(); apps.delete(app); } };
 }
 
-const command = (app, mode, extra = {}) => ({ action: 'reset', mode, requestId: randomUUID(), confirmed: true,
+const command = (app, mode, extra = {}) => ({ action: 'reset', nodeId: app.status().nodeId, mode, requestId: randomUUID(), confirmed: true,
   resetToken: app.status().reset.token, ...(mode === 'fresh' ? { restorationConfirmed: true } : {}), ...extra });
 async function completed(app, input) {
   app.requestAction(input);
@@ -144,8 +144,9 @@ test('fresh archives an incompatible database intact, keeps provider files, and 
   assert.ok((await Promise.all(databases.map(file => readFile(file)))).some(bytes => bytes.equals(original)));
   await f.close(app); const restarted = await f.open();
   const before = await readdir(resetStorage.archiveRoot(f.config));
-  restarted.requestAction(request);
-  assert.equal(restarted.status().uiOperation.state, 'complete');
+  const receipt = await (await fetch(`http://127.0.0.1:${restarted.server.address().port}/api/pair/action?nodeId=${restarted.status().nodeId}&requestId=${request.requestId}`)).json();
+  assert.equal(receipt.state, 'complete');
+  assert.equal(receipt.action, 'reset');
   assert.deepEqual(await readdir(resetStorage.archiveRoot(f.config)), before, 'retry after restart does not reset again');
   await promote(restarted);
   assert.equal(restarted.store.db.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);

@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Confirm paired operations automatically with read-only requests to the original
+  computer after reconnecting or reloading. Remove the action-resubmission button
+  and reject actions reaching the wrong computer, preventing an unintended reverse
+  handover during upgrades. Preserve newer source history after an interrupted
+  handover and report local shutdown failures with useful, private-safe diagnostics.
+
 - Find the existing user systemd bus for Linux setup and deployment from terminals
   without session variables. Report an unavailable manager separately from service
   mismatches, preserving explicit session settings and all deployment checks.

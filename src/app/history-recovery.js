@@ -315,6 +315,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
     if (value.sourceId === 'peer') {
       if (!pairContext || !['check', 'recover'].includes(value.action)) throw fail('recovery_peer_unavailable');
       pairContext.requestAction({ action: value.action === 'check' ? 'check-recovery' : 'recover', requestId: value.requestId,
+        nodeId: pairContext.status().nodeId,
         ...(value.verifyWithFullSnapshot === true ? { verifyWithFullSnapshot: true } : {}),
         ...(value.action === 'recover' ? { confirmed: value.confirmed, previewId: value.previewId } : {}) });
     } else if (value.action === 'check') {
