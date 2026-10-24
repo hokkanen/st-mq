@@ -86,6 +86,12 @@ duplicate control events caused solely by those holds. Native permission loss,
 pending device commands, physical changes and evidence outages remain distinct
 events. This recording choice never makes a held command ready.
 
+Dashboard Pause confirmation belongs to its matching active pause request,
+separately from economic-schedule confirmation. A confirmed Pause does not
+inherit an unconfirmed schedule or a lower-priority native instruction. Actual
+pending commands, uncertain outcomes and unavailable or positive measured draw
+still prevent the report from confirming physical stopping.
+
 The session selector offers recent and saved reports for that charger, loading
 older sessions and events in pages. An expired or deleted selection stays
 explicitly unavailable instead of opening another session. The guided-test link

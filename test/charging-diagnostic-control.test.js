@@ -33,6 +33,33 @@ function fixture() {
 }
 const controls = report => report.timeline.filter(row => row.kind === 'control');
 
+test('a matching confirmed dashboard Pause does not inherit an unconfirmed economic instruction', () => {
+  const f = fixture();
+  f.view.request.pause = { requestedAt: START };
+  Object.assign(f.view.control, { phase: 'waiting', confirmed: false, pauseConfirmed: false,
+    manual: { kind: 'stop' }, sessionPause: { active: true, requestedAt: START, confirmed: true } });
+  let report = f.observe();
+  assert.equal(report.current.pending, false);
+  assert.equal(report.current.pauseConfirmed, true);
+  assert.equal(report.current.manual, false);
+  assert.equal(report.current.scheduleState, 'none');
+  f.sample(START + 4 * MINUTE); report = f.observe(START + 4 * MINUTE);
+  assert(!report.findings.some(row => row.code === 'control-unconfirmed' && row.resolvedAt === null));
+  for (const patch of [ { pending: { role: 'start_charging', value: false } },
+    { sessionPause: { active: true, requestedAt: START + 1, confirmed: true } },
+    { sessionPause: { active: true, requestedAt: START, confirmed: false } },
+    { phase: 'uncertain' } ]) {
+    const original = structuredClone(f.view.control);
+    Object.assign(f.view.control, patch);
+    report = f.observe(START + 4 * MINUTE);
+    assert.equal(report.current.pending, true, JSON.stringify(patch));
+    assert.equal(report.current.pauseConfirmed, false, JSON.stringify(patch));
+    f.view.control = original;
+  }
+  f.sample(START + 4 * MINUTE, 70, 8); report = f.observe(START + 4 * MINUTE);
+  assert.equal(report.current.pauseConfirmed, false, 'A receipt cannot manufacture measured stopping');
+});
+
 test('waiting identification records its exact blocker initially and on change, without storing arbitrary provider text', () => {
   const f = fixture(); f.view.vehicle = { state: 'identifying', id: null };
   f.view.identification = { phase: 'waiting', active: true, reason: 'bmw-home-unknown' };

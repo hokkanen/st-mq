@@ -292,7 +292,10 @@ function observation(view, now) {
     && view.vehicleMqtt?.available !== false && view.vehicleMqtt?.reason !== 'vehicle-feed-stale';
   const activeId = view.identification?.active === true;
   const controlled = view.settings?.enabled === true || view.request?.chargeNow === true || Boolean(view.request?.pause);
-  const manual = Boolean(control.manual || ['yielded', 'manual'].includes(control.phase));
+  const pausedHere = Boolean(view.request?.pause);
+  const confirmedSessionPause = pausedHere && control.sessionPause?.active === true
+    && control.sessionPause.requestedAt === view.request.pause.requestedAt && control.sessionPause.confirmed === true;
+  const manual = !pausedHere && Boolean(control.manual || ['yielded', 'manual'].includes(control.phase));
   const installed = periods(control.execution?.periods);
   const proposed = periods(view.plan?.periods);
   const applicable = installed.length ? installed : proposed;
@@ -302,9 +305,10 @@ function observation(view, now) {
   const expectation = view.request?.pause ? 'hold' : manual ? 'manual' : activeId ? 'identification' : !controlled ? 'observe'
     : control.released === true || view.request?.chargeNow === true || view.plan?.provisional === true ? 'allow'
       : applicable.length ? open ? 'allow' : 'hold' : 'unknown';
-  const pending = Boolean(control.pending || control.confirmed === false || ['unconfirmed', 'pause-unconfirmed', 'uncertain', 'ownership-uncertain'].includes(control.phase));
+  const pending = Boolean(control.pending || control.confirmed === false && !confirmedSessionPause
+    || ['unconfirmed', 'pause-unconfirmed', 'uncertain', 'ownership-uncertain'].includes(control.phase));
   const pauseConfirmed = physicalFresh && charging === false && !pending && controlAvailability === 'available'
-    && (control.pauseConfirmed === true || ['paused', 'waiting'].includes(control.phase));
+    && (pausedHere ? confirmedSessionPause : control.pauseConfirmed === true || ['paused', 'waiting'].includes(control.phase));
   const releaseConfirmed = physicalFresh && !pending && controlAvailability === 'available' && ['active', 'released', 'provisional'].includes(control.phase);
   const targetApplicable = physicalFresh && values.minimumSoc?.available === true && target.value !== null && view.request != null
     && (!['manual-fallback', 'session-anchor'].includes(target.source) || vehicleId !== null);
@@ -313,7 +317,7 @@ function observation(view, now) {
     requestKnown: physicalFresh && values.connected?.available === true && values.connected.value === true && typeof view.request?.sessionId === 'string',
     automaticEnabled: typeof view.settings?.enabled === 'boolean' ? view.settings.enabled : null,
     chargeNow: view.request ? view.request.chargeNow === true : null,
-    scheduleState: installed.length ? 'installed' : controlled && proposed.length ? 'proposed' : controlled ? 'unknown' : 'none',
+    scheduleState: pausedHere ? 'none' : installed.length ? 'installed' : controlled && proposed.length ? 'proposed' : controlled ? 'unknown' : 'none',
     vehicleId, soc, target, nativeTarget, vehicleSoc, phase: PHASES.has(control.phase) ? control.phase : 'unknown',
     identification: ID_PHASES.has(view.identification?.phase) ? view.identification.phase : null,
     identificationReason: ID_REASONS.has(view.identification?.reason) ? view.identification.reason : null,

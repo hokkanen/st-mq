@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep session-report confirmation scoped to the active dashboard Pause. A
+  confirmed Pause no longer inherits an unconfirmed economic schedule or a
+  lower-priority native instruction; real pending commands and missing physical
+  stopping evidence remain explicit.
+
 - Explain the dashboard Pause beside disabled identification controls and in
   session reports. Keep that pause distinct from an external charger instruction
   and show its planning reason instead of an unavailable-reason placeholder.
