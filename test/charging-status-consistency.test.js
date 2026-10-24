@@ -2,8 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chargerDisplay } from '../chart/charging.js';
 import { chargerSummary, chargingNotice } from '../chart/charging-summary.js';
+import { chargingSessionPause } from '../chart/charging-status.js';
 
 const now = Date.parse('2026-10-19T06:00:00Z');
+
+test('lost current Pause confirmation does not claim the charger never confirmed stopping', () => {
+  const item = { ...connected('charger2'), request: { pause: { requestedAt: now - 60_000 } },
+    control: { phase: 'waiting', sessionPause: { active: true, requestedAt: now - 60_000,
+      confirmed: false, reason: 'session-pause-unconfirmed' } } };
+  const pause = chargingSessionPause(item);
+  assert.equal(pause.confirmed, false);
+  assert.equal(pause.unconfirmed, true);
+  assert.equal(pause.label, 'Pause unconfirmed');
+  assert.match(pause.detail, /current stopping confirmation is unavailable/);
+  assert.match(pause.detail, /physical readings and their original times/);
+  assert.doesNotMatch(pause.detail, /has not confirmed/);
+});
 const reading = (value, source = 'shelly-evse') => ({ value, source, available: value !== null, measuredAt: now });
 function connected(id) {
   return { id, provider: id === 'charger1' ? 'easee' : 'shelly-evse', capabilities: { scheduling: true },

@@ -56,7 +56,7 @@ export const CHARGING_CONTROL_CAUSES = {
   'vehicle-not-before': 'Vehicle start restriction', 'identification-pause': 'Identification pause',
   'identification-waiting': 'Identification waiting', 'identification-charging': 'Identification observing charge',
   'session-pause': 'Paused here for this connection',
-  'session-pause-unconfirmed': 'Waiting for the charger to confirm the session pause',
+  'session-pause-unconfirmed': 'Current stopping confirmation is unavailable; the pause remains saved',
   'economic-wait': 'Waiting for a planned charging period', 'charge-now': 'Charge now requested',
   'economic-window': 'Within a planned charging period', 'no-headroom': 'No electrical headroom available',
   'supply-unavailable': 'Supply information unavailable', 'within-limit': 'Within the available current limit',
@@ -76,7 +76,7 @@ export function chargingSessionPause(charger) {
   const label = confirmed ? 'Paused until unplugging' : unconfirmed ? 'Pause unconfirmed' : 'Pause requested';
   const detail = [
     'Paused here for this connection. Automatic charging remains ' + (charger.settings?.enabled === true ? 'on' : 'off') + '.',
-    confirmed ? 'The charger has confirmed the pause.' : 'The pause request is saved; the charger has not confirmed that charging has stopped.',
+    confirmed ? 'The charger has confirmed the pause.' : 'The pause request is saved; current stopping confirmation is unavailable. Check the latest physical readings and their original times.',
     'Unplugging ends the pause. Charge now requests immediate charging; Use automatic returns to price scheduling. A later observed external Resume also ends the pause.',
     chargingControlReason(pause?.reason || (unconfirmed ? control.reason : null)),
   ].filter(Boolean).join(' ');
