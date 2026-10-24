@@ -647,7 +647,12 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-setting-mode').checkVisibility()||document.querySelector('${appliance} .caravan-setting-swing').checkVisibility()`), false, 'Unsupported native settings are omitted');
     assert.match(await evaluate(`document.querySelector('${appliance} .caravan-recording').textContent`), /Recording paused.*power did not confirm both switches/);
     assert.equal(await evaluate(`[...document.querySelectorAll('${appliance} .caravan-power-buttons button')].every(button=>button.disabled)`), true, 'Automatic power owns the power buttons');
-    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-power').checkVisibility()`), false, 'Managed power does not leave inactive manual buttons in the native settings grid');
+    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-power').checkVisibility()`), true, 'Managed power keeps manual controls discoverable');
+    assert.match(await evaluate(`document.querySelector('${appliance} .caravan-power-help').textContent`), /controlled automatically.*Turn off Automatic power and save/);
+    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-power-help').checkVisibility()`), true);
+    const disabledPowerCalls = await evaluate('window.equipmentUiFixture.calls.length');
+    await evaluate(`[...document.querySelectorAll('${appliance} .caravan-power-buttons button')].forEach(button=>button.click());true`);
+    assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), disabledPowerCalls, 'Disabled native buttons send no requests');
     assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-dehumidifier-controls').getBoundingClientRect().top < document.querySelector('${policyDetails}').getBoundingClientRect().top`), true, 'Everyday native settings precede advanced power policy');
     assert.equal(await evaluate(`document.querySelector('${fan}').value`), 'low');
     await captureAppliance('live-paused');
@@ -695,13 +700,14 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     await evaluate(`document.querySelector('${policy} [data-setting=automaticPower]').click();true`);
     await refresh();
     assert.equal(await evaluate(`document.querySelector('${policy} [data-setting=automaticPower]').checked`), false, 'Polling keeps an unsaved automatic-power draft');
-    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-power').checkVisibility()`), false, 'A draft cannot relinquish saved automatic power ownership');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${appliance} .caravan-power-buttons button')].every(button=>button.checkVisibility()&&button.disabled)`), true, 'A draft cannot relinquish saved automatic power ownership');
     await evaluate(`document.querySelector('${savePolicy}').click();true`);
     await until(`window.equipmentUiFixture.calls.length===${settingsCalls + 1}`); await settle();
     assert.deepEqual(await evaluate('window.equipmentUiFixture.calls.at(-1)'),
       {path:'/api/equipment/dehumidifier/temperature-control',body:{deviceId:'caravan_dehumidifier',enabled:false,offAtC:1,onAtC:3}});
     assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-power-buttons button:last-child').disabled`), false, 'Disabling automatic power restores native manual controls');
     assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-power').checkVisibility()`), true);
+    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-power-help').checkVisibility()`), false);
     if (await evaluate(`document.querySelector('${policyDetails}').open`)) await toggleDisclosure(policyDetails);
     await evaluate(`(() => {const d=window.equipmentUiFixture.devices.find(d=>d.id==='caravan_dehumidifier').dehumidifier;
       Object.assign(d,{state:{power:'on',targetHumidity:55,fanSpeed:'high'},runningState:'on',operation:null});

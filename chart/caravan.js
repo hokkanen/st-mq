@@ -191,6 +191,8 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     refreshPolicy();
   });
   const power = make('div', '', 'caravan-setting caravan-power'), powerButtons = make('div', '', 'caravan-power-buttons');
+  const powerHelp = make('span', 'Power is controlled automatically. Turn off Automatic power and save to use manual controls.', 'caravan-setting-label caravan-power-help');
+  powerHelp.id = 'caravan-dehumidifier-power-help';
   controls.setAttribute('data-admin-only', ''); controls.setAttribute('data-write-control', '');
   help.id = 'caravan-dehumidifier-help';
   const access = make('p', 'Admin access is required to change dehumidifier settings.', 'family-access-note');
@@ -203,7 +205,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     button.addEventListener('click', () => { if (!blocked()) void actions.dehumidifier('caravan_dehumidifier', 'power', value); });
     powerButtons.append(button); buttons.set(value, button);
   }
-  power.append(make('span', 'Manual power', 'caravan-setting-label'), powerButtons); controls.append(power);
+  power.append(make('span', 'Manual power', 'caravan-setting-label'), powerButtons, powerHelp); controls.append(power);
   for (const setting of ['mode', 'targetHumidity', 'fanSpeed', 'swing']) {
     const field = make('label', '', `caravan-setting caravan-setting-${setting}`), select = make('select');
     const unknown = make('option', 'Awaiting report'); unknown.value = ''; unknown.disabled = true; select.append(unknown);
@@ -289,7 +291,9 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
       select.value = live && dehumidifierValueAllowed(setting, reported[setting]) ? String(reported[setting]) : '';
       select.disabled = !allowed || !supported.length;
     }
-    power.hidden = !(device.capabilities?.power?.length) || device.temperatureControl?.enabled === true;
+    power.hidden = !(device.capabilities?.power?.length);
+    powerHelp.hidden = device.temperatureControl?.enabled !== true;
+    powerButtons.setAttribute('aria-describedby', powerHelp.hidden ? help.id : `${powerHelp.id} ${help.id}`);
     controls.hidden = power.hidden && [...settingFields.values()].every(field => field.hidden);
     help.textContent = isReadOnlyReplica(status) ? 'Controls are available on the master computer.'
       : device.temperatureControl?.restartWaiting ? 'Waiting five minutes after confirmed native Off before switching On.'

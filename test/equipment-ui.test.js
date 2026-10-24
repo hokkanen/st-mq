@@ -633,6 +633,10 @@ test('dehumidifier controls follow reported capabilities and automatic power rej
   const fan = descendants(appliance).find(node => node.dataset.setting === 'fanSpeed');
   assert.equal(fan.children.find(option => option.value === 'auto').hidden, true);
   assert(appliance.querySelector('.caravan-power-buttons').children.every(button => button.disabled));
+  assert.equal(appliance.querySelector('.caravan-power').hidden, false);
+  assert.equal(appliance.querySelector('.caravan-power-help').hidden, false);
+  assert.match(appliance.querySelector('.caravan-power-help').textContent, /controlled automatically.*Turn off Automatic power and save/);
+  assert.match(appliance.querySelector('.caravan-power-buttons').getAttribute('aria-describedby'), /caravan-dehumidifier-power-help/);
   assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording paused.*power did not confirm both switches/);
   assert.doesNotMatch(appliance.textContent, /inside|outside|located|in caravan/i);
   const actions = createEquipmentActions({ request: async (path, body) => { calls.push({ path, body }); return current; } }); actions.update(current);
@@ -667,7 +671,9 @@ test('automatic power edits validate hysteresis, preserve draft through polling 
   panel.update(current); assert.equal(input('onAtC').value, '3', 'Status refresh keeps the draft'); assert.equal(save.disabled, false);
   assert.equal(input('onAtC').getAttribute('aria-invalid'), 'false');
   assert.equal(appliance.querySelector('.caravan-policy-state').textContent, 'Enabled', 'Summary describes saved policy');
-  assert.equal(appliance.querySelector('.caravan-power').hidden, true, 'An unsaved draft never enables manual power');
+  assert.equal(appliance.querySelector('.caravan-power').hidden, false);
+  assert(appliance.querySelector('.caravan-power-buttons').children.every(button => button.disabled), 'An unsaved draft never enables manual power');
+  assert.equal(appliance.querySelector('.caravan-power-help').hidden, false);
   assert.equal(policy.querySelector('.caravan-policy-draft').textContent, 'Unsaved changes');
   await policy.listeners.get('submit')({ preventDefault() {} });
   assert.deepEqual(calls, [{ path: '/api/equipment/dehumidifier/temperature-control', body: { deviceId: device.id, enabled: false, offAtC: 1, onAtC: 3 } }]);
@@ -675,6 +681,8 @@ test('automatic power edits validate hysteresis, preserve draft through polling 
   assert.equal(appliance.querySelector('.caravan-recording').children[0].textContent, 'Recording active', 'Manual power does not remove recording checks');
   assert.equal(appliance.querySelector('.caravan-power-buttons').children[1].disabled, false);
   assert.equal(appliance.querySelector('.caravan-power').hidden, false);
+  assert.equal(appliance.querySelector('.caravan-power-help').hidden, true);
+  assert.equal(appliance.querySelector('.caravan-power-buttons').getAttribute('aria-describedby'), 'caravan-dehumidifier-help');
   assert.equal(appliance.querySelector('.caravan-policy-state').textContent, 'Disabled');
   panel.update({ ...current, role: 'slave' });
   assert([input('automaticPower'), input('offAtC'), input('onAtC'), save].every(node => node.disabled));
@@ -898,7 +906,8 @@ test('power policy drafts can be discarded without a request, while open details
   assert.equal(inputs.get('onAtC').value, '2'); assert.equal(inputs.get('automaticPower').checked, true);
   assert.equal(document.activeElement, inputs.get('automaticPower'));
   assert.equal(save.disabled, true); assert.equal(cancel.hidden, true); assert.deepEqual(calls, []);
-  assert.equal(appliance.querySelector('.caravan-power').hidden, true);
+  assert.equal(appliance.querySelector('.caravan-power').hidden, false);
+  assert(appliance.querySelector('.caravan-power-buttons').children.every(button => button.disabled));
 });
 
 

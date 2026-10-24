@@ -226,7 +226,10 @@ while offline.
 With Automatic power enabled, fresh Caravan air temperature at or below **Off
 at** requests native Off; at or above **On at** requests native On. Between the
 thresholds the previous demand remains. Startup in the band uses Off demand.
-Disable Automatic power to expose supported manual power controls. Disabling
+Supported manual On/Off controls stay visible but disabled while Automatic power
+is enabled, with an adjacent explanation. Turn off Automatic power and save to
+use manual controls; an unsaved draft does not release automatic ownership.
+Access, connection, power-check and restart restrictions still apply. Disabling
 the policy does not disable the independent location test or recording gate.
 The test owns native settings until it has restored the previous power setting;
 ordinary supported native controls then become available again.
