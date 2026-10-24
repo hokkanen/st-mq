@@ -7,7 +7,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 ## Unreleased
 
 - Keep dehumidifier On/Off buttons visible but disabled during Automatic power,
-  explaining how to enable manual control.
+  greyed out with neither selected, explaining how to enable manual control.
 
 - Replace Last month with Last 4 weeks in Energy cost comparisons and Recorded
   energy checks, selecting 28 Finnish calendar dates including today.

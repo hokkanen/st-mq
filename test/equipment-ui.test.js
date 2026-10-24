@@ -637,6 +637,10 @@ test('dehumidifier controls follow reported capabilities and automatic power rej
   assert.equal(appliance.querySelector('.caravan-power-help').hidden, false);
   assert.match(appliance.querySelector('.caravan-power-help').textContent, /controlled automatically.*Turn off Automatic power and save/);
   assert.match(appliance.querySelector('.caravan-power-buttons').getAttribute('aria-describedby'), /caravan-dehumidifier-power-help/);
+  for (const value of ['on', 'off']) {
+    device.dehumidifier.state.power = value; panel.update(current);
+    assert(appliance.querySelector('.caravan-power-buttons').children.every(button => button.getAttribute('aria-pressed') === 'false'), 'Automatic buttons never select a reported power state');
+  }
   assert.match(appliance.querySelector('.caravan-recording').textContent, /Recording paused.*power did not confirm both switches/);
   assert.doesNotMatch(appliance.textContent, /inside|outside|located|in caravan/i);
   const actions = createEquipmentActions({ request: async (path, body) => { calls.push({ path, body }); return current; } }); actions.update(current);
@@ -683,6 +687,7 @@ test('automatic power edits validate hysteresis, preserve draft through polling 
   assert.equal(appliance.querySelector('.caravan-power').hidden, false);
   assert.equal(appliance.querySelector('.caravan-power-help').hidden, true);
   assert.equal(appliance.querySelector('.caravan-power-buttons').getAttribute('aria-describedby'), 'caravan-dehumidifier-help');
+  assert.equal(appliance.querySelector('.caravan-power-buttons').children[0].getAttribute('aria-pressed'), 'true', 'Manual control retains native state indication');
   assert.equal(appliance.querySelector('.caravan-policy-state').textContent, 'Disabled');
   panel.update({ ...current, role: 'slave' });
   assert([input('automaticPower'), input('offAtC'), input('onAtC'), save].every(node => node.disabled));

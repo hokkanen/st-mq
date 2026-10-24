@@ -277,8 +277,10 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
         : Number.isFinite(device.observedAt ?? appliance.observedAt ?? appliance.lastReportAt) ? connection.recent : '';
     stateRecent.hidden = !stateRecent.textContent;
     state.dataset.state = live || device.powerOffAvailable ? 'available' : 'pending';
+    const automaticPower = device.temperatureControl?.enabled === true;
+    powerButtons.dataset.automatic = String(automaticPower);
     for (const [value, button] of buttons) {
-      button.setAttribute('aria-pressed', live && reported.power === value ? 'true' : 'false');
+      button.setAttribute('aria-pressed', !automaticPower && live && reported.power === value ? 'true' : 'false');
       button.disabled = !dehumidifierCommandAllowed(status, appliance, 'power', value, busy || blocked()) || reported.power === value;
     }
     for (const [setting, select] of selects) {
@@ -292,7 +294,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
       select.disabled = !allowed || !supported.length;
     }
     power.hidden = !(device.capabilities?.power?.length);
-    powerHelp.hidden = device.temperatureControl?.enabled !== true;
+    powerHelp.hidden = !automaticPower;
     powerButtons.setAttribute('aria-describedby', powerHelp.hidden ? help.id : `${powerHelp.id} ${help.id}`);
     controls.hidden = power.hidden && [...settingFields.values()].every(field => field.hidden);
     help.textContent = isReadOnlyReplica(status) ? 'Controls are available on the master computer.'
