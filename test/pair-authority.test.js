@@ -80,6 +80,63 @@ test('a full source check selects current peer metadata after verification while
   assert.equal(donor.state.value.role, 'slave');
 });
 
+test('a normal slave source check follows mirroring advances while selecting its journal source', async t => {
+  const root = await fixture(t);
+  const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
+    recoveryPreview: ({ donorPath, donorJournalPath }) => recoveryPreview({
+      masterPath: primary.state.value.activeDbPath, donorPath, donorJournalPath, signal: t.signal }),
+  } });
+  const donor = await manager(t, root, 'donor', { role: 'slave' }); connect(primary, donor);
+  await donor.synchronize(primary.state.claim());
+  const common = primary.commonPeerCheckpoint.bind(primary);
+  let advanced = false;
+  primary.commonPeerCheckpoint = async (...args) => {
+    const base = await common(...args);
+    if (!advanced) {
+      advanced = true;
+      const store = new Store(primary.state.value.activeDbPath);
+      try { store.event('synthetic-recording-during-source-selection', {}, 300); } finally { store.close(); }
+      await donor.synchronize(primary.state.claim());
+      assert.equal(donor.sync.state, 'ready');
+    }
+    return base;
+  };
+  await primary.action('check-recovery', command());
+  const recovery = primary.state.value.recovery;
+  assert.equal(recovery.state, 'ready'); assert.equal(recovery.preview.status, 'checked');
+  assert.deepEqual(recovery.preview.incremental.checkpoint, recovery.metadata.checkpoint);
+  assert.equal(primary.canControl(), true); assert.equal(donor.canControl(), false);
+  assert.equal(donor.state.value.role, 'slave');
+  await primary.action('check-recovery', command());
+  assert.equal(primary.state.value.recovery.state, 'ready', 'Repeated source checks remain usable');
+  await primary.action('handover', command());
+  assert.equal(primary.state.value.role, 'slave');
+  assert.equal(primary.state.value.recovery, null, 'The new slave cannot retain the previous master role\'s source-review workflow');
+});
+
+test('source selection retries are bounded and never follow a changed donor role', async t => {
+  const root = await fixture(t);
+  const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
+    recoveryPreview: () => { throw Error('An unselected source must not reach preview'); },
+  } });
+  const donor = await manager(t, root, 'donor', { role: 'slave' }); connect(primary, donor);
+  await donor.synchronize(primary.state.claim());
+  let attempts = 0;
+  primary.commonPeerCheckpoint = async () => {
+    attempts++;
+    throw Object.assign(Error('Synthetic concurrent source advance'), { code: 'journal_peer_conflict' });
+  };
+  await assert.rejects(primary.action('check-recovery', command()), { code: 'journal_peer_conflict' });
+  assert.equal(attempts, 3);
+  primary.commonPeerCheckpoint = async () => {
+    await donor.state.update({ role: 'protected', reason: 'synthetic-source-protection' });
+    throw Object.assign(Error('Synthetic concurrent source advance'), { code: 'journal_peer_conflict' });
+  };
+  await assert.rejects(primary.action('check-recovery', command()), { code: 'authority_changed' });
+  assert.equal(primary.state.value.recovery.state, 'error');
+  assert.equal(primary.canControl(), true); assert.equal(donor.canControl(), false);
+});
+
 test('Hassio wins active claims regardless of promotion order; equal platforms agree by stable node ID', () => {
   const first = { nodeId: randomUUID(), epoch: randomUUID(), role: 'master', platform: 'hassio', sequence: 0 };
   const second = { nodeId: randomUUID(), epoch: randomUUID(), role: 'master', platform: 'ubuntu', sequence: 10000 };

@@ -78,6 +78,21 @@ test('pairing verification choices belong to their action and disclose the inter
   }
 });
 
+test('snapshot age uses singular minutes on both computers', () => {
+  for (const minutes of [0, 1, 2]) {
+    const sync = { state: 'ready', sourceAt: now - minutes * 60_000, verifiedAt: now };
+    const expected = `${minutes} ${minutes === 1 ? 'minute' : 'minutes'} old`;
+    assert(pairDisplay(standby({ sync }), { now }).sync.includes(expected));
+    assert(pairDisplay(primary({ peer: { reachable: true, role: 'slave', sync } }), { now }).syncDetail.includes(expected));
+  }
+});
+
+test('source checkpoint failures explain a fresh review without suggesting history resets', () => {
+  assert.match(pairIssueHelp({ error: 'journal_peer_conflict' }), /Preserve both histories.*check the other computer again/);
+  assert.match(pairIssueHelp({ error: 'journal_peer_conflict' }), /Do not reset pairing/);
+  assert.match(pairIssueHelp({ error: 'recovery_required' }), /no longer matches.*Check the other computer again/);
+});
+
 test('historical slave checks do not contradict unavailable, stale or failed current mirroring', () => {
   for (const peer of [{}, { reachable: false, role: 'slave' }, { reachable: true, role: 'slave', sync: { state: 'stale' } },
     { reachable: true, role: 'slave', sync: { state: 'error' } },

@@ -1018,7 +1018,7 @@ export class PairManager {
       stage = 'adopt-replica';
       const publication = await adoptJournalDatabase({ directory: this.config.snapshotDirectory,
         dbPath, metadata, signal: this.abort.signal });
-      await this.state.update({ role: 'slave', reason: null, transition: null, everWritten: false, activeDbPath: null, accepted: {
+      await this.state.update({ role: 'slave', reason: null, transition: null, recovery: null, everWritten: false, activeDbPath: null, accepted: {
         generation: metadata.generation, digest: metadata.digest, checkpoint: metadata.checkpoint, epoch: metadata.claim.epoch,
         sequence: metadata.sequence, nodeId: metadata.claim.nodeId } });
       this.sync = { state: 'ready', sourceAt: publication.sourceAt, verifiedAt: publication.verifiedAt,
@@ -1052,14 +1052,27 @@ export class PairManager {
       // Full verification pins its own observed boundary. Normal mirroring may
       // advance meanwhile, so select the source checkpoint only after it ends.
       if (verifyWithFullSnapshot) await this.peer.request('verify-checkpoint', {}, { timeoutMs: this.config.timeoutMs });
-      const peerObservation = this.peerObservation;
-      let metadata = validateSnapshot(await this.peer.request('checkpoint', {}, { timeoutMs: this.config.timeoutMs }));
-      if (metadata.claim.role === 'master') throw pairError('authority_changed');
-      if (peerObservation === this.peerObservation) this.recordPeerStatus(metadata.claim);
-      const base = await this.commonPeerCheckpoint(metadata);
-      let donorPath, donorJournalPath;
-      if (base) donorJournalPath = await this.stageRecoveryJournal(metadata, base);
-      else {
+      let metadata, donorPath, donorJournalPath;
+      for (let attempt = 0; ; attempt++) {
+        const peerObservation = this.peerObservation;
+        const next = validateSnapshot(await this.peer.request('checkpoint', {}, { timeoutMs: this.config.timeoutMs }));
+        if (next.claim.role === 'master' || metadata && (next.claim.nodeId !== metadata.claim.nodeId
+          || next.claim.epoch !== metadata.claim.epoch || next.claim.role !== metadata.claim.role)) throw pairError('authority_changed');
+        metadata = next;
+        if (peerObservation === this.peerObservation) this.recordPeerStatus(metadata.claim);
+        try {
+          const base = await this.commonPeerCheckpoint(metadata);
+          if (base) donorJournalPath = await this.stageRecoveryJournal(metadata, base);
+          break;
+        } catch (error) {
+          // Normal mirroring can advance the slave's accepted anchor between
+          // these independent reads. Reselect the source, never relax the exact
+          // checkpoint checks or retry a changed/protected donor decision.
+          if (metadata.claim.role !== 'slave' || attempt >= 2
+            || !['journal_peer_conflict', 'recovery_required'].includes(error?.code)) throw error;
+        }
+      }
+      if (!donorJournalPath) {
         // Independent databases have no journal ancestry to compare. An owner
         // initiated recovery is the exceptional repair that needs a full base.
         metadata = validateSnapshot(await this.peer.request('snapshot', { force: true }, { timeoutMs: this.config.timeoutMs }));
@@ -1356,7 +1369,7 @@ export class PairManager {
       else if(anchor?.pending && sameCheckpoint(anchor.pending.target,body.after))
         await this.acknowledgePeerTransfer(body.after,dbPath);
       return this.peerTransfers.export({dbPath,...this.peerStorageOptions(),onYield:()=>this.hooks.admitStorageWrite?.(),after:body.after,
-        refresh:body.refresh===true && (this.state.value.role==='protected'||Boolean(this.state.value.recovery?.releaseOperation)),signal:this.abort.signal});
+        refresh:body.refresh===true && (['slave','protected'].includes(this.state.value.role)||Boolean(this.state.value.recovery?.releaseOperation)),signal:this.abort.signal});
     }
     if (operation === 'peer-transfer-chunk') {
       if(!Object.keys(body).every(key=>['id','offset'].includes(key)))throw pairError('peer_protocol_failed');

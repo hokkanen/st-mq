@@ -6,6 +6,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep paired history checks usable when normal slave mirroring advances during
+  source selection. Reselect the same slave within a bounded attempt count,
+  refresh its temporary source export, and retain exact checkpoint and authority
+  checks. Clear the former master's source-review workflow after completed
+  handover so the new slave can be updated normally. Explain checkpoint failures
+  and use singular snapshot-age wording.
+
 - Batch unchanged Caravan appliance evidence renewals without adding reporting-policy
   changes or repeating the recorded state. Preserve independent native/meter expiry,
   real gaps and original clocks. The current development database uses schema 35

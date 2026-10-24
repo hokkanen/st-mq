@@ -9,6 +9,10 @@ const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-
 const validPreviewId = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const presentationClockAhead = (time, now) => time > now + 60_000;
 const ageMinutes = (time, now) => Math.max(0, Math.floor((now - time) / 60_000));
+const snapshotAge = (time, now) => {
+  const minutes = ageMinutes(time, now);
+  return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'} old`;
+};
 const stamp = value => Number.isFinite(value) && value > 0 ? value : null;
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const roleName = role => ({ master: 'Master', slave: 'Slave', protected: 'Protected recovery' })[role] ?? 'Checking role';
@@ -43,6 +47,8 @@ export function pairIssueHelp(view) {
     action_interrupted: 'The operation was interrupted by a restart. Review the current computer roles before starting another operation.',
     journal_peer_format_incompatible: 'A pending delivery uses an unsupported format. Preserve the database and staging files. Complete and acknowledge that delivery with its matching application before updating both computers together. Do not reset history to clear this error.',
     journal_history_expired: 'This operation requires recent transaction history that is no longer retained. Configured-peer catch-up uses its durable shared anchor; review the reported operation before retrying.',
+    journal_peer_conflict: 'The shared history checkpoint changed or could not be reconciled. Preserve both histories and check the other computer again. Do not reset pairing to bypass this check.',
+    recovery_required: 'The checked history source no longer matches the selected checkpoint. Check the other computer again before recovering history or resuming mirroring.',
     vip_helper_unavailable: 'The virtual-IP helper is unavailable. Check that the address-helper socket service is running on this computer and that its socket path matches the pair configuration.',
     vip_helper_permission: 'The controller cannot access the virtual-IP helper. Check the socket permissions and the group membership of the user running the controller; sign in again after changing groups.',
     vip_policy_invalid: 'The virtual-IP helper policy could not be read safely. Check its JSON, root ownership and permissions, then restart the helper service.',
@@ -205,11 +211,11 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
       : 'This master supplies the database for one-way mirroring.'
     : sync.state === 'syncing' ? phaseText[sync.phase] ?? 'Synchronizing the database.'
       : sync.state === 'error' ? `Synchronization needs attention. ${sourceAt && verifiedAt ? 'The last verified snapshot is kept.' : 'No verified snapshot is available yet.'}`
-        : sourceAt && verifiedAt ? `Last snapshot: ${formatTime(sourceAt)} · ${presentationClockAhead(sourceAt, now) ? 'snapshot clock ahead' : `${ageMinutes(sourceAt, now)} minutes old`}.`
+        : sourceAt && verifiedAt ? `Last snapshot: ${formatTime(sourceAt)} · ${presentationClockAhead(sourceAt, now) ? 'snapshot clock ahead' : snapshotAge(sourceAt, now)}.`
           : 'No verified snapshot has been reported yet.';
   const syncDetail = state === 'protected' ? 'Incoming snapshots cannot replace this history while protection is active.' : view.role === 'master'
     ? peer.role === 'protected' && peer.reachable === true ? 'Check the preserved history before explicitly replacing the other database.'
-      : peerSourceAt && peerVerifiedAt ? `The slave reports a verified snapshot from ${formatTime(peerSourceAt)} · ${presentationClockAhead(peerSourceAt, now) ? 'snapshot clock ahead' : `${ageMinutes(peerSourceAt, now)} minutes old`}. Identity verified ${formatTime(peerVerifiedAt)}.${stamp(peer.syncReceivedAt) ? ` Status received ${formatTime(peer.syncReceivedAt)}.` : ''} Newer master data can still be waiting to sync.`
+      : peerSourceAt && peerVerifiedAt ? `The slave reports a verified snapshot from ${formatTime(peerSourceAt)} · ${presentationClockAhead(peerSourceAt, now) ? 'snapshot clock ahead' : snapshotAge(peerSourceAt, now)}. Identity verified ${formatTime(peerVerifiedAt)}.${stamp(peer.syncReceivedAt) ? ` Status received ${formatTime(peer.syncReceivedAt)}.` : ''} Newer master data can still be waiting to sync.`
       : 'A connection alone does not confirm that the slave database is current. Waiting for its verified snapshot status.'
     : [verifiedAt ? `Last snapshot identity verified ${formatTime(verifiedAt)}.` : '',
     count(sync.bytes) !== null ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(sync.bytes / 1e6)} MB.` : '',

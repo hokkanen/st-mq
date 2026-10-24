@@ -922,9 +922,16 @@ section so the slave-first upgrade instructions accompany the action they use.
 
 Checks are initiated on the master. When the other computer is a normal slave,
 the result is an informational **No recovery needed** result with a checkmark.
+If normal mirroring advances its checkpoint while the source is being selected,
+the check reselects that same slave up to twice before reporting a failure.
+Each attempt still requires an exact journal boundary; a changed identity or role
+and protected-history decisions are never retried under the earlier review.
 It validates that slave snapshot, not whether every current master record has
 already been mirrored. Current synchronization and compatibility problems remain
 visible separately and take precedence over an earlier successful source check.
+Completed handover clears the former master's role-scoped source review so it
+does not become a pending recovery workflow on the new slave. Saved history
+recovery operations remain available in **Previous recoveries**.
 Optional full verification retains its own observed checkpoint. The peer source
 is selected after its full check, and its read-only journal review precedes the
 master's full check, so ordinary mirroring can continue during the long scans.
