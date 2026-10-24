@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Let identification use a quiet peer held by a matching, physically confirmed
+  dashboard Pause. Preserve freshness, recent-transition, pending-command and
+  native-schedule checks without requiring an economic plan for the paused car.
+
 - Wait for updated committed status after saving charger priority when a
   concurrent transaction delays its display. Keep the saved draft visible and
   report a conflict only after a newer revision shows a different preference.

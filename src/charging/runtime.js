@@ -995,6 +995,20 @@ export class ChargingRuntime {
       // evidence lets the other charger test without changing that restriction.
       if (control.devicePermissionHeld) return snapshot.transport === 'shelly-evse' && shellyPermission(false)
         && noNativeSchedule && freshRead(snapshot.readAt) && charging.value === false && power.value === 0;
+      if (peer.request?.pause) {
+        // A dashboard Pause deliberately has no economic periods. Its matching
+        // current native/physical confirmation can establish a quiet peer;
+        // a saved request or a past UI receipt alone cannot. Local OCPP proof
+        // remains usable without cloud schedule data, while known schedules
+        // and any pending takeover retain their independent restrictions.
+        const pause = control.sessionPause;
+        const scheduleQuiet = snapshot.transport === 'ocpp'
+          ? appControl?.schedule == null || appControl.schedule.enabled === 'none' : noNativeSchedule;
+        return pause?.active === true && pause.confirmed === true
+          && pause.requestedAt === peer.request.pause.requestedAt
+          && !control.takeoverPending && control.takeover?.state !== 'pending'
+          && scheduleQuiet && freshRead(snapshot.readAt) && charging.value === false && power.value === 0;
+      }
       if (!peer.controls.enabled || peer.request?.chargeNow) return true;
       const periods = control.execution?.periods?.length ? control.execution.periods : peer.plan?.periods;
       // A confirmed provisional allowance is still an ordinary charging

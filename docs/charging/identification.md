@@ -10,6 +10,14 @@ unready charger have distinct explanations; retry keeps the same admission rules
 A later dashboard Pause keeps a completed, inconclusive or observing attempt's
 recorded result. Its current retry blocker explains the Pause separately.
 
+A connected peer paused here can provide a quiet window for the other charger's
+identification. Its saved Pause must match current native/physical confirmation;
+no economic periods are required for that held connection. Recent transitions,
+stale or nonzero power, pending commands/takeover and native schedules still
+block the window. Current local OCPP Pause proof does not require cloud schedule
+data; a known native schedule remains a restriction. This does not resume the
+peer, renew evidence clocks or change the target's original test limits.
+
 ## Vehicle assignment
 
 The observer evaluates both charging points together, including while automatic charging is OFF and hours after connection. Assignment requires positive corroboration: applicable vehicle home/plug/start evidence and physical charging behavior. Similar powers or currents on two charging points can remain ambiguous. A negative Tesla match never identifies BMW or the other charger by elimination.

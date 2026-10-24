@@ -197,3 +197,62 @@ test('malformed persisted pause-contamination restrictions fail closed', t => {
   assert.throws(() => new ChargingRuntime({ engine: {}, store: f.runtime.store, config: f.runtime.config,
     clock: () => f.now }), /Unsupported saved current identification evidence/);
 });
+
+for (const transport of ['ocpp', 'shelly-evse']) test(`a confirmed dashboard Pause is a quiet ${transport} peer without economic periods`, t => {
+  const f = fixture(t), peer = f.runtime.chargers.charger2, control = f.controls.charger2;
+  f.setNow(STOP + 2 * MINUTE);
+  peer.request.pause = { requestedAt: REQUEST };
+  peer.plan = { state: 'paused', reason: 'session-pause', periods: [] };
+  control.sessionPause = { active: true, confirmed: true, requestedAt: REQUEST };
+  control.owned = { purpose: 'session-pause', connectedAt: control.session.connectedAt, requestedAt: REQUEST };
+  control.ownsInstruction = true; control.pauseConfirmed = true;
+  Object.assign(control.snapshot, { transport, controlReady: true, nativeScheduleActive: false,
+    fields: { start_charging: { value: false, measuredAt: REQUEST, retained: false } },
+    appControl: { schedule: { enabled: 'none' } } });
+  const physical = {
+    charger2: { providerConnected: true, connected: { value: true, available: true },
+      charging: { value: false, available: true }, powerKw: { value: 0, available: true, measuredAt: f.now } },
+  };
+  const available = () => f.runtime.identificationPauseAvailable(f.runtime.chargers.charger1, physical, f.now);
+  const before = structuredClone({ request: peer.request, identification: peer.identification, control });
+  assert.equal(available(), true, 'The matching native-confirmed Pause needs no economic schedule');
+  assert.deepEqual({ request: peer.request, identification: peer.identification, control }, before,
+    'Testing the peer does not resume it, renew evidence or change its Pause');
+  for (const field of ['active', 'confirmed']) {
+    control.sessionPause[field] = false;
+    assert.equal(available(), false, `${field} is required`);
+    control.sessionPause[field] = true;
+  }
+  control.sessionPause.requestedAt = REQUEST - 1;
+  assert.equal(available(), false, 'A receipt for an earlier Pause cannot authorize the new one');
+  control.sessionPause.requestedAt = REQUEST;
+  delete peer.request.pause;
+  assert.equal(available(), false, 'Native confirmation alone cannot manufacture a saved dashboard Pause');
+  peer.request.pause = { requestedAt: REQUEST };
+  control.pending = { action: 'stop' };
+  assert.equal(available(), false, 'Pending native work is not a quiet peer');
+  control.pending = null;
+  control.takeoverPending = true;
+  assert.equal(available(), false, 'An in-flight takeover can change the peer');
+  control.takeoverPending = false;
+  control.takeover = { state: 'pending' };
+  assert.equal(available(), false);
+  delete control.takeover;
+  peer.vehicleEvidence.stoppedTimes.push(f.now - 1000);
+  assert.equal(available(), false, 'The existing recent-transition quiet window still applies');
+  peer.vehicleEvidence.stoppedTimes.pop();
+  physical.charger2.powerKw.measuredAt = f.now - MINUTE - 1;
+  assert.equal(available(), false, 'Stale physical zero cannot establish a quiet peer');
+  physical.charger2.powerKw.measuredAt = f.now;
+  physical.charger2.powerKw.value = .05;
+  assert.equal(available(), false, 'The established zero-draw requirement is preserved');
+  physical.charger2.powerKw.value = 0;
+  if (transport === 'ocpp') {
+    delete control.snapshot.appControl.schedule;
+    assert.equal(available(), true, 'Current local Pause proof does not need a cloud reply');
+    control.snapshot.appControl.schedule = { enabled: 'none' };
+  }
+  if (transport === 'ocpp') control.snapshot.appControl.schedule.enabled = 'daily';
+  else control.snapshot.nativeScheduleActive = true;
+  assert.equal(available(), false, 'A native schedule remains a separate possible transition');
+});
