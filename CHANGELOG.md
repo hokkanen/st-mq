@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Describe vehicle feeds and charger associations in read-only setup views as
+  recorded master evidence, without implying a live logger failure or a current
+  physical identification.
+
 - Fill tariff-control relay feedback and heat-pump alarm bars from recorded
   unchanged confirmations. Preserve actual outages and source expiry, and refresh
   open charts when these confirmations arrive without a state change.

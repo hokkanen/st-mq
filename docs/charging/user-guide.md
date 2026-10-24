@@ -202,6 +202,11 @@ transaction or restore cloud control. See [outages and recovery](execution-and-r
 
 ## Device information and setup
 
+On a read-only slave, vehicle setup describes saved master evidence. Feed health
+and physical charger associations are labelled as recorded, with current health
+and identity unknown. Original field clocks remain visible; these reports do not
+establish a live connection or grant control. Check the master for current health.
+
 Follow **Charging setup & documentation** from either card, or open
 **Data & settings → Connections & configuration → Charging**. This is the home
 for installation information rather than duplicating it in daily session folds.

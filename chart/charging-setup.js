@@ -112,8 +112,10 @@ function readingText(field, key) {
   return `${value ?? 'Unavailable'}${clock}${retained}`;
 }
 
-function feedState(feed, vehicle) {
+function feedState(feed, vehicle, recorded) {
   if (!feed) return { label: 'Not configured', state: 'pending', detail: 'Configure this vehicle feed to receive automatic battery and identification evidence.' };
+  if (recorded) return { label: 'Recorded feed · live health unknown', state: 'pending',
+    detail: 'This read-only view shows saved vehicle evidence from the master. It has no live vehicle connection; field times below retain their original clocks. Check the master for current feed health.' };
   const reception = feed.reception ?? {};
   const connected = reception.brokerConnected ?? reception.connected;
   if (connected === false) return { label: 'Disconnected', state: 'attention', detail: 'The MQTT connection is unavailable. Last known readings do not establish current vehicle readiness.' };
@@ -187,15 +189,20 @@ export function chargingSetupView(status = {}) {
   return { chargers: Object.fromEntries(['charger1', 'charger2'].map(id => [id, chargerSetup(chargers.find(charger => charger.id === id), status, id)])),
     vehicles: Object.fromEntries(VEHICLES.map(vehicle => {
       const feed = status.charging?.vehicleFeeds?.find(item => item.id === vehicle);
+      const recorded = status.readOnly === true || isReadOnlyReplica(status) || status.charging?.recorded === true
+        || feed?.setup?.recorded === true || feed?.reception?.readOnly === true;
       const association = chargers.find(charger => charger.id === feed?.usedByChargerId
         && charger.vehicle?.state === 'identified' && charger.vehicle.id === vehicle && charger.values?.connected?.value === true);
       const lastHome = feed?.setup?.homeContext;
       const homeNote = lastHome?.source === 'last-known' && time(lastHome.measuredAt)
-        ? ` Current location is unknown. Last confirmed home context (${time(lastHome.measuredAt)}) remains usable without a time limit, including across reconnects, until a valid away report replaces it. Matching charging evidence is still required for each connection.` : '';
-      return [vehicle, { ...feedState(feed, vehicle),
+        ? recorded ? ` Last recorded home context: ${time(lastHome.measuredAt)}; current location is unknown.`
+          : ` Current location is unknown. Last confirmed home context (${time(lastHome.measuredAt)}) remains usable without a time limit, including across reconnects, until a valid away report replaces it. Matching charging evidence is still required for each connection.` : '';
+      return [vehicle, { ...feedState(feed, vehicle, recorded),
         connectionContext: vehicle === 'tesla' && feed?.setup?.connectionContext?.source === 'live-charging'
-          ? 'Connection inferred from live vehicle charging, measured current and power. The reported plug field below has not confirmed it; identification still requires matching physical charger evidence.' : '',
-        association: association ? `${labels[vehicle]} is identified at ${association.id === 'charger1' ? 'Charger 1' : 'Charger 2'} for this connection.${homeNote}`
+          ? recorded ? 'The saved connection was inferred from vehicle charging, measured current and power. This does not confirm a current connection on this read-only view.'
+            : 'Connection inferred from live vehicle charging, measured current and power. The reported plug field below has not confirmed it; identification still requires matching physical charger evidence.' : '',
+        association: recorded ? `${association ? `Last recorded association: ${labels[vehicle]} at ${association.id === 'charger1' ? 'Charger 1' : 'Charger 2'}.` : 'No physical charger association was confirmed in this snapshot.'} Current connection and identity are unconfirmed in this read-only view.${homeNote}`
+          : association ? `${labels[vehicle]} is identified at ${association.id === 'charger1' ? 'Charger 1' : 'Charger 2'} for this connection.${homeNote}`
           : `No current physical charger association is confirmed.${homeNote}`,
         fields: Object.fromEntries(fieldRows(vehicle).map(([key]) => [key, readingText(feed?.setup?.fields?.[key], key)])) }];
     })) };

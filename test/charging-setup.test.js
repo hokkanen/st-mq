@@ -119,6 +119,32 @@ test('setup summary never equates a broker connection with live vehicle health o
   }
 });
 
+test('recorded vehicle setup describes snapshot evidence without diagnosing a live feed or confirming current identity', () => {
+  const state = { role: 'slave', readOnly: true, charging: { recorded: true, vehicleFeeds: ['bmw', 'tesla'].map(id => ({
+    id, usedByChargerId: 'charger2', reception: { connected: null, available: false, readOnly: true, reason: 'read-only-snapshot' },
+    setup: { available: false, healthy: false, recorded: true,
+      connectionContext: { source: 'live-charging' }, homeContext: { source: 'last-known', measuredAt: NOW - 1000 },
+      fields: { soc: { available: false, value: 0, measuredAt: NOW - 1000, recorded: true } } },
+  })), chargers: [{ id: 'charger2', values: { connected: { value: true, available: false } },
+    vehicle: { state: 'identified', id: 'bmw' } }] } };
+  const before = structuredClone(state), view = chargingSetupView(state);
+  for (const id of ['bmw', 'tesla']) {
+    assert.equal(view.vehicles[id].label, 'Recorded feed · live health unknown');
+    assert.match(view.vehicles[id].detail, /no live vehicle connection.*original clocks/);
+    assert.doesNotMatch(view.vehicles[id].detail, /logger report is required|Waiting for.*live/);
+    assert.match(view.vehicles[id].association, /Current connection and identity are unconfirmed/);
+    assert.match(view.vehicles[id].association, /Last recorded home context/);
+    assert.doesNotMatch(view.vehicles[id].association, /remains usable|is identified/);
+    assert.match(view.vehicles[id].fields.soc, /^Unavailable · Measured/);
+  }
+  assert.match(view.vehicles.bmw.association, /^Last recorded association: BMW at Charger 2/);
+  assert.match(view.vehicles.tesla.association, /^No physical charger association was confirmed in this snapshot/);
+  assert.match(view.vehicles.tesla.connectionContext, /saved connection was inferred.*does not confirm a current connection/);
+  assert.deepEqual(state, before, 'Rendering never grants live availability or changes saved evidence');
+  delete state.role; delete state.readOnly; delete state.charging.recorded;
+  assert.equal(chargingSetupView(state).vehicles.tesla.label, 'Recorded feed · live health unknown', 'Feed-local provenance is sufficient');
+});
+
 test('setup text retains source clocks, privacy and readiness boundaries', () => {
   const status = { charging: { vehicleFeeds: [{ id: 'bmw', reception: { available: true }, setup: bmwVehicleSetup(bmw(), { available: true, now: NOW }) }],
     chargers: [{ id: 'charger2', provider: 'shelly-evse', control: { snapshot: { commissioning: { profileSupported: false } } } }] } };
