@@ -156,6 +156,17 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
   const admin = () => dashboard?.webAccess?.role === 'admin';
   const sources = state => [{ id: 'upload', kind: 'upload-choice', label: 'Upload a database backup', available: true },
     ...(state.view?.sources ?? []), ...(uploaded && !(state.view?.sources ?? []).some(source => source.id === uploaded.id) ? [uploaded] : [])];
+  function sourceLabels(items) {
+    const labels = items.map(item => item.kind !== 'upload' ? item.label : `${item.label} · ${Number.isFinite(item.createdAt)
+      ? `received ${formatTime(item.createdAt)}` : 'Upload time unavailable'}`);
+    const counts = new Map(), copies = new Map();
+    for (const label of labels) counts.set(label, (counts.get(label) ?? 0) + 1);
+    return new Map(items.map((item, index) => {
+      const label = labels[index], copy = (copies.get(label) ?? 0) + 1;
+      copies.set(label, copy);
+      return [item.id, item.kind === 'upload' && counts.get(label) > 1 ? `${label} · copy ${copy}` : label];
+    }));
+  }
   function source(state) { return sources(state).find(item => item.id === selected); }
   const pair = state => dashboard?.pair ?? state.view?.peer;
   function render(state) {
@@ -163,12 +174,13 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     const readonly = state.view?.readOnly === true || !admin() || dashboard?.readOnly === true || dashboard?.role === 'slave'
       || dashboard?.topology === 'pair' && (dashboard.pair?.role !== 'master' || dashboard.pair?.canControl !== true);
     const running = activeJob(state.view), blocked = readonly || !state.connected || state.busy || running || uploadBusy || !!state.pending || state.view?.available !== true;
-    const allSources = sources(state), key = JSON.stringify(allSources.map(item => [item.id, item.label, item.available]));
+    const allSources = sources(state), labels = sourceLabels(allSources);
+    const key = JSON.stringify(allSources.map(item => [item.id, labels.get(item.id), item.available]));
     if (key !== sourceKey) {
       selector.replaceChildren();
       for (const item of allSources) {
         const option = document.createElement('option'); option.value = item.id;
-        option.textContent = item.label; option.disabled = item.available === false; selector.append(option);
+        option.textContent = labels.get(item.id); option.disabled = item.available === false; selector.append(option);
       }
       sourceKey = key;
     }
@@ -320,7 +332,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     const operationTime = operation?.startedAt ?? operation?.createdAt;
     $('history-recovery-review-source').textContent = revisionView
       ? `${revisionSource}${Number.isFinite(operationTime) ? ` · ${formatTime(operationTime)}` : ''}`
-      : choice?.label ?? (peer ? 'Paired computer' : 'Selected backup');
+      : labels.get(selected) ?? (peer ? 'Paired computer' : 'Selected backup');
     if (focusReview && !$('history-recovery-review').hidden) {
       focusReview = false;
       $('history-recovery-review').focus({ preventScroll: true });

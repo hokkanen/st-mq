@@ -16,6 +16,24 @@ const view = changes => ({ available: true, readOnly: false, busy: false, source
   preview, job: { kind: 'check', status: 'complete', source }, ...changes });
 const admin = { topology: 'standalone', role: 'master', webAccess: { role: 'admin' } };
 
+test('retained uploads have distinct dated choices and keep their source identity across refresh', async () => {
+  const { document, $ } = fixture();
+  const uploads = [1, 2, 3].map(n => ({ id: `uploaded-copy-${n}`, kind: 'upload', label: 'Uploaded database',
+    createdAt: n === 1 ? 1000 : 2000, bytes: 1024, available: true }));
+  const panel = createHistoryRecoveryPanel({ document, formatTime: at => `time ${at}`,
+    request: async () => view({ sources: [source, ...uploads] }) });
+  panel.update(admin); await panel.open({ sourceId: uploads[2].id });
+  const choices = () => $('history-recovery-source').children.filter(node => node.value.startsWith('uploaded-copy-'));
+  assert.equal(new Set(choices().map(node => node.textContent)).size, 3, 'Each retained upload is distinguishable');
+  assert.match(choices()[0].textContent, /Uploaded database.*received time 1000/);
+  assert.match(choices()[1].textContent, /received time 2000.*copy 1/);
+  assert.match(choices()[2].textContent, /received time 2000.*copy 2/);
+  assert.equal($('history-recovery-source').value, uploads[2].id);
+  assert.equal($('history-recovery-review-source').textContent, choices()[2].textContent);
+  await panel.controller.refresh();
+  assert.equal($('history-recovery-source').value, uploads[2].id);
+});
+
 test('upload failures explain the known cause without leaking arbitrary exception text', async () => {
   for (const [code, status, expected] of [
     ['recovery_upload_too_large', 413, /8 GiB/],

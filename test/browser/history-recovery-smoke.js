@@ -77,7 +77,8 @@ try {
         if (request.url.endsWith('/upload')) {
           assert.equal(request.headers['content-type'], 'application/vnd.sqlite3');
           assert(Buffer.concat(chunks).length > 0);
-          const uploaded = { id: 'upload-fixture', kind: 'upload', label: 'Uploaded database', available: true };
+          const uploaded = { id: 'upload-fixture', kind: 'upload', label: 'Uploaded database', available: true,
+            createdAt: now, bytes: Buffer.concat(chunks).length };
           recovery.sources.push(uploaded); requests.push({ action: 'upload' });
           return json(200, { sourceId: uploaded.id, source: uploaded });
         }
@@ -343,6 +344,17 @@ try {
   await until(`${$('history-recovery-source')}.value==='upload-fixture'`);
   assert.equal(await evaluate(`${$('history-recovery-installation-confirm')}.checked`), false);
   assert.equal(await evaluate(`${$('history-recovery-check')}.disabled`), true);
+  recovery.sources.push({ id: 'second-upload-fixture', kind: 'upload', label: 'Uploaded database', available: true, createdAt: now, bytes: 64 });
+  await click('history-recovery-refresh');
+  await until(`${$('history-recovery-source')}.options.length===4`);
+  const uploadLabels = JSON.parse(await evaluate(`JSON.stringify([...${$('history-recovery-source')}.options].filter(o=>o.value.includes('upload-fixture')).map(o=>o.textContent))`));
+  assert.equal(new Set(uploadLabels).size, 2, 'Retained uploads have distinguishable labels even at the same receipt time');
+  assert(uploadLabels.every(label => label.includes('received') && label.includes('copy ')));
+  assert.equal(await evaluate(`${$('history-recovery-source')}.value`), 'upload-fixture', 'Refreshing labels preserves the selected source identity');
+  await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 800, deviceScaleFactor: 1, mobile: false });
+  await evaluate(`${$('history-recovery-source')}.parentElement.querySelector('.app-select-trigger').click();true`);
+  assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'), true, 'Dated upload choices fit the narrow viewport');
+  await evaluate(`${$('history-recovery-source')}.parentElement.querySelector('.app-select-trigger').click();true`);
   await click('history-recovery-close');
   await evaluate(`${$('recording-backup-card')}.open=true;${$('database-export-details')}.open=true;true`);
   await click('database-export-save');

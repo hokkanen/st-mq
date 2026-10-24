@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Identify retained uploaded recovery sources by their upload receipt time, with
+  distinct copy labels for matching timestamps. Keep the selected source identity
+  and show the same description in its review.
+
 - Keep paired history checks usable when normal slave mirroring advances during
   source selection. Reselect the same slave within a bounded attempt count,
   refresh its temporary source export, and retain exact checkpoint and authority

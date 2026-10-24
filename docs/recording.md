@@ -2121,6 +2121,10 @@ backups and ordinary exports have the same `.sqlite` format. Only the current
 schema and learning contract are supported; recovery does not migrate older
 development databases. Keep the original backup. Uploaded copies are temporary
 working sources and do not replace an independent backup.
+Retained uploads show when this application received each copy; that time is
+not the original recording period. Copies with the same displayed receipt time
+receive separate copy labels. The selected source and its review use the same
+description without changing the source identity.
 
 For a backup, confirm **This backup contains this household’s history**, then select
 **Check backup**. A source sharing this database's transaction lineage is checked
