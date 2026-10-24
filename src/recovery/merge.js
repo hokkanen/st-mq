@@ -11,6 +11,7 @@ import { ENERGY_SIGNALS } from '../domain/history-series.js';
 import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { observationTimeAdmitted, validateAdmittedSourceTime } from '../domain/time-evidence.js';
+import { validCaravanCoverageEvidence } from '../domain/caravan-recording-evidence.js';
 import { rememberContribution, rejectedContribution, sourceFingerprint } from './ledger.js';
 
 import { ScratchMap, ScratchList, initializeScratch } from './scratch.js';
@@ -458,8 +459,25 @@ export class HistoryMerge {
         && row.end_at >= row.start_at && Number.isSafeInteger(row.samples) && row.samples >= 0);
       const mapped = row.observation_id === null ? null : this.known('observations', row.observation_id);
       this.require(row.observation_id === null || mapped?.id != null && mapped.disposition !== 'conflicts');
-      if (row.samples === 0) {
-        const observation = mapped?.id == null ? null : this.target.db.prepare('SELECT * FROM active_observations AS observations WHERE id=?').get(mapped.id);
+      const needsObservation = row.evidence !== null || row.samples === 0
+        || row.source === 'mqtt-equipment' && row.device === 'caravan_dehumidifier' && row.signal === 'caravan_dehumidifier_state';
+      const observation = !needsObservation || mapped?.id == null ? null
+        : this.target.db.prepare('SELECT * FROM active_observations AS observations WHERE id=?').get(mapped.id);
+      const nativeEvidence = observation && { ...observation, raw: decode(observation.raw) };
+      this.require(validCaravanCoverageEvidence(nativeEvidence, row));
+      if (row.evidence !== null) {
+        this.require(row.status === 'fresh' && observation && usable(observation)
+          && observation.source === row.source && observation.device === row.device && observation.signal === row.signal
+          && observation.received_at <= row.start_at && row.end_at <= this.now
+          && observationTimeAdmitted({ sourceTime: observation.source_time, receivedAt: observation.received_at,
+            raw: nativeEvidence.raw }, row.start_at));
+        // An endpoint can extend unchanged evidence, never reopen an explicit
+        // outage that occurred after its original observation/recovery event.
+        this.require(!this.target.db.prepare(`SELECT 1 FROM active_recorder_coverage
+          WHERE source=? AND device=? AND signal=? AND status<>'fresh' AND start_at>=? AND start_at<=? LIMIT 1`)
+          .get(row.source, row.device, row.signal, observation.received_at, row.start_at));
+      }
+      if (row.samples === 0 && row.evidence === null) {
         this.require(observation && row.start_at === row.end_at && row.start_at === observation.received_at
           && row.source === observation.source && row.device === observation.device && row.signal === observation.signal
           && row.source_time === observation.source_time && row.status === decode(observation.raw)?.recorder?.status
@@ -474,7 +492,7 @@ export class HistoryMerge {
           AND source_time IS ? AND samples=? ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END,id`)
         .iterate(row.source, row.device, row.signal, row.status, row.start_at, row.end_at,
           row.source_time, row.samples, row.id)) {
-        if (this.sameObservationReference(old.observation_id, observationId)) return { id: old.id, disposition: 'duplicates' };
+        if (old.evidence === row.evidence && this.sameObservationReference(old.observation_id, observationId)) return { id: old.id, disposition: 'duplicates' };
       }
       const old = this.target.db.prepare(`SELECT * FROM active_recorder_coverage AS recorder_coverage WHERE source=? AND device=? AND signal=?
         AND start_at<=? AND end_at>=? ORDER BY id DESC LIMIT 1`).get(row.source, row.device, row.signal, row.start_at, row.end_at);
@@ -489,9 +507,10 @@ export class HistoryMerge {
         if (continued === undefined) {
           const original = observationId === null ? null : this.target.db.prepare('SELECT * FROM active_observations WHERE id=?').get(observationId);
           const raw = original ? decode(original.raw) : null;
-          continued = row.status === 'fresh' && row.samples > 0 && mapped?.disposition === 'duplicates'
+          continued = row.status === 'fresh' && (row.samples > 0 || row.evidence !== null) && mapped?.disposition === 'duplicates'
             && usable(original) && raw?.recorder?.version === RECORDING_VERSION
-            && raw.recorder.status === 'fresh' && raw.recorder.temporalBasis === 'source-observation'
+            && raw.recorder.status === 'fresh' && (raw.recorder.temporalBasis === 'source-observation'
+              || row.evidence !== null && caravanBoundary(original, raw))
             && !raw.retained && !raw.cached && !raw.acquisitionOnly && !raw.auditOnly
             && !decode(original.quality).some(flag => ['retained', 'cached', 'acquisition-only', 'audit-only'].includes(flag))
             && original.source === row.source && original.device === row.device && original.signal === row.signal
@@ -502,9 +521,9 @@ export class HistoryMerge {
         // original saved observation. A frozen continuation of that exact
         // shared prefix is additional evidence, not a competing value. Retain
         // the intact donor row separately so reversal never owns the prefix.
-        if (!continued || prior.status !== 'fresh' || prior.samples <= 0 || prior.start_at !== row.start_at
+        if (!continued || prior.status !== 'fresh' || prior.samples <= 0 && prior.evidence === null || prior.start_at !== row.start_at
           || prior.end_at >= row.end_at || !instant(prior.source_time) || prior.source_time > prior.end_at
-          || row.source_time < prior.source_time || row.samples <= prior.samples
+          || row.source_time < prior.source_time || (row.evidence !== null ? row.samples < prior.samples : row.samples <= prior.samples)
           || !this.sameObservationReference(prior.observation_id, observationId)) return { disposition: 'conflicts' };
       }
       const id = this.insert('recorder_coverage', { ...without(row, ['id']), observation_id: mapped?.id ?? null });

@@ -216,5 +216,5 @@ test('lightweight source status uses current coverage clocks and never queries m
   assert.deepEqual(row.freshness.reasons,['missing-report']);
   assert.equal(row.freshness.sourceObservedAt,START+MINUTE/2);
   assert.equal(prepare('SELECT total_changes() n').get().n,changes);
-  assert(queries.every(sql=>/^SELECT value FROM state|^SELECT source_time FROM recorder_coverage WHERE id=\?/.test(sql)));
+  assert(queries.every(sql=>/^SELECT value FROM state|^SELECT source_time,evidence FROM recorder_coverage WHERE id=\?/.test(sql)));
 });

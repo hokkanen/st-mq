@@ -169,9 +169,13 @@ adapter's old device observations.
 Advance a field's clock only when a new native reply contains that datapoint.
 Conflicting values at the same field clock are rejected. Each snapshot replaces
 the previous settings; omitted/invalid values are unknown,
-not merged with older settings. Reported power independently establishes the
-recorded Off/On state; a missing fan setting does not make known power unknown.
-Fan settings are displayed live and are never stored as telemetry history.
+not merged with older settings. Live power readiness is independent of the
+recorded combined Off/Low/Medium/High state: Off requires native power; a running
+level requires both native power and fan clocks. Each required field expires
+independently. Recording retains the configured report policy and batches healthy
+evidence renewals into compact coverage endpoints, normally within 30 seconds.
+A supporting meter report cannot renew an appliance field, and real gaps remain
+unknown. This changes no live command, qualification or native restart gate.
 
 | Setting | Allowed values |
 | --- | --- |

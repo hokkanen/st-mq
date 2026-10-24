@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Batch unchanged Caravan appliance evidence renewals without adding reporting-policy
+  changes or repeating the recorded state. Preserve independent native/meter expiry,
+  real gaps and original clocks. The current development database uses schema 35
+  and journaled layout 31; earlier databases remain rejected before mutation.
+
 - Preserve the Equalizer and equipment source clocks behind local charger current
   estimates. Connector-status updates no longer make held allowance evidence look
   newly measured; derived estimates retain unknown clocks without changing limits.

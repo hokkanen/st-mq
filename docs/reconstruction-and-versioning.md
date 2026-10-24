@@ -24,11 +24,12 @@ learning epoch. Original observations, frozen forecasts, corrections and their
 provenance keep their historical meaning throughout an upgrade.
 
 The current physical SQLite schema and the current journaled data layout have
-separate identifiers. Physical schema 34 adds indexed manual-firewood revision,
-time-window and removal-target reads to coefficient history and the chronological
-coverage and bounded journal/recovery indexes. Its journaled rows retain layout
-30 and the existing genesis/hash interpretation. Every fresh schema-34 database uses that one current
-layout. There is no older-schema runtime branch or alternate journal decoder. Strict physical-schema
+separate identifiers. Physical schema 35 and journaled layout 31 add the compact
+independent-evidence endpoint to recording coverage. They retain indexed
+manual-firewood, coefficient-history, chronological coverage and bounded
+journal/recovery reads. Every fresh database uses this one current layout and
+its matching genesis/hash interpretation. There is no older-schema runtime
+branch or alternate journal decoder. Strict physical-schema
 validation rejects incompatible physical schemas before writable setup. The owner's one-time
 2026-10-15 chart-index conversion exception requires verified backups and rollback,
 unchanged table rows, original database/checkpoint identities and journal hashes,
@@ -46,6 +47,14 @@ fully validate the candidates with rollback retained. The disposable tooling sta
 outside Git; this is no permission to convert other databases. Runtime startup still rejects
 other physical schemas before mutation. A pair with different physical schemas cannot mirror or
 hand over across that boundary; both roles must use the same supported schema.
+For schema 35/layout 31 the owner separately approved the installation-only
+offline transition and scoped dehumidifier-history removal on 2026-10-24 under
+[F1](../AGENTS.md#f1). External disposable tools must preserve the other source
+history, complete learning journal, control/restoration state and pair authority,
+with verified backups and rehearsed rollback. The operational replication
+journal may be reanchored; its original history remains in those backups.
+No conversion, journal translation, backfill or reset-on-startup is supplied
+by the application, and this exception does not cover other installations.
 
 Given an intact committed learning journal, its saved configuration and initial
 seed, the selected fireplace and sensor-correction revisions, and the matching
@@ -275,8 +284,9 @@ history, current model and backups remain intact. Corrupt or incompatible tempor
 state is not migrated or trusted. Failures and superseded jobs remain terminal
 until an explicit new action; there is no automatic retry loop.
 
-This changes the one current physical schema while retaining journaled layout 30,
-the existing genesis/hash interpretation and the numerical learning algorithm. Incompatible development databases are rejected
+The original coefficient-history change retained journaled layout 30 and the
+numerical learning algorithm. The current coverage-evidence format uses layout
+31 as described above; numerical learning is unchanged. Incompatible development databases are rejected
 before mutation; the runtime adds no upgrade ladder, permanent historical backfill
 or old-format reader. Any specifically owner-approved, data-preserving preparation
 of an existing installation is an external controlled operation under the exact

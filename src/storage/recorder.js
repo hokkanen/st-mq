@@ -11,6 +11,8 @@ import { ADAPTIVE_BUDGET_KEY, initialAdaptiveBudget as initialBudget, readAdapti
 import { STORAGE_METRICS_KEY, initialStorageMetrics, readStorageMetrics } from './recording-metrics.js';
 import { observationTimeAdmitted, observationAvailableAt, sourceTimeAdmission, validateAdmittedSourceTime } from '../domain/time-evidence.js';
 import { selectedCoverageSpan } from './coverage-history.js';
+import { caravanState, hasCaravanEvidence, caravanRecordingEvidence, caravanEvidenceDeadline,
+  caravanEvidenceContinues, caravanCoverageDeadline } from '../domain/caravan-recording-evidence.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, YEAR = 365.25 * DAY;
 export const RECORDING_VERSION = 'recording-contract-v2';
@@ -40,8 +42,6 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const stateKey = key => `recorder:signal:${key}`;
 const finiteTime = at => Number.isSafeInteger(at) && Math.abs(at) <= 8640000000000000;
 const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
-const caravanState = o => o?.source === 'mqtt-equipment' && o.device === 'caravan_dehumidifier'
-  && o.signal === 'caravan_dehumidifier_state' && o.unit === 'state';
 const validRecordingWait = wait => wait && Object.keys(wait).length === 5
   && ['startedAt', 'recordingSince', 'deadline'].every(key => finiteTime(wait[key]) && wait[key] >= 0)
   && wait.recordingSince <= wait.startedAt && wait.deadline > wait.startedAt
@@ -74,6 +74,7 @@ function caravanRecordingBoundary(o, newReport) {
     && (o.quality ?? []).every(flag => flag === 'good') && !raw.retained && !raw.cached
     && !raw.auditOnly && !raw.acquisitionOnly
     && age !== null && Number.isSafeInteger(raw.maxAgeMs) && raw.maxAgeMs > 0 && age <= raw.maxAgeMs
+    && caravanEvidenceDeadline(caravanRecordingEvidence(o)) > at
     && fields.every(field => finiteTime(raw.fieldTimestamps?.[field]) && raw.fieldTimestamps[field] >= 0
       && raw.fieldTimestamps[field] <= at && at < raw.fieldTimestamps[field] + raw.maxAgeMs)
     && wait.deadline <= Math.min(...fields.map(field => raw.fieldTimestamps[field])) + raw.maxAgeMs
@@ -128,10 +129,14 @@ function sameEnergyQuality(a,b,{ zeroA = false,zeroB = false } = {}) {
   }
   return same(left,right);
 }
-const semanticQuality = raw => Object.fromEntries(['usableForControl','verified','retained','cached','installationVerified',
+const semanticQuality = (raw, observation) => Object.fromEntries(['usableForControl','verified','retained','cached','installationVerified',
   'verification','diagnosticAvailable','accuracyVerified','contractVersion','supported','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs','eventOnly','temperatureRouteSignature',
   'transport','voltageSource','voltageAvailability'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]])
-  .concat(raw?.voltageEstimate ? [['voltageInputs',raw.voltageEstimate.inputs],['voltageInput',raw.voltageEstimate.input]] : []));
+  .concat(raw?.voltageEstimate ? [['voltageInputs',raw.voltageEstimate.inputs],['voltageInput',raw.voltageEstimate.input]] : [])
+  .concat(caravanState(observation) && raw?.fieldTimestamps && raw?.maxAgeMs !== undefined ? [['applianceEvidenceScope', {
+    identity: raw.identity, maxAgeMs: raw.maxAgeMs,
+    ...(raw.locationEvidence ? { association: Object.fromEntries(Object.entries(raw.locationEvidence)
+      .filter(([key]) => key !== 'meterObservedAt')) } : {}) }]] : []));
 // Source validity is independent of the recording budget.
 // Increasing storage compression must never make old measurements fresher.
 // Room and garage readings remain the last reported measurement until replaced.
@@ -158,9 +163,14 @@ function recordingFreshness(state, coverage, now) {
   const sourceObservedAt = Number.isFinite(coverage?.source_time) ? coverage.source_time
     : Number.isFinite(state.lastSourceTime) ? state.lastSourceTime : null;
   const age = sourceObservedAt === null ? null : now - sourceObservedAt;
+  const evidenceDeadline = coverage?.evidence ? caravanEvidenceDeadline(JSON.parse(coverage.evidence)) : null;
   const reasons = state.status === 'fresh' ? [] : (state.last?.quality ?? []).filter(flag => typeof flag === 'string')
     .map(flag => flag.replaceAll('_', '-')).filter(flag => DIAGNOSTIC_QUALITY.has(flag));
   let status = state.status ?? 'waiting';
+  if (state.recordingEvidence && evidenceDeadline === null) {
+    reasons.push('invalid-quality');
+    if (status === 'fresh') status = 'unavailable';
+  }
   if (status === 'failed' && !reasons.length) reasons.push('provider-error');
   if (status === 'unavailable' && !reasons.length) reasons.push('invalid-quality');
   if (Number.isFinite(state.last?.sourceTime) && Number.isFinite(state.last?.receivedAt)
@@ -174,6 +184,10 @@ function recordingFreshness(state, coverage, now) {
     reasons.push(periodicAge !== null ? 'missing-report' : 'source-expired');
     if (status === 'fresh') status = 'stale';
   }
+  if (evidenceDeadline !== null && now >= evidenceDeadline) {
+    reasons.push('missing-report');
+    if (status === 'fresh') status = 'stale';
+  }
   if (status === 'stale' && !reasons.length) reasons.push('invalid-quality');
   if (status === 'fresh' && interval) status = 'recorded-interval';
   if (status === 'fresh' && held) status = age > INDOOR_ATTENTION_MS ? 'held-attention' : 'held';
@@ -183,6 +197,7 @@ function recordingFreshness(state, coverage, now) {
     ageBasis: interval ? 'completed-interval' : eventOnly ? 'event-only' : periodicAge !== null ? 'periodic-report' : 'source-observation',
     ...(periodicAge !== null ? { reportIntervalMs: state.reportPolicy.reportIntervalMs,
       reportGraceMs: state.reportPolicy.reportGraceMs ?? 0 } : {}),
+    ...(evidenceDeadline !== null ? { evidenceExpiresAt: evidenceDeadline } : {}),
     ...(held ? { attentionAfterMs: INDOOR_ATTENTION_MS } : {}) };
 }
 
@@ -322,8 +337,8 @@ export class Recorder {
     const pending = this.pendingSignals.get(key);
     if (!pending) return;
     const { state, endAt, sourceTime, samples } = pending;
-    this.store.db.prepare('UPDATE recorder_coverage SET end_at=?,source_time=?,samples=samples+? WHERE id=?')
-      .run(endAt, sourceTime, samples, state.coverageId);
+    this.store.db.prepare('UPDATE recorder_coverage SET end_at=?,source_time=?,samples=samples+?,evidence=? WHERE id=?')
+      .run(endAt, sourceTime, samples, state.recordingEvidence ? JSON.stringify(state.recordingEvidence) : null, state.coverageId);
     this.store.setState(stateKey(key), state);
     this.setPendingSignal(key, null);
   }
@@ -345,6 +360,7 @@ export class Recorder {
       return { changed: false };
     return this.store.transaction(() => {
       const s = this.signalState(reading, at), wait = reading.raw.sourceTimeWait;
+      this.savePendingSignal(s.key);
       // A queued writer can save the pause after the new source clock. Native
       // ordering and its actual admission proof govern the report, not gap time.
       const newReport = Number.isSafeInteger(reading.sourceTime) && reading.sourceTime > s.lastSourceTime;
@@ -358,19 +374,21 @@ export class Recorder {
       const gapRaw = gap?.raw ? JSON.parse(gap.raw) : null;
       if (gap?.value !== null || gap.received_at !== wait.startedAt || !same(gapRaw?.sourceTimeWait, wait))
         return { changed: false };
-      const prior = this.store.db.prepare(`SELECT c.source_time,c.end_at,o.raw,o.value FROM active_recorder_coverage c
+      const prior = this.store.db.prepare(`SELECT c.source_time,c.end_at,c.evidence,o.raw,o.value FROM active_recorder_coverage c
         JOIN active_observations o ON o.id=c.observation_id WHERE c.source=? AND c.device=? AND c.signal=?
         AND c.status='fresh' AND c.end_at<=? AND ${selectedCoverageSpan('c', '?')}
         ORDER BY c.end_at DESC,c.start_at DESC,c.id DESC LIMIT 1`)
         .get(reading.source, reading.device, reading.signal, wait.startedAt, wait.startedAt);
       const priorRaw = prior?.raw ? JSON.parse(prior.raw) : null;
+      const priorEvidence = prior?.evidence ? JSON.parse(prior.evidence) : null;
       const probe = evidence => evidence && Object.fromEntries(['method', 'meterSignature', 'startedAt', 'completedAt',
-        'powerRiseW', 'powerFallW', 'minimumChangeW', 'phases'].map(key => [key, evidence[key]]));
+        'maxAgeMs', 'powerRiseW', 'powerFallW', 'minimumChangeW', 'phases'].map(key => [key, evidence[key]]));
       const fields = reading.value === 0 ? ['power'] : ['power', 'fanSpeed'];
       if (!prior || prior.source_time !== s.lastSourceTime || prior.value !== s.previousValue
         || priorRaw?.identity !== wait.identity || !same(probe(priorRaw.locationEvidence), probe(reading.raw.locationEvidence))
-        || fields.some(field => priorRaw.fieldTimestamps?.[field] !== undefined
-          && (!finiteTime(priorRaw.fieldTimestamps[field]) || reading.raw.fieldTimestamps?.[field] < priorRaw.fieldTimestamps[field])))
+        || fields.some(field => (priorEvidence?.[field] ?? priorRaw.fieldTimestamps?.[field]) !== undefined
+          && (!finiteTime(priorEvidence?.[field] ?? priorRaw.fieldTimestamps[field])
+            || reading.raw.fieldTimestamps?.[field] < (priorEvidence?.[field] ?? priorRaw.fieldTimestamps[field]))))
         return { changed: false };
       const previousReport = s.lastReportTime;
       if (!previousReport || previousReport.sourceTime !== s.lastSourceTime) return { changed: false };
@@ -404,12 +422,14 @@ export class Recorder {
       if (!(newReport ? isCaravanRecordingAdmission(observation) : isCaravanRecordingRecovery(observation))) return { changed: false };
       observation.id = this.store.observation(observation);
       s.last = { id: observation.id, value: observation.value, sourceTime: observation.sourceTime, receivedAt: at,
-        quality: observation.quality, semanticQuality: semanticQuality(raw) };
+        quality: observation.quality, semanticQuality: semanticQuality(raw, observation) };
       s.reportPolicy = { reportIntervalMs: raw.reportIntervalMs, reportGraceMs: raw.reportGraceMs ?? 0 };
       s.status = 'fresh'; s.recordingPolicy = raw.recorder.policy; s.lastPollAt = at; s.reportUnavailableSince = null;
+      s.recordingEvidence = caravanRecordingEvidence(observation);
       s.coverageId = Number(this.store.db.prepare(`INSERT INTO recorder_coverage
-        (source,device,signal,status,start_at,end_at,source_time,observation_id,samples) VALUES(?,?,?,?,?,?,?,?,?)`)
-        .run(reading.source, reading.device, reading.signal, 'fresh', at, at, reading.sourceTime, observation.id, Number(newReport)).lastInsertRowid);
+        (source,device,signal,status,start_at,end_at,source_time,observation_id,samples,evidence) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+        .run(reading.source, reading.device, reading.signal, 'fresh', at, at, reading.sourceTime, observation.id, Number(newReport),
+          s.recordingEvidence ? JSON.stringify(s.recordingEvidence) : null).lastInsertRowid);
       s.coverageObservationId = observation.id;
       if (newReport) { this.scale(s, reading.value, reading.sourceTime); s.lastSourceTime = reading.sourceTime; s.lastReportTime = report; }
       this.count(s, at, { saved: true, bytes: Buffer.byteLength(JSON.stringify(observation)), polls: Number(newReport) });
@@ -529,6 +549,13 @@ export class Recorder {
     const contact = hostContactReport(o);
     if (q.some(x => /failed|disconnected|fetch-error|acquisition-failed|provider[-_]error/.test(x))) return 'failed';
     if (o.value === null || !Number.isFinite(o.sourceTime) || q.some(x => /missing|invalid|retained|unavailable/.test(x))) return 'unavailable';
+    if (hasCaravanEvidence(o)) {
+      const evidence = caravanRecordingEvidence(o), deadline = caravanEvidenceDeadline(evidence);
+      const availableAt = observationAvailableAt(o) ?? o.receivedAt;
+      if (deadline === null || Math.max(evidence.power, evidence.fanSpeed ?? 0, evidence.meter?.observedAt ?? 0) > availableAt
+        || o.sourceTime !== Math.max(evidence.power, evidence.fanSpeed ?? evidence.power)) return 'unavailable';
+      if (availableAt >= deadline) return 'stale';
+    }
     if (q.some(x => /stale|out-of-order/.test(x)) || !observationTimeAdmitted(o, o.raw?.timeAdmission ? this.clock() : Infinity)
       || (temperatureReportMaxAge(o) !== null
         ? o.receivedAt - o.sourceTime >= sourceAge(o) : o.receivedAt - o.sourceTime > sourceAge(o))
@@ -627,7 +654,7 @@ export class Recorder {
     return [...history.values()].sort((a,b) => a.bucket - b.bucket);
   }
 
-  coverage(state, o, status, freshUpdate = true, reportPolicyChanged = false) {
+  coverage(state, o, status, freshUpdate = true, reportPolicyChanged = false, evidence = null) {
     // Coverage describes successful source updates and availability separately
     // from the value approximation. An unchanged OLD timestamp never advances
     // measurement freshness, even though its HTTP request succeeded.
@@ -635,7 +662,7 @@ export class Recorder {
     const observed = Number.isFinite(o.sourceTime) ? o.sourceTime : null;
     // Polling a cached MQTT reading is not another detector report. Keep the
     // compact span's endpoint on the actual report's source and receipt clocks.
-    if (temperatureReportMaxAge(o) !== null && status === 'fresh' && !freshUpdate) {
+    if (!evidence && temperatureReportMaxAge(o) !== null && status === 'fresh' && !freshUpdate) {
       if (reportPolicyChanged) {
         // A revised remaining lifetime changes availability from this receipt,
         // but is not another source measurement or an edit of earlier history.
@@ -653,15 +680,17 @@ export class Recorder {
     // expiry of the previous source reading: a later arrival cannot prove that
     // an earlier controller already had fresh data. This makes every historical
     // prefix of an extended span independently valid.
-    const continuous = status !== 'fresh' || !Number.isFinite(state.lastSourceTime)
-      || observed - state.lastSourceTime <= sourceAge(o) && at - state.lastSourceTime <= sourceAge(o);
+    const continuous = evidence ? caravanEvidenceContinues(state.recordingEvidence, evidence, at)
+      : status !== 'fresh' || !Number.isFinite(state.lastSourceTime)
+        || observed - state.lastSourceTime <= sourceAge(o) && at - state.lastSourceTime <= sourceAge(o);
     if (state.coverageId && state.status === status && state.coverageObservationId === state.last?.id && continuous) {
-      this.store.db.prepare('UPDATE recorder_coverage SET end_at=?,source_time=?,samples=samples+1 WHERE id=?')
-        .run(at, observed, state.coverageId);
+      this.store.db.prepare('UPDATE recorder_coverage SET end_at=?,source_time=?,samples=samples+?,evidence=? WHERE id=?')
+        .run(at, observed, evidence ? Number(freshUpdate) : 1, evidence ? JSON.stringify(evidence) : null, state.coverageId);
     } else {
       state.coverageId = Number(this.store.db.prepare(`INSERT INTO recorder_coverage
-        (source,device,signal,status,start_at,end_at,source_time,observation_id,samples) VALUES(?,?,?,?,?,?,?,?,1)`)
-        .run(o.source,o.device,o.signal,status,at,at,observed,state.last?.id ?? null).lastInsertRowid);
+        (source,device,signal,status,start_at,end_at,source_time,observation_id,samples,evidence) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+        .run(o.source,o.device,o.signal,status,at,at,observed,state.last?.id ?? null,
+          evidence ? Number(freshUpdate) : 1, evidence ? JSON.stringify(evidence) : null).lastInsertRowid);
       state.coverageObservationId = state.last?.id ?? null;
     }
     state.status = status;
@@ -702,6 +731,7 @@ export class Recorder {
             || s.reportUnavailableSince!=null && (o.sourceTime<s.reportUnavailableSince || o.sourceTime<=s.lastSourceTime))))
         o.quality = flags([...o.quality, 'out-of-order-source-time']);
       const status = this.classify(o,s), fresh = status === 'fresh';
+      const evidence = fresh ? caravanRecordingEvidence(o) : null;
       const freshUpdate = fresh && (hostContactReport(o) || s.lastSourceTime === null || o.sourceTime > s.lastSourceTime
         || o.sourceTime === s.lastSourceTime && s.previousValue !== o.value);
       // Coverage stores admission endpoints. Keep the latest genuine report's
@@ -714,7 +744,7 @@ export class Recorder {
       s.recordingPolicy = policy.id;
       const changed = s.last === null || o.value !== s.last.value;
       const transition = s.last && (status !== s.status || !same(o.quality,s.last.quality)
-        || o.unit!==s.unit || !same(semanticQuality(o.raw),s.last.semanticQuality??{}));
+        || o.unit!==s.unit || !same(semanticQuality(o.raw,o),s.last.semanticQuality??{}));
       const crossingZero = /pump_speed$/.test(o.signal) && s.last && (o.value === 0) !== (s.last.value === 0);
       const threshold = Math.max(valueFloor(o),s.scale * (budget?.tolerance ?? 0),numericalFloor(o.value,s.last?.value));
       let reason = !s.last ? 'initial' : transition ? 'quality-or-availability' : force ? 'forced'
@@ -752,22 +782,25 @@ export class Recorder {
         committed.id = this.store.observation(committed);
         s.last = { id:committed.id,value:o.value,sourceTime:o.sourceTime,receivedAt:o.receivedAt,
           ...(o.raw?.timeAdmission ? { timeAdmission: o.raw.timeAdmission } : {}),
-          quality:o.quality,usableForControl:o.raw?.usableForControl,semanticQuality:semanticQuality(o.raw) };
+          quality:o.quality,usableForControl:o.raw?.usableForControl,semanticQuality:semanticQuality(o.raw,o) };
         s.unit=o.unit;
       }
       // Only an exactly unchanged, continuously fresh scalar can wait. A gap,
       // actual change, force, policy/quality boundary or energy receipt flushes
       // its earlier endpoint before recording the new evidence.
       const pending = this.pendingSignals.get(s.key);
-      const coalesce = !this.metadataHolds.size && COALESCED_SOURCES.has(o.source) && o.unit !== 'kWh' && !reason && !force
-        && freshUpdate && fresh && prior && o.value === prior.value && !transition && !reportPolicyChanged
+      const coalesce = !this.metadataHolds.size && (COALESCED_SOURCES.has(o.source) || evidence) && o.unit !== 'kWh' && !reason && !force
+        && (evidence ? caravanEvidenceContinues(s.recordingEvidence, evidence, observationAvailableAt(o) ?? o.receivedAt) : freshUpdate)
+        && fresh && prior && o.value === prior.value && !transition && !reportPolicyChanged
         && s.status === status && s.coverageId && s.coverageObservationId === prior.id
         && Number.isFinite(s.lastSourceTime) && o.sourceTime - s.lastSourceTime <= sourceAge(o)
         && o.receivedAt - s.lastSourceTime <= sourceAge(o);
       if (!coalesce) {
         if (pending) this.savePendingSignal(s.key);
-        this.coverage(s,o,status,freshUpdate,reportPolicyChanged);
+        this.coverage(s,o,status,freshUpdate,reportPolicyChanged,evidence);
       }
+      if (evidence) s.recordingEvidence = evidence;
+      else delete s.recordingEvidence;
       if (periodic) s.reportUnavailableSince = fresh ? null : s.reportUnavailableSince ?? o.receivedAt;
       const elapsed = s.lastPollAt === null ? 0 : Math.min(o.receivedAt - s.lastPollAt,sourceAge(o));
       // Error is the held saved value at every acquisition, time weighted so
@@ -781,7 +814,8 @@ export class Recorder {
       s.lastPollAt = o.receivedAt;
       if (fresh) s.lastSourceTime = Math.max(s.lastSourceTime ?? o.sourceTime,o.sourceTime);
       if (coalesce) this.setPendingSignal(s.key, { state: s, firstAt: pending?.firstAt ?? o.receivedAt,
-        endAt: o.receivedAt, sourceTime: o.sourceTime, samples: (pending?.samples ?? 0) + 1 });
+        endAt: observationAvailableAt(o) ?? o.receivedAt, sourceTime: o.sourceTime,
+        samples: (pending?.samples ?? 0) + (evidence ? Number(freshUpdate) : 1) });
       else this.store.setState(stateKey(s.key),s);
       this.store.setState(STORAGE_METRICS_KEY,g);
       this.flushMetadata(o.receivedAt);
@@ -1024,11 +1058,12 @@ export class Recorder {
     if (reportAge !== null) {
       const span = this.store.db.prepare(`SELECT * FROM active_recorder_coverage AS recorder_coverage WHERE source=? AND device=? AND signal=?
         AND start_at<=? AND ${selectedCoverageSpan('recorder_coverage')} ORDER BY start_at DESC,id DESC LIMIT 1`).get(o.source,o.device,signal,at);
-      const available = span?.status==='fresh' && at<span.source_time+reportAge;
+      const deadline = hasCaravanEvidence(o) ? caravanCoverageDeadline(o, span, at) : span?.source_time + reportAge;
+      const available = span?.status==='fresh' && deadline !== null && at<deadline;
       return {...o,value:available?o.value:null,quality:available?o.quality:flags([...o.quality,span?.status==='fresh'?'missing-report':span?.status??'unavailable']),
         reportObservedAt:span?.end_at<=at?span.source_time:null,
         reportReceivedAt:span?.end_at<=at?span.end_at:null,
-        reportExpiresAt:available?Math.min(span.source_time+reportAge,span.end_at>at?at:Infinity):null};
+        reportExpiresAt:available?Math.min(deadline,span.end_at>at?at:Infinity):null};
     }
     const coverage = this.store.db.prepare(`SELECT * FROM active_recorder_coverage AS recorder_coverage WHERE source=? AND device=? AND signal=? AND start_at<=?
       AND ${selectedCoverageSpan('recorder_coverage')} ORDER BY start_at DESC,id DESC LIMIT 1`).get(o.source,o.device,signal,at);
@@ -1053,7 +1088,7 @@ export class Recorder {
   sourceStatus(now = this.clock()) {
     const states = this.store.db.prepare("SELECT value FROM state WHERE key LIKE 'recorder:signal:%'").all()
       .map(row=>JSON.parse(row.value)).filter(isRecordedDataset);
-    const latestCoverage = this.store.db.prepare('SELECT source_time FROM recorder_coverage WHERE id=?');
+    const latestCoverage = this.store.db.prepare('SELECT source_time,evidence FROM recorder_coverage WHERE id=?');
     const parameters = states.map(state=>sourceParameter(state,
       state.coverageId ? latestCoverage.get(state.coverageId) : null,now,this.observedStreams))
       .sort((a,b)=>a.signal.localeCompare(b.signal));
@@ -1085,11 +1120,12 @@ export class Recorder {
     // deadlines a separate revision so long plots can refresh without following
     // every fast power acquisition. Device identifiers stay out of the revision.
     const temperatureReportRevision = JSON.stringify(states.filter(s=>s.reportPolicy && s.signal!=='dhwr_active')
-      .map(s=>[s.signal,s.lastSourceTime,s.coverageId,s.status]).sort((a,b)=>a[0].localeCompare(b[0])||a[2]-b[2]));
+      .map(s=>[s.signal,s.lastSourceTime,s.coverageId,s.status,caravanEvidenceDeadline(s.recordingEvidence)])
+      .sort((a,b)=>a[0].localeCompare(b[0])||a[2]-b[2]));
     const sourceReportRevision = JSON.stringify(states.filter(hasSourceReportCoverage)
       .map(s=>[s.source,s.signal,s.lastSourceTime,s.coverageId,s.status])
       .sort((a,b)=>a[0].localeCompare(b[0])||a[1].localeCompare(b[1])||a[3]-b[3]));
-    const latestCoverage = this.store.db.prepare('SELECT source_time FROM recorder_coverage WHERE id=?');
+    const latestCoverage = this.store.db.prepare('SELECT source_time,evidence FROM recorder_coverage WHERE id=?');
     // Complete hours already have exact counts and timestamp extrema. Only the
     // four rolling-window edges require reading observation index entries;
     // increasing archive density must not turn each control tick into a week scan.
@@ -1193,7 +1229,7 @@ function compactRaw(raw, observation) {
       && evidence.completedAt >= evidence.startedAt && evidence.meterObservedAt >= evidence.startedAt
       && ['powerRiseW', 'powerFallW', 'minimumChangeW'].every(key => Number.isFinite(evidence[key]) && evidence[key] >= 3))
       result.locationEvidence = Object.fromEntries(['method', 'meterSignature', 'startedAt', 'completedAt',
-        'meterObservedAt', 'powerRiseW', 'powerFallW', 'minimumChangeW'].map(key => [key, evidence[key]]));
+        'meterObservedAt', 'maxAgeMs', 'powerRiseW', 'powerFallW', 'minimumChangeW'].map(key => [key, evidence[key]]));
     if (result.locationEvidence && evidence.phases && ['baseline', 'on', 'off'].every(phase => {
       const row = evidence.phases[phase];
       return row && (finiteTime(row.commandAt) || phase === 'baseline' && row.commandAt === null)

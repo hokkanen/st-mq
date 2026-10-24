@@ -180,7 +180,7 @@ test('retired inline bodies, unknown versions, malformed references and unbounde
 });
 
 test('unsupported persisted adaptive state rejects before writable setup and preserves main/WAL evidence', t => {
-  assert.equal(SCHEMA_VERSION, 34);
+  assert.equal(SCHEMA_VERSION, 35);
   for (const keepOpen of [false, true]) {
     const { store, directory } = fixture(t, true);
     store.transaction(() => store.db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)')

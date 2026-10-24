@@ -154,6 +154,7 @@ test('required Caravan power queued behind a counter still pauses recording unti
 
 for (const source of ['native meter', 'MQTT meter', 'appliance snapshot']) test(`a bounded ${source} wait records its gap and resumes unchanged state automatically`, async t => {
   const f = fixture(t, { genericMeter: source === 'MQTT meter' }); await f.qualifyManaged();
+  f.recorder.flushMetadata(f.now(), { force: true });
   const before = f.recorder.latestCommitted(SIGNAL), commands = structuredClone(f.commands);
   const earlierCoverage = f.store.db.prepare('SELECT * FROM recorder_coverage WHERE signal=? ORDER BY id').all(SIGNAL);
   f.advance(1000); const gap = f.now(), lead = 40;
@@ -379,8 +380,9 @@ test('fresh meter reports refresh only the remaining recording deadline and pres
     assert.equal(f.recording().freshness.sourceObservedAt, source);
   }
   const event = f.recorder.latestCommitted(SIGNAL);
-  assert.equal(event.raw.timeBasis, 'report-policy-change');
-  assert.equal(event.sourceTime, source); assert.equal(event.raw.originalReportReceivedAt, receipt);
+  assert.equal(event.raw.timeBasis, 'mqtt-live-status');
+  assert.equal(event.reportObservedAt, source);
+  assert.equal(event.raw.originalReportReceivedAt ?? event.receivedAt, receipt);
   assert.equal(event.raw.reportIntervalMs, 180000, 'The meter extension remains capped by original required appliance fields');
   const rows = f.store.observations({ signal: SIGNAL }), coverage = f.store.db.prepare('SELECT * FROM recorder_coverage WHERE signal=? ORDER BY id').all(SIGNAL);
   f.capture.tick(); f.capture.tick(); await settle();

@@ -17,7 +17,7 @@ const NEW_SOURCE = GAP + 500, NEW_FAN = GAP + 400, NEW_DEADLINE = NEW_FAN + MAX_
 const IDENTITY = 'a'.repeat(64), METER = 'b'.repeat(64);
 const wait = () => ({ startedAt: GAP, recordingSince: BASE + 20_000,
   identity: IDENTITY, meterSignature: METER, deadline: DEADLINE });
-const evidence = () => ({ method: 'native-power-cycle-v1', meterSignature: METER,
+const evidence = () => ({ method: 'native-power-cycle-v1', meterSignature: METER, maxAgeMs: MAX_AGE,
   startedAt: BASE, completedAt: BASE + 20_000, meterObservedAt: SOURCE,
   powerRiseW: 5, powerFallW: 5, minimumChangeW: 3,
   phases: {
@@ -492,6 +492,7 @@ test('HistoryMerge refuses Caravan recovery over contrary master evidence', asyn
       quality: outage ? ['missing', scenario === 'real-outage' ? 'mqtt-disconnected' : 'invalid-value'] : [],
       raw: { ...reading().raw, fieldTimestamps: { power: GAP + 100, fanSpeed: GAP + 100 } } });
     if (scenario === 'earlier-invalid-before-matching-gap') recorder.record(f.rows()[1]);
+    recorder.flush(RECOVERY, { force: true });
     const result = await merge(target, f.store);
     assert(result.counts.conflicts > 0);
     assert.equal(recoveryRows(target).length, 0, 'The donor cannot reopen the master connection');

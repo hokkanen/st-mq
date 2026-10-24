@@ -15,11 +15,11 @@ export function selectedCoverageSpan(alias, through = null, futureFallback = fal
       OR (${alias}.end_at>${through} AND +continuation.end_at>${through})) AND ${dominates})`
     : `${dominates} ${through === null ? '' : `AND +continuation.end_at<=${through}`}`;
   return `NOT EXISTS (SELECT 1 FROM active_recorder_coverage continuation
-    WHERE ${alias}.status='fresh' AND ${alias}.samples>0
+    WHERE ${alias}.status='fresh' AND (${alias}.samples>0 OR ${alias}.evidence IS NOT NULL)
       AND continuation.source=${alias}.source AND continuation.device=${alias}.device
       AND continuation.signal=${alias}.signal AND continuation.status='fresh'
       AND continuation.start_at=${alias}.start_at AND continuation.observation_id=${alias}.observation_id
-      AND continuation.samples>0 AND (${order})
+      AND (continuation.samples>0 OR continuation.evidence IS NOT NULL) AND (${order})
       AND ${alias}.source_time<=${alias}.end_at
       AND continuation.source_time<=continuation.end_at)`;
 }

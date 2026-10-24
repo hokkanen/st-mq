@@ -257,7 +257,7 @@ test('a later fan or humidity report cannot extend an old power observation dead
     fieldTimestamps: { power: INITIAL, fanSpeed: INITIAL + 110_000, humidity: INITIAL + 110_000 } });
   assert.equal(f.status().available, true);
   assert.equal(f.observations.at(-1).sourceTime, INITIAL + 110_000);
-  assert.equal(f.observations.at(-1).raw.reportIntervalMs, 10_000);
+  assert.equal(f.observations.at(-1).raw.reportIntervalMs, 120_000);
   assert.equal(f.observations.at(-1).raw.fieldTimestamps.power, INITIAL);
   assert.equal(f.observations.at(-1).raw.fieldTimestamps.fanSpeed, INITIAL + 110_000);
   f.advance(10_000); f.capture.tick();
@@ -284,7 +284,7 @@ test('a fan-only observation records its explicit level using both source clocks
     fieldTimestamps: { power: INITIAL, fanSpeed: INITIAL + 20_000, humidity: INITIAL + 20_000 } });
   const changed = f.observations.at(-1);
   assert.equal(changed.value, 3); assert.equal(changed.sourceTime, INITIAL + 20_000);
-  assert.equal(changed.raw.reportIntervalMs, 100_000);
+  assert.equal(changed.raw.reportIntervalMs, 120_000);
   assert.deepEqual(changed.raw.fieldTimestamps, { power: INITIAL, fanSpeed: INITIAL + 20_000 });
   f.advance(20_000); f.report({ power: 'on', fanSpeed: 'high', humidity: 51,
     fieldTimestamps: { power: INITIAL, fanSpeed: INITIAL + 20_000, humidity: INITIAL + 40_000 } });
@@ -298,7 +298,7 @@ test('fan expiry creates unknown history on a timer while fresh power still perm
     fieldTimestamps: { power: INITIAL + 110_000, fanSpeed: INITIAL } });
   assert.equal(f.observations.at(-1).value, 2);
   assert.equal(f.observations.at(-1).sourceTime, INITIAL + 110_000);
-  assert.equal(f.observations.at(-1).raw.reportIntervalMs, 10_000);
+  assert.equal(f.observations.at(-1).raw.reportIntervalMs, 120_000);
   f.advance(10_000); f.capture.tick();
   assert.equal(f.observations.at(-1).value, null);
   assert.equal(f.observations.at(-1).sourceTime, null);

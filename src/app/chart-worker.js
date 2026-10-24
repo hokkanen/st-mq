@@ -13,6 +13,7 @@ import { CHART_VIEW_BY_KEY } from '../domain/chart-views.js';
 import { CHARGING_ALLOWANCE_SIGNALS } from '../charging/allowance-history.js';
 import { CHARGING_ALLOWANCE_SERIES } from './chart-charging-allowances.js';
 import { CHART_SOURCE_COVERAGE_SQL, chartReportAge } from './chart-coverage.js';
+import { hasCaravanEvidence, caravanCoverageDeadline } from '../domain/caravan-recording-evidence.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
 import { ENERGY_SIGNALS, HISTORY_AXIS_BY_KEY, MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
 import { createChartQueryContext } from './chart-query-context.js';
@@ -135,7 +136,7 @@ function invalidateChangedRanges() {
 const heatingFingerprint = ({ generatedAt, ...summary }) => JSON.stringify(summary);
 const pendingEnergyFingerprint = (args,range) => JSON.stringify(pendingEnergyObservations(store,args)
   .filter(row=>row.source_time>range.from&&JSON.parse(row.raw).intervalStart<range.to));
-const latestSourceCoverage=db.prepare(`SELECT c.*,o.raw,o.source_time AS observed_at FROM state s
+const latestSourceCoverage=db.prepare(`SELECT c.*,o.unit,o.value,o.raw,o.source_time AS observed_at,o.received_at AS observed_received_at FROM state s
   JOIN active_recorder_coverage c ON c.id=json_extract(s.value,'$.coverageId')
   JOIN active_observations o ON o.id=c.observation_id WHERE s.key LIKE 'recorder:signal:%'
     AND ${CHART_SOURCE_COVERAGE_SQL} ORDER BY c.id`);
@@ -147,7 +148,9 @@ function sourceCoverageFingerprint(args,range) {
     const raw=JSON.parse(row.raw),age=chartReportAge(row,raw);
     if(age===null) continue;
     const confirmed=row.end_at<=args.now?row.source_time:row.observed_at;
-    const end=Math.min(range.to,confirmed+age);
+    const observation={...row,sourceTime:row.observed_at,receivedAt:row.observed_received_at,raw};
+    const deadline=hasCaravanEvidence(observation) ? caravanCoverageDeadline(observation,row,args.now) : confirmed+age;
+    const end=Math.min(range.to,deadline??row.start_at);
     if(end>Math.max(range.from,row.start_at)) spans.push([row.id,end,row.end_at<=args.now]);
   }
   const selected = args.view !== undefined ? CHART_VIEW_BY_KEY[args.view]?.leftSignals.some(signal => CHARGING_ALLOWANCE_SERIES.includes(signal))

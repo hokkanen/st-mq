@@ -2683,8 +2683,9 @@ or the page is hidden; an accepted check continues, and reopening reads its resu
 
 ## Retained storage costs
 
-Unchanged scalar receipts from H66, the Garage adapter and the voltage estimator
-share one bounded metadata flush, normally within 30 seconds. Their original
+Unchanged scalar receipts from H66, the Garage adapter and the voltage estimator,
+and unchanged Caravan appliance evidence renewals, share one bounded metadata
+flush, normally within 30 seconds. Their original
 source/receipt endpoints, coverage samples, sampler state and poll totals are
 coalesced together. A value, quality or reporting-policy change, a real gap or an
 explicit force flush first saves that stream's preceding endpoint. Every accepted
@@ -2697,6 +2698,21 @@ committed endpoints and does not force a write.
 Recovery, revert and restore flush the pending metadata before changing history.
 Confirmations remain immediate for that operation, so its worker compares current
 committed coverage. Ordinary batching resumes after success, failure or cancellation.
+
+Caravan appliance reporting policy retains the configured native maximum age.
+The `recorder_coverage.evidence` endpoint separately retains the latest admitted
+power/fan clocks and supporting meter clock/maximum age. Its earliest independent
+expiry bounds recording and charts; meter renewal never renews native evidence.
+Healthy renewals extend one compact span, without repeating its immutable
+observation or creating a policy-change record. Only a genuinely newer native
+state clock increases the appliance sample count. Actual value, quality,
+association or configured-policy changes flush immediately. Renewal after any
+independent expiry starts another span, retaining the unobserved gap.
+Earlier as-of reads cannot use a future compact endpoint: they conservatively
+use the original observation's evidence, as with other compact source spans.
+Abrupt shutdown can lose the pending unchanged-evidence tail, never manufacture
+committed continuity. Source-time-wait recovery retains its separate prospective
+availability event, physical proof and native restoration/restart protections.
 
 Charging history records meaningful physical, planning, native instruction and
 restriction changes. A brief input-persistence processing gate stays visible in
@@ -2759,7 +2775,7 @@ representation change needs current-schema validation and an intentional fresh
 development database when incompatible; no cleanup should add a migration or
 silently remove evidence.
 
-Current physical schema 34 retains a chronological coverage index for seeking
+Current physical schema 35 retains a chronological coverage index for seeking
 the next boundary in one source/device/signal stream. Charts retain the original
 recovery selection, equal-start ID precedence and full successor timestamps,
 including boundaries beyond the drawn range. They do not materialize all retained

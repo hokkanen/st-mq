@@ -289,7 +289,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const meterSignature = createHash('sha256').update(JSON.stringify({ routeSignature,
       powerMapping: config.readings.filter(row => row.signal === 'caravan_power') })).digest('hex');
     return { watts: reading.value * (reading.unit === 'kW' ? 1000 : 1), observedAt: reading.observedAt,
-      deadline: reading.observedAt + (config.maxAgeMs || settings.maxAgeMs), signature: meterSignature };
+      deadline: reading.observedAt + (config.maxAgeMs || settings.maxAgeMs),
+      maxAgeMs: config.maxAgeMs || settings.maxAgeMs, signature: meterSignature };
   }
   const qualificationSignature = (device, meterSignature) => createHash('sha256').update(JSON.stringify({
     temperatureControl: temperatureControlSignature(device), meterSignature })).digest('hex');
@@ -784,11 +785,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         unit: reading.unit, sourceTime: reading.observedAt, receivedAt: wait ? reading.receivedAt : now, quality: reading.quality,
         raw: { timeBasis: 'mqtt-live-status', ...dehumidifierMetadata(device), availabilityConfirmed: true,
           identity: report.identity, fieldTimestamps: history.fieldTimestamps,
-          reportIntervalMs: locationDeadline - reading.observedAt,
           ...(wait ? { sourceTimeWait: { ...wait }, ...(reading.timeAdmission ? { timeAdmission: reading.timeAdmission } : {}) } : {}),
           ...(meter ? { locationEvidence: { method: 'native-power-cycle-v1',
             ...caravanAssociationProof(passedLocationEvidence(device.temperatureGuard)),
-            meterSignature: meter.signature, meterObservedAt: meter.observedAt } } : {}) } };
+            meterSignature: meter.signature, meterObservedAt: meter.observedAt, maxAgeMs: meter.maxAgeMs } } : {}) } };
       if (wait && device.record !== false) {
         const resumed = engine.recorder?.resumeCaravanRecording(observation, now);
         if (resumed?.changed) engine.rememberObservation?.(resumed.observation, now);

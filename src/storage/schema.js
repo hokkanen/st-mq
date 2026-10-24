@@ -1,10 +1,10 @@
 import { RECOVERY_DEPENDENCY_SCHEMA } from '../recovery/dependencies.js';
 import { journalSchema } from './journal-schema.js';
 // One current physical schema. Startup never converts an existing database.
-export const SCHEMA_VERSION = 34;
-// Index changes do not change journaled rows or their hash interpretation.
+export const SCHEMA_VERSION = 35;
+// Coverage evidence is part of the one current journaled row layout.
 // This is one current layout, not a decoder for an earlier database schema.
-export const JOURNALED_DATA_VERSION = 30;
+export const JOURNALED_DATA_VERSION = 31;
 // Original source rows remain immutable evidence. The active views select the
 // current recovery interpretation without erasing history or changing local IDs.
 export const RECOVERABLE_TABLES = ['annotations', 'counters', 'energy_audits', 'events',
@@ -133,7 +133,7 @@ CREATE TABLE provider_snapshot_fetches (
 CREATE TABLE recorder_coverage (
  id INTEGER PRIMARY KEY, source TEXT NOT NULL, device TEXT NOT NULL, signal TEXT NOT NULL,
  status TEXT NOT NULL, start_at INTEGER NOT NULL, end_at INTEGER NOT NULL,
- source_time INTEGER, observation_id INTEGER REFERENCES observations(id), samples INTEGER NOT NULL);
+ source_time INTEGER, observation_id INTEGER REFERENCES observations(id), samples INTEGER NOT NULL, evidence TEXT);
 CREATE TABLE recorder_metrics (
  key TEXT NOT NULL,bucket INTEGER NOT NULL,polls INTEGER NOT NULL,records INTEGER NOT NULL,
  first_saved_at INTEGER,last_saved_at INTEGER,

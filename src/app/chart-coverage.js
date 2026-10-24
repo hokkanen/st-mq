@@ -2,6 +2,7 @@ import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { H66_MAX_AGE_MS, DEFAULT_SOURCE_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { H66_COVERAGE_SIGNALS, EQUIPMENT_FEEDBACK_SIGNALS, EVENT_CONTACT_SIGNALS } from '../domain/recording-policy.js';
 import { selectedCoverageSpan, nextCoverageStart, nextCoverageId, coverageWindow } from '../storage/coverage-history.js';
+import { hasCaravanEvidence, caravanCoverageDeadline } from '../domain/caravan-recording-evidence.js';
 
 // Projection and cache invalidation must select exactly the same source spans.
 // These fixed deadlines match the recorder; absent device metadata is not an
@@ -74,6 +75,7 @@ function* confirmedReportRows(store,{from,to,input,signals,now=to}) {
   if (!wanted.length) return;
   const window=coverageWindow(store,{signals:wanted,from,through:now,futureFallback:true});
   const sql=`WITH ${window.sql} SELECT c.*,o.value,o.unit,o.quality,o.raw,o.source_time AS original_source_time,
+    o.received_at AS original_received_at,
     ${nextCoverageStart('c', 'history_clock.known_at', true)} AS next_start
     FROM coverage_window w CROSS JOIN active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id
     CROSS JOIN (SELECT ? AS known_at) history_clock
@@ -97,7 +99,9 @@ function* confirmedReportRows(store,{from,to,input,signals,now=to}) {
     // An extended compact span cannot reveal the intermediate receipt times.
     // For an earlier as-of query only its original observation is usable.
     const confirmedAt=row.end_at<=now ? row.source_time : row.original_source_time;
-    const expiry=fresh ? Math.min(confirmedAt+age,next) : next;
+    const observation = { ...row, sourceTime: row.original_source_time, receivedAt: row.original_received_at, raw };
+    const deadline = hasCaravanEvidence(observation) ? caravanCoverageDeadline(observation,row,now) : confirmedAt+age;
+    const expiry=fresh ? Math.min(deadline ?? start,next) : next;
     const end=Math.min(expiry,limit);
     if (end<start) continue;
     const point=(at,value,suffix,status=row.status)=>({

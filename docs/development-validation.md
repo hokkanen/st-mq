@@ -105,6 +105,12 @@ glyphs, awaits chart painting after legend changes and publishes synthetic provi
 status before navigation. These checks do not establish physical charger behavior.
 
 `test/recorder-metadata-batching.test.js` verifies unchanged-stream transaction
+coalescing. `test/caravan-evidence-renewal.test.js` additionally checks independent
+native/meter expiry, real outages, bounded renewal writes, original clocks,
+historical prefixes, recovery, failed writer COMMIT, restart and real chart-worker
+cache refresh without another value observation. These are offline checks; they
+do not establish installed SD-card latency or annual database savings.
+The metadata-batching suite retains its checks for transaction
 coalescing, exact coverage endpoints/counts, immediate value/quality/gap boundaries,
 rollback, failed worker COMMIT, exact retry and restart. Recording status remains
 read-only and reflects committed endpoints. `test/charging-plan-snapshot.test.js`
