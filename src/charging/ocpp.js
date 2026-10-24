@@ -521,9 +521,19 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       && !['Unavailable', 'Faulted', 'Reserved'].includes(snapshot.connectorStatus)
       && !snapshot.appControl?.faulted && !snapshot.appControl?.authorizationBlocked;
     const sessionPaused = sessionPauseActive();
+    const sessionPauseConfirmed = sessionPaused && currentOwnership && state.owned?.purpose === 'session-pause'
+      && state.owned.connectedAt === desired.sessionPause.connectedAt && state.owned.requestedAt >= desired.sessionPause.requestedAt
+      && pauseConfirmed && fresh(snapshot.powerAt, now);
+    // Fresh stopping evidence can arrive before its witness save completes.
+    // Keep the public phase aligned with that independently confirmed Pause;
+    // this projection neither completes the save nor grants a command lease.
+    const confirmedPausePhase = phase === 'pause-unconfirmed' && sessionPauseConfirmed
+      && hasAuthority() && !state.pending && !errorCode;
     const nativeSchedule = snapshot && staleAppControl() ? state.appControl?.schedule
       : snapshot?.appControl?.schedule ?? state.appControl?.schedule;
-    return { ...clone(state), phase, reason, errorCode, reasonCode, enabled: desired.enabled === true,
+    return { ...clone(state), phase: confirmedPausePhase ? 'paused' : phase,
+      reason: confirmedPausePhase ? 'Paused until unplugging. Charge now or Use automatic can resume charging.' : reason,
+      errorCode, reasonCode, enabled: desired.enabled === true,
       ownsInstruction: currentOwnership, pauseConfirmed: currentOwnership && pauseConfirmed && fresh(snapshot.powerAt, now),
       handoverConfirmed, planningRevision, takeover: takeoverStatus(),
       takeoverRequired: Boolean(['stop', 'schedule', 'window'].includes(state.manual?.kind)
@@ -531,9 +541,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       identification: identification ? clone(identification) : null,
       sessionPause: { available: Boolean(pauseAvailable), reason: pauseAvailable ? null : 'Fresh connected charger state and control access are required to pause charging.',
         requestedAt: scopedSessionPause() ? desired.sessionPause.requestedAt : null, active: sessionPaused,
-        confirmed: sessionPaused && currentOwnership && state.owned?.purpose === 'session-pause'
-          && state.owned.connectedAt === desired.sessionPause.connectedAt && state.owned.requestedAt >= desired.sessionPause.requestedAt
-          && pauseConfirmed && fresh(snapshot.powerAt, now), supersededAt: sessionPauseSupersededAt() },
+        confirmed: sessionPauseConfirmed, supersededAt: sessionPauseSupersededAt() },
       externalStopAt: state.manual?.kind === 'stop' ? state.manual.at : snapshot && nativeStopped()
         ? Math.max(snapshot?.appControl?.stopAt ?? -1, state.appControl?.stopAt ?? -1) : null,
       externalStop: state.manual?.kind === 'stop' && state.manual.localStop ? clone(state.manual.localStop) : null,

@@ -97,7 +97,7 @@ const IDENTIFICATION_CAUSES = {
   'current-ambiguous': 'Charger currents do not yet distinguish the Tesla connection',
   'awaiting-evidence': 'Waiting for matching vehicle evidence',
   'awaiting-stop-confirmation': 'Waiting for physical stop confirmation',
-  'observing-charge': 'Observing charging for a usable BMW baseline',
+  'observing-charge': 'Observing charging for matching vehicle evidence',
   'waiting-for-charging': 'Waiting for the vehicle to begin charging',
   'probe-energy-limit': 'Extra charging ended at the probe energy limit; passive matching continues',
   'probe-time-limit': 'Extra charging ended at the safety time limit; passive matching continues',

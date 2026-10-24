@@ -14,7 +14,7 @@ const START = Date.parse('2026-09-24T09:00:00Z'), MINUTE = 60_000, scope = 'a'.r
 const plan = (startAt, extra = {}) => ({ id: 'synthetic-plan', startAt, feasible: true, periods: [{ startAt, endAt: null }], ...extra });
 function fixture({ initialState = null, identification = null, nativeTakeover = false, getPlan, requestMeterReadback } = {}) {
   let now = START, authority = true, admission = true, connected = true, confirmed = true, transactionId = 7, connectionId = 'synthetic-socket', physicalPause = true;
-  let stored = null, saveError = false, witnessSaveError = false, interceptor = null, appControl = null, snapshotChanges = {};
+  let stored = null, saveError = false, witnessSaveError = false, saveHook = null, interceptor = null, appControl = null, snapshotChanges = {};
   const profiles = new Map(), calls = [], saves = [], nativeCalls = [];
   const isPausing = () => [...profiles.values()].some(row => row.transactionId === transactionId
     && Date.parse(row.validFrom) <= now && (row.validTo === undefined || Date.parse(row.validTo) > now));
@@ -55,13 +55,17 @@ function fixture({ initialState = null, identification = null, nativeTakeover = 
     getIdentification: snapshot => typeof identification === 'function' ? identification(snapshot) : identification,
     saveState: state => {
       if (saveError || witnessSaveError && state.pending?.instruction.pauseRequestedAt !== undefined) throw Error('synthetic disk error');
-      stored = structuredClone(state); saves.push(stored);
+      const finish = () => { stored = structuredClone(state); saves.push(stored); };
+      const pending = saveHook?.(state);
+      if (pending) return pending.then(finish);
+      finish();
     } });
   return { controller, adapter, calls, saves, profiles, nativeCalls, get stored() { return stored; }, get now() { return now; },
     advance: ms => { now += ms; }, authority: value => { authority = value; }, admission: value => { admission = value; }, connected: value => { connected = value; },
     confirmed: value => { confirmed = value; }, transaction: value => { transactionId = value; },
     physicalPause: value => { physicalPause = value; }, saveError: value => { saveError = value; },
     witnessSaveError: value => { witnessSaveError = value; },
+    saveHook: value => { saveHook = value; },
     intercept: value => { interceptor = value; }, app: value => { appControl = value; },
     snapshot: value => { snapshotChanges = value; },
     identify: value => { identification = value; },
@@ -1816,6 +1820,35 @@ test('a pending automatic takeover preserves the pause until transaction recover
 });
 
 const sessionPause = { connectedAt: START - MINUTE, requestedAt: START };
+
+test('late physical Pause confirmation updates the public phase before a delayed witness save', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  f.snapshot({ statusAt: START, powerAt: START - 1 });
+  const first = await f.controller.update({ enabled: true, sessionPause });
+  assert.equal(first.phase, 'pause-unconfirmed');
+  assert.equal(first.sessionPause.confirmed, false);
+  const prior = structuredClone(f.stored), nativeWrites = writes(f).length;
+  let entered, release;
+  const started = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  f.saveHook(state => { if (state.pauseWitness) { entered(); return gate; } });
+  f.advance(1000); f.snapshot({ statusAt: START, powerAt: f.now });
+  const update = f.controller.update();
+  await started;
+  try {
+    const view = f.controller.status();
+    assert.equal(view.sessionPause.confirmed, true);
+    assert.equal(view.phase, 'paused');
+    assert.match(view.reason, /Paused until unplugging/);
+    assert.deepEqual(f.stored, prior, 'Presentation does not complete the pending witness save');
+    assert.equal(writes(f).length, nativeWrites, 'Confirmation does not repeat a native setting');
+    f.authority(false);
+    assert.equal(f.controller.status().phase, 'pause-unconfirmed', 'Authority loss keeps the phase conservative');
+    f.authority(true); f.advance(61_000);
+    assert.equal(f.controller.status().sessionPause.confirmed, false);
+    assert.equal(f.controller.status().phase, 'pause-unconfirmed', 'A pending save cannot renew physical freshness');
+  } finally { f.saveHook(null); release(); await update; }
+});
 
 test('session pause is a strict nonexpiring zero profile in the single owned slot', async t => {
   const f = fixture(); t.after(() => f.controller.close());

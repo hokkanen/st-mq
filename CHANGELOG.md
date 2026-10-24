@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep local charger Pause status consistent when fresh stopping evidence arrives
+  before its witness save finishes. Retain command, ownership and freshness gates.
+  Describe identification observations without assuming that the vehicle is BMW.
+
 - Describe unavailable current Pause confirmation without claiming that the
   charger never confirmed stopping. Preserve the physical-evidence age limit
   and keep the saved pause distinct from the latest measurement.

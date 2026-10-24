@@ -13,6 +13,15 @@ test('flexibility report evidence distinguishes approval, cancellation, and cons
   assert.match(canceled.after, /Allowance canceled.*9 Oct/);
 });
 
+test('shared identification observation wording does not identify the vehicle as BMW', () => {
+  for (const vehicleId of ['tesla', 'bmw']) {
+    const facts = Object.fromEntries(chargingReportFacts({ current: { vehicleId,
+      identification: 'charging', identificationReason: 'observing-charge' } }));
+    assert.match(facts.Identification, /Observing charging for matching vehicle evidence/);
+    assert.doesNotMatch(facts.Identification, /BMW/);
+  }
+});
+
 function fixture() {
   const document = { activeElement: null };
   class Node {
