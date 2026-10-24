@@ -70,6 +70,7 @@ const SCHEDULE_LABELS = { none: 'No controller charging schedule', proposed: 'Pr
 const PLAN_CAUSES = { 'control-unsupported': 'Scheduling control is unsupported', disabled: 'Automatic charging is off',
   observing: 'Observing only', manual: 'Manual instructions have priority', released: 'Charging permission released',
   disconnected: 'Vehicle disconnected', unavailable: 'Planning reason unavailable', 'charge-now': 'Charge now requested',
+  'session-pause': 'Paused here until unplugging',
   'cheapest-feasible-periods': 'Cheapest feasible charging periods', 'cheapest-feasible-start': 'Cheapest feasible charging start',
   'minimum-already-satisfied': 'Requested charge is already satisfied', 'vehicle-start-after-deadline': 'Vehicle start is after ready-by',
   'multiple-external-load-balancers': 'Multiple external load balancers cannot be allocated together',
@@ -117,8 +118,9 @@ function controlText(value = {}, snapshot = false) {
   const automatic = snapshot ? value.automatic : value.automaticEnabled;
   const permission = automatic === true ? 'Automatic charging on' : automatic === false ? 'Automatic charging off' : 'Automatic charging state unknown';
   const extra = value.chargeNow === true ? ' · Charge now on' : '';
-  const schedule = SCHEDULE_LABELS[value.scheduleState] ?? 'Schedule state unknown';
-  const priority = value.manual === true ? ' · Manual charger instruction has priority' : '';
+  const pausedHere = !snapshot && value.reasonCode === 'session-pause';
+  const schedule = pausedHere ? 'Paused here until unplugging' : SCHEDULE_LABELS[value.scheduleState] ?? 'Schedule state unknown';
+  const priority = value.manual === true && !pausedHere ? ' · Manual charger instruction has priority' : '';
   const identification = value.identificationActive === true ? ' · Identification check in progress'
     : value.identification === 'observing' ? ' · Identification awaiting matching reports' : '';
   const uncertain = value.pending === true ? ' · Charger instruction unconfirmed'

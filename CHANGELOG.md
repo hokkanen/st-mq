@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Explain the dashboard Pause beside disabled identification controls and in
+  session reports. Keep that pause distinct from an external charger instruction
+  and show its planning reason instead of an unavailable-reason placeholder.
+
 - Restore Caravan's recorded slave view: air temperature/humidity, dated daily
   energy and interval-average power, appliance/fan setting, and saved Automatic
   power thresholds. Keep live controls and unrecorded native settings separate.

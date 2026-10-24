@@ -31,6 +31,7 @@ test('disabled Identify explains current prerequisites separately from the previ
   const document = documentFixture(), $ = id => document.getElementById(id);
   const panel = createChargingPanel({ document, request: async () => { throw new Error('No request expected'); } });
   for (const [reason, text] of [['vehicle-feed-stale', /current vehicle report/], ['charger-fault', /reports a fault/],
+    ['manual-stop', /Pause charging is active.*Charge now or Use automatic/],
     ['charging-authorization', /requires authorization/], ['charger-disabled', /disabled on the charger/],
     ['current-test-restoration-pending', /must be restored/]]) {
     panel.update(status({ ...connected(), identification: { phase: 'completed', active: false, available: false,

@@ -306,6 +306,20 @@ test('facts retain partial monitoring, stale power and assumed battery meanings'
   assert.match(facts.Vehicle, /Actual vehicle battery charge is unconfirmed/);
 });
 
+test('report facts distinguish a dashboard Pause from a retained native instruction', () => {
+  const report = { planning: { plannerReason: 'session-pause' }, current: {
+    automaticEnabled: true, reasonCode: 'session-pause', scheduleState: 'unknown', manual: true, pending: true,
+  } };
+  let facts = Object.fromEntries(chargingReportFacts(report));
+  assert.match(facts['Control at last assessment'], /Automatic charging on · Paused here until unplugging/);
+  assert.match(facts['Control at last assessment'], /Charger instruction unconfirmed/);
+  assert.doesNotMatch(facts['Control at last assessment'], /Schedule state unknown|Manual charger instruction/);
+  assert.equal(facts['Planning reason'], 'Paused here until unplugging');
+  report.current.reasonCode = 'manual-stop';
+  facts = Object.fromEntries(chargingReportFacts(report));
+  assert.match(facts['Control at last assessment'], /Manual charger instruction has priority/);
+});
+
 test('plan changes retain exact prices, explicit unchanged periods and execution distinction', () => {
   const changes = [{ field: 'prices', before: [{ startAt: now, endAt: now + 3600_000, priceCtPerKwh: 3.5 }], after: [{ startAt: now, endAt: now + 3600_000, priceCtPerKwh: 4.2 }] }];
   const view = chargingPlanPresentation({ scheduleState: 'installed', changes }); assert.equal(view.periodsUnchanged, true);
