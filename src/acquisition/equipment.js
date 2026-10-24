@@ -6,7 +6,8 @@ import { classifySourceTime, sourceTimeAdmission, validateAdmittedSourceTime, ob
 import { createHash } from 'node:crypto';
 import { createShellyCapture } from './shelly.js';
 import { createCaravanEnergy } from './shelly-energy.js';
-import { equipmentSignature, equipmentMeterIdentity } from './equipment-config.js';
+import { equipmentSignature, equipmentMeterIdentity, canonicalEquipmentTemperature as canonicalTemperature } from './equipment-config.js';
+import { CARAVAN_TEMPERATURE_CONTROL_DEFAULTS as defaultTemperatureControl, validCaravanTemperatureControl as validTemperatureControl } from '../domain/caravan-temperature-control.js';
 import { decodeMqttTemperature, temperatureRouteSignature } from './mqtt-temperature.js';
 import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
 import { CARAVAN_DEHUMIDIFIER_STATES } from '../domain/history-series.js';
@@ -25,7 +26,6 @@ const stateValue = value => typeof value === 'boolean' ? Number(value) : [0, 1].
   : typeof value === 'string' ? ['on', 'open', 'true', '1'].includes(value.toLowerCase()) ? 1
     : ['off', 'closed', 'close', 'false', '0'].includes(value.toLowerCase()) ? 0 : null : null;
 const sourceTime = value => Number.isSafeInteger(value) ? value : typeof value === 'string' && /(?:Z|[+-]\d\d:\d\d)$/.test(value) ? Date.parse(value) : null;
-const canonicalTemperature = device => device.kind === 'temperature' && [...INDOOR_SIGNALS, 'garage_temperature', 'garage_temperature_2', 'outdoor_temperature'].includes(device.temperatureSignal);
 const fail = message => new Error(`Equipment ${message}`);
 const DEHUMIDIFIER_SETTINGS = {
   power: ['off', 'on'], mode: ['auto', 'dehumidify', 'heater', 'fan_only'],
@@ -44,13 +44,7 @@ function dehumidifierCapabilities(input) {
 }
 const dehumidifierMetadata = device => ({ stateLabels: CARAVAN_DEHUMIDIFIER_STATES,
   maxAgeMs: device.maxAgeMs, reportIntervalMs: device.maxAgeMs, reportGraceMs: 0 });
-const defaultTemperatureControl = { enabled: true, offAtC: 1, onAtC: 2 };
 const validDehumidifierIdentity = identity => typeof identity === 'string' && /^[a-f0-9]{64}$/.test(identity);
-const validTemperatureControl = value => value && typeof value === 'object' && !Array.isArray(value)
-  && Object.keys(value).length === 3 && Object.keys(value).every(key => Object.hasOwn(defaultTemperatureControl, key))
-  && typeof value.enabled === 'boolean' && [value.offAtC, value.onAtC].every(temperature => scalar(temperature)
-    && temperature >= -10 && temperature <= 30 && Math.abs(temperature * 10 - Math.round(temperature * 10)) < 1e-8)
-  && value.onAtC - value.offAtC >= 0.5 - 1e-8;
 
 /** Explicit per-device protocol and broker routing, independent capabilities.
  * Event-only contacts preserve last-reported values without inventing heartbeats. */

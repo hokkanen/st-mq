@@ -416,6 +416,23 @@ loss withdraws current qualification and starts the continuous-loss boundary.
 
 ## Recording
 
+### Recorded view on the slave
+
+The read-only Caravan fold shows recorded air temperature and humidity, the
+saved meter's daily total with its actual Finnish date and coverage, and average
+power over the last recorded measured-energy interval. That average is not live
+watts and is never extended past its original interval. Missing or invalid
+evidence stays unavailable; a historical total is never relabeled as today's zero.
+
+The appliance shows its recorded combined Off/Low/Medium/High setting and original
+report time. Saved Automatic power and temperature thresholds appear separately
+as recorded dashboard choices, bound to the recorded appliance identity. They do
+not establish current automatic activity, native readiness or recording qualification.
+Native command controls and settings that were never recorded remain absent.
+All slave readings remain unusable for control, for both admin and family users.
+
+### Retained series
+
 The single `caravan_dehumidifier_state` series uses stable numeric codes
 with categorical labels in both Caravan charts, tooltips and the series explorer:
 

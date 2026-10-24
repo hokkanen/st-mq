@@ -1,4 +1,8 @@
 import { createHash } from 'node:crypto';
+import { INDOOR_SIGNALS } from '../domain/indoor-sensors.js';
+
+export const canonicalEquipmentTemperature = device => device.kind === 'temperature'
+  && [...INDOOR_SIGNALS, 'garage_temperature', 'garage_temperature_2', 'outdoor_temperature'].includes(device.temperatureSignal);
 
 const KINDS = ['temperature', 'switch', 'metered_switch', 'door', 'power', 'dehumidifier'];
 const DEVICE_KEYS = ['id', 'label', 'area', 'kind', 'connection', 'enabled', 'signal', 'generation', 'switch_id', 'temperature_id',

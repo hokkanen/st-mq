@@ -10,6 +10,7 @@ import { replicaReadModel } from '../src/app/replica-read-model.js';
 import { garageSettings } from '../src/garage/settings.js';
 import { GARAGE_SENDER_CONTRACT } from '../src/garage/sender.js';
 import { recordChargingSessionCheck } from '../src/app/charging-session-checks.js';
+import { recordedCaravanEnergy } from '../src/acquisition/shelly-energy.js';
 
 const at = Date.parse('2026-05-07T12:00:00Z');
 const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -35,6 +36,81 @@ function fixture(t, setup) {
 const observation = (source, device, signal, value, extra = {}) => ({ source, device, signal, value,
   unit: 'state', sourceTime: at - 20_000, receivedAt: at - 10_000,
   quality: ['good'], raw: { supported: true, timeBasis: 'source-measured' }, ...extra });
+
+const caravanConfig = { ...config, connections: { equipment: { maxAgeMs: 120_000, devices: [
+  { id: 'blu_ht', label: 'Caravan air', area: 'garage', kind: 'temperature', protocol: 'mqtt', enabled: true,
+    temperatureSignal: 'caravan_temperature', readings: [{ signal: 'caravan_humidity', label: 'Relative humidity' }] },
+  { id: 'caravan', label: 'Caravan energy', area: 'garage', kind: 'metered_switch', protocol: 'shelly', enabled: true, readings: [] },
+  { id: 'caravan_dehumidifier', label: 'Dehumidifier', area: 'garage', kind: 'dehumidifier', protocol: 'mqtt', enabled: true,
+    stateSignal: 'caravan_dehumidifier_state', readings: [] },
+] } } };
+const applianceIdentity = 'a'.repeat(64);
+const savedPolicy = { signature: 'b'.repeat(64), identity: applianceIdentity, settings: { enabled: true, offAtC: 1, onAtC: 2 } };
+const meterState = { version: 3, device: 'synthetic-meter-lineage', day: '2026-05-07', dailyKwh: 0,
+  dailyCoveredMs: 60_000, previous: { at: at - 1000, counterKwh: 10 }, reset: false, gap: false };
+
+test('Caravan snapshot projects recorded air, interval power, dated daily energy and bound dashboard choices without native authority', t => {
+  const snapshot = fixture(t, store => {
+    for (const [signal, value, unit] of [['caravan_temperature', 0, 'degC'], ['caravan_humidity', 55, '%']])
+      store.observation(observation('mqtt-equipment', 'blu_ht', signal, value, { unit }));
+    store.observation(observation('mqtt-temperature', 'wrong-source', 'caravan_temperature', 99, { unit: 'degC' }));
+    store.observation(observation('shelly-mqtt', 'caravan', 'caravan_energy', .01, { unit: 'kWh', raw: {
+      intervalStart: at - 80_000, intervalEnd: at - 20_000, durationMs: 60_000, basis: 'meter-counter-delta' } }));
+    store.observation(observation('mqtt-equipment', 'caravan_dehumidifier', 'caravan_dehumidifier_state', 3, { raw: { identity: applianceIdentity } }));
+    store.setState('shelly:caravan-energy:v2', meterState);
+    store.setState('equipment:dehumidifier-temperature-control:v1:caravan_dehumidifier', savedPolicy);
+  });
+  const [air, energy, appliance] = replicaReadModel(snapshot, caravanConfig).equipment.devices;
+  assert.equal(air.readings.caravan_temperature.value, 0, 'Generic MQTT air uses its actual source, retaining zero');
+  assert.equal(air.readings.caravan_humidity.value, 55);
+  assert.equal(energy.readings.caravan_power.value, .6, '0.01 measured kWh over one minute is 0.6 kW average');
+  assert.equal(energy.readings.caravan_power.intervalStart, at - 80_000);
+  assert.equal(energy.energy.dailyKwh, 0);
+  assert.equal(energy.energy.day, '2026-05-07');
+  assert.equal(energy.energy.partial, true);
+  assert.deepEqual(appliance.readings.caravan_dehumidifier_state.stateLabels, { 0: 'Off', 1: 'Low', 2: 'Medium', 3: 'High' });
+  assert.deepEqual(appliance.recordedSettings.temperatureControl, savedPolicy.settings);
+  assert.equal(appliance.dehumidifier, undefined, 'No native capabilities, current qualification or settings are manufactured');
+  for (const device of [air, energy, appliance]) {
+    assert.equal(device.available, false); assert.equal(device.connected, null);
+    assert.equal(device.controls.switch, false); assert.equal(device.controls.dehumidifier, false);
+    assert(Object.values(device.readings).every(row => row.readOnly && !row.usableForControl));
+  }
+  assert.equal(hash(snapshot.path), snapshot.digest);
+});
+
+test('Caravan malformed saved sections, identity mismatch and latest gaps cannot replace independent history with defaults or older values', t => {
+  const snapshot = fixture(t, store => {
+    store.observation(observation('shelly-mqtt', 'caravan', 'caravan_energy', .02, { unit: 'Wh', raw: {
+      intervalStart: at - 80_000, intervalEnd: at - 20_000, durationMs: 60_000, basis: 'meter-counter-delta' } }));
+    store.observation(observation('mqtt-equipment', 'caravan_dehumidifier', 'caravan_dehumidifier_state', 1, { raw: { identity: applianceIdentity } }));
+    store.observation(observation('mqtt-equipment', 'caravan_dehumidifier', 'caravan_dehumidifier_state', null,
+      { sourceTime: at - 5000, receivedAt: at - 4000, raw: { identity: applianceIdentity } }));
+    store.setState('shelly:caravan-energy:v2', { ...meterState, version: 2 });
+    store.setState('equipment:dehumidifier-temperature-control:v1:caravan_dehumidifier', { ...savedPolicy, identity: 'c'.repeat(64) });
+  });
+  const [, energy, appliance] = replicaReadModel(snapshot, caravanConfig).equipment.devices;
+  assert.equal(energy.readings.caravan_power.value, null, 'Wrong-unit energy cannot be interpreted as kWh');
+  assert.match(energy.recordedEnergyError, /unavailable/);
+  assert.equal(appliance.readings.caravan_dehumidifier_state.value, null);
+  assert.equal(appliance.recordedSettings.temperatureControl, null);
+  assert.match(appliance.recordedSettings.error, /unavailable/);
+  assert.equal(hash(snapshot.path), snapshot.digest);
+});
+
+test('recorded Caravan daily totals retain their date through midnight/DST and reject future or unsupported checkpoints', () => {
+  for (const [day, end] of [['2026-03-29', '2026-03-29T20:59:00Z'], ['2026-10-25', '2026-10-25T21:59:00Z']]) {
+    const timestamp = Date.parse(end), state = { ...meterState, day, dailyKwh: 1.25, previous: { at: timestamp, counterKwh: 11.25 }, reset: true };
+    const before = structuredClone(state), result = recordedCaravanEnergy(state, timestamp + 120_000, 120_000);
+    assert.equal(result.day, day); assert.equal(result.dailyKwh, 1.25);
+    assert.equal(result.counterReset, true); assert.equal(result.partial, true);
+    assert.deepEqual(state, before, 'Reading does not advance or reset the saved day');
+    assert.throws(() => recordedCaravanEnergy(state, timestamp - 1, 120_000), /unavailable/);
+  }
+  assert.equal(recordedCaravanEnergy(null, at, 120_000), null);
+  assert.throws(() => recordedCaravanEnergy({ ...meterState, version: 2 }, at, 120_000), /Unsupported/);
+  assert.throws(() => recordedCaravanEnergy({ ...meterState, retiredField: true }, at, 120_000), /unavailable/);
+});
 
 test('replicas retain separate heating and circulation reports without granting control', t => {
   const heating = { command: 'normal', at: at - 1000, status: 'mqtt', sent: true };

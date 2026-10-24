@@ -541,6 +541,37 @@ const dehumidifier = (live = false) => ({ id: 'caravan_dehumidifier', label: 'Ca
     capabilities: Object.fromEntries(Object.entries(DEHUMIDIFIER_OPTIONS).map(([setting, options]) => [setting, options.map(([value]) => value)])),
     runningState: live ? 'off' : null, operation: null } });
 
+test('Caravan replica renders recorded air, energy and appliance settings with no native controls or live-state claims', () => {
+  const document = equipmentDocument(), calls = [];
+  const panel = createEquipmentPanel({ document, request: (...args) => { calls.push(args); } });
+  const recorded = { readOnly: true, recorded: true, observedAt: now - 60_000, stale: true };
+  const air = caravanAir(); air.available = false; air.readOnly = true;
+  for (const row of Object.values(air.readings)) Object.assign(row, recorded);
+  const energy = { ...plug, readOnly: true, available: false, controls: { switch: false }, readings: {
+    caravan_power: { ...recorded, value: .6, unit: 'kW', label: 'Average power (recorded interval)', fromEnergy: true,
+      intervalStart: now - 120_000, intervalEnd: now - 60_000 } }, energy: { ...recorded, day: '2026-09-12', dailyKwh: 0, partial: true } };
+  const appliance = { id: 'caravan_dehumidifier', kind: 'dehumidifier', area: 'garage', readOnly: true, available: false,
+    controls: { dehumidifier: false }, readings: { caravan_dehumidifier_state: { ...recorded, unit: 'state', value: 3,
+      stateLabels: { 0: 'Off', 1: 'Low', 2: 'Medium', 3: 'High' } } }, recordedSettings: {
+      temperatureControl: { enabled: true, offAtC: 1, onAtC: 2 } } };
+  const current = status({ role: 'slave', equipment: { devices: [energy, air, appliance] } }); panel.update(current);
+  const caravan = deviceNode(document, 'garage-equipment-readings', 'caravan');
+  const native = caravan.querySelector('.caravan-dehumidifier');
+  assert.equal(caravan.querySelector('.caravan-energy-title').hidden, false);
+  assert.match(caravan.textContent, /Energy · 2026-09-12/);
+  assert.match(caravan.textContent, /0.000 kWh/);
+  assert.match(native.querySelector('.caravan-appliance-state').textContent, /On · High fan · recorded/);
+  assert.doesNotMatch(native.querySelector('.caravan-appliance-state').textContent, /Awaiting first/);
+  assert.equal(native.querySelector('.caravan-dehumidifier-controls').hidden, true);
+  assert.equal(native.querySelector('.caravan-recording-panel').hidden, true);
+  const saved = native.querySelector('.caravan-recorded-policy'); saved.open = true; panel.update(current);
+  assert.equal(saved.open, true); assert.match(saved.textContent, /EnabledOff at1 °COn at2 °C/);
+  assert(descendants(native).filter(node => ['BUTTON', 'SELECT', 'INPUT'].includes(node.tagName)).every(node => node.disabled));
+  appliance.readings.caravan_dehumidifier_state.value = null; panel.update(current);
+  assert.match(native.querySelector('.caravan-appliance-state').textContent, /Recorded state unavailable/);
+  assert.deepEqual(calls, []);
+});
+
 test('Caravan groups air and pending dehumidifier with energy, preserving disclosure and showing only reported values', () => {
   const document = equipmentDocument(), panel = createEquipmentPanel({ document, request: async () => {} });
   const initial = status({ equipment: { devices: [caravanAir(), { ...plug, label: 'Caravan energy' }, dehumidifier()] } });

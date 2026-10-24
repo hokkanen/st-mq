@@ -749,6 +749,29 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     await evaluate("window.equipmentUiFixture.status.role='slave';true"); await refresh();
     assert.equal(await evaluate(`document.querySelector('${fan}').disabled`), true, 'Replica remains read-only');
     assert.equal(await evaluate(`[...document.querySelectorAll('${policy} input, ${policy} button')].every(node=>node.disabled)`), true, 'Replica cannot edit durable power settings');
+    await evaluate(`(() => {const f=window.equipmentUiFixture,at=f.now;
+      const recorded={readOnly:true,recorded:true,observedAt:at-60000,stale:true};
+      const air=f.devices.find(d=>d.id==='blu_ht');air.available=false;air.readOnly=true;
+      for(const row of Object.values(air.readings))Object.assign(row,recorded);
+      const meter=f.devices.find(d=>d.id==='caravan');Object.assign(meter,{available:false,readOnly:true,controls:{switch:false},readings:{
+        caravan_power:{...recorded,value:.6,unit:'kW',label:'Average power (recorded interval)',fromEnergy:true,intervalStart:at-120000,intervalEnd:at-60000}},
+        energy:{...recorded,day:'2026-09-06',dailyKwh:0,partial:true}});
+      const native=f.devices.find(d=>d.id==='caravan_dehumidifier');delete native.dehumidifier;
+      Object.assign(native,{available:false,readOnly:true,controls:{dehumidifier:false},readings:{caravan_dehumidifier_state:{...recorded,value:3,unit:'state',stateLabels:{0:'Off',1:'Low',2:'Medium',3:'High'}}},
+        recordedSettings:{temperatureControl:{enabled:true,offAtC:1,onAtC:2}}});return true;})()`);await refresh();
+    assert.equal(await evaluate(`document.querySelector('${caravan} .caravan-energy-title').checkVisibility()`),true,'Recorded energy has its own visible section');
+    assert.match(await evaluate(`document.querySelector('${caravan}').textContent`), /Energy · 2026-09-06.*0.000 kWh/s);
+    assert.match(await evaluate(`document.querySelector('${appliance} .caravan-appliance-state').textContent`), /On · High fan · recorded/);
+    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-dehumidifier-controls').checkVisibility()`),false);
+    assert.equal(await evaluate(`document.querySelector('${appliance} .caravan-recording-panel').checkVisibility()`),false,'Historical state never claims current recording/qualification');
+    const recordedPolicy=`${appliance} .caravan-recorded-policy`;
+    await toggleDisclosure(recordedPolicy);await refresh();
+    assert.equal(await evaluate(`document.querySelector('${recordedPolicy}').open`),true);
+    assert.match(await evaluate(`document.querySelector('${recordedPolicy}').textContent`),/EnabledOff at1 °COn at2 °C/);
+    await captureAppliance('recorded');
+    const recordedCalls=await evaluate('window.equipmentUiFixture.calls.length');
+    await evaluate(`document.querySelectorAll('${appliance} button').forEach(button=>button.click());true`);
+    assert.equal(await evaluate('window.equipmentUiFixture.calls.length'),recordedCalls,'Recorded view sends no device commands');
     await evaluate("window.equipmentUiFixture.status={};window.equipmentUiFixture.observations={};window.equipmentUiFixture.devices=[];true"); await refresh();
     assert.match(await evaluate("document.getElementById('garage-equipment-readings').textContent"), /No garage devices enabled/);
     assert.equal(await evaluate("document.querySelectorAll('#equipment-connections [data-device-id=caravan], #equipment-connections [data-device-id=garage-probes], #equipment-connections [data-device-id=door1], #equipment-connections [data-device-id=door2]').length"), 0);

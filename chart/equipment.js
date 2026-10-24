@@ -151,14 +151,21 @@ export function equipmentReadingRows(device) {
       value: motion ? motion[0].toUpperCase() + motion.slice(1) : fresh || recorded ? last : state ? 'Unknown' : 'Unavailable', stale: !fresh,
       ...(recorded ? { qualifier: 'Recorded', recorded: true } : {}),
       ...(projected?.attention && fresh ? { qualifier: 'Needs attention' } : {}),
-      detail: projected?.detail ?? (motion ? `Reported ${motion} · ${observed}`
+      detail: reading.fromEnergy && recorded ? `Recorded interval average · ${clock.format(reading.intervalStart)} – ${clock.format(reading.intervalEnd)} · derived from measured energy`
+        : projected?.detail ?? (motion ? `Reported ${motion} · ${observed}`
         : known ? `${fresh ? 'Last reported' : `Last reported ${last}`} · ${observed}` : 'No usable reading received'),
     };
   });
   if (device.energy) {
     const energy = device.energy, available = Number.isFinite(energy.dailyKwh) && Number.isFinite(energy.observedAt);
-    rows.push({ signal: 'daily_energy', label: 'Energy today', qualifier: energy.partial && available ? 'Partial' : '', value: available ? `${energy.dailyKwh.toFixed(3)} kWh` : 'Unavailable',
-      stale: !available, detail: available ? `Finnish day${energy.partial ? ' · partial coverage' : ''} · updated ${clock.format(energy.observedAt)}` : 'Awaiting meter readings' });
+    const recorded = energy.recorded === true;
+    rows.push({ signal: 'daily_energy', label: recorded ? `Energy · ${energy.day}` : 'Energy today',
+      qualifier: [recorded ? 'Recorded' : '', energy.partial && available ? 'Partial' : ''].filter(Boolean).join(' · '),
+      value: available ? `${energy.dailyKwh.toFixed(3)} kWh` : 'Unavailable', recorded,
+      stale: recorded || !available, detail: available ? `Finnish day${energy.partial ? ' · partial coverage' : ''}${energy.counterReset ? ' · meter counter reset' : ''} · updated ${clock.format(energy.observedAt)}` : 'Awaiting meter readings' });
+  } else if (device.recordedEnergyError) {
+    rows.push({ signal: 'daily_energy', label: 'Recorded daily energy', qualifier: 'Recorded',
+      value: 'Unavailable', stale: true, detail: device.recordedEnergyError });
   }
   return rows;
 }
@@ -833,7 +840,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         if (air) {
           const airRows = equipmentReadingRows(air).filter(row => /(?:^|_)(?:temperature|humidity)$/.test(row.signal));
           const power = rows.find(row => row.signal === 'caravan_power');
-          node.preview.textContent = [...airRows.map(row => row.value), ...(power ? [power.value] : [])].join(' · ');
+          node.preview.textContent = [...airRows.map(row => row.value), ...(power ? [`${power.value}${power.recorded ? ' average · recorded' : ''}`] : [])].join(' · ');
           node.preview.hidden = !node.preview.textContent;
         }
         if (!rows.length) { node.empty.hidden = true; node.source.textContent = ''; node.recent.textContent = ''; }

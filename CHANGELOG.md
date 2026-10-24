@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Restore Caravan's recorded slave view: air temperature/humidity, dated daily
+  energy and interval-average power, appliance/fan setting, and saved Automatic
+  power thresholds. Keep live controls and unrecorded native settings separate.
+
 - Keep dehumidifier On/Off buttons visible but disabled during Automatic power,
   using the app's shared disabled styling with neither selected, explaining how
   to enable manual control.

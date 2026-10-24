@@ -12,6 +12,10 @@ import { garageSelectionReceipt } from '../garage/selection-receipt.js';
 import { validateGarageSenderSnapshot } from '../garage/sender.js';
 import { validateGarageAdapterSnapshot } from '../garage/contract.js';
 import { TEMPERATURE_SENSORS } from '../domain/indoor-sensors.js';
+import { CARAVAN_DEHUMIDIFIER_STATES } from '../domain/history-series.js';
+import { canonicalEquipmentTemperature } from '../acquisition/equipment-config.js';
+import { recordedCaravanEnergy } from '../acquisition/shelly-energy.js';
+import { validCaravanTemperatureControl } from '../domain/caravan-temperature-control.js';
 
 const reason = 'Read-only view. Recorded values are available; live equipment state and controls are unavailable.';
 const copy = value => structuredClone(value);
@@ -40,6 +44,8 @@ function observationReader(snapshot) {
       observedAt: row.source_time, sourceTime: row.source_time, measuredAt: row.source_time,
       receivedAt: row.received_at, quality: JSON.parse(row.quality),
       supported: raw.supported, accuracyVerified: raw.accuracyVerified, timeBasis: raw.timeBasis, basis: raw.basis,
+      ...(signal === 'caravan_energy' ? { intervalStart: raw.intervalStart, intervalEnd: raw.intervalEnd, durationMs: raw.durationMs } : {}),
+      ...(signal === 'caravan_dehumidifier_state' ? { identity: raw.identity, stateLabels: CARAVAN_DEHUMIDIFIER_STATES } : {}),
       recorded: true, readOnly: true, snapshotAt: at, stale: true, usable: false,
       available: false, usableForControl: false };
   };
@@ -53,17 +59,50 @@ function equipmentSnapshot(config, read, snapshot) {
     if (signal && !mappings.some(row => row.signal === signal)) mappings.unshift({ signal,
       label: device.kind === 'temperature' ? TEMPERATURE_SENSORS[signal] ?? device.label : device.label });
     const readings = Object.fromEntries(mappings.flatMap(mapping => {
-      const temperature = ['temperature'].includes(device.kind);
+      const temperature = canonicalEquipmentTemperature(device);
       const source = device.protocol === 'shelly' ? 'shelly-mqtt' : temperature ? 'mqtt-temperature' : 'mqtt-equipment';
       const row = read(mapping.signal, source, temperature ? null : device.id);
       return row ? [[mapping.signal, { ...row, label: mapping.label }]] : [];
     }));
+    const extra = {};
+    if (device.id === 'caravan') {
+      const source = device.protocol === 'shelly' ? 'shelly-mqtt' : 'mqtt-equipment';
+      const interval = read('caravan_energy', source, device.id);
+      if (interval) {
+        const duration = interval.intervalEnd - interval.intervalStart;
+        const valid = interval.unit === 'kWh' && Number.isFinite(interval.value) && interval.value >= 0 && duration > 0
+          && Number.isFinite(interval.value * 3_600_000 / duration)
+          && Number.isSafeInteger(interval.intervalStart) && interval.intervalStart >= 0
+          && Number.isSafeInteger(interval.intervalEnd) && interval.intervalEnd === interval.sourceTime && interval.durationMs === duration
+          && interval.basis === 'meter-counter-delta' && !(interval.quality ?? []).some(flag => /invalid|unknown|gap|conflict|reset|unsupported|sentinel|units-unverified/i.test(flag));
+        readings.caravan_power = { ...interval, signal: 'caravan_power', unit: 'kW',
+          label: 'Average power (recorded interval)', fromEnergy: true, value: valid ? interval.value * 3_600_000 / duration : null };
+      }
+      const saved = snapshotState(snapshot, device.protocol === 'shelly' ? 'shelly:caravan-energy:v2' : 'mqtt:equipment-energy:v1:caravan');
+      try {
+        if (saved.error) throw new Error(saved.error);
+        extra.energy = recordedCaravanEnergy(saved.value, snapshotAt, device.maxAgeMs || config.connections?.equipment?.maxAgeMs || 120_000);
+      } catch { extra.recordedEnergyError = 'The saved daily energy total is unavailable in this snapshot.'; }
+    }
+    if (device.id === 'caravan_dehumidifier') {
+      const saved = snapshotState(snapshot, `equipment:dehumidifier-temperature-control:v1:${device.id}`);
+      if (saved.value || saved.error) {
+        const policy = saved.value, state = readings.caravan_dehumidifier_state;
+        const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+        const valid = !saved.error && policy && Object.keys(policy).sort().join(',') === 'identity,settings,signature'
+          && digest(policy.signature) && digest(policy.identity) && policy.identity === state?.identity
+          && validCaravanTemperatureControl(policy.settings);
+        extra.recordedSettings = { recorded: true, readOnly: true, snapshotAt,
+          temperatureControl: valid ? copy(policy.settings) : null,
+          ...(valid ? {} : { error: 'Saved Automatic power settings are unavailable for the recorded appliance.' }) };
+      }
+    }
     return { id: device.id, role: device.id, label: device.label, area: device.area, kind: device.kind,
       source: device.source, protocol: device.protocol, enabled: device.enabled, readings, available: false, connected: null,
       readOnly: true, recorded: true, snapshotAt, configurationSource: 'local-configuration',
       controls: { switch: false, tariff: false, dehumidifier: false, cover: { open: false, close: false, stop: false } },
       check: { checking: false, status: 'read-only-snapshot' },
-      connectionState: { label: 'Recorded snapshot', state: 'pending' }, connectionDetail: reason };
+      connectionState: { label: 'Recorded snapshot', state: 'pending' }, connectionDetail: reason, ...extra };
   });
   // A history-only computer may have no local equipment mapping. Preserve
   // recorded streams in the inventory without borrowing control capabilities

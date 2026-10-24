@@ -222,7 +222,11 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     field.append(make('span', settingLabels[setting], 'caravan-setting-label'), select); controls.append(field); selects.set(setting, select); settingFields.set(setting, field);
   }
   result.setAttribute('role', 'status'); result.setAttribute('aria-live', 'polite');
-  dehumidifier.append(heading('Dehumidifier', model), state, controls, access, help, result, policyDetails, recordingPanel);
+  const recordedPolicy = make('details', '', 'caravan-recorded-policy');
+  const recordedPolicyValues = make('dl', '', 'equipment-readings');
+  const recordedPolicyHelp = make('p', 'Saved dashboard choices from the recorded snapshot. These do not confirm current automatic activity.', 'caravan-control-help');
+  recordedPolicy.append(make('summary', 'Saved Automatic power · Recorded'), recordedPolicyValues, recordedPolicyHelp);
+  dehumidifier.append(heading('Dehumidifier', model), state, controls, access, help, result, policyDetails, recordingPanel, recordedPolicy);
 
   function airReadings(root, rows, nodes, primary) {
     for (const row of rows) {
@@ -259,6 +263,29 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
     const device = appliance.dehumidifier ?? {}, reported = device.state ?? {};
     if (currentAppliance && currentAppliance.connection !== appliance.connection) policyDirty = false;
     lastSnapshot = snapshot; currentAppliance = appliance;
+    const readOnly = isReadOnlyReplica(status);
+    recordedPolicy.hidden = !readOnly || !appliance.recordedSettings;
+    access.hidden = readOnly; result.hidden = readOnly;
+    if (readOnly) {
+      const row = readingsFor(appliance).find(row => row.signal === 'caravan_dehumidifier_state');
+      model.textContent = appliance.model ?? 'Dehumidifier';
+      stateValue.textContent = row?.recorded ? row.value === 'Off' ? 'Off · recorded' : `On · ${row.value} fan · recorded` : 'Recorded state unavailable';
+      stateRecent.textContent = row?.detail ?? 'No appliance state was recorded in this snapshot.';
+      stateRecent.hidden = false; state.dataset.state = 'pending';
+      controls.hidden = true; policyDetails.hidden = true; recordingPanel.hidden = true;
+      for (const button of buttons.values()) { button.disabled = true; button.setAttribute('aria-pressed', 'false'); }
+      for (const select of selects.values()) select.disabled = true;
+      refreshPolicy();
+      help.textContent = 'Recorded settings are read-only. Live controls are available on the master computer.';
+      const saved = appliance.recordedSettings;
+      recordedPolicyValues.replaceChildren();
+      if (saved?.temperatureControl) for (const [label, value] of [
+        ['Automatic power', saved.temperatureControl.enabled ? 'Enabled' : 'Disabled'],
+        ['Off at', `${saved.temperatureControl.offAtC} °C`], ['On at', `${saved.temperatureControl.onAtC} °C`],
+      ]) recordedPolicyValues.append(make('dt', label), make('dd', value));
+      recordedPolicyHelp.textContent = saved?.error ?? 'Saved dashboard choices from the recorded snapshot. These do not confirm current automatic activity.';
+      return;
+    }
     const allowed = dehumidifierControlAllowed(status, appliance, busy || blocked());
     model.textContent = appliance.model ?? 'Dehumidifier';
     // Device health describes the readings. The nested availability flag also

@@ -15,6 +15,23 @@ function validateState(state, version) {
     throw new Error('Unsupported equipment meter checkpoint. Start a fresh development database.');
 }
 
+/** Project only an existing current checkpoint; never reset its day or meter. */
+export function recordedCaravanEnergy(state, at, maxGapMs) {
+  if (!state) return null;
+  validateState(state, 3);
+  const date = moment.tz(state.day, 'YYYY-MM-DD', true, 'Europe/Helsinki');
+  if (Object.keys(state).sort().join(',') !== 'dailyCoveredMs,dailyKwh,day,device,gap,previous,reset,version'
+    || typeof state.gap !== 'boolean' || !date.isValid() || date.format('YYYY-MM-DD') !== state.day
+    || !state.previous || state.previous.at > at || day(state.previous.at) !== state.day
+    || Object.keys(state.previous).sort().join(',') !== 'at,counterKwh'
+    || state.day > day(at)) throw new Error('Recorded Caravan energy checkpoint is unavailable.');
+  return { dailyKwh: state.dailyKwh, day: state.day, coveredMs: state.dailyCoveredMs,
+    counterReset: state.reset, observedAt: state.previous.at, timeZone: 'Europe/Helsinki',
+    partial: state.gap || state.day !== day(at) || at - state.previous.at >= maxGapMs
+      || state.dailyCoveredMs < state.previous.at - date.valueOf() - 1,
+    recorded: true, readOnly: true, snapshotAt: at };
+}
+
 /** Measured counter increments use the shared adaptive recorder. Daily display
  * totals update at acquisition cadence, independently of archive spacing. */
 export function createCaravanEnergy({ store, recorder, device, maxGapMs, signal = 'caravan_energy',
