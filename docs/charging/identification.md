@@ -7,6 +7,8 @@ This contract owns positive vehicle matching, bounded identification attempts an
 An explicit Identify retry reports its current availability separately from the
 previous attempt's outcome. An active attempt, unavailable vehicle feed and
 unready charger have distinct explanations; retry keeps the same admission rules.
+A later dashboard Pause keeps a completed, inconclusive or observing attempt's
+recorded result. Its current retry blocker explains the Pause separately.
 
 ## Vehicle assignment
 

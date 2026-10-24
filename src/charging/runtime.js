@@ -1043,6 +1043,10 @@ export class ChargingRuntime {
   }
   identificationReason(item, physicalById, now) {
     const control = item.controller?.status();
+    // Finished attempts retain their result; current retry blockers have their
+    // own availabilityReason and must not rewrite that historical outcome.
+    if (['completed', 'inconclusive', 'observing'].includes(item.identification?.phase)
+      && item.identification.reason) return item.identification.reason;
     if (item.request?.pause) return 'manual-stop';
     if (item.identification?.reason) return item.identification.reason;
     if (!item.controller?.supportsIdentification) return 'unsupported';

@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve the previous identification result when charging is paused here.
+  Explain the current retry restriction separately instead of relabelling a
+  successful vehicle match as a manual Stop.
+
 - Keep session-report confirmation scoped to the active dashboard Pause. A
   confirmed Pause no longer inherits an unconfirmed economic schedule or a
   lower-priority native instruction; real pending commands and missing physical

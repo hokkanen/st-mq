@@ -103,6 +103,24 @@ async function identifyBmw(f) {
   assert.equal(f.runtime.telemetry().charger1.vehicle.id, 'bmw');
 }
 
+test('a dashboard Pause preserves terminal identification outcomes and separately explains retry readiness', async t => {
+  const f = fixture(t); await identifyBmw(f);
+  const item = f.runtime.chargers.charger1;
+  item.request.pause = { requestedAt: f.now };
+  for (const [phase, reason] of [['completed', 'identified'], ['inconclusive', 'probe-time-limit'],
+    ['observing', 'awaiting-evidence']]) {
+    Object.assign(item.identification, { phase, reason });
+    const before = structuredClone(item.identification);
+    const identification = f.runtime.views()[0].identification;
+    assert.equal(identification.reason, reason, phase);
+    assert.equal(identification.available, false, phase);
+    assert.equal(identification.availabilityReason, 'manual-stop', phase);
+    assert.deepEqual(item.identification, before, 'Presentation does not rewrite the attempt');
+  }
+  Object.assign(item.identification, { phase: 'charging', reason: 'observing-charge' });
+  assert.equal(f.runtime.views()[0].identification.reason, 'manual-stop', 'An active attempt still shows the interruption');
+});
+
 test('public reads cannot create a physical-session request or identification attempt', async t => {
   const f = fixture(t);
   f.native({ connected: true });
