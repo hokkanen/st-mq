@@ -247,6 +247,13 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
       const ceilings = [limits.chargerA, limits.cableA, ...(limits.circuitA ?? [])].filter(value => Number.isFinite(value) && value > 0);
       const allowance = limits.equalizerAvailableA;
       const complete = values => Array.isArray(values) && values.length === 3 && values.every(Number.isFinite);
+      // The value uses this snapshot's fixed ceilings and Equalizer phases.
+      // Neither a newer connector status nor the live allowance callback is a
+      // new observation of those inputs. A combined estimate has no one clock.
+      const ceilingInputs = [22, 23, 24, 47, 104].map(id => ({ id,
+        measuredAt: snapshot.allowanceTelemetry?.maxCurrentA?.inputs?.find(row => row.id === id)?.measuredAt ?? null }));
+      const allowanceInputs = [230, 231, 232].map((id, phase) => ({ id,
+        measuredAt: limits.equalizerAvailableAt?.[phase] ?? null }));
       const voltageTimes = supply.observationTimes?.voltage;
       const voltageAvailable = complete(supply.voltageV) && complete(voltageTimes)
         && voltageTimes.every(at => time(at) && at <= now && now - at <= 5 * 60_000);
@@ -260,7 +267,8 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
         charging: signal(STATUSES.includes(snapshot.connectorStatus) ? snapshot.connectorStatus === 'Charging' : null,
           snapshot.statusAt, 'easee-ocpp', snapshot.statusReceivedAt ?? null),
         powerKw: signal(fresh(snapshot.powerAt, now) ? snapshot.powerKw : null, snapshot.powerAt, 'easee-ocpp', snapshot.powerReceivedAt ?? null),
-        currentA: signal(complete(allowance) && ceilings.length ? Math.min(...allowance, ...ceilings) : null),
+        currentA: { ...signal(complete(allowance) && ceilings.length ? Math.min(...allowance, ...ceilings) : null,
+          null, 'easee-equalizer'), timeBasis: 'derived-observations', inputs: [...ceilingInputs, ...allowanceInputs] },
         availableCurrentA: allowanceTelemetry?.availableCurrentA
           ?? { value: null, available: false, source: 'easee-equalizer', measuredAt: null, receivedAt: null, inputs: [] },
         maxCurrentA: allowanceTelemetry?.maxCurrentA ?? signal(ceilings.length ? Math.min(...ceilings) : null),

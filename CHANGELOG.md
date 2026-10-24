@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve the Equalizer and equipment source clocks behind local charger current
+  estimates. Connector-status updates no longer make held allowance evidence look
+  newly measured; derived estimates retain unknown clocks without changing limits.
+
 - Let identification use a quiet peer held by a matching, physically confirmed
   dashboard Pause. Preserve freshness, recent-transition, pending-command and
   native-schedule checks without requiring an economic plan for the paused car.

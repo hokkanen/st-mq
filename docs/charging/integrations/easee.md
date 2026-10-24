@@ -82,6 +82,15 @@ Before native schedule mutations and during their readback, the adapter forces
 fresh REST observation reads rather than relying on the stream cache. Original
 measurement timestamps and the existing freshness guards still apply.
 
+Local OCPP current estimates retain the Equalizer phase clocks and the fixed
+equipment-limit clocks from the same supporting snapshot. This combined value is
+labelled as derived Equalizer evidence, with no single measurement or transport
+receipt timestamp. Missing input clocks remain unknown. A connector-status
+update, repeated normalization or newer live allowance view cannot renew those
+supporting observations. The independent available-current view keeps its own
+source evidence; this timestamp projection changes no current limit, held-value
+freshness policy or command permission.
+
 Small source-clock leads wait for admission in receive order within each device;
 ready observations from the other device continue independently. Held current
 evidence is withheld for pending requested fields or that device's online state.
