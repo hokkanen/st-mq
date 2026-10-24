@@ -66,6 +66,11 @@ link. A lost request reply and a later observed operation result remain separate
 evidence. Current unresolved problems remain visible independently of receipt
 expiry.
 
+Background certificate, peer and network maintenance also disables overlapping
+actions while keeping listener readiness and the previous action receipt visible.
+If a request races maintenance, it is refused with a specific wait-and-retry
+message; it is not accepted or replayed automatically.
+
 1. Configure an admin password of at least 24 characters in
    `controller.web_token`. An optional distinct family password must meet the
    same network-access requirement. Ingress still uses Home Assistant login.

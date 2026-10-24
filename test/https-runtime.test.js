@@ -20,7 +20,7 @@ const hostname = 'fixture.test-tailnet.ts.net';
 const wait = ms => new Promise(resolveWait => setTimeout(resolveWait, ms));
 async function settled(t, manager) {
   const originalId = manager.status().operation?.id;
-  while (manager.status().operation?.state === 'running') {
+  while (manager.status().operation?.state === 'running' || manager.status().busy) {
     // The node:test deadline owns cancellation. Publication has no independent
     // one-second deadline; the actual operation must finish its durable work.
     await waitForPoll(5, undefined, { signal: t.signal });

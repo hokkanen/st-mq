@@ -170,7 +170,7 @@ try {
   const firstEnergy = energyReads;
   await pause(4300);
   assert.equal(energyReads,firstEnergy,'Completed checks do not poll or start repeated work');
-  await evaluate(`${$('energy-check-period-month')}.click();true`);
+  await evaluate(`${$('energy-check-period-four-weeks')}.click();true`);
   await until(`${$('energy-audit-message')}.textContent.startsWith('Last checked:')`);
   assert(energyReads>firstEnergy,'A period change requests its own check');
   await evaluate(`${$('energy-audit-refresh')}.click();true`);

@@ -108,6 +108,8 @@ function nextStep(state, { tlsReady, certificateValid, certificateExpired, uncon
   }[state.operation.action] ?? 'Setting up HTTPS', help: 'The current operation is running. Status updates when it completes.' };
   if (state.phase === 'preparing') return { title: 'Setting up HTTPS',
     help: 'Preparing this computer’s certificate access. Status updates when the operation completes.' };
+  if (state.busy === true) return { title: 'Checking web access',
+    help: 'Background web access maintenance is running. Actions become available when it finishes; current listener readiness is shown separately.' };
   if (errorCode === 'helper_hostname_changed') return { title: 'Update the HTTPS hostname',
     help: failures.helper_hostname_changed };
   if (errorCode === 'helper_tailnet_changed') return { title: 'Review the Tailscale network',
@@ -171,7 +173,7 @@ export function insecureWebWarning(transport, { protocol, hostname, ingress = fa
 export function secureWebAccessView(state = {}, { admin = false, now = Date.now() } = {}) {
   const transport = state.transport ?? {}, tls = transport.https;
   const phase = phases[state.phase] ?? ['Status unavailable', 'This computer’s HTTPS status is unavailable.'];
-  const busy = state.operation?.state === 'running' || state.phase === 'preparing';
+  const busy = state.busy === true || state.operation?.state === 'running' || state.phase === 'preparing';
   const certificate = state.certificate;
   const expiresAt = new Date(certificate?.expiresAt ?? NaN).getTime();
   const certificateValid = Number.isFinite(expiresAt) && expiresAt > now;
@@ -411,6 +413,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
   async function run(action, extra = {}) {
     if (pending || state.operation?.state === 'running' || getAccess()?.role !== 'admin' || !Object.hasOwn(phases, state.phase)) return false;
     const actionView = secureWebAccessView(state, { admin: true });
+    if (actionView.busy) return false;
     if (action === 'enable' && !actionView.setupAvailable) return false;
     if (action === 'update-now' && !actionView.updateAvailable || action === 'set-update-policy' && !actionView.updatePolicyAvailable) return false;
     if (action === 'restore-identity' && !secureWebAccessView(state, { admin: true }).restoreIdentity) return false;

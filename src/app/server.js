@@ -847,6 +847,9 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             : { error: refused ? 'The paired request was rejected. Review the action requirements and current status.'
               : 'The paired request could not be confirmed. Recheck its saved outcome before trying again.' });
         }
+        if (/^\/api\/web-access(?:\?|$)/.test(req.url) && error.code === 'https_manager_busy')
+          return json(409, { code: 'https_manager_busy',
+            error: 'Web access maintenance is running. Wait for it to finish, then retry.' });
         if (/^\/api\/web-access(?:\?|$)/.test(req.url))
           return json(error.statusCode ?? (error instanceof SyntaxError ? 400 : 503), {
             error: typeof error.publicMessage === 'string' ? error.publicMessage

@@ -531,7 +531,7 @@ its bounded source pass; historical comparisons are published together only
 after the complete check succeeds. A previous complete result retains its
 completion time and receipt cutoff while a refresh runs.
 The independent **Check period** uses inclusive Finnish dates and initially selects
-**Last 7 days**, including today. Its calendars and Last month / This year / Last
+**Last 7 days**, including today. Its calendars and Last 4 weeks / This year / Last
 year shortcuts match Energy cost comparisons, with controls aligned directly in
 the fold and Finnish time labelled once beside the period. The Property row owns
 the latest meter reading; source and receipt times remain in its evidence.
@@ -1866,8 +1866,9 @@ calendars with the same behavior as the chart and Recorded energy checks. Select
 a start date sets both fields to that day; the end field stays editable with its
 normal appearance. **Today** at the bottom left selects the current Finnish day
 for the open field and closes the calendar; **Close** stays at the bottom right.
-The initial period is today. **Last 7 days** includes today; **Last month**
-and **Last year** select complete calendar periods; **This year** runs from
+The initial period is **Last 7 days**. **Last 7 days** and **Last 4 weeks**
+include today (7 and 28 Finnish calendar dates respectively); **Last year**
+selects the complete previous calendar year; **This year** runs from
 January 1 through today. All dates use Finnish time and stay fixed across
 midnight until the reader chooses again. A comparison-date change does not move
 the chart, and chart navigation does not change comparisons. While loading or

@@ -710,7 +710,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
         lastSuccessfulCheck: state.updates.lastSuccessfulCheck, error: state.updates.error,
         securityCoverage: 'incomplete', bulletinUrl: 'https://tailscale.com/security-bulletins' },
       dns: { ...clone(dns), resolver: config().web?.lanResolver || null, expectedAddress: expectedDnsAddress() },
-      operation: clone(state.operation), error: certificateError ?? lastError, pair: state.pairId ? { paired: true, ownerId: state.ownerId,
+      busy: Boolean(busy || admission), operation: clone(state.operation), error: certificateError ?? lastError, pair: state.pairId ? { paired: true, ownerId: state.ownerId,
         localOwner: localOwner(), peerRenewalRequired: state.peerRenewalRequired, peer: clone(peerStatus) } : { paired: config().topology === 'pair' } };
   }
   async function action(input) {

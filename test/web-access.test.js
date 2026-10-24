@@ -29,6 +29,24 @@ function simulateProxy(server, address = '172.30.32.2') {
   server.on('connection', socket => Object.defineProperty(socket, 'remoteAddress', { value: address }));
 }
 
+test('HTTPS maintenance races return a specific conflict without exposing native error details', async t => {
+  let code = 'https_manager_busy';
+  const { access } = await setup(t, configuration({ addon: false, token: firstToken }), {
+    httpsManagerFactory: () => ({ start() {}, close() {}, status: () => ({ phase: 'ready', enabled: true, busy: true }),
+      action() { throw Object.assign(new Error('/private/native/error'), { code }); } }),
+  });
+  const post = () => fetch(`${endpoint(access.server)}/api/web-access`, { method: 'POST',
+    headers: { ...authorization(firstToken), 'Content-Type': 'application/json' }, body: '{"action":"recheck"}' });
+  const conflict = await post();
+  assert.equal(conflict.status, 409);
+  assert.deepEqual(await conflict.json(), { code: 'https_manager_busy',
+    error: 'Web access maintenance is running. Wait for it to finish, then retry.' });
+  code = 'unrecognized_native_error';
+  const failed = await post();
+  assert.equal(failed.status, 503);
+  assert.doesNotMatch(JSON.stringify(await failed.json()), /private|native|unrecognized/);
+});
+
 test('authenticated pairing management reports access independently of failed dashboard state', async t => {
   let actions = 0;
   const familyToken = 'synthetic-family-web-access-token';

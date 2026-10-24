@@ -6,7 +6,7 @@ import { createDatePicker } from './date-picker.js';
 export function createEnergyCheckRange({ document = globalThis.document, now = Date.now, onChange }) {
   const $ = id => document.getElementById(`energy-check-${id}`);
   const start = $('date-start'), end = $('date-end'), form = $('range-form'), message = $('range-status');
-  const presets = ['week', 'month', 'year', 'previous-year'];
+  const presets = ['week', 'four-weeks', 'year', 'previous-year'];
   let dates = comparisonPeriod('week', now()), preset = 'week', initialized = false;
   function draw() {
     startPicker.dismiss(); endPicker.dismiss();

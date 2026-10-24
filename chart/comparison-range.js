@@ -4,19 +4,17 @@ import { createTimingBenefit } from './timing-benefit.js';
 import { createComparisonDisclosure } from './comparison-disclosure.js';
 import { replicaSnapshotKey } from './replica-status.js';
 
-const presets = ['week', 'month', 'year', 'previous-year'];
+const presets = ['week', 'four-weeks', 'year', 'previous-year'];
 
 /** Calendar periods use Finnish dates, including across DST and year boundaries. */
 export function comparisonPeriod(preset, now) {
   const today = finnishDate(now), year = Number(today.slice(0, 4));
   if (preset === 'week') return { startDate: shiftDate(today, -6), endDate: today };
-  if (preset === 'month') {
-    const endDate = shiftDate(`${today.slice(0, 7)}-01`, -1);
-    return { startDate: `${endDate.slice(0, 7)}-01`, endDate };
-  }
+  if (preset === 'four-weeks') return { startDate: shiftDate(today, -27), endDate: today };
   if (preset === 'year') return { startDate: `${year}-01-01`, endDate: today };
   if (preset === 'previous-year') return { startDate: `${year - 1}-01-01`, endDate: `${year - 1}-12-31` };
-  return selectedRange('today', now);
+  if (preset === 'today') return selectedRange('today', now);
+  throw new RangeError('Unsupported comparison period');
 }
 
 const sameDates = (a, b) => a && b && a.startDate === b.startDate && a.endDate === b.endDate;

@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Replace Last month with Last 4 weeks in Energy cost comparisons and Recorded
+  energy checks, selecting 28 Finnish calendar dates including today.
+
+- Keep HTTPS actions unavailable during background web access maintenance and
+  explain a maintenance conflict when a request races its start.
+
 - Describe vehicle feeds and charger associations in read-only setup views as
   recorded master evidence, without implying a live logger failure or a current
   physical identification.

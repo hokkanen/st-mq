@@ -98,8 +98,9 @@ test('actual background certificate recovery separates current readiness from th
     status: async () => connected ? observation() : { Version: `${BOOTSTRAP_VERSION}-fixture`, BackendState: 'NeedsLogin', AuthURL: '' } }));
   await manager.action({ action: 'enable' }); await until(() => manager.status().operation.state !== 'running');
   const failed = manager.status().operation;
+  await until(() => !manager.status().busy);
   connected = true; await manager.configure();
-  await until(() => manager.status().phase === 'ready' && manager.status().certificate);
+  await until(() => manager.status().phase === 'ready' && manager.status().certificate && !manager.status().busy);
   const current = manager.status();
   assert.equal(current.error, null); assert.equal(current.operation.id, failed.id); assert.equal(current.operation.state, 'failed');
   const view = secureWebAccessView({ ...current, transport: { https: { enabled: true, listening: true } } }, { admin: true, now: now() });
@@ -130,4 +131,33 @@ test('a current configured loopback destination remains visible without househol
   assert.equal(view.hostsEntry, ''); assert.equal(view.curlCommand, '');
   assert.match(view.browserInstructions, /HTTPS for fixture\.test-tailnet\.ts\.net uses port 8443.*reaches only this computer/);
   assert.match(view.dnsInstructions, /loopback destination cannot provide household access/);
+});
+
+test('background maintenance reports busy while retaining its completed action receipt', async t => {
+  let hold = false, release, notify;
+  const gate = new Promise(resolve => { release = resolve; });
+  const entered = new Promise(resolve => { notify = resolve; });
+  const context = await fixture(t, () => ({ status: async () => {
+    if (hold) { notify(); await gate; }
+    return { Version: `${BOOTSTRAP_VERSION}-fixture`, BackendState: 'Running', CertDomains: [hostname], AuthURL: '' };
+  } }));
+  await context.manager.action({ action: 'enable' });
+  await until(() => context.manager.status().operation.state !== 'running' && !context.manager.status().busy);
+  hold = true;
+  await context.manager.configure(); await entered;
+  try {
+    const current = context.manager.status();
+    assert.equal(current.phase, 'ready');
+    assert.equal(current.operation.state, 'completed');
+    assert.equal(current.busy, true, 'Background maintenance must gate visible actions');
+    const view = secureWebAccessView(current, { admin: true, now: context.now() });
+    assert.equal(view.busy, true);
+    assert.equal(view.next.title, 'Checking web access');
+    assert.match(view.receipt.text, /Last action/);
+    assert.equal('busy' in context.manager.status({ admin: false }), false);
+    await assert.rejects(context.manager.action({ action: 'recheck' }), { code: 'https_manager_busy' });
+    assert.equal(context.manager.status().operation.id, current.operation.id, 'A refused request cannot replace the completed receipt');
+  } finally { release(); }
+  await until(() => !context.manager.status().busy);
+  assert.equal(secureWebAccessView(context.manager.status(), { admin: true, now: context.now() }).busy, false);
 });

@@ -46,7 +46,7 @@ function fixture({ open = true } = {}) {
   document.body = document.createElement('body');
   const elements = new Map();
   for (const id of ['comparison-toggle', 'comparison-content', 'timing-benefit', 'comparison-range-form', 'comparison-date-start', 'comparison-date-end',
-    'comparison-range-status', 'comparison-range-retry', ...['week', 'month', 'year', 'previous-year'].map(period => `comparison-period-${period}`)]) {
+    'comparison-range-status', 'comparison-range-retry', ...['week', 'four-weeks', 'year', 'previous-year'].map(period => `comparison-period-${period}`)]) {
     const element = document.createElement(id.includes('date-') ? 'input' : 'div');
     element.id = id; element.required = true; elements.set(id, element); document.body.append(element);
   }
@@ -79,7 +79,7 @@ function historySelectionStatus(historySelection, historyRevision = 4) {
 
 function comparisonControlState(f) {
   return { start: f.start.value, end: f.end.value, endMin: f.end.min,
-    presets: ['week', 'month', 'year', 'previous-year'].map(period => f.get(`comparison-period-${period}`).getAttribute('aria-pressed')),
+    presets: ['week', 'four-weeks', 'year', 'previous-year'].map(period => f.get(`comparison-period-${period}`).getAttribute('aria-pressed')),
     expanded: f.get('comparison-toggle').getAttribute('aria-expanded'), contentHidden: f.get('comparison-content').hidden,
     focused: f.document.activeElement?.id };
 }
@@ -89,11 +89,14 @@ test('comparison shortcuts use Finnish calendar dates, inclusive weeks and compl
     ['today', '2026-12-31T22:30:00Z', ['2027-01-01', '2027-01-01']],
     ['year', '2026-12-31T22:30:00Z', ['2027-01-01', '2027-01-01']],
     ['previous-year', '2026-12-31T22:30:00Z', ['2026-01-01', '2026-12-31']],
-    ['month', '2024-02-29T22:30:00Z', ['2024-02-01', '2024-02-29']],
-    ['month', '2026-01-15T12:00:00Z', ['2025-12-01', '2025-12-31']],
+    ['four-weeks', '2024-02-29T22:30:00Z', ['2024-02-03', '2024-03-01']],
+    ['four-weeks', '2026-01-15T12:00:00Z', ['2025-12-19', '2026-01-15']],
+    ['four-weeks', '2026-03-29T21:30:00Z', ['2026-03-03', '2026-03-30']],
+    ['four-weeks', '2026-10-25T22:30:00Z', ['2026-09-29', '2026-10-26']],
     ['week', '2026-03-29T21:30:00Z', ['2026-03-24', '2026-03-30']],
     ['week', '2026-10-25T22:30:00Z', ['2026-10-20', '2026-10-26']],
   ]) assert.deepEqual(comparisonPeriod(preset, Date.parse(at)), { startDate: dates[0], endDate: dates[1] }, `${preset} at ${at}`);
+  assert.throws(() => comparisonPeriod('month', NOW), /Unsupported comparison period/);
 });
 
 test('comparisons default to seven Finnish dates and later midnight polls preserve the selected period', async t => {
@@ -120,12 +123,12 @@ test('comparisons default to seven Finnish dates and later midnight polls preser
 test('custom starts set both date fields and reject invalid end dates', async t => {
   const f = fixture(); t.after(() => f.controller.close());
   const first = f.controller.refresh({ now: NOW }); await tick(); reply(f.requests[0]); await first;
-  f.preset('month'); await tick(); reply(f.requests[1]); await tick();
-  assert.equal(f.end.value, '2026-08-31');
+  f.preset('four-weeks'); await tick(); reply(f.requests[1]); await tick();
+  assert.equal(f.start.value, '2026-08-31'); assert.equal(f.end.value, '2026-09-27');
   f.change('start', '2026-08-12'); await tick();
   assert.match(f.requests[2].path, /start=2026-08-12&end=2026-08-12/);
   assert.equal(f.end.value, '2026-08-12'); assert.equal(f.end.min, '2026-08-12');
-  assert.equal(f.get('comparison-period-month').getAttribute('aria-pressed'), 'false');
+  assert.equal(f.get('comparison-period-four-weeks').getAttribute('aria-pressed'), 'false');
   reply(f.requests[2]); await tick();
   f.change('end', '2026-08-11'); await tick();
   assert.equal(f.end.checkValidity(), false); assert.equal(f.requests.length, 3);
@@ -238,7 +241,7 @@ test('same-date refreshes show measured stage progress and preserve stale eviden
 test('late progress from a cancelled comparison cannot change the newer result', async t => {
   const f = fixture(); t.after(() => f.controller.close());
   const first = f.controller.refresh({ now: NOW }); await tick();
-  f.preset('month'); await tick(); reply(f.requests[1], 2); await tick();
+  f.preset('four-weeks'); await tick(); reply(f.requests[1], 2); await tick();
   const text = f.message.textContent;
   f.requests[0].onProgress({ stage: 'reading-energy', completed: 3, total: 4 });
   assert.equal(f.message.textContent, text);
@@ -302,12 +305,12 @@ for (const [period, nextHistoryRevision] of [['year', 4], ['previous-year', 5]])
 test('failed period requests identify retained results and retry replaces them only after success', async t => {
   const f = fixture(); t.after(() => f.controller.close());
   const first = f.controller.refresh({ now: NOW }); await tick(); reply(f.requests[0], 1); await first;
-  f.preset('month'); await tick();
-  assert.match(f.message.textContent, /Loading 2026-08-01 – 2026-08-31.*Showing 2026-09-21 – 2026-09-27 until ready/);
+  f.preset('four-weeks'); await tick();
+  assert.match(f.message.textContent, /Loading 2026-08-31 – 2026-09-27.*Showing 2026-09-21 – 2026-09-27 until ready/);
   assert.equal(f.root.dataset.stale, 'true'); assert.equal(f.root.getAttribute('aria-busy'), 'true');
   f.requests[1].reject(new Error('Fixture unavailable')); await tick();
   assert.equal(f.form.dataset.state, 'error'); assert.equal(f.retry.hidden, false);
-  assert.match(f.message.textContent, /Unable to load 2026-08-01 – 2026-08-31: Fixture unavailable.*Showing 2026-09-21 – 2026-09-27/);
+  assert.match(f.message.textContent, /Unable to load 2026-08-31 – 2026-09-27: Fixture unavailable.*Showing 2026-09-21 – 2026-09-27/);
   assert.match(f.root.textContent, /€1.00/); assert.equal(f.form.dataset.startDate, '2026-09-21');
   f.retry.emit('click'); await tick();
   assert.equal(f.requests.length, 3); assert.equal(f.form.dataset.state, 'loading');
@@ -315,7 +318,7 @@ test('failed period requests identify retained results and retry replaces them o
   reply(f.requests[2], 6); await tick();
   assert.equal(f.form.dataset.state, 'ready'); assert.equal(f.retry.hidden, true);
   assert.equal(f.root.dataset.stale, 'false'); assert.equal(f.root.getAttribute('aria-busy'), 'false');
-  assert.match(f.message.textContent, /^2026-08-01 – 2026-08-31 · Finnish time$/);
+  assert.match(f.message.textContent, /^2026-08-31 – 2026-09-27 · Finnish time$/);
   assert.match(f.root.textContent, /€6.00/); assert.doesNotMatch(f.root.textContent, /€1.00/);
 });
 

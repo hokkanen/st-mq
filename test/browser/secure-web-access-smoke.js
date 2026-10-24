@@ -436,6 +436,7 @@ try {
   const installFixture = next => { for (const key of Object.keys(fixture)) delete fixture[key]; Object.assign(fixture, structuredClone(next)); };
   for (const [name, changes] of [
     ['remote-configured', { ...readyFixture, remoteAccess: { state: 'configured' } }],
+    ['background-maintenance', { ...readyFixture, busy: true, operation: { action: 'recheck', state: 'completed', completedAt: Date.parse('2026-10-14T11:59:59Z'), error: null } }],
     ['remote-unavailable', { ...readyFixture, phase: 'ready', error: 'helper_remote_forwarding_unavailable', remoteAccess: { state: 'unavailable' } }],
     ['disabled-pair', originalFixture],
     ['disabled-peer-owner', { ...readyFixture, enabled: false, phase: 'disabled', pair: { paired: true, ownerId: 'synthetic-peer', localOwner: false }, transport: { ...readyFixture.transport, https: { enabled: false, listening: false } } }],
@@ -486,6 +487,15 @@ try {
       for(const action of ['enable','recheck','retry','disable','check-updates','update-now'])
         assert.equal(await evaluate(`document.getElementById('secure-web-access-${action}').disabled`), true, 'Startup setup progress disables overlapping panel actions');
       assert.equal(await evaluate("document.getElementById('secure-web-access-authorize').hasAttribute('href')"), false);
+    }
+    if(name==='background-maintenance') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'Checking web access');
+      for (const action of ['recheck', 'disable', 'check-updates'])
+        assert.equal(await evaluate(`document.getElementById('secure-web-access-${action}').disabled`), true);
+      const writesBefore = await evaluate('webBrowser.writes');
+      assert.equal(await evaluate("webBrowser.panel.run('recheck')"), false, 'Programmatic activation also respects background maintenance');
+      assert.equal(await evaluate('webBrowser.writes'), writesBefore);
+      assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"), /Last action/);
     }
     if(name==='retry-pending')assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Setting up HTTPS');
     if(name==='recovered-receipt'){assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'One address at home and away');assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"),/Last action · Set up HTTPS request failed/);}

@@ -850,7 +850,7 @@ try {
   await evaluate("renderEnergyView({...energyView,job:{state:'running'}})");
   assert.match(await evaluate("document.getElementById('energy-audit-message').textContent"),/running.*Last complete check/,'A refresh retains the completion date of the previous result');
   await evaluate("renderEnergyView()");
-  for (const [preset, expected] of [['month',['2026-09-01','2026-09-30']],['year',['2026-01-01','2026-10-07']],['previous-year',['2025-01-01','2025-12-31']],['week',['2026-10-01','2026-10-07']]]) {
+  for (const [preset, expected] of [['four-weeks',['2026-09-10','2026-10-07']],['year',['2026-01-01','2026-10-07']],['previous-year',['2025-01-01','2025-12-31']],['week',['2026-10-01','2026-10-07']]]) {
     await evaluate(`document.getElementById('energy-check-period-${preset}').click()`);
     assert.deepEqual(await evaluate("[document.getElementById('energy-check-date-start').value,document.getElementById('energy-check-date-end').value]"), expected);
     assert.equal(await evaluate(`document.getElementById('energy-check-period-${preset}').getAttribute('aria-pressed')`),'true');
