@@ -528,7 +528,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     // Keep the public phase aligned with that independently confirmed Pause;
     // this projection neither completes the save nor grants a command lease.
     const confirmedPausePhase = phase === 'pause-unconfirmed' && sessionPauseConfirmed
-      && hasAuthority() && !state.pending && !errorCode;
+      && !state.pending && !errorCode;
     const nativeSchedule = snapshot && staleAppControl() ? state.appControl?.schedule
       : snapshot?.appControl?.schedule ?? state.appControl?.schedule;
     return { ...clone(state), phase: confirmedPausePhase ? 'paused' : phase,

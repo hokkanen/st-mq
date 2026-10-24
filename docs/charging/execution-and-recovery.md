@@ -349,8 +349,9 @@ is already false remains as described above.
 
 A matching, physically confirmed local session Pause is shown as paused even
 while its compact witness save finishes. That presentation does not complete
-the save or grant a command lease. Pending native commands, errors, lost
-authority and expired evidence retain their independent confirmation gates.
+the save or grant a command lease. Pending native commands, errors and expired
+evidence retain their independent confirmation gates. Command authority remains
+separate from observed stopping; public status does not invoke its callback.
 
 An open charging period can show **Charging is allowed** while the connected
 vehicle draws no power. A later planned period does not mean the current one

@@ -12,7 +12,7 @@ import { updateTeslaCurrentRequest } from '../src/charging/tesla-current-request
 
 const START = Date.parse('2026-09-24T09:00:00Z'), MINUTE = 60_000, scope = 'a'.repeat(64);
 const plan = (startAt, extra = {}) => ({ id: 'synthetic-plan', startAt, feasible: true, periods: [{ startAt, endAt: null }], ...extra });
-function fixture({ initialState = null, identification = null, nativeTakeover = false, getPlan, requestMeterReadback } = {}) {
+function fixture({ initialState = null, identification = null, nativeTakeover = false, getPlan, requestMeterReadback, hasAuthority } = {}) {
   let now = START, authority = true, admission = true, connected = true, confirmed = true, transactionId = 7, connectionId = 'synthetic-socket', physicalPause = true;
   let stored = null, saveError = false, witnessSaveError = false, saveHook = null, interceptor = null, appControl = null, snapshotChanges = {};
   const profiles = new Map(), calls = [], saves = [], nativeCalls = [];
@@ -50,7 +50,7 @@ function fixture({ initialState = null, identification = null, nativeTakeover = 
     isCurrent: (value, { unchangedStatus = false } = {}) => connected && value.connectionId === connectionId
       && value.transactionId === transactionId && (!unchangedStatus || value.connectorStatus === readSnapshot().connectorStatus
         && value.statusAt === readSnapshot().statusAt) });
-  const controller = adapter.createController({ initialState, clock: () => now, canControl: () => authority && admission, hasAuthority: () => authority,
+  const controller = adapter.createController({ initialState, clock: () => now, canControl: () => authority && admission, hasAuthority: hasAuthority ?? (() => authority),
     getPlan,
     getIdentification: snapshot => typeof identification === 'function' ? identification(snapshot) : identification,
     saveState: state => {
@@ -1822,7 +1822,10 @@ test('a pending automatic takeover preserves the pause until transaction recover
 const sessionPause = { connectedAt: START - MINUTE, requestedAt: START };
 
 test('late physical Pause confirmation updates the public phase before a delayed witness save', async t => {
-  const f = fixture(); t.after(() => f.controller.close());
+  // The runtime's authority callback itself reads controller status. Public
+  // presentation must never call that callback recursively.
+  const f = fixture({ hasAuthority: () => { f.controller.status(); return true; } });
+  t.after(() => f.controller.close());
   f.snapshot({ statusAt: START, powerAt: START - 1 });
   const first = await f.controller.update({ enabled: true, sessionPause });
   assert.equal(first.phase, 'pause-unconfirmed');
@@ -1843,7 +1846,8 @@ test('late physical Pause confirmation updates the public phase before a delayed
     assert.deepEqual(f.stored, prior, 'Presentation does not complete the pending witness save');
     assert.equal(writes(f).length, nativeWrites, 'Confirmation does not repeat a native setting');
     f.authority(false);
-    assert.equal(f.controller.status().phase, 'pause-unconfirmed', 'Authority loss keeps the phase conservative');
+    assert.equal(f.controller.status().phase, 'paused', 'Observed stopping does not grant command authority');
+    assert.equal(writes(f).length, nativeWrites);
     f.authority(true); f.advance(61_000);
     assert.equal(f.controller.status().sessionPause.confirmed, false);
     assert.equal(f.controller.status().phase, 'pause-unconfirmed', 'A pending save cannot renew physical freshness');

@@ -8,6 +8,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 - Keep local charger Pause status consistent when fresh stopping evidence arrives
   before its witness save finishes. Retain command, ownership and freshness gates.
+  Keep authority callbacks outside status projection to prevent recursive reads.
   Describe identification observations without assuming that the vehicle is BMW.
 
 - Describe unavailable current Pause confirmation without claiming that the
