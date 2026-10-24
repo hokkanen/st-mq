@@ -28,6 +28,11 @@ the same arrow placement with **One extra day ↗**.
 | **Shared priority** | Chooses Balanced, Charger 1 or Charger 2 for both chargers. Both cards edit the same saved choice. |
 | **One extra day** | Compares the current deadline with one later calendar day. Allowing the day changes only this connection's deadline; canceling an active allowance restores the earlier deadline. |
 
+After a priority save is accepted, the editor may briefly show **Waiting for
+updated status** until the committed preference arrives. You can close it while
+waiting. A newer conflicting preference remains visible for review; the editor
+does not repeat the write automatically.
+
 Automatic starts on for both chargers and shared priority starts Balanced when
 charging state is first initialized, including a fresh database. Later saved
 choices survive restart; replacement equipment starts with Automatic off.

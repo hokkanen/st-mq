@@ -2402,6 +2402,72 @@ test('shared priority saves only on submit and updates both entries from the ack
   panel.close();
 });
 
+test('a saved priority waits for a newer committed revision without locking other charger controls', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+  const panel = createChargingPanel({ document, request: async (...args) => {
+    calls.push(args); return { ...priorityStatus(), storagePending: true };
+  } });
+  panel.update(priorityStatus()); const entry = $('charger1-shared-priority'); entry.dispatch('click');
+  choosePriority(document, 'charger2'); await submit($('charging-priority-form'));
+  assert.equal($('charging-priority-dialog').open, true);
+  assert.match($('charging-priority-message').textContent, /saved.*waiting/i);
+  assert(!$('charging-priority-message').matches('.form-error'));
+  assert($('charging-priority-charger2').checked);
+  assert($('charging-priority-save').disabled); assert($('charging-priority-charger1').disabled);
+  assert(!$('charging-priority-cancel').disabled);
+  assert(!$('charger1-enabled').disabled, 'An acknowledged save releases the shared mutation lock');
+  await submit($('charging-priority-form')); panel.update(priorityStatus());
+  assert.equal(calls.length, 1); assert.equal($('charging-priority-dialog').open, true);
+  panel.update(priorityStatus('charger2', 2));
+  assert.equal($('charging-priority-dialog').open, false);
+  assert.equal(document.activeElement, entry);
+  assert.equal($('charger1-shared-priority-value').textContent, 'Charger 2');
+  assert.equal($('charger2-shared-priority-value').textContent, 'Charger 2');
+  panel.close();
+});
+
+test('a priority waiting for status can close and does not affect a later editor', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => priorityStatus() });
+  panel.update(priorityStatus()); $('charger1-shared-priority').dispatch('click');
+  choosePriority(document, 'charger2'); await submit($('charging-priority-form'));
+  assert(!$('charging-priority-dialog').dispatch('cancel').defaultPrevented);
+  $('charging-priority-cancel').dispatch('click');
+  assert(!$('charger2-shared-priority').disabled);
+  $('charger2-shared-priority').dispatch('click'); choosePriority(document, 'charger1');
+  panel.update(priorityStatus('charger2', 2));
+  assert.equal($('charging-priority-dialog').open, true);
+  assert($('charging-priority-charger1').checked); assert(!$('charging-priority-save').disabled);
+  panel.close();
+});
+
+test('a newer conflicting priority resolves the wait with the actual saved preference visible', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => priorityStatus() });
+  panel.update(priorityStatus()); $('charger1-shared-priority').dispatch('click');
+  choosePriority(document, 'charger2'); await submit($('charging-priority-form'));
+  panel.update(priorityStatus('charger1', 3));
+  assert.equal($('charging-priority-dialog').open, true);
+  assert.match($('charging-priority-message').textContent, /changed while saving/);
+  assert($('charging-priority-message').matches('.form-error'));
+  assert($('charging-priority-charger2').checked); assert(!$('charging-priority-save').disabled);
+  assert.equal($('charger1-shared-priority-value').textContent, 'Charger 1');
+  panel.close();
+});
+
+test('equipment reassociation cancels a priority confirmation wait', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => priorityStatus() });
+  panel.update(priorityStatus()); $('charger1-shared-priority').dispatch('click');
+  choosePriority(document, 'charger2'); await submit($('charging-priority-form'));
+  const replacement = priorityStatus(); replacement.charging.chargers[0].association = 'fixture:replacement';
+  panel.update(replacement);
+  assert.equal($('charging-priority-dialog').open, false);
+  $('charger2-shared-priority').dispatch('click');
+  assert($('charging-priority-balanced').checked); assert(!$('charging-priority-charger1').disabled);
+  panel.close();
+});
+
 test('priority polling follows committed changes until edited and then preserves the open draft and focus', () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const panel = createChargingPanel({ document, request: async () => priorityStatus() });

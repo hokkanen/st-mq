@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Wait for updated committed status after saving charger priority when a
+  concurrent transaction delays its display. Keep the saved draft visible and
+  report a conflict only after a newer revision shows a different preference.
+
 - Keep local charger Pause status consistent when fresh stopping evidence arrives
   before its witness save finishes. Retain command, ownership and freshness gates.
   Keep authority callbacks outside status projection to prevent recursive reads.

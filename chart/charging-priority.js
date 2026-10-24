@@ -3,7 +3,7 @@
 export function createChargingPriority({ document, save }) {
   const choices = ['balanced', 'charger1', 'charger2'], entries = new Map(), listeners = [];
   let charging, deviceScope, writable = false, busy = false, saving = false, disposed = false;
-  let dialog, form, current, message, apply, cancel, invoker, draft, edited = false;
+  let dialog, form, current, message, apply, cancel, invoker, draft, edited = false, awaiting = null;
   const radios = new Map();
   const make = (tag, text = '', className = '', id) => {
     const node = document.createElement(tag); node.textContent = text;
@@ -19,11 +19,22 @@ export function createChargingPriority({ document, save }) {
     : charging?.chargers?.find(charger => charger.id === value)?.label
       ?? ({ charger1: 'Charger 1', charger2: 'Charger 2' })[value] ?? 'Unavailable';
   function refresh() {
-    const selected = committed(), locked = busy || saving || !writable || !selected;
+    const selected = committed();
+    let confirmed = false;
+    if (awaiting && deviceScope === awaiting.scope && Number.isSafeInteger(charging?.controls?.revision)
+      && charging.controls.revision > awaiting.revision) {
+      confirmed = selected === awaiting.priority;
+      awaiting = null;
+      if (!confirmed) {
+        message.textContent = 'The saved priority changed while saving. Review the current value and try again.';
+        message.classList.add('form-error');
+      }
+    }
+    const locked = busy || saving || Boolean(awaiting) || !writable || !selected;
     for (const { button, value } of entries.values()) {
       value.textContent = label(selected);
       button.setAttribute('aria-label', `Shared charger priority: ${label(selected)}`);
-      button.disabled = busy || saving;
+      button.disabled = busy || saving || Boolean(awaiting);
     }
     if (!dialog) return;
     if (!dialog.open || !edited) draft = selected;
@@ -38,10 +49,11 @@ export function createChargingPriority({ document, save }) {
         : `Favor this charging point when both requests cannot be met.${provider ? ` ${provider} · any connected vehicle.` : ' Applies to any connected vehicle.'}`;
     }
     apply.disabled = locked || !choices.includes(draft) || draft === selected;
-    apply.textContent = saving ? 'Saving' : 'Save priority';
+    apply.textContent = saving ? 'Saving' : awaiting ? 'Waiting for status' : 'Save priority';
     cancel.disabled = saving;
-    cancel.textContent = writable && draft !== selected ? 'Cancel' : 'Close';
-    form.setAttribute('aria-busy', String(saving));
+    cancel.textContent = !awaiting && writable && draft !== selected ? 'Cancel' : 'Close';
+    form.setAttribute('aria-busy', String(saving || Boolean(awaiting)));
+    if (confirmed && dialog.open) dialog.close();
   }
   function createDialog() {
     dialog = make('dialog', '', 'charging-priority-dialog', 'charging-priority-dialog');
@@ -78,25 +90,24 @@ export function createChargingPriority({ document, save }) {
     bind(cancel, 'click', () => { if (!saving) dialog.close(); });
     bind(dialog, 'cancel', event => { if (saving) event.preventDefault(); });
     bind(dialog, 'close', () => {
-      edited = false; draft = committed();
+      awaiting = null; edited = false; draft = committed(); refresh();
       if (invoker?.isConnected) invoker.focus({ preventScroll: true });
       invoker = null;
     });
     bind(form, 'submit', async event => {
       event.preventDefault(); if (apply.disabled || saving) return;
-      const requested = draft;
+      const requested = draft, revision = charging.controls.revision, scope = deviceScope;
       saving = true; refresh();
       try {
         const saved = await save(requested, message);
-        if (disposed) return;
-        if (saved && committed() === requested) {
-          // Native close restores focus immediately; the invoking button must
-          // already be enabled when that happens.
-          saving = false; refresh(); dialog.close();
-        }
-        else if (saved) {
-          message.textContent = 'The saved priority changed while saving. Review the current value and try again.';
-          message.classList.add('form-error');
+        if (disposed || deviceScope !== scope) return;
+        if (saved) {
+          // A successful write may return the older committed snapshot while
+          // another transaction is pending. Wait for a newer scoped revision
+          // before deciding whether the requested preference was superseded.
+          awaiting = { priority: requested, revision, scope };
+          message.textContent = 'Priority saved. Waiting for updated status.';
+          message.classList.remove('form-error');
         }
       } finally { saving = false; if (!disposed) refresh(); }
     });
@@ -125,7 +136,7 @@ export function createChargingPriority({ document, save }) {
     update(next, controls) {
       const nextScope = JSON.stringify((next?.chargers ?? []).map(charger => [charger.id, charger.association]));
       if (deviceScope !== undefined && deviceScope !== nextScope && dialog?.open) {
-        edited = false; dialog.close();
+        awaiting = null; edited = false; dialog.close();
       }
       deviceScope = nextScope; charging = next; writable = controls.writable; busy = controls.busy; refresh();
     },
