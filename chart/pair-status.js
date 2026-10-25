@@ -563,7 +563,7 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     getAccess: getAccess ?? (() => controller.snapshot().view?.webAccess),
     allowed: view => pairActionAllowed(view, 'reset'), run: options => controller.run('reset', options), httpsNotice,
     onWebAccess: openWebAccess });
-  $('pairing-reset-web-access').addEventListener('click', openWebAccess);
+  $('pairing-reset-web-access').addEventListener('click', event => { event?.preventDefault(); openWebAccess(); });
   function renderVerification(state) {
     for (const action of ['handover', 'promote']) {
       const select = $(`pairing-${action}-verification`);

@@ -1527,7 +1527,7 @@ function resetWindowFixture({ access = { role: 'admin' }, webRequest } = {}) {
       sent.push(body); return { ...view, uiOperation: { id: body.requestId, action: 'reset', state: 'complete', finishedAt: now } };
     } });
   panel.update(view);
-  const click = name => $(`pairing-reset${name ? '-'+name : ''}`).listeners.get('click')();
+  const click = (name, event) => $(`pairing-reset${name ? '-'+name : ''}`).listeners.get('click')(event);
   const change = name => $(`pairing-reset-${name}`).listeners.get('change')();
   const fresh = () => { $('pairing-reset-keep').checked = false; $('pairing-reset-fresh').checked = true; change('fresh'); };
   return { document, $, panel, sent, storage, view, click, change, fresh, setAccess: value => { access = value; panel.update(view); } };
@@ -1552,7 +1552,9 @@ test('Review web access cancels either reset stage then opens, focuses and scrol
       destination.target.open = false; destination.outer.open = false;
       f.click(''); await flushReset();
       if (review) { f.click('continue'); await flushReset(); }
-      f.click('https-link'); await flushReset();
+      let prevented = false;
+      f.click('https-link', { preventDefault: () => { prevented = true; } }); await flushReset();
+      assert.equal(prevented, true, 'The native fragment jump cannot undo destination focus');
       assert.equal(f.$('pairing-reset-dialog').open, false);
       assert.equal(f.document.activeElement, destination.summary, 'Reset focus restoration cannot steal navigation focus');
       assert.deepEqual(destination.visits.at(-1), { targetOpen: true, outerOpen: true, focused: true,
@@ -1567,7 +1569,9 @@ test('Review web access cancels either reset stage then opens, focuses and scrol
 
 test('the completed-reset Review web access control shares destination navigation without a reset', () => {
   const f = resetWindowFixture(), destination = webAccessDestination(f);
-  f.$('pairing-reset-web-access').listeners.get('click')();
+  let prevented = false;
+  f.$('pairing-reset-web-access').listeners.get('click')({ preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, true);
   assert.equal(f.document.activeElement, destination.summary);
   assert.deepEqual(destination.visits, [{ targetOpen: true, outerOpen: true, focused: true,
     options: { block: 'start', behavior: 'auto' } }]);

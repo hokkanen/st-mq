@@ -122,7 +122,7 @@ export function createPairResetWindow({ document, request, getState, getAccess, 
     if (!webIdentity) readHttps();
   });
   $('cancel').addEventListener('click', () => dialog.close());
-  $('https-link').addEventListener('click', () => { webAccessRequested = true; dialog.close(); });
+  $('https-link').addEventListener('click', event => { event?.preventDefault(); webAccessRequested = true; dialog.close(); });
   dialog.addEventListener('close', () => {
     ++epoch; webStatus = null; webIdentity = null;
     const cancelled = review, submitted = acceptedClose; review = null; acceptedClose = false; cancelled?.resolve(false);

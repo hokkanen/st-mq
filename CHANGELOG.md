@@ -10,7 +10,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   actions and receipts together, and integrate fresh setup into HTTPS setup
   without repeating healthy-access instructions.
 
-- Make both Review web access controls use the shared secondary-button style and
+- Keep both Review web access links compact and aligned with their related help
+  or reset receipt, using the same accent and underline as other in-app links, and
   open, scroll to and focus Web access, including when its parent folds are closed
   or the same destination was already selected. Leaving reset still submits no reset.
 

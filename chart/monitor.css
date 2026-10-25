@@ -1636,7 +1636,8 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .floor-preheat-panel .equipment-fold > summary small { color: var(--muted); font-size: 10px; font-weight: 400; text-align: right; }
 .floor-preheat-downloads { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 16px 0; }
 .floor-preheat-downloads button { margin: 0; max-width: 100%; font-size: 12px; }
-.floor-preheat-panel a, .floor-setup-link a, .equipment-control-link a { color: var(--accent); text-underline-offset: 3px; }
+.floor-preheat-panel a, .floor-setup-link a, .equipment-control-link a, a.equipment-control-link { color: var(--accent); text-underline-offset: 3px; }
+a.equipment-control-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
 .floor-setup-link { margin: 12px 0; font-size: 11px; line-height: 1.6; }
 .floor-commissioning-steps { margin: 16px 0 0; padding-left: 22px; }
 .floor-commissioning-steps > li { padding-left: 4px; margin: 0 0 20px; }
@@ -2315,6 +2316,7 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .pairing-reset-action { margin-top: 0; padding-top: 0; border-top: 0; }
 #pairing-operation-status:focus { outline: none; }
 .pairing-reset-receipt { overflow-wrap: anywhere; }
+.pairing-reset-web-link { display: inline-block; margin-top: 2px; font-size: 12px; line-height: 1.6; }
 .pairing-reset-dialog { width: min(620px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 0; overflow: hidden; }
 .pairing-reset-dialog[open] { display: flex; flex-direction: column; }
 .pairing-reset-header, .pairing-reset-body, .pairing-reset-actions { padding-inline: var(--ui-surface-inset); }
