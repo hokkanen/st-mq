@@ -814,3 +814,40 @@ test('pairing reset HTTPS notice remains conservative for missing, stale or inco
   }
   assert.equal(pairingResetHttpsNotice(known, null).title, 'Review HTTPS after reset');
 });
+
+test('native HTTPS storage failures explain a precise remedy while preserving source and private state', async () => {
+  for (const [error, title, remedy] of [
+    ['https_storage_full', 'Free storage space', /Free space.*saved HTTPS files in place/],
+    ['https_storage_permission_denied', 'Restore private storage access', /administrator restore.*permissions.*private HTTPS.*helper-identity/],
+    ['https_storage_read_only', 'Restore writable storage', /administrator restore writable storage.*saved files in place/],
+    ['https_storage_cross_device', 'Use one filesystem for HTTPS storage', /HTTPS storage.*helper identity on the same filesystem.*preserving/],
+  ]) {
+    const source = { ...structuredClone(ready), phase: 'degraded', error };
+    const before = structuredClone(source), view = secureWebAccessView(source, { admin: true });
+    assert.equal(view.next.title, title);
+    assert.match(view.summary, /saved setup is preserved/);
+    assert.match(view.next.help, remedy);
+    assert.match(view.next.help, /Then select Recheck\.$/);
+    assert.doesNotMatch(`${view.error} ${view.next.help}`, /delete|remove|reset|start fresh/i);
+    assert.equal(view.problemCode, error);
+    assert.equal(view.replacementNeeded, false);
+    assert.deepEqual(source, before, 'Reading failure guidance does not modify source evidence');
+    assert.equal(secureWebAccessView(source).error, '', 'Family receives no private diagnostic detail');
+    const { document, nodes } = fixture();
+    const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, request: async () => source });
+    await panel.refresh({ force: true });
+    assert.equal(nodes.get('secure-web-access-message').textContent, '', 'Specific summary replaces duplicated error prose');
+    const interrupted = secureWebAccessView({ ...source,
+      operation: { action: 'start-fresh', state: 'interrupted' },
+      recovery: { fresh: { token: 'fixture-saved-storage-recovery' } } }, { admin: true });
+    assert.equal(interrupted.next.title, title);
+    assert.match(interrupted.next.help, remedy);
+    assert.match(interrupted.next.help, /Then continue fresh HTTPS setup below\.$/);
+  }
+  for (const error of ['constructor', 'toString', '__proto__']) {
+    const unknown = secureWebAccessView({ ...ready, error }, { admin: true });
+    assert.equal(typeof unknown.error, 'string');
+    assert.equal(unknown.next.title, 'Resolve the setup problem');
+    assert.equal(unknown.problemInSummary, false);
+  }
+});

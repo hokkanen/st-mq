@@ -30,8 +30,19 @@ const replacementCauses = {
   helper_stateful_update_requires_repair: 'The helper update left an unusable identity.',
   https_setup_replacement_invalid: 'The saved preparation for replacing HTTPS is damaged or unsupported.',
 };
+const storageProblems = {
+  https_storage_full: { title: 'Free storage space', cause: 'HTTPS storage is full; the saved setup is preserved.',
+    remedy: 'Free space on the affected disk while keeping the saved HTTPS files in place.' },
+  https_storage_permission_denied: { title: 'Restore private storage access', cause: 'The application cannot access its private HTTPS storage; the saved setup is preserved.',
+    remedy: 'Have the administrator restore the application’s permissions for its private HTTPS and helper-identity storage.' },
+  https_storage_read_only: { title: 'Restore writable storage', cause: 'HTTPS storage is read-only; the saved setup is preserved.',
+    remedy: 'Have the administrator restore writable storage for HTTPS and its helper identity, keeping the saved files in place.' },
+  https_storage_cross_device: { title: 'Use one filesystem for HTTPS storage', cause: 'HTTPS storage and its helper identity are on different filesystems; the saved setup is preserved.',
+    remedy: 'Have the administrator place the managed HTTPS storage and its helper identity on the same filesystem, preserving their saved contents.' },
+};
 const failures = {
   ...replacementCauses,
+  ...Object.fromEntries(Object.entries(storageProblems).map(([code, problem]) => [code, problem.cause])),
   credentials_required: 'Configure an admin password of at least 24 characters before enabling a network entrance.',
   tls_port_unavailable: 'The HTTPS port is already in use. Change web.https_port in private configuration and restart, then retry.',
   http_port_unavailable: 'The LAN HTTP backup port is already in use. Review web.lan_http_port in private configuration.',
@@ -86,7 +97,7 @@ const failure = (value, environment) => {
   if (value === 'helper_installation_binding_unavailable') return environment === 'home-assistant'
     ? 'The Supervisor host identity is unavailable. Check Home Assistant Supervisor health and this add-on’s Supervisor API access, then Retry setup. The saved helper identity is preserved; do not delete its directory.'
     : 'This computer’s installation identity could not be confirmed. Restore read access to /etc/machine-id, /sys/class/dmi/id/product_uuid or /sys/firmware/devicetree/base/serial-number, then Retry setup. The saved helper identity is preserved; do not delete its directory.';
-  return typeof value !== 'string' || !value ? '' : failures[value]
+  return typeof value !== 'string' || !value ? '' : (Object.hasOwn(failures, value) ? failures[value] : null)
     ?? (/^[a-z][a-z0-9_]+$/.test(value) ? 'Web access could not complete its last check. Select Recheck to update the result. If it continues, the diagnostic details below identify the problem; your saved setup is preserved.' : value);
 };
 const date = value => {
@@ -154,6 +165,9 @@ function nextStep(state, { tlsReady, certificateValid, certificateExpired, uncon
     help: 'Preparing this computer’s certificate access. Status updates when the operation completes.' };
   if (state.busy === true) return { title: 'Checking web access',
     help: 'Background web access maintenance is running. Actions become available when it finishes; current listener readiness is shown separately.' };
+  if (Object.hasOwn(storageProblems, errorCode)) return { title: storageProblems[errorCode].title,
+    help: `${storageProblems[errorCode].remedy} ${state.operation?.action === 'start-fresh'
+      && ['interrupted', 'failed'].includes(state.operation.state) ? 'Then continue fresh HTTPS setup below.' : 'Then select Recheck.'}` };
   if (state.operation?.action === 'start-fresh' && ['interrupted', 'failed'].includes(state.operation.state)
     && state.recovery?.fresh) return { title: 'Continue preparing HTTPS setup',
     help: 'Preparation was interrupted. Open Start fresh HTTPS setup below to continue the same operation; the previous setup remains preserved.' };
@@ -299,7 +313,9 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     && ['interrupted', 'failed'].includes(state.operation.state));
   const replacementNeeded = replacementProblems.has(errorCode)
     || errorCode === 'https_pair_identity_changed' && !state.pair?.reauthorization || continuingReplacement;
-  const problemInSummary = admin && !busy && replacementNeeded && Boolean(replacementCauses[errorCode]);
+  const summaryProblem = Object.hasOwn(storageProblems, errorCode) ? storageProblems[errorCode].cause
+    : replacementNeeded && Object.hasOwn(replacementCauses, errorCode) ? replacementCauses[errorCode] : null;
+  const problemInSummary = admin && !busy && Boolean(summaryProblem);
   const receipt = admin ? operationReceipt(state.operation, now) : null;
   const authorizationUrl = admin && !peerOwner && (state.enabled === true || retainedRenewal)
     && errorCode !== 'helper_authorization_start_failed' && state.helper?.state === 'authorization_required'
@@ -321,7 +337,7 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
       : dnsPending ? dns.state === 'mismatch' ? 'HTTPS ready · DNS mismatch' : 'HTTPS ready · DNS not verified' : phase[0],
     tone: unavailable || remoteUnavailable || ['degraded', 'repair_required', 'authorization_required', 'certificate_settings_required'].includes(state.phase)
       ? 'attention' : state.phase === 'ready' && !unconfirmed ? 'available' : 'pending',
-    summary: problemInSummary ? replacementCauses[errorCode] : unavailable ? Number.isFinite(expiresAt) && expiresAt <= now
+    summary: problemInSummary ? summaryProblem : unavailable ? Number.isFinite(expiresAt) && expiresAt <= now
       ? 'The certificate has expired. HTTPS is unavailable; recovery access remains separate. Review certificate renewal below.'
       : 'The HTTPS listener is unavailable. Recovery access remains separate; review the reported problem and retry.'
       : unconfirmed ? 'Current listener or certificate evidence is missing. Recheck to confirm HTTPS readiness; recovery access has separate readiness.'

@@ -4,7 +4,12 @@ import { createServer } from 'node:net';
 import { dirname, resolve } from 'node:path';
 
 export function httpsError(code) { const error = new Error(code); error.code = code; return error; }
-export function errorCode(error) { return /^[a-z][a-z0-9_]{0,80}$/.test(error?.code ?? '') ? error.code : 'https_operation_failed'; }
+export function errorCode(error) {
+  const storage = { ENOSPC: 'https_storage_full', EDQUOT: 'https_storage_full', EACCES: 'https_storage_permission_denied',
+    EPERM: 'https_storage_permission_denied', EROFS: 'https_storage_read_only', EXDEV: 'https_storage_cross_device' };
+  const code = typeof error?.code === 'string' ? error.code : '';
+  return Object.hasOwn(storage, code) ? storage[code] : /^[a-z][a-z0-9_]{0,80}$/.test(code) ? code : 'https_operation_failed';
+}
 
 export async function outsideCheckout(path) {
   const isGitMetadata = async marker => {
