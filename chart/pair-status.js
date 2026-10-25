@@ -229,7 +229,8 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
   const phase = [phaseText[progress?.phase ?? view.transition?.phase ?? view.phase] ?? (view.busy || view.uiOperation?.state === 'running' ? 'An operation is in progress.' : ''),
     count(progress?.processed) !== null ? `${progress.processed}${count(progress?.total) !== null ? ` / ${progress.total}` : ''} ${progress?.phase === 'checking' ? 'source groups checked' : progress?.phase === 'reset-backup' ? 'backups completed' : 'entries processed'}.` : '',
     count(progress?.totalBytes) !== null && progress.totalBytes > 0 ? `${Math.floor(progress.completedBytes / progress.totalBytes * 100)}% of archive bytes moved.` : '',
-    view.uiOperation?.action === 'reset' && stamp(view.uiOperation.startedAt) ? `${Math.max(0, Math.floor((now - view.uiOperation.startedAt) / 1000))} s elapsed.` : ''].filter(Boolean).join(' ');
+    view.uiOperation?.action === 'reset' && view.uiOperation.state === 'running' && stamp(view.uiOperation.startedAt)
+      ? `${Math.max(0, Math.floor((now - view.uiOperation.startedAt) / 1000))} s elapsed.` : ''].filter(Boolean).join(' ');
   const recovery = view.recovery ?? {};
   const recoveryHistorical = mirrorComparison(view) && recovery.state === 'ready'
     && (peer.reachable !== true || peer.role !== 'slave' || ['error', 'stale'].includes(peerSync?.state)

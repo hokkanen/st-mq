@@ -117,7 +117,7 @@ try {
           pair = { ...standby(body.mode === 'keep' ? 'protected' : 'slave'), reason: body.mode === 'keep' ? 'pairing_reset' : null,
             reset: { token: resetToken, lastResult: { requestId: body.requestId, mode: body.mode, completedAt: now, backup: body.mode === 'fresh' && body.backup, archiveDirectory: body.mode === 'fresh' && body.backup ? '/config/st-mq/reset-archives/synthetic-reset' : null,
               backupCount: body.mode === 'fresh' && body.backup ? 1 : 0, unavailableCount: 0, unavailableReasons: [] } },
-            actions: { promote: true, reset: true }, uiOperation: { id: body.requestId, action: 'reset', state: 'complete' } };
+            actions: { promote: true, reset: true }, uiOperation: { id: body.requestId, action: 'reset', state: 'complete', startedAt: now - 5000 } };
           return json(200, pair);
         }
         pair = { ...pair, busy: true, uiOperation: { id: body.requestId, action: body.action, state: 'running' },
@@ -578,6 +578,7 @@ try {
   assert.equal(await evaluate(`${$('pairing-reset-equipment')}.hidden`), true);
   await evaluate(`${$('pairing-reset-confirm')}.click(); true`);
   await until(`${$('pairing-reset-receipt')}.textContent.includes('local history kept protected')`);
+  assert.equal(await evaluate(`${$('pairing-phase')}.textContent`), '', 'A completed reset has no running elapsed timer');
   assert.equal(actions.at(-1).mode, 'keep'); assert.equal(actions.at(-1).restorationConfirmed, undefined);
   assert.equal(pair.role, 'protected');
   assert.match(await evaluate(`${$('pairing-reset-receipt')}.textContent`), /History remains in place; no database backup was needed/);

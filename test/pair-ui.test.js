@@ -87,6 +87,17 @@ test('snapshot age uses singular minutes on both computers', () => {
   }
 });
 
+test('reset elapsed time belongs only to a running operation', () => {
+  for (const state of ['complete', 'error']) {
+    const view = standby({ uiOperation: { action: 'reset', state, startedAt: now - 120_000 } });
+    assert.equal(pairDisplay(view, { now }).phase, '');
+    assert.equal(pairDisplay(view, { now: now + 60_000 }).phase, '');
+  }
+  const running = standby({ uiOperation: { action: 'reset', state: 'running', startedAt: now - 120_000,
+    progress: { phase: 'reset-backup', processed: 0, total: 1 } } });
+  assert.match(pairDisplay(running, { now }).phase, /0 \/ 1 backups completed.*120 s elapsed/);
+});
+
 test('source checkpoint failures explain a fresh review without suggesting history resets', () => {
   assert.match(pairIssueHelp({ error: 'journal_peer_conflict' }), /Preserve both histories.*check the other computer again/);
   assert.match(pairIssueHelp({ error: 'journal_peer_conflict' }), /Do not reset pairing/);
