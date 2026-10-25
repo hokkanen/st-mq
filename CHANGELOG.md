@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Make both Review web access controls use the shared secondary-button style and
+  open, scroll to and focus Web access, including when its parent folds are closed
+  or the same destination was already selected. Leaving reset still submits no reset.
+
 - Clear pending pairing requests when signing out and fence late replies and
   confirmations from the previous login. Keep completed resets out of the running
   progress display. Expire pairing success messages after 24 hours using their

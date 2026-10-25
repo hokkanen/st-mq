@@ -3,10 +3,11 @@ import { pairingResetHttpsNotice } from './secure-web-access.js';
 /** The reset window collects one choice and one explicit review. Confirmation
  * stays inside this dialog; the action controller still owns stale-state checks,
  * saved request identity, submission and receipt recovery. */
-export function createPairResetWindow({ document, request, getState, getAccess, allowed, run, httpsNotice = pairingResetHttpsNotice }) {
+export function createPairResetWindow({ document, request, getState, getAccess, allowed, run, httpsNotice = pairingResetHttpsNotice, onWebAccess = () => {} }) {
   const $ = id => document.getElementById(`pairing-reset-${id}`);
   const dialog = $('dialog'), trigger = document.getElementById('pairing-reset');
   let review = null, stage = 'choose', epoch = 0, webStatus = null, webIdentity = null, acceptedClose = false;
+  let webAccessRequested = false;
   const mode = () => $('keep').checked ? 'keep' : 'fresh';
   const fresh = () => mode() === 'fresh';
   const current = state => state?.available && getAccess()?.role === 'admin' && !state.pending && allowed(state.view)
@@ -121,16 +122,18 @@ export function createPairResetWindow({ document, request, getState, getAccess, 
     if (!webIdentity) readHttps();
   });
   $('cancel').addEventListener('click', () => dialog.close());
-  $('https-link').addEventListener('click', () => dialog.close());
+  $('https-link').addEventListener('click', () => { webAccessRequested = true; dialog.close(); });
   dialog.addEventListener('close', () => {
     ++epoch; webStatus = null; webIdentity = null;
     const cancelled = review, submitted = acceptedClose; review = null; acceptedClose = false; cancelled?.resolve(false);
+    const navigateToWebAccess = webAccessRequested; webAccessRequested = false;
     trigger.setAttribute('aria-expanded', 'false');
     // Cancellation resolves the controller's confirmation promise first, so its
     // busy flag releases Reset before focus returns. Accepted work instead owns
     // the progress message while the action button remains disabled.
     queueMicrotask(() => {
       if (dialog.open) return;
+      if (navigateToWebAccess) { onWebAccess(); return; }
       const target = submitted || trigger.disabled ? document.getElementById('pairing-operation-status') : trigger;
       target?.focus();
     });

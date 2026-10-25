@@ -545,13 +545,25 @@ export function createPairActions({ request, storage, confirm = (message, { acti
 
 export function createPairPanel({ document, request, storage, confirm, afterMutation, formatTime, now = () => Date.now(), onRecovery = () => {}, getAccess, httpsNotice }) {
   const $ = id => document.getElementById(id);
+  const openWebAccess = () => {
+    const target = $('secure-web-access-details');
+    if (!target) return;
+    for (let fold = target; fold; fold = fold.parentElement?.closest('details')) fold.open = true;
+    const view = document.defaultView;
+    if (view?.location?.hash !== '#secure-web-access-details')
+      view?.history?.pushState(null, '', '#secure-web-access-details');
+    target.querySelector(':scope > summary')?.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'start', behavior: 'auto' });
+  };
   let resetWindow;
   const controller = createPairActions({ request, storage, afterMutation, now, onChange: render, confirm: (message, details) => details.action === 'reset'
     ? resetWindow.confirm(details) : confirm ? confirm(message, details)
       : confirmAction({ document, title: 'Confirm computer change', message, action: 'Confirm change' }) });
   resetWindow = createPairResetWindow({ document, request, getState: controller.snapshot,
     getAccess: getAccess ?? (() => controller.snapshot().view?.webAccess),
-    allowed: view => pairActionAllowed(view, 'reset'), run: options => controller.run('reset', options), httpsNotice });
+    allowed: view => pairActionAllowed(view, 'reset'), run: options => controller.run('reset', options), httpsNotice,
+    onWebAccess: openWebAccess });
+  $('pairing-reset-web-access').addEventListener('click', openWebAccess);
   function renderVerification(state) {
     for (const action of ['handover', 'promote']) {
       const select = $(`pairing-${action}-verification`);

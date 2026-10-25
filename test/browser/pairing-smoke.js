@@ -568,9 +568,13 @@ try {
   await key('\uE00C'); await until(`${$('pairing-reset-dialog')}.open === false`);
   assert.equal(await evaluate('document.activeElement.id'), 'pairing-reset');
   assert.equal(actions.length, beforeResets, 'Escape from review sends no reset');
-  await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-https')}.open=true; ${$('pairing-reset-https-link')}.click(); true`);
+  const closeWebAccess = `for (let fold=document.getElementById('secure-web-access-details');fold;fold=fold.parentElement?.closest('details')) fold.open=false;`;
+  await evaluate(`${closeWebAccess} ${$('pairing-details')}.open=true; ${$('pairing-reset')}.click(); ${$('pairing-reset-https')}.open=true; ${$('pairing-reset-https-link')}.click(); true`);
   await until(`${$('pairing-reset-dialog')}.open === false`);
+  await until(`${$('secure-web-access-details')}.open && document.activeElement === ${$('secure-web-access-details')}.querySelector(':scope > summary')`);
   assert.equal(await evaluate('location.hash'), '#secure-web-access-details');
+  assert.equal(await evaluate(`${$('secure-web-access-details')}.getBoundingClientRect().top >= 0 && ${$('secure-web-access-details')}.getBoundingClientRect().top < innerHeight / 2`), true);
+  assert.equal(await evaluate(`${$('pairing-reset-https-link')}.tagName === 'BUTTON' && ${$('pairing-reset-https-link')}.classList.contains('secondary-button') && ${$('pairing-reset-https-link')}.type === 'button'`), true);
   assert.equal(actions.length, beforeResets, 'Web access navigation cancels reset');
 
   await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-continue')}.click(); true`);
@@ -609,7 +613,12 @@ try {
   await until(`${$('pairing-reset-receipt')}.textContent.includes('discarded without creating a backup')`);
   assert.equal(actions.at(-1).backup, false); assert.equal(actions.at(-1).discardConfirmed, true);
   assert.equal(await evaluate(`${$('pairing-reset-web-access')}.hidden`), false);
-  assert.equal(await evaluate("document.querySelector('#pairing-reset-web-access a').getAttribute('href')"), '#secure-web-access-details');
+  const beforeReceiptNavigation = actions.length;
+  await evaluate(`${closeWebAccess} ${$('pairing-details')}.open=true; ${$('pairing-reset-web-access')}.click(); true`);
+  await until(`${$('secure-web-access-details')}.open && document.activeElement === ${$('secure-web-access-details')}.querySelector(':scope > summary')`);
+  assert.equal(await evaluate(`${$('secure-web-access-details')}.getBoundingClientRect().top >= 0 && ${$('secure-web-access-details')}.getBoundingClientRect().top < innerHeight / 2`), true);
+  assert.equal(await evaluate(`${$('pairing-reset-web-access')}.tagName === 'BUTTON' && ${$('pairing-reset-web-access')}.classList.contains('secondary-button') && ${$('pairing-reset-web-access')}.type === 'button'`), true);
+  assert.equal(actions.length, beforeReceiptNavigation, 'Completed-receipt navigation submits no reset');
 
   await viewer.close();
   viewer = await startReplica({ config: { ...config, topology: 'mirror', role: 'slave', mirror: { directory } }, clock: () => now,

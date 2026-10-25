@@ -749,8 +749,9 @@ Resetting the certificate owner's identity requires **Start fresh HTTPS setup**
 on the receiving computer first, then the owner, followed by normal setup; the
 address, DNS and browser sign-in may need changing. Saved disabled setup also
 needs review. The window never promises uninterrupted HTTPS or remote access.
-The **Review web access** link closes reset without submitting it and opens the
-existing Web access fold. The completed receipt links there too. Use confirmed
+The **Review web access** button closes reset without submitting it, opens Web
+access and its parent folds, and scrolls to and focuses its summary. The same
+button beside the completed receipt opens that destination too. Use confirmed
 recovery access or HA ingress when HTTPS is unavailable; their readiness remains
 separate from stored certificates. See [HTTPS recovery](https.md).
 

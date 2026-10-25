@@ -1533,6 +1533,47 @@ function resetWindowFixture({ access = { role: 'admin' }, webRequest } = {}) {
   return { document, $, panel, sent, storage, view, click, change, fresh, setAccess: value => { access = value; panel.update(view); } };
 }
 
+function webAccessDestination(f) {
+  const target = f.$('secure-web-access-details'), summary = f.document.createElement('summary');
+  const outer = { open: false }, visits = [];
+  target.parentElement = { closest: () => outer };
+  target.querySelector = () => summary;
+  target.scrollIntoView = options => visits.push({ targetOpen: target.open, outerOpen: outer.open,
+    focused: f.document.activeElement === summary, options });
+  f.document.defaultView = { location: { hash: '#secure-web-access-details' } };
+  target.open = false;
+  return { target, summary, outer, visits };
+}
+
+test('Review web access cancels either reset stage then opens, focuses and scrolls the closed destination', async () => {
+  for (const review of [false, true]) {
+    const f = resetWindowFixture(), destination = webAccessDestination(f);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      destination.target.open = false; destination.outer.open = false;
+      f.click(''); await flushReset();
+      if (review) { f.click('continue'); await flushReset(); }
+      f.click('https-link'); await flushReset();
+      assert.equal(f.$('pairing-reset-dialog').open, false);
+      assert.equal(f.document.activeElement, destination.summary, 'Reset focus restoration cannot steal navigation focus');
+      assert.deepEqual(destination.visits.at(-1), { targetOpen: true, outerOpen: true, focused: true,
+        options: { block: 'start', behavior: 'auto' } });
+      assert.equal(f.panel.snapshot().busy, false);
+      assert.equal(f.panel.snapshot().pending, null);
+      assert.equal(f.sent.length, 0, 'Navigation submits no reset');
+    }
+    assert.equal(destination.visits.length, 2, 'The same fragment still navigates again');
+  }
+});
+
+test('the completed-reset Review web access control shares destination navigation without a reset', () => {
+  const f = resetWindowFixture(), destination = webAccessDestination(f);
+  f.$('pairing-reset-web-access').listeners.get('click')();
+  assert.equal(f.document.activeElement, destination.summary);
+  assert.deepEqual(destination.visits, [{ targetOpen: true, outerOpen: true, focused: true,
+    options: { block: 'start', behavior: 'auto' } }]);
+  assert.equal(f.sent.length, 0);
+});
+
 test('reset window presents balanced choices then confirms Keep in the same dialog without another modal', async () => {
   const f = resetWindowFixture(); f.click(''); await flushReset();
   assert.equal(f.$('pairing-reset-dialog').open, true);
