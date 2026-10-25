@@ -407,6 +407,7 @@ export function createPairActions({ request, storage, confirm = (message, { acti
   requestId = makeRequestId, onChange = () => {}, afterMutation = () => {} }) {
   let view = null, available = false, busy = false, pending = restoredOperation(storage), error = Boolean(pending);
   let confirmation = null;
+  let generation = 0;
   let message = pending ? 'Confirming the previous operation with its original computer…' : '';
   const snapshot = () => ({ view, available, busy, pending, message, error });
   const notify = () => onChange(snapshot());
@@ -443,6 +444,7 @@ export function createPairActions({ request, storage, confirm = (message, { acti
     if (!pending || !available || busy) return Promise.resolve();
     if (confirmation) return confirmation;
     const original = pending;
+    const current = generation;
     confirmation = (async () => {
       // Assign the in-flight promise before even a synchronous transport failure.
       await Promise.resolve();
@@ -459,13 +461,14 @@ export function createPairActions({ request, storage, confirm = (message, { acti
           error = true;
           message = 'The operation’s outcome is unconfirmed. Confirmation resumes automatically when its original computer reconnects.';
         }
-      } finally { confirmation = null; notify(); }
+      } finally { if (current === generation) { confirmation = null; notify(); } }
     })();
     return confirmation;
   }
   async function send(body) {
     if (busy || !available || !view || pending) return false;
     if (!body || !uuid.test(body.nodeId ?? '') || !pairActionAllowed(view, body.action)) return false;
+    const current = generation;
     busy = true; notify();
     const confirmation = body.action === 'rejoin' && view.recovery?.pendingRelease?.requestId === body.requestId ? null : pairConfirmation(body.action, { discardUnrecovered: body.discardUnrecovered,
       noRecoveryNeeded: emptyPreview(view),
@@ -475,6 +478,7 @@ export function createPairActions({ request, storage, confirm = (message, { acti
       bootstrapPending: view.bootstrapPending && !(view.peer?.reachable === true && view.peer.role === 'master') });
     let accepted = body.action !== 'reset' && !confirmation;
     try { if (confirmation || body.action === 'reset') accepted = await confirm(confirmation, { action: body.action, nodeId: body.nodeId, mode: body.mode, backup: body.backup, resetToken: body.resetToken }); } catch { /* A blocked dialog is a cancelled action. */ }
+    if (current !== generation) return false;
     if (!accepted || !available || view.nodeId !== body.nodeId || !pairActionAllowed(view, body.action)) { busy = false; notify(); return false; }
     if (body.action === 'reset' && (body.resetToken !== view.reset?.token || (view.reset?.pendingMode && view.reset.pendingMode !== body.mode) || (body.mode === 'keep' && view.reset?.keepBlockedReason))) {
       busy = false; error = true; message = 'This computer’s pairing state changed. Review the current status before resetting it.'; notify(); return false;
@@ -490,6 +494,7 @@ export function createPairActions({ request, storage, confirm = (message, { acti
     let saved = false;
     try {
       const result = await request('/api/pair/action', pending);
+      if (current !== generation) return false;
       const status = uuid.test(result?.nodeId ?? '') ? result : null;
       // A matching receipt can arrive through polling before this response.
       // Keep that confirmed result and its roles instead of an older reply.
@@ -497,6 +502,7 @@ export function createPairActions({ request, storage, confirm = (message, { acti
       if (pending) message = 'Operation accepted. Waiting for its completion; status updates automatically.';
       saved = true;
     } catch (failure) {
+      if (current !== generation) return false;
       if (!pending) saved = true;
       else if (failure.status >= 400 && failure.status < 500 && ![408, 429].includes(failure.status)) {
         error = true;
@@ -506,11 +512,16 @@ export function createPairActions({ request, storage, confirm = (message, { acti
           : failure.status === 409 ? 'The role, recovery preview or readiness changed. Refresh the status and check again.'
             : 'The operation was not accepted. Check this computer’s role and readiness before retrying.';
       } else { error = true; message = 'Operation not confirmed. Its saved outcome will be checked automatically after reconnection.'; }
-    } finally { busy = false; notify(); }
+    } finally { if (current === generation) { busy = false; notify(); } }
     if (saved) await afterMutation();
     return saved;
   }
   return { snapshot,
+    clear() {
+      ++generation;
+      view = null; available = false; busy = false; pending = null; confirmation = null; error = false; message = '';
+      persist(); notify();
+    },
     update(next) { if (next) acceptStatus(next); else { view = null; available = false; } notify(); return confirmPending(); },
     unavailable() { available = false; notify(); },
     run(action, options = {}) {

@@ -258,6 +258,43 @@ function memoryStorage() {
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
 }
 
+test('sign-out clears uncertain pairing work and a late reply cannot change the next login', async () => {
+  for (const outcome of ['resolve', 'reject']) {
+    const storage = memoryStorage();
+    let settle;
+    const actions = createPairActions({ storage, requestId: () => id, confirm: () => true,
+      request: () => new Promise((resolve, reject) => { settle = outcome === 'resolve'
+        ? () => resolve(operation(primary(), 'running', 'handover')) : () => reject(new Error('late transport failure')); }) });
+    await actions.update(primary());
+    const sending = actions.run('handover');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.notEqual(storage.getItem('stmq-pair-pending'), null);
+    actions.clear();
+    assert.equal(storage.getItem('stmq-pair-pending'), null);
+    assert.equal(actions.snapshot().view, null);
+    await actions.update(standby());
+    const nextLogin = actions.snapshot();
+    settle();
+    assert.equal(await sending, false);
+    assert.deepEqual(actions.snapshot(), nextLogin);
+  }
+});
+
+test('sign-out cancels open pairing consent and does not submit it after a replacement login', async () => {
+  let consent, writes = 0;
+  const actions = createPairActions({ requestId: () => id,
+    confirm: () => new Promise(resolve => { consent = resolve; }), request: async () => { writes++; } });
+  await actions.update(primary());
+  const sending = actions.run('handover');
+  actions.clear();
+  await actions.update(primary());
+  consent(true);
+  assert.equal(await sending, false);
+  assert.equal(writes, 0);
+  assert.equal(actions.snapshot().busy, false);
+  assert.equal(actions.snapshot().pending, null);
+});
+
 test('paired controls require confirmed primary authority while recovery keeps normal control available', () => {
   assert.equal(pairAllowsControl({ role: 'master' }), true);
   for (const pair of [{}, standby(), standby({ role: 'protected' }), primary({ canControl: false }), primary({ transition: { kind: 'handover' } })]) {

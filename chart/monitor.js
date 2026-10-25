@@ -161,6 +161,7 @@ function lockScreen({ authenticationFailed = false } = {}) {
   for (const picker of temporaryDatePickers) picker.dismiss();
   const hadPassword = Boolean(session.token), hadStatus = Boolean(lastStatus);
   session.logout(); ++refreshSequence; lastStatus = undefined; webAccess = undefined; dashboardStatusReceived = false;
+  pairPanel.clear();
   configurationReview.clear(); configurationReview.update();
   secureWebAccess.clear();
   document.body.dataset.authenticated = 'false';

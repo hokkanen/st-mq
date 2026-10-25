@@ -26,7 +26,7 @@ try {
     STMQ_INPUT: 'simulated', STMQ_PORT: '0', STMQ_API_TOKEN: admin, STMQ_FAMILY_API_TOKEN: family }, directory);
   config.topology = 'pair'; // Synthetic pairContext below owns authority; no peer transport starts.
   config.web.httpsHost = '127.0.0.1'; config.web.httpsPort = 0;
-  const pair = { role: 'master', canControl: true, busy: false,
+  const pair = { nodeId: '11111111-1111-4111-8111-111111111111', role: 'master', canControl: true, busy: false,
     peer: { reachable: true, role: 'slave', lastSeenAt: now }, vip: { owned: true, ready: true },
     recovery: { state: 'idle' }, reset: { token: 'b'.repeat(64) }, actions: { 'check-recovery': true, recover: false, rejoin: false, handover: true, promote: false, reset: true } };
   app = await start({ config, clock: () => now, pairContext: { status: () => {
@@ -306,7 +306,12 @@ try {
       await evaluate("document.getElementById('pairing-reset').click(); true");
       assert.equal(await evaluate("document.getElementById('pairing-reset-dialog').open"), true, 'Admin can review reset choices');
       assert.equal(await evaluate("document.getElementById('pairing-reset-keep').disabled"), false);
-      assert.equal(await evaluate("document.getElementById('pairing-reset-fresh').disabled"), true, 'Consent is required even for admin');
+      assert.equal(await evaluate("document.getElementById('pairing-reset-fresh').disabled"), false, 'Admin can choose Fresh before reviewing its consequences');
+      await evaluate("document.getElementById('pairing-reset-fresh').click();true");
+      await until("!document.getElementById('pairing-reset-continue').disabled");
+      await evaluate("document.getElementById('pairing-reset-continue').click();true");
+      await until("document.getElementById('pairing-reset-dialog').dataset.stage === 'review'");
+      assert.equal(await evaluate("document.getElementById('pairing-reset-confirm').disabled"), true, 'Fresh requires restoration consent during review');
       await evaluate("document.getElementById('pairing-reset-cancel').click(); true");
     }
     for (const id of ['charger1-charge-now', 'charger1-enabled', 'charger1-setting-readyBy-choose', 'charger1-identify',
@@ -391,10 +396,11 @@ try {
   await evaluate("document.getElementById('fireplace-kg').value='4';document.getElementById('fireplace-submit').click();true");
   await until("document.querySelectorAll('.fireplace-remove').length === 2");
   assert.equal(await evaluate("document.querySelector('.fireplace-remove').disabled"), false, 'Fresh entries can be removed');
-  await evaluate("document.getElementById('fireplace-close').click();sessionStorage.setItem('stmq-fireplace-pending','synthetic pending');document.getElementById('web-logout').click();true");
+  await evaluate("document.getElementById('fireplace-close').click();sessionStorage.setItem('stmq-fireplace-pending','synthetic pending');sessionStorage.setItem('stmq-pair-pending','synthetic pending');document.getElementById('web-logout').click();true");
   await until("document.getElementById('auth') && !document.getElementById('auth').hidden && !sessionStorage.getItem('stmq-token')");
   assert.equal(await evaluate("document.body.dataset.authenticated"), 'false');
   assert.equal(await evaluate("sessionStorage.getItem('stmq-fireplace-pending')"), null);
+  assert.equal(await evaluate("sessionStorage.getItem('stmq-pair-pending')"), null);
   await send('Page.reload');
   await until("document.getElementById('auth') && !document.getElementById('auth').hidden");
   assert.equal(await evaluate("document.body.dataset.authenticated"), 'false', 'Reload does not undo logout');
@@ -441,12 +447,16 @@ try {
   const writesBeforeRecovery = writes.length;
   await evaluate("document.getElementById('pairing-details').open=true;true");
   for (const width of [320, 1440]) for (const theme of ['dark', 'light']) {
+    await until("!document.getElementById('pairing-reset').disabled");
     await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
     await evaluate(`window.homeEnergyTheme.setTheme(${JSON.stringify(theme)}); document.getElementById('pairing-reset').click();true`);
     await until("document.getElementById('pairing-reset-dialog').open");
-    assert.equal(await evaluate("document.getElementById('pairing-reset-fresh').disabled"), true, 'Existing restoration acknowledgement remains required');
+    assert.equal(await evaluate("document.getElementById('pairing-reset-fresh').disabled"), false, 'Start fresh is selectable while dashboard status fails');
+    await evaluate("document.getElementById('pairing-reset-fresh').click();document.getElementById('pairing-reset-continue').click();true");
+    await until("document.getElementById('pairing-reset-dialog').dataset.stage === 'review'");
+    assert.equal(await evaluate("document.getElementById('pairing-reset-confirm').disabled"), true, 'Existing restoration acknowledgement remains required during review');
     await evaluate("document.getElementById('pairing-reset-restoration').click();true");
-    assert.equal(await evaluate("document.getElementById('pairing-reset-fresh').disabled"), false, 'Start fresh is reachable while dashboard status fails');
+    assert.equal(await evaluate("document.getElementById('pairing-reset-confirm').disabled"), false, 'Start fresh review remains usable while dashboard status fails');
     assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
     assert.equal(await evaluate("(() => { const dialog=document.getElementById('pairing-reset-dialog'); return dialog.scrollWidth <= dialog.clientWidth; })()"), true);
     await evaluate("document.getElementById('pairing-reset-cancel').click();true");
