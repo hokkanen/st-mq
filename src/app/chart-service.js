@@ -1,4 +1,5 @@
 import { chartNeedsAssessment } from './chart-dependencies.js';
+import { REPLICA_CHECKPOINT_ADVANCED } from './chart-read-errors.js';
 import { DEFAULT_CHART_CACHE } from '../domain/chart-cache.js';
 import { createDerivedCacheAnchorOwner,derivedCacheId } from '../storage/derived-cache-anchor.js';
 import { storageOperationHealth } from '../storage/operation-health.js';
@@ -128,11 +129,14 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
             const observed = lane.observations.get(message.id); lane.observations.delete(message.id);
             if (message.cacheHit) observed?.observation?.discard();
             else observed?.observation?.finish(observed.aborted ? 'cancelled' : message.failed ? 'failed' : 'completed',
-              { reason: observed.aborted ? 'cancelled' : message.failed ? 'operation-failed' : null });
+              { reason: observed.aborted ? 'cancelled' : message.failed
+                ? message.cleanupFailed ? 'cleanup-failed'
+                  : observed.response?.error?.code === REPLICA_CHECKPOINT_ADVANCED ? 'replica-checkpoint-advanced' : 'operation-failed' : null });
             if (message.id === lane.active?.id) {
               const entry = lane.active; lane.active = null;
               const response = entry.response;
-              const error = response?.error ? Object.assign(new Error(response.error.message), { name: response.error.name }) : null;
+              const error = response?.error ? Object.assign(new Error(response.error.message), { name: response.error.name },
+                !message.cleanupFailed && response.error.code === REPLICA_CHECKPOINT_ADVANCED ? { code: REPLICA_CHECKPOINT_ADVANCED } : {}) : null;
               settle(entry, error, response?.result); pump();
             }
             return;

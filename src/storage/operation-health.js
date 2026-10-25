@@ -11,7 +11,7 @@ const outcomes = ['completed', 'failed', 'cancelled', 'superseded', 'unconfirmed
 const stages = new Set(['queued', 'starting', 'reading', 'copying', 'verifying', 'rebuilding', 'publishing', 'cleanup', 'running']);
 const scopes = new Set(['runtime', 'history', 'standby', 'shared']);
 const reasons = new Set(['operation-failed', 'cancelled', 'superseded', 'capacity', 'worker-lost', 'cleanup-failed',
-  'durability-unconfirmed', 'committed-followup-failed', 'stale', 'observation-limit']);
+  'durability-unconfirmed', 'committed-followup-failed', 'stale', 'observation-limit', 'replica-checkpoint-advanced']);
 const BUCKET_MS = 5 * 60_000, DAY_MS = 86400_000, RETENTION_MS = 7 * DAY_MS, MAX_ACTIVE = 128;
 const empty = () => ({ completed: 0, failed: 0, cancelled: 0, superseded: 0, unconfirmed: 0, refused: 0,
   committed: 0, durationSamples: 0, elapsedMs: 0, runningMs: 0, queueMs: 0, maxElapsedMs: 0 });

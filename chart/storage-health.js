@@ -100,6 +100,7 @@ const operationLabels = {
 const operationOutcomes = { completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', superseded: 'Superseded',
   unconfirmed: 'Unconfirmed', refused: 'Refused' };
 const operationReasons = { 'operation-failed': 'The cause is not established here.',
+  'replica-checkpoint-advanced': 'The database checkpoint was ahead of this queued read. A fresh verified snapshot is required.',
   'durability-unconfirmed': 'Publication durability is unconfirmed.', 'committed-followup-failed': 'The save committed; follow-up work failed.',
   'worker-lost': 'The worker became unavailable.', 'cleanup-failed': 'Cleanup failed.', cancelled: 'The task was cancelled.',
   superseded: 'Newer work superseded this task.', stale: 'The task no longer matched its original context.',

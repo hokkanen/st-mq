@@ -384,7 +384,11 @@ test('queued chart requests retain their own checkpoint after the service defaul
  const queued=service.query(args);
  store.expectedCheckpoint={...store.expectedCheckpoint,hash:'0'.repeat(64)};
  release();await first;assert.equal((await queued).meta.cacheHit,true);
- await assert.rejects(service.query(args),/checkpoint advanced/);
+ await assert.rejects(service.query(args), error => {
+  assert.match(error.message,/no longer matches/);
+  assert.equal(error.code,undefined,'A conflicting hash is not a forward checkpoint advance');
+  return true;
+ });
 });
 
 test('a pinned archive cancellation retains the open reader after its published file is removed', async t => {

@@ -1,11 +1,12 @@
 import { chartAssessmentPending } from '../domain/chart-response.js';
+import { ReplicaCheckpointAdvancedError, REPLICA_CHECKPOINT_ADVANCED } from './chart-read-errors.js';
 import { chartNeedsAssessment, chartNeedsLearningHistory, chartSignals } from './chart-dependencies.js';
 import { FirewoodProjectionCache } from './firewood-projection-cache.js';
 import { maintainFirewoodProjection } from './firewood-benefit.js';
 import { DEFAULT_CHART_CACHE } from '../domain/chart-cache.js';
 import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
-import { readCheckpoint, matchingCheckpoint } from '../storage/journal.js';
+import { readCheckpoint, matchingCheckpoint, checkpointAt, journalBase } from '../storage/journal.js';
 import { getChartData, chartRequestRange } from './chart-data.js';
 import { getHeatingBenefit } from './chart-heating-benefit.js';
 import { pendingEnergyObservations } from '../storage/pending-energy.js';
@@ -31,6 +32,19 @@ import { storageStep, admittedReader, setStorageMaintenance, releaseStorageLease
 const db = admittedReader(storageStep(() => new DatabaseSync(workerData.dbPath, { readOnly: true })), { batchRows: 192 });
 db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE;');
 const store = { db, path: workerData.dbPath };
+function assertRequestedCheckpoint(expected) {
+  if (!expected) return;
+  const actual = readCheckpoint(db);
+  if (matchingCheckpoint(actual, expected)) return;
+  if (actual.databaseId === expected.databaseId && actual.sequence > expected.sequence) {
+    const prior = checkpointAt(db, expected.sequence);
+    // Coalesced publication deliberately removes its verified old prefix.
+    // Missing entries inside the retained journal are not that condition.
+    if (prior ? matchingCheckpoint(prior, expected) : expected.sequence < journalBase(db).sequence)
+      throw new ReplicaCheckpointAdvancedError();
+  }
+  throw new Error('The read-only snapshot no longer matches its database checkpoint. Wait for verified synchronization, then refresh.');
+}
 let anchorRequestSequence=0;
 let currentChartRequestId=null,projectionWritable=Boolean(workerData.projectionWritable);
 function requestDerivedAnchor(request) {
@@ -193,8 +207,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       const status = storageStep(() => {
         db.exec('BEGIN');
         try {
-          if (checkpoint && !matchingCheckpoint(readCheckpoint(db), checkpoint))
-            throw new Error('The replica checkpoint advanced. Retry the request.');
+          assertRequestedCheckpoint(checkpoint);
           return sourceCache?.maintain(args.now, 256);
         } finally { db.exec('ROLLBACK'); }
       });
@@ -206,8 +219,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       parentPort.postMessage({ id, result: { ready: sourceCache?.ready ?? false } }); return;
     }
     db.exec('BEGIN');
-    if (checkpoint && !matchingCheckpoint(readCheckpoint(db), checkpoint))
-      throw new Error('The replica checkpoint advanced. Retry the request.');
+    assertRequestedCheckpoint(checkpoint);
     if (['pin', 'pin-archive'].includes(operation)) {
       parentPort.postMessage({ id, result: { ready: true } }); return;
     }
@@ -321,11 +333,13 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       const bytes = encodeChartResponse(result, prepared, wire);
       parentPort.postMessage({ id, result: bytes }, [bytes.buffer]);
     } else parentPort.postMessage({ id, result });
-  } catch (error) { contexts.clear(); observationFailed = true; parentPort.postMessage({ id, error: { name: error.name, message: error.message } }); }
+  } catch (error) { contexts.clear(); observationFailed = true; parentPort.postMessage({ id, error: { name: error.name, message: error.message,
+    ...(error instanceof ReplicaCheckpointAdvancedError ? { code: REPLICA_CHECKPOINT_ADVANCED } : {}) } }); }
   finally {
     setStorageRequestActive(false);
-    if (operation !== 'maintain' && db.isTransaction) try { db.exec('ROLLBACK'); } catch { observationFailed = true; }
+    let cleanupFailed = false;
+    if (operation !== 'maintain' && db.isTransaction) try { db.exec('ROLLBACK'); } catch { observationFailed = true; cleanupFailed = true; }
     setStorageMaintenance(false); releaseStorageLease();
-    parentPort.postMessage({ id, storageOperationComplete: true, failed: observationFailed, cacheHit: observationCacheHit && !observationFailed });
+    parentPort.postMessage({ id, storageOperationComplete: true, failed: observationFailed, cleanupFailed, cacheHit: observationCacheHit && !observationFailed });
   }
 });
