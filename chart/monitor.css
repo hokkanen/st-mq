@@ -2313,12 +2313,60 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 #heating-test-details:has(#home-manual-override-details[open]) #heating-held-summary { display: none; }
 
 .pairing-reset-action { margin-top: 0; padding-top: 0; border-top: 0; }
+#pairing-operation-status:focus { outline: none; }
 .pairing-reset-receipt { overflow-wrap: anywhere; }
-.pairing-reset-dialog .pairing-reset-choice { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
-.pairing-reset-dialog .pairing-reset-choice h3 { font-size: 14px; margin-bottom: 4px; }
-.pairing-reset-dialog .pairing-reset-choice button { margin-top: 4px; max-width: 100%; }
-.pairing-reset-restoration { display: flex; flex-direction: row; align-items: flex-start; gap: 10px; font-size: 12px; line-height: 1.5; }
-.pairing-reset-restoration input { flex: none; margin: 1px 0 0; min-height: 18px; width: 18px; height: 18px; padding: 0; }
+.pairing-reset-dialog { width: min(620px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 0; overflow: hidden; }
+.pairing-reset-dialog[open] { display: flex; flex-direction: column; }
+.pairing-reset-header, .pairing-reset-body, .pairing-reset-actions { padding-inline: var(--ui-surface-inset); }
+.pairing-reset-header { display: block; flex: none; padding-block: 20px 12px; border-bottom: 1px solid var(--border); }
+.pairing-reset-dialog .pairing-reset-step { margin: 0 0 7px; font-size: 11px; color: var(--muted); }
+.pairing-reset-dialog h2 { margin-bottom: 4px; }
+.pairing-reset-dialog h2:focus { outline: none; }
+.pairing-reset-dialog #pairing-reset-description { margin: 0; }
+.pairing-reset-dialog #pairing-reset-computer { margin: 5px 0 0; font-size: 12px; }
+.pairing-reset-body { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-block: 16px; }
+.pairing-reset-options > legend { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.pairing-reset-options { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.pairing-reset-option { display: grid; grid-template-columns: 18px minmax(0,1fr); align-content: start; align-items: start; gap: 10px; margin: 0; padding: 14px var(--ui-inset); border: 1px solid var(--border); border-radius: 7px; cursor: pointer; }
+.pairing-reset-option:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb,var(--accent) 7%,var(--surface)); }
+.pairing-reset-option:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
+.pairing-reset-option:has(input:disabled) { cursor: default; opacity: .65; }
+.pairing-reset-option > span { display: grid; gap: 7px; min-width: 0; font-size: 13px; line-height: 1.45; }
+.pairing-reset-option strong { font-size: 14px; font-weight: 600; }
+.pairing-reset-option small { font-size: 12px; color: var(--muted); }
+.pairing-reset-check > span { min-width: 0; }
+.pairing-reset-option input, .pairing-reset-check input { flex: none; width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 2px 0 0; }
+.pairing-reset-dialog .pairing-reset-backup-options { margin-top: 14px; padding: 10px var(--ui-inset); border: 1px solid var(--border); border-radius: 7px; }
+.pairing-reset-check { display: flex; flex-direction: row; margin: 0; align-items: flex-start; gap: 10px; min-height: 40px; padding-block: 9px; font-size: 13px; line-height: 1.5; cursor: pointer; }
+.pairing-reset-dialog #pairing-reset-backup-help, .pairing-reset-dialog #pairing-reset-equipment-help { margin: 0; font-size: 12px; line-height: 1.5; }
+.pairing-reset-dialog .pairing-reset-scope { margin-block: 14px 0; font-size: 12px; line-height: 1.6; }
+.pairing-reset-dialog .pairing-reset-note { margin: 12px 0 0; padding: 10px var(--ui-inset); border-left: 3px solid var(--stale); background: color-mix(in srgb,var(--stale) 7%,var(--surface)); border-radius: 4px; font-size: 12px; line-height: 1.55; }
+.pairing-reset-dialog .pairing-reset-note p { margin: 5px 0 0; font-size: 12px; line-height: 1.55; }
+.pairing-reset-review-facts { margin: 0; }
+.pairing-reset-review-facts > div { display: grid; grid-template-columns: minmax(100px,.6fr) minmax(0,1fr); gap: 12px; padding-block: 10px; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.5; }
+.pairing-reset-review-facts dt { color: var(--muted); }
+.pairing-reset-review-facts dd { margin: 0; overflow-wrap: anywhere; }
+.pairing-reset-equipment { padding-block: 8px; }
+.pairing-reset-next { margin-top: 12px; font-size: 12px; }
+.pairing-reset-next > summary { min-height: 40px; padding-block: 10px; cursor: pointer; }
+.pairing-reset-dialog .pairing-reset-next p { font-size: 12px; line-height: 1.55; margin: 4px 0 8px; }
+.pairing-reset-https { margin: 0 0 14px; padding: 0 var(--ui-inset); border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); }
+.pairing-reset-https > summary { min-height: 40px; padding-block: 10px; font-size: 12px; font-weight: 550; cursor: pointer; }
+.pairing-reset-dialog .pairing-reset-https p { margin: 5px 0; font-size: 12px; line-height: 1.55; }
+.pairing-reset-https a { display: inline-block; margin-block: 4px 10px; font-size: 12px; }
+.pairing-reset-actions { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-block: 12px; border-top: 1px solid var(--border); }
+.pairing-reset-actions > div { display: flex; justify-content: flex-end; gap: 8px; }
+.pairing-reset-actions button { margin: 0; min-height: 42px; }
+.pairing-reset-actions button:disabled { cursor: not-allowed; }
+.pairing-reset-actions button[data-tone="attention"] { border-color: var(--stale); }
+@media (max-width:480px) {
+  .pairing-reset-options { grid-template-columns: minmax(0,1fr); gap: 10px; }
+  .pairing-reset-option { padding-block: 12px; }
+  .pairing-reset-option > span { gap: 5px; }
+  .pairing-reset-review-facts > div { grid-template-columns: minmax(0,1fr); gap: 2px; }
+  .pairing-reset-actions { gap: 8px; }
+  .pairing-reset-actions button { padding-inline: 11px; }
+}
 
 /* Keep measurement labels readable once the five-column table no longer fits. */
 @media (max-width: 800px) {

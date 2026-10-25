@@ -1,4 +1,5 @@
 import { confirmAction } from './confirmation.js';
+import { createPairResetWindow } from './pair-reset.js';
 import { recoveryErrorMessage } from '../src/recovery/errors.js';
 import { checkedRecoverySource, emptyRecoverySource } from '../src/recovery/source-check.js';
 const actions = ['check-recovery', 'recover', 'handover', 'promote', 'rejoin', 'reset'];
@@ -114,16 +115,12 @@ export function pairActionAllowed(view, action) {
   return ['check-recovery', 'handover'].includes(action);
 }
 
-export function pairConfirmation(action, { discardUnrecovered = false, noRecoveryNeeded = false, bootstrapPending = false, mode, backup, nodeId, donorBytes, incremental = false, verifyWithFullSnapshot = false } = {}) {
+export function pairConfirmation(action, { discardUnrecovered = false, noRecoveryNeeded = false, bootstrapPending = false, donorBytes, incremental = false, verifyWithFullSnapshot = false } = {}) {
   const retainedSize = Number.isSafeInteger(donorBytes) && donorBytes > 0
     ? ` (the checked source is ${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(donorBytes / 1024 ** 2)} MiB)` : '';
   const retention = incremental
     ? ' The other computer retains its divergent changes as an inactive journal branch in its database. Storage depends on the changed records, and retained branches have no automatic expiry.'
     : ` If the other computer holds only a slave snapshot, this keeps an additional full database-sized copy${retainedSize}. Retained copies have no automatic expiry; repeated protected rejoins can accumulate copies. They remain inactive until you deliberately archive or remove them.`;
-  if (action === 'reset' && mode === 'fresh' && backup === false) return `Permanently discard this computer’s local history without a backup? Computer: ${nodeId}. This deletes its active source history, learning and saved dashboard choices. This cannot be undone from this computer unless another copy already exists. Existing backups and the other computer are unchanged. Local control stops and this computer starts as an empty slave; it will not become master automatically.`;
-  if (action === 'reset') return mode === 'fresh'
-    ? 'Archive this computer’s database and pairing state, then start as an empty slave? Local recording and control stop. Current history, learning and saved dashboard choices leave the active database. Archives are kept until you manually delete them; configuration and credentials stay in place. The other computer is unchanged and may supply its database through mirroring. This computer will not become master automatically.'
-    : 'Reset pairing and keep local history? Local recording and control stop. The database and saved settings remain intact. Pairing authority is cleared without copying the database. This computer stays in Protected recovery until you explicitly choose recovery or promotion. Configuration, credentials and the other computer are unchanged.';
   const verification = !verifyWithFullSnapshot ? '' : action === 'handover'
     ? ' Full history verification is selected. It reads both databases at the final checkpoint and can extend the time without controller operation during handover.'
     : action === 'promote' ? ' Full history verification is selected. It reads the local database before starting control and may delay promotion.'
@@ -406,7 +403,7 @@ function restoredOperation(storage) {
 }
 
 /** Submit once; reconnects only read the outcome on the original computer. */
-export function createPairActions({ request, storage, confirm = (message, { discardHistory = false } = {}) => confirmAction({ document: globalThis.document, title: discardHistory ? 'Discard local history?' : 'Confirm computer change', message, action: discardHistory ? 'Discard history' : 'Confirm change' }),
+export function createPairActions({ request, storage, confirm = (message, { action } = {}) => action === 'reset' ? false : confirmAction({ document: globalThis.document, title: 'Confirm computer change', message, action: 'Confirm change' }),
   requestId = makeRequestId, onChange = () => {}, afterMutation = () => {} }) {
   let view = null, available = false, busy = false, pending = restoredOperation(storage), error = Boolean(pending);
   let confirmation = null;
@@ -472,12 +469,12 @@ export function createPairActions({ request, storage, confirm = (message, { disc
     busy = true; notify();
     const confirmation = body.action === 'rejoin' && view.recovery?.pendingRelease?.requestId === body.requestId ? null : pairConfirmation(body.action, { discardUnrecovered: body.discardUnrecovered,
       noRecoveryNeeded: emptyPreview(view),
-      mode: body.mode, backup: body.backup, nodeId: body.nodeId, donorBytes: view.recovery?.donorBytes,
+      donorBytes: view.recovery?.donorBytes,
       verifyWithFullSnapshot: body.verifyWithFullSnapshot === true,
       incremental: Boolean(view.recovery?.preview?.incremental || view.recovery?.retainedStorage === 'journal-branch'),
       bootstrapPending: view.bootstrapPending && !(view.peer?.reachable === true && view.peer.role === 'master') });
-    let accepted = !confirmation;
-    try { if (confirmation) accepted = await confirm(confirmation, { discardHistory: body.action === 'reset' && body.mode === 'fresh' && body.backup === false }); } catch { /* A blocked dialog is a cancelled action. */ }
+    let accepted = body.action !== 'reset' && !confirmation;
+    try { if (confirmation || body.action === 'reset') accepted = await confirm(confirmation, { action: body.action, nodeId: body.nodeId, mode: body.mode, backup: body.backup, resetToken: body.resetToken }); } catch { /* A blocked dialog is a cancelled action. */ }
     if (!accepted || !available || view.nodeId !== body.nodeId || !pairActionAllowed(view, body.action)) { busy = false; notify(); return false; }
     if (body.action === 'reset' && (body.resetToken !== view.reset?.token || (view.reset?.pendingMode && view.reset.pendingMode !== body.mode) || (body.mode === 'keep' && view.reset?.keepBlockedReason))) {
       busy = false; error = true; message = 'This computer’s pairing state changed. Review the current status before resetting it.'; notify(); return false;
@@ -529,10 +526,15 @@ export function createPairActions({ request, storage, confirm = (message, { disc
     } };
 }
 
-export function createPairPanel({ document, request, storage, confirm, afterMutation, formatTime, now = () => Date.now(), onRecovery = () => {} }) {
+export function createPairPanel({ document, request, storage, confirm, afterMutation, formatTime, now = () => Date.now(), onRecovery = () => {}, getAccess, httpsNotice }) {
   const $ = id => document.getElementById(id);
-  const controller = createPairActions({ request, storage, confirm, afterMutation, onChange: render });
-  const resetDialog = $('pairing-reset-dialog');
+  let resetWindow;
+  const controller = createPairActions({ request, storage, afterMutation, onChange: render, confirm: (message, details) => details.action === 'reset'
+    ? resetWindow.confirm(details) : confirm ? confirm(message, details)
+      : confirmAction({ document, title: 'Confirm computer change', message, action: 'Confirm change' }) });
+  resetWindow = createPairResetWindow({ document, request, getState: controller.snapshot,
+    getAccess: getAccess ?? (() => controller.snapshot().view?.webAccess),
+    allowed: view => pairActionAllowed(view, 'reset'), run: options => controller.run('reset', options), httpsNotice });
   function renderVerification(state) {
     for (const action of ['handover', 'promote']) {
       const select = $(`pairing-${action}-verification`);
@@ -546,24 +548,11 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
           : 'Checks the local history and readiness before starting control. Uses the latest history available on this computer.';
     }
   }
-  function resetDialogState(state) {
-    const allowed = state.available && !state.busy && !state.pending && pairActionAllowed(state.view, 'reset');
-    $('pairing-reset-keep').disabled = !allowed || state.view?.reset?.pendingMode === 'fresh' || Boolean(state.view?.reset?.keepBlockedReason);
-    $('pairing-reset-fresh').disabled = !allowed || state.view?.reset?.pendingMode === 'keep' || $('pairing-reset-restoration').checked !== true;
-    $('pairing-reset-backup').disabled = !allowed || Boolean(state.view?.reset?.pendingMode);
-    if (state.view?.reset?.pendingMode === 'fresh') $('pairing-reset-backup').checked = state.view.reset.pendingBackup === true;
-    $('pairing-reset-restoration').disabled = !allowed || state.view?.reset?.pendingMode === 'keep';
-    $('pairing-reset-keep-help').textContent = state.view?.reset?.keepBlockedReason === 'invalid_pair_state'
-      ? 'The previous pairing state is unreadable, so the active history cannot be identified. Start fresh archives the configured storage without reading the old format.'
-      : state.view?.reset?.keepBlockedReason ? 'The active history cannot be identified safely. Keep local history is unavailable.' : '';
-    $('pairing-reset-dialog-help').textContent = !state.available ? 'Reconnect before resetting this computer.'
-      : state.view?.reset?.pendingMode ? 'Finish the interrupted reset using the same choice and backup setting. Discard may already have removed some active history.'
-      : !allowed ? 'This computer’s state changed. Close this dialog and review its status.' : '';
-  }
   function render(state) {
     const display = pairDisplay(state.view, { now: now(), formatTime });
     $('pairing-panel').hidden = !display;
-    if (!display) { if (resetDialog.open) resetDialog.close(); return; }
+    resetWindow?.update(state);
+    if (!display) return;
     $('pairing-panel').dataset.state = display.state;
     $('pairing-panel').setAttribute('aria-busy', String(state.busy || state.view.busy === true));
     const unavailable = { title: 'Role unconfirmed', summary: 'Connection to this computer is lost. Reconnect to confirm its role and current status.',
@@ -648,14 +637,13 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
       : checkedPreview(state.view) && !noRecoveryNeeded && !mirrorComparison(state.view) ? 'Resume without recovery' : 'Resume mirroring';
     $('pairing-rejoin').dataset.tone = checkedPreview(state.view) && !noRecoveryNeeded && !mirrorComparison(state.view) ? 'attention' : 'neutral';
     $('pairing-rejoin-help').dataset.tone = $('pairing-rejoin').dataset.tone;
-    for (const action of actions.filter(action => !['check-recovery', 'recover'].includes(action))) {
+    for (const action of actions.filter(action => !['check-recovery', 'recover', 'reset'].includes(action))) {
       const button = $(`pairing-${action}`);
-      button.hidden = action === 'reset' ? false : action === 'promote' ? !['slave', 'protected'].includes(state.view.role) : state.view.role !== 'master';
+      button.hidden = action === 'promote' ? !['slave', 'protected'].includes(state.view.role) : state.view.role !== 'master';
       button.disabled = !state.available || state.busy || Boolean(state.pending) || !pairActionAllowed(state.view, action);
     }
     $('pairing-history-recovery').disabled = !state.available;
     $('pairing-history-recovery').textContent = recoveryNeeded && !noRecoveryNeeded ? 'Recover history' : 'Review history';
-    resetDialogState(state);
     const receipt = state.view.reset?.lastResult;
     const showReceipt = receipt && resetModes.includes(receipt.mode) && (receipt.archiveDirectory === null || typeof receipt.archiveDirectory === 'string') && stamp(receipt.completedAt) && receipt.completedAt <= now() && now() - receipt.completedAt <= 86400_000;
     $('pairing-reset-receipt').hidden = !showReceipt;
@@ -670,7 +658,7 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     const unavailableSummary = unavailableCount > 0
       ? `${unavailableCount} ${unavailableCount === 1 ? 'history source could' : 'history sources could'} not produce a recovery backup${unavailableReasons.length ? `: ${unavailableReasons.join('; ')}` : ''}. Original files were preserved in the archive.` : '';
     $('pairing-reset-receipt').textContent = showReceipt ? [receipt.mode === 'keep' ? 'Pairing reset; local history kept protected.' : 'Started fresh as a slave.',
-      receipt.mode === 'keep' && !receipt.archiveDirectory ? 'History remains in place; no database backup was needed. Explicitly promote one computer, review the other history, then resume mirroring.'
+      receipt.mode === 'keep' && !receipt.archiveDirectory ? 'History remains in place; no database backup was needed. Use the master to review this protected history before resuming mirroring. If neither computer is master, explicitly promote exactly one.'
         : receipt.backup === false ? 'Active local history was discarded without creating a backup. Existing backups were left in place.' : backupSummary,
       unavailableSummary, receipt.archiveDirectory ? `Archive: ${receipt.archiveDirectory}. Archives are kept until you manually delete them.` : ''].filter(Boolean).join(' ') : '';
     $('pairing-reset-receipt').dataset.tone = unavailableCount > 0 || backupCount === null ? 'attention' : 'neutral';
@@ -683,22 +671,6 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
   for (const action of ['handover', 'promote']) $(`pairing-${action}-verification`).addEventListener('change', () => renderVerification(controller.snapshot()));
   $('pairing-history-recovery').addEventListener('click', () => {
     if (!$('pairing-history-recovery').disabled) onRecovery({ sourceId: 'peer', trigger: $('pairing-history-recovery') });
-  });
-  $('pairing-reset').addEventListener('click', () => {
-    const state = controller.snapshot();
-    if (!state.available || state.busy || state.pending || !pairActionAllowed(state.view, 'reset') || resetDialog.open) return;
-    $('pairing-reset-restoration').checked = false; $('pairing-reset-backup').checked = true; resetDialogState(state);
-    resetDialog.showModal(); $('pairing-reset').setAttribute('aria-expanded', 'true'); $('pairing-reset-cancel').focus();
-  });
-  $('pairing-reset-cancel').addEventListener('click', () => resetDialog.close());
-  resetDialog.addEventListener('close', () => { $('pairing-reset').setAttribute('aria-expanded', 'false'); $('pairing-reset').focus(); });
-  $('pairing-reset-backup').addEventListener('change', () => resetDialogState(controller.snapshot()));
-  $('pairing-reset-restoration').addEventListener('change', () => resetDialogState(controller.snapshot()));
-  for (const mode of resetModes) $(`pairing-reset-${mode}`).addEventListener('click', () => {
-    if ($(`pairing-reset-${mode}`).disabled) return;
-    const restorationConfirmed = $('pairing-reset-restoration').checked === true;
-    resetDialog.close();
-    void controller.run('reset', { mode, ...(mode === 'fresh' ? { restorationConfirmed, backup: $('pairing-reset-backup').checked === true } : {}) });
   });
   render(controller.snapshot());
   return controller;

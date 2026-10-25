@@ -728,9 +728,31 @@ copying a database alone does not transfer command permission.
 The admin-only **Reset pairing** action changes only this computer. It keeps
 configuration, peer addresses, shared credentials, provider tokens and the other
 computer's data unchanged. A confirmation is required; a changed pairing role
-or history invalidates an open confirmation. Reset can require explicit HTTPS
-authorization again; saved HTTPS identity and certificates are preserved. The reset
-receipt links to **Web access** for review once pairing is ready.
+or history invalidates an open confirmation.
+
+The window separates choosing local history from reviewing its consequences.
+Keep is selected initially when available. Fresh reveals its recovery-backup
+option, checked by default. **Review reset** opens the second stage in the same
+window; only Fresh asks for equipment-restoration acknowledgement there.
+Unchecked backup shows an explicit irreversible-discard warning and a **Discard
+history** confirmation. Back preserves the selected choice but clears consent;
+Cancel or Escape submits nothing. An interrupted retry locks its original choice
+and backup setting. Recording/control stop only after the final confirmation.
+
+Reset changes this computer's pairing identity. Saved HTTPS listeners and the
+certificate helper can be blocked until their binding is reviewed. The window
+reads current admin Web access status when opened and reviewed, and uses its shared
+HTTPS presentation rules. Its compact disclosure expands during review; failed
+or stale reads give conservative guidance. Resetting a receiving computer can use **Authorize current pair** on both computers when the same pair
+and certificate owner remain, preserving address, identity and certificates.
+Resetting the certificate owner's identity requires **Start fresh HTTPS setup**
+on the receiving computer first, then the owner, followed by normal setup; the
+address, DNS and browser sign-in may need changing. Saved disabled setup also
+needs review. The window never promises uninterrupted HTTPS or remote access.
+The **Review web access** link closes reset without submitting it and opens the
+existing Web access fold. The completed receipt links there too. Use confirmed
+recovery access or HA ingress when HTTPS is unavailable; their readiness remains
+separate from stored certificates. See [HTTPS recovery](https.md).
 
 Pairing management loads independently of database-backed dashboard status. If
 saved state prevents the dashboard from loading, the authenticated **Paired

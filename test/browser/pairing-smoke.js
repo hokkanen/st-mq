@@ -17,11 +17,12 @@ import { chargingSettings } from '../../src/charging/settings.js';
 import { writeChargingRuntime } from '../../src/charging/runtime-storage.js';
 import { buildCharger, CHARGER_DEFINITIONS } from '../../src/charging/model.js';
 
+const resetOnly = process.argv.includes('--reset-only');
 const directory = mkdtempSync(join(tmpdir(), 'stmq-pairing-browser-'));
 const screenshots = mkdtempSync(join(tmpdir(), 'stmq-pairing-screenshots-'));
 const now = Date.now(), previewId = 'a'.repeat(64), resetToken = 'b'.repeat(64);
 const receiptReads = [];
-let confirmationResult = null;
+let confirmationResult = null, resetHttpsStatus = null;
 const actions = [], pending = new Map(), errors = [], prompts = [], measurements = [];
 const preview = { previewId, status: 'checked', tables: [{ name: 'observations', count: 21 }], model: { status: 'not-assessed' } };
 const master = (overrides = {}) => {
@@ -91,6 +92,7 @@ try {
         return json(200, confirmationResult ?? { nodeId: query.get('nodeId'), requestId: query.get('requestId'),
           action: pair.uiOperation?.action, state: pair.uiOperation?.state ?? 'unknown' });
       }
+      if (path === '/api/web-access' && request.method === 'GET' && resetHttpsStatus) return json(200, resetHttpsStatus);
       if (request.url === '/api/pair' && request.method === 'GET') return json(200, topology === 'pair' ? pair : null);
       if (request.url === '/api/history-recovery' && request.method === 'GET') return json(200, {
         available: pair.canControl === true, readOnly: pair.canControl !== true, busy: pair.busy === true,
@@ -209,6 +211,7 @@ try {
     return message;
   };
 
+  if (!resetOnly) {
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1000 }, devicePixelRatio: 1 });
   for (const [mode, role, label] of [
     ['standalone', 'master', 'Standalone'], ['mirror', 'master', 'Mirror · Master'],
@@ -501,73 +504,107 @@ try {
       assert.doesNotMatch(await evaluate(`${$('pairing-summary')}.textContent`), /MQTT|credentials/);
     }
   }
+  } else {
+    topology = 'pair'; pair = master();
+    await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${proxy.address().port}`, wait: 'complete' });
+    await until(`${$('pairing-panel')}.checkVisibility()`);
+  }
   pair = { ...standby('protected'), error: 'database_schema_mismatch', reason: 'activation_failed',
     actions: { promote: true, reset: true }, reset: { token: resetToken, blockedReason: null } };
   await until(`${$('pairing-reset')}.disabled === false`);
   await open();
+  resetHttpsStatus = { version: 1, phase: 'ready', enabled: true, pair: { paired: true, ownerId: pair.nodeId, localOwner: true } };
   const beforeResets = actions.length;
-  for (const width of [1440, 320]) for (const theme of ['dark', 'light']) {
-    await command('browsingContext.setViewport', { context, viewport: { width, height: 1000 }, devicePixelRatio: 1 });
+  for (const width of [1440, 768, 390, 320]) for (const theme of ['dark', 'light']) {
+    await command('browsingContext.setViewport', { context, viewport: { width, height: width === 320 ? 568 : 1000 }, devicePixelRatio: 1 });
     if (await evaluate('document.documentElement.dataset.theme') !== theme)
       await evaluate("document.getElementById('theme-toggle').click(); true");
     await evaluate(`${$('pairing-reset')}.click(); true`);
     await until(`${$('pairing-reset-dialog')}.open`);
     assert.equal(await evaluate(`${$('pairing-reset')}.getAttribute('aria-expanded')`), 'true');
-    assert.equal(await evaluate("document.activeElement.id"), 'pairing-reset-cancel', 'Reset dialog opens with Cancel focused');
-    assert.equal(await evaluate(`${$('pairing-reset-fresh')}.disabled`), true, 'Fresh reset needs explicit restoration acknowledgement');
-    assert.equal(await evaluate(`${$('pairing-reset-backup')}.checked`), true, 'Recovery backup defaults to checked');
-    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Reset choices fit the viewport');
-    assert.equal(await evaluate(`(() => { const dialog = ${$('pairing-reset-dialog')}; return dialog.scrollWidth <= dialog.clientWidth; })()`), true, 'Reset dialog text does not overflow');
+    assert.equal(await evaluate('document.activeElement.id'), 'pairing-reset-cancel');
+    assert.equal(await evaluate(`${$('pairing-reset-keep')}.checked`), true);
+    assert.equal(await evaluate(`${$('pairing-reset-backup-options')}.hidden`), true);
+    assert.equal(await evaluate(`${$('pairing-reset-backup')}.checked`), true);
+    assert.equal(await evaluate(`${$('pairing-reset-restoration')}.checkVisibility()`), false, 'Equipment acknowledgement belongs to review');
+    const choiceLayout = JSON.parse(await evaluate(`JSON.stringify((()=>{const d=${$('pairing-reset-dialog')};return {width:innerWidth,height:innerHeight,scroll:d.scrollWidth,client:d.clientWidth,dialog:d.getBoundingClientRect().toJSON(),footer:d.querySelector('footer').getBoundingClientRect().toJSON(),overflow:[...d.querySelectorAll('*')].filter(e=>e.checkVisibility()&&e.getBoundingClientRect().right>d.getBoundingClientRect().right).map(e=>({id:e.id,tag:e.tagName,right:e.getBoundingClientRect().right}))};})())`));
+    if (!(choiceLayout.scroll<=choiceLayout.client&&choiceLayout.footer.bottom<=choiceLayout.height&&choiceLayout.footer.top>=0)) await capture('reset-layout-failure',true);
+    assert(choiceLayout.scroll<=choiceLayout.client&&choiceLayout.footer.bottom<=choiceLayout.height&&choiceLayout.footer.top>=0,'Choice layout: '+JSON.stringify(choiceLayout));
     if (width === 320) await capture(`reset-choices-${theme}`);
+    await evaluate(`${$('pairing-reset-fresh')}.click(); ${$('pairing-reset-continue')}.click(); true`);
+    await until(`${$('pairing-reset-dialog')}.dataset.stage === 'review'`);
+    assert.equal(await evaluate(`${$('pairing-reset-confirm')}.disabled`), true);
+    assert.equal(await evaluate('document.activeElement.id'), 'pairing-reset-title');
+    assert.equal(await evaluate("document.querySelectorAll('dialog[open]').length"), 1, 'Review stays in the same modal');
+    const footerLayout = JSON.parse(await evaluate(`JSON.stringify((()=>{const d=${$('pairing-reset-dialog')};return {width:innerWidth,height:innerHeight,scroll:d.scrollWidth,client:d.clientWidth,dialog:d.getBoundingClientRect().toJSON(),buttons:[...d.querySelectorAll('footer button')].filter(e=>e.checkVisibility()).map(e=>({id:e.id,...e.getBoundingClientRect().toJSON()}))};})())`));
+    assert(footerLayout.scroll<=footerLayout.client&&footerLayout.buttons.every(r=>r.left>=0&&r.right<=footerLayout.width&&r.bottom<=footerLayout.height), 'Review footer stays visible: '+JSON.stringify(footerLayout));
+    if (width === 320) await capture(`reset-review-${theme}`);
+    await evaluate(`${$('pairing-reset-back')}.click(); true`);
+    await until(`${$('pairing-reset-dialog')}.dataset.stage === 'choose' && !${$('pairing-reset-continue')}.disabled`);
+    assert.equal(await evaluate(`${$('pairing-reset-fresh')}.checked`), true);
+    assert.equal(await evaluate(`${$('pairing-reset-restoration')}.checked`), false);
     await evaluate(`${$('pairing-reset-cancel')}.click(); true`);
     await until(`${$('pairing-reset-dialog')}.open === false`);
-    assert.equal(await evaluate(`${$('pairing-reset')}.getAttribute('aria-expanded')`), 'false');
-    assert.equal(await evaluate('document.activeElement.id'), 'pairing-reset', 'Cancel restores focus to reset button');
+    assert.equal(await evaluate('document.activeElement.id'), 'pairing-reset');
   }
-  assert.equal(actions.length, beforeResets, 'Reviewing or cancelling reset choices sends no mutation');
-  await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-keep')}.click(); true`);
-  await until("document.querySelector('.confirmation-dialog[open] #confirmation-description') !== null");
-  assert.match(await evaluate("document.getElementById('confirmation-description').textContent"), /database and saved settings remain intact/);
-  await evaluate("document.querySelector('.confirmation-dialog[open] .confirmation-actions button:last-child').click(); true");
-  await until(`${$('pairing-reset-receipt')}.textContent.includes('local history kept protected')`);
-  assert.equal(actions.at(-1).mode, 'keep');
-  assert.equal(pair.reset.lastResult.requestId, actions.at(-1).requestId);
-  assert.equal(actions.at(-1).restorationConfirmed, undefined);
-  assert.equal(pair.role, 'protected');
-  assert.equal(await evaluate(`${$('pairing-reset-receipt')}.hidden`), false);
-  assert.match(await evaluate(`${$('pairing-reset-receipt')}.textContent`), /History remains in place; no database backup was needed/);
-  await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-restoration')}.click(); ${$('pairing-reset-fresh')}.click(); true`);
-  await until("document.querySelector('.confirmation-dialog[open] #confirmation-description') !== null");
-  assert.match(await evaluate("document.getElementById('confirmation-description').textContent"), /Archives are kept until you manually delete/);
-  await evaluate("document.querySelector('.confirmation-dialog[open] .confirmation-actions button:first-child').click(); true");
-  await until(`${$('pairing-reset')}.disabled === false`);
-  assert.equal(actions.length, beforeResets + 1, 'Fresh final confirmation can be cancelled');
+  assert.equal(actions.length, beforeResets, 'Reviewing, going Back and cancelling never submit reset');
+  const key = value => command('input.performActions', { context, actions: [{ type: 'key', id: 'reset-keyboard', actions: [{ type: 'keyDown', value }, { type: 'keyUp', value }] }] });
+  const tabTo = async id => { for(let i=0;i<12;i++){if(await evaluate('document.activeElement.id')===id)return;await key('\uE004');}assert.fail('Keyboard could not reach '+id); };
   await evaluate(`${$('pairing-reset')}.click(); true`);
-  assert.equal(await evaluate(`${$('pairing-reset-restoration')}.checked`), false, 'Opening the dialog clears old fresh-start consent');
-  await evaluate(`${$('pairing-reset-restoration')}.click(); ${$('pairing-reset-fresh')}.click(); true`);
-  await until("document.querySelector('.confirmation-dialog[open] #confirmation-description') !== null");
-  await evaluate("document.querySelector('.confirmation-dialog[open] .confirmation-actions button:last-child').click(); true");
-  await until(`${$('pairing-reset-receipt')}.textContent.includes('Started fresh as a slave')`);
-  assert.equal(actions.at(-1).mode, 'fresh');
-  assert.equal(actions.at(-1).restorationConfirmed, true);
-  assert.equal(pair.role, 'slave');
-  assert.match(await evaluate(`${$('pairing-reset-receipt')}.textContent`), /synthetic-reset/);
+  await command('browsingContext.activate', { context });
+  await command('input.performActions', { context, actions: [{type:'key',id:'reset-keyboard',actions:[{type:'keyDown',value:'\uE008'},{type:'keyDown',value:'\uE004'},{type:'keyUp',value:'\uE004'},{type:'keyUp',value:'\uE008'}]}] });
+  assert.equal(await evaluate('document.activeElement.id'), 'pairing-reset-keep', 'Shift-Tab reaches the selected native radio from Cancel');
+  await key('\uE015');
+  assert.equal(await evaluate(`${$('pairing-reset-fresh')}.checked`), true, 'Arrow key selects Fresh');
+  await key('\uE004'); await key(' ');
+  assert.equal(await evaluate(`${$('pairing-reset-backup')}.checked`), false, 'Space changes backup preference');
+  await key('\uE004'); await key('\uE004'); await key('\uE007');
+  await until(`${$('pairing-reset-dialog')}.dataset.stage === 'review'`);
+  await tabTo('pairing-reset-restoration');
+  assert.equal(await evaluate('document.activeElement.id'), 'pairing-reset-restoration');
+  await key(' '); assert.equal(await evaluate(`${$('pairing-reset-confirm')}.disabled`), false);
+  await tabTo('pairing-reset-next-summary'); await key(' ');
+  assert.equal(await evaluate(`${$('pairing-reset-next')}.open`), true, 'Next-step disclosure works by keyboard');
+  await key('\uE00C'); await until(`${$('pairing-reset-dialog')}.open === false`);
+  assert.equal(await evaluate('document.activeElement.id'), 'pairing-reset');
+  assert.equal(actions.length, beforeResets, 'Escape from review sends no reset');
+  await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-https')}.open=true; ${$('pairing-reset-https-link')}.click(); true`);
+  await until(`${$('pairing-reset-dialog')}.open === false`);
+  assert.equal(await evaluate('location.hash'), '#secure-web-access-details');
+  assert.equal(actions.length, beforeResets, 'Web access navigation cancels reset');
 
-  assert.equal(actions.at(-1).backup, true);
+  await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-continue')}.click(); true`);
+  await until(`${$('pairing-reset-dialog')}.dataset.stage === 'review'`);
+  assert.equal(await evaluate(`${$('pairing-reset-equipment')}.hidden`), true);
+  await evaluate(`${$('pairing-reset-confirm')}.click(); true`);
+  await until(`${$('pairing-reset-receipt')}.textContent.includes('local history kept protected')`);
+  assert.equal(actions.at(-1).mode, 'keep'); assert.equal(actions.at(-1).restorationConfirmed, undefined);
+  assert.equal(pair.role, 'protected');
+  assert.match(await evaluate(`${$('pairing-reset-receipt')}.textContent`), /History remains in place; no database backup was needed/);
+  await until(`${$('pairing-reset')}.disabled === false`);
+  await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-fresh')}.click(); ${$('pairing-reset-continue')}.click(); true`);
+  await until(`${$('pairing-reset-dialog')}.dataset.stage === 'review'`);
+  assert.equal(await evaluate(`${$('pairing-reset-confirm')}.disabled`), true);
+  await evaluate(`${$('pairing-reset-restoration')}.click(); ${$('pairing-reset-confirm')}.click(); true`);
+  await until(`${$('pairing-reset-receipt')}.textContent.includes('Started fresh as a slave')`);
+  assert.equal(actions.at(-1).mode, 'fresh'); assert.equal(actions.at(-1).restorationConfirmed, true); assert.equal(actions.at(-1).backup, true);
+  assert.equal(pair.role, 'slave');
   const beforeDiscard = actions.length;
   await until(`${$('pairing-reset')}.disabled === false`);
-  await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-backup')}.click(); ${$('pairing-reset-restoration')}.click(); ${$('pairing-reset-fresh')}.click(); true`);
-  await until("document.querySelector('.confirmation-dialog[open] #confirmation-description') !== null");
-  assert.match(await evaluate("document.getElementById('confirmation-description').textContent"), /Permanently discard.*without a backup/);
-  assert.match(await evaluate("document.getElementById('confirmation-description').textContent"), /cannot be undone/);
-  await evaluate("document.querySelector('.confirmation-dialog[open] .confirmation-actions button:first-child').click(); true");
+  await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-fresh')}.click(); ${$('pairing-reset-backup')}.click(); ${$('pairing-reset-continue')}.click(); true`);
+  await until(`${$('pairing-reset-dialog')}.dataset.stage === 'review'`);
+  assert.equal(await evaluate(`${$('pairing-reset-title')}.textContent`), 'Discard local history?');
+  assert.equal(await evaluate(`${$('pairing-reset-confirm')}.textContent`), 'Discard history');
+  assert.equal(await evaluate(`${$('pairing-reset-discard-warning')}.checkVisibility()`), true);
+  assert.match(await evaluate(`${$('pairing-reset-discard-warning')}.textContent`), /cannot undo/);
+  await evaluate(`${$('pairing-reset-cancel')}.click(); true`);
   await until(`${$('pairing-reset')}.disabled === false`);
-  assert.equal(actions.length, beforeDiscard, 'Cancelling destructive warning sends no request');
+  assert.equal(actions.length, beforeDiscard);
   await evaluate(`${$('pairing-reset')}.click(); true`);
-  assert.equal(await evaluate(`${$('pairing-reset-backup')}.checked`), true, 'Reopening restores the safe backup default');
-  await evaluate(`${$('pairing-reset-backup')}.click(); ${$('pairing-reset-restoration')}.click(); ${$('pairing-reset-fresh')}.click(); true`);
-  await until("document.querySelector('.confirmation-dialog[open] #confirmation-description') !== null");
-  await evaluate("document.querySelector('.confirmation-dialog[open] .confirmation-actions button:last-child').click(); true");
+  assert.equal(await evaluate(`${$('pairing-reset-backup')}.checked`), true);
+  await evaluate(`${$('pairing-reset-fresh')}.click(); ${$('pairing-reset-backup')}.click(); ${$('pairing-reset-continue')}.click(); true`);
+  await until(`${$('pairing-reset-dialog')}.dataset.stage === 'review'`);
+  await evaluate(`${$('pairing-reset-restoration')}.click(); ${$('pairing-reset-confirm')}.click(); true`);
   await until(`${$('pairing-reset-receipt')}.textContent.includes('discarded without creating a backup')`);
   assert.equal(actions.at(-1).backup, false); assert.equal(actions.at(-1).discardConfirmed, true);
   assert.equal(await evaluate(`${$('pairing-reset-web-access')}.hidden`), false);
@@ -609,8 +646,8 @@ try {
   await until(`${$('instance-role')}.textContent === 'Pair · Role change'`);
   assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true, 'Role-change progress remains visible when folded');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'pairing-browser-smoke-passed', measurements, screenshots,
-    checked: ['automatic original-node confirmation after reconnecting to a different master', 'no recheck button or reverse handover', 'actual built dashboard', 'all topology and role headers', 'mode-specific synchronization panels and read-only controls', 'role beside operating mode', 'compact desktop/mobile dark/light layout',
+  console.log(JSON.stringify({ result: resetOnly ? 'pairing-reset-browser-smoke-passed' : 'pairing-browser-smoke-passed', measurements, screenshots,
+    checked: resetOnly ? ['actual reset window and shared HTTPS owner notice', 'choose and review states', 'both themes and 320/390/768/1440 widths', 'small-height scrolling and visible footer', 'keyboard radio/checkbox/disclosure/Escape', 'safe backup defaults', 'Back clears consent', 'cancel submits nothing', 'Keep and both Fresh payloads', 'no stacked confirmation dialog'] : ['automatic original-node confirmation after reconnecting to a different master', 'no recheck button or reverse handover', 'actual built dashboard', 'all topology and role headers', 'mode-specific synchronization panels and read-only controls', 'role beside operating mode', 'compact desktop/mobile dark/light layout',
       'placement above events', 'keyboard disclosure', 'poll preserves disclosure', 'secondary read failures preserve local pairing evidence', 'older failed reads cannot erase newer status', 'local status failure and recovery', 'failed/running checks never enable recovery',
       'successful preview unlocks recovery', 'skip and completed recovery confirmations explain retained inactive original',
       'recovery sends checked identity', 'closed progress and failures', 'matching protected/slave layout without master controls', 'actual immutable ReplicaViewer projection',

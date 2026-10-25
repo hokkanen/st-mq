@@ -268,7 +268,7 @@ renderModelInputs($('model-inputs-content'), undefined, { sensorChanges: $('sens
 const sensorChangePanel = createSensorChangePanel({ document, request: api, storage: sessionStorage,
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh({ forceChart: true }) });
 let statusReceivedMonotonicAt = performance.now();
-const pairPanel = createPairPanel({ document, request: api, storage: sessionStorage, formatTime: time,
+const pairPanel = createPairPanel({ document, request: api, storage: sessionStorage, formatTime: time, getAccess: () => webAccess,
   now: () => Number.isFinite(lastStatus?.now)
     ? lastStatus.now + Math.max(0, performance.now() - statusReceivedMonotonicAt) : Date.now(),
   afterMutation: () => refresh({ forceChart: true }), onRecovery: options => historyRecovery.open(options) });

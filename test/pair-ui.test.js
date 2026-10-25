@@ -540,6 +540,9 @@ function fixture() {
     replaceChildren(...children) { this.children = children; }
     addEventListener(name, callback) { this.listeners.set(name, callback); }
     setAttribute(name, value) { this.attributes[name] = value; }
+    focus() { if (!this.disabled) document.activeElement = this; }
+    showModal() { this.open = true; }
+    close() { this.open = false; this.listeners.get('close')?.(); }
   }
   const nodes = new Map();
   const document = { createElement: tag => new Element(tag), getElementById: id => {
@@ -1139,7 +1142,7 @@ test('peer roles are timestamped reports and a fresh slave waits when a master i
 
 
 const resetToken = 'b'.repeat(64);
-const resettable = (overrides = {}) => standby({ role: 'protected', reason: 'activation_failed', error: 'database_schema_mismatch',
+const resettable = (overrides = {}) => standby({ webAccess: { role: 'admin' }, role: 'protected', reason: 'activation_failed', error: 'database_schema_mismatch',
   reset: { token: resetToken, blockedReason: null }, actions: { reset: true, promote: true }, ...overrides });
 
 test('reset remains a management action on each role but requires current server capability and token', () => {
@@ -1148,14 +1151,12 @@ test('reset remains a management action on each role but requires current server
     { busy: true }, { uiOperation: { state: 'running' } }])
     assert.equal(pairActionAllowed(resettable(overrides), 'reset'), false);
   assert.equal(isPairManagementRequest('/api/pair/action', { nodeId, action: 'reset', requestId: id }, { topology: 'pair' }), true);
-  assert.match(pairConfirmation('reset', { mode: 'keep' }), /database and saved settings remain intact/);
-  assert.match(pairConfirmation('reset', { mode: 'fresh' }), /Archives are kept until you manually delete/);
-  assert.doesNotMatch(pairConfirmation('reset', { mode: 'fresh' }), /permanently delete|automatically promote/i);
+  assert.equal(pairConfirmation('reset'), null, 'reset uses its structured review instead of generic confirmation text');
 });
 
 test('fresh reset requires explicit restoration acknowledgement and carries the reviewed token', async () => {
   const sent = [], confirmations = [];
-  const controller = createPairActions({ requestId: () => id, confirm: message => { confirmations.push(message); return true; },
+  const controller = createPairActions({ requestId: () => id, confirm: (message, details) => { confirmations.push(details); return true; },
     request: async (path, body) => { sent.push(body); return operation(standby(), 'complete', 'reset'); } });
   controller.update(resettable());
   assert.equal(await controller.run('reset', { mode: 'fresh' }), false);
@@ -1164,18 +1165,17 @@ test('fresh reset requires explicit restoration acknowledgement and carries the 
   assert.equal(confirmations.length, 0);
   assert.equal(await controller.run('reset', { mode: 'fresh', restorationConfirmed: true, backup: true }), true);
   assert.deepEqual(sent, [{ nodeId, action: 'reset', requestId: id, confirmed: true, mode: 'fresh', resetToken, restorationConfirmed: true, backup: true }]);
-  assert.match(confirmations[0], /Local recording and control stop/);
+  assert.equal(confirmations[0].action, 'reset'); assert.equal(confirmations[0].mode, 'fresh'); assert.equal(confirmations[0].backup, true);
 });
 
 test('keep reset preserves the database without claiming authority or requiring fresh-start consent', async () => {
-  let body, message;
-  const controller = createPairActions({ requestId: () => id, confirm: text => { message = text; return true; },
+  let body, review;
+  const controller = createPairActions({ requestId: () => id, confirm: (_text, details) => { review = details; return true; },
     request: async (path, data) => { body = data; return operation(resettable(), 'complete', 'reset'); } });
   controller.update(resettable());
   assert.equal(await controller.run('reset', { mode: 'keep' }), true);
   assert.deepEqual(body, { nodeId, action: 'reset', requestId: id, confirmed: true, mode: 'keep', resetToken });
-  assert.match(message, /stays in Protected recovery/);
-  assert.match(message, /other computer are unchanged/);
+  assert.equal(review.action, 'reset'); assert.equal(review.mode, 'keep'); assert.equal(review.resetToken, resetToken);
 });
 
 test('reset confirmation is cancelled when the authority token changes or the connection is lost', async () => {
@@ -1300,8 +1300,8 @@ test('unreadable old pairing state blocks keep-history but still permits explici
   const panel = createPairPanel({ document, request: async () => {} }); panel.update(view);
   assert.equal($('pairing-reset').disabled, false);
   assert.equal($('pairing-reset-keep').disabled, true);
-  assert.match($('pairing-reset-keep-help').textContent, /previous pairing state is unreadable/);
-  assert.match($('pairing-reset-keep-help').textContent, /without reading the old format/);
+  assert.match($('pairing-reset-keep-help').textContent, /Saved pairing state cannot identify/);
+  assert.match($('pairing-reset-keep-help').textContent, /Keep local history is unavailable/);
   $('pairing-reset-restoration').checked = true; panel.update(view);
   assert.equal($('pairing-reset-fresh').disabled, false);
 });
@@ -1451,4 +1451,131 @@ test('a retained handover marker permits explicitly admitted recovery promotion 
       assert.equal(pairActionAllowed({ ...view, ...blocked }, 'promote'), false);
     }
   }
+});
+
+const flushReset = () => new Promise(resolve => setImmediate(resolve));
+function resetWindowFixture({ access = { role: 'admin' }, webRequest } = {}) {
+  const { document, $ } = fixture(), sent = [], storage = memoryStorage();
+  const view = resettable({ platform: 'ubuntu' });
+  const panel = createPairPanel({ document, storage, getAccess: () => access, now: () => now,
+    request: async (path, body) => {
+      if (path === '/api/web-access') return webRequest ? webRequest() : { version: 1, phase: 'disabled', enabled: false, recovery: { kind: 'fresh' } };
+      sent.push(body); return { ...view, uiOperation: { id: body.requestId, action: 'reset', state: 'complete' } };
+    } });
+  panel.update(view);
+  const click = name => $(`pairing-reset${name ? '-'+name : ''}`).listeners.get('click')();
+  const change = name => $(`pairing-reset-${name}`).listeners.get('change')();
+  const fresh = () => { $('pairing-reset-keep').checked = false; $('pairing-reset-fresh').checked = true; change('fresh'); };
+  return { document, $, panel, sent, storage, view, click, change, fresh, setAccess: value => { access = value; panel.update(view); } };
+}
+
+test('reset window presents balanced choices then confirms Keep in the same dialog without another modal', async () => {
+  const f = resetWindowFixture(); f.click(''); await flushReset();
+  assert.equal(f.$('pairing-reset-dialog').open, true);
+  assert.equal(f.$('pairing-reset-keep').checked, true);
+  assert.equal(f.$('pairing-reset-backup').checked, true);
+  assert.equal(f.$('pairing-reset-backup-options').hidden, true);
+  assert.equal(f.$('pairing-reset-review').hidden, true);
+  assert.equal(f.$('pairing-reset-continue').disabled, false);
+  f.click('continue'); await flushReset();
+  assert.equal(f.$('pairing-reset-dialog').dataset.stage, 'review');
+  assert.equal(f.$('pairing-reset-equipment').hidden, true);
+  assert.equal(f.$('pairing-reset-confirm').disabled, false);
+  assert.equal(f.document.activeElement, f.$('pairing-reset-title'));
+  assert.equal(f.sent.length, 0, 'review never submits the action');
+  f.click('confirm'); await flushReset();
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].mode, 'keep');
+  assert.equal(f.sent[0].backup, undefined); assert.equal(f.sent[0].restorationConfirmed, undefined);
+  assert.equal(f.$('pairing-reset-dialog').open, false);
+});
+
+test('Fresh review collects restoration consent only at confirmation and never submits an unchecked acknowledgement', async () => {
+  const f = resetWindowFixture(); f.click(''); f.fresh();
+  assert.equal(f.$('pairing-reset-backup-options').hidden, false);
+  assert.equal(f.$('pairing-reset-restoration').checked, false);
+  f.click('continue'); await flushReset();
+  assert.equal(f.$('pairing-reset-equipment').hidden, false);
+  assert.equal(f.$('pairing-reset-confirm').disabled, true);
+  f.click('confirm'); await flushReset(); assert.equal(f.sent.length, 0);
+  assert.equal(f.storage.getItem('stmq-pair-pending'), null, 'unconfirmed consent is not persisted');
+  f.$('pairing-reset-restoration').checked = true; f.change('restoration');
+  assert.equal(f.$('pairing-reset-confirm').disabled, false);
+  f.click('confirm'); await flushReset();
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].backup, true);
+  assert.equal(f.sent[0].restorationConfirmed, true); assert.equal(f.sent[0].discardConfirmed, undefined);
+});
+
+test('discard is an explicit warning review; Back preserves the choice but clears consent; Cancel sends nothing', async () => {
+  const f = resetWindowFixture(); f.click(''); f.fresh();
+  f.$('pairing-reset-backup').checked = false; f.change('backup');
+  assert.equal(f.$('pairing-reset-no-backup').hidden, false);
+  f.click('continue'); await flushReset();
+  assert.equal(f.$('pairing-reset-discard-warning').hidden, false);
+  assert.equal(f.$('pairing-reset-title').textContent, 'Discard local history?');
+  assert.equal(f.$('pairing-reset-confirm').textContent, 'Discard history');
+  f.$('pairing-reset-restoration').checked = true; f.change('restoration');
+  f.click('back'); await flushReset();
+  assert.equal(f.$('pairing-reset-dialog').dataset.stage, 'choose');
+  assert.equal(f.$('pairing-reset-backup').checked, false); assert.equal(f.$('pairing-reset-restoration').checked, false);
+  f.click('continue'); await flushReset(); assert.equal(f.$('pairing-reset-confirm').disabled, true);
+  f.click('cancel'); await flushReset(); assert.equal(f.sent.length, 0);
+  assert.equal(f.document.activeElement, f.$('pairing-reset'), 'cancelled Review releases busy before restoring focus');
+  f.click(''); assert.equal(f.$('pairing-reset-backup').checked, true, 'new openings restore the checked default');
+  f.fresh(); f.$('pairing-reset-backup').checked = false; f.change('backup'); f.click('continue'); await flushReset();
+  f.$('pairing-reset-restoration').checked = true; f.change('restoration'); f.click('confirm'); await flushReset();
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].backup, false); assert.equal(f.sent[0].discardConfirmed, true);
+});
+
+test('node/token changes and lost connection disable an open review without silently refreshing its consent', async () => {
+  for (const patch of [{ nodeId: id }, { reset: { token: 'c'.repeat(64) } }, null]) {
+    const f = resetWindowFixture(); f.click(''); f.click('continue'); await flushReset();
+    if (patch) f.panel.update(resettable(patch)); else f.panel.unavailable();
+    assert.equal(f.$('pairing-reset-confirm').disabled, true);
+    f.click('confirm'); await flushReset(); assert.equal(f.sent.length, 0);
+    assert.match(f.$('pairing-reset-dialog-help').textContent, /changed during review|Connection lost/);
+    f.click('cancel'); await flushReset();
+    assert.equal(f.panel.snapshot().busy, false);
+  }
+});
+
+test('family access cannot open reset, and losing admin access cancels an open confirmation', async () => {
+  const f = resetWindowFixture({ access: { role: 'family' } });
+  assert.equal(f.$('pairing-reset').disabled, true); f.click('');
+  assert.notEqual(f.$('pairing-reset-dialog').open, true); assert.equal(f.sent.length, 0);
+  f.setAccess({ role: 'admin' }); f.click(''); f.click('continue'); await flushReset();
+  f.setAccess({ role: 'family' }); await flushReset();
+  assert.equal(f.$('pairing-reset-dialog').open, false); assert.equal(f.sent.length, 0);
+  assert.equal(f.panel.snapshot().busy, false);
+});
+
+test('an interrupted reset locks the original mode and backup choice while still requiring fresh consent', async () => {
+  const f = resetWindowFixture(); f.panel.update(resettable({ reset: { token: resetToken, pendingMode: 'fresh', pendingBackup: false, pendingRequestId: id } }));
+  f.click(''); assert.equal(f.$('pairing-reset-fresh').checked, true); assert.equal(f.$('pairing-reset-keep').disabled, true);
+  assert.equal(f.$('pairing-reset-backup').checked, false); assert.equal(f.$('pairing-reset-backup').disabled, true);
+  f.click('continue'); await flushReset(); assert.equal(f.$('pairing-reset-confirm').disabled, true);
+  f.$('pairing-reset-restoration').checked = true; f.change('restoration'); f.click('confirm'); await flushReset();
+  assert.equal(f.sent[0].requestId, id); assert.equal(f.sent[0].backup, false);
+});
+
+test('late HTTPS replies cannot overwrite a reopened window and review uses the shared owner/recipient rules', async () => {
+  let resolveOld, reads = 0;
+  const owner = { version: 1, phase: 'ready', enabled: true, pair: { paired: true, ownerId: nodeId, localOwner: true } };
+  const recipient = { ...owner, pair: { paired: true, ownerId: id, localOwner: false } };
+  const f = resetWindowFixture({ webRequest: () => ++reads === 1 ? new Promise(resolve => { resolveOld = resolve; }) : recipient });
+  f.click(''); await flushReset(); f.click('cancel'); f.click(''); await flushReset();
+  assert.match(f.$('pairing-reset-https-help').textContent, /Authorize current pair.*both computers/);
+  resolveOld(owner); await flushReset();
+  assert.match(f.$('pairing-reset-https-help').textContent, /Authorize current pair.*both computers/);
+  assert.doesNotMatch(f.$('pairing-reset-https-help').textContent, /receiving computer first/);
+  f.click('cancel'); await flushReset();
+});
+
+test('an interrupted reset arriving while choices are open cannot silently change the chosen backup consent', async () => {
+  const f = resetWindowFixture(); f.click('');
+  f.panel.update(resettable({ reset: { token: resetToken, pendingMode: 'fresh', pendingBackup: false, pendingRequestId: id } }));
+  assert.equal(f.$('pairing-reset-continue').disabled, true);
+  assert.match(f.$('pairing-reset-dialog-help').textContent, /saved reset choice changed/);
+  f.click('continue'); await flushReset(); assert.equal(f.sent.length, 0);
+  f.click('cancel'); f.click('');
+  assert.equal(f.$('pairing-reset-fresh').checked, true); assert.equal(f.$('pairing-reset-backup').checked, false);
 });

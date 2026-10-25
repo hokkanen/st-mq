@@ -1463,7 +1463,7 @@ G_warming = G / 2</code>
           <span class="pairing-open-label">Details</span>
         </summary>
         <div class="pairing-content">
-          <div id="pairing-operation-status" class="pairing-operation-status" hidden>
+          <div id="pairing-operation-status" tabindex="-1" class="pairing-operation-status" hidden>
             <p id="pairing-phase" class="pairing-progress" role="status" aria-live="polite"></p>
             <p id="pairing-message" role="status" aria-live="polite"></p>
           </div>
@@ -1550,24 +1550,60 @@ G_warming = G / 2</code>
   </main>
   <footer>Finnish local time · Europe/Helsinki · Weather: <a href="https://en.ilmatieteenlaitos.fi/open-data">FMI</a> / <a href="https://open-meteo.com/">Open-Meteo</a> (DWD ICON)</footer>
   <dialog id="pairing-reset-dialog" class="pairing-reset-dialog" aria-labelledby="pairing-reset-title" aria-describedby="pairing-reset-description">
-    <h2 id="pairing-reset-title">Reset pairing</h2>
-    <p id="pairing-reset-description">This stops local recording and control. The other computer is unchanged. Choose what happens to this computer’s history.</p>
-    <p class="muted">Resetting pairing may require HTTPS authorization again. Saved HTTPS identity and certificates are preserved. Review Web access after pairing is ready.</p>
-    <section class="pairing-reset-choice">
-      <h3>Keep local history</h3>
-      <p>Keep the database and saved settings in place without making a database copy. History stays protected until you explicitly choose recovery or promotion. An incompatible database remains incompatible.</p>
-      <button id="pairing-reset-keep" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-reset-keep-help">Keep local history</button>
-      <p id="pairing-reset-keep-help" class="muted" role="status"></p>
-    </section>
-    <section class="pairing-reset-choice">
-      <h3>Start fresh</h3>
-      <p>Start as an empty slave. History, learning and saved dashboard choices start empty locally; a master can supply its history through mirroring. Without a backup, discarding local history is fast and requires a separate warning confirmation.</p>
-      <label class="pairing-reset-restoration" data-admin-only><input id="pairing-reset-backup" type="checkbox" checked> <span>Keep a recovery backup — takes longer. Progress stays available while history is archived and verified. Archives remain until you manually delete them.</span></label>
-      <label class="pairing-reset-restoration" data-admin-only><input id="pairing-reset-restoration" type="checkbox"> <span>I have resolved any temporary equipment changes. Archiving data does not restore equipment.</span></label>
-      <button id="pairing-reset-fresh" data-admin-only class="secondary-button" type="button" disabled>Start fresh</button>
-    </section>
-    <p id="pairing-reset-dialog-help" class="muted" role="status"></p>
-    <div class="confirmation-actions"><button id="pairing-reset-cancel" class="secondary-button" type="button" autofocus>Cancel</button></div>
+    <header class="pairing-reset-header">
+      <p id="pairing-reset-step" class="pairing-reset-step">Step 1 of 2 · Choose history</p>
+      <h2 id="pairing-reset-title" tabindex="-1">Reset pairing</h2>
+      <p id="pairing-reset-description">Choose what to keep on this computer.</p>
+      <p id="pairing-reset-computer" class="muted"></p>
+    </header>
+    <div id="pairing-reset-body" class="pairing-reset-body">
+      <details id="pairing-reset-https" class="pairing-reset-https">
+        <summary id="pairing-reset-https-title">Web access after reset</summary>
+        <p id="pairing-reset-https-help">Checking the saved HTTPS setup…</p>
+        <a id="pairing-reset-https-link" href="#secure-web-access-details">Review web access</a>
+      </details>
+      <section id="pairing-reset-choose" aria-label="Choose local history">
+        <fieldset class="pairing-reset-options">
+          <legend class="sr-only">After resetting this computer’s pairing</legend>
+          <label class="pairing-reset-option" for="pairing-reset-keep">
+            <input id="pairing-reset-keep" data-admin-only type="radio" name="pairing-reset-mode" value="keep" checked aria-describedby="pairing-reset-keep-help">
+            <span><strong>Keep local history</strong><span>Retain history, learning and saved dashboard choices.</span><small>Continue in Protected recovery.</small></span>
+          </label>
+          <label class="pairing-reset-option" for="pairing-reset-fresh">
+            <input id="pairing-reset-fresh" data-admin-only type="radio" name="pairing-reset-mode" value="fresh">
+            <span><strong>Start fresh</strong><span>Begin with empty local history and dashboard choices.</span><small>Continue as a read-only slave.</small></span>
+          </label>
+        </fieldset>
+        <p id="pairing-reset-keep-help" class="pairing-reset-note" role="status" hidden></p>
+        <div id="pairing-reset-backup-options" class="pairing-reset-backup-options" hidden>
+          <label class="pairing-reset-check" for="pairing-reset-backup"><input id="pairing-reset-backup" data-admin-only type="checkbox" checked aria-describedby="pairing-reset-backup-help"><span>Keep a recovery backup</span></label>
+          <p id="pairing-reset-backup-help" class="muted">Preserve local files before resetting. Preparing and verifying backups takes longer with large histories.</p>
+          <p id="pairing-reset-no-backup" class="pairing-reset-note" role="status" aria-live="polite" data-tone="attention" hidden>No new backup. Active local history will be permanently discarded.</p>
+        </div>
+        <p class="pairing-reset-scope muted">Local recording and control stop. Configuration, passwords and the other computer stay unchanged. Neither computer is promoted automatically.</p>
+      </section>
+      <section id="pairing-reset-review" aria-label="Review reset" hidden>
+        <div id="pairing-reset-discard-warning" class="pairing-reset-note" data-tone="attention" hidden>
+          <strong>No recovery backup</strong>
+          <p>This permanently removes this computer’s active history, learning and saved dashboard choices. You cannot undo this reset using this computer’s data. Existing backups are left in place.</p>
+        </div>
+        <dl class="pairing-reset-review-facts">
+          <div><dt>Local history</dt><dd id="pairing-reset-history-result"></dd></div>
+          <div><dt>Recovery backup</dt><dd id="pairing-reset-backup-result"></dd></div>
+          <div><dt>After reset</dt><dd id="pairing-reset-role-result"></dd></div>
+        </dl>
+        <div id="pairing-reset-equipment" class="pairing-reset-equipment" hidden>
+          <label class="pairing-reset-check" for="pairing-reset-restoration"><input id="pairing-reset-restoration" data-admin-only type="checkbox" required aria-describedby="pairing-reset-equipment-help"><span>No temporary equipment changes need restoration.</span></label>
+          <p id="pairing-reset-equipment-help" class="muted">Resetting history does not restore equipment. Outstanding restoration duties block Start fresh.</p>
+        </div>
+        <details id="pairing-reset-next" class="pairing-reset-next"><summary id="pairing-reset-next-summary">What happens next?</summary><p id="pairing-reset-next-help"></p><p id="pairing-reset-backup-retention" hidden>Archives remain until you delete them. Incompatible history is preserved as files; it cannot produce a usable recovery backup.</p></details>
+      </section>
+      <p id="pairing-reset-dialog-help" class="pairing-reset-note" role="status" aria-live="polite" hidden></p>
+    </div>
+    <footer class="pairing-reset-actions">
+      <button id="pairing-reset-cancel" class="secondary-button" type="button" autofocus>Cancel</button>
+      <div><button id="pairing-reset-back" class="secondary-button" type="button" hidden>Back</button><button id="pairing-reset-continue" data-admin-only type="button">Review reset</button><button id="pairing-reset-confirm" data-admin-only type="button" hidden disabled>Reset pairing</button></div>
+    </footer>
   </dialog>
   <dialog id="garage-doors-dialog" class="control-dialog garage-doors-dialog" aria-labelledby="garage-doors-title" aria-describedby="garage-doors-help">
     <h2 id="garage-doors-title">Garage doors</h2>

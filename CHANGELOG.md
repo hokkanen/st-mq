@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Redesign Reset pairing as a choice followed by an explicit review in one
+  window. Keep the backup default checked, collect equipment acknowledgement only
+  for Fresh, and give discard its own warning. Match HTTPS guidance to current
+  certificate ownership and the shared Web access recovery rules; preserve
+  keyboard focus, draft choices and safe retry behavior.
+
 - Make pairing reset fast when keeping history in place or starting fresh without
   a backup. Fresh keeps its recovery-backup checkbox checked by default; discarding
   history without a backup requires a destructive warning. Keep authenticated
