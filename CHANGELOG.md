@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Clear pending pairing requests when signing out and fence late replies and
+  confirmations from the previous login. Keep completed resets out of the running
+  progress display. Expire pairing success messages after 24 hours using their
+  original completion time, including after reconnection or restart.
+
 - Redesign Reset pairing as a choice followed by an explicit review in one
   window. Keep the backup default checked, collect equipment acknowledgement only
   for Fresh, and give discard its own warning. Match HTTPS guidance to current
