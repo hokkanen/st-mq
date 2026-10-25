@@ -21,12 +21,13 @@ export async function recoveryWorkload(t, { records = 1024, windows = 32, payloa
   observation(f.master, start, 20);
   f.master.setState('synthetic-authority', { permitted: false, equipment: 'synthetic-current-equipment' });
   const donor = await f.donor();
-  donor.transaction(() => {
-    for (let index = 1; index <= records; index++)
-      observation(donor, start + index * 1000, 20 + index % 4 / 10,
-        { raw: { synthetic: 'x'.repeat(payloadBytes), sequence: index } });
-    for (let index = 2; index <= windows + 1; index++) sample(donor, start + index * W);
-  });
+  // Fixture construction must obey the controller's bounded journal capture,
+  // including the benchmark's largest supported raw payloads. Each observation
+  // is its own current-format transaction, as in ordinary recording.
+  for (let index = 1; index <= records; index++)
+    observation(donor, start + index * 1000, 20 + index % 4 / 10,
+      { raw: { synthetic: 'x'.repeat(payloadBytes), sequence: index } });
+  for (let index = 2; index <= windows + 1; index++) sample(donor, start + index * W);
   const snapshot = await f.snapshot(donor);
   // Exercise the same persistent writer used by the active application, rather
   // than qualifying only the direct synchronous fixture connection.
