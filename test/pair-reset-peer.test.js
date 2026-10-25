@@ -43,17 +43,14 @@ test('keep reset preserves an interrupted seed as evidence and starts a new peer
   const result = app.status().uiOperation;
   assert.equal(result.state, 'complete', result.error);
   assert.equal(app.pair.canControl(), false);
-  const archive = result.result.archiveDirectory, plan = JSON.parse(await readFile(join(archive, 'reset.json'), 'utf8'));
-  const archived = source => join(archive, plan.entries.find(entry => entry.source === source).destination);
+  assert.equal(result.result.archiveDirectory, null);
   assert.equal(previous.pending.sourcePath.startsWith(join(config.recording.backupDirectory, 'pair-exports') + '/'), true);
-  assert.equal(plan.entries.some(entry => entry.source === previous.pending.sourcePath), false,
-    'The managed immutable repository remains separate from raw reset storage');
   assert.deepEqual(await readFile(previous.pending.sourcePath), sourceBytes,
     'Reset preserves the pinned seed at its captured immutable generation');
   await access(previous.pending.sourcePath.replace(/\.sqlite$/, '.pin'));
-  assert.deepEqual(await readFile(archived(previous.pending.path)), spoolBytes);
+  assert.deepEqual(await readFile(previous.pending.path), spoolBytes);
   const kept = await peerOperation('anchor', { dbPath: app.pair.state.value.activeDbPath });
-  assert.equal(kept.pending, null, 'the kept copy belongs to the reset pairing, not the archived pending delivery');
+  assert.equal(kept.pending, null, 'the retained database has no stale pending delivery authority');
   await app.close(); app = await open();
   assert.equal(app.pair.canControl(), false, 'reset history still requires explicit promotion after restart');
   await promote();

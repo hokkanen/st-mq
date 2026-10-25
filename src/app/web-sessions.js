@@ -38,7 +38,8 @@ export const clearRememberedCookie = () => `${REMEMBERED_LOGIN_COOKIE}=; Path=/;
  * A standby forwards to its active peer; it never grants access from a delayed
  * replica or writes its read-only database. Only token hashes enter storage. */
 export function createWebSessions({ store, getAccess, writable = () => true, peer, clock = Date.now }) {
-  const local = () => Boolean(store && !store.readOnly && writable());
+  let suspended = false, retained = null;
+  const local = () => !suspended && Boolean(store && !store.readOnly && writable());
   const password = role => role === 'admin' ? getAccess().token : getAccess().familyToken;
   const matches = record => validRecord(record) && Boolean(getAccess().token && password(record.role))
     && equal(record.binding, binding(password(record.role), record.digest));
@@ -85,11 +86,22 @@ export function createWebSessions({ store, getAccess, writable = () => true, pee
     });
   }
   const dispatch = async input => {
-    try { return local() ? await perform(input) : peer ? await peer.request(input) : Promise.reject(failure()); }
+    try {
+      if (suspended && retained) {
+        if (input.action !== 'authenticate') throw failure();
+        return retained.find(record => record.digest === input.digest && valid(record)) ?? null;
+      }
+      return local() ? await perform(input) : peer ? await peer.request(input) : Promise.reject(failure()); }
     catch (error) { if (error.statusCode) throw error; throw failure(); }
   };
   return {
     perform,
+    suspend() {
+      // Only a current writable authority may retain its bounded login records.
+      // A replica continues to ask the current peer, never its delayed copy.
+      if (local()) { try { retained = structuredClone(read().sessions); } catch { retained = []; } }
+      suspended = true;
+    },
     async authenticate(hash) { return hash ? dispatch({ action: 'authenticate', digest: hash }) : null; },
     identity(hash, remote) {
       if (!hash) return null;

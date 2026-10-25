@@ -5,7 +5,7 @@ import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, s
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
-import { archiveRoot, createResetArchive, listResetBackups, resumeResetArchive, scanResetBackups, selectResetDatabase } from '../src/pairing/reset-storage.js';
+import { archiveRoot, createResetArchive, listResetBackups, resumeResetArchive, scanResetBackups, selectResetDatabase, createLocalReset, resumeLocalReset, finishLocalReset } from '../src/pairing/reset-storage.js';
 
 async function file(path, bytes) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -18,7 +18,7 @@ async function fixture(t) {
   const config = { addon: false, dataDir: join(root, 'private'), databaseDir: join(root, 'public', 'st-mq'),
     pair: { directory: join(root, 'private', 'pairing'), snapshotDirectory: join(root, 'public', 'st-mq', 'pair-snapshots') } };
   config.dbPath = join(config.databaseDir, 'st-mq.sqlite');
-  const state = { role: 'master', everWritten: true, activeDbPath: config.dbPath };
+  const state = { nodeId: randomUUID(), role: 'master', everWritten: true, activeDbPath: config.dbPath };
   await file(join(config.pair.directory, 'state.json'), JSON.stringify(state));
   await file(join(config.pair.directory, '.st-mq-pair'), '');
   await file(join(config.pair.directory, '.node-lock.sqlite'), 'stable lock');
@@ -238,7 +238,7 @@ test('fresh reset archives exact database sidecars and pairing state without tou
   assert.deepEqual(await resume(plan, config, plan.archiveDirectory), result, 'completed archive is idempotent');
 });
 
-for (const mode of ['fresh', 'keep']) test(`${mode} reset archives only recognized database peer companions byte for byte`, async t => {
+for (const mode of ['fresh']) test(`${mode} reset archives only recognized database peer companions byte for byte`, async t => {
   const { config, create } = await fixture(t), id = randomUUID();
   const suffixes = [`.peer-${id}.sqlite`, `.peer-${id}.sqlite-journal`, `.peer-${id}.sqlite-wal`,
     `.peer-${id}.sqlite-shm`, `.peer-${id}.sqlite.partial`, `.peer-${id}.sqlite.partial-journal`,
@@ -264,7 +264,6 @@ for (const mode of ['fresh', 'keep']) test(`${mode} reset archives only recogniz
   }
   for (const path of unrelated) assert.equal(await readFile(path, 'utf8'), 'unrelated sibling');
   assert.equal(await readFile(join(config.pair.directory, '.node-lock.sqlite'), 'utf8'), 'stable lock');
-  if (mode === 'keep') assert.equal(await readFile(result.keptDbPath, 'utf8'), 'database bytes');
   assert.deepEqual(await resume(plan, config, plan.archiveDirectory), result);
 });
 
@@ -296,69 +295,100 @@ test('an edited reset manifest cannot expand a peer companion into an unrelated 
   assert.equal(await readFile(companion, 'utf8'), 'retained spool');
 });
 
-test('keep history selects a promoted database and retains its SQLite companions while archiving the configured database separately', async t => {
-  const { config, state, create } = await fixture(t);
+async function local(config, state, mode) {
+  const requestId = randomUUID();
+  const prepared = await createLocalReset({ config, state, mode, requestId });
+  const journal = { requestId, mode, backup: false, originalNodeId: state.nodeId, archiveDirectory: null, storagePlan: prepared.storagePlan };
+  return { journal, result: await resumeLocalReset({ config, journal }) };
+}
+
+test('keep preserves the selected promoted database and SQLite companions in place without reading history', async t => {
+  const { config, state } = await fixture(t);
   const promoted = join(config.pair.directory, `master-${randomUUID()}.sqlite`);
   state.activeDbPath = promoted;
   await file(promoted, 'promoted household history');
   await file(`${promoted}-wal`, 'promoted WAL bytes');
   await file(`${promoted}-shm`, 'promoted SHM bytes');
-  assert.equal(await selectResetDatabase(config, state), promoted);
-  const plan = await create('keep');
-  const result = await resume(plan, config);
-  assert.equal(result.keptDbPath, join(config.pair.directory, 'kept-history.sqlite'));
-  assert.equal(await readFile(result.keptDbPath, 'utf8'), 'promoted household history');
-  assert.equal(await readFile(`${result.keptDbPath}-wal`, 'utf8'), 'promoted WAL bytes');
-  assert.equal(await readFile(`${result.keptDbPath}-shm`, 'utf8'), 'promoted SHM bytes');
-  assert.equal(await readFile(archived(plan, config.dbPath), 'utf8'), 'database bytes');
-  assert.equal(await readFile(archived(plan, promoted), 'utf8'), 'promoted household history');
-  await absent(promoted);
+  const before = await stat(promoted);
+  const { result } = await local(config, state, 'keep');
+  assert.equal(result.keptDbPath, promoted);
+  assert.equal((await stat(promoted)).ino, before.ino);
+  assert.equal(await readFile(promoted, 'utf8'), 'promoted household history');
+  assert.equal(await readFile(`${promoted}-wal`, 'utf8'), 'promoted WAL bytes');
+  assert.equal(await readFile(`${promoted}-shm`, 'utf8'), 'promoted SHM bytes');
+  assert.equal(await readFile(config.dbPath, 'utf8'), 'database bytes');
+  await absent(archiveRoot(config));
 });
 
-test('a later reset archives the retained active database without touching the earlier archive', async t => {
-  const { config, state, create } = await fixture(t);
-  const first = await create('keep'), kept = await resume(first, config);
-  state.activeDbPath = kept.keptDbPath;
-  state.role = 'protected';
-  await file(kept.keptDbPath, 'same history with later records');
-  const second = await create('fresh');
-  await resume(second, config);
-  assert.equal(await readFile(archived(first, first.selectedDbPath), 'utf8'), 'database bytes');
-  assert.equal(await readFile(archived(second, kept.keptDbPath), 'utf8'), 'same history with later records');
-  await absent(kept.keptDbPath);
+test('fresh discard removes active history and recognized spools but preserves old backups, credentials and lock', async t => {
+  const { config, state } = await fixture(t);
+  const previous = join(archiveRoot(config), 'existing', 'original.sqlite');
+  await file(previous, 'old independent backup');
+  const unrelated = join(dirname(config.dbPath), 'provider-secret.json');
+  await file(unrelated, 'synthetic unrelated file');
+  const spool = `${config.dbPath}.peer-${randomUUID()}.sqlite`;
+  await file(spool, 'pending delivery');
+  const { journal, result } = await local(config, state, 'fresh');
+  assert.equal(result.keptDbPath, null); assert.deepEqual(result.recoveryBackups, []);
+  await absent(config.dbPath); await absent(spool);
+  assert.equal(await readFile(previous, 'utf8'), 'old independent backup');
+  assert.equal(await readFile(unrelated, 'utf8'), 'synthetic unrelated file');
+  assert.equal(await readFile(join(config.pair.directory, '.node-lock.sqlite'), 'utf8'), 'stable lock');
+  assert.deepEqual(await resumeLocalReset({ config, journal }), result, 'missing already-discarded files are safe on explicit retry');
+  await finishLocalReset({ config, storagePlan: journal.storagePlan });
+  await absent(journal.storagePlan);
 });
 
-test('slave and protected replica keep the actual published history rather than an unrelated configured database', async t => {
-  const { config, create } = await fixture(t);
+test('slave and protected replica keep actual published history without copying an unrelated configured database', async t => {
+  const { config, state } = await fixture(t);
   const generation = randomUUID(), snapshot = join(config.pair.snapshotDirectory, `snapshot-${generation}.sqlite`);
   await file(snapshot, 'accepted snapshot history');
   await file(join(config.pair.snapshotDirectory, 'publication.json'), JSON.stringify({ format: 2, fileGeneration: generation, checkpoint: { databaseId: randomUUID(), sequence: 0, hash: 'b'.repeat(64) },
     digestAlgorithm: 'sha256-sqlite-pages-v1', generation, digest: 'a'.repeat(64), bytes: 512,
     sourceStartedAt: 1000, sourceAt: 1100, verifiedAt: 1200, previousGeneration: null }));
-  for (const role of ['slave', 'protected']) assert.equal(await selectResetDatabase(config, { role, everWritten: false }), snapshot);
-  const plan = await create('keep', { state: { role: 'slave', everWritten: false } });
-  const result = await resume(plan, config);
-  assert.equal(await readFile(result.keptDbPath, 'utf8'), 'accepted snapshot history');
-  assert.equal(await readFile(archived(plan, config.dbPath), 'utf8'), 'database bytes');
+  for (const role of ['slave', 'protected']) {
+    const { result } = await local(config, { ...state, role, everWritten: false }, 'keep');
+    assert.equal(result.keptDbPath, snapshot);
+    assert.equal(await readFile(result.keptDbPath, 'utf8'), 'accepted snapshot history');
+  }
+  assert.equal(await readFile(config.dbPath, 'utf8'), 'database bytes');
 });
 
-test('fresh reset archives an invalid publication unchanged while keep refuses to guess the active history', async t => {
-  const { config, create } = await fixture(t);
+test('fresh can preserve an invalid publication unchanged while keep refuses to guess history', async t => {
+  const { config, state, create } = await fixture(t);
   const publication = join(config.pair.snapshotDirectory, 'publication.json');
   await file(publication, '{not a current publication}');
-  const state = { role: 'slave', everWritten: false };
-  await assert.rejects(create('keep', { state }), { code: 'pair_reset_history_unavailable' });
-  const plan = await create('fresh', { state });
-  assert.equal(plan.selectedDbPath, null);
-  await resume(plan, config);
+  const localState = { ...state, role: 'slave', everWritten: false };
+  await assert.rejects(local(config, localState, 'keep'), { code: 'pair_reset_history_unavailable' });
+  const plan = await create('fresh', { state: localState }); await resume(plan, config);
   assert.equal(await readFile(archived(plan, publication), 'utf8'), '{not a current publication}');
 });
 
-test('keep refuses a missing active database instead of silently archiving other history and returning empty', async t => {
-  const { config, state, create } = await fixture(t);
-  state.activeDbPath = join(config.pair.directory, 'missing-master.sqlite');
-  await assert.rejects(create('keep'), { code: 'pair_reset_history_unavailable' });
+test('keep refuses missing active history instead of silently returning empty', async t => {
+  const { config, state } = await fixture(t);
+  await assert.rejects(local(config, { ...state, activeDbPath: join(config.pair.directory, 'missing-master.sqlite') }, 'keep'), { code: 'pair_reset_history_unavailable' });
   assert.equal(await readFile(config.dbPath, 'utf8'), 'database bytes');
+});
+
+test('discard rejects replaced files, expanded manifests, symlinks, and retargeted config before erasing evidence', async t => {
+  const { root, config, state } = await fixture(t);
+  const requestId = randomUUID(), prepared = await createLocalReset({ config, state, mode: 'fresh', requestId });
+  const journal = { requestId, mode: 'fresh', backup: false, originalNodeId: state.nodeId, archiveDirectory: null, storagePlan: prepared.storagePlan };
+  const saved = await readFile(journal.storagePlan);
+  const wrong = JSON.parse(saved); wrong.entries[0].source = join(root, 'unrelated');
+  await file(wrong.entries[0].source, 'unrelated bytes');
+  await writeFile(journal.storagePlan, JSON.stringify(wrong));
+  await assert.rejects(resumeLocalReset({ config, journal }), { code: 'pair_reset_unsafe_storage' });
+  assert.equal(await readFile(config.dbPath, 'utf8'), 'database bytes');
+  await writeFile(journal.storagePlan, saved);
+  await rename(config.dbPath, `${config.dbPath}.original`);
+  await file(config.dbPath, 'new history must not be deleted');
+  await assert.rejects(resumeLocalReset({ config, journal }), { code: 'pair_reset_unsafe_storage' });
+  assert.equal(await readFile(config.dbPath, 'utf8'), 'new history must not be deleted');
+  await rm(config.dbPath); await symlink(`${config.dbPath}.original`, config.dbPath);
+  await assert.rejects(resumeLocalReset({ config, journal }), { code: 'pair_reset_unsafe_storage' });
+  assert.equal(await readFile(`${config.dbPath}.original`, 'utf8'), 'database bytes');
+  await assert.rejects(resumeLocalReset({ config: { ...config, dbPath: join(root, 'elsewhere.sqlite') }, journal }), { code: 'pair_reset_unsafe_storage' });
 });
 
 test('explicit retry finishes an interrupted move before its manifest acknowledgement', async t => {
@@ -432,7 +462,14 @@ async function configuredAlias(t) {
 
 test('explicit configured storage ancestors may be symlinks for both reset choices', async t => {
   for (const mode of ['keep', 'fresh']) await t.test(mode, async t => {
-    const { config, physical, alias, create } = await configuredAlias(t);
+    const { config, state, physical, alias, create } = await configuredAlias(t);
+    if (mode === 'keep') {
+      const { result } = await local(config, state, 'keep');
+      assert.equal(result.keptDbPath, join(physical, 'st-mq.sqlite'));
+      assert.equal(await readFile(result.keptDbPath, 'utf8'), 'history behind configured alias');
+      assert.equal((await lstat(alias)).isSymbolicLink(), true);
+      return;
+    }
     const actualDatabase = join(physical, 'st-mq.sqlite');
     const plan = await create(mode);
     assert.equal(plan.databasePath, actualDatabase);
@@ -455,14 +492,12 @@ test('explicit configured storage ancestors may be symlinks for both reset choic
 });
 
 test('an explicitly configured pairing directory alias is canonicalized without moving the alias', async t => {
-  const { root, config, create } = await fixture(t);
+  const { root, config, state } = await fixture(t);
   const actualPair = config.pair.directory, alias = join(root, 'configured-pairing');
   await symlink(actualPair, alias);
   config.pair.directory = alias;
-  const plan = await create('keep');
-  assert.equal(plan.pairDirectory, actualPair);
-  const result = await resume(plan, config);
-  assert.equal(result.keptDbPath, join(actualPair, 'kept-history.sqlite'));
+  const { result } = await local(config, state, 'keep');
+  assert.equal(result.keptDbPath, config.dbPath);
   assert.equal(await readFile(result.keptDbPath, 'utf8'), 'database bytes');
   assert.equal((await lstat(alias)).isSymbolicLink(), true);
 });

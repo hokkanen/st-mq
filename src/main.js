@@ -85,7 +85,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     console.error(JSON.stringify({ event: 'controller-error',
       reason: databaseBusy ? 'database-busy' : 'controller-tick-failed', eventStored: false }));
   }
-  function close({ restore = true } = {}) {
+  function close({ restore = true, preserveWebAccess = false } = {}) {
     if (closePending) return closePending;
     closed = true;
     engine?.beginShutdown({ restore: restore && canControl() });
@@ -116,7 +116,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       await attempt(() => authority?.close());
       await replicationStopped;
       await attempt(() => chartService?.close());
-      await attempt(() => webAccess?.close());
+      if (!preserveWebAccess) await attempt(() => webAccess?.close());
       await attempt(() => store.close());
       clearInterval(storageDeadline);
       runtimeTiming.close();

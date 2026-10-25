@@ -35,8 +35,8 @@ async function fixture(t) {
   }, async close(app) { await app.close(); apps.delete(app); } };
 }
 
-const command = (app, mode, extra = {}) => ({ action: 'reset', nodeId: app.status().nodeId, mode, requestId: randomUUID(), confirmed: true,
-  resetToken: app.status().reset.token, ...(mode === 'fresh' ? { restorationConfirmed: true } : {}), ...extra });
+const command = (app, mode, extra = {}) => ({ action: 'reset', nodeId: app.status().nodeId, mode, requestId: app.status().reset.pendingRequestId ?? randomUUID(), confirmed: true,
+  resetToken: app.status().reset.token, ...(mode === 'fresh' ? { restorationConfirmed: true, backup: true } : {}), ...extra });
 async function completed(app, input) {
   app.requestAction(input);
   for (let i = 0; i < 1000; i++) {
@@ -97,13 +97,13 @@ for (const asyncSink of [false, true]) test(`shutdown failure reports safe reset
   finally { preserved.close(); }
 });
 
-test('keep history archives previous pairing identity and returns a master as protected without losing records', async t => {
+test('keep history clears previous pairing identity in place and returns a master as protected without losing records', async t => {
   const f = await fixture(t), app = await f.open(); await promote(app);
   await app.store.runWrite(() => app.store.event('synthetic-reset-evidence', { value: 7 }, Date.now()));
   const previousId = app.pair.state.value.nodeId;
   const op = await completed(app, command(app, 'keep'));
   assert.equal(op.state, 'complete', op.error);
-  assert.equal(op.result.backupCount, 1);
+  assert.equal(op.result.backupCount, 0);
   assert.equal(op.result.unavailableCount, 0);
   assert.deepEqual(op.result.unavailableReasons, []);
   assert.equal(app.pair.canControl(), false);
@@ -113,8 +113,9 @@ test('keep history archives previous pairing identity and returns a master as pr
   const kept = new Store(app.pair.state.value.activeDbPath, { readOnly: true });
   assert.equal(kept.db.prepare("SELECT count(*) AS n FROM events WHERE type='synthetic-reset-evidence'").get().n, 1);
   kept.close();
-  const archivedState = JSON.parse(await readFile(join(op.result.archiveDirectory, 'pairing', 'state.json')));
-  assert.equal(archivedState.nodeId, previousId);
+  assert.equal(op.result.archiveDirectory, null);
+  assert.equal(app.pair.state.value.activeDbPath, f.config.dbPath);
+  await assert.rejects(readdir(resetStorage.archiveRoot(f.config)), { code: 'ENOENT' });
   await f.close(app); const restarted = await f.open();
   assert.equal(restarted.status().role, 'protected');
   assert.equal(restarted.status().reset.lastResult.archiveDirectory, op.result.archiveDirectory);
@@ -176,6 +177,7 @@ test('interrupted archive stays protected across restart and only a confirmed re
   assert.equal(restarted.status().role, 'protected');
   assert.equal(restarted.pair.state.value.reset.archiveDirectory, archive);
   assert.throws(() => restarted.requestAction(command(restarted, 'keep')), /original choice/);
+  assert.throws(() => restarted.requestAction(command(restarted, 'fresh', { backup: false, discardConfirmed: true })), /original choice/);
   const retry = await completed(restarted, command(restarted, 'fresh'));
   assert.equal(retry.state, 'complete', retry.error);
   assert.equal(retry.result.archiveDirectory, archive);
@@ -191,13 +193,13 @@ test('reset rejects missing confirmation, unknown fields, and a stale review bef
   assert.equal(app.pair.canControl(), true);
 });
 
-test('fresh cannot erase a recorded equipment restoration obligation even with confirmation', async t => {
+for (const backup of [true, false]) test(`fresh cannot erase a recorded equipment restoration obligation with backup=${backup}`, async t => {
   const f = await fixture(t);
   const db = new Store(f.config.dbPath);
   db.setState('equipment-tests:v1', { version: 1, active: { deviceId: 'synthetic-switch', signature: 'a'.repeat(64),
     on: true, previousOn: false, requestedAt: 1000, until: 2000, status: 'restoration-pending' } }); db.close();
   const app = await f.open();
-  const op = await completed(app, command(app, 'fresh'));
+  const op = await completed(app, command(app, 'fresh', { backup, ...(!backup ? { discardConfirmed: true } : {}) }));
   assert.equal(op.state, 'error'); assert.match(op.error, /still require restoration/);
   assert.equal(app.status().role, 'protected');
   const saved = new Store(f.config.dbPath, { readOnly: true });
@@ -239,7 +241,7 @@ test('reset endpoint requires admin access even on a protected database', async 
   assert.equal(app.pair.state.value.resetReceipt, undefined);
 });
 
-test('keeping incompatible history archives it without making the obsolete format usable', async t => {
+test('keeping incompatible history retains it in place without making the obsolete format usable', async t => {
   const f = await fixture(t); await mkdir(f.config.dataDir, { recursive: true });
   const db = new DatabaseSync(f.config.dbPath); db.exec('CREATE TABLE old_history(value); PRAGMA user_version=18'); db.close();
   const original = await readFile(f.config.dbPath), app = await f.open();
@@ -261,7 +263,7 @@ test('a linked data directory supports keep, explicit promotion, then fresh rese
   await app.store.runWrite(() => app.store.event('synthetic-linked-storage', { value: 3 }, Date.now()));
   const kept = await completed(app, command(app, 'keep'));
   assert.equal(kept.state, 'complete', kept.error);
-  assert.equal(app.pair.state.value.activeDbPath, join(physical, 'pairing', 'kept-history.sqlite'));
+  assert.equal(app.pair.state.value.activeDbPath, join(physical, 'st-mq.sqlite'));
   assert.equal(app.status().role, 'protected');
   await promote(app);
   assert.equal(app.store.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type='synthetic-linked-storage'").get().n, 1);
@@ -270,6 +272,117 @@ test('a linked data directory supports keep, explicit promotion, then fresh rese
   assert.equal(app.status().role, 'slave');
   assert.equal(app.status().bootstrapPending, true);
   assert.equal(fresh.result.archiveDirectory.startsWith(join(physical, 'backups', 'reset-archives') + '/'), true);
-  assert.equal((await readdir(join(alias, 'backups', 'reset-archives'))).length, 2);
+  assert.equal((await readdir(join(alias, 'backups', 'reset-archives'))).length, 1);
   await assert.rejects(readFile(f.config.dbPath), { code: 'ENOENT' });
+});
+
+for (const mode of ['keep', 'fresh']) test(`${mode} fast reset never invokes archival and preserves existing independent backups`, async t => {
+  const f = await fixture(t);
+  const store = new Store(f.config.dbPath); store.event('synthetic-fast-history', {}, 10); store.close();
+  const backups = resetStorage.archiveRoot(f.config);
+  await mkdir(backups, { recursive: true }); await writeFile(join(backups, 'old-copy.sqlite'), 'independent backup');
+  const app = await f.open({ resetStorage: { ...resetStorage,
+    createResetArchive: () => { throw Error('Fast reset must not hash or archive history'); },
+    resumeResetArchive: () => { throw Error('Fast reset must not create portable backups'); } } });
+  const before = app.pair.state.value.activeDbPath;
+  const input = command(app, mode, mode === 'fresh' ? { backup: false, discardConfirmed: true } : {});
+  const op = await completed(app, input);
+  assert.equal(op.state, 'complete', op.error);
+  assert.equal(op.result.archiveDirectory, null); assert.equal(op.result.backup, false);
+  assert.equal(await readFile(join(backups, 'old-copy.sqlite'), 'utf8'), 'independent backup');
+  assert.equal(app.pair.canControl(), false);
+  if (mode === 'keep') assert.equal(app.pair.state.value.activeDbPath, before);
+  else await assert.rejects(readFile(before), { code: 'ENOENT' });
+  await f.close(app); const restarted = await f.open();
+  assert.equal(restarted.status().role, mode === 'keep' ? 'protected' : 'slave');
+  const response = await fetch(`http://127.0.0.1:${restarted.server.address().port}/api/pair/action?nodeId=${input.nodeId}&requestId=${input.requestId}`);
+  assert.equal(response.status, 200); assert.equal((await response.json()).state, 'complete', 'original computer identity resolves after reset/restart');
+});
+
+test('fresh rejects absent backup choice and missing destructive consent without stopping the runtime', async t => {
+  const f = await fixture(t), app = await f.open(); await promote(app);
+  const input = command(app, 'fresh');
+  for (const extra of [{ backup: undefined }, { backup: false }, { backup: false, discardConfirmed: false },
+    { backup: true, discardConfirmed: true }, { backup: 'false' }]) {
+    assert.throws(() => app.requestAction({ ...input, ...extra }), /paired action/);
+    assert.equal(app.pair.canControl(), true);
+  }
+  assert.throws(() => app.requestAction(command(app, 'keep', { backup: false })), /paired action/);
+});
+
+test('slow fresh backup keeps the same authenticated listeners and progress available without a database', async t => {
+  const f = await fixture(t);
+  f.config.token = 'synthetic-reset-progress-admin-token'; f.config.familyToken = 'synthetic-reset-progress-family-token';
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  t.after(() => release());
+  const app = await f.open({ resetStorage: { ...resetStorage,
+    resumeResetArchive: async (directory, options) => {
+      options.onProgress({ phase: 'reset-backup', processed: 0, total: 1 });
+      entered(); await gate;
+      return resetStorage.resumeResetArchive(directory, options);
+    } } });
+  await promote(app);
+  const endpoint = `http://127.0.0.1:${app.server.address().port}`;
+  const input = command(app, 'fresh');
+  const headers = token => ({ Authorization: `Bearer ${token}`, 'content-type': 'application/json' });
+  const accepted = await fetch(`${endpoint}/api/pair/action`, { method: 'POST', headers: headers(f.config.token), body: JSON.stringify(input) });
+  assert.equal(accepted.status, 202); await accepted.json(); await started;
+  assert.equal(app.store, undefined, 'database runtime has closed while listeners stay available');
+  for (let i = 0; i < 4; i++) {
+    for (const token of [f.config.token, f.config.familyToken]) {
+      const response = await fetch(`${endpoint}/api/pair`, { headers: headers(token), signal: AbortSignal.timeout(1500) });
+      assert.equal(response.status, 200);
+      const status = await response.json();
+      assert.equal(status.canControl, false); assert.equal(status.uiOperation.state, 'running');
+      assert.equal(status.uiOperation.progress.phase, 'reset-backup'); assert.equal(status.uiOperation.progress.total, 1);
+      assert.equal(status.webAccess.role, token === f.config.token ? 'admin' : 'family');
+    }
+  }
+  const denied = await fetch(`${endpoint}/api/pair`); assert.equal(denied.status, 401);
+  const familyWrite = await fetch(`${endpoint}/api/pair/action`, { method: 'POST', headers: headers(f.config.familyToken), body: JSON.stringify(input) });
+  assert.equal(familyWrite.status, 403);
+  const database = await fetch(`${endpoint}/api/status`, { headers: headers(f.config.token) }); assert.equal(database.status, 503);
+  const receipt = await fetch(`${endpoint}/api/pair/action?nodeId=${input.nodeId}&requestId=${input.requestId}`, { headers: headers(f.config.token) });
+  assert.equal((await receipt.json()).state, 'running');
+  assert.throws(() => app.requestAction({ ...input, backup: false, discardConfirmed: true }), /another action/);
+  release();
+  for (let i = 0; i < 1000 && app.status().uiOperation.state === 'running'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(app.status().uiOperation.state, 'complete', app.status().uiOperation.error);
+  assert.equal(app.status().reset.lastResult.backupCount, 1);
+});
+
+test('interrupted discard preserves consent and requires an explicit identical retry after restart', async t => {
+  const f = await fixture(t), store = new Store(f.config.dbPath); store.close();
+  const app = await f.open({ resetStorage: { ...resetStorage, resumeLocalReset: async () => { throw Error('synthetic interrupted discard'); } } });
+  const input = command(app, 'fresh', { backup: false, discardConfirmed: true });
+  assert.equal((await completed(app, input)).state, 'error');
+  const pending = app.pair.state.value.reset;
+  assert.equal(pending.backup, false); assert.equal(pending.requestId, input.requestId);
+  await f.close(app); const restarted = await f.open();
+  assert.equal(restarted.status().role, 'protected');
+  const interruptedReceipt = await fetch(`http://127.0.0.1:${restarted.server.address().port}/api/pair/action?nodeId=${input.nodeId}&requestId=${input.requestId}`);
+  const interruptedStatus = await interruptedReceipt.json();
+  assert.equal(interruptedStatus.state, 'error'); assert.equal(interruptedStatus.action, 'reset');
+  assert.throws(() => restarted.requestAction(command(restarted, 'fresh')), /original choice/);
+  assert.throws(() => restarted.requestAction(command(restarted, 'fresh', { backup: false, discardConfirmed: true, requestId: randomUUID() })), /original request ID/);
+  const retry = await completed(restarted, command(restarted, 'fresh', { backup: false, discardConfirmed: true }));
+  assert.equal(retry.state, 'complete', retry.error);
+  assert.equal(restarted.status().role, 'slave');
+});
+
+for (const backup of [true, false]) test(`interrupted file inspection retains reset consent before a storage plan exists, backup=${backup}`, async t => {
+  const f = await fixture(t), store = new Store(f.config.dbPath); store.event('synthetic-before-inspection', {}, 10); store.close();
+  const stop = async () => { throw Error('synthetic inspection interrupted'); };
+  const app = await f.open({ resetStorage: { ...resetStorage, createResetArchive: stop, createLocalReset: stop } });
+  const input = command(app, 'fresh', { backup, ...(!backup ? { discardConfirmed: true } : {}) });
+  const op = await completed(app, input);
+  assert.equal(op.state, 'error'); assert.equal(app.status().role, 'protected');
+  assert.equal(app.pair.state.value.reset.backup, backup);
+  assert.equal(app.pair.state.value.reset.archiveDirectory, null); assert.equal(app.pair.state.value.reset.storagePlan, null);
+  await f.close(app); const restarted = await f.open();
+  assert.equal(restarted.status().reset.pendingRequestId, input.requestId);
+  const result = await completed(restarted, command(restarted, 'fresh', { backup, ...(!backup ? { discardConfirmed: true } : {}) }));
+  assert.equal(result.state, 'complete', result.error); assert.equal(restarted.status().role, 'slave');
 });

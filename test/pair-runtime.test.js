@@ -223,7 +223,7 @@ test('pair HTTP refusals preserve authored busy and missing-restoration causes b
     return response.json();
   };
   const token = app.status().reset.token;
-  assert.deepEqual(await post(command('reset', { mode: 'fresh', resetToken: token })), {
+  assert.deepEqual(await post(command('reset', { mode: 'fresh', backup: true, resetToken: token })), {
     code: 'pair_action_rejected', error: 'Confirm that temporary equipment changes have been resolved before starting fresh.',
   });
   app.pair.busy = true;
@@ -542,4 +542,42 @@ test('completed recovery stays protected without rejoin through rejected actions
   assert.equal(donor.status().role, 'slave');
   assert.equal(donor.pair.canControl(), false);
   assert.doesNotMatch(pairDisplay(donor.status()).sync, /blocked/i);
+});
+
+test('both computers can keep-reset, explicitly select one master, recover retained additions and resume mirroring', { timeout: 90000 }, async t => {
+  const f = await fixture(t), master = await f.open('reset-master', 'master', 'hassio'), slave = await f.open('reset-slave', 'slave', 'ubuntu');
+  connect(master, slave);
+  await observation(master.store, now - 4 * W, 20);
+  await slave.pair.synchronize(master.pair.state.claim());
+  const identities = [master.status().nodeId, slave.status().nodeId];
+  const reset = async app => {
+    await apiAction(t, app, command('reset', { mode: 'keep', resetToken: app.status().reset.token }));
+    assert.equal(app.status().role, 'protected'); assert.equal(app.pair.canControl(), false);
+    clearTimeout(app.pair.timer); await app.pair.polling; clearTimeout(app.pair.timer);
+  };
+  await reset(slave); assert.equal(master.pair.canControl(), true);
+  await reset(master);
+  assert.notEqual(master.status().nodeId, identities[0]); assert.notEqual(slave.status().nodeId, identities[1]);
+  assert.equal(master.status().role, 'protected'); assert.equal(slave.status().role, 'protected');
+  const donor = new Store(slave.pair.state.value.activeDbPath);
+  try { await observation(donor, now - 3 * W, 21); } finally { await donor.close(); }
+  connect(master, slave);
+  await apiAction(t, master, command('promote'));
+  assert.equal(master.pair.canControl(), true); assert.equal(slave.pair.canControl(), false);
+  await apiAction(t, master, command('check-recovery'));
+  const preview = master.status().recovery.preview;
+  assert.equal(preview.status, 'checked');
+  await apiAction(t, master, command('recover', { previewId: preview.previewId }));
+  assert.equal(master.store.observations().find(row => row.sourceTime === now - 3 * W).value, 21);
+  assert.deepEqual(replayLearningJournal(master.store, 'mqtt', null, { rebuild: true }), master.engine.checkpoint);
+  await apiAction(t, master, command('rejoin'));
+  assert.equal(slave.status().role, 'slave'); assert.equal(slave.pair.sync.state, 'ready');
+  assert.equal(master.pair.canControl(), true); assert.equal(slave.pair.canControl(), false);
+  const publication = await readReplicaPublication(slave.pair.config.snapshotDirectory);
+  const reader = new Store(publication.dbPath, { readOnly: true });
+  try {
+    assert.equal(reader.observations().find(row => row.sourceTime === now - 3 * W).value, 21);
+    assert.equal(reader.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+    assert.equal(reader.db.prepare('PRAGMA foreign_key_check').get(), undefined);
+  } finally { await reader.close(); }
 });

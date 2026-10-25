@@ -202,6 +202,14 @@ release. Database preservation, evidence and authority safeguards remain in forc
   is insufficient. Do not silently remove required replay history or replace it
   with fitted coefficients; a retention change that narrows the guarantee needs
   an explicit scope decision under the conflict procedure.
+- The owner approved deliberate **Reset pairing → Start fresh** with an optional
+  recovery backup on 2026-10-25. The backup checkbox defaults to checked. Unchecked
+  requires explicit destructive warning confirmation and may permanently discard
+  this computer's active source/learning history; existing independent backups and
+  archives remain untouched. This operational reset narrows reconstruction only
+  for the deliberately discarded local history, never routine retention or replay.
+  **Keep local history** retains the database in place under protected authority.
+  Neither choice bypasses equipment restoration, safe storage or single-master rules.
 - Manual additions, sensor changes and their corrections are compact immutable
   source events. Removing a firewood entry excludes its heat throughout the
   selected corrected history. Reverting a sensor-change entry removes that

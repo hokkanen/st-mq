@@ -152,6 +152,7 @@ async function verify(path, entry) {
 
 function excluded(paths, path) {
   return path === join(paths.pairDirectory, 'state.json') || path === join(paths.pairDirectory, 'state.json.tmp')
+    || path === join(paths.pairDirectory, 'reset-operation.json') || path === join(paths.pairDirectory, 'reset-operation.json.tmp')
     || SIDECARS.some(suffix => path === join(paths.pairDirectory, `.node-lock.sqlite${suffix}`));
 }
 
@@ -167,66 +168,74 @@ function recoveryBackupCandidates(plan) {
       destination: `backups/${entry.source === plan.databasePath ? 'configured' : entry.source === plan.selectedDbPath ? 'active' : 'history'}-${createHash('sha256').update(entry.destination).digest('hex').slice(0, 16)}.sqlite` }));
 }
 
+async function inventory(paths, selectedDbPath, inspect) {
+  const entries = [], directories = [], seen = new Set();
+  const addFile = async (source, destination, retain = false) => {
+    if (seen.has(source) || excluded(paths, source)) return;
+    seen.add(source);
+    const info = await present(source);
+    if (!info) return;
+    if (!info.isFile() || info.isSymbolicLink()) throw failure('pair_reset_unsafe_storage');
+    if (entries.length >= MAX_FILES) throw failure('pair_reset_unsafe_storage');
+    entries.push({ source, destination, ...await inspect(source), retain });
+  };
+  const scan = async (source, destination, depth = 0) => {
+    if (depth > 32) throw failure('pair_reset_unsafe_storage');
+    const info = await present(source);
+    if (!info) return;
+    if (info.isSymbolicLink() || !info.isDirectory()) throw failure('pair_reset_unsafe_storage');
+    if (depth) {
+      if (directories.length >= MAX_FILES) throw failure('pair_reset_unsafe_storage');
+      directories.push({ source, destination });
+    }
+    for (const name of (await readdir(source)).sort()) {
+      const child = join(source, name), target = join(destination, name), info = await lstat(child);
+      if (excluded(paths, child)) {
+        if (!info.isFile() || info.isSymbolicLink()) throw failure('pair_reset_unsafe_storage');
+        continue;
+      }
+      if (info.isSymbolicLink()) throw failure('pair_reset_unsafe_storage');
+      if (info.isDirectory()) await scan(child, target, depth + 1);
+      else await addFile(child, target, copiedMarker(paths, child));
+    }
+  };
+  await scan(paths.pairDirectory, 'pairing');
+  await scan(paths.snapshotDirectory, 'snapshots');
+  const addDatabase = async (source, destination) => {
+    for (const suffix of SIDECARS) await addFile(`${source}${suffix}`, `${destination}${suffix}`);
+    if (!(await present(dirname(source)))) return;
+    // Peer delivery spools and their SQLite lock are siblings of the database,
+    // including when that directory is outside pairing/snapshot storage.
+    for await (const entry of await opendir(dirname(source))) {
+      const companion = join(dirname(source), entry.name);
+      if (peerCompanion(source, companion)) await addFile(companion, `${destination}${companion.slice(source.length)}`);
+    }
+  };
+  await addDatabase(paths.databasePath, 'database/configured.sqlite');
+  if (selectedDbPath && selectedDbPath !== paths.databasePath) await addDatabase(selectedDbPath, 'database/active.sqlite');
+  return { entries, directories };
+}
+
 /** The caller stops database writers first, then persists its protected reset marker
  * before calling resumeResetArchive. Creating this plan never moves source files. */
-async function performCreateResetArchive({ config, state, mode, requestId, clock = Date.now }) {
+async function performCreateResetArchive({ config, state, mode, requestId, clock = Date.now, onProgress = () => {} }) {
   return checked(async () => {
-    if (!['keep', 'fresh'].includes(mode) || !UUID.test(requestId)) throw failure('pair_reset_unsafe_storage');
+    if (mode !== 'fresh' || !UUID.test(requestId)) throw failure('pair_reset_unsafe_storage');
     const paths = await locations(config);
     for (const path of [dirname(paths.databasePath), paths.pairDirectory, paths.snapshotDirectory, paths.archiveRoot]) await safeParents(path);
     let selectedDbPath;
     try { selectedDbPath = await selectResetDatabase(config, state); }
     catch (error) {
-      if (mode !== 'fresh' || error.code !== 'pair_reset_history_unavailable') throw error;
+      if (error.code !== 'pair_reset_history_unavailable') throw error;
       selectedDbPath = null;
     }
-    const entries = [], directories = [], seen = new Set();
-    const addFile = async (source, destination, retain = false) => {
-      if (seen.has(source) || excluded(paths, source)) return;
-      seen.add(source);
-      const info = await present(source);
-      if (!info) return;
-      if (!info.isFile() || info.isSymbolicLink()) throw failure('pair_reset_unsafe_storage');
-      if (entries.length >= MAX_FILES) throw failure('pair_reset_unsafe_storage');
-      entries.push({ source, destination, ...await fingerprint(source), retain });
-    };
-    const scan = async (source, destination, depth = 0) => {
-      if (depth > 32) throw failure('pair_reset_unsafe_storage');
-      const info = await present(source);
-      if (!info) return;
-      if (info.isSymbolicLink() || !info.isDirectory()) throw failure('pair_reset_unsafe_storage');
-      if (depth) {
-        if (directories.length >= MAX_FILES) throw failure('pair_reset_unsafe_storage');
-        directories.push({ source, destination });
-      }
-      for (const name of (await readdir(source)).sort()) {
-        const child = join(source, name), target = join(destination, name), info = await lstat(child);
-        if (excluded(paths, child)) {
-          if (!info.isFile() || info.isSymbolicLink()) throw failure('pair_reset_unsafe_storage');
-          continue;
-        }
-        if (info.isSymbolicLink()) throw failure('pair_reset_unsafe_storage');
-        if (info.isDirectory()) await scan(child, target, depth + 1);
-        else await addFile(child, target, copiedMarker(paths, child));
-      }
-    };
-    await scan(paths.pairDirectory, 'pairing');
-    await scan(paths.snapshotDirectory, 'snapshots');
-    const addDatabase = async (source, destination) => {
-      for (const suffix of SIDECARS) await addFile(`${source}${suffix}`, `${destination}${suffix}`);
-      if (!(await present(dirname(source)))) return;
-      // Peer delivery spools and their SQLite lock are siblings of the database,
-      // including when that directory is outside pairing/snapshot storage.
-      for await (const entry of await opendir(dirname(source))) {
-        const companion = join(dirname(source), entry.name);
-        if (peerCompanion(source, companion)) await addFile(companion, `${destination}${companion.slice(source.length)}`);
-      }
-    };
-    await addDatabase(paths.databasePath, 'database/configured.sqlite');
-    if (selectedDbPath && selectedDbPath !== paths.databasePath) await addDatabase(selectedDbPath, 'database/active.sqlite');
-    if (mode === 'keep' && !selectedDbPath && entries.some(entry => /\.sqlite(?:-wal|-shm|-journal)?$/.test(entry.source)
-      && !/^\.receiver-lock\.sqlite(?:-wal|-shm|-journal)?$/.test(basename(entry.source))))
-      throw failure('pair_reset_history_unavailable');
+    let processed = 0, completedBytes = 0;
+    const { entries, directories } = await inventory(paths, selectedDbPath, async path => {
+      onProgress({ phase: 'reset-inspecting', processed, completedBytes });
+      const result = await fingerprint(path);
+      processed++; completedBytes += result.bytes;
+      return result;
+    });
     // Original state bytes are preserved even when its contract is invalid.
     const statePath = join(paths.pairDirectory, 'state.json'), stateInfo = await present(statePath);
     if (stateInfo && (!stateInfo.isFile() || stateInfo.isSymbolicLink() || stateInfo.size > 16 * 1024 * 1024))
@@ -244,7 +253,7 @@ async function performCreateResetArchive({ config, state, mode, requestId, clock
     try { await stateFile.sync(); } finally { await stateFile.close(); }
     await syncDirectory(dirname(archivedState));
     const plan = { version: 2, requestId, mode, createdAt, archiveDirectory, ...paths,
-      selectedDbPath, keptDbPath: mode === 'keep' && selectedDbPath ? join(paths.pairDirectory, 'kept-history.sqlite') : null,
+      selectedDbPath, keptDbPath: null,
       entries, directories, complete: false };
     plan.recoveryBackups = recoveryBackupCandidates(plan).map(item => ({ ...item, status: 'pending', bytes: null, digest: null, reason: null }));
     await durableJson(join(archiveDirectory, MANIFEST), plan);
@@ -354,31 +363,6 @@ async function archiveEntry(plan, entry) {
   await chmod(target, 0o600);
   await syncFile(target);
   await syncDirectory(dirname(target));
-}
-
-async function retainHistory(plan) {
-  if (!plan.keptDbPath) return;
-  await directory(dirname(plan.keptDbPath));
-  for (const suffix of SIDECARS) {
-    const entry = plan.entries.find(item => item.source === `${plan.selectedDbPath}${suffix}`);
-    if (!entry) continue;
-    const target = `${plan.keptDbPath}${suffix}`;
-    if (await present(target)) { await verify(target, entry); continue; }
-    const pending = `${target}.reset-copying`;
-    const previous = await present(pending);
-    if (previous) {
-      if (!previous.isFile() || previous.isSymbolicLink()) throw failure('pair_reset_unsafe_storage');
-      await unlink(pending);
-    }
-    const source = join(plan.archiveDirectory, entry.destination);
-    await verify(source, entry);
-    await copyFile(source, pending, constants.COPYFILE_EXCL);
-    await chmod(pending, 0o600);
-    await verify(pending, entry);
-    await syncFile(pending);
-    await rename(pending, target);
-    await syncDirectory(dirname(target));
-  }
 }
 
 async function prepareRecoveryBackup(plan, item) {
@@ -501,7 +485,7 @@ export async function listResetBackups(config, options) {
  * fence the archive manifest; files in an archive cannot redefine their scope. */
 async function performResumeResetArchive(planOrArchiveDirectory, expected) {
   return checked(async () => {
-    if (!expected?.config || !UUID.test(expected.requestId) || !['keep', 'fresh'].includes(expected.mode))
+    if (!expected?.config || !UUID.test(expected.requestId) || expected.mode !== 'fresh')
       throw failure('pair_reset_unsafe_storage');
     const paths = await locations(expected.config);
     const archiveDirectory = typeof planOrArchiveDirectory === 'string' ? planOrArchiveDirectory : planOrArchiveDirectory?.archiveDirectory;
@@ -520,20 +504,24 @@ async function performResumeResetArchive(planOrArchiveDirectory, expected) {
       return resetResult(plan);
     }
     for (const item of plan.directories) await directory(join(archiveDirectory, item.destination));
+    let processed = 0, completedBytes = 0;
+    const totalBytes = plan.entries.reduce((sum, item) => sum + item.bytes, 0);
     for (const entry of plan.entries) {
+      expected.onProgress?.({ phase: 'reset-archiving', processed, total: plan.entries.length, completedBytes, totalBytes });
       await archiveEntry(plan, entry);
       // State is acknowledged after the file and both directory entries are durable.
       if (!entry.archived) { entry.archived = true; await durableJson(manifestPath, plan); }
+      processed++; completedBytes += entry.bytes;
     }
     for (const item of [...plan.directories].sort((a, b) => b.source.length - a.source.length)) {
       try { await rmdir(item.source); await syncDirectory(dirname(item.source)); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
-    for (const item of plan.recoveryBackups) {
+    for (const [index, item] of plan.recoveryBackups.entries()) {
+      expected.onProgress?.({ phase: 'reset-backup', processed: index, total: plan.recoveryBackups.length });
       await prepareRecoveryBackup(plan, item);
       await durableJson(manifestPath, plan);
     }
-    await retainHistory(plan);
     plan.complete = true;
     await durableJson(manifestPath, plan);
     return resetResult(plan);
@@ -545,4 +533,108 @@ export function createResetArchive(options) {
 }
 export function resumeResetArchive(...args) {
   return observeStorageOperation('reset-archive', () => performResumeResetArchive(...args), { scope: 'shared' });
+}
+
+
+const localPlanPath = paths => join(paths.pairDirectory, 'reset-operation.json');
+const fileIdentity = info => Object.fromEntries(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].map(key => [key, String(info[key])]));
+async function inspectIdentity(path) {
+  const info = await lstat(path, { bigint: true });
+  if (!info.isFile() || info.isSymbolicLink() || info.size > BigInt(Number.MAX_SAFE_INTEGER)) throw failure('pair_reset_unsafe_storage');
+  return { identity: fileIdentity(info) };
+}
+
+/** Fast reset plans contain filesystem identity, never a full-history digest.
+ * The closed runtime and continuous node lock fence their explicit resumption. */
+export async function createLocalReset({ config, state, mode, requestId }) {
+  return checked(async () => {
+    if (!['keep', 'fresh'].includes(mode) || !UUID.test(requestId) || !UUID.test(state.nodeId)) throw failure('pair_reset_unsafe_storage');
+    const paths = await locations(config);
+    for (const path of [dirname(paths.databasePath), paths.pairDirectory, paths.snapshotDirectory]) await safeParents(path);
+    let selectedDbPath;
+    try { selectedDbPath = await selectResetDatabase(config, state); }
+    catch (error) {
+      if (mode !== 'fresh' || error.code !== 'pair_reset_history_unavailable') throw error;
+      selectedDbPath = null;
+    }
+    const files = await inventory(paths, selectedDbPath, inspectIdentity);
+    if (mode === 'keep' && !selectedDbPath && files.entries.some(entry => /\.sqlite(?:-wal|-shm|-journal)?$/.test(entry.source)
+      && !/^\.receiver-lock\.sqlite(?:-wal|-shm|-journal)?$/.test(basename(entry.source)))) throw failure('pair_reset_history_unavailable');
+    const plan = { version: 1, requestId, mode, originalNodeId: state.nodeId, ...paths, selectedDbPath,
+      entries: mode === 'fresh' ? files.entries.filter(entry => !entry.retain) : [],
+      directories: mode === 'fresh' ? files.directories : [] };
+    for (const path of [localPlanPath(paths), `${localPlanPath(paths)}.tmp`]) {
+      const existing = await present(path);
+      if (existing && (!existing.isFile() || existing.isSymbolicLink())) throw failure('pair_reset_unsafe_storage');
+    }
+    await durableJson(localPlanPath(paths), plan);
+    return { storagePlan: localPlanPath(paths), selectedDbPath };
+  });
+}
+
+export async function resumeLocalReset({ config, journal, onProgress = () => {} }) {
+  return checked(async () => {
+    const paths = await locations(config), path = localPlanPath(paths);
+    if (journal.storagePlan !== path || journal.backup !== false || !UUID.test(journal.requestId)
+      || !UUID.test(journal.originalNodeId) || !['keep', 'fresh'].includes(journal.mode)) throw failure('pair_reset_unsafe_storage');
+    await safeParents(paths.pairDirectory);
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > 16 * 1024 * 1024) throw failure('pair_reset_unsafe_storage');
+    const plan = JSON.parse(await readFile(path, 'utf8'));
+    if (plan?.version !== 1 || plan.mode !== journal.mode || plan.requestId !== journal.requestId || plan.originalNodeId !== journal.originalNodeId
+      || Object.keys(plan).sort().join(',') !== ['version', 'requestId', 'mode', 'originalNodeId', ...Object.keys(paths), 'selectedDbPath', 'entries', 'directories'].sort().join(',')
+      || Object.keys(paths).some(key => plan[key] !== paths[key]) || !Array.isArray(plan.entries) || plan.entries.length > MAX_FILES
+      || !Array.isArray(plan.directories) || plan.directories.length > MAX_FILES
+      || plan.selectedDbPath !== null && !allowedDatabase(paths, plan.selectedDbPath)
+      || plan.mode === 'keep' && (plan.entries.length || plan.directories.length)) throw failure('pair_reset_unsafe_storage');
+    const authorized = source => typeof source === 'string' && source === resolve(source)
+      && (within(paths.pairDirectory, source) || within(paths.snapshotDirectory, source)
+        || SIDECARS.some(suffix => source === `${paths.databasePath}${suffix}`) || peerCompanion(paths.databasePath, source))
+      && source !== paths.pairDirectory && source !== paths.snapshotDirectory && !excluded(paths, source) && !copiedMarker(paths, source);
+    const sources = new Set();
+    // Validate the entire manifest before removing the first file.
+    for (const entry of plan.entries) {
+      if (!entry || !authorized(entry.source) || sources.has(entry.source) || entry.retain !== false
+        || Object.keys(entry).sort().join(',') !== 'destination,identity,retain,source'
+        || !entry.identity || Object.keys(entry.identity).sort().join(',') !== 'ctimeNs,dev,ino,mtimeNs,size'
+        || Object.values(entry.identity).some(value => typeof value !== 'string' || !/^[0-9]+$/.test(value))) throw failure('pair_reset_unsafe_storage');
+      sources.add(entry.source);
+    }
+    for (const entry of plan.directories) if (!entry || Object.keys(entry).sort().join(',') !== 'destination,source'
+      || typeof entry.source !== 'string' || entry.source !== resolve(entry.source)
+      || !(within(paths.pairDirectory, entry.source) && entry.source !== paths.pairDirectory
+        || within(paths.snapshotDirectory, entry.source) && entry.source !== paths.snapshotDirectory)) throw failure('pair_reset_unsafe_storage');
+    // Reject replaced files anywhere in the plan before the first deletion.
+    for (const entry of plan.entries) {
+      await safeParents(dirname(entry.source));
+      try {
+        const actual = (await inspectIdentity(entry.source)).identity;
+        if (Object.keys(actual).some(key => actual[key] !== entry.identity[key])) throw failure('pair_reset_unsafe_storage');
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    for (const [index, entry] of plan.entries.entries()) {
+      onProgress({ phase: 'reset-discarding', processed: index, total: plan.entries.length });
+      await safeParents(dirname(entry.source));
+      try {
+        const actual = (await inspectIdentity(entry.source)).identity;
+        if (Object.keys(actual).some(key => actual[key] !== entry.identity[key])) throw failure('pair_reset_unsafe_storage');
+        await unlink(entry.source);
+        await syncDirectory(dirname(entry.source));
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    for (const entry of [...plan.directories].sort((a, b) => b.source.length - a.source.length)) {
+      await safeParents(entry.source);
+      try { await rmdir(entry.source); await syncDirectory(dirname(entry.source)); }
+      catch (error) { if (!['ENOENT', 'ENOTEMPTY'].includes(error.code)) throw error; }
+    }
+    return { keptDbPath: plan.mode === 'keep' ? plan.selectedDbPath : null, recoveryBackups: [], recoveryBackupUnavailable: null };
+  });
+}
+
+export async function finishLocalReset({ config, storagePlan }) {
+  const paths = await locations(config);
+  if (storagePlan !== localPlanPath(paths)) throw failure('pair_reset_unsafe_storage');
+  await safeParents(paths.pairDirectory);
+  await rm(storagePlan, { force: true });
+  await syncDirectory(paths.pairDirectory);
 }

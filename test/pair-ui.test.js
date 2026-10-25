@@ -1162,8 +1162,8 @@ test('fresh reset requires explicit restoration acknowledgement and carries the 
   assert.equal(await controller.run('reset', { mode: 'unrecognized', restorationConfirmed: true }), false);
   assert.equal(sent.length, 0);
   assert.equal(confirmations.length, 0);
-  assert.equal(await controller.run('reset', { mode: 'fresh', restorationConfirmed: true }), true);
-  assert.deepEqual(sent, [{ nodeId, action: 'reset', requestId: id, confirmed: true, mode: 'fresh', resetToken, restorationConfirmed: true }]);
+  assert.equal(await controller.run('reset', { mode: 'fresh', restorationConfirmed: true, backup: true }), true);
+  assert.deepEqual(sent, [{ nodeId, action: 'reset', requestId: id, confirmed: true, mode: 'fresh', resetToken, restorationConfirmed: true, backup: true }]);
   assert.match(confirmations[0], /Local recording and control stop/);
 });
 
@@ -1196,7 +1196,7 @@ test('an uncertain fresh reset reads its receipt without repeating the archive o
   const storage = memoryStorage(), sent = [];
   const first = createPairActions({ storage, requestId: () => id, confirm: () => true,
     request: async (path, body) => { sent.push(body); throw new TypeError('response lost'); } });
-  first.update(resettable()); await first.run('reset', { mode: 'fresh', restorationConfirmed: true });
+  first.update(resettable()); await first.run('reset', { mode: 'fresh', restorationConfirmed: true, backup: true });
   const restored = createPairActions({ storage, request: async (path, body) => {
     assert.equal(body, undefined); return { nodeId, requestId: id, action: 'reset', state: 'complete' };
   } });
@@ -1212,7 +1212,7 @@ test('incomplete saved reset consent is rejected, and an interrupted reset can o
   }
   const controller = createPairActions({ confirm: () => true, request: async () => { throw Error('Wrong reset mode'); } });
   controller.update(resettable({ reset: { token: resetToken, pendingMode: 'keep' } }));
-  assert.equal(await controller.run('reset', { mode: 'fresh', restorationConfirmed: true }), false);
+  assert.equal(await controller.run('reset', { mode: 'fresh', restorationConfirmed: true, backup: true }), false);
 });
 
 test('reset panel displays completed archive receipts for one day and stays available on protected schema errors', () => {
@@ -1224,6 +1224,7 @@ test('reset panel displays completed archive receipts for one day and stays avai
   assert.equal($('pairing-reset').hidden, false);
   assert.equal($('pairing-reset').disabled, false);
   assert.equal($('pairing-reset-receipt').hidden, false);
+  assert.equal($('pairing-reset-web-access').hidden, false);
   assert.match($('pairing-reset-receipt').textContent, /synthetic-reset/);
   assert.match($('pairing-reset-receipt').textContent, /manually delete/);
   assert.match($('pairing-reset-receipt').textContent, /1 verified backup was created.*Recording details → History recovery/);
@@ -1260,7 +1261,7 @@ test('reset failures explain known recovery steps without displaying arbitrary e
     ['pair_reset_unsafe_storage', /storage locations cannot be safely archived/],
     ['pair_reset_history_unavailable', /database could not be identified/],
     ['pair_reset_restoration_required', /outstanding temporary equipment changes/],
-    ['pair_reset_failed', /Existing files remain preserved/]]) {
+    ['pair_reset_failed', /Remaining storage stays protected/]]) {
     const view = resettable({ uiOperation: { nodeId, action: 'reset', state: 'error', errorCode, error: 'secret unrelated detail' } });
     assert.match(pairIssueHelp(view), message);
     assert.match(pairDisplay(view).summary, message);
@@ -1293,7 +1294,7 @@ test('unreadable old pairing state blocks keep-history but still permits explici
   controller.update(view);
   assert.equal(await controller.run('reset', { mode: 'keep' }), false);
   assert.equal(sent.length, 0);
-  assert.equal(await controller.run('reset', { mode: 'fresh', restorationConfirmed: true }), true);
+  assert.equal(await controller.run('reset', { mode: 'fresh', restorationConfirmed: true, backup: true }), true);
   assert.equal(sent[0].mode, 'fresh');
   const { document, $ } = fixture();
   const panel = createPairPanel({ document, request: async () => {} }); panel.update(view);

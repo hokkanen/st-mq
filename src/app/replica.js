@@ -381,14 +381,14 @@ export async function startReplica({ config, clock = Date.now,
     getDatabaseExportDirectory: () => backupDirectory(config),
     settingsReloadStatus: () => ({ available: false, busy: false, reason: unavailable }),
     staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../../dist') });
-  function close() {
+  function close({ preserveWebAccess = false } = {}) {
     if (closePending) return closePending;
     closed = true;
     for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
     closePending = (async () => {
       await startupSettled;
       const errors = [];
-      try { await webAccess.close(); } catch (error) { errors.push(error); }
+      try { if (!preserveWebAccess) await webAccess.close(); } catch (error) { errors.push(error); }
       try { await refreshing; } catch (error) { errors.push(error); }
       if (current) { current.retired = true; retire(current); }
       for (const result of await Promise.allSettled([...retiring])) if (result.status === 'rejected') errors.push(result.reason);

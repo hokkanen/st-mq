@@ -112,7 +112,7 @@ function chargingReportQuery(url, kind) {
 }
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '', familyToken = '',
-  getAccess, ingress = false, tls, transportLimits, webTransport, webSessions, clock = Date.now, role = 'master', topology = 'standalone', getReadContext, syncStatus,
+  getAccess, ingress = false, tls, transportLimits, webTransport, webSessions, maintenance = () => false, acquireRequest, clock = Date.now, role = 'master', topology = 'standalone', getReadContext, syncStatus,
   pairContext, controlAuthority, historyRecovery, recordingHealth, databaseExport, databaseVerification, modelReconstruction,
   backupCatalog, backupInspection, getDatabaseExportDirectory,
   reloadSettings, previewSettings, settingsReloadStatus = () => ({ available: false, busy: false,
@@ -140,6 +140,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
   const recovering = () => Boolean(historyRecovery?.busy() || pairContext?.recovering?.());
   const readOnlyMessage = 'This computer is read-only. Database edits, settings changes and device commands require the active master.';
   const handler = async (req, res) => {
+    const releaseRequest = acquireRequest?.();
     let acceptedAccess, completingReload = false, readContext, webAccess, cookieDigest, rememberedRecord;
     const identity = current => webIdentity(req, current, ingress)
       ?? (!ingress && !req.headers.authorization && webSessions.identity(cookieDigest, rememberedRecord));
@@ -185,6 +186,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return json(403, { error: 'Cross-origin request rejected' });
         cookieDigest = !ingress ? rememberedCookieDigest(req) : null;
         const sessionAction = ['/api/session/remember', '/api/session/logout', '/api/session/revoke-all'].includes(url.pathname);
+        if (sessionAction && maintenance()) return json(503, { error: 'Pairing reset is in progress. Sign in with your password to view progress.' });
         if (sessionAction) {
           if (req.method !== 'POST') return json(405, { error: 'Use an explicit sign-in or sign-out action.' });
           if (ingress || !req.socket.encrypted) return json(403, { error: 'Remembered login requires HTTPS.' });
@@ -233,7 +235,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (webAccess.role === 'family' && !familyRouteAllowed(req.method, url.pathname))
           return json(403, { error: 'Admin access is required for this action.' });
-        if (url.pathname === '/api/web-access' && ['GET', 'POST'].includes(req.method)) {
+        if (url.pathname === '/api/web-access' && ['GET', 'POST'].includes(req.method) && !maintenance()) {
           if (!webTransport) return json(409, { error: 'Web access management is unavailable.' });
           if (req.method === 'GET') return json(200, { ...webTransport.status({ admin: true }), webAccess });
           const input = await body(req, transportLimits?.bodyTimeoutMs);
@@ -272,6 +274,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (!stillAuthorized()) return;
           return json(200, result);
         }
+        if (maintenance()) return json(503, { error: 'Pairing reset is in progress. Pairing status remains available.', pair: pairContext?.status(), webAccess });
         // These jobs write only this computer's disposable verification progress.
         // Standby operation has no main-database or device-command authority.
         if (url.pathname === '/api/model-reconstruction' && req.method === 'GET') {
@@ -874,7 +877,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         json(code, { error: code >= 500 ? 'Request could not be confirmed. Retry shortly.'
           : error instanceof SyntaxError && /^\/api\/settings\//.test(req.url) ? 'The request must contain valid JSON.' : error.message });
       }
-    } finally { readContext?.release?.(); }
+    } finally { try { readContext?.release?.(); } finally { releaseRequest?.(); } }
   };
   const { bodyTimeoutMs: _bodyTimeoutMs, ...limits } = transportLimits ?? {};
   const server = tls ? createHttpsServer({ ...limits, ...tls }, handler) : createServer(limits, handler);

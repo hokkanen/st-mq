@@ -1524,11 +1524,12 @@ G_warming = G / 2</code>
           </section>
           <section class="pairing-management" aria-labelledby="pairing-reset-heading">
             <div class="pairing-role-action pairing-reset-action">
-              <div><h3 id="pairing-reset-heading">Reset this computer’s pairing</h3><p>Keep local history protected, or archive it and start as an empty slave. Configuration and credentials stay in place. This never promotes either computer.</p></div>
+              <div><h3 id="pairing-reset-heading">Reset this computer’s pairing</h3><p>Keep local history protected, or start as an empty slave with an optional recovery backup. Configuration and credentials stay in place. This never promotes either computer.</p></div>
               <button id="pairing-reset" data-admin-only class="secondary-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="pairing-reset-dialog" aria-describedby="pairing-reset-help" disabled>Reset pairing</button>
               <p id="pairing-reset-help" class="muted pairing-step-help"></p>
             </div>
             <p id="pairing-reset-receipt" class="pairing-reset-receipt" role="status" aria-live="polite" hidden></p>
+            <p id="pairing-reset-web-access" class="muted" hidden><a href="#secure-web-access-details">Review web access</a></p>
           </section>
         </div>
       </details>
@@ -1543,15 +1544,17 @@ G_warming = G / 2</code>
   <dialog id="pairing-reset-dialog" class="pairing-reset-dialog" aria-labelledby="pairing-reset-title" aria-describedby="pairing-reset-description">
     <h2 id="pairing-reset-title">Reset pairing</h2>
     <p id="pairing-reset-description">This stops local recording and control. The other computer is unchanged. Choose what happens to this computer’s history.</p>
+    <p class="muted">Resetting pairing may require HTTPS authorization again. Saved HTTPS identity and certificates are preserved. Review Web access after pairing is ready.</p>
     <section class="pairing-reset-choice">
       <h3>Keep local history</h3>
-      <p>Preserve the database and saved settings. Archive the old pairing state and keep history protected until you explicitly choose recovery or promotion. An incompatible database remains incompatible.</p>
+      <p>Keep the database and saved settings in place without making a database copy. History stays protected until you explicitly choose recovery or promotion. An incompatible database remains incompatible.</p>
       <button id="pairing-reset-keep" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-reset-keep-help">Keep local history</button>
       <p id="pairing-reset-keep-help" class="muted" role="status"></p>
     </section>
     <section class="pairing-reset-choice">
       <h3>Start fresh</h3>
-      <p>Archive the database and pairing state, then start as an empty slave. History, learning and saved dashboard choices start empty locally; a master can supply its history through mirroring. Archives remain until you manually delete them.</p>
+      <p>Start as an empty slave. History, learning and saved dashboard choices start empty locally; a master can supply its history through mirroring. Without a backup, discarding local history is fast and requires a separate warning confirmation.</p>
+      <label class="pairing-reset-restoration" data-admin-only><input id="pairing-reset-backup" type="checkbox" checked> <span>Keep a recovery backup — takes longer. Progress stays available while history is archived and verified. Archives remain until you manually delete them.</span></label>
       <label class="pairing-reset-restoration" data-admin-only><input id="pairing-reset-restoration" type="checkbox"> <span>I have resolved any temporary equipment changes. Archiving data does not restore equipment.</span></label>
       <button id="pairing-reset-fresh" data-admin-only class="secondary-button" type="button" disabled>Start fresh</button>
     </section>

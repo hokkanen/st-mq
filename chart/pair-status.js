@@ -74,8 +74,8 @@ export function pairIssueHelp(view) {
     database_state_incompatible: 'Saved application state is incompatible with this software. Keep the original files and run the matching current build on both computers. Do not reset state to bypass equipment or pairing safeguards.',
     database_integrity_failed: 'The database failed its integrity check. Keep the original files and restore an intact current-format backup. Any previously verified snapshot remains selected.',
     database_journal_invalid: 'The transaction journal or checkpoint could not be verified. Preserve the database and its SQLite companions. Run full verification to investigate or use an intact current-format backup; changing roles cannot repair it.',
-    pair_reset_failed: 'The pairing reset could not finish. Existing files remain preserved. Review the reset status below and retry the same choice.',
-    pair_reset_storage_failed: 'The pairing archive could not be completed. Existing files remain protected. Check available disk space and storage permissions, then retry the same reset choice.',
+    pair_reset_failed: 'The pairing reset could not finish. Remaining storage stays protected; a discard may already have removed some active history. Review the reset status below and retry the same choice.',
+    pair_reset_storage_failed: 'The pairing reset storage work could not be completed. Remaining files stay protected; a discard may already have removed some active history. Check available disk space and storage permissions, then retry the same reset choice.',
     pair_reset_unsafe_storage: 'The configured storage locations cannot be safely archived. Check for overlapping storage locations or symbolic links inside the files being archived before retrying.',
     pair_reset_history_unavailable: 'The local history database could not be identified. Keep local history cannot continue. Start fresh can archive existing files without opening the old database.',
     pair_reset_restoration_required: 'Resolve outstanding temporary equipment changes before starting fresh. Keep local history preserves their restoration records. Archiving records does not restore equipment.',
@@ -114,15 +114,16 @@ export function pairActionAllowed(view, action) {
   return ['check-recovery', 'handover'].includes(action);
 }
 
-export function pairConfirmation(action, { discardUnrecovered = false, noRecoveryNeeded = false, bootstrapPending = false, mode, donorBytes, incremental = false, verifyWithFullSnapshot = false } = {}) {
+export function pairConfirmation(action, { discardUnrecovered = false, noRecoveryNeeded = false, bootstrapPending = false, mode, backup, nodeId, donorBytes, incremental = false, verifyWithFullSnapshot = false } = {}) {
   const retainedSize = Number.isSafeInteger(donorBytes) && donorBytes > 0
     ? ` (the checked source is ${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(donorBytes / 1024 ** 2)} MiB)` : '';
   const retention = incremental
     ? ' The other computer retains its divergent changes as an inactive journal branch in its database. Storage depends on the changed records, and retained branches have no automatic expiry.'
     : ` If the other computer holds only a slave snapshot, this keeps an additional full database-sized copy${retainedSize}. Retained copies have no automatic expiry; repeated protected rejoins can accumulate copies. They remain inactive until you deliberately archive or remove them.`;
+  if (action === 'reset' && mode === 'fresh' && backup === false) return `Permanently discard this computer’s local history without a backup? Computer: ${nodeId}. This deletes its active source history, learning and saved dashboard choices. This cannot be undone from this computer unless another copy already exists. Existing backups and the other computer are unchanged. Local control stops and this computer starts as an empty slave; it will not become master automatically.`;
   if (action === 'reset') return mode === 'fresh'
     ? 'Archive this computer’s database and pairing state, then start as an empty slave? Local recording and control stop. Current history, learning and saved dashboard choices leave the active database. Archives are kept until you manually delete them; configuration and credentials stay in place. The other computer is unchanged and may supply its database through mirroring. This computer will not become master automatically.'
-    : 'Reset pairing and keep local history? Local recording and control stop. The database and saved settings remain intact. Old pairing state is archived. This computer stays in Protected recovery until you explicitly choose recovery or promotion. Configuration, credentials and the other computer are unchanged.';
+    : 'Reset pairing and keep local history? Local recording and control stop. The database and saved settings remain intact. Pairing authority is cleared without copying the database. This computer stays in Protected recovery until you explicitly choose recovery or promotion. Configuration, credentials and the other computer are unchanged.';
   const verification = !verifyWithFullSnapshot ? '' : action === 'handover'
     ? ' Full history verification is selected. It reads both databases at the final checkpoint and can extend the time without controller operation during handover.'
     : action === 'promote' ? ' Full history verification is selected. It reads the local database before starting control and may delay promotion.'
@@ -146,7 +147,13 @@ export function pairConfirmation(action, { discardUnrecovered = false, noRecover
 const phaseText = {
   'check-recovery': 'Validating the other computer’s history source.', recover: 'Recovering gaps and rebuilding the model when needed.',
   handover: 'Handing control to the other computer.', promote: 'Preparing this computer to become master.',
-  rejoin: 'Verifying the master’s history before resuming mirroring.', reset: 'Archiving the previous pairing state and resetting this computer.',
+  rejoin: 'Verifying the master’s history before resuming mirroring.', reset: 'Resetting this computer’s pairing.',
+  'reset-stopping': 'Finishing local control and releasing authority.',
+  'reset-inspecting': 'Inspecting files for the recovery backup.',
+  'reset-archiving': 'Archiving local history. Pairing progress remains available.',
+  'reset-backup': 'Creating and verifying recovery backups. Large histories can take longer.',
+  'reset-discarding': 'Discarding active local history without a backup.',
+  'reset-finishing': 'Finishing reset and preparing the management view.',
   importing: 'Importing missing history.', 'catching-up': 'Catching the rebuilt model up to current observations.',
   publishing: 'Publishing the verified recovery result.',
   checking: 'Validating the other computer’s history source.', recovering: 'Recovering missing history.',
@@ -170,7 +177,7 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
   const resetFailed = view.uiOperation?.action === 'reset' && view.uiOperation.state === 'error';
   const resetInterrupted = ['pairing_reset_pending', 'pairing_reset_failed'].includes(view.reason);
   const summary = resetFailed && issue ? issue : localDatabaseIssue || (resetInterrupted
-    ? 'The previous pairing reset did not finish. Existing files remain preserved and this computer cannot control equipment. Review Reset pairing below to complete recovery.'
+    ? 'The previous pairing reset did not finish. This computer cannot control equipment. Review Reset pairing below and retry the same choice; a discard may already have removed some active history.'
     : startupProblem(view)
     ? `${issue} Local history is preserved. After correcting the setup, retry promotion below; the other computer can stay offline.`
     : state === 'protected' && view.error === 'snapshot_failed' ? issue
@@ -223,7 +230,9 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
       ? `${Math.min(100, Math.floor(sync.completedBytes / sync.bytes * 100))}% checked or transferred.` : ''].filter(Boolean).join(' ');
   const progress = view.uiOperation?.state === 'running' ? view.uiOperation.progress : null;
   const phase = [phaseText[progress?.phase ?? view.transition?.phase ?? view.phase] ?? (view.busy || view.uiOperation?.state === 'running' ? 'An operation is in progress.' : ''),
-    count(progress?.processed) !== null ? `${progress.processed} ${progress?.phase === 'checking' ? 'source groups checked' : 'entries processed'}.` : ''].filter(Boolean).join(' ');
+    count(progress?.processed) !== null ? `${progress.processed}${count(progress?.total) !== null ? ` / ${progress.total}` : ''} ${progress?.phase === 'checking' ? 'source groups checked' : progress?.phase === 'reset-backup' ? 'backups completed' : 'entries processed'}.` : '',
+    count(progress?.totalBytes) !== null && progress.totalBytes > 0 ? `${Math.floor(progress.completedBytes / progress.totalBytes * 100)}% of archive bytes moved.` : '',
+    view.uiOperation?.action === 'reset' && stamp(view.uiOperation.startedAt) ? `${Math.max(0, Math.floor((now - view.uiOperation.startedAt) / 1000))} s elapsed.` : ''].filter(Boolean).join(' ');
   const recovery = view.recovery ?? {};
   const recoveryHistorical = mirrorComparison(view) && recovery.state === 'ready'
     && (peer.reachable !== true || peer.role !== 'slave' || ['error', 'stale'].includes(peerSync?.state)
@@ -319,7 +328,7 @@ export function pairActionHelp(view) {
   return {
     reset: (view?.busy || view?.uiOperation?.state === 'running' ? 'Wait for the current operation to finish.' : null) ?? (view?.reset?.pendingMode ? 'A reset was interrupted. Retry the same choice to finish using the retained archive.'
       : view?.reset?.blockedReason ? 'Reset is unavailable until the current operation or storage problem is resolved.'
-      : view?.actions?.reset === true ? 'Choose whether to keep local history or archive it and start fresh. Neither choice promotes this computer.'
+      : view?.actions?.reset === true ? 'Choose whether to keep local history or start fresh, with an optional backup. Neither choice promotes this computer.'
       : 'Reset is unavailable until this computer’s state is confirmed.'),
     check: wait ?? (view?.recovery?.pendingRelease ? 'Verify the pending mirroring request before starting another check.'
       : view?.actions?.['check-recovery'] === true ? view?.peer?.role === 'slave' ? 'Validate the slave snapshot. Normal mirroring does not need manual recovery.'
@@ -378,10 +387,10 @@ function restoredOperation(storage) {
     const body = JSON.parse(storage?.getItem(pendingKey) ?? 'null');
     if (!actions.includes(body?.action) || !uuid.test(body?.requestId ?? '') || !uuid.test(body?.nodeId ?? '')) return null;
     if (Object.keys(body).some(key => !['action', 'nodeId', 'requestId', 'confirmed', 'verifyWithFullSnapshot',
-      'mode', 'resetToken', 'restorationConfirmed', 'previewId', 'discardUnrecovered'].includes(key))) return null;
+      'mode', 'resetToken', 'restorationConfirmed', 'backup', 'discardConfirmed', 'previewId', 'discardUnrecovered'].includes(key))) return null;
     if (body.verifyWithFullSnapshot !== undefined && typeof body.verifyWithFullSnapshot !== 'boolean') return null;
     if (body.action !== 'check-recovery' && body.confirmed !== true) return null;
-    if (body.action === 'reset' && (!resetModes.includes(body.mode) || !validResetToken(body.resetToken) || (body.mode === 'fresh' && body.restorationConfirmed !== true))) return null;
+    if (body.action === 'reset' && (!resetModes.includes(body.mode) || !validResetToken(body.resetToken) || (body.mode === 'fresh' && (body.restorationConfirmed !== true || typeof body.backup !== 'boolean' || body.backup === false && body.discardConfirmed !== true)))) return null;
     if (body.action === 'recover' && !validPreviewId(body.previewId)) return null;
     if (body.action === 'rejoin' && (body.discardUnrecovered !== undefined && body.discardUnrecovered !== true
       || body.previewId !== undefined && !validPreviewId(body.previewId)
@@ -389,7 +398,7 @@ function restoredOperation(storage) {
     return { action: body.action, nodeId: body.nodeId, requestId: body.requestId,
       ...(body.verifyWithFullSnapshot === true ? { verifyWithFullSnapshot: true } : {}),
       ...(body.action !== 'check-recovery' ? { confirmed: true } : {}),
-      ...(body.action === 'reset' ? { mode: body.mode, resetToken: body.resetToken, ...(body.mode === 'fresh' ? { restorationConfirmed: true } : {}) } : {}),
+      ...(body.action === 'reset' ? { mode: body.mode, resetToken: body.resetToken, ...(body.mode === 'fresh' ? { restorationConfirmed: true, backup: body.backup, ...(body.backup === false ? { discardConfirmed: true } : {}) } : {}) } : {}),
       ...(body.action === 'recover' ? { previewId: body.previewId } : {}),
       ...(body.action === 'rejoin' ? { ...(body.discardUnrecovered === true ? { discardUnrecovered: true } : {}),
         ...(validPreviewId(body.previewId) ? { previewId: body.previewId } : {}) } : {}) };
@@ -397,7 +406,7 @@ function restoredOperation(storage) {
 }
 
 /** Submit once; reconnects only read the outcome on the original computer. */
-export function createPairActions({ request, storage, confirm = message => confirmAction({ document: globalThis.document, title: 'Confirm computer change', message, action: 'Confirm change' }),
+export function createPairActions({ request, storage, confirm = (message, { discardHistory = false } = {}) => confirmAction({ document: globalThis.document, title: discardHistory ? 'Discard local history?' : 'Confirm computer change', message, action: discardHistory ? 'Discard history' : 'Confirm change' }),
   requestId = makeRequestId, onChange = () => {}, afterMutation = () => {} }) {
   let view = null, available = false, busy = false, pending = restoredOperation(storage), error = Boolean(pending);
   let confirmation = null;
@@ -463,12 +472,12 @@ export function createPairActions({ request, storage, confirm = message => confi
     busy = true; notify();
     const confirmation = body.action === 'rejoin' && view.recovery?.pendingRelease?.requestId === body.requestId ? null : pairConfirmation(body.action, { discardUnrecovered: body.discardUnrecovered,
       noRecoveryNeeded: emptyPreview(view),
-      mode: body.mode, donorBytes: view.recovery?.donorBytes,
+      mode: body.mode, backup: body.backup, nodeId: body.nodeId, donorBytes: view.recovery?.donorBytes,
       verifyWithFullSnapshot: body.verifyWithFullSnapshot === true,
       incremental: Boolean(view.recovery?.preview?.incremental || view.recovery?.retainedStorage === 'journal-branch'),
       bootstrapPending: view.bootstrapPending && !(view.peer?.reachable === true && view.peer.role === 'master') });
     let accepted = !confirmation;
-    try { if (confirmation) accepted = await confirm(confirmation); } catch { /* A blocked dialog is a cancelled action. */ }
+    try { if (confirmation) accepted = await confirm(confirmation, { discardHistory: body.action === 'reset' && body.mode === 'fresh' && body.backup === false }); } catch { /* A blocked dialog is a cancelled action. */ }
     if (!accepted || !available || view.nodeId !== body.nodeId || !pairActionAllowed(view, body.action)) { busy = false; notify(); return false; }
     if (body.action === 'reset' && (body.resetToken !== view.reset?.token || (view.reset?.pendingMode && view.reset.pendingMode !== body.mode) || (body.mode === 'keep' && view.reset?.keepBlockedReason))) {
       busy = false; error = true; message = 'This computer’s pairing state changed. Review the current status before resetting it.'; notify(); return false;
@@ -509,8 +518,8 @@ export function createPairActions({ request, storage, confirm = message => confi
     unavailable() { available = false; notify(); },
     run(action, options = {}) {
       if (busy || pending || !available || !actions.includes(action) || !pairActionAllowed(view, action)) return Promise.resolve(false);
-      if (action === 'reset' && (!resetModes.includes(options.mode) || (options.mode === 'fresh' && options.restorationConfirmed !== true) || (view.reset?.pendingMode && view.reset.pendingMode !== options.mode) || (options.mode === 'keep' && view.reset?.keepBlockedReason))) return Promise.resolve(false);
-      return send({ action, nodeId: view.nodeId, ...(action === 'reset' ? { mode: options.mode, resetToken: view.reset.token, ...(options.mode === 'fresh' ? { restorationConfirmed: true } : {}) } : {}), requestId: action === 'rejoin' && view.recovery?.pendingRelease ? view.recovery.pendingRelease.requestId : requestId(), ...(action !== 'check-recovery' ? { confirmed: true } : {}),
+      if (action === 'reset' && (!resetModes.includes(options.mode) || (options.mode === 'fresh' && (options.restorationConfirmed !== true || typeof options.backup !== 'boolean')) || (view.reset?.pendingMode && view.reset.pendingMode !== options.mode) || (options.mode === 'keep' && view.reset?.keepBlockedReason))) return Promise.resolve(false);
+      return send({ action, nodeId: view.nodeId, ...(action === 'reset' ? { mode: options.mode, resetToken: view.reset.token, ...(options.mode === 'fresh' ? { restorationConfirmed: true, backup: options.backup, ...(options.backup === false ? { discardConfirmed: true } : {}) } : {}) } : {}), requestId: action === 'reset' && view.reset?.pendingRequestId ? view.reset.pendingRequestId : action === 'rejoin' && view.recovery?.pendingRelease ? view.recovery.pendingRelease.requestId : requestId(), ...(action !== 'check-recovery' ? { confirmed: true } : {}),
         ...((action === 'rejoin' && savedRelease(view) ? view.recovery.pendingRelease.verifyWithFullSnapshot : options.verifyWithFullSnapshot) === true && action !== 'reset' ? { verifyWithFullSnapshot: true } : {}),
         ...(action === 'recover' ? { previewId: view.recovery.preview.previewId } : {}),
         ...(action === 'rejoin' && savedRelease(view) ? {
@@ -541,12 +550,14 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     const allowed = state.available && !state.busy && !state.pending && pairActionAllowed(state.view, 'reset');
     $('pairing-reset-keep').disabled = !allowed || state.view?.reset?.pendingMode === 'fresh' || Boolean(state.view?.reset?.keepBlockedReason);
     $('pairing-reset-fresh').disabled = !allowed || state.view?.reset?.pendingMode === 'keep' || $('pairing-reset-restoration').checked !== true;
+    $('pairing-reset-backup').disabled = !allowed || Boolean(state.view?.reset?.pendingMode);
+    if (state.view?.reset?.pendingMode === 'fresh') $('pairing-reset-backup').checked = state.view.reset.pendingBackup === true;
     $('pairing-reset-restoration').disabled = !allowed || state.view?.reset?.pendingMode === 'keep';
     $('pairing-reset-keep-help').textContent = state.view?.reset?.keepBlockedReason === 'invalid_pair_state'
       ? 'The previous pairing state is unreadable, so the active history cannot be identified. Start fresh archives the configured storage without reading the old format.'
       : state.view?.reset?.keepBlockedReason ? 'The active history cannot be identified safely. Keep local history is unavailable.' : '';
     $('pairing-reset-dialog-help').textContent = !state.available ? 'Reconnect before resetting this computer.'
-      : state.view?.reset?.pendingMode ? 'Finish the interrupted reset using the same choice. The existing archive is retained.'
+      : state.view?.reset?.pendingMode ? 'Finish the interrupted reset using the same choice and backup setting. Discard may already have removed some active history.'
       : !allowed ? 'This computer’s state changed. Close this dialog and review its status.' : '';
   }
   function render(state) {
@@ -646,8 +657,9 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     $('pairing-history-recovery').textContent = recoveryNeeded && !noRecoveryNeeded ? 'Recover history' : 'Review history';
     resetDialogState(state);
     const receipt = state.view.reset?.lastResult;
-    const showReceipt = receipt && resetModes.includes(receipt.mode) && typeof receipt.archiveDirectory === 'string' && stamp(receipt.completedAt) && receipt.completedAt <= now() && now() - receipt.completedAt <= 86400_000;
+    const showReceipt = receipt && resetModes.includes(receipt.mode) && (receipt.archiveDirectory === null || typeof receipt.archiveDirectory === 'string') && stamp(receipt.completedAt) && receipt.completedAt <= now() && now() - receipt.completedAt <= 86400_000;
     $('pairing-reset-receipt').hidden = !showReceipt;
+    $('pairing-reset-web-access').hidden = !showReceipt;
     const backupCount = count(receipt?.backupCount), unavailableCount = count(receipt?.unavailableCount);
     const backupSummary = backupCount > 0 ? `${backupCount} ${backupCount === 1 ? 'verified backup was' : 'verified backups were'} created. Open Recording details → History recovery to review available sources.`
       : backupCount === 0 ? 'No usable recovery backup was created.' : 'Recovery backup availability is unconfirmed.';
@@ -658,7 +670,9 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     const unavailableSummary = unavailableCount > 0
       ? `${unavailableCount} ${unavailableCount === 1 ? 'history source could' : 'history sources could'} not produce a recovery backup${unavailableReasons.length ? `: ${unavailableReasons.join('; ')}` : ''}. Original files were preserved in the archive.` : '';
     $('pairing-reset-receipt').textContent = showReceipt ? [receipt.mode === 'keep' ? 'Pairing reset; local history kept protected.' : 'Started fresh as a slave.',
-      backupSummary, unavailableSummary, `Archive: ${receipt.archiveDirectory}. Archives are kept until you manually delete them.`].filter(Boolean).join(' ') : '';
+      receipt.mode === 'keep' && !receipt.archiveDirectory ? 'History remains in place; no database backup was needed. Explicitly promote one computer, review the other history, then resume mirroring.'
+        : receipt.backup === false ? 'Active local history was discarded without creating a backup. Existing backups were left in place.' : backupSummary,
+      unavailableSummary, receipt.archiveDirectory ? `Archive: ${receipt.archiveDirectory}. Archives are kept until you manually delete them.` : ''].filter(Boolean).join(' ') : '';
     $('pairing-reset-receipt').dataset.tone = unavailableCount > 0 || backupCount === null ? 'attention' : 'neutral';
     renderVerification(state);
   }
@@ -673,17 +687,18 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
   $('pairing-reset').addEventListener('click', () => {
     const state = controller.snapshot();
     if (!state.available || state.busy || state.pending || !pairActionAllowed(state.view, 'reset') || resetDialog.open) return;
-    $('pairing-reset-restoration').checked = false; resetDialogState(state);
+    $('pairing-reset-restoration').checked = false; $('pairing-reset-backup').checked = true; resetDialogState(state);
     resetDialog.showModal(); $('pairing-reset').setAttribute('aria-expanded', 'true'); $('pairing-reset-cancel').focus();
   });
   $('pairing-reset-cancel').addEventListener('click', () => resetDialog.close());
   resetDialog.addEventListener('close', () => { $('pairing-reset').setAttribute('aria-expanded', 'false'); $('pairing-reset').focus(); });
+  $('pairing-reset-backup').addEventListener('change', () => resetDialogState(controller.snapshot()));
   $('pairing-reset-restoration').addEventListener('change', () => resetDialogState(controller.snapshot()));
   for (const mode of resetModes) $(`pairing-reset-${mode}`).addEventListener('click', () => {
     if ($(`pairing-reset-${mode}`).disabled) return;
     const restorationConfirmed = $('pairing-reset-restoration').checked === true;
     resetDialog.close();
-    void controller.run('reset', { mode, ...(mode === 'fresh' ? { restorationConfirmed } : {}) });
+    void controller.run('reset', { mode, ...(mode === 'fresh' ? { restorationConfirmed, backup: $('pairing-reset-backup').checked === true } : {}) });
   });
   render(controller.snapshot());
   return controller;

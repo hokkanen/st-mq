@@ -728,7 +728,9 @@ copying a database alone does not transfer command permission.
 The admin-only **Reset pairing** action changes only this computer. It keeps
 configuration, peer addresses, shared credentials, provider tokens and the other
 computer's data unchanged. A confirmation is required; a changed pairing role
-or history invalidates an open confirmation.
+or history invalidates an open confirmation. Reset can require explicit HTTPS
+authorization again; saved HTTPS identity and certificates are preserved. The reset
+receipt links to **Web access** for review once pairing is ready.
 
 Pairing management loads independently of database-backed dashboard status. If
 saved state prevents the dashboard from loading, the authenticated **Paired
@@ -738,91 +740,99 @@ equipment controls or substitutes for missing dashboard observations.
 
 | Choice | History | Result |
 | --- | --- | --- |
-| **Keep local history** | Archives previous pairing files and retains a separate active copy of the selected local database, including its saved learning and control records. | A new pairing identity in **Protected recovery** when history exists. Explicit promotion or protected recovery is required; ordinary mirroring cannot overwrite the retained history. |
-| **Start fresh** | Archives local databases, SQLite sidecars, pairing files and snapshots. Nothing in those archives is automatically deleted. | A new pairing identity as an empty, read-only slave. It may receive a verified snapshot from an existing master; otherwise explicitly promote exactly one computer. |
+| **Keep local history** | Keeps the selected database, SQLite companions, source history, learning and saved dashboard choices in place. No full database copy or backup is made. | A new pairing identity in **Protected recovery**. Explicit promotion or recovery/rejoin is required; ordinary mirroring cannot overwrite this history. |
+| **Start fresh**, **Keep a recovery backup** checked (default) | Archives active local databases, SQLite companions, pairing files and snapshots, then creates verified portable backups for supported sources. | A new pairing identity as an empty, read-only slave. Backup work can take longer with large histories; progress stays available. |
+| **Start fresh**, backup unchecked | Permanently discards active local databases, SQLite companions, pairing files and snapshots after a separate destructive warning confirmation. Existing independent backups and reset archives are untouched. | An empty, read-only slave without a new backup. File contents are not copied, hashed or fully verified. |
 
-Neither choice promotes the computer. Both forget the previous pairing authority,
-accepted-snapshot lineage, saved errors and unfinished pairing operations. Keep
-local history does not migrate or repair an incompatible database: its schema
-error remains until a deliberate fresh start. No reset automatically imports
-archived history. [History recovery](#protected-history-and-manual-recovery)
-remains a separate, explicit operation for supported current-format history.
+Neither choice promotes either computer. Configuration, credentials, provider files
+and the other computer remain unchanged. Fresh may subsequently synchronize from
+an existing master; that synchronization is separate from reset and can take time.
+Keep does not migrate or repair an incompatible database. Its schema error remains
+until the owner resolves compatibility or deliberately starts fresh. Recovery never
+automatically imports archived history.
 
-The action stops the local runtime and synchronization, attempts ordinary graceful
-restoration when this computer has control, and releases its virtual IP before
-moving files. Starting fresh requires confirmation that temporary equipment
-changes have been resolved. Known saved restoration obligations on a former
-controller block a fresh start even after confirmation; retain the database or
-resolve those duties first. An incompatible or unreadable database is never
-decoded to infer equipment state. Its physical state must be checked separately;
-archiving records does not restore equipment. A slave's recorded copy does not
-transfer its master's physical obligations to the slave.
+Reset first finishes local control, attempts ordinary graceful restoration when
+this computer has authority, stops synchronization and releases the virtual IP.
+Fresh requires acknowledgement that temporary equipment changes have been resolved.
+Known saved restoration obligations on a former controller block Fresh, with or
+without backup. A slave's recorded copy does not transfer its master's physical
+duties to the slave. An incompatible or unreadable database is never decoded to
+infer equipment state; archiving or discarding records does not restore equipment.
 
-Archives use private permissions and are named by time and operation ID:
+Keep preserves source and learning history but clears obsolete operational peer
+enrollment and pending delivery authority in a validated current database. Existing
+immutable seed exports and spool evidence remain inactive. The original database
+path is retained, including when the selected history is a published slave snapshot.
+The fast paths perform bounded path/metadata checks rather than full-history reads;
+timing still depends on graceful restoration, file count and filesystem latency.
 
-- The configured `recording.backup_directory`, under `reset-archives/<archive>/`.
-- With the empty default, Home Assistant uses `/config/st-mq/backups/reset-archives/<archive>/`
+### Backup and progress
+
+The authenticated management listeners stay available while the database runtime
+is closed. **Paired computers** shows reset phase, elapsed time and available
+file/byte or backup counts. History-dependent dashboard requests are temporarily
+unavailable, and no equipment controls are enabled. Family users may view progress
+but cannot initiate or retry reset. Password access and HA ingress remain available;
+remembered access uses the current authority's bounded records during its reset,
+while a standby still requires its current master's authentication response.
+
+Backup archives use private permissions and are named by time and operation ID:
+
+- Configured `recording.backup_directory`, under `reset-archives/<archive>/`.
+- With the empty default, HA uses `/config/st-mq/backups/reset-archives/<archive>/`
   inside the app, normally accessible under `/addon_configs/<actual-app-slug>/st-mq/backups/`.
 - Linux uses `<database directory>/backups/reset-archives/<archive>/`.
 
-Pending replication spools, partial spools and their SQLite lock/sidecars beside
-the selected or configured database are archived with their original bytes.
-They are preserved evidence, not independent application backups. Keep history
-clears the previous peer enrollment in the validated current-format kept copy;
-the archived original and its pending transfer remain unchanged.
+Raw archives preserve original database and sidecar bytes, pending replication
+spools and original pairing state. Raw WAL files are preserved evidence, not a
+portable backup. Each identifiable supported database produces a separate verified,
+self-contained `.sqlite` in the archive's `backups` directory, including committed
+WAL content. The current backup manifest acknowledges a usable copy only after
+verified publication. Review these copies through **Recording details → History
+recovery → Review history**. The reset receipt remains visible for 24 hours.
 
-The result displays the specific archive path for 24 hours. Archives include the
-original `state.json`, the configured database when present, the actual promoted
-or published database, and their SQLite companion files. Configuration and
-unrelated files in the data directory are excluded. Each identifiable supported
-database also produces a verified self-contained `.sqlite` file in the archive's
-`backups` directory, using the same snapshot generator as dashboard and CLI exports.
-These files include committed WAL content and require no companion files. Distinct
-databases get separately identified backups; reset never merges their histories.
-The current archive manifest records each portable backup and its checksum only
-after verified publication. These backups are available from **Recording details
-→ History recovery → Review history**, including when the computer later runs standalone. The
-reset result reports how many usable backups were made and any unavailable
-history; it does not claim that preserved raw files are portable backups.
+Corrupt or incompatible sources remain unchanged as raw evidence; the receipt
+explicitly identifies unavailable portable backups. Storage or publication failure
+leaves reset protected and incomplete for explicit retry, without claiming a usable
+backup. Files are renamed on the same filesystem; cross-filesystem copies require
+verification and flushing before removing originals. Allow space for raw archives,
+portable backups and temporary verification files. Existing completed current-format
+archives remain discoverable read-only, including after relocation under the current
+archive root with their names unchanged. Relocation does not authorize reset resume.
 
-Corrupt or incompatible source databases remain byte-for-byte in the original
-archive. They are neither converted nor repaired; the reset result reports that
-a recovery backup is unavailable and why. No identifiable database likewise
-reports unavailable history. This does not prevent a deliberate fresh reset.
-Completed current-format archives can be discovered read-only after moving them
-under the configured archive root with their archive directory names unchanged.
-Their recorded absolute paths remain unchanged provenance; discovery uses only
-validated relative portable-backup paths inside the present archive. Archives
-without portable backups are described as preserved source history, not recovery
-donors. This does not permit resuming a reset from a relocated archive: retry
-still requires the original location and matching trusted configuration.
-Storage or publication failures leave reset protected and incomplete for explicit
-retry instead of claiming a completed backup. Keep mode uses a separate
-copy of the selected database; the archived copy stays inactive. On the same
-filesystem, files are renamed; between filesystems, each copy is verified and
-flushed before the original filesystem entry is removed. Permanent deletion of
-archives is manual. Ensure enough free space for the raw archive, portable backups,
-temporary verification copies and any retained active copy.
+### Interruption and continuing after reset
 
-An interrupted archive remains protected across restart. The dashboard offers
-retry of the same choice using the same archive; it never resumes control or
-finishes a reset automatically. Unreadable pairing state can open a protected
-management page without interpreting or rewriting the rejected state. In that
-case **Keep local history** is unavailable because the active history cannot be
-identified reliably; **Start fresh** archives the configured storage intact.
-Invalid configuration, unsafe paths or storage permissions can still require
-repair outside the dashboard. Configured directory aliases, such as a checkout's
-`var` symbolic link to persistent storage, are resolved to their physical locations.
-Overlapping physical pairing/snapshot/archive paths, links within their contents,
-and a link at the derived `reset-archives` directory are refused. The archive
-records its physical source locations; retargeting a configured directory link
-blocks a pending reset until its original location is restored.
+A durable operation record binds the computer, reset choice and backup consent.
+Reloads and lost responses check the existing request's result without submitting
+another destructive action. After interruption or restart, the computer remains
+protected; retry must explicitly use the same request ID and choices. A discard
+failure may have removed some active files already; retry finishes that same discard.
+No failure automatically grants control or switches from backup to discard.
 
-After resetting only one computer, the other may protect its previous lineage.
-Review its retained history before recovery or its own explicit reset. Resetting
-both computers fresh requires selecting a master again. Existing manual recovery
-and rejoin behavior is unchanged; reset archives are never used as disposable
-snapshot files or removed by replica retention.
+Unreadable pairing state still permits authenticated Fresh without interpreting
+the rejected state. Keep is unavailable when the active history cannot be identified.
+Configured directory aliases are resolved to physical locations; overlapping roots,
+internal symbolic links, retargeted operation records and unsafe paths are refused.
+No checkbox bypasses those checks. Fresh discard verifies each recorded file identity
+before removal and refuses a replacement file rather than deleting newer history.
+
+To reset both computers while retaining history:
+
+1. Reset the current slave with **Keep local history**, then reset the current master
+   with the same choice. Both are protected. Application recording and control pause
+   when the master is reset; device-local protection remains independent.
+2. Explicitly promote exactly one computer, normally the former master with the
+   desired complete history, after confirming the other cannot control equipment.
+3. On the selected master, open **Review history → Check other computer**. If the
+   protected computer has additional history, explicitly recover it and await completion.
+   Existing master records win conflicts; this is not an automatic two-way merge.
+4. Select **Resume mirroring** after the checked history is resolved. The other
+   computer becomes the synchronized read-only slave. Review, recovery and initial
+   synchronization may take longer than the reset itself.
+
+Resetting just one computer can leave the other protecting its previous lineage;
+review that history before explicit recovery/rejoin or another deliberate reset.
+Resetting both Fresh requires explicitly selecting exactly one master again.
 
 ## Protected history and manual recovery
 

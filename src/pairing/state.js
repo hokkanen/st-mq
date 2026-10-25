@@ -54,10 +54,18 @@ const releaseRecord = (value, owner) => record(value) && owner.role === 'protect
     && NODE_PATTERN.test(value.preservedSnapshot.generation) && sequence(value.preservedSnapshot.sequence)
     && value.preservedSnapshot.digest === value.identity.donorDigest && value.preservedSnapshot.bytes === value.identity.donorBytes);
 const resetRecord = (value, receipt = false) => record(value) && ['keep', 'fresh'].includes(value.mode)
-  && NODE_PATTERN.test(value.requestId) && typeof value.archiveDirectory === 'string' && isAbsolute(value.archiveDirectory)
+  && NODE_PATTERN.test(value.requestId)
+  && (receipt ? value.archiveDirectory === null || typeof value.archiveDirectory === 'string' && isAbsolute(value.archiveDirectory)
+    : typeof value.backup === 'boolean' && NODE_PATTERN.test(value.originalNodeId)
+      && (value.mode !== 'keep' || value.backup === false)
+      && (value.backup ? (value.archiveDirectory === null || typeof value.archiveDirectory === 'string' && isAbsolute(value.archiveDirectory)) && value.storagePlan === null
+        : value.archiveDirectory === null && (value.storagePlan === null || typeof value.storagePlan === 'string' && isAbsolute(value.storagePlan))))
+  && (value.backup === undefined && receipt || typeof value.backup === 'boolean')
+  && (value.originalNodeId === undefined && receipt || NODE_PATTERN.test(value.originalNodeId))
+  && (value.storagePlan === undefined && receipt || value.storagePlan === null || typeof value.storagePlan === 'string' && isAbsolute(value.storagePlan))
   && Object.keys(value).every(key => (receipt
-    ? ['mode', 'requestId', 'archiveDirectory', 'completedAt', 'backupCount', 'unavailableCount', 'unavailableReasons']
-    : ['mode', 'requestId', 'archiveDirectory']).includes(key))
+    ? ['mode', 'requestId', 'archiveDirectory', 'storagePlan', 'backup', 'originalNodeId', 'completedAt', 'backupCount', 'unavailableCount', 'unavailableReasons']
+    : ['mode', 'requestId', 'archiveDirectory', 'storagePlan', 'backup', 'originalNodeId']).includes(key))
   && (!receipt || sequence(value.completedAt) && sequence(value.backupCount) && sequence(value.unavailableCount)
     && Array.isArray(value.unavailableReasons) && value.unavailableReasons.length <= 3
     && new Set(value.unavailableReasons).size === value.unavailableReasons.length
@@ -208,11 +216,11 @@ export class PairState {
     const operation = this.queue.then(async () => {
       const retained = Boolean(activeDbPath);
       const next = { version: 3, pairId: this.options.pairId, nodeId: randomUUID(),
-        platform: this.options.platform, role: retained ? 'protected' : 'slave',
+        platform: this.options.platform, role: retained || receipt.mode === 'keep' ? 'protected' : 'slave',
         epoch: randomUUID(), sequence: 0, ancestors: [], everWritten: retained,
         bootstrapPending: !retained, accepted: null,
         activeDbPath: activeDbPath ?? this.options.databasePath,
-        reason: retained ? 'pairing_reset' : null, activationError: null,
+        reason: receipt.mode === 'keep' ? 'pairing_reset' : null, activationError: null,
         transition: null, release: null, actions: [], createdAt: this.clock(), updatedAt: this.clock(),
         reset: null, resetReceipt: receipt };
       this.validate(next);

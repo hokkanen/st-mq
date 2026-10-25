@@ -113,6 +113,16 @@ export function createWebAccess({ config: initialConfig, httpsManagerFactory = c
         role: serverOptions.role ?? config.role, release: context?.release };
     },
   });
+  let maintenance = false;
+  const requests = new Set();
+  serverOptions.maintenance = () => maintenance;
+  serverOptions.acquireRequest = () => {
+    if (maintenance) return;
+    let release;
+    const done = new Promise(resolve => { release = resolve; });
+    requests.add(done);
+    return () => { requests.delete(done); release(); };
+  };
   const draining = new Map();
   const rawSockets = new WeakMap();
   const ingressAccess = { enabled: true, token: '', tokenRequired: false };
@@ -370,6 +380,13 @@ export function createWebAccess({ config: initialConfig, httpsManagerFactory = c
         started = false;
         throw error;
       }
+    },
+    async beginPairReset() {
+      maintenance = true;
+      await Promise.all([serverOptions.databaseVerification.close(), serverOptions.modelReconstruction?.close(),
+        serverOptions.backupInspection.close(), ...requests]);
+      // In-flight credential edits/revocations finish before the bounded snapshot.
+      sessions.suspend();
     },
     prepare,
     async apply(next) { const transaction = await prepare(next); try { await transaction.commit(); } catch (error) { await transaction.rollback(); throw error; } },

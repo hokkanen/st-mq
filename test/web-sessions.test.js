@@ -178,3 +178,29 @@ test('HTTP never issues or accepts a remembered cookie even with spoofed proxy H
   }
   assert.equal((await fetch(`${base}/api/pair`, { headers: { Cookie: cookie(issued) } })).status, 401);
 });
+
+test('reset maintenance retains current authority logins without touching closed storage or renewing expiry', async t => {
+  const f = fixture(t), admin = await f.service.issue('admin'), family = await f.service.issue('family');
+  f.service.suspend();
+  f.store.getState = () => { throw Error('Maintenance must not read closed history'); };
+  for (const [issued, role] of [[admin, 'admin'], [family, 'family']]) {
+    const record = await f.service.authenticate(hash(issued));
+    assert.equal(f.service.identity(hash(issued), record).role, role);
+    assert.equal(record.expiresAt, issued.expiresAt);
+  }
+  await assert.rejects(f.service.issue('admin'));
+  await assert.rejects(f.service.revoke(hash(admin)));
+  f.access({ enabled: true, token: 'synthetic-changed-password', familyToken: FAMILY });
+  assert.equal(await f.service.authenticate(hash(admin)), null);
+  f.time(family.expiresAt);
+  assert.equal(await f.service.authenticate(hash(family)), null);
+});
+
+test('reset maintenance never authorizes a standby from its copied session records', async t => {
+  let requests = 0;
+  const f = fixture(t, { store: { readOnly: true, getState: () => { throw Error('Do not read replica sessions'); } },
+    peer: { request: async () => { requests++; throw Error('No current master'); } } });
+  f.service.suspend();
+  await assert.rejects(f.service.authenticate('a'.repeat(64)));
+  assert.equal(requests, 1);
+});

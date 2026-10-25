@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Make pairing reset fast when keeping history in place or starting fresh without
+  a backup. Fresh keeps its recovery-backup checkbox checked by default; discarding
+  history without a backup requires a destructive warning. Keep authenticated
+  pairing progress available throughout archival and backup verification, including
+  explicit interruption/retry handling and clear next steps for both computers.
+
 - Avoid racing normal local charger reports with extra meter requests. Keep
   valid measured power recordable through a phase-current conflict using recent,
   earlier phase readings only as labelled estimates; control still sees the

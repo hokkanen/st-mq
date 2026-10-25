@@ -113,8 +113,8 @@ try {
           // The app and viewer use this fixed clock; wall time would make a
           // valid receipt appear to be from the future after several UI steps.
           pair = { ...standby(body.mode === 'keep' ? 'protected' : 'slave'), reason: body.mode === 'keep' ? 'pairing_reset' : null,
-            reset: { token: resetToken, lastResult: { requestId: body.requestId, mode: body.mode, completedAt: now, archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset',
-              backupCount: 1, unavailableCount: 0, unavailableReasons: [] } },
+            reset: { token: resetToken, lastResult: { requestId: body.requestId, mode: body.mode, completedAt: now, backup: body.mode === 'fresh' && body.backup, archiveDirectory: body.mode === 'fresh' && body.backup ? '/config/st-mq/reset-archives/synthetic-reset' : null,
+              backupCount: body.mode === 'fresh' && body.backup ? 1 : 0, unavailableCount: 0, unavailableReasons: [] } },
             actions: { promote: true, reset: true }, uiOperation: { id: body.requestId, action: 'reset', state: 'complete' } };
           return json(200, pair);
         }
@@ -515,6 +515,7 @@ try {
     assert.equal(await evaluate(`${$('pairing-reset')}.getAttribute('aria-expanded')`), 'true');
     assert.equal(await evaluate("document.activeElement.id"), 'pairing-reset-cancel', 'Reset dialog opens with Cancel focused');
     assert.equal(await evaluate(`${$('pairing-reset-fresh')}.disabled`), true, 'Fresh reset needs explicit restoration acknowledgement');
+    assert.equal(await evaluate(`${$('pairing-reset-backup')}.checked`), true, 'Recovery backup defaults to checked');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Reset choices fit the viewport');
     assert.equal(await evaluate(`(() => { const dialog = ${$('pairing-reset-dialog')}; return dialog.scrollWidth <= dialog.clientWidth; })()`), true, 'Reset dialog text does not overflow');
     if (width === 320) await capture(`reset-choices-${theme}`);
@@ -534,7 +535,7 @@ try {
   assert.equal(actions.at(-1).restorationConfirmed, undefined);
   assert.equal(pair.role, 'protected');
   assert.equal(await evaluate(`${$('pairing-reset-receipt')}.hidden`), false);
-  assert.match(await evaluate(`${$('pairing-reset-receipt')}.textContent`), /1 verified backup was created/);
+  assert.match(await evaluate(`${$('pairing-reset-receipt')}.textContent`), /History remains in place; no database backup was needed/);
   await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-restoration')}.click(); ${$('pairing-reset-fresh')}.click(); true`);
   await until("document.querySelector('.confirmation-dialog[open] #confirmation-description') !== null");
   assert.match(await evaluate("document.getElementById('confirmation-description').textContent"), /Archives are kept until you manually delete/);
@@ -551,6 +552,26 @@ try {
   assert.equal(actions.at(-1).restorationConfirmed, true);
   assert.equal(pair.role, 'slave');
   assert.match(await evaluate(`${$('pairing-reset-receipt')}.textContent`), /synthetic-reset/);
+
+  assert.equal(actions.at(-1).backup, true);
+  const beforeDiscard = actions.length;
+  await until(`${$('pairing-reset')}.disabled === false`);
+  await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-backup')}.click(); ${$('pairing-reset-restoration')}.click(); ${$('pairing-reset-fresh')}.click(); true`);
+  await until("document.querySelector('.confirmation-dialog[open] #confirmation-description') !== null");
+  assert.match(await evaluate("document.getElementById('confirmation-description').textContent"), /Permanently discard.*without a backup/);
+  assert.match(await evaluate("document.getElementById('confirmation-description').textContent"), /cannot be undone/);
+  await evaluate("document.querySelector('.confirmation-dialog[open] .confirmation-actions button:first-child').click(); true");
+  await until(`${$('pairing-reset')}.disabled === false`);
+  assert.equal(actions.length, beforeDiscard, 'Cancelling destructive warning sends no request');
+  await evaluate(`${$('pairing-reset')}.click(); true`);
+  assert.equal(await evaluate(`${$('pairing-reset-backup')}.checked`), true, 'Reopening restores the safe backup default');
+  await evaluate(`${$('pairing-reset-backup')}.click(); ${$('pairing-reset-restoration')}.click(); ${$('pairing-reset-fresh')}.click(); true`);
+  await until("document.querySelector('.confirmation-dialog[open] #confirmation-description') !== null");
+  await evaluate("document.querySelector('.confirmation-dialog[open] .confirmation-actions button:last-child').click(); true");
+  await until(`${$('pairing-reset-receipt')}.textContent.includes('discarded without creating a backup')`);
+  assert.equal(actions.at(-1).backup, false); assert.equal(actions.at(-1).discardConfirmed, true);
+  assert.equal(await evaluate(`${$('pairing-reset-web-access')}.hidden`), false);
+  assert.equal(await evaluate("document.querySelector('#pairing-reset-web-access a').getAttribute('href')"), '#secure-web-access-details');
 
   await viewer.close();
   viewer = await startReplica({ config: { ...config, topology: 'mirror', role: 'slave', mirror: { directory } }, clock: () => now,

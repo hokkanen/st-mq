@@ -323,3 +323,28 @@ test('standalone createAppServer remains compatible with a fixed token', async t
   assert.equal((await fetch(`${endpoint(server)}/api/status`)).status, 401);
   assert.equal((await fetch(`${endpoint(server)}/api/status`, { headers: authorization(firstToken) })).status, 200);
 });
+
+test('reset maintenance drains existing database reads while admitting authenticated progress only', async t => {
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
+  t.after(() => release());
+  const pair = { role: 'protected', canControl: false, phase: 'reset' };
+  const { access } = await setup(t, configuration({ addon: false, token: firstToken }), {
+    chartService: { overview: async () => { entered(); await gate; return { rows: [] }; } },
+    pairContext: { status: () => pair, canControl: () => false },
+  });
+  const base = endpoint(access.server), headers = authorization(firstToken);
+  const reading = fetch(`${base}/api/recording-overview`, { headers });
+  await Promise.race([started, reading.then(() => { throw Error('Expected the existing history read to remain active'); })]);
+  let drained = false;
+  const maintenance = access.beginPairReset().then(() => { drained = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(drained, false, 'history cannot close before the existing reader releases');
+  const progress = await fetch(`${base}/api/pair`, { headers });
+  assert.equal(progress.status, 200); assert.equal((await progress.json()).phase, 'reset');
+  const unavailable = await fetch(`${base}/api/status`, { headers }); assert.equal(unavailable.status, 503);
+  const mutation = await fetch(`${base}/api/temporary`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{}' });
+  assert.equal(mutation.status, 503);
+  release(); await reading; await maintenance;
+  assert.equal(drained, true); assert.equal(access.server.listening, true);
+});
