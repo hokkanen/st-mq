@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Label saved Home schedule choices as recorded on read-only computers, use
+  consistent heating phase names, and correctly list the backup folder as
+  requiring restart. Keep source names and storage timing labels within their
+  columns on narrow screens.
+
 - Use measured BMW HV state of charge in publisher setup and the CarData feed
   guide, preserving original BMW timestamps and independent identity, target and
   capacity evidence. Update the installed Home Assistant publisher to activate

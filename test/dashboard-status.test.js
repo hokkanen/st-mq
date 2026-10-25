@@ -70,7 +70,9 @@ test('reload scope distinguishes live provider configuration from startup and en
   assert(live.reloadable.some(item => /Provider connections/.test(item)));
   assert(live.reloadable.some(item => /H66 device selection/.test(item)));
   assert(live.reloadable.some(item => /Heating strategy/.test(item)));
-  assert(live.reloadable.some(item => /recording budget.*backup folder.*verification schedule/.test(item)));
+  assert(live.reloadable.some(item => /recording budget.*verification schedule/.test(item)));
+  assert(!live.reloadable.some(item => /backup folder/.test(item)));
+  assert(live.restartRequired.some(item => /backup folder/.test(item)));
   assert(live.restartRequired.some(item => /Topology.*pairing.*mirroring/.test(item)));
   assert(live.reloadable.some(item => /Electricity rates/.test(item)));
   assert(live.restartRequired.some(item => /Input mode/.test(item)));

@@ -120,7 +120,7 @@ let lastReplicaSnapshot;
 let recordingContext;
 const dirtyTemporary = new Set();
 const temporaryFields = { awayUntilLocal: 'away-until', pauseUntilLocal: 'pause-until' };
-const heatingCommandLabel = command => ({ reduction: 'Reduced heating', normal: 'Normal heating', preheat: 'Preheat', circulation: 'Circulation' })[command] ?? 'Heating request';
+const heatingCommandLabel = command => ({ reduction: 'Reduced heating', normal: 'Normal heating', preheat: 'Preheat', recovery: 'Recovery heating', circulation: 'Circulation', Unavailable: 'Unavailable' })[command] ?? 'Heating request';
 const heatingTestButtons = [...document.querySelectorAll('[data-heating-command]')];
 const dateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const time = value => dateFormat.format(new Date(value));
@@ -378,12 +378,16 @@ function updateTemporaryButtons(updateEquipment = true) {
 }
 function renderTemporary(s) {
   const saved = temporaryValues(s);
+  const recorded = isReadOnlyReplica(s);
   for (const [field, id] of Object.entries(temporaryFields)) {
     if (!dirtyTemporary.has(field)) $(id).value = saved[field];
   }
-  $('away-status').textContent = saved.awayUntilLocal ? `Away until ${time(s.settings.occupancy.returnAt)}.` : 'At home.';
+  $('away-status').textContent = (recorded ? 'Recorded · ' : '') + (saved.awayUntilLocal ? `Away until ${time(s.settings.occupancy.returnAt)}.` : 'At home.');
   const paused = s.automation?.home?.enabled === false;
-  $('override-status').textContent = saved.pauseUntilLocal
+  $('override-status').textContent = recorded ? saved.pauseUntilLocal
+    ? `Recorded pause · Automatic was set to resume at ${time(s.override.expiresAt)}.`
+    : paused ? 'Recorded choice · Paused without a resume time.' : 'Recorded choice · Automatic.'
+    : saved.pauseUntilLocal
     ? `Paused · Automatic resumes at ${time(s.override.expiresAt)}.`
     : paused ? 'Paused until you select Automatic.' : 'Automatic heating is active.';
   $('temporary-overview').textContent = (isReadOnlyReplica(s) ? 'Recorded · ' : '') + [saved.awayUntilLocal ? `Away until ${time(s.settings.occupancy.returnAt)}` : 'At home',
@@ -961,7 +965,7 @@ function render(s) {
   $('reference').dataset.empty = !s.demoComfortTargetC && !Number.isFinite(reference);
   $('reference-source').textContent = s.demoComfortTargetC ? 'Demo reference only' : replica && !Number.isFinite(reference) ? 'No recorded normal temperature' : homeReferenceSummary(s);
   renderHomePolicy(document, s);
-  $('home-policy-current-title').textContent = `${replica ? 'Recorded plan' : manualHold ? 'Held request' : 'Current plan'} · ${label(manualHold?.phase ?? s.decision.phase ?? s.decision.action ?? 'Unavailable')}`;
+  $('home-policy-current-title').textContent = `${replica ? 'Recorded plan' : manualHold ? 'Held request' : 'Current plan'} · ${heatingCommandLabel(manualHold?.phase ?? s.decision.phase ?? s.decision.action ?? 'Unavailable')}`;
   $('home-policy-current-detail').textContent = [controlMode, decisionReasons, recoveryDetail].filter(Boolean).join(' · ');
   $('drop').textContent = `${s.settings?.comfort?.maxDropC} °C`;
   $('drop-note').textContent = s.decision.comfort?.maxDropApplies === false ? 'Inactive while you are away' : 'When you are home';

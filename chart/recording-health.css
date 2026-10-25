@@ -251,7 +251,7 @@ div.recording-task-status:not(:has(> p:not(:empty):not([hidden]), > progress:not
 .recording-performance-waits dd { margin: 4px 0 0; font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .recording-performance-outcomes { margin: 0; font-size: 12px; line-height: 1.6; }
 .recording-performance-outcomes > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto); align-items: baseline; gap: 12px; padding: 4px 0; }
-.recording-performance-outcomes dt { color: var(--muted); }
+.recording-performance-outcomes dt { color: var(--muted); overflow-wrap: anywhere; }
 .recording-performance-outcomes dd { margin: 0; font-weight: 550; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; text-align: right; }
 .recording-performance-outcome { margin: 0 0 8px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .recording-performance-result-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 24px; margin: 0; padding: 14px var(--ui-inset); border-radius: 6px; background: var(--surface-soft); font-size: 12px; line-height: 1.5; }

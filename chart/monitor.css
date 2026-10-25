@@ -1567,7 +1567,7 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 #provider-overview [data-state="pending"] { --provider-tone: var(--muted); }
 #provider-overview .provider-series-live { margin: 0; padding: 0; }
 #provider-overview .provider-series-live > li { grid-template-columns: minmax(0, 1fr) auto; gap: 3px 12px; padding: 10px 0; }
-#provider-overview .provider-series-live > li > strong { color: var(--provider-tone, var(--text)); font-size: 12px; line-height: 1.5; }
+#provider-overview .provider-series-live > li > strong { color: var(--provider-tone, var(--text)); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 #provider-overview .provider-series-value { display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 6px; color: var(--provider-tone, var(--muted)); font-size: 11px; line-height: 1.5; }
 #provider-overview .provider-series-value::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--provider-tone, var(--muted)); align-self: center; }
 #provider-overview .provider-series-source { grid-column: 1 / -1; color: var(--muted); font-size: 10px; line-height: 1.5; }

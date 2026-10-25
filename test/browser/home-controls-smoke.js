@@ -475,16 +475,21 @@ try {
     homeFixture.receipt = homeFixture.controlReceipts.circulation;
   ` });
   await send('Page.reload');
-  await until(`document.getElementById('heating-test-message').textContent.includes('Reduced heating requested')
-    && document.getElementById('dhwr-message').textContent.includes('Circulation requested')`);
+  await until(`document.getElementById('heating-test-message')?.textContent.includes('Reduced heating requested')
+    && document.getElementById('dhwr-message')?.textContent.includes('Circulation requested')`);
   assert.match(await evaluate(`document.getElementById('heating-test-message').textContent`), /Device confirmed.*Held until you select/,
     'A cold page renders the independent heating receipt alongside the newer circulation receipt');
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `homeFixture.circulationStopAt = ${now};` });
   await send('Page.reload');
-  await until(`document.getElementById('dhwr-message').textContent === 'Circulation stopped · device confirmed.'`);
+  await until(`document.getElementById('dhwr-message')?.textContent === 'Circulation stopped · device confirmed.'`);
   assert.match(await evaluate(`document.getElementById('heating-test-message').textContent`), /Reduced heating requested/);
   await evaluate(`homeFixture.replica = true; await homeFixture.poll()`);
   await until(`document.getElementById('dhwr-message').textContent === 'Recorded circulation stop request. Live confirmation is unavailable on this computer.'`);
+  assert.equal(await evaluate(`document.getElementById('override-status').textContent`), 'Recorded choice · Paused without a resume time.');
+  assert.match(await evaluate(`document.getElementById('away-status').textContent`), /^Recorded · /);
+  await evaluate(`homeFixture.paused = false; homeFixture.automatic = true; homeFixture.manualPhase = null; await homeFixture.poll()`);
+  await until(`document.getElementById('override-status').textContent === 'Recorded choice · Automatic.'`);
+  assert.equal(await evaluate(`document.getElementById('home-policy-current-title').textContent`), 'Recorded plan · Normal heating');
   assert.equal(await evaluate(`document.getElementById('test-circulation').disabled`), true,
     'Replica stops report saved intent without pretending to wait for local device feedback');
   assert.deepEqual(errors, [], 'Production monitor runs without browser exceptions');

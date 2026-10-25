@@ -61,7 +61,7 @@ export function settingsReloadScope(status = {}) {
   const reloadable = [
     'Heating strategy, comfort limits and learning settings',
     'Electricity rates',
-    'Adaptive recording budget, backup folder and verification schedule',
+    'Adaptive recording budget and verification schedule',
     'Admin and family passwords',
   ];
   if (['mqtt', 'providers'].includes(status?.input)) {
@@ -71,7 +71,7 @@ export function settingsReloadScope(status = {}) {
   const restartRequired = [
     'Input mode',
     'Web address and port, including LAN HTTP backup enablement',
-    'Data and database locations',
+    'Data, database and backup folder locations',
     'Topology, instance role, pairing and mirroring connections',
     'Environment variables, including overrides',
   ];
