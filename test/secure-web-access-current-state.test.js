@@ -87,7 +87,7 @@ test('actual pending Retry does not display its retained previous error as the c
     assert.equal(current.operation.state, 'running'); assert.equal(current.operation.error, null);
     assert.equal(current.error, 'helper_authorization_start_failed');
     const view = secureWebAccessView(current, { admin: true, now: now() });
-    assert.equal(view.next.title, 'Setting up HTTPS'); assert.equal(view.busy, true);
+    assert.equal(view.next.title, 'Retrying HTTPS setup'); assert.equal(view.busy, true);
     assert.equal(view.receipt, null, 'A running operation does not become a completed receipt');
   } finally { release(); await until(() => manager.status().operation.state !== 'running'); }
 });
@@ -106,7 +106,7 @@ test('actual background certificate recovery separates current readiness from th
   const view = secureWebAccessView({ ...current, transport: { https: { enabled: true, listening: true } } }, { admin: true, now: now() });
   assert.equal(view.next, null); assert.equal(view.error, '');
   assert.match(view.addressHelp, /loopback.*reaches only this computer/);
-  assert.match(view.receipt.text, /Last action · Set up HTTPS request failed/);
+  assert.match(view.receipt.text, /Last action · Enable HTTPS request failed/);
   assert.equal(view.receipt.at, failed.completedAt, 'Background recovery never renews the old receipt clock');
 });
 

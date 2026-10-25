@@ -7,6 +7,7 @@ import { assertWebRequest } from '../chart/web-access.js';
 
 const admin = { role: 'admin' }, family = { role: 'family' };
 const ready = {
+  version: 1,
   phase: 'ready', enabled: true, hostname: 'synthetic-access.example-tail.ts.net',
   url: 'https://synthetic-access.example-tail.ts.net:8443',
   certificate: { expiresAt: '2026-12-01T12:00:00Z' },
@@ -17,6 +18,10 @@ const ready = {
   dns: { state: 'ready', checkedAt: '2026-10-14T12:00:00Z', resolver: '192.0.2.53', expectedAddress: '192.0.2.1', a: ['192.0.2.1'], aaaa: [] },
   updates: { policy: 'manual', installed: '1.104.1', latest: '1.104.2', candidate: '1.104.2' },
 };
+const operationReply = (action, state = 'running', at = Date.parse('2026-10-14T12:00:00Z')) => ({
+  id: '11111111-1111-4111-8111-111111111111', action, state, stage: state === 'running' ? 'starting' : 'complete',
+  startedAt: at, completedAt: state === 'running' ? null : at, error: null,
+});
 
 test('network guidance uses the reported destination and exact HTTPS port, with no runnable unknown-address examples', () => {
   const source = { ...ready, url: `https://${ready.hostname}:9443`,
@@ -233,14 +238,14 @@ test('a running Retry reports the current action and retains its last problem se
   const source = { ...ready, phase: 'degraded', error: 'helper_authorization_start_failed',
     operation: { state: 'running', action: 'retry', error: null } };
   const view = secureWebAccessView(source, { admin: true });
-  assert.equal(view.busy, true); assert.equal(view.next.title, 'Setting up HTTPS');
-  assert.match(view.next.help, /current operation is running/);
+  assert.equal(view.busy, true); assert.equal(view.next.title, 'Retrying HTTPS setup');
+  assert.match(view.next.help, /Retrying the saved HTTPS setup/);
   assert.match(view.error, /could not start Tailscale authorization/);
   assert.equal(view.problemCode, 'helper_authorization_start_failed');
   const { document, nodes } = fixture();
   const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, request: async () => source });
   await panel.refresh({ force: true });
-  assert.equal(nodes.get('secure-web-access-next-title').textContent, 'Setting up HTTPS');
+  assert.equal(nodes.get('secure-web-access-next-title').textContent, 'Retrying HTTPS setup');
   assert.equal(nodes.get('secure-web-access-message').classList.contains('form-error'), false);
   assert.match(nodes.get('secure-web-access-last-error').textContent, /^Last reported problem ·/);
   assert.equal(nodes.get('secure-web-access-last-error').hidden, false);
@@ -276,7 +281,7 @@ test('current recovery is independent of a recent failed action receipt and its 
   const view = secureWebAccessView(recovered, { admin: true, now });
   assert.equal(view.next, null);
   assert.equal(view.error, ''); assert.equal(view.historicalProblem, true);
-  assert.match(view.receipt.text, /Last action · Set up HTTPS request failed/);
+  assert.match(view.receipt.text, /Last action · Enable HTTPS request failed/);
   assert.equal(view.receipt.at, operation.completedAt, 'Receipt keeps the actual operation clock');
   for (const completedAt of [now + 1, null, 'invalid', '2026-10-14T11:59:59Z', NaN])
     assert.equal(secureWebAccessView({ ...recovered, operation: { ...operation, completedAt } }, { admin: true, now }).receipt, null,
@@ -381,6 +386,144 @@ function fixture() {
   return { document, nodes };
 }
 
+const webActionCases = [
+  ['enable', 'Enable HTTPS', 'Enabling HTTPS', { enabled: false, phase: 'disabled' }],
+  ['recheck', 'Recheck', 'Checking web access', {}],
+  ['retry', 'Retry setup', 'Retrying HTTPS setup', { phase: 'degraded', error: 'helper_authorization_start_failed' }],
+  ['disable', 'Disable HTTPS', 'Disabling HTTPS', {}],
+  ['check-updates', 'Check releases', 'Checking helper releases', {}],
+  ['update-now', 'Install helper update', 'Updating the certificate helper', {}],
+  ['set-update-policy', 'Change update policy', 'Saving the update policy', {}],
+  ['restore-identity', 'Restore saved identity', 'Restoring the saved certificate identity', { phase: 'degraded', error: 'identity_restore_required' }],
+  ['reauthorize-pair', 'Authorize current pair', 'Authorizing the current pair', { phase: 'degraded', error: 'https_pair_identity_changed',
+    pair: { paired: true, ownerId: 'fixture-owner', localOwner: true, reauthorization: { token: 'fixture-binding' } } }],
+  ['start-fresh', 'Start fresh HTTPS setup', 'Preparing fresh HTTPS setup', { recovery: { fresh: { token: 'fixture-replacement' } } }],
+];
+
+test('every Web access action distinguishes request submission, running work and terminal receipts', async () => {
+  const clock = Date.parse('2026-10-14T12:00:00Z');
+  for (const [action, label, runningTitle, changes] of webActionCases) {
+    const { document, nodes } = fixture(); document.defaultView.location.protocol = 'http:';
+    let source = { ...structuredClone(ready), ...changes }, accept, writes = 0;
+    const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, now: () => clock, confirm: async () => true,
+      request: async (_path, body) => { if (body) { writes++; return new Promise(resolve => { accept = resolve; }); } return structuredClone(source); } });
+    await panel.refresh({ force: true });
+    const request = panel.run(action, action === 'set-update-policy' ? { policy: 'automatic' } : {});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(writes, 1, action);
+    assert.equal(nodes.get('secure-web-access-next-title').textContent, `${label} request in progress`, action);
+    assert.match(nodes.get('secure-web-access-next-help').textContent, /Waiting for the request result/);
+    assert.equal(nodes.get('secure-web-access-message').textContent, '', 'One progress block, without a competing generic instruction');
+    assert.equal(await panel.run(action), false, 'A second activation cannot duplicate the pending request');
+    source = { ...source, operation: { id: 'fixture-operation', action, state: 'running', startedAt: clock, error: null } };
+    accept(operationReply(action)); assert.equal(await request, true);
+    assert.equal(nodes.get('secure-web-access-next-title').textContent, runningTitle, action);
+    assert.equal(nodes.get('secure-web-access-message').textContent, '');
+    for (const other of webActionCases) assert.equal(nodes.get(`secure-web-access-${other[0] === 'set-update-policy' ? 'update-policy' : other[0]}`).disabled, true, action);
+    for (const outcome of ['completed', 'failed', 'interrupted']) {
+      source = { ...structuredClone(ready), operation: { id: 'fixture-operation', action, state: outcome,
+        completedAt: clock - 3000, error: outcome === 'completed' ? null : 'helper_authorization_start_failed' } };
+      await panel.refresh({ force: true });
+      const view = secureWebAccessView(source, { admin: true, now: clock });
+      assert.equal(view.busy, false); assert.equal(view.next, null, 'A historical outcome cannot replace current healthy readiness');
+      assert.equal(view.receipt.at, clock - 3000);
+      assert(view.receipt.text.includes(`Last action · ${label} request ${outcome === 'completed' ? 'processed' : outcome}`));
+      assert.equal(nodes.get('secure-web-access-message').textContent, '');
+      assert.equal(secureWebAccessView(source, { admin: true, now: clock + 86400_000 }).receipt, null);
+    }
+  }
+  assert.equal(secureWebAccessView({ ...ready, operation: { state: 'running', action: 'constructor' } }, { admin: true }).next.title, 'Processing web access request');
+  assert.equal(secureWebAccessView({ ...ready, operation: { state: 'completed', action: 'constructor', completedAt: clock } }, { admin: true, now: clock }).receipt, null);
+});
+
+test('active Web access polling promptly observes completion, preserves policy drafts and stops when hidden or idle', async () => {
+  const { document, nodes } = fixture(); let clock = Date.parse('2026-10-14T12:00:00Z'), reads = 0;
+  let source = structuredClone(ready), accept;
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, now: () => clock,
+    request: async (_path, body) => { if (body) return new Promise(resolve => { accept = resolve; }); reads++; return structuredClone(source); } });
+  await panel.refresh({ force: true }); nodes.get('secure-web-access-details').open = true;
+  const request = panel.run('set-update-policy', { policy: 'automatic' });
+  assert.equal(nodes.get('secure-web-access-update-policy').value, 'automatic');
+  source.operation = operationReply('set-update-policy'); accept(source.operation); await request;
+  assert.equal(nodes.get('secure-web-access-update-policy').value, 'automatic', 'An accepted but unfinished save retains the selected choice');
+  clock += 1999; await panel.tick(); assert.equal(reads, 2);
+  nodes.get('secure-web-access-details').open = false; clock++; await panel.tick(); assert.equal(reads, 2);
+  nodes.get('secure-web-access-details').open = true; nodes.get('secure-web-access-details').checkVisibility = () => false;
+  await panel.tick(); assert.equal(reads, 2, 'A closed ancestor does not poll hidden work');
+  nodes.get('secure-web-access-details').checkVisibility = () => true;
+  nodes.get('secure-web-access-details').open = true; document.visibilityState = 'hidden'; await panel.tick(); assert.equal(reads, 2);
+  document.visibilityState = 'visible'; source.updates.policy = 'automatic'; source.operation = { action: 'set-update-policy', state: 'completed', completedAt: clock };
+  await panel.tick(); assert.equal(reads, 3); assert.equal(nodes.get('secure-web-access-update-policy').value, 'automatic');
+  assert.equal(nodes.get('secure-web-access-update-policy').disabled, false);
+  clock += 30_000; await panel.tick(); assert.equal(reads, 3, 'Idle Web access adds no active-operation polling');
+  assert.equal(await panel.run('retired-action'), false, 'Unsupported actions fail before sending a request');
+});
+
+test('an accepted operation survives a failed status refresh without hiding uncertainty or permitting another write', async () => {
+  const { document, nodes } = fixture(); let clock = Date.parse('2026-10-14T12:00:00Z');
+  let fail = false, writes = 0, source = structuredClone(ready);
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, now: () => clock,
+    request: async (_path, body) => {
+      if (body) { writes++; fail = true; return operationReply(body.action); }
+      if (fail) throw new Error('Synthetic status connection lost.');
+      return structuredClone(source);
+    } });
+  await panel.refresh({ force: true }); nodes.get('secure-web-access-details').open = true;
+  assert.equal(await panel.run('recheck'), true);
+  assert.equal(nodes.get('secure-web-access-next-title').textContent, 'Checking web access', 'Durable acceptance remains known even when the next GET fails');
+  assert.match(nodes.get('secure-web-access-message').textContent, /status could not be refreshed.*connection lost/);
+  assert.equal(nodes.get('secure-web-access-state').textContent, 'Status unavailable');
+  assert.match(nodes.get('secure-web-access-summary').textContent, /last successful status read/);
+  assert.equal(nodes.get('secure-web-access-message').classList.contains('form-error'), true);
+  assert.equal(await panel.run('disable'), false); assert.equal(writes, 1);
+  fail = false; clock += 2000; source.operation = operationReply('recheck', 'completed', clock);
+  await panel.tick();
+  assert.equal(nodes.get('secure-web-access-message').textContent, '');
+  assert.equal(nodes.get('secure-web-access-next').hidden, true);
+  assert.equal(nodes.get('secure-web-access-recheck').disabled, false);
+  assert.match(nodes.get('secure-web-access-receipt').textContent, /Recheck request processed/);
+});
+
+test('unsupported or missing status versions block commands until a current status arrives', async () => {
+  const { document, nodes } = fixture(); let source = structuredClone(ready), writes = 0;
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => admin,
+    request: async (_path, body) => { if (body) { writes++; return operationReply(body.action); } return structuredClone(source); } });
+  await panel.refresh({ force: true });
+  for (const version of [undefined, 0, 2]) {
+    source.version = version; await panel.refresh({ force: true });
+    assert.equal(nodes.get('secure-web-access-recheck').disabled, true);
+    assert.match(nodes.get('secure-web-access-message').textContent, /status format is unsupported/);
+    assert.equal(await panel.run('recheck'), false); assert.equal(writes, 0);
+  }
+  source = structuredClone(ready); await panel.refresh({ force: true });
+  assert.equal(nodes.get('secure-web-access-recheck').disabled, false);
+  assert.equal(nodes.get('secure-web-access-message').textContent, '');
+});
+
+test('malformed, mismatched and unsupported operation replies fail closed and check status without resubmitting', async () => {
+  for (const reply of [undefined, ready, { ...operationReply('disable') }, { ...operationReply('recheck'), retiredField: true },
+    { ...operationReply('recheck'), state: 'unknown' }, { ...operationReply('recheck'), completedAt: 123 }]) {
+    const { document, nodes } = fixture(); let writes = 0, reads = 0;
+    const panel = createSecureWebAccessPanel({ document, getAccess: () => admin,
+      request: async (_path, body) => { if (body) { writes++; return structuredClone(reply); } reads++; return structuredClone(ready); } });
+    await panel.refresh({ force: true }); assert.equal(await panel.run('recheck'), false);
+    assert.equal(writes, 1); assert.equal(reads, 2);
+    assert.match(nodes.get('secure-web-access-request-receipt').textContent, /valid operation receipt.*checked before trying again/);
+    assert.equal(nodes.get('secure-web-access-next').hidden, true);
+  }
+});
+
+test('signing out while an action reply is pending clears its progress and rejects the late receipt', async () => {
+  const { document, nodes } = fixture(); let access = admin, accept;
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => access,
+    request: async (_path, body) => body ? new Promise(resolve => { accept = resolve; }) : structuredClone(ready) });
+  await panel.refresh({ force: true }); const request = panel.run('recheck');
+  access = family; panel.clear(); accept(operationReply('recheck')); assert.equal(await request, false);
+  assert.equal(nodes.get('secure-web-access-admin').hidden, true);
+  assert.equal(nodes.get('secure-web-access-next').hidden, true);
+  assert.equal(nodes.get('secure-web-access-request-receipt').hidden, true);
+});
+
 test('panel role changes remove private links without rebuilding controls or keeping pending responses', async () => {
   const { document, nodes } = fixture();
   let access = admin, complete;
@@ -440,9 +583,10 @@ test('an uncertain request reply and a durable completed operation remain distin
   let now = Date.parse('2026-10-14T12:00:00Z'), source = structuredClone(ready), fail = true;
   const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, now: () => now,
     request: async (_path, body) => {
-      if (body && fail) {
-        source.operation = { id: 'synthetic-operation', action: body.action, state: 'completed', completedAt: now, error: null };
-        throw Error('The request reply was lost.');
+      if (body) {
+        source.operation = operationReply(body.action, 'completed', now);
+        if (fail) throw Error('The request reply was lost.');
+        return structuredClone(source.operation);
       }
       return structuredClone(source);
     } });
@@ -483,6 +627,8 @@ test('first paired setup submits the explicit selected certificate owner and lat
       if (body) {
         writes.push(body);
         responses.pair = { paired: true, ownerId: 'synthetic-owner', localOwner: owner === 'local' };
+        responses.operation = operationReply(body.action, 'completed');
+        return structuredClone(responses.operation);
       }
       return structuredClone(responses);
     } });
@@ -544,7 +690,8 @@ test('pair recovery needs explicit current-token confirmation and is unavailable
     pair: { paired: true, ownerId: 'fixture-owner', localOwner: true, reauthorization: { token: 'fixture-current-binding' } } };
   const panel = createSecureWebAccessPanel({ document, getAccess: () => access,
     confirm: async details => { confirmation = details; return accepted; }, request: async (_path, body) => {
-      if (body) writes.push(body); return structuredClone(source);
+      if (body) { writes.push(body); source.operation = operationReply(body.action, 'completed'); return structuredClone(source.operation); }
+      return structuredClone(source);
     } });
   await panel.refresh({ force: true });
   assert.equal(nodes.get('secure-web-access-reauthorize-pair').hidden, false);
@@ -575,7 +722,7 @@ test('restored identity requires a separate fenced-owner confirmation and never 
   const source = { ...ready, phase: 'degraded', error: 'identity_restore_required' };
   const panel = createSecureWebAccessPanel({ document, getAccess: () => access,
     confirm: async details => { confirmation = details; return accepted; }, request: async (_path, body) => {
-      if (body) writes.push(body);
+      if (body) { writes.push(body); source.operation = operationReply(body.action, 'completed'); return structuredClone(source.operation); }
       return structuredClone(source);
     } });
   await panel.refresh({ force: true });
@@ -617,7 +764,7 @@ test('helper installation requires setup and stays on the certificate owner whil
   assert.match(view.updateSummary, /managed on the paired certificate-owner/);
   const { document, nodes } = fixture(), writes = [];
   const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, request: async (_path, body) => {
-    if (body) writes.push(body);
+    if (body) { writes.push(body); peer.operation = operationReply(body.action, 'completed'); return structuredClone(peer.operation); }
     return structuredClone(peer);
   } });
   await panel.refresh({ force: true });
@@ -702,8 +849,9 @@ test('fresh preparation requires active recovery access and explicit confirmatio
       request: async (_path, body) => {
         if (body) {
           writes.push(body);
-          if (body.action === 'start-fresh') source = { phase: 'disabled', enabled: false,
+          if (body.action === 'start-fresh') source = { version: 1, phase: 'disabled', enabled: false,
             setup: { credentialsReady: true }, pair: { paired: true }, transport: source.transport };
+          source.operation = operationReply(body.action, 'completed'); return structuredClone(source.operation);
         }
         return structuredClone(source);
       } });

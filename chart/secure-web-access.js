@@ -140,12 +140,23 @@ function releaseDifference(candidate, installed) {
   return 0;
 }
 
-const actionLabels = { enable: 'Set up HTTPS', disable: 'Disable HTTPS', retry: 'Retry setup', recheck: 'Recheck',
+const actionLabels = { enable: 'Enable HTTPS', disable: 'Disable HTTPS', retry: 'Retry setup', recheck: 'Recheck',
   'check-updates': 'Check releases', 'update-now': 'Install helper update', 'set-update-policy': 'Change update policy',
   'restore-identity': 'Restore saved identity', 'reauthorize-pair': 'Authorize current pair', 'start-fresh': 'Start fresh HTTPS setup' };
 
+function acceptedOperation(value, action) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).every(key => ['id', 'action', 'state', 'stage', 'startedAt', 'completedAt', 'error'].includes(key))
+    && typeof value.id === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value.id)
+    && value.action === action && ['running', 'completed', 'failed', 'interrupted'].includes(value.state)
+    && typeof value.stage === 'string' && value.stage.length > 0
+    && Number.isSafeInteger(value.startedAt) && value.startedAt >= 0
+    && (value.state === 'running' ? value.completedAt === null : Number.isSafeInteger(value.completedAt) && value.completedAt >= 0)
+    && (value.error === null || typeof value.error === 'string');
+}
+
 function operationReceipt(operation, now) {
-  if (!operation || !actionLabels[operation.action] || !['completed', 'failed', 'interrupted'].includes(operation.state)) return null;
+  if (!operation || !Object.hasOwn(actionLabels, operation.action) || !['completed', 'failed', 'interrupted'].includes(operation.state)) return null;
   const at = operation.completedAt;
   if (!actionReceiptRecent(at, now)) return null;
   return { at, error: operation.error ?? '', text: `Last action · ${actionLabels[operation.action]} request ${
@@ -156,11 +167,32 @@ const replacementProblems = new Set(Object.keys(replacementCauses).filter(code =
 
 
 function nextStep(state, { tlsReady, certificateValid, certificateExpired, unconfirmed, peerOwner, retainedRenewal, savedSetup, authorizationUrl, errorCode }) {
-  if (state.operation?.state === 'running') return { title: {
-    'check-updates': 'Checking helper releases', 'update-now': 'Updating the certificate helper',
-    'set-update-policy': 'Saving the update policy', 'restore-identity': 'Restoring the certificate identity',
-    disable: 'Disabling HTTPS', 'start-fresh': 'Preparing fresh HTTPS setup',
-  }[state.operation.action] ?? 'Setting up HTTPS', help: 'The current operation is running. Status updates when it completes.' };
+  if (state.operation?.state === 'running') {
+    const progress = {
+      enable: { title: savedSetup ? 'Enabling HTTPS' : 'Setting up HTTPS',
+        help: 'Preparing this computer’s HTTPS access. Current listener readiness is shown separately.' },
+      recheck: { title: 'Checking web access',
+        help: 'Checking the existing HTTPS setup and household DNS. Pending certificate maintenance may finish as part of this check. Results update automatically.' },
+      retry: { title: 'Retrying HTTPS setup',
+        help: 'Retrying the saved HTTPS setup. Results update automatically.' },
+      disable: { title: 'Disabling HTTPS',
+        help: 'Closing this computer’s HTTPS listener. Retained certificate-owner duties are shown separately.' },
+      'check-updates': { title: 'Checking helper releases',
+        help: 'Checking which signed helper releases are eligible. Results update automatically.' },
+      'update-now': { title: 'Updating the certificate helper',
+        help: 'Installing the selected eligible helper release. Current HTTPS readiness is shown separately.' },
+      'set-update-policy': { title: 'Saving the update policy',
+        help: 'Saving the selected helper update policy. Results update automatically.' },
+      'restore-identity': { title: 'Restoring the saved certificate identity',
+        help: 'Restoring the confirmed saved identity on this computer. Current HTTPS readiness is shown separately.' },
+      'reauthorize-pair': { title: 'Authorizing the current pair',
+        help: 'Authorizing the reviewed paired identities while retaining the existing HTTPS owner and saved setup.' },
+      'start-fresh': { title: 'Preparing fresh HTTPS setup',
+        help: 'Preserving the previous setup and preparing this computer for normal HTTPS setup.' },
+    };
+    return Object.hasOwn(progress, state.operation.action) ? progress[state.operation.action]
+      : { title: 'Processing web access request', help: 'The current web access request is running. Results update automatically.' };
+  }
   if (state.phase === 'preparing') return { title: 'Setting up HTTPS',
     help: 'Preparing this computer’s certificate access. Status updates when the operation completes.' };
   if (state.busy === true) return { title: 'Checking web access',
@@ -426,17 +458,24 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
   onAccess = () => {}, ingress = false, now = Date.now, confirm = confirmAction }) {
   const $ = id => document.getElementById(id), fold = $('secure-web-access-details');
   const location = document.defaultView?.location ?? {};
-  let state = {}, overview, pending = false, reading, epoch = 0, lastRead = 0, status, localReceipt, replacementContext;
+  let state = {}, overview, pending = false, pendingAction = null, policyDraft = null, readFailure = '', reading, epoch = 0, lastRead = 0, status, localReceipt, replacementContext;
   const recoverySession = () => ingress || getAccess()?.source === 'ingress' || location.protocol === 'http:'
     && (state.transport?.recovery?.listening === true || state.transport?.lanHttp?.listening === true);
   const setText = (id, text) => { const node = $(id); if (node && node.textContent !== text) node.textContent = text; };
   function render() {
     const admin = getAccess()?.role === 'admin';
     const view = secureWebAccessView(state, { admin, now: now() });
-    setText('secure-web-access-state', view.label); $('secure-web-access-state').dataset.state = view.tone;
+    const waiting = admin && pendingAction;
+    const next = waiting && !view.busy
+      ? { title: `${pendingAction === 'enable' ? view.enableLabel : actionLabels[pendingAction]} request in progress`, help: 'Waiting for the request result. Current HTTPS readiness is shown separately above.' }
+      : view.next;
+    if (!pending && (!view.busy || state.operation?.action !== 'set-update-policy' || state.updates?.policy === policyDraft)) policyDraft = null;
+    setText('secure-web-access-state', readFailure ? 'Status unavailable' : view.label);
+    $('secure-web-access-state').dataset.state = readFailure ? 'attention' : view.tone;
     setText('secure-web-access-remote', view.remote);
     $('secure-web-access-remote-row').hidden = !admin;
-    setText('secure-web-access-summary', view.summary);
+    setText('secure-web-access-summary', readFailure
+      ? 'Latest web access status could not be confirmed. Values below are from the last successful status read.' : view.summary);
     for (const field of ['https', 'expiry', 'http', 'recovery', 'ingress']) setText(`secure-web-access-${field}`, view[field]);
     $('secure-web-access-expiry-row').hidden = !view.hasCertificate;
     $('secure-web-access-admin').hidden = !admin;
@@ -451,7 +490,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     setText('secure-web-access-security-help', view.securityWarning);
     setText('secure-web-access-security-reported', view.securityReported);
     $('secure-web-access-security-warning').hidden = !view.securityWarning;
-    const available = admin && !pending && !view.busy && Object.hasOwn(phases, state.phase);
+    const available = admin && !pending && !view.busy && !readFailure && Object.hasOwn(phases, state.phase);
     for (const action of ['enable', 'recheck', 'retry', 'disable', 'check-updates', 'update-now', 'restore-identity', 'reauthorize-pair'])
       $(`secure-web-access-${action}`).disabled = !available || action === 'update-now' && !view.updateAvailable
         || action === 'enable' && !view.setupAvailable;
@@ -486,13 +525,14 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     $('secure-web-access-update-policy').disabled = !available || !view.updatePolicyAvailable;
     $('secure-web-access-update-now').hidden = !view.updateAvailable;
     $('secure-web-access-owner-select').disabled = !available || !view.pairSetup;
-    if ($('secure-web-access-update-policy').value !== view.policy) $('secure-web-access-update-policy').value = view.policy;
+    const policy = policyDraft ?? view.policy;
+    if ($('secure-web-access-update-policy').value !== policy) $('secure-web-access-update-policy').value = policy;
     const authorization = $('secure-web-access-authorize');
     $('secure-web-access-authorization').hidden = !view.authorizationUrl;
     if (view.authorizationUrl) authorization.setAttribute('href', view.authorizationUrl); else authorization.removeAttribute('href');
-    $('secure-web-access-next').hidden = !view.next;
-    setText('secure-web-access-next-title', view.next?.title ?? '');
-    setText('secure-web-access-next-help', view.next?.help ?? '');
+    $('secure-web-access-next').hidden = !next;
+    setText('secure-web-access-next-title', next?.title ?? '');
+    setText('secure-web-access-next-help', next?.help ?? '');
     $('secure-web-access-account-links').hidden = !view.accountLinks;
     const link = $('secure-web-access-url'); link.hidden = !view.url; $('secure-web-access-address').hidden = !view.url;
     if (view.url) link.setAttribute('href', view.url); else link.removeAttribute('href');
@@ -523,19 +563,21 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     setText('secure-web-access-release-summary', view.releaseSummary);
     setText('secure-web-access-update-summary', admin ? view.updateSummary : '');
     setText('secure-web-access-problem-code', view.problemCode);
-    setText('secure-web-access-problem-label', view.historicalProblem ? 'Last action problem code' : 'Current problem code');
+    setText('secure-web-access-problem-label', (view.busy || waiting || readFailure) && view.error ? 'Last reported problem code'
+      : view.historicalProblem ? 'Last action problem code' : 'Current problem code');
     $('secure-web-access-problem-row').hidden = !view.problemCode;
-    setText('secure-web-access-last-error', view.busy && view.error ? `Last reported problem · ${view.error}` : '');
-    $('secure-web-access-last-error').hidden = !view.busy || !view.error;
+    setText('secure-web-access-last-error', (view.busy || waiting) && view.error ? `Last reported problem · ${view.error}` : '');
+    $('secure-web-access-last-error').hidden = !(view.busy || waiting) || !view.error;
     if (localReceipt && !actionReceiptRecent(localReceipt.at, now())) localReceipt = null;
     setText('secure-web-access-receipt', view.receipt?.text ?? '');
     $('secure-web-access-receipt').hidden = !view.receipt;
     setText('secure-web-access-request-receipt', admin ? localReceipt?.text ?? '' : '');
     $('secure-web-access-request-receipt').hidden = !admin || !localReceipt;
-    if (!pending) {
-      const message = view.busy ? 'Web access operation is running. Recheck after it completes.' : view.problemInSummary ? '' : view.error;
+    if (!pending || waiting) {
+      const message = readFailure || (view.busy || waiting ? next ? '' : 'A web access operation is running. Status updates automatically.'
+        : view.problemInSummary ? '' : view.error);
       setText('secure-web-access-message', message);
-      $('secure-web-access-message').classList.toggle('form-error', !view.busy && Boolean(message));
+      $('secure-web-access-message').classList.toggle('form-error', Boolean(readFailure) || !view.busy && !waiting && Boolean(message));
     }
     const warning = insecureWebWarning(state.transport, { protocol: location.protocol, hostname: location.hostname, ingress })
       || (!overview?.transport && typeof overview?.warning === 'string' ? overview.warning : '');
@@ -550,18 +592,19 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
       try {
         const next = await request('/api/web-access');
         if (generation !== epoch) return;
+        if (!next || next.version !== 1) throw new Error('The Web access status format is unsupported. Use matching application versions before continuing.');
         if (next.webAccess) onAccess(next.webAccess);
-        state = next; lastRead = now(); render();
+        state = next; lastRead = now(); readFailure = ''; render();
       } catch (error) {
         if (generation !== epoch || error.status === 401) return;
-        setText('secure-web-access-message', failure(error.code ?? error.message, state.environment) || 'Web access status could not be refreshed.');
-        $('secure-web-access-message').classList.add('form-error');
+        readFailure = `Web access status could not be refreshed. ${failure(error.code ?? error.message, state.environment) || 'The latest result is not confirmed.'}`;
+        lastRead = now(); render();
       } finally { if (generation === epoch) reading = null; }
     })();
     return reading;
   }
   async function run(action, extra = {}) {
-    if (pending || state.operation?.state === 'running' || getAccess()?.role !== 'admin' || !Object.hasOwn(phases, state.phase)) return false;
+    if (!Object.hasOwn(actionLabels, action) || pending || readFailure || state.operation?.state === 'running' || getAccess()?.role !== 'admin' || !Object.hasOwn(phases, state.phase)) return false;
     const actionView = secureWebAccessView(state, { admin: true });
     if (actionView.busy) return false;
     if (action === 'enable' && !actionView.setupAvailable) return false;
@@ -596,17 +639,19 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
       if (action === 'restore-identity' && !secureWebAccessView(state, { admin: true }).restoreIdentity) return false;
       if (action === 'reauthorize-pair' && pairToken !== secureWebAccessView(state, { admin: true }).pairReauthorization?.token) return false;
       if (action === 'start-fresh' && (!recoverySession() || freshToken !== secureWebAccessView(state, { admin: true }).fresh?.token)) return false;
-      render();
+      pendingAction = action;
+      if (action === 'set-update-policy' && ['automatic', 'manual'].includes(extra.policy)) policyDraft = extra.policy;
       localReceipt = null;
-      setText('secure-web-access-message', 'Web access request in progress…');
-      $('secure-web-access-message').classList.remove('form-error');
+      render();
       const owner = action === 'enable' && state.pair?.paired === true && !state.pair.ownerId
         ? { owner: $('secure-web-access-owner-select').value } : {};
-      await request('/api/web-access', { action, ...owner, ...extra,
+      const accepted = await request('/api/web-access', { action, ...owner, ...extra,
         ...(action === 'reauthorize-pair' ? { token: pairToken, confirmed: true } : {}),
         ...(action === 'start-fresh' ? { token: freshToken, confirmed: true, confirmedPreviousOwnerStopped: true } : {}),
         ...(action === 'restore-identity' ? { confirmedPeerFenced: true } : {}) });
       if (generation !== epoch) return false;
+      if (!acceptedOperation(accepted, action)) throw new Error('The action reply did not contain a valid operation receipt. Its result must be checked before trying again.');
+      state = { ...state, operation: accepted }; render();
       if (reading) await reading;
       lastRead = 0;
       await refresh({ force: true });
@@ -614,11 +659,13 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     } catch (error) {
       if (generation === epoch && error.status !== 401) {
         localReceipt = { at: now(), text: `Last request · ${actionLabels[action] ?? 'Web access'} · ${date(now())}. ${failure(error.code ?? error.message, state.environment) || 'The reply could not be confirmed.'}` };
+        if (reading) await reading;
+        await refresh({ force: true });
       }
       return false;
     } finally {
       if (generation === epoch) {
-        pending = false;
+        pending = false; pendingAction = null;
         render();
         const visible = node => node?.isConnected && !node.disabled && node.getClientRects().length;
         if (document.activeElement === document.body || !visible(document.activeElement)) {
@@ -639,6 +686,11 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
   render();
   return {
     refresh, run,
+    tick() {
+      if (getAccess()?.role === 'admin' && fold.open && fold.checkVisibility?.() !== false && document.visibilityState !== 'hidden'
+        && (readFailure || state.busy === true || state.operation?.state === 'running') && now() - lastRead >= 2000)
+        return refresh({ force: true });
+    },
     update(next) {
       status = next;
       overview = next?.webTransport;
@@ -651,7 +703,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
       if (fold.open || !lastRead) void refresh();
     },
     clear() {
-      ++epoch; state = {}; overview = undefined; status = undefined; reading = null; lastRead = 0; pending = false; localReceipt = null;
+      ++epoch; state = {}; overview = undefined; status = undefined; reading = null; lastRead = 0; pending = false; pendingAction = null; policyDraft = null; readFailure = ''; localReceipt = null;
       replacementContext = undefined; $('secure-web-access-replacement-details').open = false;
       $('secure-web-access-owner-select').value = 'local'; render();
     },

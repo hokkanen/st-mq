@@ -115,6 +115,7 @@ try {
           fixture.helper = { state: 'authorization_required', version: '1.104.1', authorizationUrl: 'https://login.tailscale.com/a/synthetic-authorization' };
           fixture.updates.installed = '1.104.1';
         } else if (input.action === 'recheck' || input.action === 'retry') {
+          fixture.error = null;
           fixture.phase = 'ready'; fixture.hostname = hostname; fixture.url = `https://${hostname}:8443/`;
           fixture.certificate = { expiresAt: '2026-12-01T12:00:00Z' };
           fixture.helper.state = 'running';
@@ -130,12 +131,20 @@ try {
         else if (input.action === 'restore-identity') {
           assert.equal(input.confirmedPeerFenced, true, 'Restoration only follows an explicit fenced-owner confirmation');
           fixture.error = null; fixture.phase = 'ready';
+        } else if (input.action === 'reauthorize-pair') {
+          assert.equal(input.token, fixture.pair.reauthorization.token);
+          assert.equal(input.confirmed, true);
+          fixture.pair.reauthorization = null; fixture.error = null; fixture.phase = 'ready';
         } else if (input.action === 'start-fresh') {
           assert.equal(input.token, fixture.recovery.fresh.token);
           assert.equal(input.confirmed, true); assert.equal(input.confirmedPreviousOwnerStopped, true);
           for (const key of Object.keys(fixture)) delete fixture[key];
           Object.assign(fixture, structuredClone(originalFixture));
         }
+        fixture.operation = { id: '11111111-1111-4111-8111-111111111111', action: input.action,
+          state: 'completed', stage: 'complete', startedAt: Date.parse('2026-10-14T12:00:00Z'),
+          completedAt: Date.parse('2026-10-14T12:00:00Z'), error: null };
+        response.end(JSON.stringify(fixture.operation)); return;
       }
       response.end(JSON.stringify({ ...fixture, webAccess: { role, source: 'password' } })); return;
     }
@@ -544,7 +553,16 @@ try {
     assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').closest('section').getAttribute('aria-labelledby')`), 'secure-web-access-release-title');
   const readyFixture = structuredClone(fixture);
   const installFixture = next => { for (const key of Object.keys(fixture)) delete fixture[key]; Object.assign(fixture, structuredClone(next)); };
+  const runningActions = [
+    ['enable', 'Enabling HTTPS'], ['recheck', 'Checking web access'], ['retry', 'Retrying HTTPS setup'],
+    ['disable', 'Disabling HTTPS'], ['check-updates', 'Checking helper releases'], ['update-now', 'Updating the certificate helper'],
+    ['set-update-policy', 'Saving the update policy'], ['restore-identity', 'Restoring the saved certificate identity'],
+    ['reauthorize-pair', 'Authorizing the current pair'], ['start-fresh', 'Preparing fresh HTTPS setup'],
+  ];
   for (const [name, changes] of [
+    ...runningActions.map(([action]) => ['running-'+action, { ...readyFixture,
+      operation: { id: '11111111-1111-4111-8111-111111111111', action, state: 'running', stage: 'starting',
+        startedAt: Date.parse('2026-10-14T12:00:00Z'), completedAt: null, error: null } }]),
     ['remote-configured', { ...readyFixture, remoteAccess: { state: 'configured' } }],
     ['background-maintenance', { ...readyFixture, busy: true, operation: { action: 'recheck', state: 'completed', completedAt: Date.parse('2026-10-14T11:59:59Z'), error: null } }],
     ['remote-unavailable', { ...readyFixture, phase: 'ready', error: 'helper_remote_forwarding_unavailable', remoteAccess: { state: 'unavailable' } }],
@@ -670,8 +688,13 @@ try {
       assert.equal(await evaluate('webBrowser.writes'), writesBefore);
       assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"), /Last action/);
     }
-    if(name==='retry-pending')assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Setting up HTTPS');
-    if(name==='recovered-receipt'){assert.equal(await evaluate("document.getElementById('secure-web-access-next').checkVisibility()"),false);assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"),/Last action · Set up HTTPS request failed/);}
+    if(name==='retry-pending')assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Retrying HTTPS setup');
+    if(name.startsWith('running-')) {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), runningActions.find(([action]) => name==='running-'+action)[1]);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-message').textContent"), '', 'One action-specific progress block');
+      assert.doesNotMatch(await evaluate("document.getElementById('secure-web-access-next-help').textContent"), /Recheck after|current operation is running/);
+    }
+    if(name==='recovered-receipt'){assert.equal(await evaluate("document.getElementById('secure-web-access-next').checkVisibility()"),false);assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"),/Last action · Enable HTTPS request failed/);}
     if(name==='current-release') {
       assert.equal(await evaluate("document.getElementById('secure-web-access-update-now').hidden"), true);
       assert.equal(await evaluate("document.getElementById('secure-web-access-update-now').disabled"), true);
@@ -719,6 +742,23 @@ try {
     if (name==='peer-certificate') assert.equal(await evaluate("document.getElementById('secure-web-access-authorize').hasAttribute('href')"), false);
     await captureLayout(name,{details:['current-release','retained-urgent','unknown-destination','loopback-destination','custom-ports','default-port','long-hostname'].includes(name)});
   }
+  installFixture({ ...readyFixture, phase: 'degraded', error: 'helper_authorization_start_failed' });
+  await evaluate('webBrowser.panel.refresh({force:true})');
+  await evaluate("document.getElementById('secure-web-access-retry').focus();true"); await key('Enter');
+  await until("document.getElementById('secure-web-access-retry').hidden");
+  assert.equal(requests.at(-2).action, 'retry', 'The Retry button submits its own action');
+  installFixture({ ...readyFixture, phase: 'degraded', error: 'https_pair_identity_changed',
+    pair: { paired: true, ownerId: 'synthetic-owner', localOwner: true, reauthorization: { token: 'fixture-binding' } } });
+  await evaluate('webBrowser.panel.refresh({force:true})');
+  const beforeAuthorization = requests.filter(row => row.action==='reauthorize-pair').length;
+  await evaluate("document.getElementById('secure-web-access-reauthorize-pair').focus();true"); await key('Enter');
+  await until("document.querySelector('.confirmation-dialog[open]')"); await key('Escape');
+  await until("!document.querySelector('.confirmation-dialog')");
+  assert.equal(requests.filter(row => row.action==='reauthorize-pair').length, beforeAuthorization);
+  await key('Enter'); await until("document.querySelector('.confirmation-dialog[open]')");
+  await evaluate("document.querySelector('.confirmation-dialog .confirmation-actions button:last-child').click();true");
+  await until("document.getElementById('secure-web-access-reauthorize-pair').hidden");
+  assert.equal(requests.filter(row => row.action==='reauthorize-pair').length, beforeAuthorization+1);
   installFixture({ ...readyFixture, phase: 'repair_required', error: 'https_state_invalid',
     recovery: { kind: 'invalid-state', fresh: { token: 'fixture-keyboard-replacement', requiresPreviousOwnerStopped: true } } });
   await evaluate('webBrowser.panel.refresh({force:true})');

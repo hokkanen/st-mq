@@ -1391,6 +1391,7 @@ setInterval(refreshPairing, 3_000);
 setInterval(() => {
   checkCommunication();
   if (!session.locked) {
+    void secureWebAccess.tick();
     fireplacePanel.tick(); heatingExplorer.tick(); databaseExport.tick();
     if (lastStatus?.heatingTests?.busy && !heatingTestBusy && !equipmentBusy && !temporaryBusy && !h66TestBusy && !settingsReloadBusy)
       void refresh({ background: true });

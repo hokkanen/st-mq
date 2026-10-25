@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Show the requested Web access action while its reply is pending and use its
+  specific progress wording after acceptance. Refresh active results promptly,
+  retain update-policy selections during saves, and keep failed status reads
+  visible until a fresh result arrives. Recheck no longer appears as HTTPS setup
+  or asks for another manual check after automatic completion.
+
 - Keep the reset window’s Web access fold title stable while fresh HTTPS status
   loads. Show checking in its body instead of briefly flashing fallback guidance
   before the certificate-owner or receiving-computer instructions arrive.

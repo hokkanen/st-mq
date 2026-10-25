@@ -139,6 +139,25 @@ state cannot require a redundant login after browser sign-in has finished.
 Current login-needed, stopped and approval-pending states keep their existing
 explicit setup behavior; a current status failure does not count as authentication.
 
+The progress block names the action that is running. **Recheck** shows
+**Checking web access**, **Retry setup** shows **Retrying HTTPS setup**, and
+**Authorize current pair** shows **Authorizing the current pair**. Re-enabling a
+saved setup shows **Enabling HTTPS**; initial setup shows **Setting up HTTPS**.
+Release checks, helper updates, policy saves, identity restoration, disabling
+and fresh preparation each retain their own action wording. A pending request
+is distinct from accepted work, and neither is a completion receipt. Current
+listener readiness remains separate. While this panel is visible, active work
+is checked every two seconds; idle status keeps its ordinary refresh interval.
+Failed status reads remain visible and block further actions until current
+status is available. A lost action reply is checked without repeating the write.
+Past action receipts retain their original completion clocks and do not replace
+current readiness or a newer action.
+
+Recheck currently includes pending maintenance for the existing setup, such as
+finishing certificate issuance; the same-helper rename behavior is described
+below. It is distinct from **Start fresh HTTPS setup**, which requires its own
+recovery entrance and confirmation before preparing a new identity.
+
 The external steps are Tailscale account authorization and settings, a stable LAN
 address and local DNS mapping, and a browser check on each intended device. The
 application handles its helper installation, certificate issuance, listener and
