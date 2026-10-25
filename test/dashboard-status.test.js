@@ -143,6 +143,9 @@ test('HA pair-copy guidance is available before setup and on an HA slave without
     settingsReload: { available: false, reason: 'Read-only slave' } });
   assert.equal(slave.pairCopyHelp, true);
   assert.equal(slave.available, false);
+  assert.match(slave.location.message, /disabled in this read-only view/);
+  assert.doesNotMatch(slave.location.message, /Restart/);
+  assert.deepEqual(slave.location.rows, []);
   for (const status of [{}, { settingsReload: { configuration: { environment: 'ubuntu' } } },
     { topology: 'pair', pair: { platform: 'ubuntu' } }, { topology: 'pair', pair: {} },
     { topology: 'mirror', pair: { platform: 'hassio' } }]) {
@@ -157,6 +160,18 @@ test('configuration location reports missing metadata explicitly without guessin
     assert.equal(scope.location.message, 'Restart the controller to load configuration paths, then refresh this page');
     assert.deepEqual(scope.location.rows, []);
     assert.doesNotMatch(scope.instructions.join(' '), /undefined|null|\/home\/|\/addon_configs\/|\/config\/secrets/);
+  }
+});
+
+test('read-only configuration guidance does not promise paths after a restart', () => {
+  for (const status of [{ readOnly: true }, { topology: 'mirror', role: 'slave' },
+    { topology: 'pair', pair: { role: 'slave', canControl: false } }]) {
+    const scope = settingsReloadScope({ ...status, settingsReload: { available: false } });
+    assert.equal(scope.available, false);
+    assert.deepEqual(scope.location.rows, []);
+    assert.match(scope.location.message, /read-only view.*locations are unavailable/);
+    assert.doesNotMatch(scope.location.message, /Restart|\/home\/|\/config\//);
+    assert.deepEqual(scope.access, []);
   }
 });
 

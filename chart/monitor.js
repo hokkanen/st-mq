@@ -988,6 +988,7 @@ function render(s) {
     const item = document.createElement('li'); item.textContent = text; $('settings-configuration-steps').append(item);
   }
   $('settings-access').textContent = scope.access.join(' ');
+  $('settings-access').hidden = scope.access.length === 0;
   const cleanupPending = s.settingsReload?.result?.cleanupPending === true;
   $('settings-import-warning').hidden = !cleanupPending;
   $('settings-import-warning').textContent = cleanupPending

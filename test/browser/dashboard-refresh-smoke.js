@@ -38,6 +38,7 @@ try {
           status.sync = { state: 'ready', generation: `synthetic-${generation}`, sourceAt: now, snapshotAt: now };
           status.recordingHealth.scope = 'snapshot'; status.recordingHealth.contextId = 'synthetic-fixed-file';
           status.recordingHealth.recording.state = 'read-only';
+          status.settingsReload = { available: false, busy: false, reason: 'Read-only slave' };
         }
         response.writeHead(result.status, headers); response.end(JSON.stringify(status));
       } else {
@@ -121,6 +122,11 @@ try {
     await until(() => statusReads > previousStatus);
     await pause(50);
     await healthy(`${mode} generation ${generation}`);
+    if (mode === 'slave') {
+      assert.match(await evaluate("document.getElementById('settings-location-message').textContent"), /read-only view.*locations are unavailable/);
+      assert.equal(await evaluate("document.getElementById('settings-access').hidden"), true,
+        'A replica does not leave an empty access notice when local entrance metadata is unavailable');
+    }
     await until(() => eventReads > previousEvents);
     if (mode === 'slave') await until(() => energyReads > previousEnergy);
   }

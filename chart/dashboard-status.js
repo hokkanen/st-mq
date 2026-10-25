@@ -1,3 +1,5 @@
+import { isReadOnlyReplica } from './replica-status.js';
+
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 
 /** Compact current evidence, without converting missing counters into zero or
@@ -87,6 +89,8 @@ export function settingsReloadScope(status = {}) {
   const pairCopyHelp = configuration?.environment === 'home-assistant'
     || status?.topology === 'pair' && status.pair?.platform === 'hassio';
   const location = configurationLocation(configuration);
+  if (location.message && isReadOnlyReplica(status))
+    location.message = 'Applying configuration is disabled in this read-only view. Local file locations are unavailable here.';
   const instructions = [], access = [];
   if (configuration?.environment === 'home-assistant') {
     instructions.push('Change and save options in the host dashboard. Check & review configuration reads those freshly saved options.');
