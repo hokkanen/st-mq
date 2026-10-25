@@ -500,7 +500,7 @@ try {
     for (const state of ['ordinary', 'backend-readings', 'idle-current', 'schedule-overview', 'schedule-gaps', 'schedule-outage', 'schedule-recorded', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'identify-native-schedule', 'identify-offline', 'identify-unknown', 'remaining-cost', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'vehicle-reference', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       if (state === 'schedule-gaps') for (const id of ['charger1', 'charger2']) {
-        assert.equal(await evaluate(`document.getElementById('${id}-sources').textContent`), 'Energy gaps · charge may be higher');
+        assert.equal(await evaluate(`document.getElementById('${id}-sources').textContent`), 'Energy gaps · incomplete estimate');
         assert.match(await evaluate(`document.getElementById('${id}-energy-label').textContent`), /Remaining · energy gaps/);
       }
       const layout = await evaluate(`(() => {

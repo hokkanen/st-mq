@@ -1033,6 +1033,16 @@ test('estimated current charge progresses beyond the requested target and identi
   assert(!result.sources.includes('fallback'));
 });
 
+test('a capped full-charge estimate reports gaps without implying charge above 100 percent', () => {
+  const item = active(), result = view({ ...item, progress: { estimatedSoc: 100, hasEnergyEstimate: true,
+    deliveredGridKwh: 58.4, remainingGridKwh: 0, basis: { energyCoverageIncomplete: true } } });
+  assert.equal(result.incompleteChargeEstimate, true); assert.equal(result.soc, '≈100 %');
+  assert.match(result.energyNote, /Missing measurements are excluded/);
+  assert.doesNotMatch(result.energyNote, /Charge may be higher/);
+  assert.match(result.notes.join(' '), /Recorded added energy may be low/);
+  assert.doesNotMatch(result.notes.join(' '), /charge estimate may be low/);
+});
+
 test('idle zero-energy coverage gaps do not claim that charging occurred', () => {
   const item = connected('charger2');
   const result = view({ ...item, progress: { estimatedSoc: 20, hasEnergyEstimate: false,

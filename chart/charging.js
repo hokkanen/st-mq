@@ -473,7 +473,9 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   else if (showMetrics && retainedVehicleReference) vehicleNotes.push(`Vehicle readings are unavailable${feedReason ? ` (${feedReason})` : ''}. The estimate uses the last vehicle charge and measured energy for this connection. Edit Current charge in Session settings to set a new reference.`);
   else if (showMetrics && storage) vehicleNotes.push(storage.detail);
   else if (showMetrics && feedReason) vehicleNotes.push(`Vehicle feed: ${feedReason}. The last valid reading keeps its original timestamp.`);
-  if (showMetrics && progress.basis?.energyCoverageIncomplete) vehicleNotes.push('Energy measurements have gaps. The charge estimate may be low.');
+  if (showMetrics && progress.basis?.energyCoverageIncomplete) vehicleNotes.push(progress.estimatedSoc >= 100
+    ? 'Energy measurements have gaps. Recorded added energy may be low.'
+    : 'Energy measurements have gaps. The charge estimate may be low.');
   // Recorded scope is informational; missing energy remains a limitation.
   notes.push(...(recordedVehicleFeed ? vehicleNotes.slice(1) : vehicleNotes));
   const controlDetail = !supported ? 'This integration supports monitoring only.'
@@ -572,7 +574,9 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     gridEnergy: `${estimatedSoc && requiredGridKwh > 0 ? '≈' : ''}${number(requiredGridKwh, 'kWh')}`, deadline, readiness, readingTime, periodCount, periodRows,
     priority: activeManual && showMetrics ? resumption : '',
     energyLabel: hasProgress ? 'Grid remaining' : 'Grid to target',
-    energyNote: incompleteChargeEstimate ? 'Energy coverage is incomplete. Charge may be higher and remaining energy may be lower than shown'
+    energyNote: incompleteChargeEstimate ? progress.estimatedSoc >= 100
+      ? 'Energy coverage is incomplete. Missing measurements are excluded from the estimate'
+      : 'Energy coverage is incomplete. Charge may be higher and remaining energy may be lower than shown'
       : targetReached ? target.detail : 'Includes losses', problem,
     rows, notes: [...new Set(notes)].filter(note => note !== event), vehicleNotes, recordedVehicleFeed, explanations, yielded: activeManual, supported, controlDetail,
     controlReason: [chargingStatusReason(charger), chargingRecordedDetail(charger)].filter(Boolean).join('\n\n') };
@@ -1095,7 +1099,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.metrics.soc.value.textContent = view.showMetrics ? view.soc : defaultsPreview?.soc ?? '—';
       device.metrics.minimum.value.textContent = view.showMetrics ? view.minimum : defaultsPreview?.minimum ?? '—';
       device.sources.textContent = defaultsPreview ? 'Configured defaults' : !view.showMetrics ? 'Awaiting data'
-        : view.incompleteChargeEstimate ? 'Energy gaps · charge may be higher' : view.soc.startsWith('≈') ? 'Estimated charge' : view.sources;
+        : view.incompleteChargeEstimate ? 'Energy gaps · incomplete estimate' : view.soc.startsWith('≈') ? 'Estimated charge' : view.sources;
       device.metrics.minimum.value.dataset.state = view.showMetrics && view.targetHeld ? 'attention' : 'normal';
       device.targetSource.textContent = view.showMetrics && view.targetHeld ? 'Held BMW target' : '';
       device.targetSource.hidden = !device.targetSource.textContent;
