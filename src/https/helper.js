@@ -108,6 +108,34 @@ export async function installationBinding({ addon = false, signal, environment =
   throw httpsError('helper_installation_binding_unavailable');
 }
 
+export function helperIdentityDirectory(dataDir, managerDirectory, { root = process.getuid?.() === 0 } = {}) {
+  const sibling = resolve(managerDirectory) === resolve(dataDir, 'https') ? dataDir : managerDirectory;
+  return root ? resolve(dirname(sibling), `.${basename(sibling)}-https-helper`) : resolve(managerDirectory, 'identity');
+}
+
+export async function assertHelperStopped(identity, processRecordPath) {
+  // Process metadata is supplementary: never signal a PID read from disk. The
+  // manager stops its own children; a live saved process or responding native
+  // socket blocks replacement until that process has really stopped.
+  let saved;
+  try { saved = await readJson(processRecordPath); }
+  catch (error) { if (!['https_state_invalid', 'https_state_unsafe'].includes(error.code)) throw error; }
+  if (Number.isSafeInteger(saved?.pid) && saved.pid > 0 && /^\d{1,20}$/.test(saved.start ?? '') &&
+      await processStart(saved.pid) === saved.start) throw httpsError('helper_already_running');
+  const socketDirectory = resolve('/tmp', `stmq-h-${createHash('sha256').update(identity).digest('hex').slice(0, 16)}`);
+  const socketParent = await lstat(socketDirectory).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (!socketParent) return;
+  const uid = process.getuid() === 0 ? UID : process.getuid();
+  if (!socketParent.isDirectory() || socketParent.isSymbolicLink() || socketParent.uid !== uid || socketParent.mode & 0o077)
+    throw httpsError('helper_socket_directory_unsafe');
+  const socket = resolve(socketDirectory, 's');
+  const existing = await lstat(socket).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
+  if (!existing) return;
+  if (!existing.isSocket() || existing.uid !== uid) throw httpsError('helper_socket_unsafe');
+  try { await localApi(socket, '/localapi/v0/status'); throw httpsError('helper_already_running'); }
+  catch (error) { if (!['helper_api_socket_refused', 'helper_api_socket_absent'].includes(error.code)) throw error; }
+}
+
 export async function helperLocations(dataDir, managerDirectory, { restoreFenced = false, addon = false, signal,
   getInstallationBinding = installationBinding } = {}) {
   if (process.platform !== 'linux' || !process.getuid) throw httpsError('helper_platform_unsupported');
@@ -116,8 +144,7 @@ export async function helperLocations(dataDir, managerDirectory, { restoreFenced
   // Never open up private household-data ancestors. On root-run HA, the helper
   // owns its separate persistent sibling; the application alone owns certs and
   // accepted executables. Parent traversal is checked by an actual launch.
-  const sibling = resolve(managerDirectory) === resolve(dataDir, 'https') ? dataDir : managerDirectory;
-  const identity = root ? resolve(dirname(sibling), `.${basename(sibling)}-https-helper`) : resolve(managerDirectory, 'identity');
+  const identity = helperIdentityDirectory(dataDir, managerDirectory, { root });
   await outsideCheckout(identity);
   const marker = resolve(identity, 'stmq-owner.json');
   const binding = await getInstallationBinding({ addon, signal });

@@ -9,12 +9,12 @@ const localManager = hooks => ({ closed: false, stopping: false,
 test('web certificate peer operations have independent node hooks and reject unexpected metadata', async () => {
   let received;
   const manager = localManager({
-    webCertificateStatus: () => ({ enabled: true, ownerId: 'owner-node' }),
+    webCertificateStatus: () => ({ admitted: true, enabled: true, ownerId: 'owner-node' }),
     webCertificateGet: () => ({ hostname: 'example.example-tailnet.ts.net', generation: 3 }),
     webCertificateReceive: value => { received = value; return { installed: true }; },
   });
   const handle = (op, body = {}) => PairManager.prototype.handlePeer.call(manager, op, body);
-  assert.deepEqual(await handle('https-status'), { enabled: true, ownerId: 'owner-node' });
+  assert.deepEqual(await handle('https-status'), { admitted: true, enabled: true, ownerId: 'owner-node' });
   assert.equal((await handle('https-get')).generation, 3);
   const envelope = { pairId: 'fixture-pair', ownerId: 'owner-node', generation: 4 };
   assert.deepEqual(await handle('https-receive', envelope), { installed: true });

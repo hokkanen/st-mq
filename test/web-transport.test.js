@@ -83,6 +83,30 @@ test('native HTTPS shares ordinary authentication, pins hostname and scheme, and
   assert.equal(access.server, recovery);
 });
 
+test('fresh setup requires an active recovery entrance and cannot close its requesting HTTPS connection', async t => {
+  const { access, actions } = await setup(t), material = certificate(t);
+  await access.installCertificate(material);
+  const body = JSON.stringify({ action: 'start-fresh', token: 'synthetic-reviewed-binding', confirmed: true, confirmedPreviousOwnerStopped: true });
+  const response = await new Promise((resolve, reject) => {
+    const request = httpsRequest({ host: '127.0.0.1', port: access.httpsServer.address().port, method: 'POST',
+      servername: hostname, ca: material.certificate.cert, agent: false, path: '/api/web-access',
+      headers: { Host: `${hostname}:${access.httpsServer.address().port}`, ...authorization(admin),
+        'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'X-Forwarded-Proto': 'http' } }, result => {
+      const chunks = []; result.on('data', chunk => chunks.push(chunk));
+      result.on('end', () => resolve({ status: result.statusCode, body: JSON.parse(Buffer.concat(chunks)) }));
+    });
+    request.on('error', reject); request.end(body);
+  });
+  assert.equal(response.status, 409); assert.equal(response.body.code, 'https_recovery_entrance_required');
+  assert.equal(actions.length, 0);
+  assert.equal((await tlsGet(access.httpsServer, material)).status, 200);
+  const url = `${endpoint(access.server)}/api/web-access`;
+  assert.equal((await fetch(url, { method: 'POST', headers: { ...authorization(family), 'Content-Type': 'application/json' }, body })).status, 403);
+  assert.equal(actions.length, 0);
+  assert.equal((await fetch(url, { method: 'POST', headers: { ...authorization(admin), 'Content-Type': 'application/json', 'X-Forwarded-Proto': 'https' }, body })).status, 202);
+  assert.equal(actions.length, 1);
+});
+
 test('credential rotation revokes pending private reads on HTTPS and LAN HTTP together', async t => {
   const initial = config(); initial.web.lanHttpEnabled = true;
   const waiting = [];

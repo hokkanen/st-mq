@@ -5,6 +5,17 @@ whole-second timestamp: valid total power retains exact integrated energy using
 earlier labelled phase weights while current control retains the conflict.
 Missing, expired and replaced connection evidence still produces gaps. The native
 sampling suite also runs maintenance before the next periodic packet arrives.
+HTTPS replacement tests use private synthetic installations and the same ordinary
+setup flow afterward. They cover standalone-to-pair changes, new pairs and
+certificate owners, opaque damaged-state preservation, stale approvals, peer
+admission and retained renewal duties. `test/https-setup-replacement.test.js`
+exercises real process termination, failed writes, renamed-inode recovery,
+source/archive races and native helper process/socket refusal. The authenticated
+TLS transport tests reject replacement through the entrance it would close.
+Browser tests cover recovery-session prerequisites, confirmations, keyboard
+focus, family permissions and ordinary first setup after preparation. These
+offline checks never replace a live enrolled identity or prove phone DNS routing.
+
 HTTPS runtime and UI tests cover explicit current-pair authorization, unchanged
 owner/certificate/runtime, restart, stale approval, peer loss and identity races.
 Ordinary Retry cannot authorize replacement identities.

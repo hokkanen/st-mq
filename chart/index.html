@@ -538,25 +538,28 @@
                       </dl>
                       <p class="family-access-note">Admin access is required to change web access.</p>
                       <div id="secure-web-access-admin" data-admin-only hidden>
-                        <p id="secure-web-access-standby" class="muted" hidden>These settings apply to this computer. They can be managed while it is a standby.</p>
+                        <p id="secure-web-access-standby" class="muted" hidden>Standby · web access can be managed here.</p>
                         <p id="secure-web-access-owner" class="muted" hidden></p>
                         <p id="secure-web-access-peer-renewal" class="secure-web-access-notice" role="status" hidden></p>
-                        <div id="secure-web-access-security-warning" class="secure-web-access-security" role="status" hidden>
-                          <strong>Security update reported</strong>
-                          <p id="secure-web-access-security-help"></p>
-                          <p id="secure-web-access-security-reported" class="muted"></p>
-                          <a href="https://tailscale.com/security-bulletins" target="_blank" rel="noopener noreferrer">Review Tailscale security bulletins ↗</a>
-                        </div>
                         <div id="secure-web-access-owner-choice" class="secure-web-access-owner-choice" hidden>
                           <label for="secure-web-access-owner-select">Certificate and remote access owner<select id="secure-web-access-owner-select" aria-describedby="secure-web-access-owner-help" disabled><option value="local">This computer</option><option value="peer">Paired computer</option></select></label>
                           <p id="secure-web-access-owner-help" class="muted">One computer renews the certificate and provides Tailscale access for the pair. Choose Paired computer only after setting it up there. Changing the master does not change this choice.</p>
                         </div>
+                        <p id="secure-web-access-message" class="muted" role="status" aria-live="polite"></p>
                         <div id="secure-web-access-next" class="secure-web-access-next" hidden>
                           <h3 id="secure-web-access-next-title"></h3>
                           <p id="secure-web-access-next-help" class="muted"></p>
                           <p id="secure-web-access-authorization" class="secure-web-access-authorization" hidden><a id="secure-web-access-authorize" class="secure-web-access-link-action" target="_blank" rel="noopener noreferrer">Authorize in Tailscale ↗</a></p>
                           <p id="secure-web-access-account-links" class="secure-web-access-setup-links" hidden><a href="https://console.tailscale.com/admin/dns" target="_blank" rel="noopener noreferrer">Tailscale DNS settings ↗</a><a href="https://console.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">Tailscale Machines ↗</a></p>
                         </div>
+                        <details id="secure-web-access-replacement-details" class="equipment-fold" hidden>
+                          <summary>Start fresh HTTPS setup</summary>
+                          <p id="secure-web-access-replacement-intro">Starting fresh preserves the previous setup, then uses the normal setup steps to choose the certificate owner and authorize a new identity.</p>
+                          <p class="muted">HTTPS closes here during replacement. The address can change; household DNS and browser sign-in may need updating.</p>
+                          <p id="secure-web-access-replacement-help" class="muted"></p>
+                          <p id="secure-web-access-replacement-error" class="muted" role="status" hidden></p>
+                          <button id="secure-web-access-start-fresh" class="secondary-button" type="button" disabled>Start fresh HTTPS setup</button>
+                        </details>
                         <div id="secure-web-access-address" class="secure-web-access-address" hidden><span class="muted">HTTPS address</span><a id="secure-web-access-url" target="_blank" rel="noopener noreferrer" hidden></a></div>
                         <div class="secure-web-access-actions">
                           <button id="secure-web-access-enable" type="button" disabled>Set up HTTPS</button>
@@ -566,9 +569,14 @@
                           <button id="secure-web-access-restore-identity" class="secondary-button" type="button" hidden disabled>Restore saved identity</button>
                           <button id="secure-web-access-reauthorize-pair" type="button" hidden disabled>Authorize current pair</button>
                         </div>
-                        <p id="secure-web-access-message" class="muted" role="status" aria-live="polite"></p>
                         <p id="secure-web-access-receipt" class="muted" role="status" aria-live="polite" hidden></p>
                         <p id="secure-web-access-request-receipt" class="muted" role="status" aria-live="polite" hidden></p>
+                        <div id="secure-web-access-security-warning" class="secure-web-access-security" role="status" hidden>
+                          <strong>Security update reported</strong>
+                          <p id="secure-web-access-security-help"></p>
+                          <p id="secure-web-access-security-reported" class="muted"></p>
+                          <a href="https://tailscale.com/security-bulletins" target="_blank" rel="noopener noreferrer">Review Tailscale security bulletins ↗</a>
+                        </div>
                         <details id="secure-web-access-setup-details" class="equipment-fold">
                           <summary>How HTTPS setup works</summary>
                           <p class="muted">This application manages its certificate and private remote access through a dedicated Tailscale connection. The same HTTPS address and normal sign-in work at home and away. Existing Home Assistant or host Tailscale installations remain separate.</p>

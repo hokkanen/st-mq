@@ -241,6 +241,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           const input = await body(req, transportLimits?.bodyTimeoutMs);
           if (!stillAuthorized()) return;
           if (settingsReloadStatus().stopping) return json(503, { error: 'The application is shutting down.' });
+          if (input?.action === 'start-fresh' && req.socket.encrypted)
+            return json(409, { error: 'Open Home Assistant ingress or local HTTP recovery before starting fresh HTTPS setup.', code: 'https_recovery_entrance_required' });
           return json(202, await webTransport.action(input));
         }
         const downloads = {

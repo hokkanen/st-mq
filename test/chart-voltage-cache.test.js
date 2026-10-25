@@ -131,11 +131,13 @@ for (const clock of ['receipt', 'source']) {
 
   test(`same-bucket future native ${clock} admission refreshes the voltage plot`, async t => {
     const f = await fixture(t);
-    const at = Math.floor(now / 15_000) * 15_000 + 1000;
+    // Keep the admission and cache bucket on the selected synthetic day.
+    const at = Date.parse('2026-10-23T12:00:01Z');
     const args = { ...f.args, now: at, startDate: '2026-10-23', endDate: '2026-10-23', view: 'voltage_estimates' };
     seedVoltage(f.store, clock === 'source' ? at + 3000 : at - 3000, [245, 245, 245],
       { receivedAt: clock === 'receipt' ? at + 3000 : at });
     const first = await canonical(f, args), head = f.store.checkpoint();
+    assert(first.range.from <= at && at + 4000 < first.range.to, 'The clock admission belongs to this selected day');
     assert.equal((await f.service.query({ ...args, now: at + 1000 })).meta.cacheHit, true);
     const after = await canonical(f, { ...args, now: at + 4000 });
     assert.notEqual(after.meta.cacheHit, true); assert.notDeepEqual(after.series, first.series);

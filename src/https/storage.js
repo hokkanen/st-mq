@@ -68,14 +68,14 @@ export async function readJson(path, { missing = null, limit = 512 * 1024 } = {}
   try { return JSON.parse(await readFile(path, 'utf8')); } catch { throw httpsError('https_state_invalid'); }
 }
 
-export async function lockDirectory(directory) {
+export async function lockDirectory(directory, { replacement = false } = {}) {
   if (process.platform !== 'linux') throw httpsError('https_lock_unavailable');
   const canonical = await realpath(directory);
   const identity = await lstat(canonical, { bigint: true });
   if (!identity.isDirectory() || identity.uid !== BigInt(process.getuid())) throw httpsError('https_directory_unsafe');
   // Retired ownership records cannot identify a current owner. Preserve them
   // for explicit stopped repair, without decoding, converting or deleting them.
-  for (const name of ['manager.lock', 'manager.claim']) {
+  for (const name of replacement ? [] : ['manager.lock', 'manager.claim']) {
     const info = await lstat(resolve(canonical, name)).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
     if (info) throw httpsError('https_lock_recovery_required');
   }

@@ -390,12 +390,11 @@ managed directory between installations in separate network namespaces.
 
 Obsolete `manager.lock` or `manager.claim` artifacts report
 `https_lock_recovery_required` before admission. They are preserved and never
-decoded, converted or automatically removed. For this explicit repair, stop the
-application and confirm that its previous helper and any restored copy are
-stopped. Preserve the managed directory first; then remove only the obsolete
-`https/manager.lock` file and/or `https/manager.claim` directory and its
-`owner.json`, and restart. Do not delete helper identity or certificates to clear
-a lock warning. Current normal operation creates neither artifact.
+decoded, converted or automatically removed. Web access offers the explicit
+**Start fresh HTTPS setup** action. It obtains the current kernel lock, verifies
+the dedicated helper has stopped, and preserves those artifacts with the previous
+setup before returning to ordinary setup. A running duplicate instance blocks
+this action. Current normal operation creates neither artifact.
 
 ## Paired nodes and backups
 
@@ -423,10 +422,46 @@ outage or an identity change during review rejects recovery. An interrupted
 approved binding update remains a complete atomic state and can restart normally.
 
 A standalone HTTPS state cannot silently become paired certificate ownership
-after a topology change. Preserve the existing private directory, explicitly
-select a fresh `web.https_directory`, then choose the paired owner during setup.
-This creates separate identity state; use its shown hostname and update DNS
-deliberately. Existing keys and certificates are never migrated automatically.
+after a topology change. Choose **Start fresh HTTPS setup**, then select the
+owner through the ordinary paired setup steps. This creates a distinct identity;
+use the shown hostname and update DNS deliberately. Existing identity state and
+certificates are preserved without automatic conversion.
+
+### Starting fresh through Web access
+
+First setup, repaired setup and replacement use the same owner selection,
+authorization, certificate issuance and DNS guidance. The panel recommends
+retaining a usable setup through Recheck, Authorize current pair or Restore saved
+identity. **Start fresh HTTPS setup** is available when an old identity or owner
+must be replaced, a pair changes, or saved state cannot be used. It preserves the
+previous setup and returns to the ordinary disabled, unconfigured setup state;
+preparation does not enroll a helper or issue a certificate.
+
+Use an authenticated Home Assistant ingress or HTTP recovery session before
+starting fresh. The server refuses this action through the HTTPS entrance that
+it would close. Review the old-owner confirmation: another instance using the
+old identity must be stopped and unable to restart. This computer stops only its
+own helper. For paired replacement, prepare the receiving computer first, then
+the certificate owner. The owner checks the current authenticated peer has a
+fresh, disabled setup before releasing its renewal and remote-access duty. A
+disabled recipient still holding the old certificate is not fresh. An unavailable
+peer must be reconnected or its pairing recovered first. Then set up the selected
+owner before enabling HTTPS on its recipient.
+
+Preparation keeps the configured HTTPS directory unchanged. It renames only
+known managed files and the dedicated helper identity into a private
+`setup-archives/<operation-id>` directory. It does not touch application history,
+configuration, pairing roles, device-control intent or host Tailscale. Archives
+have no automatic deletion policy. A durable replacement record tracks the
+approved operation separately from the state being preserved; restart resumes
+an accepted operation without repeating completed preparation. Damaged or
+unsupported saved state is preserved as opaque material, never translated into
+new permission. Unsafe paths, storage failures and live helper processes block
+preparation with a specific explanation.
+
+A new identity can result in a new HTTPS hostname and separate browser sessions.
+The UI keeps local listener, remote entrance and DNS readiness separate and shows
+the next required action; raw diagnostic codes are secondary details.
 
 Home Assistant's cold application backup includes default private runtime state,
 identity and certificates beneath `/data`; ordinary database backups do not.

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { helperAuthorizationUrl, httpsAccessUrl, insecureWebWarning, secureWebAccessView,
+import { helperAuthorizationUrl, httpsAccessUrl, insecureWebWarning, pairingResetHttpsNotice, secureWebAccessView,
   createSecureWebAccessPanel } from '../chart/secure-web-access.js';
 import { assertDashboardWrite } from '../chart/dashboard-access.js';
 import { assertWebRequest } from '../chart/web-access.js';
@@ -208,7 +208,7 @@ test('a running Retry reports the current action and retains its last problem se
   assert.equal(nodes.get('secure-web-access-last-error').hidden, false);
   assert.equal(nodes.get('secure-web-access-retry').disabled, true);
   const unknown = secureWebAccessView({ ...ready, phase: 'degraded', error: 'synthetic_unknown_failure' }, { admin: true });
-  assert.match(unknown.error, /Web access needs attention.*problem code/);
+  assert.match(unknown.error, /Select Recheck.*diagnostic details/);
   assert.equal(unknown.problemCode, 'synthetic_unknown_failure');
   assert.equal(secureWebAccessView(source).problemCode, '', 'Family cannot receive diagnostic codes');
 });
@@ -216,7 +216,7 @@ test('a running Retry reports the current action and retains its last problem se
 test('certificate-manager lock failures explain recovery without exposing admin diagnostics to family', () => {
   for (const [code, explanation] of [
     ['https_manager_already_running', /Another running application instance.*Stop the duplicate/],
-    ['https_lock_recovery_required', /Obsolete.*stopped lock-recovery procedure/],
+    ['https_lock_recovery_required', /obsolete process lock/],
     ['https_lock_unavailable', /Linux process lock.*Unix-socket support/],
   ]) {
     const source = { ...ready, phase: 'degraded', error: code };
@@ -224,7 +224,8 @@ test('certificate-manager lock failures explain recovery without exposing admin 
     assert.match(view.error, explanation);
     assert.doesNotMatch(view.error, /Review the reported problem code/);
     assert.equal(view.problemCode, code);
-    assert.match(view.error, /[Rr]ecovery access|[Kk]eep the saved helper identity and certificates/);
+    if (view.problemInSummary) assert.match(view.next.help, /Start fresh HTTPS setup.*preserve/);
+    else assert.match(view.error, /[Rr]ecovery access|[Kk]eep the saved helper identity and certificates/);
     assert.equal(secureWebAccessView(source).error, '');
     assert.equal(secureWebAccessView(source).problemCode, '');
   }
@@ -589,9 +590,9 @@ test('helper installation requires setup and stays on the certificate owner whil
   assert.deepEqual(writes, [{ action: 'check-updates' }]);
   assert.match(secureWebAccessView({ ...peer, error: 'https_setup_required' }, { admin: true }).error, /Set up HTTPS/);
   assert.match(secureWebAccessView({ ...peer, error: 'https_helper_owner_required' }, { admin: true }).error, /paired certificate-owner computer/);
-  assert.match(secureWebAccessView({ ...peer, error: 'https_pair_owner_setup_required' }, { admin: true }).error, /Preserve its directory.*fresh external web.https_directory.*select the paired certificate owner/);
-  assert.match(secureWebAccessView({ ...peer, error: 'https_certificate_owner_fixed' }, { admin: true }).error, /Re-enable it using that owner/);
-  assert.match(secureWebAccessView({ ...peer, error: 'https_peer_owner_conflict' }, { admin: true }).error, /Review Web access on both computers/);
+  assert.match(secureWebAccessView({ ...peer, error: 'https_pair_owner_setup_required' }, { admin: true }).error, /standalone computer.*now paired/);
+  assert.match(secureWebAccessView({ ...peer, error: 'https_certificate_owner_fixed' }, { admin: true }).error, /selected certificate owner differs.*saved HTTPS owner/);
+  assert.match(secureWebAccessView({ ...peer, error: 'https_peer_owner_conflict' }, { admin: true }).error, /Open Web access on both computers/);
 });
 
 test('helper update availability requires an eligible actually newer release and current security remains separate', async () => {
@@ -622,4 +623,194 @@ test('a current hostname mismatch gives the deliberate Recheck action without ch
   const changedNetwork = secureWebAccessView({ ...source, error: 'helper_tailnet_changed' }, { admin: true });
   assert.equal(changedNetwork.next.title, 'Review the Tailscale network'); assert.match(changedNetwork.error, /original account.*cannot adopt a different network/);
   assert.equal(changedNetwork.url, httpsAccessUrl(ready.url, ready.hostname)); assert.equal(changedNetwork.retryAvailable, false);
+});
+
+const replacementState = (changes = {}) => ({ ...structuredClone(ready), phase: 'repair_required',
+  error: 'https_state_invalid', recovery: { kind: 'invalid-state',
+    fresh: { token: 'fixture-reviewed-fresh-state', requiresPreviousOwnerStopped: true } }, ...changes });
+
+test('unusable HTTPS states lead to normal fresh setup without filesystem instructions', () => {
+  for (const error of ['https_state_invalid', 'https_pair_owner_setup_required', 'https_certificate_owner_fixed',
+    'certificate_generation_invalid', 'certificate_integrity_failed', 'helper_identity_marker_invalid',
+    'helper_identity_missing', 'helper_unowned_identity_present', 'helper_stateful_update_requires_repair',
+    'https_pair_identity_changed', 'https_setup_replacement_invalid']) {
+    const source = replacementState({ error });
+    const view = secureWebAccessView(source, { admin: true });
+    assert.equal(view.replacementNeeded, true, error);
+    assert.equal(view.replacementVisible, true, error);
+    assert.equal(view.setupAvailable, false, error);
+    assert.equal(view.retryAvailable, false, error);
+    assert.match(view.next.help, /Start fresh HTTPS setup/, error);
+    assert.doesNotMatch(view.next.help, /https_directory|delete|\.json|folder|directory/, error);
+    assert.equal(view.problemCode, error);
+    const familyView = secureWebAccessView(source);
+    assert.equal(familyView.fresh, null); assert.equal(familyView.replacementVisible, false);
+  }
+  const reauthorization = secureWebAccessView(replacementState({ error: 'https_pair_identity_changed',
+    pair: { paired: true, reauthorization: { token: 'fixture-same-pair' } } }), { admin: true });
+  assert.equal(reauthorization.replacementNeeded, false);
+  assert.match(reauthorization.next.help, /Authorize the current pair.*retained/);
+});
+
+test('fresh preparation requires active recovery access and explicit confirmation before returning to shared setup', async () => {
+  for (const entrance of ['https', 'http', 'ingress']) {
+    const { document, nodes } = fixture(), writes = [];
+    let source = replacementState(), accept = false, confirmation;
+    document.defaultView.location.protocol = entrance === 'http' ? 'http:' : 'https:';
+    const panel = createSecureWebAccessPanel({ document, getAccess: () => ({ ...admin,
+      source: entrance === 'ingress' ? 'ingress' : 'password' }),
+      confirm: async input => { confirmation = input; return accept; },
+      request: async (_path, body) => {
+        if (body) {
+          writes.push(body);
+          if (body.action === 'start-fresh') source = { phase: 'disabled', enabled: false,
+            setup: { credentialsReady: true }, pair: { paired: true }, transport: source.transport };
+        }
+        return structuredClone(source);
+      } });
+    await panel.refresh({ force: true });
+    assert.equal(nodes.get('secure-web-access-replacement-details').open, true);
+    assert.equal(nodes.get('secure-web-access-enable').hidden, true);
+    assert.equal(nodes.get('secure-web-access-start-fresh').disabled, entrance === 'https');
+    assert.equal(await panel.run('start-fresh'), false);
+    assert.deepEqual(writes, []);
+    if (entrance === 'https') {
+      assert.equal(confirmation, undefined, 'The user must open a recovery entrance first');
+      assert.match(nodes.get('secure-web-access-replacement-help').textContent, /Home Assistant ingress.*connection available/);
+      continue;
+    }
+    assert.match(confirmation.message, /preserved.*HTTPS.*close.*normal setup steps.*address may change/s);
+    assert.match(confirmation.message, /other process.*stopped and cannot restart/);
+    accept = true; assert.equal(await panel.run('start-fresh'), true);
+    assert.deepEqual(writes[0], { action: 'start-fresh', token: 'fixture-reviewed-fresh-state',
+      confirmed: true, confirmedPreviousOwnerStopped: true });
+    assert.equal(nodes.get('secure-web-access-replacement-details').hidden, true);
+    assert.equal(nodes.get('secure-web-access-owner-choice').hidden, false);
+    assert.equal(nodes.get('secure-web-access-enable').textContent, 'Set up HTTPS');
+    assert.equal(nodes.get('secure-web-access-enable').hidden, false);
+    assert.match(nodes.get('secure-web-access-next-help').textContent, /Choose which computer/);
+    await panel.run('enable');
+    assert.deepEqual(writes[1], { action: 'enable', owner: 'local' }, 'Fresh and first setup use the same action');
+  }
+});
+
+test('replacement confirmation rejects changed approval, resolved state and lost admin access', async () => {
+  for (const change of ['approval', 'resolved', 'role']) {
+    const { document } = fixture(), writes = [];
+    let source = replacementState(), access = admin, finishReview;
+    document.defaultView.location.protocol = 'http:';
+    const panel = createSecureWebAccessPanel({ document, getAccess: () => access,
+      confirm: () => new Promise(resolve => { finishReview = resolve; }),
+      request: async (_path, body) => { if (body) writes.push(body); return structuredClone(source); } });
+    await panel.refresh({ force: true }); const action = panel.run('start-fresh');
+    assert.equal(await panel.run('start-fresh'), false, 'A second activation cannot open another review');
+    if (change === 'role') { access = family; panel.clear(); }
+    else {
+      source = change === 'resolved' ? structuredClone(ready) : replacementState({ recovery: { kind: 'invalid-state',
+        fresh: { token: 'fixture-new-reviewed-state', requiresPreviousOwnerStopped: true } } });
+      await panel.refresh({ force: true });
+    }
+    finishReview(true); assert.equal(await action, false); assert.deepEqual(writes, [], change);
+  }
+});
+
+test('replacement disclosure preserves user choice and gives specific blocked-recovery guidance', async () => {
+  const { document, nodes } = fixture();
+  let source = replacementState();
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, request: async () => structuredClone(source) });
+  await panel.refresh({ force: true });
+  const disclosure = nodes.get('secure-web-access-replacement-details');
+  disclosure.open = false; await panel.refresh({ force: true }); assert.equal(disclosure.open, false);
+  source = replacementState({ recovery: { kind: 'invalid-state', fresh: null, error: 'https_directory_unsafe' } });
+  await panel.refresh({ force: true });
+  assert.equal(disclosure.hidden, false);
+  assert.equal(nodes.get('secure-web-access-start-fresh').disabled, true);
+  assert.match(nodes.get('secure-web-access-replacement-error').textContent, /unsafe permissions.*administrator.*preserved/);
+  assert.equal(await panel.run('start-fresh'), false);
+});
+
+test('interrupted fresh preparation continues the same setup path with an explicit next step', async () => {
+  const { document, nodes } = fixture();
+  const source = replacementState({ error: 'https_setup_replacement_pending',
+    operation: { id: 'fixture-accepted-replacement', action: 'start-fresh', state: 'interrupted',
+      completedAt: Date.parse('2026-10-14T12:00:00Z'), error: 'https_setup_replacement_pending' } });
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, request: async () => source });
+  await panel.refresh({ force: true });
+  assert.equal(nodes.get('secure-web-access-next-title').textContent, 'Continue preparing HTTPS setup');
+  assert.equal(nodes.get('secure-web-access-start-fresh').textContent, 'Continue fresh HTTPS setup');
+  assert.equal(nodes.get('secure-web-access-replacement-details').open, true);
+  assert.equal(nodes.get('secure-web-access-enable').hidden, true);
+});
+
+test('owner replacement explains the exact peer prerequisite before releasing renewal', () => {
+  for (const [error, title, explanation] of [
+    ['https_peer_fresh_setup_required', 'Prepare the paired computer first', /Start fresh HTTPS setup on the receiving computer first.*previous setup is preserved/],
+    ['https_peer_recovery_required', 'Reconnect the paired computer first', /Reconnect it or complete pairing recovery/],
+    ['https_peer_setup_unavailable', 'Prepare the paired computer first', /Open Web access on that computer.*finish setup.*Current local certificate readiness/s],
+  ]) {
+    const view = secureWebAccessView(replacementState({ error,
+      recovery: { kind: 'paired-setup', fresh: { token: 'fixture-reviewed-peer-prerequisite' }, error } }), { admin: true });
+    assert.equal(view.next.title, title);
+    assert.match(view.error, explanation);
+    assert.match(view.replacementError, explanation);
+    assert.equal(view.replacementVisible, true);
+  }
+});
+
+test('required replacement shows one cause and one action without repeating its explanation', async () => {
+  const { document, nodes } = fixture();
+  let source = replacementState();
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, request: async () => structuredClone(source) });
+  await panel.refresh({ force: true });
+  assert.equal(nodes.get('secure-web-access-summary').textContent, 'The saved HTTPS setup is damaged or unsupported.');
+  assert.equal(nodes.get('secure-web-access-message').textContent, '');
+  assert.match(nodes.get('secure-web-access-next-help').textContent, /^Choose Start fresh HTTPS setup.*preserve.*normal setup\.$/);
+  assert.equal(nodes.get('secure-web-access-replacement-intro').hidden, true);
+  source = { ...ready, recovery: source.recovery }; await panel.refresh({ force: true });
+  assert.equal(nodes.get('secure-web-access-replacement-intro').hidden, false, 'Optional replacement retains its context when it is not the recommended action');
+});
+
+test('pairing reset HTTPS notice distinguishes certificate owner from receiving computer', () => {
+  const source = { ...ready, version: 1, pair: { paired: true, ownerId: 'fixture-current-node', localOwner: true } };
+  const before = structuredClone(source);
+  const owner = pairingResetHttpsNotice(source, 'fixture-current-node');
+  assert.equal(owner.title, 'HTTPS setup after owner reset');
+  assert.match(owner.message, /blocks saved HTTPS listeners.*helper.*receiving computer first.*then on this computer.*normal setup/);
+  assert.match(owner.message, /address may change.*DNS.*browser sign-in/);
+  assert.doesNotMatch(owner.message, /Authorize current pair|address.*preserv|retained/);
+  const recipient = pairingResetHttpsNotice({ ...source,
+    pair: { paired: true, ownerId: 'fixture-other-node', localOwner: false } }, 'fixture-current-node');
+  assert.equal(recipient.title, 'HTTPS review after reset');
+  assert.match(recipient.message, /same pair and certificate owner remain.*Authorize current pair.*both computers.*preserve the address, identity and certificates/);
+  assert.deepEqual(source, before);
+});
+
+test('pairing reset HTTPS notice treats saved disabled setup as meaningful and fresh local setup as absent', () => {
+  const savedDisabled = { ...ready, version: 1, phase: 'disabled', enabled: false,
+    pair: { paired: true, ownerId: 'fixture-other-node', localOwner: false } };
+  assert.match(pairingResetHttpsNotice(savedDisabled, 'fixture-current-node').message, /Authorize current pair/);
+  const fresh = { version: 1, phase: 'disabled', enabled: false, certificate: null, hostname: null,
+    pair: { paired: true }, recovery: { kind: 'fresh' }, helper: { state: 'stopped' }, updates: { installed: null } };
+  assert.equal(pairingResetHttpsNotice(fresh, 'fixture-current-node').title, 'No saved HTTPS setup here');
+  assert.match(pairingResetHttpsNotice(fresh, 'fixture-current-node').message, /no extra HTTPS setup is needed here.*paired computer uses HTTPS.*review/);
+  for (const retained of [{ certificate: { expiresAt: 0 } }, { pair: { paired: true, ownerId: 'fixture-other-node' } },
+    { hostname: ready.hostname }, { helper: { version: '1.104.1' } }, { recovery: { kind: 'saved-state-unusable' } }]) {
+    assert.notEqual(pairingResetHttpsNotice({ ...fresh, ...retained }, 'fixture-current-node').title, 'No saved HTTPS setup here');
+  }
+});
+
+test('pairing reset HTTPS notice remains conservative for missing, stale or inconsistent ownership evidence', () => {
+  const known = { ...ready, version: 1, pair: { paired: true, ownerId: 'fixture-current-node', localOwner: true } };
+  for (const source of [undefined, {}, { ...known, stale: true }, { ...known, available: false },
+    { ...known, busy: true }, { ...known, operation: { state: 'running' } }, { ...known, version: 2 },
+    { ...known, managementError: 'https_management_unavailable' },
+    { ...known, phase: 'unsupported' }, { ...known, pair: undefined },
+    { ...known, pair: { paired: true, ownerId: 'fixture-other-node', localOwner: true } },
+    { ...known, error: 'https_pair_identity_changed' }, { ...known, phase: 'repair_required' }]) {
+    const notice = pairingResetHttpsNotice(source, 'fixture-current-node');
+    assert.equal(notice.title, 'Review HTTPS after reset');
+    assert.match(notice.message, /may block.*could not be confirmed.*Web access on both computers/);
+    assert.doesNotMatch(notice.message, /will remain|is retained|no extra HTTPS/);
+  }
+  assert.equal(pairingResetHttpsNotice(known, null).title, 'Review HTTPS after reset');
 });

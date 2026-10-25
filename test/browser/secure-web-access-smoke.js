@@ -4,7 +4,9 @@ import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // certificate helper is started, and no installation configuration is read.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { createServer as createHttpsServer } from 'node:https';
+import { spawn, execFileSync } from 'node:child_process';
+import { createHash, X509Certificate } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
@@ -47,7 +49,7 @@ const fixture = {
 const originalFixture = structuredClone(fixture);
 const requests = [], errors = [], layouts = [], metadataLayouts = [], folds = [], blocked = [], pending = new Map();
 const pause = ms => new Promise(resolvePause => setTimeout(resolvePause, ms));
-let server, browser, socket, sequence = 0;
+let server, tlsServer, browser, socket, sequence = 0;
 const page = (await readFile(join(root, 'chart/index.html'), 'utf8'))
   .replace('src="./monitor.js"', 'src="/secure-web-harness.js"')
   .replace('</head>', `${styleLinks(runtimeStyles)}</head>`);
@@ -95,7 +97,7 @@ const harness = `
 `;
 
 try {
-  server = createServer(async (request, response) => {
+  const handleRequest = async (request, response) => {
     const path = new URL(request.url, 'http://localhost').pathname;
     if (path === '/api/web-access') {
       const role = request.headers.authorization === `Bearer ${adminToken}` ? 'admin' : 'family';
@@ -128,6 +130,11 @@ try {
         else if (input.action === 'restore-identity') {
           assert.equal(input.confirmedPeerFenced, true, 'Restoration only follows an explicit fenced-owner confirmation');
           fixture.error = null; fixture.phase = 'ready';
+        } else if (input.action === 'start-fresh') {
+          assert.equal(input.token, fixture.recovery.fresh.token);
+          assert.equal(input.confirmed, true); assert.equal(input.confirmedPreviousOwnerStopped, true);
+          for (const key of Object.keys(fixture)) delete fixture[key];
+          Object.assign(fixture, structuredClone(originalFixture));
         }
       }
       response.end(JSON.stringify({ ...fixture, webAccess: { role, source: 'password' } })); return;
@@ -145,12 +152,22 @@ try {
       response.setHeader('content-type', path.endsWith('.js') ? 'text/javascript' : path.endsWith('.css') ? 'text/css' : 'application/octet-stream');
       response.end(data);
     } catch { response.writeHead(404); response.end(); }
-  });
+  };
+  server = createServer(handleRequest);
   await new Promise(resolveListen => server.listen(0, '127.0.0.1', resolveListen));
   const base = `http://127.0.0.1:${server.address().port}`;
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(directory, 'key.pem'),
+    '-out', join(directory, 'cert.pem'), '-days', '2', '-subj', '/CN=synthetic-web-browser.invalid',
+    '-addext', 'subjectAltName=IP:127.0.0.1'], { stdio: 'ignore' });
+  const cert = await readFile(join(directory, 'cert.pem')), keyMaterial = await readFile(join(directory, 'key.pem'));
+  const pin = createHash('sha256').update(new X509Certificate(cert).publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
+  tlsServer = createHttpsServer({ cert, key: keyMaterial }, handleRequest);
+  await new Promise(resolveListen => tlsServer.listen(0, '127.0.0.1', resolveListen));
+  const secureBase = `https://127.0.0.1:${tlsServer.address().port}`;
   const profile = join(directory, 'chrome');
   browser = spawn(process.env.STMQ_CHROME_BIN ?? '/opt/google/chrome/chrome', [
     '--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking',
+    `--ignore-certificate-errors-spki-list=${pin}`,
     '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank',
   ], { stdio: 'ignore' });
   let launchError, port;
@@ -176,7 +193,7 @@ try {
       if (message.error) request.reject(new Error(message.error.message)); else request.resolve(message.result);
     } else if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
     else if (message.method === 'Fetch.requestPaused') {
-      const local = message.params.request.url.startsWith(`${base}/`);
+      const local = message.params.request.url.startsWith(`${base}/`) || message.params.request.url.startsWith(`${secureBase}/`);
       if (!local) blocked.push(message.params.request.url);
       void send(local ? 'Fetch.continueRequest' : 'Fetch.failRequest', { requestId: message.params.requestId, ...(local ? {} : { errorReason: 'BlockedByClient' }) });
     }
@@ -397,6 +414,11 @@ try {
       if (screenshots) {
         const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
         await writeFile(join(screenshots, `${name}-${theme}-${width}.png`), Buffer.from(shot.data, 'base64'));
+        if (['disabled-pair', 'replacement-https_state_invalid', 'https-recovery-required'].includes(name)) {
+          const clip = await evaluate(`(()=>{const r=document.getElementById('secure-web-access-details').getBoundingClientRect();return{x:r.x+scrollX,y:r.y+scrollY,width:r.width,height:r.height,scale:1};})()`);
+          const full = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip });
+          await writeFile(join(screenshots, `${name}-full-fold-${theme}-${width}.png`), Buffer.from(full.data, 'base64'));
+        }
       }
       if (details) {
         const facts = await evaluate(`(()=>{
@@ -469,12 +491,52 @@ try {
     ['identity-repair', { ...readyFixture, phase: 'degraded', error: 'identity_restore_required' }],
     ['pair-reauthorization', { ...readyFixture, certificate: null, phase: 'degraded', error: 'https_pair_identity_changed',
       pair: { paired: true, ownerId: 'fixture-owner', localOwner: true, reauthorization: { token: 'fixture-pair-binding' } } }],
+    ...['https_pair_identity_changed', 'https_pair_owner_setup_required', 'https_state_invalid', 'certificate_integrity_failed', 'https_setup_replacement_invalid'].map(error =>
+      [`replacement-${error}`, { ...readyFixture, phase: 'repair_required', error,
+        pair: { paired: true, ownerId: 'fixture-former-owner', localOwner: false },
+        recovery: { kind: error, fresh: { token: 'fixture-reviewed-replacement', requiresPreviousOwnerStopped: true } } }]),
+    ['replacement-blocked', { ...readyFixture, phase: 'repair_required', error: 'https_state_invalid',
+      recovery: { kind: 'invalid-state', fresh: null, error: 'https_directory_unsafe' } }],
+    ['replacement-running', { ...readyFixture, phase: 'preparing', operation: { action: 'start-fresh', state: 'running' },
+      recovery: { kind: 'replacement', fresh: null } }],
+    ['replacement-optional', { ...readyFixture,
+      recovery: { kind: 'ready', fresh: { token: 'fixture-optional-replacement', requiresPreviousOwnerStopped: true } } }],
+    ...['https_peer_fresh_setup_required', 'https_peer_recovery_required', 'https_peer_setup_unavailable'].map(error =>
+      [`replacement-${error}`, { ...readyFixture, phase: 'degraded', error,
+        recovery: { kind: 'paired-setup', fresh: { token: 'fixture-peer-prerequisite' }, error } }]),
   ]) {
     installFixture(changes); await evaluate('webBrowser.panel.refresh({force:true})');
     if (name === 'pair-reauthorization') {
       assert.equal(await evaluate("document.getElementById('secure-web-access-reauthorize-pair').hidden"), false);
       assert.equal(await evaluate("document.getElementById('secure-web-access-retry').hidden"), true);
       assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'Review the current paired computers');
+    }
+    if (name.startsWith('replacement-https') && !name.startsWith('replacement-https_peer_') || name === 'replacement-certificate_integrity_failed') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-replacement-details').open"), true);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-start-fresh').disabled"), false);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-enable').hidden"), true);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-retry').hidden"), true);
+      assert.doesNotMatch(await evaluate("document.getElementById('secure-web-access-next-help').textContent"), /https_directory|delete|folder/);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-message').textContent"), '', 'The specific summary replaces duplicate fault prose');
+      assert.equal(await evaluate("document.getElementById('secure-web-access-replacement-intro').checkVisibility()"), false);
+      if (name === 'replacement-https_state_invalid') {
+        assert.equal(await evaluate("document.getElementById('secure-web-access-summary').textContent"), 'The saved HTTPS setup is damaged or unsupported.');
+        assert.equal(await evaluate("[...document.querySelectorAll('#secure-web-access-details p')].filter(node=>node.checkVisibility()).map(node=>node.textContent).join(' ').match(/preserv/gi)?.length"), 1, 'Recovery explains preservation once before confirmation');
+      }
+    }
+    if (name.startsWith('replacement-https_peer_')) {
+      assert.match(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), /paired computer first/);
+      assert.match(await evaluate("document.getElementById('secure-web-access-replacement-error').textContent"), name.endsWith('fresh_setup_required')
+        ? /Start fresh HTTPS setup on the receiving computer first.*previous setup is preserved/ : name.endsWith('setup_unavailable')
+          ? /Open Web access on that computer.*finish setup.*Current local certificate readiness/s : /Reconnect it or complete pairing recovery/);
+    }
+    if (name === 'replacement-blocked') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-start-fresh').disabled"), true);
+      assert.match(await evaluate("document.getElementById('secure-web-access-replacement-error').textContent"), /unsafe permissions.*administrator/);
+    }
+    if (name === 'replacement-running') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'Preparing fresh HTTPS setup');
+      assert.equal(await evaluate("document.getElementById('secure-web-access-start-fresh').disabled"), true);
     }
     assert.equal(await evaluate("document.querySelector('#secure-web-access-details > summary > small').textContent"),
       'HTTPS & remote access', 'The setup subtitle describes contents in every status');
@@ -546,6 +608,33 @@ try {
     if (name==='peer-certificate') assert.equal(await evaluate("document.getElementById('secure-web-access-authorize').hasAttribute('href')"), false);
     await captureLayout(name,{details:['current-release','retained-urgent','unknown-destination','loopback-destination','custom-ports','default-port','long-hostname'].includes(name)});
   }
+  installFixture({ ...readyFixture, phase: 'repair_required', error: 'https_state_invalid',
+    recovery: { kind: 'invalid-state', fresh: { token: 'fixture-keyboard-replacement', requiresPreviousOwnerStopped: true } } });
+  await evaluate('webBrowser.panel.refresh({force:true})');
+  await evaluate("document.getElementById('secure-web-access-start-fresh').focus();true"); await key('Enter');
+  await until("document.querySelector('.confirmation-dialog[open]')");
+  assert.match(await evaluate("document.querySelector('.confirmation-dialog').textContent"), /preserved.*normal setup steps.*address may change/s);
+  const beforeFreshCancel = requests.filter(item => item.action === 'start-fresh').length;
+  await key('Escape'); await until("!document.querySelector('.confirmation-dialog')");
+  assert.equal(requests.filter(item => item.action === 'start-fresh').length, beforeFreshCancel);
+  assert.equal(await evaluate('document.activeElement.id'), 'secure-web-access-start-fresh');
+  await evaluate("document.querySelector('#secure-web-access-replacement-details > summary').focus();true"); await key('Enter');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-replacement-details').open"), false);
+  await evaluate('webBrowser.panel.refresh({force:true})');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-replacement-details').open"), false, 'Polling respects a closed recovery disclosure');
+  await key('Enter');
+  await evaluate("document.getElementById('secure-web-access-start-fresh').click();true");
+  await until("document.querySelector('.confirmation-dialog[open]')");
+  await evaluate("document.querySelector('.confirmation-dialog .confirmation-actions button:last-child').click();true");
+  await until("document.getElementById('secure-web-access-enable').checkVisibility() && !document.getElementById('secure-web-access-enable').disabled");
+  assert.equal(await evaluate("document.getElementById('secure-web-access-enable').textContent"), 'Set up HTTPS');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-owner-choice').checkVisibility()"), true);
+  assert.equal(await evaluate("document.getElementById('secure-web-access-replacement-details').checkVisibility()"), false);
+  await until("document.activeElement.id==='secure-web-access-enable'");
+  await key('Enter');
+  await until("document.getElementById('secure-web-access-authorize').checkVisibility()");
+  assert.equal(requests.filter(item => item.action === 'start-fresh').length, beforeFreshCancel + 1, 'One confirmed preparation returns to the ordinary setup flow');
+  assert.equal(requests.filter(item => item.action === 'enable').length, 2, 'First and replacement setup share the enable operation');
   installFixture(readyFixture); await evaluate('webBrowser.panel.refresh({force:true})');
   await evaluate("webBrowser.controlRole('master');true");
   assert.equal(await evaluate("document.getElementById('secure-web-access-standby').hidden"), true);
@@ -601,6 +690,8 @@ try {
   for(const id of ['browser-instructions','recovery-help','lan-backup-help']) assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').textContent`),'');
   assert.equal(await evaluate("document.getElementById('secure-web-access-security-warning').checkVisibility()"), false);
   assert.equal(await evaluate("document.getElementById('secure-web-access-restore-identity').checkVisibility()"), false);
+  assert.equal(await evaluate("document.getElementById('secure-web-access-replacement-details').checkVisibility()"), false);
+  assert.equal(await evaluate("webBrowser.panel.run('start-fresh')"), false);
   assert.equal(await evaluate("document.getElementById('web-unsafe-warning').checkVisibility()"), true);
   assert.equal(requests.length, reads, 'Family does not poll the admin setup endpoint');
   assert.equal(await evaluate(`fetch('/api/web-access',{method:'POST',headers:{Authorization:'Bearer '+${JSON.stringify(familyToken)},'Content-Type':'application/json'},body:'{"action":"enable"}'}).then(r=>r.status)`), 403);
@@ -611,6 +702,18 @@ try {
   assert.equal(await evaluate("document.getElementById('secure-web-access-authorize').hasAttribute('href')"), false);
   assert.equal(await evaluate("document.getElementById('secure-web-access-url').hasAttribute('href')"), false);
   await captureLayout('signed-out', { anonymous: true });
+  installFixture({ ...readyFixture,
+    recovery: { kind: 'paired-setup', fresh: { token: 'fixture-https-recovery-review', requiresPreviousOwnerStopped: true } } });
+  await send('Page.navigate', { url: `${secureBase}/` }); await until('window.webBrowser?.ready');
+  await until("!document.getElementById('secure-web-access-replacement-details').hidden");
+  await evaluate("document.getElementById('secure-web-access-replacement-details').open=true;true");
+  assert.equal(await evaluate('location.protocol'), 'https:');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-start-fresh').disabled"), true, 'Actual HTTPS origin cannot close its only recovery connection');
+  assert.match(await evaluate("document.getElementById('secure-web-access-replacement-help').textContent"), /Home Assistant ingress.*connection available/);
+  const beforeTlsFresh = requests.filter(item => item.action === 'start-fresh').length;
+  assert.equal(await evaluate("webBrowser.panel.run('start-fresh')"), false);
+  assert.equal(requests.filter(item => item.action === 'start-fresh').length, beforeTlsFresh);
+  await captureLayout('https-recovery-required');
   if (baselinePage) {
     await send('Page.navigate',{url:`${base}/baseline`});await until("document.getElementById('controls-details')");
     await evaluate("document.getElementById('connections-details').open=true;true");
@@ -638,6 +741,7 @@ try {
 } finally {
   socket?.close(); for (const request of pending.values()) clearTimeout(request.timer);
   if (server) await new Promise(resolveClose => server.close(resolveClose));
+  if (tlsServer) await new Promise(resolveClose => tlsServer.close(resolveClose));
   if (browser && browser.exitCode === null) { browser.kill(); await new Promise(resolveExit => browser.once('exit', resolveExit)); }
   await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }

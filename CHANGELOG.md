@@ -12,6 +12,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   pairing progress available throughout archival and backup verification, including
   explicit interruption/retry handling and clear next steps for both computers.
 
+- Guide HTTPS setup and recovery through Web access. Explain identity, ownership
+  and saved-state problems, preserve the previous setup when explicitly starting
+  fresh, and continue through the normal setup steps. Interrupted preparation
+  resumes safely; paired owners retain renewal until the recipient is prepared.
+
 - Avoid racing normal local charger reports with extra meter requests. Keep
   valid measured power recordable through a phase-current conflict using recent,
   earlier phase readings only as labelled estimates; control still sees the

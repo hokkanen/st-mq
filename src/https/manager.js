@@ -7,12 +7,13 @@ import { httpsError, errorCode, privateDirectory, atomicJson, readJson, lockDire
 import { BOOTSTRAP_VERSION } from './official-roots.js';
 import { runtimeTask } from './worker.js';
 import { releaseCandidate, compareVersions, architecture, stableVersion } from './distribution.js';
-import { CertificateHelper, helperLocations, preflightRuntime, validRemoteTarget } from './helper.js';
+import { CertificateHelper, helperLocations, helperIdentityDirectory, assertHelperStopped, preflightRuntime, validRemoteTarget } from './helper.js';
+import { reviewSetupReplacement, startSetupReplacement, resumeSetupReplacement, readSetupReplacement } from './setup-replacement.js';
 import { helperAuthorizationUrl } from './authorization-url.js';
 import { validateCertificate, inspectCertificate, certificateHostname, renewalMinimumValidity } from './certificates.js';
 
 const HOUR = 3600000; const DAY = 24 * HOUR;
-const ACTIONS = ['enable', 'disable', 'recheck', 'retry', 'check-updates', 'update-now', 'set-update-policy', 'restore-identity', 'reauthorize-pair'];
+const ACTIONS = ['enable', 'disable', 'recheck', 'retry', 'check-updates', 'update-now', 'set-update-policy', 'restore-identity', 'reauthorize-pair', 'start-fresh'];
 const STATE_KEYS = ['version', 'enabled', 'hostname', 'ownerId', 'pairId', 'localId', 'peerId', 'peerRenewalRequired', 'machineName', 'certificate', 'runtime', 'previousRuntime', 'highestVersion', 'seen', 'updates', 'operation', 'transaction', 'quarantined'];
 function initialState() {
   return { version: 1, enabled: false, hostname: null, ownerId: null, pairId: null, localId: null, peerId: null, peerRenewalRequired: false,
@@ -109,12 +110,13 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   const preflight = dependencies.preflightRuntime ?? preflightRuntime;
   const clock = dependencies.now ?? Date.now;
   let state = initialState(); let loaded = false; let invalid = false; let closed = false; let busy = null; let admission = null; let admissionKind = null; let initialization = null;
-  let helper = null; let locations = null; let releaseLock = null; let timer = null; let expiryTimer = null; let certificate = null;
+  let helper = null; let locations = null; let releaseLock = null; let timer = null; let expiryTimer = null; let expiryWork = null; let certificate = null;
   let observedHelper = null;
   let publishedCertificate = null;
   let certificateError = null;
   let phase = 'disabled'; let lastError = null; let helperStatus = { state: 'stopped', version: null }; let dns = { state: 'not_configured', a: [], aaaa: [], checkedAt: null };
   let peerStatus = null; let restartAfter = 0; let restartFailures = 0;
+  let replacementPending = false; let replacementReceipt = null; let admittedRequest = null; let operationRequest = null;
   let remoteAccess = { state: 'disabled' };
   const config = () => getConfig();
   let ownedDirectory = null;
@@ -123,6 +125,25 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   const statePath = () => resolve(directory(), 'state.json');
   const runtimeDirectory = record => resolve(directory(), 'runtime', record.name);
   const pairConfiguration = () => pair?.configuration?.() ?? null;
+  function replacementOptions() {
+    return { directory: directory(), identityDirectory: locations?.identity ??
+      (dependencies.helperIdentityDirectory ?? helperIdentityDirectory)(config().dataDir, directory()),
+    identityUid: locations?.uid ?? (process.getuid?.() === 0 ? 65534 : process.getuid()) };
+  }
+  function setupRecovery() {
+    const current = pairConfiguration();
+    const blocked = ['https_directory_unsafe', 'helper_storage_outside_checkout_required', 'https_lock_unavailable',
+      'https_manager_already_running', 'helper_socket_unsafe', 'helper_socket_directory_unsafe', 'helper_directory_unsafe',
+      'https_setup_replacement_unsafe'].includes(lastError);
+    const saved = invalid || state.enabled || state.runtime || state.certificate || state.ownerId || state.hostname || replacementPending;
+    const kind = invalid ? 'saved-state-unusable' : lastError === 'https_pair_identity_changed' ? 'pair-changed'
+      : state.ownerId ? 'paired-setup' : saved ? 'saved-setup' : 'fresh';
+    const token = createHash('sha256').update(JSON.stringify([directory(), config().topology, current,
+      state.machineName, state.pairId, state.localId, state.peerId, state.ownerId, state.hostname,
+      state.certificate?.fingerprint, invalid, replacementPending])).digest('hex');
+    return { kind, fresh: saved && !blocked ? { token, requiresPreviousOwnerStopped: true } : null,
+      error: blocked || ['https_peer_fresh_setup_required', 'https_peer_recovery_required'].includes(lastError) ? lastError : null };
+  }
   const expectedDnsAddress = () => pairConfiguration()?.vipAddress ??
     (isIPv4(config().web?.httpsHost) && config().web.httpsHost !== '0.0.0.0' ? config().web.httpsHost : null);
   const localOwner = () => state.pairId ? state.ownerId === pairConfiguration()?.localId : config().topology !== 'pair';
@@ -167,6 +188,16 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   }
   async function load() {
     if (loaded) return;
+    const replacement = await readSetupReplacement(replacementOptions());
+    replacementReceipt = replacement?.receipt ?? null;
+    if (replacement?.pending) {
+      replacementPending = true;
+      await privateDirectory(directory());
+      if (!releaseLock) releaseLock = await lockDirectory(directory(), { replacement: true });
+      await (dependencies.assertHelperStopped ?? assertHelperStopped)(replacementOptions().identityDirectory, resolve(directory(), 'helper-process.json'));
+      replacementReceipt = await resumeSetupReplacement(replacementOptions());
+      replacementPending = false;
+    }
     const missing = Symbol('missing HTTPS state');
     const saved = await readJson(statePath(), { missing });
     if (saved === missing) { loaded = true; return; }
@@ -225,16 +256,33 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   }
   function expiryCheck() {
     clearTimeout(expiryTimer);
+    // One in-flight expiry task owns its callback until every awaited native
+    // change finishes. Renewal may schedule again while that task is draining.
+    if (expiryWork) return;
     const expiresAt = state.certificate?.expiresAt;
     if (!expiresAt || !state.enabled && !responsible()) return;
     const wait = Math.min(Math.max(expiresAt - clock(), 1), 2147483647);
-    expiryTimer = setTimeout(async () => {
-      if (state.certificate?.expiresAt <= clock()) {
-        await onDisable().catch(() => {});
-        await syncRemoteAccess().catch(() => {});
-        phase = 'degraded'; lastError = 'certificate_not_current';
-      }
-      else expiryCheck();
+    const fingerprint = state.certificate.fingerprint;
+    expiryTimer = setTimeout(() => {
+      if (expiryWork) return;
+      const current = () => !closed && !replacementPending && admissionKind !== 'replacement' &&
+        state.certificate?.fingerprint === fingerprint && state.certificate.expiresAt === expiresAt;
+      const work = (async () => {
+        if (!current()) return;
+        if (expiresAt <= clock()) {
+          await onDisable().catch(() => {});
+          if (!current()) return;
+          await syncRemoteAccess().catch(() => {});
+          if (!current()) return;
+          phase = 'degraded'; lastError = 'certificate_not_current';
+        } else expiryCheck();
+      })();
+      expiryWork = work;
+      work.finally(() => {
+        if (expiryWork !== work) return;
+        expiryWork = null;
+        if (!closed && !replacementPending && admissionKind !== 'replacement' && state.certificate?.expiresAt > clock()) expiryCheck();
+      }).catch(() => {});
     }, wait); expiryTimer.unref();
   }
   async function activate(material, generation, hostname = state.hostname) {
@@ -555,6 +603,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       throw error;
     }
     if (peer.nodeId !== state.peerId) throw httpsError('https_peer_identity_mismatch');
+    if (peer.admitted !== true) throw httpsError('https_peer_setup_unavailable');
     if (peer.ownerId && peer.ownerId !== state.ownerId) throw httpsError('https_peer_owner_conflict');
   }
   async function deliverPeer() {
@@ -562,6 +611,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     try {
       const result = await peerRequest('status', {}); peerStatus = result;
       if (typeof result.enabled !== 'boolean' || result.nodeId !== pairConfiguration()?.peerId) throw httpsError('https_peer_identity_mismatch');
+      if (result.admitted !== true) throw httpsError('https_peer_setup_unavailable');
       if (result.enabled && result.ownerId === state.ownerId) {
         state.peerRenewalRequired = true; await persist();
         if (publishedCertificate && (result.generation ?? 0) < publishedCertificate.record.generation) await peerRequest('receive', certificateEnvelope());
@@ -586,6 +636,77 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     return { token: createHash('sha256').update(JSON.stringify([state.pairId, state.localId, state.peerId,
       state.ownerId, current.localId, current.peerId, state.hostname, state.certificate?.fingerprint ?? null])).digest('hex') };
   }
+  async function startFreshSetup(input) {
+    if (input.confirmed !== true || input.confirmedPreviousOwnerStopped !== true || !input.token)
+      throw httpsError('https_setup_replacement_confirmation_required');
+    if (replacementReceipt?.approvalToken === input.token && state.operation?.id === replacementReceipt.id &&
+        state.operation.action === 'start-fresh') return clone(state.operation);
+    if (setupRecovery().fresh?.token !== input.token) throw httpsError('https_setup_replacement_changed');
+    if (busy) throw httpsError('https_manager_busy');
+    // Replacement also retires the owner's renewal/remote-access duty. The
+    // connected recipient must explicitly stop using that service first.
+    if (!replacementPending && state.pairId && state.ownerId === state.localId) {
+      const current = pairConfiguration();
+      if (!current?.peerId) throw httpsError('https_peer_recovery_required');
+      let peerState;
+      try { peerState = await peerRequest('status', {}); }
+      catch { throw httpsError('https_peer_recovery_required'); }
+      assertOpen();
+      if (setupRecovery().fresh?.token !== input.token) throw httpsError('https_setup_replacement_changed');
+      if (peerState.nodeId !== current.peerId || typeof peerState.enabled !== 'boolean') throw httpsError('https_peer_identity_mismatch');
+      if (peerState.admitted !== true) throw httpsError('https_peer_setup_unavailable');
+      if (peerState.enabled || peerState.ownerId !== null || peerState.hostname !== null || peerState.generation !== 0)
+        throw httpsError('https_peer_fresh_setup_required');
+    }
+    await outsideCheckout(directory());
+    await privateDirectory(directory());
+    if (!releaseLock) releaseLock = await lockDirectory(directory(), { replacement: true });
+    assertOpen();
+    if (setupRecovery().fresh?.token !== input.token) throw httpsError('https_setup_replacement_changed');
+    clearTimeout(timer); clearTimeout(expiryTimer);
+    await expiryWork;
+    assertOpen();
+    if (helper) await helper.stop(); helper = null;
+    helperStatus = { state: 'stopped', version: null }; remoteAccess = { state: 'disabled' };
+    assertOpen();
+    if (setupRecovery().fresh?.token !== input.token) throw httpsError('https_setup_replacement_changed');
+    await (dependencies.assertHelperStopped ?? assertHelperStopped)(replacementOptions().identityDirectory, resolve(directory(), 'helper-process.json'));
+    let existing;
+    try { existing = await readSetupReplacement(replacementOptions()); }
+    catch (error) { if (!['https_setup_replacement_invalid', 'https_state_invalid'].includes(error.code)) throw error; }
+    const review = existing?.pending ? null : await reviewSetupReplacement(replacementOptions());
+    assertOpen();
+    if (setupRecovery().fresh?.token !== input.token) throw httpsError('https_setup_replacement_changed');
+    await onDisable();
+    assertOpen();
+    if (setupRecovery().fresh?.token !== input.token) throw httpsError('https_setup_replacement_changed');
+    publishedCertificate = null; certificate = null; certificateError = null;
+    helperStatus = { state: 'stopped', version: null }; remoteAccess = { state: 'disabled' };
+    const fresh = initialState();
+    const at = clock();
+    const operation = { id: existing?.pending ? existing.id : randomUUID(), action: 'start-fresh', state: 'completed',
+      stage: 'complete', startedAt: at, completedAt: at, error: null };
+    fresh.operation = operation;
+    replacementPending = true;
+    state.operation = { ...operation, state: 'running', stage: 'preserving', completedAt: null };
+    try {
+      replacementReceipt = existing?.pending ? await resumeSetupReplacement(replacementOptions())
+        : await startSetupReplacement({ ...replacementOptions(), token: review.token, approvalToken: input.token,
+          freshState: fresh, id: operation.id, now: at,
+          checkpoint: async stage => { assertOpen(); await dependencies.replacementCheckpoint?.(stage); } });
+      state = validateState(await readJson(statePath()));
+      loaded = true; invalid = false; replacementPending = false; locations = null;
+      peerStatus = null; observedHelper = null; restartAfter = 0; restartFailures = 0;
+      lastError = null; phase = 'disabled';
+      return clone(state.operation);
+    } catch (error) {
+      // An accepted replacement owns its separate durable journal. Never write
+      // the old manager state over partially archived or newly published state.
+      lastError = errorCode(error); phase = 'repair_required';
+      state.operation = { ...operation, state: 'interrupted', stage: 'preserving', completedAt: clock(), error: lastError };
+      throw error;
+    }
+  }
   async function reauthorizePair(input) {
     const approval = pairReauthorization();
     if (!approval || input.confirmed !== true || input.token !== approval.token)
@@ -597,6 +718,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     if (peerState.nodeId !== current.peerId || peerState.pairId !== current.pairId
       || peerState.ownerId !== state.ownerId || peerState.hostname !== state.hostname)
       throw httpsError('https_peer_identity_mismatch');
+    if (peerState.admitted !== true) throw httpsError('https_peer_setup_unavailable');
     const next = { ...state, localId: current.localId, peerId: current.peerId };
     await atomicJson(statePath(), next);
     state = next; lastError = null;
@@ -645,6 +767,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
         if (state.pairId) {
           const peerState = await peerRequest('status', {});
           if (peerState.nodeId !== state.peerId) throw httpsError('https_peer_identity_mismatch');
+          if (peerState.admitted !== true) throw httpsError('https_peer_setup_unavailable');
           if (localOwner() ? peerState.ownerId && peerState.ownerId !== state.ownerId : peerState.ownerId !== state.ownerId || peerState.pairId !== state.pairId)
             throw httpsError(localOwner() ? 'https_peer_owner_conflict' : 'https_peer_owner_not_configured');
         }
@@ -714,17 +837,18 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     try { await atomicJson(statePath(), { ...state, operation: complete }); }
     catch { complete.state = 'failed'; complete.error = 'https_state_write_failed'; lastError = complete.error; if (!closed) phase = 'degraded'; }
     state.operation = complete;
+    operationRequest = null;
   }
   function schedule() {
-    clearTimeout(timer); if (closed || !state.enabled && !state.peerRenewalRequired) return;
+    clearTimeout(timer); if (closed || replacementPending || !state.enabled && !state.peerRenewalRequired) return;
     const pending = ['authorization_required', 'approval_or_connection_pending', 'certificate_settings_required'].includes(helperStatus.state) || ['certificate_settings_required', 'peer_certificate_pending'].includes(phase);
-    const delay = lastError === 'helper_already_running' ? 5000 : restartAfter > clock() ? Math.max(1000, Math.min(HOUR, restartAfter - clock())) : pending ? 15000 : HOUR;
+    const delay = lastError === 'helper_already_running' || !helper && responsible() ? 5000 : restartAfter > clock() ? Math.max(1000, Math.min(HOUR, restartAfter - clock())) : pending ? 15000 : HOUR;
     timer = setTimeout(() => {
       if (!busy && !admission) background(tick); else schedule();
     }, delay); timer.unref();
   }
   async function tick() {
-    if (closed || invalid) return;
+    if (closed || invalid || replacementPending) return;
     try {
       validatePairBinding();
       if (state.certificate?.expiresAt <= clock()) { await onDisable(); await syncRemoteAccess(); phase = 'degraded'; lastError = 'certificate_not_current'; }
@@ -755,25 +879,36 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
         lastSuccessfulCheck: state.updates.lastSuccessfulCheck, error: state.updates.error,
         securityCoverage: 'incomplete', bulletinUrl: 'https://tailscale.com/security-bulletins' },
       dns: { ...clone(dns), resolver: config().web?.lanResolver || null, expectedAddress: expectedDnsAddress() },
-      busy: Boolean(busy || admission), operation: clone(state.operation), error: certificateError ?? lastError, pair: state.pairId ? { paired: true, ownerId: state.ownerId,
+      busy: Boolean(busy || admission), operation: clone(state.operation), error: certificateError ?? lastError,
+      recovery: setupRecovery(), pair: state.pairId ? { paired: true, ownerId: state.ownerId,
         localOwner: localOwner(), peerRenewalRequired: state.peerRenewalRequired, peer: clone(peerStatus),
         reauthorization: pairReauthorization() } : { paired: config().topology === 'pair' } };
   }
   async function action(input) {
-    const actionFields = { enable: ['owner'], disable: [], recheck: [], retry: [], 'check-updates': [], 'update-now': ['retry'], 'set-update-policy': ['policy'], 'restore-identity': ['confirmedPeerFenced'], 'reauthorize-pair': ['token', 'confirmed'] };
+    const actionFields = { enable: ['owner'], disable: [], recheck: [], retry: [], 'check-updates': [], 'update-now': ['retry'], 'set-update-policy': ['policy'], 'restore-identity': ['confirmedPeerFenced'], 'reauthorize-pair': ['token', 'confirmed'], 'start-fresh': ['token', 'confirmed', 'confirmedPreviousOwnerStopped'] };
     if (!input || !ACTIONS.includes(input.action) || Object.keys(input).some(key => !['action', ...actionFields[input.action]].includes(key)) ||
         input.retry !== undefined && typeof input.retry !== 'boolean') throw httpsError('https_action_invalid');
     if (input.action === 'set-update-policy' && !['automatic', 'manual'].includes(input.policy)) throw httpsError('https_update_policy_invalid');
-    if (admission) { if (admissionKind === 'action') return admission; throw httpsError('https_manager_busy'); }
-    admissionKind = 'action';
+    const requestIdentity = JSON.stringify([input.action, ...actionFields[input.action].map(field => input[field])]);
+    if (admission) {
+      if (['action', 'replacement'].includes(admissionKind) && admittedRequest === requestIdentity) return admission;
+      throw httpsError('https_manager_busy');
+    }
+    admissionKind = input.action === 'start-fresh' ? 'replacement' : 'action'; admittedRequest = requestIdentity;
     admission = (async () => {
-      await initialize(); assertOpen(); if (invalid) throw httpsError(lastError ?? 'https_state_invalid');
+      await initialize(); assertOpen();
+      if (input.action === 'start-fresh') {
+        try { return await startFreshSetup(input); }
+        catch (error) { lastError = errorCode(error); throw error; }
+        finally { if (!replacementPending && !closed) schedule(); }
+      }
+      if (invalid || replacementPending) throw httpsError(lastError ?? 'https_state_invalid');
       if (input.action === 'reauthorize-pair') {
         if (input.confirmed !== true || !input.token || input.token !== pairReauthorization()?.token)
           throw httpsError('https_pair_reauthorization_required');
       } else validatePairBinding();
       if (busy) {
-        if (state.operation?.state === 'running') return clone(state.operation);
+        if (state.operation?.state === 'running' && operationRequest === requestIdentity) return clone(state.operation);
         throw httpsError('https_manager_busy');
       }
       await prepareStorage(); assertOpen();
@@ -783,9 +918,10 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
       // failed journal write rejects the action and cannot become a detached
       // unhandled rejection capable of killing the application.
       try { await persist(); } catch { record.state = 'failed'; record.error = 'https_state_write_failed'; lastError = record.error; throw httpsError(record.error); }
+      operationRequest = requestIdentity;
       assertOpen(); background(() => runOperation(record, input)); return clone(record);
     })();
-    try { return await admission; } finally { admission = null; admissionKind = null; }
+    try { return await admission; } finally { admission = null; admissionKind = null; admittedRequest = null; }
   }
   function certificateEnvelope() {
     if (!localOwner() || !state.pairId || !publishedCertificate || publishedCertificate.record.expiresAt <= clock()) throw httpsError('https_owner_certificate_unavailable');
@@ -797,6 +933,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     // durable renewal duty even if the owner has disabled its local TLS. Do not
     // assume an offline peer disabled its entrance or erase this responsibility.
     await initialize(); assertOpen();
+    if (replacementPending || admissionKind === 'replacement') throw httpsError('https_manager_busy');
     validatePairBinding(); certificateEnvelope();
     if (!state.peerRenewalRequired || admissionKind === 'export') {
       while (busy || admission) {
@@ -820,14 +957,15 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     if (admission) throw httpsError('https_manager_busy');
     admissionKind = 'certificate';
     admission = (async () => {
-      await initialize(); if (closed || invalid) throw httpsError('https_manager_unavailable');
+      await initialize(); if (closed || invalid || replacementPending) throw httpsError('https_manager_unavailable');
       if (busy) throw httpsError('https_manager_busy');
       await prepareStorage(); assertOpen(); busy = receive(envelope);
       try { await busy; return pairStatus(); } finally { busy = null; }
     })();
     try { return await admission; } finally { admission = null; admissionKind = null; schedule(); }
   }
-  function pairStatus() { return { enabled: state.enabled, pairId: state.pairId, ownerId: state.ownerId, hostname: state.hostname,
+  function pairStatus() { return { admitted: loaded && !invalid && !closed && !replacementPending && admissionKind !== 'replacement',
+    enabled: state.enabled, pairId: state.pairId, ownerId: state.ownerId, hostname: state.hostname,
     generation: publishedCertificate?.record.generation ?? 0, expiry: publishedCertificate?.record.expiresAt ?? null, ready: phase === 'ready' }; }
   function start() {
     initialize().then(() => {
@@ -836,15 +974,28 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     }).catch(() => {});
   }
   async function configure() {
-    if (closed) return;
+    if (closed || replacementPending) return;
     if (busy || admission) { schedule(); return; }
-    try { validatePairBinding(); } catch (error) { lastError = errorCode(error); phase = 'degraded'; await onDisable().catch(() => {}); if (helper) await helper.stop(); helper = null; remoteAccess = { state: 'unavailable', error: lastError }; return; }
-    if (state.enabled && certificate) { try { await activate(certificate, state.certificate.generation); } catch (error) { lastError = errorCode(error); phase = 'degraded'; } }
+    admissionKind = 'configure';
+    admission = (async () => {
+      await initialize(); if (closed || invalid || replacementPending) return;
+      try { validatePairBinding(); }
+      catch (error) {
+        lastError = errorCode(error); phase = 'degraded'; await onDisable().catch(() => {});
+        if (helper) await helper.stop(); helper = null; remoteAccess = { state: 'unavailable', error: lastError }; return;
+      }
+      if (state.enabled && certificate) {
+        try { await activate(certificate, state.certificate.generation); }
+        catch (error) { lastError = errorCode(error); phase = 'degraded'; }
+      }
+    })();
+    try { await admission; } finally { admission = null; admissionKind = null; }
     if (!busy && (state.enabled || state.peerRenewalRequired)) background(tick);
     else schedule();
   }
   async function close() {
     closed = true; cancellation.abort(); clearTimeout(timer); clearTimeout(expiryTimer); await initialization?.catch(() => {});
+    await expiryWork?.catch(() => {});
     if (helper) await helper.stop(); helper = null;
     await admission?.catch(() => {}); await busy?.catch(() => {});
     if (helper) await helper.stop(); helper = null; helperStatus.state = 'stopped'; await onDisable().catch(() => {});

@@ -40,6 +40,8 @@
 .secure-web-access-body .equipment-fold { border-top: 1px solid var(--border); margin-top: 12px; }
 .secure-web-access-body .equipment-fold > p { font-size: 12px; }
 .secure-web-access-body .equipment-fold code { overflow-wrap: anywhere; }
+.secure-web-access-body #secure-web-access-start-fresh { min-height: 42px; max-width: 100%; margin: 4px 0 8px; font-size: 12px; }
+#secure-web-access-replacement-error:not([hidden]) { border-inline-start: 2px solid var(--stale); padding-inline-start: var(--ui-inset); }
 #secure-web-access-message:empty { display: none; }
 .web-unsafe-warning { margin: 16px 0; border-color: var(--stale); color: var(--text); }
 @media (max-width: 480px) {

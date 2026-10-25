@@ -12,10 +12,26 @@ const phases = {
   renewal_pending: ['Certificate pending', 'Waiting for a certificate.'],
   ready: ['HTTPS ready locally', 'The local HTTPS listener is ready. Use the same address at home and through Tailscale; remote access is managed on the certificate-owner computer.'],
   degraded: ['Needs attention', 'HTTPS needs attention. Review the reported problem and retry.'],
-  repair_required: ['Repair required', 'Saved HTTPS state could not be admitted. Recovery access has separate readiness; review this computer’s HTTPS state before retrying.'],
+  repair_required: ['Setup needs attention', 'The saved HTTPS setup could not be used. Review the next step below; your previous setup is preserved.'],
   peer_certificate_pending: ['Peer certificate pending', 'Waiting for the paired certificate owner to provide a valid certificate.'],
 };
+const replacementCauses = {
+  https_pair_owner_setup_required: 'This HTTPS setup belongs to a standalone computer, and this installation is now paired.',
+  https_certificate_owner_fixed: 'The selected certificate owner differs from the saved HTTPS owner.',
+  https_pair_identity_changed: 'The saved HTTPS pair or certificate owner no longer matches these computers.',
+  https_state_invalid: 'The saved HTTPS setup is damaged or unsupported.',
+  https_state_size_exceeded: 'The saved HTTPS setup is too large to use safely.',
+  certificate_generation_invalid: 'The saved certificate files do not match the recorded setup.',
+  certificate_integrity_failed: 'The saved certificate does not match its recorded identity.',
+  https_lock_recovery_required: 'The saved HTTPS setup contains an obsolete process lock.',
+  helper_identity_marker_invalid: 'The saved helper identity cannot be validated.',
+  helper_identity_missing: 'The saved helper identity is missing.',
+  helper_unowned_identity_present: 'This installation cannot safely use the identity in its helper storage.',
+  helper_stateful_update_requires_repair: 'The helper update left an unusable identity.',
+  https_setup_replacement_invalid: 'The saved preparation for replacing HTTPS is damaged or unsupported.',
+};
 const failures = {
+  ...replacementCauses,
   credentials_required: 'Configure an admin password of at least 24 characters before enabling a network entrance.',
   tls_port_unavailable: 'The HTTPS port is already in use. Change web.https_port in private configuration and restart, then retry.',
   http_port_unavailable: 'The LAN HTTP backup port is already in use. Review web.lan_http_port in private configuration.',
@@ -23,23 +39,46 @@ const failures = {
   https_management_unavailable: 'HTTPS management is unavailable on this computer. Recovery access has separate readiness.',
   https_operation_interrupted: 'The previous web access operation was interrupted. Review its current status and retry.',
   https_manager_already_running: 'Another running application instance owns this computer’s certificate manager. Stop the duplicate instance, then restart this application. Keep the saved helper identity and certificates.',
-  https_lock_recovery_required: 'Obsolete certificate-manager lock files need review. Follow the stopped lock-recovery procedure in the HTTPS guide before restarting. Keep the saved helper identity and certificates.',
   https_lock_unavailable: 'The certificate manager could not acquire its Linux process lock. Check local Unix-socket support and application permissions before restarting. Recovery access has separate readiness.',
-  identity_restore_required: 'A restored certificate helper identity needs explicit review before it can be used again. Keep the original owner fenced and follow the HTTPS restoration guide.',
+  identity_restore_required: 'This saved identity belongs to a different installation. Restore it only after its previous owner is stopped and cannot restart. You can also preserve it and start fresh below.',
   helper_storage_outside_checkout_required: 'HTTPS needs private storage outside the checkout. Configure web.https_directory with an external private path and restart before setup.',
   https_setup_required: 'Set up HTTPS on the certificate owner before installing a helper update.',
   https_helper_owner_required: 'Manage certificate helper updates on the paired certificate-owner computer.',
-  https_pair_owner_setup_required: 'This HTTPS state was set up for standalone use. Preserve its directory, configure a fresh external web.https_directory and restart, then explicitly select the paired certificate owner in Web access.',
-  https_pair_identity_changed: 'The paired computer identities changed. Review and authorize the current pair on each computer to retain the same certificate owner. Retry setup cannot approve this change. Keep the saved identity and certificates.',
   https_pair_reauthorization_required: 'The pair changed or its approval is missing. Refresh Web access and review the current pair before authorizing it.',
-  https_certificate_owner_fixed: 'This HTTPS state already has a fixed certificate owner. Re-enable it using that owner. Changing the owner requires preserving the current state and explicitly setting up fresh HTTPS state.',
-  https_peer_owner_conflict: 'The paired computer reports a different certificate owner. Review Web access on both computers and agree on one owner before retrying setup.',
+  https_peer_owner_conflict: 'The two computers selected different certificate owners. Open Web access on both computers, prepare a fresh setup where the saved choice must change, then set up the selected owner first.',
+  https_peer_owner_not_configured: 'The selected certificate owner has not completed its setup. Open Web access on that computer and select This computer as owner. Return here and select Paired computer after it is ready.',
+  https_pair_not_ready: 'The paired computers are not ready for HTTPS setup. Finish pairing first, then return to Web access. This does not require changing household controls.',
+  https_peer_identity_mismatch: 'The paired computer changed while HTTPS was being reviewed. Refresh Web access on both computers and review their current identities before trying again.',
+  https_peer_unavailable: 'The paired computer cannot be reached. Check that it is running and connected, then select Recheck. Any valid local certificate has separate readiness above.',
+  https_peer_fresh_setup_required: 'Start fresh HTTPS setup on the receiving computer first, then return here to prepare the certificate owner. Its previous setup is preserved.',
+  https_peer_recovery_required: 'The paired computer must be reachable before replacing its certificate owner. Reconnect it or complete pairing recovery first, then return to Web access. The saved renewal responsibility stays in place.',
+  https_peer_setup_unavailable: 'The paired computer’s saved HTTPS setup is not ready to use. Open Web access on that computer and finish setup or preserve it with Start fresh HTTPS setup, then return here. Let any running preparation finish first. Current local certificate readiness is shown separately above.',
+  https_peer_hostname_changed: 'The paired owner supplied an unexpected HTTPS address. Open Web access on the certificate owner and Recheck; the saved address remains in place.',
+  certificate_not_current: 'The saved certificate is not currently valid. Select Recheck on its certificate owner to renew it. Use recovery access until HTTPS is ready.',
+  https_state_unsafe: 'The saved HTTPS files have unsafe permissions, ownership or links. Ask the administrator to correct access to the application’s private HTTPS storage, then restart. The application will not follow or replace unsafe paths.',
+  https_directory_unsafe: 'The HTTPS storage directory has unsafe permissions, ownership or links. Ask the administrator to correct its private storage access, then restart. The saved setup is preserved.',
+  helper_directory_unsafe: 'The helper identity directory has unsafe permissions, ownership or links. Ask the administrator to correct its private storage access, then retry. The saved identity is preserved.',
+  helper_api_timeout: 'The certificate helper did not reply in time. Select Recheck to reconnect. If this continues, check this computer’s network connection and Tailscale status.',
+  helper_api_unavailable: 'The certificate helper is unavailable. Select Recheck to reconnect. If this continues, check this computer’s network connection and Tailscale status.',
+  helper_userspace_start_failed: 'The dedicated Tailscale connection could not start. Check this computer’s network connection, then select Retry setup. The saved identity is preserved.',
+  helper_userspace_start_timeout: 'The dedicated Tailscale connection did not become ready in time. Check this computer’s network connection, then select Retry setup. The saved identity is preserved.',
+  helper_restrictions_not_confirmed: 'The helper’s required security settings could not be confirmed, so its connection was stopped. Select Retry setup to check them again. The saved identity is preserved.',
+  helper_runtime_missing: 'The installed certificate helper is missing. Select Retry setup to prepare it again; the saved identity is preserved.',
+  https_state_write_failed: 'The HTTPS operation could not be saved. Check available disk space and application storage permissions, then retry. The operation is not confirmed.',
+  https_manager_busy: 'Another web access operation is running. Wait for its result; status updates automatically.',
+  https_recovery_entrance_required: 'Open Web access through Home Assistant ingress or an available HTTP recovery entrance before starting fresh. This keeps access open while HTTPS is replaced.',
+  https_setup_replacement_changed: 'The setup changed while you were reviewing it. Refresh Web access and review Start fresh HTTPS setup again. No new approval has been assumed.',
+  https_setup_replacement_confirmation_required: 'Review Start fresh HTTPS setup again and confirm that any previous process using the saved identity is stopped and cannot restart.',
+  https_setup_replacement_unsafe: 'Some HTTPS files cannot be preserved safely because their ownership, links or storage location changed. Ask the administrator to correct private storage access, then review the replacement again.',
+  https_setup_replacement_too_large: 'The HTTPS storage contains more files than this recovery operation can safely handle. Its contents are preserved. Ask the administrator to inspect the private HTTPS storage before continuing.',
+  https_setup_replacement_pending: 'Preparation for fresh HTTPS setup is unfinished. Wait for recovery to finish, then continue with the normal setup steps.',
+  helper_socket_unsafe: 'The helper connection has unsafe ownership or is not a local socket. Ask the administrator to check for a duplicate helper and correct its private runtime access before retrying.',
+  helper_already_running: 'Another certificate helper is still running. Stop the duplicate process and prevent it from restarting, then select Recheck. The saved identity is preserved.',
   helper_authorization_start_failed: 'The certificate helper could not start Tailscale authorization. No sign-in link was received. Choose Retry setup; the installed helper and saved identity are preserved.',
   helper_remote_target_invalid: 'The private HTTPS destination is unavailable. Review the configured HTTPS listener and shared pair address, then select Recheck.',
   helper_remote_forwarding_unavailable: 'The private Tailscale connection could not be configured. Select Recheck on the certificate-owner computer. Local HTTPS has separate readiness.',
   helper_hostname_changed: 'The certificate name changed in Tailscale. Select Recheck to issue a matching certificate and update the HTTPS address. The saved address changes only after successful publication; update household DNS afterward.',
   helper_tailnet_changed: 'The certificate helper reports a different Tailscale network. Restore its original account and network before selecting Recheck; this action cannot adopt a different network or reset the saved identity.',
-  https_peer_hostname_changed: 'The paired certificate owner supplied a changed name without an eligible newer certificate for the same Tailscale network. Recheck the certificate owner; the saved address and certificate remain in place.',
   helper_update_not_available: 'No eligible newer helper release is available. Check releases again later; Set up HTTPS owns initial installation.',
   helper_major_or_version_unsupported: 'The observed release is outside this helper’s supported update contract. The installed helper remains in place; review Tailscale releases and security bulletins.',
 };
@@ -48,7 +87,7 @@ const failure = (value, environment) => {
     ? 'The Supervisor host identity is unavailable. Check Home Assistant Supervisor health and this add-on’s Supervisor API access, then Retry setup. The saved helper identity is preserved; do not delete its directory.'
     : 'This computer’s installation identity could not be confirmed. Restore read access to /etc/machine-id, /sys/class/dmi/id/product_uuid or /sys/firmware/devicetree/base/serial-number, then Retry setup. The saved helper identity is preserved; do not delete its directory.';
   return typeof value !== 'string' || !value ? '' : failures[value]
-    ?? (/^[a-z][a-z0-9_]+$/.test(value) ? 'Web access needs attention. Review the reported problem code in Certificate renewal & helper updates before retrying.' : value);
+    ?? (/^[a-z][a-z0-9_]+$/.test(value) ? 'Web access could not complete its last check. Select Recheck to update the result. If it continues, the diagnostic details below identify the problem; your saved setup is preserved.' : value);
 };
 const date = value => {
   if (value === null || value === undefined || value === '') return 'Unknown';
@@ -92,7 +131,7 @@ function releaseDifference(candidate, installed) {
 
 const actionLabels = { enable: 'Set up HTTPS', disable: 'Disable HTTPS', retry: 'Retry setup', recheck: 'Recheck',
   'check-updates': 'Check releases', 'update-now': 'Install helper update', 'set-update-policy': 'Change update policy',
-  'restore-identity': 'Restore saved identity', 'reauthorize-pair': 'Authorize current pair' };
+  'restore-identity': 'Restore saved identity', 'reauthorize-pair': 'Authorize current pair', 'start-fresh': 'Start fresh HTTPS setup' };
 
 function operationReceipt(operation, now) {
   if (!operation || !actionLabels[operation.action] || !['completed', 'failed', 'interrupted'].includes(operation.state)) return null;
@@ -102,29 +141,53 @@ function operationReceipt(operation, now) {
     operation.state === 'completed' ? 'processed' : operation.state === 'interrupted' ? 'interrupted' : 'failed'} · ${date(at)}.` };
 }
 
+const replacementProblems = new Set(Object.keys(replacementCauses).filter(code => code !== 'https_pair_identity_changed'));
+
+
 function nextStep(state, { tlsReady, certificateValid, certificateExpired, unconfirmed, peerOwner, retainedRenewal, savedSetup, authorizationUrl, errorCode, localDestination }) {
   if (state.operation?.state === 'running') return { title: {
     'check-updates': 'Checking helper releases', 'update-now': 'Updating the certificate helper',
     'set-update-policy': 'Saving the update policy', 'restore-identity': 'Restoring the certificate identity',
-    disable: 'Disabling HTTPS',
+    disable: 'Disabling HTTPS', 'start-fresh': 'Preparing fresh HTTPS setup',
   }[state.operation.action] ?? 'Setting up HTTPS', help: 'The current operation is running. Status updates when it completes.' };
   if (state.phase === 'preparing') return { title: 'Setting up HTTPS',
     help: 'Preparing this computer’s certificate access. Status updates when the operation completes.' };
   if (state.busy === true) return { title: 'Checking web access',
     help: 'Background web access maintenance is running. Actions become available when it finishes; current listener readiness is shown separately.' };
+  if (state.operation?.action === 'start-fresh' && ['interrupted', 'failed'].includes(state.operation.state)
+    && state.recovery?.fresh) return { title: 'Continue preparing HTTPS setup',
+    help: 'Preparation was interrupted. Open Start fresh HTTPS setup below to continue the same operation; the previous setup remains preserved.' };
   if (errorCode === 'https_pair_identity_changed' || state.pair?.reauthorization) return {
     title: 'Review the current paired computers',
     help: state.pair?.reauthorization
       ? 'Authorize the current pair on each computer. The selected certificate owner, saved identity and HTTPS address are retained. This does not change heating or charging authority.'
-      : 'The original certificate owner and a matching, connected pair must be confirmed before recovery is available. Keep the saved HTTPS directory; a changed certificate owner requires separate setup.',
+      : 'The saved certificate owner or pair no longer matches. Open Start fresh HTTPS setup below to preserve the previous setup and choose the owner for the current pair.',
+  };
+  if (replacementProblems.has(errorCode)) return { title: 'Set up HTTPS again',
+    help: 'Choose Start fresh HTTPS setup below to preserve this setup and return to normal setup.' };
+  if (errorCode === 'https_peer_owner_conflict') return { title: 'Agree on one certificate owner',
+    help: 'Choose the same certificate owner on both computers. Prepare a fresh setup on a computer whose saved choice needs to change, then set up the owner first.' };
+  if (['https_peer_fresh_setup_required', 'https_peer_recovery_required', 'https_peer_setup_unavailable'].includes(errorCode)) return {
+    title: errorCode === 'https_peer_recovery_required' ? 'Reconnect the paired computer first' : 'Prepare the paired computer first',
+    help: errorCode === 'https_peer_fresh_setup_required'
+      ? 'Open Web access on the computer receiving this owner’s certificate and choose Start fresh HTTPS setup. Return here after its previous setup has been preserved.'
+      : errorCode === 'https_peer_setup_unavailable'
+        ? 'Open Web access on the paired computer. Complete or repair its saved setup before continuing here.'
+        : 'Finish reconnecting or recovering the pair before continuing replacement on this certificate owner.',
+  };
+  if (errorCode === 'https_peer_owner_not_configured' || errorCode === 'https_pair_not_ready') return {
+    title: errorCode === 'https_pair_not_ready' ? 'Finish pairing first' : 'Set up the certificate owner first',
+    help: errorCode === 'https_pair_not_ready' ? 'Complete pairing before returning to HTTPS setup.'
+      : 'Complete Web access setup on the selected owner, then enable HTTPS here using Paired computer.',
   };
   if (errorCode === 'helper_hostname_changed') return { title: 'Update the HTTPS hostname',
     help: failures.helper_hostname_changed };
   if (errorCode === 'helper_tailnet_changed') return { title: 'Review the Tailscale network',
     help: failures.helper_tailnet_changed };
-  if (errorCode) return { title: 'Resolve the setup problem', help: errorCode === 'identity_restore_required'
-    ? 'Review the reported problem below. Restore the saved identity only after its previous owner is stopped and fenced.'
-    : 'Review the reported problem below. Retry setup after its cause is resolved; recovery access has separate readiness.' };
+  if (errorCode) return { title: errorCode === 'identity_restore_required' ? 'Review the saved identity' : 'Resolve the setup problem',
+    help: errorCode === 'identity_restore_required'
+      ? 'Use Restore saved identity after confirming its previous owner cannot restart, or start fresh below to authorize a distinct identity.'
+      : 'Follow the explanation below, then select Recheck to confirm the result. Current access remains shown above.' };
   if (state.setup?.credentialsReady === false) return { title: 'Set an admin password first',
     help: 'In Configuration, set controller.web_token to at least 24 characters. If a family password is configured, it must also have at least 24 characters and differ from the admin password.' };
   if (!state.enabled && state.phase === 'disabled' && !retainedRenewal) return { title: savedSetup ? 'Re-enable HTTPS' : 'Set up secure browser access',
@@ -177,6 +240,35 @@ export function insecureWebWarning(transport, { protocol, hostname, ingress = fa
   return '';
 }
 
+/** Pairing reset changes this computer's identity. Only a fresh admin read can
+ * establish which HTTPS recovery path applies; certificate presence alone
+ * never establishes ownership or preserves a pair binding. */
+export function pairingResetHttpsNotice(status, currentNodeId) {
+  const unknown = { title: 'Review HTTPS after reset',
+    message: 'Reset changes this computer’s identity and may block HTTPS listeners and the certificate helper until review. HTTPS setup could not be confirmed. After reset, open Web access on both computers through recovery access to see the required next step.' };
+  if (!status || status.version !== 1 || status.stale === true || status.available === false || status.managementError
+    || status.busy === true || status.operation?.state === 'running' || !Object.hasOwn(phases, status.phase)) return unknown;
+  const saved = status.enabled === true || Boolean(status.certificate || status.hostname || status.pair?.ownerId
+    || status.updates?.installed || status.helper?.version);
+  if (!saved && status.enabled === false && status.phase === 'disabled' && status.recovery?.kind === 'fresh') return {
+    title: 'No saved HTTPS setup here',
+    message: 'This computer has no HTTPS setup to recover, so no extra HTTPS setup is needed here. If the paired computer uses HTTPS, review Web access there after its peer’s identity changes.',
+  };
+  if (!saved || typeof currentNodeId !== 'string' || !currentNodeId || status.pair?.paired !== true
+    || typeof status.pair.ownerId !== 'string' || !status.pair.ownerId
+    || status.error === 'https_pair_identity_changed' && !status.pair.reauthorization
+    || status.phase === 'repair_required') return unknown;
+  if (status.pair.localOwner === true && status.pair.ownerId === currentNodeId) return {
+    title: 'HTTPS setup after owner reset',
+    message: 'Reset changes the certificate owner’s identity and blocks saved HTTPS listeners and the helper until review. Start fresh HTTPS setup on the receiving computer first, then on this computer, and follow normal setup. The HTTPS address may change; household DNS and browser sign-in may need updating.',
+  };
+  if (status.pair.localOwner === false && status.pair.ownerId !== currentNodeId) return {
+    title: 'HTTPS review after reset',
+    message: 'Reset changes this computer’s identity and blocks saved HTTPS listeners and the certificate helper until review. If the same pair and certificate owner remain, use Authorize current pair in Web access on both computers to preserve the address, identity and certificates. Web access will explain any other required setup.',
+  };
+  return unknown;
+}
+
 /** Missing listener evidence remains unknown, even if a certificate exists. */
 export function secureWebAccessView(state = {}, { admin = false, now = Date.now() } = {}) {
   const transport = state.transport ?? {}, tls = transport.https;
@@ -201,6 +293,13 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
   const savedSetup = Boolean(state.pair?.ownerId || state.updates?.installed || state.certificate)
     && !(state.pair?.paired === true && !state.pair.ownerId);
   const errorCode = state.error ?? state.managementError ?? tls?.error ?? state.updates?.error ?? '';
+  const fresh = admin && typeof state.recovery?.fresh?.token === 'string' && state.recovery.fresh.token
+    ? state.recovery.fresh : null;
+  const continuingReplacement = Boolean(fresh && state.operation?.action === 'start-fresh'
+    && ['interrupted', 'failed'].includes(state.operation.state));
+  const replacementNeeded = replacementProblems.has(errorCode)
+    || errorCode === 'https_pair_identity_changed' && !state.pair?.reauthorization || continuingReplacement;
+  const problemInSummary = admin && !busy && replacementNeeded && Boolean(replacementCauses[errorCode]);
   const receipt = admin ? operationReceipt(state.operation, now) : null;
   const authorizationUrl = admin && !peerOwner && (state.enabled === true || retainedRenewal)
     && errorCode !== 'helper_authorization_start_failed' && state.helper?.state === 'authorization_required'
@@ -222,7 +321,7 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
       : dnsPending ? dns.state === 'mismatch' ? 'HTTPS ready · DNS mismatch' : 'HTTPS ready · DNS not verified' : phase[0],
     tone: unavailable || remoteUnavailable || ['degraded', 'repair_required', 'authorization_required', 'certificate_settings_required'].includes(state.phase)
       ? 'attention' : state.phase === 'ready' && !unconfirmed ? 'available' : 'pending',
-    summary: unavailable ? Number.isFinite(expiresAt) && expiresAt <= now
+    summary: problemInSummary ? replacementCauses[errorCode] : unavailable ? Number.isFinite(expiresAt) && expiresAt <= now
       ? 'The certificate has expired. HTTPS is unavailable; recovery access remains separate. Review certificate renewal below.'
       : 'The HTTPS listener is unavailable. Recovery access remains separate; review the reported problem and retry.'
       : unconfirmed ? 'Current listener or certificate evidence is missing. Recheck to confirm HTTPS readiness; recovery access has separate readiness.'
@@ -242,12 +341,13 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     enableLabel: savedSetup ? 'Enable HTTPS' : 'Set up HTTPS',
     pairSetup: admin && state.pair?.paired === true && !state.pair.ownerId,
     owner: admin && state.pair?.paired === true && state.pair.ownerId
-      ? `Certificate and remote access · ${state.pair.localOwner === true ? 'This computer' : 'Paired computer'}` : '',
+      ? `HTTPS owner · ${state.pair.localOwner === true ? 'This computer' : 'Paired computer'}` : '',
     peerRenewal: retainedRenewal && !state.enabled ? 'This computer retains responsibility for certificate renewal and the Tailscale entrance until the peer confirms HTTPS is disabled. Forwarding uses the shared address, independently of controller roles.' : '',
     authorizationUrl,
     next: admin && Object.hasOwn(phases, state.phase) ? nextStep(state, { tlsReady, certificateValid, certificateExpired, unconfirmed, peerOwner, retainedRenewal, savedSetup, authorizationUrl, errorCode, localDestination }) : null,
-    setupAvailable: Object.hasOwn(phases, state.phase) && state.setup?.credentialsReady !== false,
-    retryAvailable: state.enabled === true && !state.pair?.reauthorization && !['helper_hostname_changed', 'helper_tailnet_changed', 'https_pair_identity_changed'].includes(errorCode) && (Boolean(errorCode) || unavailable
+    setupAvailable: Object.hasOwn(phases, state.phase) && state.setup?.credentialsReady !== false && !replacementNeeded,
+    recheckAvailable: !replacementNeeded && !state.pair?.reauthorization && errorCode !== 'identity_restore_required',
+    retryAvailable: state.enabled === true && !replacementNeeded && !state.pair?.reauthorization && !['helper_hostname_changed', 'helper_tailnet_changed', 'https_pair_identity_changed', 'https_peer_owner_conflict', 'https_peer_owner_not_configured', 'https_pair_not_ready'].includes(errorCode) && (Boolean(errorCode) || unavailable
       || ['degraded', 'repair_required', 'certificate_settings_required'].includes(state.phase)
       || state.phase === 'authorization_required' && !authorizationUrl),
     accountLinks: admin && !peerOwner && ['approval_or_connection_pending', 'certificate_settings_required'].includes(state.phase),
@@ -303,10 +403,15 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
       : 'Signed stable releases are checked and installed automatically. Existing HTTPS can keep using a valid stored certificate after a helper update fails; some helper failures require repair.',
     restoreIdentity: admin && errorCode === 'identity_restore_required',
     pairReauthorization: admin ? state.pair?.reauthorization ?? null : null,
+    fresh, replacementNeeded, continuingReplacement, problemInSummary,
+    replacementVisible: admin && Boolean(fresh || state.recovery?.error),
+    replacementError: admin ? failure(state.recovery?.error, state.environment) : '',
     receipt,
     problemCode: admin && typeof errorCode === 'string' && errorCode ? errorCode : receipt?.error ?? '',
     historicalProblem: !errorCode && Boolean(receipt?.error),
-    error: admin ? failure(errorCode, state.environment) : '',
+    error: admin ? errorCode === 'https_pair_identity_changed' && !state.pair?.reauthorization
+      ? replacementCauses.https_pair_identity_changed
+      : failure(errorCode, state.environment) : '',
   };
 }
 
@@ -316,7 +421,9 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
   onAccess = () => {}, ingress = false, now = Date.now, confirm = confirmAction }) {
   const $ = id => document.getElementById(id), fold = $('secure-web-access-details');
   const location = document.defaultView?.location ?? {};
-  let state = {}, overview, pending = false, reading, epoch = 0, lastRead = 0, status, localReceipt;
+  let state = {}, overview, pending = false, reading, epoch = 0, lastRead = 0, status, localReceipt, replacementContext;
+  const recoverySession = () => ingress || getAccess()?.source === 'ingress' || location.protocol === 'http:'
+    && (state.transport?.recovery?.listening === true || state.transport?.lanHttp?.listening === true);
   const setText = (id, text) => { const node = $(id); if (node && node.textContent !== text) node.textContent = text; };
   function render() {
     const admin = getAccess()?.role === 'admin';
@@ -329,6 +436,8 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     $('secure-web-access-expiry-row').hidden = !view.hasCertificate;
     $('secure-web-access-admin').hidden = !admin;
     $('secure-web-access-standby').hidden = status?.readOnly !== true && status?.role !== 'slave';
+    setText('secure-web-access-standby', status?.role === 'slave' ? 'Standby · web access can be managed here.'
+      : 'Web access can be managed here while household control is unavailable.');
     $('secure-web-access-owner-choice').hidden = !view.pairSetup;
     $('secure-web-access-owner').hidden = !view.owner;
     setText('secure-web-access-owner', view.owner);
@@ -345,7 +454,23 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     $('secure-web-access-restore-identity').disabled = !available || !view.restoreIdentity;
     $('secure-web-access-reauthorize-pair').hidden = !view.pairReauthorization;
     $('secure-web-access-reauthorize-pair').disabled = !available || !view.pairReauthorization;
-    $('secure-web-access-enable').hidden = view.enabled;
+    const replacement = $('secure-web-access-replacement-details');
+    replacement.hidden = !view.replacementVisible;
+    const currentReplacementContext = view.replacementNeeded ? state.recovery?.kind ?? state.error ?? state.managementError : null;
+    if (currentReplacementContext && currentReplacementContext !== replacementContext) replacement.open = true;
+    replacementContext = currentReplacementContext;
+    $('secure-web-access-start-fresh').disabled = !available || !view.fresh || !recoverySession();
+    $('secure-web-access-replacement-intro').hidden = view.replacementNeeded;
+    setText('secure-web-access-start-fresh', view.continuingReplacement ? 'Continue fresh HTTPS setup' : 'Start fresh HTTPS setup');
+    setText('secure-web-access-replacement-help', !view.replacementVisible ? '' : recoverySession()
+      ? 'Recovery access is open. Any other process using the old identity must be stopped and prevented from restarting. This computer stops its own helper.'
+      : state.environment === 'home-assistant'
+        ? 'Open this application through Home Assistant ingress, then return to Web access and start fresh there. This keeps your connection available while HTTPS closes.'
+        : 'Open this computer’s HTTP recovery entrance, then return to Web access and start fresh there. See Household DNS & recovery below for the available entrance. This keeps your connection available while HTTPS closes.');
+    setText('secure-web-access-replacement-error', view.replacementError);
+    $('secure-web-access-replacement-error').hidden = !view.replacementError;
+    $('secure-web-access-enable').hidden = view.enabled || view.replacementNeeded;
+    $('secure-web-access-recheck').hidden = !view.recheckAvailable;
     setText('secure-web-access-enable', view.enableLabel);
     $('secure-web-access-disable').hidden = !view.enabled;
     $('secure-web-access-retry').hidden = !view.retryAvailable || view.restoreIdentity;
@@ -395,8 +520,9 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     setText('secure-web-access-request-receipt', admin ? localReceipt?.text ?? '' : '');
     $('secure-web-access-request-receipt').hidden = !admin || !localReceipt;
     if (!pending) {
-      setText('secure-web-access-message', view.busy ? 'Web access operation is running. Recheck after it completes.' : view.error);
-      $('secure-web-access-message').classList.toggle('form-error', !view.busy && Boolean(view.error));
+      const message = view.busy ? 'Web access operation is running. Recheck after it completes.' : view.problemInSummary ? '' : view.error;
+      setText('secure-web-access-message', message);
+      $('secure-web-access-message').classList.toggle('form-error', !view.busy && Boolean(message));
     }
     const warning = insecureWebWarning(state.transport, { protocol: location.protocol, hostname: location.hostname, ingress })
       || (!overview?.transport && typeof overview?.warning === 'string' ? overview.warning : '');
@@ -415,7 +541,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
         state = next; lastRead = now(); render();
       } catch (error) {
         if (generation !== epoch || error.status === 401) return;
-        setText('secure-web-access-message', error.message || 'Web access status could not be refreshed.');
+        setText('secure-web-access-message', failure(error.code ?? error.message, state.environment) || 'Web access status could not be refreshed.');
         $('secure-web-access-message').classList.add('form-error');
       } finally { if (generation === epoch) reading = null; }
     })();
@@ -426,14 +552,17 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     const actionView = secureWebAccessView(state, { admin: true });
     if (actionView.busy) return false;
     if (action === 'enable' && !actionView.setupAvailable) return false;
+    if (action === 'recheck' && !actionView.recheckAvailable) return false;
     if (action === 'update-now' && !actionView.updateAvailable || action === 'set-update-policy' && !actionView.updatePolicyAvailable) return false;
     if (action === 'restore-identity' && !secureWebAccessView(state, { admin: true }).restoreIdentity) return false;
     if (action === 'reauthorize-pair' && !actionView.pairReauthorization) return false;
+    if (action === 'start-fresh' && (!actionView.fresh || !recoverySession())) return false;
     const pairToken = actionView.pairReauthorization?.token;
+    const freshToken = actionView.fresh?.token;
     const generation = epoch;
     const previousFocus = document.activeElement;
     pending = true;
-    if (!['disable', 'restore-identity', 'reauthorize-pair'].includes(action)) render();
+    if (!['disable', 'restore-identity', 'reauthorize-pair', 'start-fresh'].includes(action)) render();
     try {
       if (action === 'disable' && !await confirm({ document, title: 'Disable HTTPS on this computer?',
         message: 'The HTTPS entrance closes. The certificate helper identity and valid certificate stay saved for re-enabling. Loopback recovery, Home Assistant ingress and any explicitly configured LAN HTTP backup remain available.'
@@ -447,9 +576,13 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
       if (action === 'reauthorize-pair' && !await confirm({ document, title: 'Authorize HTTPS for the current pair?',
         message: 'Confirm that these are the intended paired computers. This authorizes their current identities for HTTPS and retains the existing certificate owner, saved helper identity, certificates and address. It does not grant heating or charging authority. Complete this review on both computers.',
         action: 'Authorize current pair' })) return false;
+      if (action === 'start-fresh' && !await confirm({ document, title: 'Start fresh HTTPS setup on this computer?',
+        message: 'The previous HTTPS setup and saved helper identity will be preserved. HTTPS on this computer will close, then the normal setup steps let you choose the certificate owner and authorize a new identity. The HTTPS address may change; update household DNS and sign in again afterward. Confirm that any other process using the previous identity is stopped and cannot restart. This computer stops its own helper. Heating, charging, history and pairing roles keep their own settings.',
+        action: 'Previous owner stopped · start fresh' })) return false;
       if (generation !== epoch || getAccess()?.role !== 'admin') return false;
       if (action === 'restore-identity' && !secureWebAccessView(state, { admin: true }).restoreIdentity) return false;
       if (action === 'reauthorize-pair' && pairToken !== secureWebAccessView(state, { admin: true }).pairReauthorization?.token) return false;
+      if (action === 'start-fresh' && (!recoverySession() || freshToken !== secureWebAccessView(state, { admin: true }).fresh?.token)) return false;
       render();
       localReceipt = null;
       setText('secure-web-access-message', 'Web access request in progress…');
@@ -458,6 +591,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
         ? { owner: $('secure-web-access-owner-select').value } : {};
       await request('/api/web-access', { action, ...owner, ...extra,
         ...(action === 'reauthorize-pair' ? { token: pairToken, confirmed: true } : {}),
+        ...(action === 'start-fresh' ? { token: freshToken, confirmed: true, confirmedPreviousOwnerStopped: true } : {}),
         ...(action === 'restore-identity' ? { confirmedPeerFenced: true } : {}) });
       if (generation !== epoch) return false;
       if (reading) await reading;
@@ -466,23 +600,24 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
       return true;
     } catch (error) {
       if (generation === epoch && error.status !== 401) {
-        localReceipt = { at: now(), text: `Last request · ${actionLabels[action] ?? 'Web access'} · ${date(now())}. ${error.message || 'The reply could not be confirmed.'}` };
+        localReceipt = { at: now(), text: `Last request · ${actionLabels[action] ?? 'Web access'} · ${date(now())}. ${failure(error.code ?? error.message, state.environment) || 'The reply could not be confirmed.'}` };
       }
       return false;
     } finally {
       if (generation === epoch) {
         pending = false;
         render();
-        if (document.activeElement === document.body) {
-          const visible = node => node?.isConnected && !node.disabled && node.getClientRects().length;
+        const visible = node => node?.isConnected && !node.disabled && node.getClientRects().length;
+        if (document.activeElement === document.body || !visible(document.activeElement)) {
           const destination = visible(previousFocus) ? previousFocus
-            : visible($('secure-web-access-authorize')) ? $('secure-web-access-authorize') : $('secure-web-access-recheck');
+            : visible($('secure-web-access-authorize')) ? $('secure-web-access-authorize')
+              : visible($('secure-web-access-enable')) ? $('secure-web-access-enable') : $('secure-web-access-recheck');
           if (visible(destination)) destination.focus({ preventScroll: true });
         }
       }
     }
   }
-  for (const action of ['enable', 'recheck', 'retry', 'disable', 'check-updates', 'update-now', 'restore-identity', 'reauthorize-pair'])
+  for (const action of ['enable', 'recheck', 'retry', 'disable', 'check-updates', 'update-now', 'restore-identity', 'reauthorize-pair', 'start-fresh'])
     $(`secure-web-access-${action}`).addEventListener('click', () => { void run(action); });
   $('secure-web-access-update-policy').addEventListener('change', () => {
     void run('set-update-policy', { policy: $('secure-web-access-update-policy').value });
@@ -504,6 +639,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     },
     clear() {
       ++epoch; state = {}; overview = undefined; status = undefined; reading = null; lastRead = 0; pending = false; localReceipt = null;
+      replacementContext = undefined; $('secure-web-access-replacement-details').open = false;
       $('secure-web-access-owner-select').value = 'local'; render();
     },
   };
