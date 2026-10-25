@@ -56,8 +56,14 @@ current, validated Tailscale sign-in URL. **HTTPS setup** contains the
 setup guide and **Replace saved HTTPS setup**, which offers the explicit
 **Start fresh HTTPS setup** action. Required replacement opens this section and
 its review together, then returns to the normal guide after preparation.
-Household DNS/recovery checks and certificate renewal/helper updates have their
-own disclosures. Refreshing preserves disclosure choices and keyboard focus.
+**Household DNS & recovery** opens with the reported DNS result and expected LAN
+destination. **Set up household DNS** holds mapping/check instructions and resolver
+answers. **Temporary connection tests** appears only when validated hosts-file or
+certificate-checked command examples are available. **Recovery access** groups
+loopback/ingress readiness, with optional LAN HTTP instructions in their own fold.
+An active unencrypted-access warning remains visible outside these instructions.
+Certificate renewal/helper updates have their own disclosure. Refreshing preserves
+disclosure choices and keyboard focus.
 
 HTTPS being requested, a stored certificate, a listening HTTPS port and household
 DNS verification are separate observations. Client access and the unattended

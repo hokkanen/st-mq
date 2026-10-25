@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep Web access network status compact, with separate folds for household DNS
+  setup, temporary connection tests and recovery entrances. Show validated examples
+  as readable code blocks and keep optional LAN HTTP instructions behind their
+  own fold, with current access warnings preserved.
+
 - Group the HTTPS address with its connection guidance in Web access. Keep routine
   actions and receipts together, and integrate fresh setup into HTTPS setup
   without repeating healthy-access instructions.

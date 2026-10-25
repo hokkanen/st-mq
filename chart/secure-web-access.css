@@ -38,6 +38,10 @@
 .secure-web-access-address { display: grid; gap: 3px; margin: 14px 0; overflow-wrap: anywhere; }
 .secure-web-access-address a { font-size: 13px; }
 .secure-web-access-address p { margin: 5px 0 0; }
+.secure-web-access-test { margin: 14px 0; }
+.secure-web-access-test h4 { margin: 0 0 5px; font-size: 12px; font-weight: 550; }
+.secure-web-access-test p { margin: 8px 0; }
+.secure-web-access-command { padding: 8px var(--ui-inset); border-radius: 4px; background: var(--surface-soft); overflow-wrap: anywhere; }
 .secure-web-access-body .equipment-fold { border-top: 1px solid var(--border); margin-top: 12px; }
 .secure-web-access-body .equipment-fold > p { font-size: 12px; }
 .secure-web-access-body .equipment-fold code { overflow-wrap: anywhere; }

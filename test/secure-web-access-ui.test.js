@@ -33,6 +33,7 @@ test('network guidance uses the reported destination and exact HTTPS port, with 
     assert.doesNotMatch(`${unknown.addressHelp} ${unknown.browserInstructions}`, /0\.0\.0\.0|192\.0\.2\.74/);
   }
   assert.equal(view.url, `https://${ready.hostname}:9443/`);
+  assert.equal(view.networkNotice, '', 'Ordinary destinations do not create a redundant overview notice');
   assert.match(view.dnsInstructions, /192\.0\.2\.74/);
   assert.match(view.browserInstructions, /Open the full HTTPS address on each intended device and sign in/);
   assert.match(view.recoveryHelp, /http:\/\/127\.0\.0\.1:4321.*this application/);
@@ -46,6 +47,7 @@ test('network guidance uses the reported destination and exact HTTPS port, with 
     assert.equal(local.expectedAddress, `${address} · this computer only`);
     assert.equal(local.hostsEntry, ''); assert.equal(local.curlCommand, '');
     assert.match(local.addressHelp, /reaches only this computer/);
+    assert.match(local.networkNotice, /loopback destination cannot provide household access.*LAN address or shared pair VIP/);
     assert.match(local.dnsInstructions, /loopback destination cannot provide household access/);
     assert.equal(local.next, null, 'A ready listener does not create a second address-guidance block');
     assert.match(local.addressHelp, /Household access needs a LAN listener.*matching DNS/);
@@ -69,6 +71,37 @@ test('release currency never replaces unknown vendor security evidence or clears
   assert.equal(source.helper.securityUpdate, null);
 });
 
+test('connection-test guidance follows current usable examples without discarding disclosure choice', async () => {
+  const { document, nodes } = fixture();
+  let source = structuredClone(ready), access = admin;
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => access,
+    request: async () => structuredClone(source) });
+  await panel.refresh({ force: true });
+  const tests = nodes.get('secure-web-access-connection-tests-details');
+  assert.equal(tests.hidden, false);
+  tests.open = true;
+  for(const changes of [
+    { dns: { expectedAddress: null } },
+    { dns: { expectedAddress: '127.0.0.1' } },
+    { hostname: null, url: null },
+    { url: 'https://unrelated.invalid/' },
+  ]) {
+    source = { ...structuredClone(ready), ...changes };
+    await panel.refresh({ force: true });
+    assert.equal(tests.hidden, true, 'An absent usable test leaves no empty instruction fold');
+    assert.equal(nodes.get('secure-web-access-hosts-entry').textContent, '');
+    assert.equal(nodes.get('secure-web-access-curl-command').textContent, '');
+    assert.equal(tests.open, true, 'Losing evidence does not rewrite the user’s disclosure choice');
+  }
+  source = structuredClone(ready); await panel.refresh({ force: true });
+  assert.equal(tests.hidden, false); assert.equal(tests.open, true);
+  assert.equal(nodes.get('secure-web-access-hosts-entry').textContent, `192.0.2.1 ${ready.hostname}`);
+  access = family; panel.update({ readOnly: true, role: 'slave' });
+  assert.equal(tests.hidden, true);
+  assert.equal(nodes.get('secure-web-access-hosts-entry').textContent, '');
+  assert.equal(nodes.get('secure-web-access-curl-command').textContent, '');
+});
+
 test('a valid certificate is distinct from listener and household DNS readiness', () => {
   const view = secureWebAccessView(ready, { admin: true });
   assert.equal(view.label, 'HTTPS ready locally');
@@ -80,7 +113,7 @@ test('a valid certificate is distinct from listener and household DNS readiness'
   assert.equal(secureWebAccessView({ ...ready, transport: {} }).https, 'Unknown');
   const familyView = secureWebAccessView(ready);
   for (const field of ['url', 'hostname', 'authorizationUrl', 'helper', 'latest', 'checked', 'installed']) assert.equal(familyView[field], null, field);
-  for (const field of ['addressHelp', 'browserInstructions', 'recoveryHelp', 'lanBackupHelp']) assert.equal(familyView[field], '', field);
+  for (const field of ['addressHelp', 'networkNotice', 'browserInstructions', 'recoveryHelp', 'lanBackupHelp']) assert.equal(familyView[field], '', field);
   assert.equal(familyView.error, '');
   assert.equal(familyView.updateAvailable, false);
 });

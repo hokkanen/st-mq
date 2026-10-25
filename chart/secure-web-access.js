@@ -321,7 +321,6 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
   const localDestination = expectedAddress?.startsWith('127.') === true;
   const householdAddress = localDestination ? null : expectedAddress;
   const recoveryUrl = admin ? loopbackUrl(transport.recovery) : null;
-  const backupPort = admin ? port(transport.lanHttp?.address?.port) : null;
   const dnsPending = admin && state.phase === 'ready' && tlsReady && dns.state !== 'ready';
   const newerRelease = releaseDifference(state.updates?.candidate, state.updates?.installed) === 1;
   const checkedRelease = releaseDifference(state.updates?.latest, state.updates?.installed);
@@ -368,8 +367,8 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
       || state.phase === 'authorization_required' && !authorizationUrl),
     accountLinks: admin && !peerOwner && ['approval_or_connection_pending', 'certificate_settings_required'].includes(state.phase),
     dnsText: `${dnsText}${dns.checkedAt ? ` · ${date(dns.checkedAt)}` : ''}`,
-    dnsHelp: localDestination ? `The reported destination ${expectedAddress} is loopback and reaches only this computer. Confirm the server’s reserved LAN address or shared pair VIP for household access. Certificate issuance does not require router DNS changes.`
-      : hostname ? 'Certificate issuance does not require router DNS changes. A successful check on this computer does not verify other household devices.'
+    networkNotice: localDestination ? 'This loopback destination cannot provide household access. Confirm the reserved server LAN address or shared pair VIP.' : '',
+    dnsHelp: hostname ? 'Certificate issuance does not require router DNS changes. A successful check on this computer does not verify other household devices.'
       : 'Certificate issuance can be completed before configuring household DNS.',
     dnsResolver: admin ? ipv4(dns.resolver) ?? 'Not configured' : '',
     expectedAddress: expectedAddress ? `${expectedAddress}${localDestination ? ' · this computer only' : ''}` : 'Confirm the reserved LAN IPv4 address',
@@ -382,7 +381,7 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
       ? 'inside this application’s network namespace. Home Assistant ingress is a separate recovery entrance; another SSH add-on does not automatically share this listener.'
       : 'on this application’s computer. Remote loopback recovery requires an SSH tunnel to that listener.'}`
       : 'The recovery endpoint is not confirmed. Recovery and Home Assistant ingress have separate status; a wildcard listener is not a client address.',
-    lanBackupHelp: admin ? `LAN HTTP backup is disabled by default.${backupPort ? ` The reported listener uses port ${backupPort}.` : ' Its listener port is not reported.'} To enable it, set web.lan_http_enabled to true in this computer’s private configuration and restart. HTTP exposes passwords and household data to interception or modification; restrict it to a trusted LAN firewall boundary.` : '',
+    lanBackupHelp: admin ? 'To enable LAN HTTP backup, set web.lan_http_enabled to true in this computer’s private configuration, then restart. It is disabled by default.' : '',
     dnsInstructions: localDestination ? 'A loopback destination cannot provide household access. Confirm the reserved server LAN IPv4 address or shared pair VIP before configuring the hostname mapping.'
       : hostname ? `Add a local DNS A-record for ${hostname} pointing to ${householdAddress ?? 'the server’s reserved LAN IPv4 address'}.${state.pair?.paired ? ' Use the shared pair VIP rather than either computer’s individual address.' : ' Reserve that address in DHCP.'}`
       : `After certificate setup, map the exact certificate hostname to ${state.pair?.paired ? 'the shared pair VIP' : 'the server’s reserved LAN IPv4 address'}.`,
@@ -506,6 +505,8 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     setText('secure-web-access-url', view.url ?? '');
     setText('secure-web-access-address-help', view.addressHelp);
     setText('secure-web-access-dns', admin ? view.dnsText : 'Not checked');
+    setText('secure-web-access-network-notice', view.networkNotice);
+    $('secure-web-access-network-notice').hidden = !view.networkNotice;
     setText('secure-web-access-dns-help', admin ? view.dnsHelp : 'Certificate issuance can be completed before configuring household DNS.');
     for (const [field, id] of [['dnsResolver', 'dns-resolver'], ['expectedAddress', 'expected-address'], ['dnsA', 'dns-a'], ['dnsAAAA', 'dns-aaaa']])
       setText(`secure-web-access-${id}`, admin ? view[field] : '');
@@ -517,6 +518,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     setText('secure-web-access-hosts-entry', view.hostsEntry);
     $('secure-web-access-curl-help').hidden = !view.curlCommand;
     setText('secure-web-access-curl-command', view.curlCommand);
+    $('secure-web-access-connection-tests-details').hidden = !view.hostsEntry && !view.curlCommand;
     setText('secure-web-access-helper', view.helper ?? 'Not installed');
     setText('secure-web-access-key-expiry', view.keyExpiry ?? 'Not reported');
     $('secure-web-access-key-expiry').classList.toggle('form-error', Boolean(view.keyExpired));

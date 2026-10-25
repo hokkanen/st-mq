@@ -297,6 +297,13 @@ try {
   'Address and its guidance form one accessible group; fresh setup belongs to the setup flow exactly once');
   assert.equal(await evaluate("document.querySelectorAll('.secure-web-access-steps > li').length"), 3, 'Plain-language setup guide avoids redundant technical progress rows');
   assert.equal(await evaluate("document.getElementById('secure-web-access-setup-details').open"), false, 'Detailed setup guidance stays collapsed by default');
+  const networkInstructionIds = await evaluate("[...document.querySelectorAll('#secure-web-access-network-details > details')].map(node=>node.id)");
+  assert.equal(networkInstructionIds.length, 3, 'Network guidance separates DNS configuration, temporary tests and recovery access');
+  assert.equal(await evaluate("[...document.querySelectorAll('#secure-web-access-network-details details')].every(node=>!node.open)"), true,
+    'Network instructions remain folded until their task is selected');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-connection-tests-details').hidden"), true,
+    'First setup has no empty connection-test disclosure before a usable hostname exists');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-network-notice').hidden"), true);
   assert.match(await evaluate("document.getElementById('secure-web-access-next-help').textContent"), /Choose which computer.*separate from the master/);
   assert.equal(await evaluate("document.querySelector('.secure-web-access-setup-links a').href"), 'https://console.tailscale.com/admin/dns');
   assert.equal(await evaluate("document.getElementById('settings-reload').disabled"), true, 'Standby cannot edit ordinary settings');
@@ -336,6 +343,42 @@ try {
   assert.equal(await evaluate("document.getElementById('secure-web-access-https').textContent"), 'Listening · port 8443');
   assert.equal(await evaluate("document.getElementById('secure-web-access-hosts-entry').textContent"), `192.0.2.50 ${hostname}`);
   assert.equal(await evaluate("document.getElementById('secure-web-access-curl-command').textContent"), `curl --resolve '${hostname}:8443:192.0.2.50' 'https://${hostname}:8443/'`);
+  const networkOverview = await evaluate(`(()=>{
+    const network=document.getElementById('secure-web-access-network-details');
+    return {text:network.innerText,prose:[...network.querySelectorAll('p')].filter(node=>node.checkVisibility()).map(node=>node.textContent),
+      facts:['dns','expected-address'].map(id=>document.getElementById('secure-web-access-'+id).closest('details').id),
+      dnsDetails:['dns-resolver','dns-a','dns-aaaa'].map(id=>document.getElementById('secure-web-access-'+id).closest('details').id),
+      recovery:['recovery','ingress','recovery-help','lan-backup-help'].map(id=>document.getElementById('secure-web-access-'+id).closest('details').id)};
+  })()`);
+  assert(networkOverview.prose.join(' ').length<=260, 'Opening the network overview shows a short caveat, with instructions kept in their own folds');
+  assert.doesNotMatch(networkOverview.text, /web\.lan_resolver|\/etc\/hosts|curl --resolve|web\.lan_http_enabled/,
+    'Configuration fields, platform instructions and commands stay inside task disclosures');
+  assert.deepEqual(networkOverview.facts, Array(2).fill('secure-web-access-network-details'), 'The overview keeps only the current DNS result and expected destination');
+  assert.deepEqual(networkOverview.dnsDetails, Array(3).fill('secure-web-access-dns-setup-details'), 'DNS setup keeps resolver and address answers together');
+  assert(networkOverview.recovery.every(id=>id!=='secure-web-access-network-details'), 'Recovery listener evidence stays with recovery instructions');
+  for(const id of networkInstructionIds) {
+    await evaluate(`document.querySelector('#'+${JSON.stringify(id)}+'>summary').focus();true`); await key('Enter');
+    assert.equal(await evaluate(`document.getElementById(${JSON.stringify(id)}).open`), true, 'Nested guidance opens from its native keyboard summary');
+    await evaluate('webBrowser.panel.refresh({force:true})');
+    assert.equal(await evaluate(`document.activeElement===document.querySelector('#'+${JSON.stringify(id)}+'>summary')`), true, 'Polling preserves focused nested guidance');
+    assert.equal(await evaluate(`document.getElementById(${JSON.stringify(id)}).open`), true, 'Polling preserves nested disclosure choice');
+    await key(' ');
+    assert.equal(await evaluate(`document.getElementById(${JSON.stringify(id)}).open`), false);
+  }
+  assert.deepEqual(await evaluate(`['hosts-help','curl-help'].map(id=>{
+    const section=document.getElementById('secure-web-access-'+id),heading=section.querySelector('h4'),code=section.querySelector('code');
+    return {section:section.tagName,label:section.getAttribute('aria-labelledby')===heading?.id,
+      title:Boolean(heading?.textContent.trim()),code:Boolean(code?.textContent.trim()),owner:section.closest('details').id};
+  })`), Array(2).fill({section:'SECTION',label:true,title:true,code:true,owner:'secure-web-access-connection-tests-details'}),
+  'Temporary examples are separate named sections within the connection tests');
+  await evaluate("document.getElementById('secure-web-access-recovery-details').open=true;document.querySelector('#secure-web-access-http-details>summary').focus();true");
+  await key('Enter');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-http-details').open"), true);
+  await evaluate('webBrowser.panel.refresh({force:true})');
+  assert.equal(await evaluate("document.activeElement===document.querySelector('#secure-web-access-http-details>summary')"), true, 'HTTP help retains nested keyboard focus through refresh');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-http-details').open"), true);
+  await key(' ');
+  await evaluate("document.getElementById('secure-web-access-recovery-details').open=false;true");
   assert.equal(await evaluate("document.getElementById('secure-web-access-next').checkVisibility()"), false, 'Healthy access has no duplicate next-step description');
   assert.match(await evaluate("document.getElementById('secure-web-access-address-help').textContent"), /household DNS.*same Tailscale network/);
   assert.equal(await evaluate('location.href'), `${base}/`, 'Local HTTPS readiness never leaves the recovery page automatically');
@@ -400,15 +443,24 @@ try {
   await until("document.getElementById('secure-web-access-restore-identity').hidden");
   assert.equal(requests.filter(item => item.action === 'restore-identity').length, beforeRestore + 1, 'Explicit fence confirmation restores exactly once');
   if (screenshots) await mkdir(screenshots, { recursive: true });
-  const captureLayout = async (name, { details = false, anonymous = false } = {}) => {
+  const captureLayout = async (name, { details = false, anonymous = false, networkSection = null } = {}) => {
     assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Card padding and nested indentation remain independent');
     const recoveryOpen = await evaluate("!document.getElementById('secure-web-access-replacement-details').hidden && document.getElementById('secure-web-access-replacement-details').open && document.getElementById('secure-web-access-setup-details').open");
     await evaluate(`document.getElementById('connections-details').open=true;document.getElementById('secure-web-access-details').open=true;
       document.getElementById('secure-web-access-setup-details').open=${details || recoveryOpen};
       for(const id of ['network','update'])document.getElementById('secure-web-access-'+id+'-details').open=${details};true`);
+    if(networkSection!==null) await evaluate(`(()=>{
+      const network=document.getElementById('secure-web-access-network-details');network.open=true;
+      network.querySelectorAll('details').forEach(node=>node.open=false);
+      if(${JSON.stringify(networkSection)}!=='overview') {
+        let node=document.getElementById('secure-web-access-'+${JSON.stringify(networkSection)}+'-details');
+        while(node&&node!==network){if(node.tagName==='DETAILS')node.open=true;node=node.parentElement;}
+      }
+      return true;
+    })()`);
     for (const theme of ['light', 'dark']) for (const width of [320, 390, 1440]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: width > 400 ? 1100 : 844, deviceScaleFactor: 1, mobile: width <= 390 });
-      await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)};document.getElementById('${anonymous ? 'auth' : 'secure-web-access-details'}').scrollIntoView({block:'start',behavior:'instant'});true`);
+      await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)};document.getElementById('${anonymous ? 'auth' : networkSection!==null ? 'secure-web-access-network-details' : 'secure-web-access-details'}').scrollIntoView({block:'start',behavior:'instant'});true`);
       await settle();
       const geometry = await evaluate(`(()=>{
         const panel=document.getElementById('${anonymous ? 'auth' : 'secure-web-access-details'}'),box=panel.getBoundingClientRect();
@@ -442,6 +494,11 @@ try {
       if (screenshots) {
         const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
         await writeFile(join(screenshots, `${name}-${theme}-${width}.png`), Buffer.from(shot.data, 'base64'));
+        if(networkSection!==null) {
+          const clip=await evaluate(`(()=>{const r=document.getElementById('secure-web-access-network-details').getBoundingClientRect();return{x:r.x+scrollX,y:r.y+scrollY,width:r.width,height:r.height,scale:1};})()`);
+          const full=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip});
+          await writeFile(join(screenshots,`${name}-full-fold-${theme}-${width}.png`),Buffer.from(full.data,'base64'));
+        }
         if (['disabled-pair', 'replacement-https_state_invalid', 'https-recovery-required'].includes(name)) {
           const clip = await evaluate(`(()=>{const r=document.getElementById('secure-web-access-details').getBoundingClientRect();return{x:r.x+scrollX,y:r.y+scrollY,width:r.width,height:r.height,scale:1};})()`);
           const full = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip });
@@ -478,6 +535,9 @@ try {
     }
   };
   await captureLayout('ready-details', { details: true });
+  for(const section of ['overview','dns-setup','connection-tests','recovery','http'])
+    await captureLayout(`network-${section}`, { networkSection:section });
+  await evaluate("document.querySelectorAll('#secure-web-access-network-details details').forEach(node=>node.open=false);true");
   for(const id of ['helper','key-expiry','security-status'])
     assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').closest('section').getAttribute('aria-labelledby')`), 'secure-web-access-local-title');
   for(const id of ['tested','latest','update-check'])
@@ -631,9 +691,13 @@ try {
       assert.match(await evaluate("document.getElementById('secure-web-access-security-help').textContent"),/was reported/);
     }
     if(['unknown-destination','loopback-destination'].includes(name)) {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-connection-tests-details').hidden"), true,
+        'Unknown and loopback destinations never expose an empty or misleading connection-test fold');
       for(const id of ['hosts','curl']) assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}-help').hidden`),true);
       for(const id of ['hosts-entry','curl-command']) assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').textContent`),'');
       if(name==='loopback-destination') {
+        assert.equal(await evaluate("document.getElementById('secure-web-access-network-notice').hidden"), false);
+        assert.match(await evaluate("document.getElementById('secure-web-access-network-notice').textContent"), /loopback destination cannot provide household access/);
         assert.match(await evaluate("document.getElementById('secure-web-access-address-help').textContent"), /reaches only this computer/);
         assert.equal(await evaluate("document.getElementById('secure-web-access-next').checkVisibility()"), false);
       } else assert.equal(await evaluate("document.getElementById('secure-web-access-expected-address').textContent"), 'Confirm the reserved LAN IPv4 address');
@@ -734,6 +798,7 @@ try {
   assert.equal(await evaluate("document.getElementById('secure-web-access-authorize').hasAttribute('href')"), false);
   assert.equal(await evaluate("document.getElementById('secure-web-access-url').hasAttribute('href')"), false);
   assert.equal(await evaluate("document.getElementById('secure-web-access-curl-command').textContent"), '');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-connection-tests-details').hidden"), true);
   assert.equal(await evaluate("document.getElementById('secure-web-access-dns-a').textContent"), '');
   for(const id of ['browser-instructions','recovery-help','lan-backup-help']) assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').textContent`),'');
   assert.equal(await evaluate("document.getElementById('secure-web-access-security-warning').checkVisibility()"), false);
@@ -761,6 +826,12 @@ try {
   const beforeTlsFresh = requests.filter(item => item.action === 'start-fresh').length;
   assert.equal(await evaluate("webBrowser.panel.run('start-fresh')"), false);
   assert.equal(requests.filter(item => item.action === 'start-fresh').length, beforeTlsFresh);
+  await evaluate("document.querySelector('#secure-web-access-network-details>summary').focus();true"); await key('Enter');
+  await evaluate("document.querySelector('#secure-web-access-recovery-details>summary').focus();true"); await key('Enter');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-recovery-help').checkVisibility()"), true,
+    'Recovery instructions can be opened from the HTTPS connection before leaving it');
+  assert.match(await evaluate("document.getElementById('secure-web-access-recovery-help').textContent"), /127\.0\.0\.1:1234.*Home Assistant ingress/);
+  await captureLayout('https-recovery-access', { networkSection:'recovery' });
   await captureLayout('https-recovery-required');
   if (baselinePage) {
     await send('Page.navigate',{url:`${base}/baseline`});await until("document.getElementById('controls-details')");
