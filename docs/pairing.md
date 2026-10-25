@@ -742,7 +742,8 @@ and backup setting. Recording/control stop only after the final confirmation.
 Reset changes this computer's pairing identity. Saved HTTPS listeners and the
 certificate helper can be blocked until their binding is reviewed. The window
 reads current admin Web access status when opened and reviewed, and uses its shared
-HTTPS presentation rules. Its compact disclosure expands during review; failed
+HTTPS presentation rules. Its stable **Web access after reset** disclosure shows
+a checking message until fresh status arrives, and expands during review; failed
 or stale reads give conservative guidance. Resetting a receiving computer can use **Authorize current pair** on both computers when the same pair
 and certificate owner remain, preserving address, identity and certificates.
 Resetting the certificate owner's identity requires **Start fresh HTTPS setup**

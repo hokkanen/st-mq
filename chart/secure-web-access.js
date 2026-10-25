@@ -255,28 +255,22 @@ export function insecureWebWarning(transport, { protocol, hostname, ingress = fa
  * establish which HTTPS recovery path applies; certificate presence alone
  * never establishes ownership or preserves a pair binding. */
 export function pairingResetHttpsNotice(status, currentNodeId) {
-  const unknown = { title: 'Review HTTPS after reset',
-    message: 'Reset changes this computer’s identity and may block HTTPS listeners and the certificate helper until review. HTTPS setup could not be confirmed. After reset, open Web access on both computers through recovery access to see the required next step.' };
+  const notice = message => ({ title: 'Web access after reset', message });
+  const unknown = notice('Reset changes this computer’s identity and may block HTTPS listeners and the certificate helper until review. HTTPS setup could not be confirmed. After reset, open Web access on both computers through recovery access to see the required next step.');
   if (!status || status.version !== 1 || status.stale === true || status.available === false || status.managementError
     || status.busy === true || status.operation?.state === 'running' || !Object.hasOwn(phases, status.phase)) return unknown;
   const saved = status.enabled === true || Boolean(status.certificate || status.hostname || status.pair?.ownerId
     || status.updates?.installed || status.helper?.version);
-  if (!saved && status.enabled === false && status.phase === 'disabled' && status.recovery?.kind === 'fresh') return {
-    title: 'No saved HTTPS setup here',
-    message: 'This computer has no HTTPS setup to recover, so no extra HTTPS setup is needed here. If the paired computer uses HTTPS, review Web access there after its peer’s identity changes.',
-  };
+  if (!saved && status.enabled === false && status.phase === 'disabled' && status.recovery?.kind === 'fresh')
+    return notice('This computer has no HTTPS setup to recover, so no extra HTTPS setup is needed here. If the paired computer uses HTTPS, review Web access there after its peer’s identity changes.');
   if (!saved || typeof currentNodeId !== 'string' || !currentNodeId || status.pair?.paired !== true
     || typeof status.pair.ownerId !== 'string' || !status.pair.ownerId
     || status.error === 'https_pair_identity_changed' && !status.pair.reauthorization
     || status.phase === 'repair_required') return unknown;
-  if (status.pair.localOwner === true && status.pair.ownerId === currentNodeId) return {
-    title: 'HTTPS setup after owner reset',
-    message: 'Reset changes the certificate owner’s identity and blocks saved HTTPS listeners and the helper until review. Start fresh HTTPS setup on the receiving computer first, then on this computer, and follow normal setup. The HTTPS address may change; household DNS and browser sign-in may need updating.',
-  };
-  if (status.pair.localOwner === false && status.pair.ownerId !== currentNodeId) return {
-    title: 'HTTPS review after reset',
-    message: 'Reset changes this computer’s identity and blocks saved HTTPS listeners and the certificate helper until review. If the same pair and certificate owner remain, use Authorize current pair in Web access on both computers to preserve the address, identity and certificates. Web access will explain any other required setup.',
-  };
+  if (status.pair.localOwner === true && status.pair.ownerId === currentNodeId)
+    return notice('Reset changes the certificate owner’s identity and blocks saved HTTPS listeners and the helper until review. Start fresh HTTPS setup on the receiving computer first, then on this computer, and follow normal setup. The HTTPS address may change; household DNS and browser sign-in may need updating.');
+  if (status.pair.localOwner === false && status.pair.ownerId !== currentNodeId)
+    return notice('Reset changes this computer’s identity and blocks saved HTTPS listeners and the certificate helper until review. If the same pair and certificate owner remain, use Authorize current pair in Web access on both computers to preserve the address, identity and certificates. Web access will explain any other required setup.');
   return unknown;
 }
 

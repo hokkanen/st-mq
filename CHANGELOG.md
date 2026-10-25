@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep the reset window’s Web access fold title stable while fresh HTTPS status
+  loads. Show checking in its body instead of briefly flashing fallback guidance
+  before the certificate-owner or receiving-computer instructions arrive.
+
 - Keep Web access network status compact, with separate folds for household DNS
   setup, temporary connection tests and recovery entrances. Show validated examples
   as readable code blocks and keep optional LAN HTTP instructions behind their

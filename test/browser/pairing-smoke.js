@@ -515,6 +515,7 @@ try {
   await open();
   resetHttpsStatus = { version: 1, phase: 'ready', enabled: true, pair: { paired: true, ownerId: pair.nodeId, localOwner: true } };
   const beforeResets = actions.length;
+  await evaluate(`window.__resetHttpsTitles=[${$('pairing-reset-https-title')}.textContent]; new MutationObserver(()=>window.__resetHttpsTitles.push(${$('pairing-reset-https-title')}.textContent)).observe(${$('pairing-reset-https-title')}, {childList:true,characterData:true,subtree:true}); true`);
   for (const width of [1440, 768, 390, 320]) for (const theme of ['dark', 'light']) {
     await command('browsingContext.setViewport', { context, viewport: { width, height: width === 320 ? 568 : 1000 }, devicePixelRatio: 1 });
     if (await evaluate('document.documentElement.dataset.theme') !== theme)
@@ -533,6 +534,7 @@ try {
     if (width === 320) await capture(`reset-choices-${theme}`);
     await evaluate(`${$('pairing-reset-fresh')}.click(); ${$('pairing-reset-continue')}.click(); true`);
     await until(`${$('pairing-reset-dialog')}.dataset.stage === 'review'`);
+    await until(`${$('pairing-reset-https-help')}.textContent.includes('receiving computer first')`);
     assert.equal(await evaluate(`${$('pairing-reset-confirm')}.disabled`), true);
     assert.equal(await evaluate('document.activeElement.id'), 'pairing-reset-title');
     assert.equal(await evaluate("document.querySelectorAll('dialog[open]').length"), 1, 'Review stays in the same modal');
@@ -548,6 +550,7 @@ try {
     assert.equal(await evaluate('document.activeElement.id'), 'pairing-reset');
   }
   assert.equal(actions.length, beforeResets, 'Reviewing, going Back and cancelling never submit reset');
+  assert.deepEqual(JSON.parse(await evaluate('JSON.stringify([...new Set(window.__resetHttpsTitles)])')), ['Web access after reset'], 'Open, review, Back and reopen never flash a different fold title');
   const key = value => command('input.performActions', { context, actions: [{ type: 'key', id: 'reset-keyboard', actions: [{ type: 'keyDown', value }, { type: 'keyUp', value }] }] });
   const tabTo = async id => { for(let i=0;i<12;i++){if(await evaluate('document.activeElement.id')===id)return;await key('\uE004');}assert.fail('Keyboard could not reach '+id); };
   await evaluate(`${$('pairing-reset')}.click(); true`);

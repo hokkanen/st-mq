@@ -8,6 +8,7 @@ export function createPairResetWindow({ document, request, getState, getAccess, 
   const dialog = $('dialog'), trigger = document.getElementById('pairing-reset');
   let review = null, stage = 'choose', epoch = 0, webStatus = null, webIdentity = null, acceptedClose = false;
   let webAccessRequested = false;
+  let webLoading = false;
   const mode = () => $('keep').checked ? 'keep' : 'fresh';
   const fresh = () => mode() === 'fresh';
   const current = state => state?.available && getAccess()?.role === 'admin' && !state.pending && allowed(state.view)
@@ -16,17 +17,20 @@ export function createPairResetWindow({ document, request, getState, getAccess, 
   const setText = (id, value) => { if ($(id).textContent !== value) $(id).textContent = value; };
   function renderHttps() {
     const notice = httpsNotice(webStatus, getState().view?.nodeId);
-    setText('https-title', notice.title); setText('https-help', notice.message);
+    setText('https-title', notice.title);
+    setText('https-help', webLoading
+      ? 'Checking current HTTPS setup… Reset changes this computer’s identity and may interrupt web access.'
+      : notice.message);
   }
   function readHttps() {
     const read = ++epoch, state = getState();
-    webStatus = null; webIdentity = { nodeId: state.view?.nodeId, token: state.view?.reset?.token };
+    webStatus = null; webLoading = true; webIdentity = { nodeId: state.view?.nodeId, token: state.view?.reset?.token };
     renderHttps();
     void Promise.resolve().then(() => request('/api/web-access')).then(status => {
       const latest = getState();
       if (read !== epoch || !dialog.open || webIdentity?.nodeId !== latest.view?.nodeId || webIdentity?.token !== latest.view?.reset?.token) return;
-      webStatus = status; renderHttps();
-    }, () => { if (read === epoch && dialog.open) { webStatus = null; renderHttps(); } });
+      webStatus = status; webLoading = false; renderHttps();
+    }, () => { if (read === epoch && dialog.open) { webStatus = null; webLoading = false; renderHttps(); } });
   }
   function chooseStage() {
     stage = 'choose'; dialog.dataset.stage = stage; $('https').open = false;
@@ -66,7 +70,7 @@ export function createPairResetWindow({ document, request, getState, getAccess, 
     const role = { master: 'Master', slave: 'Slave', protected: 'Protected recovery' }[state.view?.role];
     setText('computer', [platform ?? 'This computer', role].filter(Boolean).join(' · '));
     if (dialog.open && webIdentity && (webIdentity.nodeId !== state.view?.nodeId || webIdentity.token !== state.view?.reset?.token)) {
-      ++epoch; webStatus = null; webIdentity = null; renderHttps();
+      ++epoch; webStatus = null; webIdentity = null; webLoading = false; renderHttps();
     }
   }
   function confirm(details) {
@@ -124,7 +128,7 @@ export function createPairResetWindow({ document, request, getState, getAccess, 
   $('cancel').addEventListener('click', () => dialog.close());
   $('https-link').addEventListener('click', event => { event?.preventDefault(); webAccessRequested = true; dialog.close(); });
   dialog.addEventListener('close', () => {
-    ++epoch; webStatus = null; webIdentity = null;
+    ++epoch; webStatus = null; webIdentity = null; webLoading = false;
     const cancelled = review, submitted = acceptedClose; review = null; acceptedClose = false; cancelled?.resolve(false);
     const navigateToWebAccess = webAccessRequested; webAccessRequested = false;
     trigger.setAttribute('aria-expanded', 'false');

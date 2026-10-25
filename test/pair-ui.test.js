@@ -1666,6 +1666,47 @@ test('an interrupted reset locks the original mode and backup choice while still
   assert.equal(f.sent[0].requestId, id); assert.equal(f.sent[0].backup, false);
 });
 
+test('reset HTTPS keeps one title while pending, refreshed and failed reads update only its guidance', async () => {
+  const pending = [], titleWrites = [];
+  const owner = { version: 1, phase: 'ready', enabled: true, pair: { paired: true, ownerId: nodeId, localOwner: true } };
+  const recipient = { ...owner, pair: { paired: true, ownerId: id, localOwner: false } };
+  const f = resetWindowFixture({ webRequest: () => new Promise((resolve, reject) => pending.push({ resolve, reject })) });
+  let title = 'Web access after reset';
+  Object.defineProperty(f.$('pairing-reset-https-title'), 'textContent', {
+    get: () => title, set: value => { titleWrites.push(value); title = value; },
+  });
+  f.click(''); await flushReset();
+  assert.match(f.$('pairing-reset-https-help').textContent, /^Checking current HTTPS setup/);
+  assert.doesNotMatch(f.$('pairing-reset-https-help').textContent, /could not be confirmed|receiving computer first|Authorize current pair/);
+  pending.shift().resolve(owner); await flushReset();
+  assert.match(f.$('pairing-reset-https-help').textContent, /receiving computer first/);
+  f.click('continue'); await flushReset();
+  assert.equal(f.$('pairing-reset-https').open, true);
+  assert.match(f.$('pairing-reset-https-help').textContent, /^Checking current HTTPS setup/);
+  pending.shift().resolve(recipient); await flushReset();
+  assert.match(f.$('pairing-reset-https-help').textContent, /Authorize current pair/);
+  f.click('back'); await flushReset(); f.click('continue'); await flushReset();
+  assert.match(f.$('pairing-reset-https-help').textContent, /^Checking current HTTPS setup/);
+  pending.shift().reject(new Error('unavailable')); await flushReset();
+  assert.match(f.$('pairing-reset-https-help').textContent, /could not be confirmed/);
+  assert.equal(title, 'Web access after reset');
+  assert.deepEqual(titleWrites, [], 'Neither a loading frame nor a completed read rewrites the summary');
+  assert.equal(f.sent.length, 0); f.click('cancel'); await flushReset();
+});
+
+test('late HTTPS replies cannot end the current loading state after reopening reset', async () => {
+  const pending = [];
+  const owner = { version: 1, phase: 'ready', enabled: true, pair: { paired: true, ownerId: nodeId, localOwner: true } };
+  const f = resetWindowFixture({ webRequest: () => new Promise(resolve => pending.push(resolve)) });
+  f.click(''); await flushReset(); f.click('cancel'); f.click(''); await flushReset();
+  pending.shift()(owner); await flushReset();
+  assert.match(f.$('pairing-reset-https-help').textContent, /^Checking current HTTPS setup/);
+  pending.shift()(owner); await flushReset();
+  assert.match(f.$('pairing-reset-https-help').textContent, /receiving computer first/);
+  assert.equal(f.$('pairing-reset-https-title').textContent, 'Web access after reset');
+  assert.equal(f.sent.length, 0); f.click('cancel'); await flushReset();
+});
+
 test('late HTTPS replies cannot overwrite a reopened window and review uses the shared owner/recipient rules', async () => {
   let resolveOld, reads = 0;
   const owner = { version: 1, phase: 'ready', enabled: true, pair: { paired: true, ownerId: nodeId, localOwner: true } };

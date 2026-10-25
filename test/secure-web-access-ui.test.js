@@ -816,13 +816,13 @@ test('pairing reset HTTPS notice distinguishes certificate owner from receiving 
   const source = { ...ready, version: 1, pair: { paired: true, ownerId: 'fixture-current-node', localOwner: true } };
   const before = structuredClone(source);
   const owner = pairingResetHttpsNotice(source, 'fixture-current-node');
-  assert.equal(owner.title, 'HTTPS setup after owner reset');
+  assert.equal(owner.title, 'Web access after reset');
   assert.match(owner.message, /blocks saved HTTPS listeners.*helper.*receiving computer first.*then on this computer.*normal setup/);
   assert.match(owner.message, /address may change.*DNS.*browser sign-in/);
   assert.doesNotMatch(owner.message, /Authorize current pair|address.*preserv|retained/);
   const recipient = pairingResetHttpsNotice({ ...source,
     pair: { paired: true, ownerId: 'fixture-other-node', localOwner: false } }, 'fixture-current-node');
-  assert.equal(recipient.title, 'HTTPS review after reset');
+  assert.equal(recipient.title, owner.title, 'Ownership changes guidance inside the stable fold');
   assert.match(recipient.message, /same pair and certificate owner remain.*Authorize current pair.*both computers.*preserve the address, identity and certificates/);
   assert.deepEqual(source, before);
 });
@@ -833,11 +833,11 @@ test('pairing reset HTTPS notice treats saved disabled setup as meaningful and f
   assert.match(pairingResetHttpsNotice(savedDisabled, 'fixture-current-node').message, /Authorize current pair/);
   const fresh = { version: 1, phase: 'disabled', enabled: false, certificate: null, hostname: null,
     pair: { paired: true }, recovery: { kind: 'fresh' }, helper: { state: 'stopped' }, updates: { installed: null } };
-  assert.equal(pairingResetHttpsNotice(fresh, 'fixture-current-node').title, 'No saved HTTPS setup here');
+  assert.equal(pairingResetHttpsNotice(fresh, 'fixture-current-node').title, 'Web access after reset');
   assert.match(pairingResetHttpsNotice(fresh, 'fixture-current-node').message, /no extra HTTPS setup is needed here.*paired computer uses HTTPS.*review/);
   for (const retained of [{ certificate: { expiresAt: 0 } }, { pair: { paired: true, ownerId: 'fixture-other-node' } },
     { hostname: ready.hostname }, { helper: { version: '1.104.1' } }, { recovery: { kind: 'saved-state-unusable' } }]) {
-    assert.notEqual(pairingResetHttpsNotice({ ...fresh, ...retained }, 'fixture-current-node').title, 'No saved HTTPS setup here');
+    assert.doesNotMatch(pairingResetHttpsNotice({ ...fresh, ...retained }, 'fixture-current-node').message, /no extra HTTPS setup is needed here/);
   }
 });
 
@@ -850,11 +850,11 @@ test('pairing reset HTTPS notice remains conservative for missing, stale or inco
     { ...known, pair: { paired: true, ownerId: 'fixture-other-node', localOwner: true } },
     { ...known, error: 'https_pair_identity_changed' }, { ...known, phase: 'repair_required' }]) {
     const notice = pairingResetHttpsNotice(source, 'fixture-current-node');
-    assert.equal(notice.title, 'Review HTTPS after reset');
+    assert.equal(notice.title, 'Web access after reset');
     assert.match(notice.message, /may block.*could not be confirmed.*Web access on both computers/);
     assert.doesNotMatch(notice.message, /will remain|is retained|no extra HTTPS/);
   }
-  assert.equal(pairingResetHttpsNotice(known, null).title, 'Review HTTPS after reset');
+  assert.match(pairingResetHttpsNotice(known, null).message, /could not be confirmed/);
 });
 
 test('native HTTPS storage failures explain a precise remedy while preserving source and private state', async () => {
