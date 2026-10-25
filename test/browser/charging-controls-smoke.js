@@ -228,9 +228,16 @@ fixture.setCase = name => {
 fixture.refresh = () => { panel.update(fixture.status); diagnostics.update(fixture.status); };
 fixture.setCase('ordinary');
 </script></body></html>`;
+// The real two-column dashboard catches wrapping inside narrower Garage cards.
+const dashboardHtml = readFileSync(join(root, 'chart/index.html'), 'utf8')
+  .replace('data-authenticated="false"', 'data-authenticated="true"')
+  .replace(/<script[^>]*src="\.\/[^\"]+"[^>]*><\/script>/g, '')
+  .replaceAll('href="./', 'href="/chart/')
+  .replace('</body>', html.slice(html.indexOf('<script type="module">'), html.indexOf('</script></body>') + 9) + '</body>');
 const server = createServer((request, response) => {
   const path = new URL(request.url, 'http://localhost').pathname;
   if (path === '/') { response.setHeader('Content-Type', 'text/html'); response.end(html); return; }
+  if (path === '/dashboard') { response.setHeader('Content-Type', 'text/html'); response.end(dashboardHtml); return; }
   if (!/^\/chart\/[a-z0-9-]+\.(?:js|css)$/.test(path) && !/^\/src\/[a-z0-9/-]+\.js$/.test(path)) { response.writeHead(404); response.end(); return; }
   try { response.setHeader('Content-Type', path.endsWith('.css') ? 'text/css' : 'text/javascript'); response.end(readFileSync(join(root, path))); }
   catch { response.writeHead(404); response.end(); }
@@ -301,6 +308,7 @@ try {
   await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` });
   await until('Boolean(globalThis.chargingFixture) && Boolean(document.getElementById("charger2-use-automatic"))');
 
+  if (!process.argv.includes('--layout-only') && !process.argv.includes('--record-layout')) {
   for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
@@ -500,8 +508,8 @@ try {
     for (const state of ['ordinary', 'backend-readings', 'idle-current', 'schedule-overview', 'schedule-gaps', 'schedule-outage', 'schedule-recorded', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'identify-native-schedule', 'identify-offline', 'identify-unknown', 'remaining-cost', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'vehicle-reference', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       if (state === 'schedule-gaps') for (const id of ['charger1', 'charger2']) {
-        assert.equal(await evaluate(`document.getElementById('${id}-sources').textContent`), 'Energy gaps · incomplete estimate');
-        assert.match(await evaluate(`document.getElementById('${id}-energy-label').textContent`), /Remaining · energy gaps/);
+        assert.equal(await evaluate(`document.getElementById('${id}-sources').textContent`), 'Energy gaps');
+        assert.equal(await evaluate(`document.getElementById('${id}-energy-label').textContent`), 'Remaining');
       }
       const layout = await evaluate(`(() => {
         const cards = [...document.querySelectorAll('.charging-device')];
@@ -796,8 +804,59 @@ try {
     await until(`document.getElementById('${id}-takeover-message').classList.contains('form-error')`);
     assert.match(await evaluate(`document.getElementById('${id}-takeover-message').textContent`), /charger changed.*latest state/);
   }
+  }
+  await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/dashboard` });
+  await until('Boolean(globalThis.chargingFixture) && Boolean(document.getElementById("charger2-use-automatic"))');
+  const dashboardGeometry = [];
+  for (const width of [320, 390, 1280, 1440, 1920]) for (const theme of ['dark', 'light']) for (const role of ['admin', 'family']) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`document.documentElement.dataset.theme = '${theme}'; document.body.dataset.accessRole = '${role}'`);
+    for (const [soc, energy] of [[56, 0], [56, 16.3], [100, 116.3]]) {
+      await evaluate(`chargingFixture.setCase('schedule-overview'); chargingFixture.status.charging.chargers.forEach(item => {
+        item.progress.estimatedSoc = ${soc}; item.progress.deliveredGridKwh = ${energy}; item.progress.remainingGridKwh = ${energy};
+        item.sessionCost.recordedGridKwh = ${energy};
+      }); chargingFixture.refresh(); document.querySelectorAll('.charging-device').forEach(card => card.open = false)`);
+      const geometry = `(() => {
+        const box = node => { const b = node.getBoundingClientRect(); return { width: b.width, height: b.height }; };
+        return { garage: box(document.getElementById('garage-control')), home: box(document.getElementById('home-control')),
+          cards: [...document.querySelectorAll('.charging-device')].map(card => ({ summary: box(card.querySelector('summary')),
+            charge: box(card.querySelector('.charging-overview')), energy: box(card.querySelector('.charging-fact-overview')) })),
+          overflow: document.documentElement.scrollWidth > innerWidth };
+      })()`;
+      const original = await evaluate(geometry);
+      await evaluate(`chargingFixture.status.charging.chargers.forEach(item => { item.progress.basis = { energyCoverageIncomplete: true }; }); chargingFixture.refresh()`);
+      const incomplete = await evaluate(geometry);
+      dashboardGeometry.push({ width, theme, role, soc, energy, original, incomplete });
+      if (!process.argv.includes('--record-layout')) {
+        assert.deepEqual(incomplete, original, `${width}px ${theme} ${role} ${soc}%: gap warning preserves complete charger, Garage and Home geometry`);
+        assert.equal(incomplete.overflow, false, `${width}px ${theme}: dashboard has no horizontal overflow`);
+        for (const id of ['charger1', 'charger2']) {
+          assert.equal(await evaluate(`document.getElementById('${id}-sources').textContent`), 'Energy gaps');
+          assert.equal(await evaluate(`document.getElementById('${id}-energy-label').textContent`), energy > 0 ? 'Remaining' : 'To target');
+          await evaluate(`document.querySelector('#${id}-charge-label button').click()`);
+          const chargeDetail = await evaluate("document.getElementById('status-detail-popover').textContent");
+          assert.match(chargeDetail, /Energy coverage is incomplete/);
+          assert.match(chargeDetail, /cannot establish a missed target/);
+          if (soc === 100) assert.doesNotMatch(chargeDetail, /Charge may be higher/);
+          await keyPress('Escape', 'Escape', 27);
+          await evaluate(`document.querySelector('#${id}-energy-label button').click()`);
+          assert.match(await evaluate("document.getElementById('status-detail-popover').textContent"), /Energy coverage is incomplete/);
+          await keyPress('Escape', 'Escape', 27);
+          assert.equal(await evaluate(`document.getElementById('${id}-device').open`), false, 'Inspecting gap details preserves the folded card');
+        }
+      }
+      if (role === 'admin' && soc === 56 && energy === 16.3) {
+        const clip = await evaluate(`(() => { const b = document.getElementById('garage-control').getBoundingClientRect();
+          return { x: b.left + scrollX, y: b.top + scrollY, width: b.width, height: b.height, scale: 1 }; })()`);
+        const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip });
+        writeFileSync(join(artifacts, `dashboard-garage-gaps-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
+      }
+    }
+  }
+  writeFileSync(join(artifacts, 'dashboard-geometry.json'), JSON.stringify(dashboardGeometry, null, 2));
+  console.log(`${process.argv.includes('--record-layout') ? 'Recorded dashboard gap geometry' : 'Dashboard gap geometry checks passed'}: ${dashboardGeometry.length} cases at 320/390/1280/1440/1920px, both themes/admin-family. Artifacts: ${artifacts}`);
   assert.deepEqual(errors, []);
-  console.log(`Charging controls browser checks passed: balanced Pause and Use automatic at all widths, keyboard pause and scoped resume, pending/confirmed/unconfirmed session pause, atomic scoped Charge now OFF enables Automatic with one request, title disclosures, independent report dialogs, conditional shared controls, explicit takeover fencing, visible allowances beside pending/errors and retained 24-hour receipts, shared allowance colors and details, two-line approval status, expanded session settings, shared readings with capability differences, setup links without installation rows, read-only inspection, consistent compact statuses, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
+  if (!process.argv.includes('--layout-only') && !process.argv.includes('--record-layout')) console.log(`Charging controls browser checks passed: balanced Pause and Use automatic at all widths, keyboard pause and scoped resume, pending/confirmed/unconfirmed session pause, atomic scoped Charge now OFF enables Automatic with one request, title disclosures, independent report dialogs, conditional shared controls, explicit takeover fencing, visible allowances beside pending/errors and retained 24-hour receipts, shared allowance colors and details, two-line approval status, expanded session settings, shared readings with capability differences, setup links without installation rows, read-only inspection, consistent compact statuses, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   if (browser && browser.exitCode === null) { browser.kill(); await new Promise(resolve => browser.once('exit', resolve)); }

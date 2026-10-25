@@ -1099,7 +1099,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.metrics.soc.value.textContent = view.showMetrics ? view.soc : defaultsPreview?.soc ?? '—';
       device.metrics.minimum.value.textContent = view.showMetrics ? view.minimum : defaultsPreview?.minimum ?? '—';
       device.sources.textContent = defaultsPreview ? 'Configured defaults' : !view.showMetrics ? 'Awaiting data'
-        : view.incompleteChargeEstimate ? 'Energy gaps · incomplete estimate' : view.soc.startsWith('≈') ? 'Estimated charge' : view.sources;
+        : view.incompleteChargeEstimate ? 'Energy gaps' : view.soc.startsWith('≈') ? 'Estimated charge' : view.sources;
       device.metrics.minimum.value.dataset.state = view.showMetrics && view.targetHeld ? 'attention' : 'normal';
       device.targetSource.textContent = view.showMetrics && view.targetHeld ? 'Held BMW target' : '';
       device.targetSource.hidden = !device.targetSource.textContent;
@@ -1129,8 +1129,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       energyText(device.deliveredValue, view.showMetrics && finite(deliveredEnergy) ? number(deliveredEnergy, 'kWh') : '—');
       metricDetail(device.deliveredLabel, { label: 'Added energy', title: 'Energy added since plugging in',
         detail: view.showMetrics && finite(deliveredEnergy) ? 'Recorded grid energy since plugging in, including charging losses. It remains after charging ends and after the ready-by time, until the vehicle disconnects. New battery readings do not reset it; missing measurements are not estimated.' : 'No recorded energy total is available for this connection.', key: `${charger.id}:delivered` });
-      metricDetail(device.energyLabel, { label: view.incompleteChargeEstimate ? 'Remaining · energy gaps'
-        : view.energyLabel === 'Grid remaining' ? 'Remaining' : 'To target', title: view.energyLabel,
+      metricDetail(device.energyLabel, { label: view.energyLabel === 'Grid remaining' ? 'Remaining' : 'To target', title: view.energyLabel,
         detail: `${view.energyNote}. ${explanation['Energy estimate'] ?? ''}`, key: `${charger.id}:energy` });
       const cost = chargingCost(charger, view, presentation, { now: next.now, prices: next.prices });
       device.cost.textContent = cost.value;
