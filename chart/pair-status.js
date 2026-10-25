@@ -1,5 +1,6 @@
 import { confirmAction } from './confirmation.js';
 import { createPairResetWindow } from './pair-reset.js';
+import { actionReceiptRecent } from './action-receipts.js';
 import { recoveryErrorMessage } from '../src/recovery/errors.js';
 import { checkedRecoverySource, emptyRecoverySource } from '../src/recovery/source-check.js';
 const actions = ['check-recovery', 'recover', 'handover', 'promote', 'rejoin', 'reset'];
@@ -405,12 +406,14 @@ function restoredOperation(storage) {
 
 /** Submit once; reconnects only read the outcome on the original computer. */
 export function createPairActions({ request, storage, confirm = (message, { action } = {}) => action === 'reset' ? false : confirmAction({ document: globalThis.document, title: 'Confirm computer change', message, action: 'Confirm change' }),
-  requestId = makeRequestId, onChange = () => {}, afterMutation = () => {} }) {
+  requestId = makeRequestId, onChange = () => {}, afterMutation = () => {}, now = Date.now }) {
   let view = null, available = false, busy = false, pending = restoredOperation(storage), error = Boolean(pending);
   let confirmation = null;
   let generation = 0;
+  let resolvedReceipt = null;
   let message = pending ? 'Confirming the previous operation with its original computer…' : '';
-  const snapshot = () => ({ view, available, busy, pending, message, error });
+  const snapshot = () => ({ view, available, busy, pending,
+    message: !error && !pending && resolvedReceipt !== null && !actionReceiptRecent(resolvedReceipt.at, now()) ? '' : message, error });
   const notify = () => onChange(snapshot());
   const persist = () => { try { if (pending) storage?.setItem(pendingKey, JSON.stringify(pending)); else storage?.removeItem(pendingKey); } catch {} };
   function finish(operation, next = view) {
@@ -418,6 +421,7 @@ export function createPairActions({ request, storage, confirm = (message, { acti
       || (operation.action ?? operation.name) !== pending.action
       || !['complete', 'error', 'unknown'].includes(operation.state)) return;
     error = operation.state !== 'complete';
+    if (!error) resolvedReceipt = { at: stamp(operation.finishedAt) };
     message = operation.state === 'unknown'
       ? 'The original computer has no saved result. The outcome remains unconfirmed; confirmation will continue automatically.'
       : error ? pairIssueHelp({ error: operation.errorCode ?? operation.error }) || (next?.recovery?.pendingRelease
@@ -435,7 +439,7 @@ export function createPairActions({ request, storage, confirm = (message, { acti
       && next.reset.lastResult.mode === pending.mode ? next.reset.lastResult : null;
     // An explicit reset replaces the node identity; its durable receipt still
     // confirms that reset without authorizing any further operation.
-    if (reset) { finish({ requestId: reset.requestId, action: 'reset', state: 'complete' }, next); return; }
+    if (reset) { finish({ requestId: reset.requestId, action: 'reset', state: 'complete', finishedAt: reset.completedAt }, next); return; }
     if (next.nodeId !== pending.nodeId) return;
     const durable = next.recentActions?.find(operation => operation.requestId === pending.requestId);
     const operation = next.uiOperation?.id === pending.requestId ? next.uiOperation : durable;
@@ -491,6 +495,7 @@ export function createPairActions({ request, storage, confirm = (message, { acti
       busy = false; error = true; message = 'The recovery preview changed. Review the current check before confirming again.'; notify(); return false;
     }
     pending = body; persist();
+    resolvedReceipt = null;
     error = false; message = 'Waiting for this operation’s confirmed result…'; notify();
     let saved = false;
     try {
@@ -520,7 +525,7 @@ export function createPairActions({ request, storage, confirm = (message, { acti
   return { snapshot,
     clear() {
       ++generation;
-      view = null; available = false; busy = false; pending = null; confirmation = null; error = false; message = '';
+      view = null; available = false; busy = false; pending = null; confirmation = null; error = false; message = ''; resolvedReceipt = null;
       persist(); notify();
     },
     update(next) { if (next) acceptStatus(next); else { view = null; available = false; } notify(); return confirmPending(); },
@@ -541,7 +546,7 @@ export function createPairActions({ request, storage, confirm = (message, { acti
 export function createPairPanel({ document, request, storage, confirm, afterMutation, formatTime, now = () => Date.now(), onRecovery = () => {}, getAccess, httpsNotice }) {
   const $ = id => document.getElementById(id);
   let resetWindow;
-  const controller = createPairActions({ request, storage, afterMutation, onChange: render, confirm: (message, details) => details.action === 'reset'
+  const controller = createPairActions({ request, storage, afterMutation, now, onChange: render, confirm: (message, details) => details.action === 'reset'
     ? resetWindow.confirm(details) : confirm ? confirm(message, details)
       : confirmAction({ document, title: 'Confirm computer change', message, action: 'Confirm change' }) });
   resetWindow = createPairResetWindow({ document, request, getState: controller.snapshot,

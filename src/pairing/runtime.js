@@ -90,10 +90,14 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     const accepted = operations.get(requestId);
     if (nodeId !== manager.state?.value?.nodeId && accepted?.nodeId !== nodeId && manager.state?.value?.resetReceipt?.originalNodeId !== nodeId && manager.state?.value?.reset?.originalNodeId !== nodeId)
       throw requestError('This request belongs to another computer.');
-    const operation = accepted ?? manager.state.value.actions.find(item => item.requestId === requestId);
+    const durable = manager.state.value.actions.find(item => item.requestId === requestId);
+    const operation = accepted ?? durable;
     const reset = manager.state.value.resetReceipt, interrupted = manager.state.value.reset;
     const errorCode = operation?.errorCode ?? operation?.error;
+    const finishedAt = reset?.requestId === requestId ? reset.completedAt
+      : durable?.finishedAt ?? operation?.finishedAt;
     return { nodeId, requestId, state: operation?.state ?? (reset?.requestId === requestId ? 'complete' : interrupted?.requestId === requestId ? 'error' : 'unknown'),
+      ...((operation?.state === 'complete' || reset?.requestId === requestId) && Number.isFinite(finishedAt) ? { finishedAt } : {}),
       ...(operation ? { action: operation.action ?? operation.name,
         ...(operation.state === 'error' ? { errorCode: RESET_ERRORS.has(errorCode) ? errorCode : publicPairError({ code: errorCode }) } : {}) } : {}),
       ...(reset?.requestId === requestId ? { action: 'reset' } : !operation && interrupted?.requestId === requestId

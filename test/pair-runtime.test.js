@@ -342,7 +342,8 @@ test('full application handover switches controller/viewer, preserves durable ro
   const receiptPath = `/api/pair/action?nodeId=${handover.nodeId}&requestId=${handover.requestId}`;
   const stateBeforeRead = b.pair.state.value;
   const receipt = await (await fetch(`${url(b)}${receiptPath}`)).json();
-  assert.deepEqual(receipt, { nodeId: handover.nodeId, requestId: handover.requestId, action: 'handover', state: 'complete' });
+  assert.deepEqual(receipt, { nodeId: handover.nodeId, requestId: handover.requestId, action: 'handover', state: 'complete',
+    finishedAt: a.pair.state.value.actions.find(item => item.requestId === handover.requestId).finishedAt });
   assert.equal(b.pair.state.value, stateBeforeRead, 'Reading an origin receipt cannot start another operation or change authority');
   const misrouted = await fetch(`${url(b)}/api/pair/action`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(handover) });
   assert.equal(misrouted.status, 409);

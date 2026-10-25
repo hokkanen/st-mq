@@ -117,7 +117,7 @@ try {
           pair = { ...standby(body.mode === 'keep' ? 'protected' : 'slave'), reason: body.mode === 'keep' ? 'pairing_reset' : null,
             reset: { token: resetToken, lastResult: { requestId: body.requestId, mode: body.mode, completedAt: now, backup: body.mode === 'fresh' && body.backup, archiveDirectory: body.mode === 'fresh' && body.backup ? '/config/st-mq/reset-archives/synthetic-reset' : null,
               backupCount: body.mode === 'fresh' && body.backup ? 1 : 0, unavailableCount: 0, unavailableReasons: [] } },
-            actions: { promote: true, reset: true }, uiOperation: { id: body.requestId, action: 'reset', state: 'complete', startedAt: now - 5000 } };
+            actions: { promote: true, reset: true }, uiOperation: { id: body.requestId, action: 'reset', state: 'complete', startedAt: now - 5000, finishedAt: now } };
           return json(200, pair);
         }
         pair = { ...pair, busy: true, uiOperation: { id: body.requestId, action: body.action, state: 'running' },
@@ -368,7 +368,7 @@ try {
   await evaluate(`${$('history-recovery-check')}.click(); true`);
   await until(`${$('pairing-recovery')}.textContent.includes('Validating')`);
   assert.equal(actions.length, 2);
-  pair = { ...checked(), uiOperation: { id: actions.at(-1).requestId, action: 'check-recovery', state: 'complete' } };
+  pair = { ...checked(), uiOperation: { id: actions.at(-1).requestId, action: 'check-recovery', state: 'complete', finishedAt: now } };
   await until(`${$('history-recovery-apply')}.disabled === false && !${$('history-recovery-apply')}.hidden`);
   assert.equal(await evaluate(`${$('pairing-rejoin-step')}.checkVisibility()`), true);
   for (const width of [1440, 390, 320]) for (const theme of ['dark', 'light']) {
@@ -392,7 +392,7 @@ try {
   pair = master({ peer: { reachable: true, role: 'protected', lastSeenAt: now },
     recovery: { state: 'complete', donorRole: 'protected', report: { status: 'complete', counts: { missing: 12, conflicts: 3, duplicates: 4, skipped: 2 }, imported: 12, model: { status: 'rebuilt' } } },
     actions: { 'check-recovery': true, recover: false, rejoin: true },
-    uiOperation: { id: actions.at(-1).requestId, action: 'recover', state: 'complete', progress: { phase: 'publishing', processed: 12 } } });
+    uiOperation: { id: actions.at(-1).requestId, action: 'recover', state: 'complete', finishedAt: now, progress: { phase: 'publishing', processed: 12 } } });
   await until(`${$('pairing-rejoin')}.textContent === 'Resume mirroring' && !${$('pairing-rejoin')}.disabled`);
   assert.equal(await evaluate(`${$('pairing-phase')}.textContent`), '');
   await open();await evaluate(`${$('pairing-history-recovery')}.click(); true`);
@@ -629,7 +629,7 @@ try {
   const originalRequest = '44444444-4444-4444-8444-444444444444';
   const beforeConfirmation = actions.length;
   pair = master({ nodeId: '33333333-3333-4333-8333-333333333333' });
-  confirmationResult = { nodeId: originalNode, requestId: originalRequest, action: 'handover', state: 'complete' };
+  confirmationResult = { nodeId: originalNode, requestId: originalRequest, action: 'handover', state: 'complete', finishedAt: now };
   await evaluate(`sessionStorage.setItem('stmq-pair-pending', JSON.stringify({nodeId:${JSON.stringify(originalNode)},requestId:${JSON.stringify(originalRequest)},action:'handover',confirmed:true})); true`);
   await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${proxy.address().port}`, wait: 'complete' });
   await until(`sessionStorage.getItem('stmq-pair-pending') === null && ${$('pairing-message')}.textContent.includes('Operation completed')`);

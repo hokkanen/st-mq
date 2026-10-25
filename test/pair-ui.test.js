@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPairActions, createPairPanel, isPairManagementRequest, pairActionAllowed, pairAllowsControl,
+import { createPairActions as pairActions, createPairPanel, isPairManagementRequest, pairActionAllowed, pairAllowsControl,
   pairConfirmation, pairDisplay, pairIssueHelp, pairActionHelp } from '../chart/pair-status.js';
 import { renderRecoveryReport } from '../chart/history-recovery-report.js';
 import { isReadOnlyReplica, replicaDisplay, chartObservationTime } from '../chart/replica-status.js';
 
 const now = Date.parse('2026-09-12T12:00:00Z');
+const createPairActions = options => pairActions({ now: () => now, ...options });
 const id = '11111111-1111-4111-8111-111111111111';
 const nodeId = '22222222-2222-4222-8222-222222222222';
 const previewId = 'a'.repeat(64);
@@ -26,7 +27,22 @@ const completedReport = () => ({ status: 'complete', counts: { missing: 12, conf
   period: { from: now - 2 * 86400_000, to: now - 86400_000 }, model: { status: 'rebuilt', unsupported: 2 } });
 const checked = () => primary({ peer: { reachable: true, role: 'protected' }, recovery: { state: 'ready', donorRole: 'protected', preview: preview() },
   actions: { 'check-recovery': true, recover: true, handover: false, promote: false, rejoin: true } });
-const operation = (view, state = 'complete', action = 'check-recovery') => ({ ...view, uiOperation: { id, action, state } });
+const operation = (view, state = 'complete', action = 'check-recovery') => ({ ...view,
+  uiOperation: { id, action, state, startedAt: now - 1000, ...(state === 'complete' ? { finishedAt: now } : {}) } });
+
+test('a pairing success receipt expires from its original completion clock after reconnection', async () => {
+  let clock = now;
+  const storage = memoryStorage();
+  storage.setItem('stmq-pair-pending', JSON.stringify({ action: 'handover', nodeId, requestId: id, confirmed: true }));
+  const actions = createPairActions({ storage, now: () => clock, request: async () => ({
+    nodeId, requestId: id, action: 'handover', state: 'complete', finishedAt: now - 86400_000 + 1 }) });
+  await actions.update(standby());
+  assert.match(actions.snapshot().message, /Operation completed/);
+  clock += 2;
+  await actions.update(standby());
+  assert.equal(actions.snapshot().message, '');
+  assert.equal(actions.snapshot().pending, null);
+});
 
 test('snapshot presentation tolerates peer clock uncertainty without negative ages or changing authority', () => {
   for (const lead of [1, 400, 60000]) {
@@ -48,7 +64,7 @@ test('optional verification stays saved while reload confirms the original opera
   first.update(primary()); await first.run('handover', { verifyWithFullSnapshot: true });
   const second = createPairActions({ storage, request: async (path, body) => {
     assert.equal(path, `/api/pair/action?nodeId=${nodeId}&requestId=${id}`); assert.equal(body, undefined);
-    return { nodeId, requestId: id, action: 'handover', state: 'complete' };
+    return { nodeId, requestId: id, action: 'handover', state: 'complete', finishedAt: now };
   } });
   assert.deepEqual(second.snapshot().pending, sent[0]);
   await second.update(primary());
@@ -476,7 +492,7 @@ test('an uncertain promotion automatically reads its original result after reloa
   first.update(standby()); assert.equal(await first.run('promote'), false);
   const restored = createPairActions({ storage, confirm: () => { throw new Error('No new action'); }, request: async (path, body) => {
     assert.equal(body, undefined); assert.equal(path, `/api/pair/action?nodeId=${nodeId}&requestId=${id}`);
-    return { nodeId, requestId: id, action: 'promote', state: 'complete' };
+    return { nodeId, requestId: id, action: 'promote', state: 'complete', finishedAt: now };
   } });
   assert.equal(requests.length, 1);
   await restored.update(primary());
@@ -489,7 +505,7 @@ test('a durable completion resolves an uncertain operation after the server has 
   const first = createPairActions({ storage, requestId: () => id, request: async () => { throw new TypeError('response lost'); } });
   first.update(primary()); await first.run('check-recovery');
   const restored = createPairActions({ storage, request: async () => { throw new Error('should not send another request'); } });
-  restored.update({ ...checked(), recentActions: [{ requestId: id, name: 'check-recovery', state: 'complete' }] });
+  restored.update({ ...checked(), recentActions: [{ requestId: id, name: 'check-recovery', state: 'complete', finishedAt: now }] });
   assert.equal(restored.snapshot().pending, null);
   assert.match(restored.snapshot().message, /Source check complete/);
 });
@@ -896,7 +912,7 @@ test('an uncertain skip keeps its consent for confirmation without automatically
     request: async (path, body) => { sent.push(body); throw new TypeError('response lost'); } });
   first.update(checked()); await first.run('rejoin');
   const restored = createPairActions({ storage, request: async (_path, body) => {
-    assert.equal(body, undefined); return { nodeId, requestId: id, action: 'rejoin', state: 'complete' };
+    assert.equal(body, undefined); return { nodeId, requestId: id, action: 'rejoin', state: 'complete', finishedAt: now };
   } });
   assert.equal(restored.snapshot().pending.discardUnrecovered, true);
   assert.equal(restored.snapshot().pending.previewId, previewId);
@@ -1246,7 +1262,7 @@ test('an uncertain fresh reset reads its receipt without repeating the archive o
     request: async (path, body) => { sent.push(body); throw new TypeError('response lost'); } });
   first.update(resettable()); await first.run('reset', { mode: 'fresh', restorationConfirmed: true, backup: true });
   const restored = createPairActions({ storage, request: async (path, body) => {
-    assert.equal(body, undefined); return { nodeId, requestId: id, action: 'reset', state: 'complete' };
+    assert.equal(body, undefined); return { nodeId, requestId: id, action: 'reset', state: 'complete', finishedAt: now };
   } });
   await restored.update(standby({ reset: { token: 'c'.repeat(64) } }));
   assert.equal(sent.length, 1); assert.equal(restored.snapshot().pending, null);
@@ -1400,7 +1416,7 @@ test('a dashboard reconnect to the new master confirms the origin without a reve
       reads.push(path); assert.equal(body, undefined);
       assert.equal(path, `/api/pair/action?nodeId=${nodeId}&requestId=${id}`);
       if (++reconnects === 1) throw Error('origin offline');
-      return { nodeId, requestId: id, action: 'handover', state: 'complete' };
+      return { nodeId, requestId: id, action: 'handover', state: 'complete', finishedAt: now };
     } });
   // Even a colliding receipt on the newly serving node cannot confirm the
   // original request. Only a read routed to the original node may do that.
@@ -1419,8 +1435,8 @@ test('a dashboard reconnect to the new master confirms the origin without a reve
 test('confirmation joins overlapping polls and keeps unknown or mismatched results honest', async () => {
   for (const result of [
     { nodeId, requestId: id, state: 'unknown' },
-    { nodeId: '33333333-3333-4333-8333-333333333333', requestId: id, action: 'handover', state: 'complete' },
-    { nodeId, requestId: id, action: 'promote', state: 'complete' },
+    { nodeId: '33333333-3333-4333-8333-333333333333', requestId: id, action: 'handover', state: 'complete', finishedAt: now },
+    { nodeId, requestId: id, action: 'promote', state: 'complete', finishedAt: now },
   ]) {
     const storage = memoryStorage();
     storage.setItem('stmq-pair-pending', JSON.stringify({ nodeId, action: 'handover', requestId: id, confirmed: true }));
@@ -1456,7 +1472,7 @@ test('a delayed acceptance cannot replace roles observed after reconnecting to t
   const otherNode = '33333333-3333-4333-8333-333333333333';
   const actions = createPairActions({ requestId: () => id, confirm: () => true,
     request: async (_path, body) => body ? new Promise(resolve => { accept = resolve; })
-      : { nodeId, requestId: id, action: 'handover', state: 'complete' } });
+      : { nodeId, requestId: id, action: 'handover', state: 'complete', finishedAt: now } });
   actions.update(primary()); const sending = actions.run('handover');
   await Promise.resolve();
   const newMaster = primary({ nodeId: otherNode }); await actions.update(newMaster);
@@ -1472,7 +1488,7 @@ test('a synchronous receipt transport failure cannot prevent later automatic con
   const actions = createPairActions({ storage, request: (_path, body) => {
     assert.equal(body, undefined);
     if (++reads === 1) throw Error('offline');
-    return { nodeId, requestId: id, action: 'handover', state: 'complete' };
+    return { nodeId, requestId: id, action: 'handover', state: 'complete', finishedAt: now };
   } });
   await actions.update(primary()); assert(actions.snapshot().pending);
   await actions.update(primary()); assert.equal(actions.snapshot().pending, null); assert.equal(reads, 2);
@@ -1508,7 +1524,7 @@ function resetWindowFixture({ access = { role: 'admin' }, webRequest } = {}) {
   const panel = createPairPanel({ document, storage, getAccess: () => access, now: () => now,
     request: async (path, body) => {
       if (path === '/api/web-access') return webRequest ? webRequest() : { version: 1, phase: 'disabled', enabled: false, recovery: { kind: 'fresh' } };
-      sent.push(body); return { ...view, uiOperation: { id: body.requestId, action: 'reset', state: 'complete' } };
+      sent.push(body); return { ...view, uiOperation: { id: body.requestId, action: 'reset', state: 'complete', finishedAt: now } };
     } });
   panel.update(view);
   const click = name => $(`pairing-reset${name ? '-'+name : ''}`).listeners.get('click')();
