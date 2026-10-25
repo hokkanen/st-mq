@@ -574,7 +574,7 @@ try {
   };
   await evaluate(`${closeWebAccess} ${$('pairing-details')}.open=true; ${$('pairing-reset')}.click(); ${$('pairing-reset-https')}.open=true; true`);
   await assertWebAccessLink('pairing-reset-https-link', 'pairing-reset-https-help');
-  await evaluate(`${$('pairing-reset-https-link')}.click(); true`);
+  await tabTo('pairing-reset-https-link'); await key('\uE007');
   await until(`${$('pairing-reset-dialog')}.open === false`);
   await until(`${$('secure-web-access-details')}.open && document.activeElement === ${$('secure-web-access-details')}.querySelector(':scope > summary')`);
   assert.equal(await evaluate('location.hash'), '#secure-web-access-details');

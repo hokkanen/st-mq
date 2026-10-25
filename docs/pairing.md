@@ -751,7 +751,7 @@ address, DNS and browser sign-in may need changing. Saved disabled setup also
 needs review. The window never promises uninterrupted HTTPS or remote access.
 The **Review web access** link closes reset without submitting it, opens Web
 access and its parent folds, and scrolls to and focuses its summary. The same
-button beside the completed receipt opens that destination too. Use confirmed
+link below the completed receipt opens that destination too. Use confirmed
 recovery access or HA ingress when HTTPS is unavailable; their readiness remains
 separate from stored certificates. See [HTTPS recovery](https.md).
 
