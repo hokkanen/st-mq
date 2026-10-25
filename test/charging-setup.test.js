@@ -154,6 +154,10 @@ test('setup text retains source clocks, privacy and readiness boundaries', () =>
   assert.equal(view.chargers.charger2.readiness, 'Charger profile unsupported');
   const markup = chargingSetupMarkup();
   for (const [, descriptor] of BMW_SETUP_DESCRIPTORS) assert.ok(markup.includes(descriptor));
+  assert.ok(markup.includes('vehicle.drivetrain.batteryManagement.header'));
+  assert.match(markup, /Battery HV State Of Charge/);
+  assert.match(markup, /original BMW timestamp/);
+  assert.doesNotMatch(markup, /vehicle\.powertrain\.electric\.battery\.stateOfCharge\.displayed/);
   assert.match(markup, /does not send vehicle charging windows/);
   assert.match(markup, /not describe a complete weekly schedule/);
   assert.match(markup, /Optional; configured capacity/);

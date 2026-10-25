@@ -70,7 +70,7 @@ Supply entities belonging to the same vehicle:
 
 | Builder argument | CarData descriptor or Home Assistant entity |
 | --- | --- |
-| `socEntity` | `vehicle.powertrain.electric.battery.stateOfCharge.displayed` |
+| `hvSocEntity` | `vehicle.drivetrain.batteryManagement.header` (Battery HV State Of Charge) |
 | `targetEntity` | `vehicle.powertrain.electric.battery.stateOfCharge.target` |
 | `capacityEntity` | `vehicle.drivetrain.batteryManagement.maxEnergy` |
 | `plugEntity` | `vehicle.body.chargingPort.status` |
@@ -79,7 +79,10 @@ Supply entities belonging to the same vehicle:
 | `longitudeEntity` | `vehicle.cabin.infotainment.navigation.currentLocation.longitude` |
 | `locationEntity` | Optional BMW `device_tracker` trigger; not a source clock |
 
-Use measured SoC, not CarData's predicted SoC. ST-MQ already estimates progress
+Use **Battery HV State Of Charge** for measured SoC. The separate **Battery EV
+State Of Charge** descriptor can retain an older reading while the HV measurement
+updates. CarData's **Battery EV Predicted State Of Charge** is a calculated
+estimate, not an independent measurement. ST-MQ already estimates progress
 from recorded charging energy. Capacity comes from `maxEnergy`, not a range
 estimate or charging-session counter. AC current and voltage descriptors describing
 the last charging process are not treated as live charging power.
@@ -91,6 +94,10 @@ boolean or explicit `null` when unknown. Every identity fact has its own
 retain independent clocks. The top-level provider is `bmw-cardata`.
 
 The original BMW `timestamp` attribute supplies the clock, never automation time.
+The publisher maps only the measured HV percentage; unavailable HV data does not
+fall back to the EV or predicted sensors. An accepted newer HV measurement updates
+the existing session's battery reference and remaining-energy calculation without
+changing vehicle identity, session choices or independent target/capacity clocks.
 Identity can be published and accepted even when SoC is unavailable. Unknown
 identity facts clear current facts; they do not become false or turn an earlier
 true into a current reading. Sparse battery fields retain the last accepted measurement and
@@ -224,3 +231,11 @@ Private mappings, automation readbacks and deployment evidence belong outside Gi
 under `~/.config/st-mq/bmw-cardata/` (directory `0700`, files `0600`). Credentials
 are read from the owner-provided token file, never placed in generated automation
 payloads or repository files.
+
+Changing this mapping requires updating the installed Home Assistant automation,
+including its state trigger, its SoC value lookup and its timestamp lookup. A
+dashboard/application update alone does not replace that external publisher.
+Preserve the topic, target, capacity, identity and home-location mappings. Verify
+the rendered payload and received SoC against the HV sensor's value and source
+timestamp; the existing MQTT `soc` contract and database layout do not change.
+Previously recorded readings keep their original meaning and timestamps.

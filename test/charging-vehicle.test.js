@@ -256,6 +256,48 @@ test('visitor keeps manual defaults until positive BMW correlation, then each av
   assert.equal(view(restarted).vehicle.state, 'unidentified'); assert.equal(view(restarted).values.soc.value, 25);
 });
 
+test('a newer measured BMW HV percentage corrects the same identified session and survives restart', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts(START - MINUTE, { pluggedIn: false, charging: false,
+    soc: 18.4, measuredAt: START - 2 * 86_400_000, readingId: 'old-measured-battery' }));
+  publish(runtime, facts(START, { soc: 18.4, measuredAt: START - 2 * 86_400_000,
+    readingId: 'old-measured-battery', usableCapacityKwh: 72, chargeLimitSoc: 85 }));
+  pauseBmw(runtime, f);
+  assert.equal(view(runtime).vehicle.id, 'bmw');
+  await runtime.setChargerSettings('charger1', sessionEdit(runtime, { minimumSoc: 90 }));
+  const before = structuredClone(view(runtime)), identity = structuredClone(runtime.chargers.charger1.vehicleMatch);
+  assert.equal(before.values.soc.value, 18.4);
+  const fields = structuredClone(runtime.vehicleFeeds.bmw.reading.fields);
+  const measuredAt = START + 2 * MINUTE;
+  f.setNow(measuredAt + 5000);
+  const packet = { provider: 'bmw-cardata', soc: 57, measuredAt, readingId: 'measured-hv-battery' };
+  publish(runtime, packet);
+  const corrected = view(runtime);
+  assert.equal(corrected.values.soc.value, 57);
+  assert.equal(corrected.values.soc.measuredAt, measuredAt);
+  assert.equal(corrected.values.soc.receivedAt, measuredAt + 5000);
+  assert.equal(corrected.progress.estimatedSoc, 57);
+  assert.ok(corrected.requiredGridKwh < before.requiredGridKwh);
+  assert.deepEqual(corrected.request, before.request, 'Session identity and explicit target are preserved');
+  assert.equal(corrected.values.minimumSoc.value, 90);
+  assert.deepEqual(corrected.values.capacityKwh, before.values.capacityKwh);
+  assert.deepEqual(runtime.chargers.charger1.vehicleMatch, identity);
+  assert.deepEqual(runtime.vehicleFeeds.bmw.reading.fields, fields);
+  const source = structuredClone(corrected.values.soc);
+  runtime.persist();
+  const restarted = f.create(); t.after(() => restarted.close());
+  publish(restarted, packet, { retain: true });
+  assert.equal(restarted.vehicleFeeds.bmw.reading.soc, 57);
+  assert.equal(view(restarted).progress.estimatedSoc, 57, 'Retained replay preserves the session reference');
+  publish(restarted, packet);
+  const restored = view(restarted);
+  assert.equal(restored.vehicle.id, 'bmw');
+  assert.deepEqual(restored.values.soc, source);
+  assert.equal(restored.progress.estimatedSoc, 57);
+  assert.equal(restored.requiredGridKwh, corrected.requiredGridKwh);
+  assert.deepEqual(restored.request, corrected.request);
+});
+
 test('identity-only BMW can match without imposing absent battery fields', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   const packet = facts(); delete packet.soc; delete packet.readingId; delete packet.measuredAt;

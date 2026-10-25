@@ -13,15 +13,17 @@ function booleanFact(name, entity, onValues, offValues) {
 }
 
 /** Home Assistant automation for measured BMW CarData inputs.
+ * hvSocEntity must map to vehicle.drivetrain.batteryManagement.header
+ * (Battery HV State Of Charge), with its original BMW timestamp.
  * Entity identifiers and the optional home point are supplied privately at deployment.
  * MQTT contains no coordinates, tracker identifiers, or private zone names.
  */
-export function bmwCardataAutomation({ socEntity, targetEntity, capacityEntity,
+export function bmwCardataAutomation({ hvSocEntity, targetEntity, capacityEntity,
   plugEntity, chargingEntity, locationEntity, latitudeEntity, longitudeEntity,
   homeLatitude, homeLongitude, homeRadiusMeters, topic = 'stmq/vehicles/bmw' }) {
-  const batteryEntities = [socEntity, targetEntity, capacityEntity];
+  const batteryEntities = [hvSocEntity, targetEntity, capacityEntity];
   if (batteryEntities.some(value => typeof value !== 'string' || !sensorPattern.test(value)))
-    throw new Error('Three CarData sensor entity IDs are required');
+    throw new Error('CarData measured HV state of charge, target and capacity sensor entity IDs are required');
   for (const value of [plugEntity, chargingEntity, latitudeEntity, longitudeEntity]) {
     if (value !== undefined && (typeof value !== 'string' || !sensorPattern.test(value)))
       throw new Error('Optional CarData inputs must be sensor entity IDs');
@@ -38,10 +40,10 @@ export function bmwCardataAutomation({ socEntity, targetEntity, capacityEntity,
   if (typeof topic !== 'string' || !topic || /[+#\u0000-\u001f]/.test(topic)) throw new Error('A concrete MQTT topic is required');
   const entities = [...new Set([...batteryEntities, plugEntity, chargingEntity, locationEntity,
     latitudeEntity, longitudeEntity, ...(!explicitHome && latitudeEntity ? ['zone.home'] : [])].filter(Boolean))];
-  const templates = [`{% set soc = states('${socEntity}') %}
+  const templates = [`{% set soc = states('${hvSocEntity}') %}
 {% set target = states('${targetEntity}') %}
 {% set capacity = states('${capacityEntity}') %}
-${sourceClock('soc', socEntity)}
+${sourceClock('soc', hvSocEntity)}
 ${sourceClock('target', targetEntity)}
 ${sourceClock('capacity', capacityEntity)}
 {% set ns = namespace(data=dict(provider='bmw-cardata'), fields=dict()) %}

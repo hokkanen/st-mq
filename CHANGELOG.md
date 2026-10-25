@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Use measured BMW HV state of charge in publisher setup and the CarData feed
+  guide, preserving original BMW timestamps and independent identity, target and
+  capacity evidence. Update the installed Home Assistant publisher to activate
+  the new percentage source; application updates alone do not change it.
+
 - Show the requested Web access action while its reply is pending and use its
   specific progress wording after acceptance. Refresh active results promptly,
   retain update-policy selections during saves, and keep failed status reads

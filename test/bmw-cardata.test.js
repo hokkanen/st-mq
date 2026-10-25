@@ -58,7 +58,7 @@ test('publishers using one sequence for all fields keep same-timestamp ordering'
 });
 
 test('CarData automation republishes measured facts with stable source clocks and retained QoS 1', () => {
-  const config = bmwCardataAutomation({ socEntity: 'sensor.example_soc', targetEntity: 'sensor.example_target',
+  const config = bmwCardataAutomation({ hvSocEntity: 'sensor.example_hv_soc', targetEntity: 'sensor.example_target',
     capacityEntity: 'sensor.example_usable_capacity' });
   assert.equal(config.actions[0].data.topic, 'stmq/vehicles/bmw');
   assert.equal(config.actions[0].data.qos, 1);
@@ -66,13 +66,13 @@ test('CarData automation republishes measured facts with stable source clocks an
   assert.equal(config.triggers.length, 4);
   assert.deepEqual(config.conditions, []);
   assert(config.actions[0].data.payload.includes("provider='bmw-cardata'"));
-  assert(config.actions[0].data.payload.includes("state_attr('sensor.example_soc', 'timestamp')"));
+  assert(config.actions[0].data.payload.includes("state_attr('sensor.example_hv_soc', 'timestamp')"));
   assert(!config.actions[0].data.payload.includes('now()'));
-  assert.throws(() => bmwCardataAutomation({ socEntity: "sensor.bad'", targetEntity: 'sensor.example_target',
+  assert.throws(() => bmwCardataAutomation({ hvSocEntity: "sensor.bad'", targetEntity: 'sensor.example_target',
     capacityEntity: 'sensor.example_usable_capacity' }));
 });
 
-const entities = { socEntity: 'sensor.example_soc', targetEntity: 'sensor.example_target',
+const entities = { hvSocEntity: 'sensor.example_hv_soc', targetEntity: 'sensor.example_target',
   capacityEntity: 'sensor.example_usable_capacity', plugEntity: 'sensor.example_plug',
   chargingEntity: 'sensor.example_charging', locationEntity: 'device_tracker.example_car',
   latitudeEntity: 'sensor.example_latitude', longitudeEntity: 'sensor.example_longitude' };
@@ -136,7 +136,7 @@ function render(options = {}, states = {}, attributes = {}) {
   const config = bmwCardataAutomation({ ...entities, ...home, ...options });
   const result = spawnSync(python, ['-c', renderer], { encoding: 'utf8', input: JSON.stringify({
     template: config.actions[0].data.payload,
-    states: { [entities.socEntity]: '51', [entities.targetEntity]: '80', [entities.capacityEntity]: '72',
+    states: { [entities.hvSocEntity]: '51', [entities.targetEntity]: '80', [entities.capacityEntity]: '72',
       [entities.plugEntity]: 'CONNECTED', [entities.chargingEntity]: 'CHARGINGACTIVE',
       [entities.locationEntity]: 'home', [entities.latitudeEntity]: '10', [entities.longitudeEntity]: '20', ...states },
     attributes: { ...Object.fromEntries(Object.values(entities).map(entity => [entity, { timestamp: sourceTime }])),
@@ -145,6 +145,49 @@ function render(options = {}, states = {}, attributes = {}) {
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout);
 }
+
+test('HV publisher selects the measured percentage and source clock despite conflicting EV and predicted sensors', jinja, () => {
+  const ev = 'sensor.example_ev_soc', predicted = 'sensor.example_predicted_soc';
+  const states = { [entities.hvSocEntity]: '57', [ev]: '18.4', [predicted]: '58.1' };
+  const initial = render({}, states, { [ev]: { timestamp: '2026-09-18T12:00:00+00:00' } });
+  assert.equal(initial.soc, 57);
+  assert.equal(initial.measuredAt, sourceTime);
+  const reading = acceptVehicleReading(null, initial, { now }).reading;
+  const replay = acceptVehicleReading(reading, render({}, states), { now: now + 300_000, retained: true });
+  assert.equal(replay.accepted, false);
+  assert.equal(replay.reading.measuredAt, now);
+  assert.equal(replay.reading.receivedAt, now);
+  const nextTime = '2026-09-20T12:01:00+00:00';
+  const updated = acceptVehicleReading(reading, render({}, { ...states, [entities.hvSocEntity]: '58' },
+    { [entities.hvSocEntity]: { timestamp: nextTime } }), { now: now + 60_000 });
+  assert.equal(updated.accepted, true);
+  assert.equal(updated.reading.soc, 58);
+  assert.equal(updated.reading.measuredAt, now + 60_000);
+  for (const field of ['pluggedIn', 'charging', 'atHome', 'chargeLimitSoc', 'usableCapacityKwh'])
+    assert.deepEqual(updated.reading.fields[field], reading.fields[field], `${field} keeps its own evidence`);
+  const config = bmwCardataAutomation({ ...entities, ...home });
+  assert.ok(config.triggers[0].entity_id.includes(entities.hvSocEntity));
+  assert.ok(!config.actions[0].data.payload.includes(ev));
+  assert.ok(!config.actions[0].data.payload.includes(predicted));
+});
+
+test('missing or invalid HV percentage never substitutes EV or predicted charge or blocks identity facts', jinja, () => {
+  for (const state of ['unavailable', 'unknown', 'invalid', '-1', '101']) {
+    const packet = render({}, { [entities.hvSocEntity]: state,
+      'sensor.example_ev_soc': '18.4', 'sensor.example_predicted_soc': '58.1' });
+    for (const key of ['soc', 'measuredAt', 'readingId']) assert.equal(Object.hasOwn(packet, key), false);
+    assert.equal(packet.pluggedIn, true);
+    assert.equal(packet.atHome, true);
+    assert.equal(packet.chargeLimitSoc, 80);
+    assert.equal(packet.usableCapacityKwh, 72);
+  }
+  for (const state of ['0', '100']) assert.equal(render({}, { [entities.hvSocEntity]: state }).soc, Number(state));
+});
+
+test('publisher requires the current explicit HV entity mapping', () => {
+  const { hvSocEntity, ...remaining } = entities;
+  assert.throws(() => bmwCardataAutomation({ ...remaining, socEntity: hvSocEntity }), /measured HV state of charge/);
+});
 
 test('rendered CarData payload keeps clocks independent and includes identity without SoC', jinja, () => {
   const initial = render();
@@ -165,7 +208,7 @@ test('rendered CarData payload keeps clocks independent and includes identity wi
   assert.notEqual(updated.fields.charging.readingId, initial.fields.charging.readingId);
   assert.equal(updated.charging, false);
   assert.deepEqual(updated.fields.usableCapacityKwh, initial.fields.usableCapacityKwh);
-  const identityOnly = render({}, { [entities.socEntity]: 'unavailable' });
+  const identityOnly = render({}, { [entities.hvSocEntity]: 'unavailable' });
   for (const key of ['soc', 'measuredAt', 'readingId']) assert.equal(Object.hasOwn(identityOnly, key), false);
   assert.equal(identityOnly.pluggedIn, true);
   assert.equal(identityOnly.atHome, true);
@@ -181,7 +224,7 @@ test('rendered facts distinguish explicit stopped/disconnected states from unkno
     assert.deepEqual(unknown.fields.charging, render({}, { [entities.chargingEntity]: status }).fields.charging);
   }
   for (const timestamp of [undefined, 'invalid', '2026-09-20T12:00:00']) {
-    const missing = render({}, {}, { [entities.plugEntity]: { timestamp }, [entities.socEntity]: { timestamp } });
+    const missing = render({}, {}, { [entities.plugEntity]: { timestamp }, [entities.hvSocEntity]: { timestamp } });
     assert.equal(missing.pluggedIn, null);
     assert.equal(missing.fields.pluggedIn.measuredAt, null);
     assert.equal(Object.hasOwn(missing, 'soc'), false);
@@ -222,7 +265,7 @@ test('rendered home fact invalidates missing, unpaired or invalid coordinates wi
 });
 
 test('rendered identity-only payload retains independent battery fields without inventing a SoC', jinja, () => {
-  const result = acceptVehicleReading(null, render({}, { [entities.socEntity]: 'unavailable' }),
+  const result = acceptVehicleReading(null, render({}, { [entities.hvSocEntity]: 'unavailable' }),
     { now, retained: false, provider: 'bmw-cardata' });
   assert.equal(result.accepted, true);
   for (const key of ['soc', 'measuredAt', 'receivedAt', 'readingId'])

@@ -6,7 +6,7 @@ const numeric = value => Number.isFinite(value) ? Number(value.toFixed(1)) : nul
 const labels = { bmw: 'BMW', tesla: 'Tesla' };
 
 export const BMW_SETUP_DESCRIPTORS = Object.freeze([
-  ['Battery percentage', 'vehicle.powertrain.electric.battery.stateOfCharge.displayed', 'Automatic current charge'],
+  ['Battery percentage', 'vehicle.drivetrain.batteryManagement.header', 'Battery HV State Of Charge; automatic current charge'],
   ['Vehicle charge limit', 'vehicle.powertrain.electric.battery.stateOfCharge.target', 'Automatic target and vehicle ceiling'],
   ['Usable capacity', 'vehicle.drivetrain.batteryManagement.maxEnergy', 'Optional; configured capacity is the fallback'],
   ['Plug state', 'vehicle.body.chargingPort.status', 'Identification context'],
@@ -60,7 +60,7 @@ export function chargingSetupMarkup() {
         <p>Enable the CarData sensors below in Home Assistant for the same vehicle and map them into the BMW publisher. Battery percentage and target each enable their own automatic input. Plug, charging and timestamped location reports support identification. Missing battery fields can use session settings; receiving a battery value alone does not identify a charger.</p>
         <details class="equipment-fold"><summary>CarData feeds to enable</summary>
           <dl class="charging-setup-descriptors">${BMW_SETUP_DESCRIPTORS.map(([label, descriptor, purpose]) => `<div><dt>${label}</dt><dd><code>${descriptor}</code><small>${purpose}</small></dd></div>`).join('')}</dl>
-          <p>Use measured battery percentage, not predicted charge. Enable the separate latitude and longitude sensors: a restored device tracker cannot supply their original BMW timestamps. Their clocks must be within 60 seconds of each other.</p>
+          <p>Use Battery HV State Of Charge for measured battery percentage and map it into the publisher. The separate Battery EV State Of Charge can retain an older reading; predicted charge is an estimate. Keep the HV reading’s original BMW timestamp. Enable the separate latitude and longitude sensors: a restored device tracker cannot supply their original BMW timestamps. Their clocks must be within 60 seconds of each other.</p>
           <p>Map the publisher to the actual charging property using the private home reference or Home Assistant’s home zone. Publish the derived home/not-home fact and original field timestamps; keep coordinates and vehicle identifiers private. Repeated MQTT publication must preserve measurement times.</p>
         </details>
         ${readings('bmw')}
