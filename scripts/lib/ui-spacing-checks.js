@@ -23,6 +23,7 @@ export function uiSpacingFailures() {
   }
   // These own the outside border's breathing room, rather than a nested step.
   const outerSurfaces = '.panel, .timing-card, .control-dialog, .confirmation-dialog, .pairing-reset-dialog, '
+    + '.pairing-reset-header, .pairing-reset-body, .pairing-reset-actions, '
     + '.charging-report-dialog, .charging-priority-dialog, .chart-series-picker, .recording-status-overview, '
     + '.recording-status-notices:has(> :not([hidden])), .pairing-content, .pairing-opener, .pairing-attention, '
     + '.heating-explorer-header, .heating-explorer-snapshot, .heating-explorer-message, .heating-explorer-footnotes, '
@@ -31,9 +32,12 @@ export function uiSpacingFailures() {
   for (const node of document.querySelectorAll(outerSurfaces)) {
     if (!visible(node) || node.matches(unpadded)) continue;
     const style = getComputedStyle(node);
+    // This segmented window delegates its inset to the aligned header, body and
+    // footer. Its wrapper must stay unpadded to avoid adding a second inset.
+    const expected = node.matches('.pairing-reset-dialog') ? 0 : surfaceInset;
     for (const property of ['paddingInlineStart', 'paddingInlineEnd']) {
       const actual = number(style, property);
-      if (Math.abs(actual - surfaceInset) > 0.5) failures.push({ rule: 'card/window padding', node: name(node), property, actual });
+      if (Math.abs(actual - expected) > 0.5) failures.push({ rule: 'card/window padding', node: name(node), property, actual });
     }
   }
   const surfaces = '.panel, #error, .notice, .read-only-help, .timing-card, .section-fold-body, .learning-section-body, '

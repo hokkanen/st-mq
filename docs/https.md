@@ -47,12 +47,17 @@ load measurements do not qualify physical Raspberry Pi behavior.
 
 ## Guided setup
 
-Web access shows this computer’s current status and the next action to take.
+Web access groups this computer’s current status, HTTPS address and connection
+guidance before its routine actions and recent action receipts. A next step is
+shown when setup or a problem needs attention; a healthy listener has no extra
+setup prompt.
 An authorization link appears beside the actions only when the helper provides a
-current, validated Tailscale sign-in URL. Detailed setup instructions, household
-DNS and recovery checks, and certificate renewal/helper updates have separate
-closed disclosures. Opening or refreshing the panel preserves those disclosures
-and keyboard focus.
+current, validated Tailscale sign-in URL. **HTTPS setup** contains the
+setup guide and **Replace saved HTTPS setup**, which offers the explicit
+**Start fresh HTTPS setup** action. Required replacement opens this section and
+its review together, then returns to the normal guide after preparation.
+Household DNS/recovery checks and certificate renewal/helper updates have their
+own disclosures. Refreshing preserves disclosure choices and keyboard focus.
 
 HTTPS being requested, a stored certificate, a listening HTTPS port and household
 DNS verification are separate observations. Client access and the unattended
@@ -139,7 +144,7 @@ dedicated helper uses userspace networking and does not take over host DNS,
 routes, SSH or general-purpose Tailscale access. The application manages one
 foreground Tailscale Serve TCP forwarder; there is no manual Serve setup or Funnel.
 
-## One phone address at home and away
+## LAN and Tailscale access
 
 Use the exact HTTPS URL shown in Web access, including its port, for the phone's
 installed web app. Home DNS maps that hostname to the server's reserved LAN address
@@ -432,7 +437,8 @@ certificates are preserved without automatic conversion.
 First setup, repaired setup and replacement use the same owner selection,
 authorization, certificate issuance and DNS guidance. The panel recommends
 retaining a usable setup through Recheck, Authorize current pair or Restore saved
-identity. **Start fresh HTTPS setup** is available when an old identity or owner
+identity. Under **HTTPS setup → Replace saved HTTPS setup**, **Start fresh HTTPS
+setup** is available when an old identity or owner
 must be replaced, a pair changes, or saved state cannot be used. It preserves the
 previous setup and returns to the ordinary disabled, unconfigured setup state;
 preparation does not enroll a helper or issue a certificate.

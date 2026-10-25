@@ -104,7 +104,8 @@ test('actual background certificate recovery separates current readiness from th
   const current = manager.status();
   assert.equal(current.error, null); assert.equal(current.operation.id, failed.id); assert.equal(current.operation.state, 'failed');
   const view = secureWebAccessView({ ...current, transport: { https: { enabled: true, listening: true } } }, { admin: true, now: now() });
-  assert.equal(view.next.title, 'Local network access'); assert.equal(view.error, '');
+  assert.equal(view.next, null); assert.equal(view.error, '');
+  assert.match(view.addressHelp, /loopback.*reaches only this computer/);
   assert.match(view.receipt.text, /Last action · Set up HTTPS request failed/);
   assert.equal(view.receipt.at, failed.completedAt, 'Background recovery never renews the old receipt clock');
 });
@@ -129,7 +130,9 @@ test('a current configured loopback destination remains visible without househol
   const view = secureWebAccessView(current, { admin: true, now: now() });
   assert.equal(view.expectedAddress, '127.0.0.1 · this computer only');
   assert.equal(view.hostsEntry, ''); assert.equal(view.curlCommand, '');
-  assert.match(view.browserInstructions, /HTTPS for fixture\.test-tailnet\.ts\.net uses port 8443.*reaches only this computer/);
+  assert.equal(view.url, 'https://fixture.test-tailnet.ts.net:8443/');
+  assert.match(view.addressHelp, /loopback.*reaches only this computer/);
+  assert.match(view.browserInstructions, /Open the full HTTPS address on each intended device/);
   assert.match(view.dnsInstructions, /loopback destination cannot provide household access/);
 });
 

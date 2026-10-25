@@ -118,6 +118,17 @@ try {
       `${width}: a nested level cannot add both margin and padding`);
     await evaluate("document.getElementById('temporary-details').style.paddingInlineStart='';true");
     await check(`${width}/regression-guards-restored`);
+    await evaluate("document.getElementById('pairing-reset-dialog').showModal();true");
+    for (const selector of ['#pairing-reset-dialog', '.pairing-reset-header', '.pairing-reset-body', '.pairing-reset-actions']) {
+      const wrapper = selector === '#pairing-reset-dialog';
+      await evaluate(`document.querySelector(${JSON.stringify(selector)}).style.paddingInline=${JSON.stringify(wrapper ? 'var(--ui-surface-inset)' : 'var(--ui-inset)')};true`);
+      const node = wrapper ? 'pairing-reset-dialog' : selector.slice(1);
+      assert((await evaluate(`(${uiSpacingFailures.toString()})()`)).some(failure => failure.rule === 'card/window padding' && failure.node === node),
+        `${width}: ${wrapper ? 'the dialog wrapper cannot double the owned inset' : `${node} must retain outside window padding`}`);
+      await evaluate(`document.querySelector(${JSON.stringify(selector)}).style.removeProperty('padding-inline');true`);
+    }
+    await check(`${width}/dialog-regression-guards-restored`);
+    await evaluate("document.getElementById('pairing-reset-dialog').close();true");
   }
   // Every static fold can close/reopen without changing its horizontal step.
   await evaluate("document.querySelectorAll('details').forEach(n=>n.open=false);true");

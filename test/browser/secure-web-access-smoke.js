@@ -280,6 +280,21 @@ try {
   assert.equal(await evaluate("document.getElementById('secure-web-access-enable').disabled"), false, 'Standby can set up its local web entrance');
   assert.equal(await evaluate("document.getElementById('secure-web-access-owner-choice').checkVisibility()"), true, 'First paired setup exposes the owner choice');
   assert.equal(await evaluate("document.getElementById('secure-web-access-owner-select').value"), 'local', 'Pair owner defaults to this computer');
+  assert.deepEqual(await evaluate(`(()=>{
+    const admin=document.getElementById('secure-web-access-admin'),address=document.getElementById('secure-web-access-address');
+    return {addressChildren:[...address.children].map(node=>node.id||node.tagName),
+      addressDescription:document.getElementById('secure-web-access-url').getAttribute('aria-describedby'),
+      firstContent:admin.firstElementChild.id,
+      folds:[...admin.querySelectorAll(':scope>details')].map(node=>node.id),
+      replacementParent:document.getElementById('secure-web-access-replacement-details').parentElement.id,
+      freshParent:document.getElementById('secure-web-access-start-fresh').closest('details').id,
+      repeatedIds:[...document.querySelectorAll('#secure-web-access-details [id]')].map(node=>node.id)
+        .filter((id,index,ids)=>ids.indexOf(id)!==index)};
+  })()`), {addressChildren:['SPAN','secure-web-access-url','secure-web-access-address-help'],
+    addressDescription:'secure-web-access-address-help', firstContent:'secure-web-access-address',
+    folds:['secure-web-access-setup-details','secure-web-access-network-details','secure-web-access-update-details'],
+    replacementParent:'secure-web-access-setup-details', freshParent:'secure-web-access-replacement-details', repeatedIds:[]},
+  'Address and its guidance form one accessible group; fresh setup belongs to the setup flow exactly once');
   assert.equal(await evaluate("document.querySelectorAll('.secure-web-access-steps > li').length"), 3, 'Plain-language setup guide avoids redundant technical progress rows');
   assert.equal(await evaluate("document.getElementById('secure-web-access-setup-details').open"), false, 'Detailed setup guidance stays collapsed by default');
   assert.match(await evaluate("document.getElementById('secure-web-access-next-help').textContent"), /Choose which computer.*separate from the master/);
@@ -321,7 +336,8 @@ try {
   assert.equal(await evaluate("document.getElementById('secure-web-access-https').textContent"), 'Listening · port 8443');
   assert.equal(await evaluate("document.getElementById('secure-web-access-hosts-entry').textContent"), `192.0.2.50 ${hostname}`);
   assert.equal(await evaluate("document.getElementById('secure-web-access-curl-command').textContent"), `curl --resolve '${hostname}:8443:192.0.2.50' 'https://${hostname}:8443/'`);
-  assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'One address at home and away');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-next').checkVisibility()"), false, 'Healthy access has no duplicate next-step description');
+  assert.match(await evaluate("document.getElementById('secure-web-access-address-help').textContent"), /household DNS.*same Tailscale network/);
   assert.equal(await evaluate('location.href'), `${base}/`, 'Local HTTPS readiness never leaves the recovery page automatically');
   assert.match(await evaluate("document.getElementById('secure-web-access-expiry').textContent"), /Dec 2026/);
   assert.match(await evaluate("document.getElementById('secure-web-access-key-expiry').textContent"), /16 Oct 2026.*2d 2h left/);
@@ -386,8 +402,10 @@ try {
   if (screenshots) await mkdir(screenshots, { recursive: true });
   const captureLayout = async (name, { details = false, anonymous = false } = {}) => {
     assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Card padding and nested indentation remain independent');
+    const recoveryOpen = await evaluate("!document.getElementById('secure-web-access-replacement-details').hidden && document.getElementById('secure-web-access-replacement-details').open && document.getElementById('secure-web-access-setup-details').open");
     await evaluate(`document.getElementById('connections-details').open=true;document.getElementById('secure-web-access-details').open=true;
-      for(const id of ['setup','network','update'])document.getElementById('secure-web-access-'+id+'-details').open=${details};true`);
+      document.getElementById('secure-web-access-setup-details').open=${details || recoveryOpen};
+      for(const id of ['network','update'])document.getElementById('secure-web-access-'+id+'-details').open=${details};true`);
     for (const theme of ['light', 'dark']) for (const width of [320, 390, 1440]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: width > 400 ? 1100 : 844, deviceScaleFactor: 1, mobile: width <= 390 });
       await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)};document.getElementById('${anonymous ? 'auth' : 'secure-web-access-details'}').scrollIntoView({block:'start',behavior:'instant'});true`);
@@ -396,7 +414,11 @@ try {
         const panel=document.getElementById('${anonymous ? 'auth' : 'secure-web-access-details'}'),box=panel.getBoundingClientRect();
         const visible=node=>node.checkVisibility();
         const head=panel.querySelector(':scope > summary'),headBox=head?.getBoundingClientRect();
+        const address=panel.querySelector('#secure-web-access-address'),link=address?.querySelector('a'),help=address?.querySelector('p');
+        const linkBox=link?.getBoundingClientRect(),helpBox=help?.getBoundingClientRect();
         return {viewport:innerWidth,pageWidth:document.documentElement.scrollWidth,panelWidth:box.width,
+          address:address?.checkVisibility()?{gap:helpBox.top-linkBox.bottom,left:helpBox.left-linkBox.left,
+            description:link.getAttribute('aria-describedby'),help:help.textContent}:null,
           escapes:[...panel.querySelectorAll('button,a,code,.app-select-trigger')].filter(node=>visible(node)).filter(node=>{
             const r=node.getBoundingClientRect();return r.x<box.x-2||r.right>box.right+2;
           }).map(node=>node.id||node.tagName),
@@ -409,6 +431,12 @@ try {
       layouts.push({ name, theme, width, ...geometry });
       assert(geometry.pageWidth <= geometry.viewport + 2, `${name}/${theme}/${width}: page fits`);
       assert.deepEqual(geometry.escapes, [], `${name}/${theme}/${width}: controls and addresses fit`);
+      if(geometry.address) {
+        assert(geometry.address.gap>=0 && geometry.address.gap<=12, `${name}/${theme}/${width}: address guidance stays beside the address`);
+        assert(Math.abs(geometry.address.left)<=1, `${name}/${theme}/${width}: address and guidance align`);
+        assert.equal(geometry.address.description, 'secure-web-access-address-help');
+        assert(geometry.address.help.trim(), `${name}/${theme}/${width}: displayed address keeps its explanation`);
+      }
       for (const item of geometry.heading) assert(Math.abs(item.center)<=1.1, `${name}/${theme}/${width}: fold heading centered: ${item.text}`);
       for (const item of geometry.textAlignment) assert(Math.abs(item.center)<=2, `${name}/${theme}/${width}: button text centered: ${item.id}`);
       if (screenshots) {
@@ -512,7 +540,9 @@ try {
       assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'Review the current paired computers');
     }
     if (name.startsWith('replacement-https') && !name.startsWith('replacement-https_peer_') || name === 'replacement-certificate_integrity_failed') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-setup-details').open"), true);
       assert.equal(await evaluate("document.getElementById('secure-web-access-replacement-details').open"), true);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-setup-guide').checkVisibility()"), false, 'Repair shows the relevant recovery path before first-time setup instructions');
       assert.equal(await evaluate("document.getElementById('secure-web-access-start-fresh').disabled"), false);
       assert.equal(await evaluate("document.getElementById('secure-web-access-enable').hidden"), true);
       assert.equal(await evaluate("document.getElementById('secure-web-access-retry').hidden"), true);
@@ -538,11 +568,25 @@ try {
       assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'Preparing fresh HTTPS setup');
       assert.equal(await evaluate("document.getElementById('secure-web-access-start-fresh').disabled"), true);
     }
+    if (name === 'replacement-optional') {
+      await evaluate("document.getElementById('secure-web-access-setup-details').open=false;document.getElementById('secure-web-access-replacement-details').open=false;true");
+      await evaluate('webBrowser.panel.refresh({force:true})');
+      assert.equal(await evaluate("document.getElementById('secure-web-access-start-fresh').checkVisibility()"), false, 'Optional replacement stays inside the closed setup flow');
+      assert.equal(await evaluate("document.getElementById('secure-web-access-recheck').checkVisibility()"), true, 'Routine controls remain directly available');
+      await evaluate("document.querySelector('#secure-web-access-setup-details>summary').focus();true"); await key('Enter');
+      await evaluate("document.querySelector('#secure-web-access-replacement-details>summary').focus();true"); await key('Enter');
+      assert.equal(await evaluate("document.getElementById('secure-web-access-start-fresh').checkVisibility()"), true, 'Nested replacement remains keyboard accessible');
+      await evaluate("document.getElementById('secure-web-access-start-fresh').focus();true");
+      await evaluate('webBrowser.panel.refresh({force:true})');
+      assert.equal(await evaluate('document.activeElement.id'), 'secure-web-access-start-fresh', 'Polling preserves focused nested recovery action');
+      await evaluate("document.getElementById('secure-web-access-setup-details').open=false;true");
+    }
     assert.equal(await evaluate("document.querySelector('#secure-web-access-details > summary > small').textContent"),
       'HTTPS & remote access', 'The setup subtitle describes contents in every status');
     if (name === 'remote-configured') {
       assert.equal(await evaluate("document.getElementById('secure-web-access-remote').textContent"), 'Forwarding configured');
-      assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'One address at home and away');
+      assert.equal(await evaluate("document.getElementById('secure-web-access-next').checkVisibility()"), false);
+      assert.match(await evaluate("document.getElementById('secure-web-access-address-help').textContent"), /same Tailscale network/);
     }
     if (name === 'remote-unavailable') {
       assert.equal(await evaluate("document.getElementById('secure-web-access-state').textContent"), 'Needs attention');
@@ -567,7 +611,7 @@ try {
       assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"), /Last action/);
     }
     if(name==='retry-pending')assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Setting up HTTPS');
-    if(name==='recovered-receipt'){assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'One address at home and away');assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"),/Last action · Set up HTTPS request failed/);}
+    if(name==='recovered-receipt'){assert.equal(await evaluate("document.getElementById('secure-web-access-next').checkVisibility()"),false);assert.match(await evaluate("document.getElementById('secure-web-access-receipt').textContent"),/Last action · Set up HTTPS request failed/);}
     if(name==='current-release') {
       assert.equal(await evaluate("document.getElementById('secure-web-access-update-now').hidden"), true);
       assert.equal(await evaluate("document.getElementById('secure-web-access-update-now').disabled"), true);
@@ -589,12 +633,15 @@ try {
     if(['unknown-destination','loopback-destination'].includes(name)) {
       for(const id of ['hosts','curl']) assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}-help').hidden`),true);
       for(const id of ['hosts-entry','curl-command']) assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').textContent`),'');
-      assert.match(await evaluate("document.getElementById('secure-web-access-browser-instructions').textContent"),name==='loopback-destination'?/reaches only this computer/:/LAN destination is not reported/);
-      if(name==='loopback-destination') assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"),'Local network access');
+      if(name==='loopback-destination') {
+        assert.match(await evaluate("document.getElementById('secure-web-access-address-help').textContent"), /reaches only this computer/);
+        assert.equal(await evaluate("document.getElementById('secure-web-access-next').checkVisibility()"), false);
+      } else assert.equal(await evaluate("document.getElementById('secure-web-access-expected-address').textContent"), 'Confirm the reserved LAN IPv4 address');
       if(name==='unknown-destination') assert.doesNotMatch(await evaluate("document.getElementById('secure-web-access-recovery-help').textContent"),/http:\/\/0\.0\.0\.0/);
     }
     if(name==='custom-ports') {
-      assert.match(await evaluate("document.getElementById('secure-web-access-browser-instructions').textContent"),/HTTPS for.*9443.*192\.0\.2\.74/);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-url').textContent"), `https://${hostname}:9443/`);
+      assert.match(await evaluate("document.getElementById('secure-web-access-dns-instructions').textContent"), /192\.0\.2\.74/);
       assert.equal(await evaluate("document.getElementById('secure-web-access-curl-command').textContent"),`curl --resolve '${hostname}:9443:192.0.2.74' 'https://${hostname}:9443/'`);
       assert.match(await evaluate("document.getElementById('secure-web-access-recovery-help').textContent"),/http:\/\/\[::1\]:4321.*network namespace/);
     }
@@ -628,6 +675,7 @@ try {
   await evaluate("document.querySelector('.confirmation-dialog .confirmation-actions button:last-child').click();true");
   await until("document.getElementById('secure-web-access-enable').checkVisibility() && !document.getElementById('secure-web-access-enable').disabled");
   assert.equal(await evaluate("document.getElementById('secure-web-access-enable').textContent"), 'Set up HTTPS');
+  assert.equal(await evaluate("document.getElementById('secure-web-access-setup-guide').checkVisibility()"), true, 'Fresh preparation returns to the normal setup guide in the same disclosure');
   assert.equal(await evaluate("document.getElementById('secure-web-access-owner-choice').checkVisibility()"), true);
   assert.equal(await evaluate("document.getElementById('secure-web-access-replacement-details').checkVisibility()"), false);
   await until("document.activeElement.id==='secure-web-access-enable'");
@@ -706,7 +754,7 @@ try {
     recovery: { kind: 'paired-setup', fresh: { token: 'fixture-https-recovery-review', requiresPreviousOwnerStopped: true } } });
   await send('Page.navigate', { url: `${secureBase}/` }); await until('window.webBrowser?.ready');
   await until("!document.getElementById('secure-web-access-replacement-details').hidden");
-  await evaluate("document.getElementById('secure-web-access-replacement-details').open=true;true");
+  await evaluate("document.getElementById('secure-web-access-setup-details').open=true;document.getElementById('secure-web-access-replacement-details').open=true;true");
   assert.equal(await evaluate('location.protocol'), 'https:');
   assert.equal(await evaluate("document.getElementById('secure-web-access-start-fresh').disabled"), true, 'Actual HTTPS origin cannot close its only recovery connection');
   assert.match(await evaluate("document.getElementById('secure-web-access-replacement-help').textContent"), /Home Assistant ingress.*connection available/);

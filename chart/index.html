@@ -538,6 +538,11 @@
                       </dl>
                       <p class="family-access-note">Admin access is required to change web access.</p>
                       <div id="secure-web-access-admin" data-admin-only hidden>
+                        <div id="secure-web-access-address" class="secure-web-access-address" hidden>
+                          <span class="muted">HTTPS address</span>
+                          <a id="secure-web-access-url" target="_blank" rel="noopener noreferrer" aria-describedby="secure-web-access-address-help" hidden></a>
+                          <p id="secure-web-access-address-help" class="muted"></p>
+                        </div>
                         <p id="secure-web-access-standby" class="muted" hidden>Standby · web access can be managed here.</p>
                         <p id="secure-web-access-owner" class="muted" hidden></p>
                         <p id="secure-web-access-peer-renewal" class="secure-web-access-notice" role="status" hidden></p>
@@ -552,22 +557,13 @@
                           <p id="secure-web-access-authorization" class="secure-web-access-authorization" hidden><a id="secure-web-access-authorize" class="secure-web-access-link-action" target="_blank" rel="noopener noreferrer">Authorize in Tailscale ↗</a></p>
                           <p id="secure-web-access-account-links" class="secure-web-access-setup-links" hidden><a href="https://console.tailscale.com/admin/dns" target="_blank" rel="noopener noreferrer">Tailscale DNS settings ↗</a><a href="https://console.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">Tailscale Machines ↗</a></p>
                         </div>
-                        <details id="secure-web-access-replacement-details" class="equipment-fold" hidden>
-                          <summary>Start fresh HTTPS setup</summary>
-                          <p id="secure-web-access-replacement-intro">Starting fresh preserves the previous setup, then uses the normal setup steps to choose the certificate owner and authorize a new identity.</p>
-                          <p class="muted">HTTPS closes here during replacement. The address can change; household DNS and browser sign-in may need updating.</p>
-                          <p id="secure-web-access-replacement-help" class="muted"></p>
-                          <p id="secure-web-access-replacement-error" class="muted" role="status" hidden></p>
-                          <button id="secure-web-access-start-fresh" class="secondary-button" type="button" disabled>Start fresh HTTPS setup</button>
-                        </details>
-                        <div id="secure-web-access-address" class="secure-web-access-address" hidden><span class="muted">HTTPS address</span><a id="secure-web-access-url" target="_blank" rel="noopener noreferrer" hidden></a></div>
                         <div class="secure-web-access-actions">
                           <button id="secure-web-access-enable" type="button" disabled>Set up HTTPS</button>
-                          <button id="secure-web-access-recheck" class="secondary-button" type="button" disabled>Recheck</button>
                           <button id="secure-web-access-retry" type="button" hidden disabled>Retry setup</button>
-                          <button id="secure-web-access-disable" class="secondary-button" type="button" hidden disabled>Disable HTTPS</button>
-                          <button id="secure-web-access-restore-identity" class="secondary-button" type="button" hidden disabled>Restore saved identity</button>
                           <button id="secure-web-access-reauthorize-pair" type="button" hidden disabled>Authorize current pair</button>
+                          <button id="secure-web-access-restore-identity" class="secondary-button" type="button" hidden disabled>Restore saved identity</button>
+                          <button id="secure-web-access-recheck" class="secondary-button" type="button" disabled>Recheck</button>
+                          <button id="secure-web-access-disable" class="secondary-button" type="button" hidden disabled>Disable HTTPS</button>
                         </div>
                         <p id="secure-web-access-receipt" class="muted" role="status" aria-live="polite" hidden></p>
                         <p id="secure-web-access-request-receipt" class="muted" role="status" aria-live="polite" hidden></p>
@@ -578,15 +574,25 @@
                           <a href="https://tailscale.com/security-bulletins" target="_blank" rel="noopener noreferrer">Review Tailscale security bulletins ↗</a>
                         </div>
                         <details id="secure-web-access-setup-details" class="equipment-fold">
-                          <summary>How HTTPS setup works</summary>
-                          <p class="muted">This application manages its certificate and private remote access through a dedicated Tailscale connection. The same HTTPS address and normal sign-in work at home and away. Existing Home Assistant or host Tailscale installations remain separate.</p>
-                          <ol class="secure-web-access-steps">
-                            <li><strong>Set up and authorize.</strong> Select Set up HTTPS, then use the displayed authorization link to sign in to Tailscale. Complete device approval or Tailnet Lock requirements in Tailscale Machines, then select Recheck.</li>
-                            <li><strong>Enable certificates.</strong> Enable MagicDNS and HTTPS certificates in Tailscale DNS settings. Choose a non-sensitive node name before issuance; certificate names enter public transparency records. Review or disable this dedicated node’s key expiry in Machines so renewal can continue unattended. A valid certificate does not verify that policy.</li>
-                            <li><strong>Connect browsers.</strong> <span id="secure-web-access-browser-instructions">The HTTPS address and LAN destination require current status.</span> Open the full HTTPS address on each intended device and sign in normally; a new address has its own browser session.</li>
-                          </ol>
-                          <p class="secure-web-access-setup-links"><a href="https://console.tailscale.com/admin/dns" target="_blank" rel="noopener noreferrer">Tailscale DNS settings ↗</a><a href="https://console.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">Tailscale Machines ↗</a><a href="https://tailscale.com/docs/how-to/set-up-https-certificates" target="_blank" rel="noopener noreferrer">Certificate guide ↗</a></p>
-                          <p class="muted">A paired computer can keep serving local HTTPS with its valid saved certificate while the owner is offline. Remote access and renewal require the certificate owner to be running. Disabling HTTPS preserves the saved identity and certificate. Recovery access and Home Assistant ingress have separate readiness.</p>
+                          <summary>HTTPS setup</summary>
+                          <div id="secure-web-access-setup-guide">
+                            <p class="muted">This application manages its certificate and private remote access through a dedicated Tailscale connection. Existing Home Assistant or host Tailscale installations remain separate.</p>
+                            <ol class="secure-web-access-steps">
+                              <li><strong>Set up and authorize.</strong> Select Set up HTTPS, then use the displayed authorization link to sign in to Tailscale. Complete device approval or Tailnet Lock requirements in Tailscale Machines, then select Recheck.</li>
+                              <li><strong>Enable certificates.</strong> Enable MagicDNS and HTTPS certificates in Tailscale DNS settings. Choose a non-sensitive node name before issuance; certificate names enter public transparency records. Review or disable this dedicated node’s key expiry in Machines so renewal can continue unattended. A valid certificate does not verify that policy.</li>
+                              <li><strong>Connect browsers.</strong> <span id="secure-web-access-browser-instructions">Configure the hostname mapping and check the connection in Household DNS &amp; recovery. Open the full HTTPS address on each intended device and sign in normally; a new address has its own browser session.</span></li>
+                            </ol>
+                            <p class="secure-web-access-setup-links"><a href="https://console.tailscale.com/admin/dns" target="_blank" rel="noopener noreferrer">Tailscale DNS settings ↗</a><a href="https://console.tailscale.com/admin/machines" target="_blank" rel="noopener noreferrer">Tailscale Machines ↗</a><a href="https://tailscale.com/docs/how-to/set-up-https-certificates" target="_blank" rel="noopener noreferrer">Certificate guide ↗</a></p>
+                            <p class="muted">A paired computer can keep serving local HTTPS with its valid saved certificate while the owner is offline. Remote access and renewal require the certificate owner to be running. Disabling HTTPS preserves the saved identity and certificate. Recovery access and Home Assistant ingress have separate readiness.</p>
+                          </div>
+                          <details id="secure-web-access-replacement-details" class="equipment-fold" hidden>
+                            <summary>Replace saved HTTPS setup</summary>
+                            <p id="secure-web-access-replacement-intro">Starting fresh preserves the previous setup, then uses the normal setup steps to choose the certificate owner and authorize a new identity.</p>
+                            <p class="muted">HTTPS closes here during replacement. The address can change; household DNS and browser sign-in may need updating.</p>
+                            <p id="secure-web-access-replacement-help" class="muted"></p>
+                            <p id="secure-web-access-replacement-error" class="muted" role="status" hidden></p>
+                            <button id="secure-web-access-start-fresh" class="secondary-button" type="button" disabled>Start fresh HTTPS setup</button>
+                          </details>
                         </details>
                         <details id="secure-web-access-network-details" class="equipment-fold">
                           <summary>Household DNS &amp; recovery</summary>
