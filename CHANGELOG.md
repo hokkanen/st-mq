@@ -13,7 +13,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   computers without suggesting that a restart will expose them.
 
 - Use measured BMW HV state of charge in publisher setup and the CarData feed
-  guide, preserving original BMW timestamps and independent identity, target and
+  guide, with a compact battery-source explanation on the Battery percentage
+  label. Preserve original BMW timestamps and independent identity, target and
   capacity evidence. Update the installed Home Assistant publisher to activate
   the new percentage source; application updates alone do not change it.
 

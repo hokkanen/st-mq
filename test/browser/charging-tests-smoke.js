@@ -419,6 +419,28 @@ try {
   }
   assert.equal(await evaluate('chargingFixture.mutations.length'), 0,
     'Device inspection, documentation and setup navigation do not send charger commands');
+  await send('Emulation.setDeviceMetricsOverride', {width:320, height:1000, deviceScaleFactor:1, mobile:false});
+  const batteryHelp = '[data-bmw-battery-percentage] .status-detail-trigger';
+  assert.equal(await evaluate("document.querySelector('[data-bmw-battery-percentage]').parentElement.querySelector('small').textContent"), 'Automatic current charge');
+  await evaluate(`document.querySelector(${JSON.stringify(batteryHelp)}).scrollIntoView({block:'center'})`);
+  await pause(80);
+  await evaluate(`document.querySelector(${JSON.stringify(batteryHelp)}).focus({preventScroll:true})`);
+  assert.equal(await evaluate(`document.activeElement === document.querySelector(${JSON.stringify(batteryHelp)})`), true, 'Battery label receives keyboard focus');
+  await keyPress('Enter');
+  await until("!document.getElementById('status-detail-popover').hidden");
+  assert.equal(await evaluate("document.getElementById('status-detail-heading').textContent"), 'BMW battery percentage');
+  assert.match(await evaluate("document.querySelector('.status-detail-body').textContent"), /HV State Of Charge.*EV State Of Charge.*own update time.*Predicted state of charge/);
+  await fits('#status-detail-popover');
+  await poll();
+  assert.equal(await evaluate("document.getElementById('status-detail-popover').hidden"), false, 'Battery explanation survives status polling');
+  await screenshot('bmw-battery-percentage-help-320', '#status-detail-popover', { preserveScroll: true, viewport: true });
+  await keyPress('Escape');
+  assert.equal(await evaluate(`document.activeElement === document.querySelector(${JSON.stringify(batteryHelp)})`), true, 'Escape restores battery label focus');
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+  await until("!document.getElementById('status-detail-popover').hidden");
+  await pointerClick('#charging-setup-vehicles-title');
+  assert.equal(await evaluate("document.getElementById('status-detail-popover').hidden"), true, 'Outside click dismisses battery explanation');
   await send('Emulation.setDeviceMetricsOverride', {width:1440, height:1000, deviceScaleFactor:1, mobile:false});
   await evaluate("document.getElementById('charging-setup-assessment-details').open = true; document.getElementById('charging-setup-bmw-test').focus()");
   await keyPress('Enter');
@@ -1311,6 +1333,7 @@ try {
   console.log(JSON.stringify({ result: 'charging-browser-smoke-passed', artifacts, checks: [
     'shared-device-card-style', 'reported-firmware-source-clock-and-unknown', 'local-documentation-destinations',
     'keyboard-session-to-device-setup-navigation', 'setup-disclosure-and-focus-survive-poll', 'short-viewport-expanded-setup',
+    'compact-bmw-battery-source-help-keyboard-poll-and-dismissal',
     'keyboard-disclosures-and-Escape-focus', 'vehicle-stats-without-charger', 'missing-stats-and-capacity-defaults',
     'precise-preparation-errors-and-full-decimal-capacity', 'manual-values-independent-of-vehicle-readings',
     'explicit-different-target-verification-persists-through-reload-and-100-85-flaps', 'raw-target-and-source-clock-remain-visible',

@@ -155,8 +155,10 @@ test('setup text retains source clocks, privacy and readiness boundaries', () =>
   const markup = chargingSetupMarkup();
   for (const [, descriptor] of BMW_SETUP_DESCRIPTORS) assert.ok(markup.includes(descriptor));
   assert.ok(markup.includes('vehicle.drivetrain.batteryManagement.header'));
-  assert.match(markup, /Battery HV State Of Charge/);
-  assert.match(markup, /original BMW timestamp/);
+  assert.match(markup, /data-bmw-battery-percentage/);
+  assert.match(markup, /<small>Automatic current charge<\/small>/);
+  assert.match(markup, /Use measured battery percentage, not predicted charge\./);
+  assert.doesNotMatch(markup, /Use Battery HV|retain an older reading|Keep the HV/);
   assert.doesNotMatch(markup, /vehicle\.powertrain\.electric\.battery\.stateOfCharge\.displayed/);
   assert.match(markup, /does not send vehicle charging windows/);
   assert.match(markup, /not describe a complete weekly schedule/);
