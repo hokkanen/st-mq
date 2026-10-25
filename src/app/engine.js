@@ -79,6 +79,15 @@ function statusWithoutCharging(status) {
   return result;
 }
 
+function validatePhaseSnapshot(value) {
+  if (value != null && (typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).some(key => !['phase', 'expiresAt'].includes(key))
+    || !['normal', 'preheat', 'reduction', 'recovery'].includes(value.phase)
+    || value.expiresAt != null && (!Number.isSafeInteger(value.expiresAt) || Math.abs(value.expiresAt) > 8_640_000_000_000_000)))
+    throw new TypeError('Unsupported saved controller phase; preserve the database and use a current-format backup or a fresh development database.');
+  return value;
+}
+
 
 function garageOwner(config, signal) {
   if (!['garage_temperature', 'garage_temperature_2'].includes(signal) && !isGarageDoorSignal(signal)) return null;
@@ -497,6 +506,7 @@ export class Engine {
     this.updateFlight?.catch(() => {}), this.startupLearningFlight?.catch(() => {})]); }
   constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true, cacheIdentity = null }) {
     validateVoltageState(store, config.input);
+    validatePhaseSnapshot(store.getState(`phase-snapshot:${config.input}`));
     validateHeatingTrialState(store.getState(`heating-explorer:trial:${config.input}`));
     if (store.getState(`override:${config.input}`) != null)
       throw new Error('Unsupported saved heating pause controls; start a fresh development database.');
@@ -1814,11 +1824,13 @@ export class Engine {
           regime:this.settings.occupancy.mode==='occupied'?'occupied':'away',
           episodeId:this.cycles.active()?.id ?? null},at,{config:this.control,seed:this.checkpoint});
         checkpoint=this.replayLearning(this.checkpoint);this.checkpoint=checkpoint;
-        const old = this.store.getState(`phase-snapshot:${input}`);
+        const old = validatePhaseSnapshot(this.store.getState(`phase-snapshot:${input}`));
         const expiresAt = execution.expiresAt ?? decision.expiresAt;
-        if ((old?.phase ?? old) !== phase || old?.expiresAt !== expiresAt) {
+        if (old?.phase !== phase || old?.expiresAt !== expiresAt) {
           this.store.observation({ source:'controller', device:input, signal:'controller_phase', value:['normal','preheat','reduction','recovery'].indexOf(phase),
             unit:'state', sourceTime:at, receivedAt:at, quality:this.plant?['simulated']:['requested'], raw:{phase,expiresAt,verified:Boolean(execution.actual?.verified)} });
+          if (old?.phase !== phase) this.store.event('heating-phase-changed', { input, phase,
+            previousPhase: old?.phase ?? null, expiresAt: expiresAt ?? null, reasons: decision.reasons }, at);
           this.store.setState(`phase-snapshot:${input}`,{phase,expiresAt});
         }
       }

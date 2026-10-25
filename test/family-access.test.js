@@ -50,8 +50,9 @@ async function fixture(t, options = {}) {
       .map(name => [name, record(name)])),
   };
   const config = configuration(options.config);
+  const history = new Store(':memory:');
   const access = createWebAccess({ config, engine,
-    store: { runWrite: async operation => operation(), events: () => [{ id: 1 }], observations: () => [], getState: () => null },
+    store: history,
     chartService: { overview: async () => ({ rows: [] }), query: async args => ({
       range: chartRequestRange(args).range, now: args.now, input: args.input, left: args.left ?? 'power',
       series: {}, shading: {}, operatingModes: [], meta: { warnings: [], elapsedMs: 0 },
@@ -62,7 +63,7 @@ async function fixture(t, options = {}) {
     ...options.server,
   });
   await access.start();
-  t.after(() => access.close());
+  t.after(async () => { await access.close(); history.close(); });
   const call = async (path, { token = FAMILY, method = 'GET', body, server = access.server, ...extra } = {}) => {
     const response = await fetch(`${endpoint(server)}${path}`, {
       method, headers: headers(token), ...(body === undefined ? {} : { body: JSON.stringify(body) }), ...extra,

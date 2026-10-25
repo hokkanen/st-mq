@@ -12,7 +12,7 @@ const status = { equipment: { devices: [{ id: 'door', kind: 'door', area: 'garag
 
 test('family requests allow household controls and reads while all other writes and downloads require admin', () => {
   for (const [path, data] of [
-    ['/api/status'], ['/api/events?after=0'], ['/api/energy-audits'], ['/api/sensor-changes'], ['/api/pair'],
+    ['/api/status'], ['/api/events?view=important&area=all'], ['/api/energy-audits'], ['/api/sensor-changes'], ['/api/pair'],
     ['/api/fireplace', { kg: 6 }], ['/api/fireplace/remove', { id: 3 }], ['/api/temporary', { awayUntil: null, pauseUntil: null }],
     ['/api/dhwr/stop', {}], ['/api/heating-test', { command: 'circulation' }], ['/api/heating-test', { command: 'preheat' }],
     ['/api/garage/heating', { mode: 'normal', targetC: 10 }], ['/api/garage/heating', { mode: 'away' }],

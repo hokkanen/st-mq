@@ -25,6 +25,7 @@ export function withReportDatabase(store, context, states) {
   store.runWrite = (callback, options) => database.runWrite(() => rollbackMock(callback), options);
   store.afterCommit = callback => database.afterCommit(callback);
   store.afterRollback = callback => database.afterRollback(callback);
+  store.event = database.event.bind(database);
   Object.defineProperty(store, 'transactionDepth', { get: () => database.transactionDepth });
   return store;
 }

@@ -77,7 +77,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     store.writeHealth.failure(error);
     const databaseBusy = error?.code === 'ERR_SQLITE_ERROR' && [5, 6].includes(error.errcode & 0xff);
     if (!databaseBusy) {
-      void store.runWrite(() => store.event('controller-error', { message: error.message }, clock()))
+      void store.runWrite(() => store.event('controller-error', { reason: 'controller-tick-failed' }, clock()))
         .catch(() => {});
     }
     // A failed write cannot reliably report itself with another database write.

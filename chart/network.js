@@ -90,37 +90,6 @@ export function createCommunicationWatch({ clock = () => performance.now(), stal
   } };
 }
 
-/** One cursor namespace per displayed dataset. Same-generation status polls do
- * not cancel slow useful event reads; replacement invalidates success and error. */
-export function createEventStream({ request, append, reset = () => {} }) {
-  let generation, epoch = 0, cursor = 0, pending = null, controller = null, closed = false;
-  return {
-    reset(next) {
-      if (closed || next === generation) return;
-      generation = next; epoch++; cursor = 0;
-      controller?.abort(); controller = null; pending = null; reset();
-    },
-    poll() {
-      if (closed) return Promise.resolve();
-      if (pending) return pending;
-      const captured = epoch, after = cursor, cancellation = controller = new AbortController();
-      const current = withReadDeadline(signal => request(after,{signal}),{signal:cancellation.signal}).then(rows => {
-        if (closed || captured !== epoch) return;
-        if (!Array.isArray(rows)) throw new Error('Invalid event response');
-        const unique = new Map(rows.filter(row => Number.isSafeInteger(row.id) && row.id > after).map(row => [row.id,row]));
-        const accepted = [...unique.values()].sort((a,b) => a.id-b.id);
-        append(accepted);
-        if (accepted.length) cursor = accepted.at(-1).id;
-      }).catch(error => { if (!closed && captured === epoch) throw error; }).finally(() => {
-        if (pending === current) { pending=null; controller=null; }
-      });
-      pending=current; return current;
-    },
-    close() { closed=true; epoch++; controller?.abort(); pending=null; },
-    cursor: () => cursor,
-  };
-}
-
 /** Timer polls must not overtake a slow response indefinitely. An explicit
  * refresh (for example after login or a mutation) may still supersede it. */
 export function createPollingRequest(request, { timeoutMs = READ_TIMEOUT_MS } = {}) {

@@ -625,7 +625,7 @@ test('verified snapshots remain unchanged and viewer replaces charts and history
   assert.equal((await request(chartPath)).body.series.indoor_temperature[0].y, 21);
   assert.equal((await request('/api/recording-overview')).status, 200);
   assert.equal((await request('/api/energy-audits')).status, 200);
-  assert.equal((await request('/api/events')).body.length, 1);
+  assert.equal((await request('/api/events?view=all')).body.events.length, 1);
   assert.equal((await request('/api/fireplace')).status, 200);
   assert.equal((await request('/api/heating-test', { method: 'POST' })).status, 405);
 

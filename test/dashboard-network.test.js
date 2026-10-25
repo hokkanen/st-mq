@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPollingRequest,
-  fetchJsonResponse, apiResponseError, withReadDeadline, createEventStream, createCommunicationWatch } from '../chart/network.js';
+  fetchJsonResponse, apiResponseError, withReadDeadline, createCommunicationWatch } from '../chart/network.js';
 import { getEventListeners } from 'node:events';
 import { chartQuery } from '../chart/history-model.js';
 
 test('dashboard requests retain the Home Assistant ingress prefix for reads and mutations', () => {
   const base = 'https://home.example/api/hassio_ingress/example-session/';
-  for (const path of ['/api/status', '/api/events?after=4&limit=50', '/api/settings/reload',
+  for (const path of ['/api/status', '/api/events?view=important&area=all&limit=40', '/api/settings/reload',
     '/api/fireplace', '/api/fireplace/remove', '/api/temporary', '/api/heating-test',
     '/api/test/h66', '/api/recording-overview', '/api/energy-audits',
     chartQuery({ startDate: '2026-09-08', endDate: '2026-09-08', left: 'power' }),
@@ -165,26 +165,6 @@ test('the shared GET deadline neither retries nor declares a pending mutation fa
   pending.then(()=>{settled=true;});t.mock.timers.tick(100000);await Promise.resolve();
   assert.equal(calls,1);assert.equal(settled,false);finish({json:async()=>({accepted:true})});
   assert.equal((await pending).result.accepted,true);
-});
-
-test('events are single flight, deduplicated and protected against retired successes and failures', async () => {
-  const requests=[],visible=[];
-  const stream=createEventStream({request:(after,{signal})=>new Promise((resolve,reject)=>requests.push({after,signal,resolve,reject})),
-    append:rows=>visible.push(...rows.map(row=>row.id)),reset:()=>{visible.length=0;}});
-  stream.reset('first');const first=stream.poll();assert.equal(stream.poll(),first);await Promise.resolve();
-  requests[0].resolve([{id:2},{id:1},{id:2}]);await first;assert.deepEqual(visible,[1,2]);assert.equal(stream.cursor(),2);
-  const old=stream.poll();await Promise.resolve();assert.equal(requests[1].after,2);
-  stream.reset('first');assert.equal(stream.poll(),old,'Ordinary status polling keeps useful work');
-  stream.reset('replacement');const newer=stream.poll();await Promise.resolve();assert.equal(requests[2].after,0);
-  requests[2].resolve([{id:1}]);await newer;requests[1].resolve([{id:900}]);await old;
-  assert.deepEqual(visible,[1]);assert.equal(stream.cursor(),1);
-  const failure=stream.poll();await Promise.resolve();stream.reset('third');requests[3].reject(Error('obsolete'));
-  await failure;assert.deepEqual(visible,[]);assert.equal(stream.cursor(),0);
-  const bigger=stream.poll();await Promise.resolve();requests[4].resolve([{id:1000}]);await bigger;
-  assert.deepEqual(visible,[1000]);assert.equal(stream.cursor(),1000);
-  const closing=stream.poll();await Promise.resolve();stream.close();await closing;
-  assert.equal(requests[5].signal.aborted,true);requests[5].resolve([{id:1001}]);await Promise.resolve();
-  assert.deepEqual(visible,[1000]);
 });
 
 test('communication freshness uses local monotonic receipt time, independent of source dates', () => {

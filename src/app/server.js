@@ -23,6 +23,8 @@ import { EQUIPMENT_COMMAND_ERRORS } from '../domain/equipment-command-errors.js'
 import { FLOOR_COMMAND_ERRORS } from '../domain/floor-command-errors.js';
 import { ReplicaCheckpointMismatchError, REPLICA_CHECKPOINT_MISMATCH, createReplicaReadRefusalReporter } from './replica-errors.js';
 import { createWebSessions, rememberedCookieDigest, rememberedCookie, clearRememberedCookie } from './web-sessions.js';
+import { eventLogQuery } from './event-log.js';
+import { createEventLogService } from './event-log-service.js';
 import { isRecordedDataAction } from '../domain/recorded-data-action.js';
 
 function authorized(req, token) {
@@ -119,6 +121,14 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
   reloadSettings, previewSettings, settingsReloadStatus = () => ({ available: false, busy: false,
     reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
   const reportReplicaReadRefusal = createReplicaReadRefusalReporter();
+  let eventLogStore = null, eventLogService = null;
+  const eventLog = reader => {
+    if (eventLogStore !== reader) {
+      void eventLogService?.close();
+      eventLogStore = reader; eventLogService = createEventLogService({ store: reader });
+    }
+    return eventLogService;
+  };
   const overviewService = getReadContext ? null : chartService?.overview ? chartService : createChartService({ store });
   if (typeof familyToken !== 'string' || familyToken && (!token || token === familyToken))
     throw new Error('Family access requires a separate admin web token.');
@@ -811,7 +821,32 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         });
         if (req.method === 'POST' && url.pathname === '/api/test/h66') return await mutate(async (current, input) => json(200, await current.testH66(input)));
         if (req.method === 'POST' && url.pathname === '/api/heating-test') return await mutate(async (current, input) => json(200, await current.testHeating(input)));
-        if (req.method === 'GET' && url.pathname === '/api/events') return json(200, readerStore.events({ after: numberParam(url, 'after', 0, Number.MAX_SAFE_INTEGER), limit: numberParam(url, 'limit', 100, 500) }));
+        if (req.method === 'GET' && url.pathname === '/api/events') {
+          const query = eventLogQuery(url);
+          for (let attempt = 0; ; attempt++) {
+            if (res.destroyed || res.writableEnded || !stillAuthorized()) return;
+            const currentEngine = readContext?.engine ?? engine, currentStore = readContext?.store ?? readerStore;
+            const snapshot = Boolean(readContext) || currentEngine.config.input === 'offline';
+            try {
+              const result = await eventLog(currentStore).query({ input: currentEngine.config.input, now: currentEngine.clock(), checkedAt: clock(),
+                query, scope: snapshot ? 'snapshot' : 'live', snapshotAt: readContext ? currentEngine.clock() : null,
+                checkpoint: readContext ? currentStore.expectedCheckpoint : undefined });
+              if (!res.destroyed && !res.writableEnded && stillAuthorized()) return json(200, result);
+              return;
+            } catch (error) {
+              if (attempt || !getReadContext || !readContext || error.code !== 'event_log_checkpoint_advanced') throw error;
+              if (res.destroyed || res.writableEnded || !stillAuthorized()) return;
+              // A same-database forward-checkpoint hint gets one fresh verified
+              // lease; the hint itself supplies no source or lineage proof.
+              const previous = readContext.store?.expectedCheckpoint;
+              readContext.release(); readContext = null;
+              readContext = await getReadContext();
+              if (res.destroyed || res.writableEnded || !stillAuthorized()) return;
+              const next = readContext?.store?.expectedCheckpoint;
+              if (!previous || !next || next.databaseId !== previous.databaseId || next.sequence <= previous.sequence) throw error;
+            }
+          }
+        }
         if (req.method === 'GET' && url.pathname === '/api/history') {
           const now = engine.clock();
           const from = numberParam(url, 'from', now - 86_400_000, Number.MAX_SAFE_INTEGER);
@@ -902,6 +937,14 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           reportReplicaReadRefusal(error, /^\/api\/status(?:\?|$)/.test(req.url) ? 'status' : 'recording-health');
           return json(503, REPLICA_CHECKPOINT_MISMATCH);
         }
+        if (req.method === 'GET' && /^\/api\/events(?:\?|$)/.test(req.url)) {
+          const code = ['event_log_query_invalid', 'event_log_context_changed', 'event_log_checkpoint_advanced'].includes(error?.code) ? error.code : 'event_log_unavailable';
+          return json(code === 'event_log_query_invalid' ? 400 : code === 'event_log_context_changed' ? 409 : 503,
+            { code, error: code === 'event_log_query_invalid' ? 'Choose supported event filters and a valid history page.'
+              : code === 'event_log_context_changed' ? 'The recorded history changed. Refresh the event log before loading older entries.'
+                : code === 'event_log_checkpoint_advanced' ? 'The event-log checkpoint is ahead of its requested snapshot. Previously fetched entries remain available; refresh to try again.'
+                : 'The event log could not be refreshed. Previously fetched entries remain available.' });
+        }
         const fireplaceWrite = req.method === 'POST' && /^\/api\/(?:fireplace(?:\/remove)?|sensor-changes(?:\/(?:revert|retry-rebuild))?)(?:\?|$)/.test(req.url);
         const code = error.statusCode ?? (fireplaceWrite && !(error instanceof TypeError || error instanceof SyntaxError) ? 503 : 400);
         json(code, { error: code >= 500 ? 'Request could not be confirmed. Retry shortly.'
@@ -913,5 +956,6 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
   const server = tls ? createHttpsServer({ ...limits, ...tls }, handler) : createServer(limits, handler);
   if (overviewService && overviewService !== chartService) server.once('close', () => { void overviewService.close(); });
   if (ownInspection) server.once('close', () => { void backupInspection.close(); });
+  server.once('close', () => { void eventLogService?.close(); });
   return server;
 }

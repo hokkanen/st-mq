@@ -277,7 +277,8 @@ try {
   }); window.pairingObserver.observe(${$('pairing-panel')}, { subtree: true, childList: true }); true`);
   failedReads.add('/api/events');
   await evaluate("window.dispatchEvent(new Event('online')); true");
-  await until(`!${$('error')}.hidden && ${$('error')}.textContent.includes('Synthetic read unavailable')`);
+  await until(`!${$('event-log-message')}.hidden && ${$('event-log-message')}.dataset.state === 'error'`);
+  assert.equal(await evaluate(`${$('error')}.hidden`), true, 'An event-history read failure stays local to its card');
   assert.equal(await evaluate(`${$('pairing-broker')}.textContent.includes('unconfirmed')`), false,
     'An event-history failure preserves successful local MQTT ownership evidence');
   failedReads.add('/api/chart');

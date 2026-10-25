@@ -2769,6 +2769,13 @@ SQLite WAL/FULL synchronization and atomic publication remain part of that
 contract. Learning inputs retain resolved configuration, seeds and original
 meaning even when another record has the same configuration digest.
 
+The [event log](event-log.md) projects readable operational history from existing
+source records. Important/All and area filters change presentation without
+discarding decisions, corrections or original report evidence. Prospective
+charging and Caravan choice records commit with their saved dashboard state;
+controller phase records describe requests, not measured heat. Public event
+details contain allowlisted facts, never arbitrary payload or exception text.
+
 Decision events retain each controller decision. Their current use also supplies
 replica status freshness, so deduplicating repeated summaries requires a separate
 heartbeat design. Disposable state versions and hourly recording statistics have

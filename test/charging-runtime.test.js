@@ -2380,6 +2380,28 @@ const automaticScope = (runtime, id = 'charger1', enabled = true) => {
 const priorityScope = (runtime, priority = 'charger2') => ({ priority, revision: runtime.status().controls.revision,
   associations: Object.fromEntries(runtime.status().chargers.map(view => [view.id, view.association])) });
 
+test('charging dashboard history commits only meaningful choices and rolls back with a failed event write', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  const events = () => f.store.db.prepare("SELECT payload FROM events WHERE type='charging-control-changed' ORDER BY id")
+    .all().map(row => JSON.parse(row.payload));
+  await runtime.setControl('charger1', automaticScope(runtime));
+  await runtime.setSettings(priorityScope(runtime));
+  assert.deepEqual(events(), [
+    { input: 'mqtt', chargerId: 'charger1', action: 'automatic', enabled: true },
+    { input: 'mqtt', chargerId: null, action: 'priority', priority: 'charger2' },
+  ]);
+  await runtime.setControl('charger1', automaticScope(runtime));
+  await runtime.setSettings(priorityScope(runtime));
+  assert.equal(events().length, 2, 'Saving unchanged choices does not add another event');
+  const previous = structuredClone(runtime.status().chargers.find(row => row.id === 'charger1').controls);
+  const event = f.store.event;
+  f.store.event = () => { throw new Error('Synthetic event persistence failure'); };
+  await assert.rejects(runtime.setControl('charger1', automaticScope(runtime, 'charger1', false)), /persistence failure/);
+  f.store.event = event;
+  assert.deepEqual(runtime.status().chargers.find(row => row.id === 'charger1').controls, previous);
+  assert.equal(events().length, 2, 'A failed event cannot leave a committed dashboard choice');
+});
+
 test('automatic charging and shared priority persist independently of configured four-value defaults', async t => {
   const f = fixture({ defaults: { manualSoc: 30, minimumSoc: 75, capacityKwh: 55, readyBy: '07:00' } });
   const runtime = f.create(); t.after(() => runtime.close());

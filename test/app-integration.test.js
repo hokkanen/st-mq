@@ -83,6 +83,18 @@ test('retired voltage estimate state rejects before any Engine startup mutation'
   }
 });
 
+test('retired or malformed controller phase snapshots reject before startup mutation', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  for (const value of ['normal', { phase: 'retired' }, { phase: 'normal', oldExpiry: 42 },
+    { phase: 'normal', expiresAt: 'later' }]) {
+    store.setState('phase-snapshot:providers', value);
+    const before = store.db.prepare('SELECT total_changes() AS changes').get().changes;
+    assert.throws(() => new Engine({ store, config: { input: 'providers', settings: {} } }), /Unsupported saved controller phase/);
+    assert.equal(store.db.prepare('SELECT total_changes() AS changes').get().changes, before);
+    assert.deepEqual(store.getState('phase-snapshot:providers'), value);
+  }
+});
+
 test('changing charger transport preserves saved voltage while changed physical phase mapping resets it', t => {
   const f = setup(t, 'providers');
   f.config.connections = { easee: { charger_id: 'voltage-fixture-charger', charger_voltage_ids: [194, 195, 196],
@@ -124,6 +136,21 @@ test('automatic simulation applies pulse sequence once and restart preserves rec
   advance(120 * 60_000);
   assert.equal(restarted.tick().override, null);
   assert.ok(store.events().some(e => e.type === 'heating-pause-ended'));
+});
+
+test('phase history records the first controller phase without repeating unchanged decisions or restart', async t => {
+  const { engine, store, createEngine } = setup(t);
+  await engine.setAutomation({ feature: 'home', enabled: true });
+  const phases = () => store.events().filter(event => event.type === 'heating-phase-changed');
+  assert.equal(phases().length, 1);
+  assert.equal(phases()[0].payload.previousPhase, null);
+  assert.equal(phases()[0].payload.input, 'simulated');
+  const decisions = store.events().filter(event => event.type === 'decision').length;
+  engine.tick(); engine.tick();
+  assert.equal(phases().length, 1, 'Unchanged phase assessments remain routine decisions');
+  assert.equal(store.events().filter(event => event.type === 'decision').length, decisions + 2);
+  createEngine().tick();
+  assert.equal(phases().length, 1, 'A current-format restart does not manufacture another phase transition');
 });
 
 test('history input cannot enable automation, ingest does not fabricate unknown source timestamps', async t => {

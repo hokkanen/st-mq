@@ -14,7 +14,7 @@ import { ownedDirectory, publishSnapshot, readReplicaPublication } from '../src/
 import { acceptPeerPublication, applyPeerPublication } from '../src/replication/journal-publication.js';
 import { peerOperation, PeerTransfers, receivePeerTransfer } from '../src/replication/coalesced.js';
 import { databaseCheckpoint, sameCheckpoint } from '../src/replication/incremental.js';
-import { checkpointAt } from '../src/storage/journal.js';
+import { checkpointAt, journalBase } from '../src/storage/journal.js';
 
 const generic = { error: 'Request could not be confirmed. Retry shortly.' };
 const mismatch = { code: 'replica_checkpoint_mismatch',
@@ -359,7 +359,8 @@ test('real incremental publication exposes only a typed status/health refusal an
     assert.deepEqual(response, { status: 503, body: mismatch });
     assert.equal(JSON.stringify(response).includes('synthetic-private-row'), false);
   }
-  assert.deepEqual(await f.request('/api/events'), { status: 503, body: generic }, 'Other routes retain their generic refusal');
+  assert.deepEqual(await f.request('/api/events'), { status: 503, body: { code: 'event_log_unavailable',
+    error: 'The event log could not be refreshed. Previously fetched entries remain available.' } }, 'The event log retains its safe local refusal');
   assert.deepEqual(boundaries, ['BEGIN', 'ROLLBACK', 'BEGIN', 'ROLLBACK', 'BEGIN', 'ROLLBACK']);
   assert.equal(f.publicationReads.length - reads, 6, 'Each original refusal keeps its existing refresh and one manifest check');
   assert.deepEqual(phaseDiagnostics(f), [phaseDiagnostic('same', { route: 'status' })], 'The health refusal is capped, while both public responses retain their original bodies');
@@ -372,6 +373,72 @@ test('real incremental publication exposes only a typed status/health refusal an
   const reader = new Store(publication.dbPath, { readOnly: true });
   try { assert.equal(reader.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type='synthetic-unpublished-event'").get().n, 1); }
   finally { reader.close(); }
+});
+
+async function advanceEventLogPublication(f, index) {
+  const previous = await readReplicaPublication(f.directory);
+  f.source.event('settings-reloaded', { input: 'mqtt' }, f.now + index);
+  const transfers = new PeerTransfers(join(f.root, `event-changes-${index}`));
+  const peer = { request: (operation, value) => operation === 'peer-transfer'
+    ? transfers.export({ dbPath: f.source.path, ...value }) : transfers.chunk(value) };
+  const transfer = await receivePeerTransfer({ directory: join(f.root, `event-receive-${index}`), peer, after: previous.checkpoint });
+  await applyPeerPublication({ directory: f.directory, transfer, metadata: { ...previous, generation: randomUUID() } });
+  const publication = await readReplicaPublication(f.directory), reader = new Store(publication.dbPath, { readOnly: true });
+  try {
+    assert.equal(checkpointAt(reader.db, previous.checkpoint.sequence), null, 'The real coalesced receiver has pruned the preceding operational boundary');
+    assert.ok(journalBase(reader.db).sequence > previous.checkpoint.sequence);
+  } finally { reader.close(); }
+  return publication;
+}
+async function eventAdmission(promise) {
+  let timer;
+  try { await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('The isolated event worker did not request storage admission.')), 15000); })]); }
+  finally { clearTimeout(timer); }
+}
+
+test('event log reacquires once after a real verified publication advances behind queued worker admission', async t => {
+  const f = await fixture(t), entered = deferred(), released = deferred();
+  const native = Store.prototype.runStorageTask; let held = false;
+  t.mock.method(Store.prototype, 'runStorageTask', async function(operation, options) {
+    if (!held && this.readOnly && this.path === f.publication.dbPath) { held = true; entered.resolve(); await released.promise; }
+    return native.call(this, operation, options);
+  });
+  const request = f.request('/api/events?view=all');
+  try {
+    await eventAdmission(entered.promise);
+    const publication = await advanceEventLogPublication(f, 1);
+    released.resolve();
+    const response = await request;
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal(response.body.scope, 'snapshot');
+    assert.equal(response.body.snapshotAt, publication.sourceAt);
+    assert.ok(response.body.events.some(row => row.title === 'Configuration applied' && row.at === f.now + 1));
+    assert.deepEqual(f.diagnostics, [], 'A verified worker-start race is not a local replica-manifest failure');
+  } finally { released.resolve(); await request.catch(() => {}); }
+});
+
+test('a second queued event-log checkpoint advance is refused without an unbounded retry loop', async t => {
+  const f = await fixture(t), entered = [deferred(), deferred()], released = [deferred(), deferred()];
+  const native = Store.prototype.runStorageTask, seen = new WeakSet(); let attempts = 0;
+  t.mock.method(Store.prototype, 'runStorageTask', async function(operation, options) {
+    if (this.readOnly && this.path === f.publication.dbPath && !seen.has(f.app.store)) {
+      seen.add(f.app.store); const index = attempts++;
+      if (index < 2) { entered[index].resolve(); await released[index].promise; }
+    }
+    return native.call(this, operation, options);
+  });
+  const request = f.request('/api/events?view=all');
+  try {
+    for (let index = 0; index < 2; index++) {
+      await eventAdmission(entered[index].promise);
+      await advanceEventLogPublication(f, index + 1);
+      released[index].resolve();
+    }
+    const response = await request;
+    assert.equal(response.status, 503); assert.equal(response.body.code, 'event_log_checkpoint_advanced');
+    assert.equal(attempts, 2, 'Only the original verified lease and one reacquired lease reach the worker');
+    assert.match(response.body.error, /checkpoint is ahead/);
+  } finally { released.forEach(gate => gate.resolve()); await request.catch(() => {}); }
 });
 
 test('native or unknown read failures cannot counterfeit the authored checkpoint refusal or expose private diagnostics', async t => {

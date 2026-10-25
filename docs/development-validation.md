@@ -1,5 +1,22 @@
 # Development validation
 
+`test/chart-replica-retry.test.js` exercises queued chart reads during real
+incremental and coalesced replica publication, including pruned transaction
+prefixes. Only an authored forward-checkpoint hint can request one freshly
+verified lease; new source arguments and an exact worker fence remain required.
+Different identity, changed retained hashes, rollback, uncertain cleanup,
+revocation and repeated advancement retain their refusals. Historical operation
+health describes the refused attempt without claiming its cause from timing.
+
+Event-log API and UI regressions cover privacy, selected history and source
+namespaces, occurrence-time paging, visible-record membership, expired report
+removal, snapshot fencing, bounded reads and failure recovery. The real dashboard
+fixture `node test/browser/event-log-smoke.js` checks reading position, expanded
+evidence, older navigation, local failures after successful control saves,
+admin/family layouts and sign-out fencing. Add `--firefox` for the same fixture
+through Firefox BiDi. Synthetic checks never establish physical equipment
+outcomes. See [Event log](event-log.md) for evidence and coverage boundaries.
+
 OCPP recording-admission regressions cover periodic/triggered samples sharing a
 whole-second timestamp: valid total power retains exact integrated energy using
 earlier labelled phase weights while current control retains the conflict.

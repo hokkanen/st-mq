@@ -75,6 +75,38 @@ test('failed error persistence cannot terminate the controller or expose the ori
 });
 
 
+test('stored controller errors retain a fixed reason without exposing exception text to either access role', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-error-privacy-'));
+  let now = Date.parse('2026-09-08T12:00:00Z');
+  const admin = 'synthetic-admin-event-password', family = 'synthetic-family-event-password';
+  const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0',
+    STMQ_INPUT: 'simulated', STMQ_API_TOKEN: admin, STMQ_FAMILY_API_TOKEN: family }, directory);
+  const app = await start({ config, clock: () => now });
+  t.after(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
+  t.mock.method(console, 'error', () => {});
+  let attempts = 0;
+  const tick = app.engine.tick.bind(app.engine);
+  t.mock.method(app.engine, 'tick', () => {
+    if (++attempts === 1) throw new Error('synthetic-sensitive-controller-detail');
+    // Cross the scheduled minute once recovered, as a real advancing clock
+    // would. Holding it at :59.999 would enqueue control work every millisecond.
+    if (attempts === 2) now++;
+    return tick();
+  });
+  now += 59_999; app.engine.onTemporaryChange();
+  await until(() => attempts > 1 && app.store.events().some(event => event.type === 'controller-error'));
+  const stored = app.store.events().find(event => event.type === 'controller-error');
+  assert.deepEqual(stored.payload, { reason: 'controller-tick-failed' });
+  assert.doesNotMatch(JSON.stringify(app.store.events()), /synthetic-sensitive/);
+  for (const token of [admin, family]) {
+    const response = await fetch(`http://127.0.0.1:${app.server.address().port}/api/events`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(response.status, 200);
+    assert.doesNotMatch(await response.text(), /synthetic-sensitive/);
+  }
+});
+
 test('application shutdown fences new heating before waiting for an existing dispatch', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-shutdown-fence-'));
   const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);

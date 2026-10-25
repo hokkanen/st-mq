@@ -569,6 +569,13 @@ export class ChargingRuntime {
     this.advanceTelemetry(now);
     this.persistAcceptedState(now);
   }
+  recordControlChoice(chargerId, action, detail = {}) {
+    // The enclosing admitted write commits this instruction with its state.
+    // Native readback and measured delivery remain in their own source records.
+    this.store.event('charging-control-changed', {
+      input: this.config.input, chargerId, action, ...detail,
+    }, this.clock());
+  }
   persistVehicleObservation(now) {
     this.advanceTelemetry(now);
     // Source admission remembers battery references in its existing state write.
@@ -2498,6 +2505,8 @@ export class ChargingRuntime {
       if (input.action === 'cancel') { item.plan = null; item.replan = true; }
       this.revision++;
       this.persist();
+      this.recordControlChoice(id, 'extra-day', { operation: input.action,
+        connectedAt: sessionConnectedAt(item.request) });
       this.store.afterCommit(() => this.scheduleWakeup(this.clock()));
       return true;
     }, { priority: 'control', isCurrent: () => this.canControl() });
@@ -3478,6 +3487,8 @@ export class ChargingRuntime {
         identification: previous.identification });
       this.revision = previous.revision; this.refreshSettings(); throw error;
     }
+    if (previous.controls.enabled !== input.enabled || previous.request?.chargeNow)
+      this.recordControlChoice(id, 'automatic', { enabled: input.enabled });
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
     if (input.enabled) {
@@ -3505,6 +3516,8 @@ export class ChargingRuntime {
       for (const [id, state] of Object.entries(identification)) this.chargers[id].identification = state;
       this.refreshSettings(); throw error;
     }
+    if (previous.priority !== input.priority)
+      this.recordControlChoice(null, 'priority', { priority: input.priority });
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
     try { await this.updatePlanForControl(); } catch { this.error = 'charging-planning-unavailable'; }
@@ -3554,6 +3567,7 @@ export class ChargingRuntime {
         Object.assign(item, { request: previous.request, plan: previous.plan, identification: previous.identification });
         this.revision = previous.revision; throw error;
       }
+      this.recordControlChoice(id, 'pause', { connectedAt: sessionConnectedAt(item.request) });
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
     await this.reconcile(id);
@@ -3585,6 +3599,7 @@ export class ChargingRuntime {
     try { this.persist(); } catch (error) {
       item.request = previous; item.plan = previousPlan; item.identification = previousIdentification; this.revision = previousRevision; throw error;
     }
+    this.recordControlChoice(id, 'charge-now', { connectedAt: sessionConnectedAt(item.request) });
     if (token === undefined) return null;
     const attempt = { token, mode: 'charge-now', controller: item.controller, association: item.association,
       sessionId: item.request.sessionId, revision: item.request.revision, controlRevision: item.controls.revision };
@@ -3667,6 +3682,10 @@ export class ChargingRuntime {
     try { this.persist(); } catch (error) {
       item.request = previous; item.plan = previousPlan; item.identification = previousIdentification; this.revision = previousRevision; throw error;
     }
+    if (Object.keys(input.changes).length) this.recordControlChoice(id, 'session-settings', {
+      changes: Object.fromEntries(Object.keys(input.changes).map(key => [key, checked[key]])),
+      connectedAt: sessionConnectedAt(item.request),
+    });
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands(); await this.updatePlanForControl(); await this.reconcile(id);
     this.reconcilePeers(id);
@@ -3694,6 +3713,7 @@ export class ChargingRuntime {
     // half to a replacement connection or leave a misleading partial result.
     this.returnToAutomatic(item);
     this.persist();
+    this.recordControlChoice(id, 'resume', { connectedAt: sessionConnectedAt(item.request) });
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
     // Cancelling Charge now returns our session choice to planning. It does not
@@ -3736,6 +3756,7 @@ export class ChargingRuntime {
         identification: previous.identification, replan: previous.replan });
       this.revision = previous.revision; this.refreshSettings(); throw error;
     }
+    this.recordControlChoice(id, 'use-automatic', { connectedAt: sessionConnectedAt(item.request) });
     const attempt = { token: input.takeoverToken ?? null, mode: 'automatic', controller: item.controller, association: item.association,
       sessionId: item.request.sessionId, revision: item.request.revision, controlRevision: item.controls.revision };
     item.takeoverAttempt = attempt;

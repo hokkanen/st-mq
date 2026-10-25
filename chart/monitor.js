@@ -13,6 +13,7 @@ import { renderGarage, createGarageControls } from './garage-status.js';
 import { createMitsubishiControls } from './mitsubishi.js';
 import { createChargingPanel } from './charging.js';
 import { createChargingDiagnosticsPanel } from './charging-diagnostics.js';
+import { createEventLog } from './event-log.js';
 import { createChargingTestsPanel } from './charging-tests.js';
 import { initializeChargingSetup, openChargingSetup } from './charging-setup.js';
 import './charging-diagnostics.css';
@@ -35,7 +36,7 @@ import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
 import { createSensorChangePanel } from './sensor-changes.js';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPollingRequest,
-  fetchJsonResponse, apiResponseError, createEventStream, createCommunicationWatch } from './network.js';
+  fetchJsonResponse, apiResponseError, createCommunicationWatch } from './network.js';
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
 import { createPairPanel } from './pair-status.js';
 import { createHistoryRecoveryPanel } from './history-recovery.js';
@@ -149,6 +150,7 @@ const reasons = {
   'continuous-normal-preferred': 'Continuous normal operation is preferred',
 };
 function lockScreen({ authenticationFailed = false } = {}) {
+  eventLog.clear();
   heatingExplorer.clear();
   recordingHealth.clear();
   refreshRecordingOverview.reset();
@@ -1009,18 +1011,8 @@ function render(s) {
   dashboardOverviewLayout.refreshLayout();
   return replicaStatus;
 }
-const eventStream = createEventStream({ request: (after,options) => api(`/api/events?after=${after}&limit=50`,undefined,options),
-  reset: () => $('events').replaceChildren(), append: rows => {
-  for (const event of rows) {
-    const li = document.createElement('li');
-    const timestamp = document.createElement('time');
-    timestamp.textContent = time(event.at);
-    li.append(timestamp, document.createTextNode(`${label(event.type)} · ${JSON.stringify(event.payload)}`));
-    $('events').prepend(li);
-  }
-  while ($('events').children.length > 100) $('events').lastChild.remove();
-} });
-const events = () => eventStream.poll();
+const eventLog = createEventLog({ document, request: (path, options) => api(path, undefined, options),
+  onOpenReport: (chargerId, reportId) => chargingDiagnostics.open(chargerId, reportId) });
 const communication = createCommunicationWatch();
 const requestStatus = createPollingRequest(options => api('/api/status',undefined,options));
 function renderConnection(status) {
@@ -1079,14 +1071,11 @@ async function refresh({ forceChart = false, background = false } = {}) {
     const replica = render(s);
     const snapshot = replica ? replicaSnapshotKey(s) ?? 'replica-unavailable' : 'master';
     const replaced = snapshot !== lastReplicaSnapshot;
-    if (replaced) {
-      eventStream.reset(snapshot);
-    }
     void refreshRecordingOverview();
     void refreshAudits({ force: replaced });
     lastReplicaSnapshot = snapshot;
-    if (replica && !replica.available) return;
-    await Promise.all([historyChart.refresh(s, { force: forceChart || replaced }), events()]);
+    if (replica && !replica.available) { eventLog.unavailable(); return; }
+    await Promise.all([historyChart.refresh(s, { force: forceChart || replaced }), eventLog.refresh()]);
   } catch (error) {
     // Chart, event and rendering failures do not invalidate a received local
     // pairing report or its confirmed MQTT address ownership.
@@ -1223,7 +1212,8 @@ async function applyTemporary(values, resume = false) {
     render(result);
     temporaryReceiptUntil = Date.now() + ACTION_RECEIPT_MS;
     $('temporary-message').textContent = dirtyTemporary.size ? 'Applied. Other changes are not applied yet.' : 'Changes applied.';
-    await events();
+    // Event history owns its read failures; a later read cannot undo this receipt.
+    void eventLog.refresh();
   } catch (error) {
     $('temporary-message').classList.add('form-error');
     $('temporary-message').textContent = error.message;

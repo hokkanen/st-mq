@@ -6,6 +6,21 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep historical charts available when a queued read encounters a newer database
+  checkpoint. Retry once from a fresh verified snapshot, retain the failed
+  attempt's specific diagnostic, and preserve refusal on changed identity,
+  uncertain cleanup, invalid history, revoked access or another advancement.
+
+- Make Event log a readable timeline with Important / All and area filters,
+  expandable evidence, precise timestamps and access to older records. Preserve
+  reading position and open details across refreshes, distinguish failed checks
+  from fresh history, and reconcile changed or removed records. Include charging
+  session milestones, firewood and sensor corrections, plus newly saved charging
+  and Caravan choices without replacing their original evidence. Keep successful
+  control receipts independent of log availability and keep raw exception text
+  out of stored controller errors and public event details. Reload an open
+  dashboard after updating to use the current event interface.
+
 - Label saved Home schedule choices as recorded on read-only computers, use
   consistent heating phase names, and correctly list the backup folder as
   requiring restart. Keep source names and storage timing labels within their

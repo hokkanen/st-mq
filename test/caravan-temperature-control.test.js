@@ -912,6 +912,26 @@ test('disabling automatic temperature control preserves the independent recordin
   assert.equal(f.guard().enabled, true); assert.equal(f.guard().offAtC, 1);
 });
 
+test('Caravan policy history is a saved choice, omits equipment identities and rolls back with policy', async t => {
+  const f = fixture(t); f.dryer('off');
+  const events = () => f.store.events().filter(event => event.type === 'caravan-control-changed');
+  await f.policy({ enabled: false, offAtC: 4, onAtC: 5 });
+  assert.equal(events().length, 1);
+  assert.deepEqual(events()[0].payload, { input: null, enabled: false, offAtC: 4, onAtC: 5,
+    previous: { enabled: true, offAtC: 1, onAtC: 2 } });
+  assert.doesNotMatch(JSON.stringify(events()), new RegExp('a'.repeat(64)));
+  await f.policy({ enabled: false, offAtC: 4, onAtC: 5 });
+  assert.equal(events().length, 1);
+  const record = f.store.event.bind(f.store);
+  f.store.event = (type, ...args) => {
+    if (type === 'caravan-control-changed') throw new Error('Synthetic policy event failure');
+    return record(type, ...args);
+  };
+  await assert.rejects(f.policy({ offAtC: 5, onAtC: 6 }), /policy event failure/);
+  assert.equal(f.guard().offAtC, 4); assert.equal(f.guard().onAtC, 5);
+  assert.equal(events().length, 1);
+});
+
 test('commands and policy edits cannot race a location probe or pending restoration', async t => {
   const f = fixture(t); await f.start();
   await assert.rejects(f.policy({ enabled: false }), /check|restoration/);

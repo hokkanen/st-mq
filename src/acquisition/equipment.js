@@ -1415,7 +1415,11 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       await write(() => reception.run(() => {
         if (probeBusy(device) || caravanStopping || closed || !canControl()
           || device.temperatureGuard.boundIdentity !== identity) throw fail('control authority or appliance identity changed');
+        const previous = device.temperatureGuard.settings;
         store.setState(temperatureControlKey(device), { signature: temperatureControlSignature(device), identity, settings: policy });
+        if (Object.keys(defaultTemperatureControl).some(key => previous[key] !== policy[key]))
+          store.event('caravan-control-changed', { input: engine.config?.input ?? null,
+            ...policy, previous: { ...previous } }, engine.clock());
         if (policy.enabled !== device.temperatureGuard.settings.enabled) {
           device.temperatureGuard.managed = false; device.temperatureGuard.demand = false;
           device.temperatureGuard.lastAttemptAt = null; device.temperatureGuard.lastAttemptPower = null;
