@@ -14,6 +14,10 @@ export function createPairResetWindow({ document, request, getState, getAccess, 
   const current = state => state?.available && getAccess()?.role === 'admin' && !state.pending && allowed(state.view)
     && (!state.busy || Boolean(review));
   const matching = state => review && review.nodeId === state.view?.nodeId && review.resetToken === state.view?.reset?.token;
+  // Replica publications change reset consent, but not certificate ownership.
+  // HTTPS guidance follows the same identities as the certificate peer channel.
+  const sameWebIdentity = view => webIdentity && webIdentity.nodeId === view?.nodeId
+    && webIdentity.pairId === view?.pairId && webIdentity.peerId === view?.peer?.nodeId;
   const setText = (id, value) => { if ($(id).textContent !== value) $(id).textContent = value; };
   function renderHttps() {
     const notice = httpsNotice(webStatus, getState().view?.nodeId);
@@ -24,11 +28,12 @@ export function createPairResetWindow({ document, request, getState, getAccess, 
   }
   function readHttps() {
     const read = ++epoch, state = getState();
-    webStatus = null; webLoading = true; webIdentity = { nodeId: state.view?.nodeId, token: state.view?.reset?.token };
+    webStatus = null; webLoading = true; webIdentity = { nodeId: state.view?.nodeId,
+      pairId: state.view?.pairId, peerId: state.view?.peer?.nodeId };
     renderHttps();
     void Promise.resolve().then(() => request('/api/web-access')).then(status => {
       const latest = getState();
-      if (read !== epoch || !dialog.open || webIdentity?.nodeId !== latest.view?.nodeId || webIdentity?.token !== latest.view?.reset?.token) return;
+      if (read !== epoch || !dialog.open || !sameWebIdentity(latest.view)) return;
       webStatus = status; webLoading = false; renderHttps();
     }, () => { if (read === epoch && dialog.open) { webStatus = null; webLoading = false; renderHttps(); } });
   }
@@ -69,7 +74,7 @@ export function createPairResetWindow({ document, request, getState, getAccess, 
     const platform = { hassio: 'Home Assistant', ubuntu: 'Linux' }[state.view?.platform];
     const role = { master: 'Master', slave: 'Slave', protected: 'Protected recovery' }[state.view?.role];
     setText('computer', [platform ?? 'This computer', role].filter(Boolean).join(' · '));
-    if (dialog.open && webIdentity && (webIdentity.nodeId !== state.view?.nodeId || webIdentity.token !== state.view?.reset?.token)) {
+    if (dialog.open && webIdentity && !sameWebIdentity(state.view)) {
       ++epoch; webStatus = null; webIdentity = null; webLoading = false; renderHttps();
     }
   }

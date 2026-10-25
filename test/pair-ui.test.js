@@ -1707,6 +1707,40 @@ test('late HTTPS replies cannot end the current loading state after reopening re
   assert.equal(f.sent.length, 0); f.click('cancel'); await flushReset();
 });
 
+test('history synchronization keeps fresh HTTPS guidance while separately invalidating reset consent', async () => {
+  let finish;
+  const owner = { version: 1, phase: 'ready', enabled: true, pair: { paired: true, ownerId: nodeId, localOwner: true } };
+  const f = resetWindowFixture({ webRequest: () => new Promise(resolve => { finish = resolve; }) });
+  f.click(''); await flushReset(); finish(owner); await flushReset();
+  f.click('continue'); await flushReset();
+  const changed = { ...f.view, reset: { ...f.view.reset, token: 'c'.repeat(64) } };
+  await f.panel.update(changed);
+  assert.match(f.$('pairing-reset-https-help').textContent, /^Checking current HTTPS setup/);
+  finish(owner); await flushReset();
+  assert.match(f.$('pairing-reset-https-help').textContent, /receiving computer first/);
+  assert.equal(f.$('pairing-reset-confirm').disabled, true, 'The changed history still requires a new reset review');
+  assert.match(f.$('pairing-reset-dialog-help').textContent, /Pairing changed during review/);
+  f.click('confirm'); await flushReset(); assert.equal(f.sent.length, 0);
+  f.click('cancel'); await flushReset();
+});
+
+test('changed local, pair or peer identity rejects a pending HTTPS read', async () => {
+  const owner = { version: 1, phase: 'ready', enabled: true, pair: { paired: true, ownerId: nodeId, localOwner: true } };
+  for (const change of ['local', 'pair', 'peer']) {
+    let finish;
+    const f = resetWindowFixture({ webRequest: () => new Promise(resolve => { finish = resolve; }) });
+    const view = { ...f.view, pairId: id, peer: { ...f.view.peer, nodeId: '33333333-3333-4333-8333-333333333333' } };
+    await f.panel.update(view); f.click(''); await flushReset();
+    await f.panel.update({ ...view, ...(change === 'local' ? { nodeId: '44444444-4444-4444-8444-444444444444' }
+      : change === 'pair' ? { pairId: '44444444-4444-4444-8444-444444444444' }
+      : { peer: { ...view.peer, nodeId: '44444444-4444-4444-8444-444444444444' } }) });
+    finish(owner); await flushReset();
+    assert.match(f.$('pairing-reset-https-help').textContent, /could not be confirmed/, change);
+    assert.doesNotMatch(f.$('pairing-reset-https-help').textContent, /receiving computer first/);
+    assert.equal(f.sent.length, 0); f.click('cancel'); await flushReset();
+  }
+});
+
 test('late HTTPS replies cannot overwrite a reopened window and review uses the shared owner/recipient rules', async () => {
   let resolveOld, reads = 0;
   const owner = { version: 1, phase: 'ready', enabled: true, pair: { paired: true, ownerId: nodeId, localOwner: true } };

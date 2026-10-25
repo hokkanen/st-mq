@@ -744,7 +744,10 @@ certificate helper can be blocked until their binding is reviewed. The window
 reads current admin Web access status when opened and reviewed, and uses its shared
 HTTPS presentation rules. Its stable **Web access after reset** disclosure shows
 a checking message until fresh status arrives, and expands during review; failed
-or stale reads give conservative guidance. Resetting a receiving computer can use **Authorize current pair** on both computers when the same pair
+or stale reads give conservative guidance. HTTPS reads follow the local node,
+pair and peer identity; ordinary history synchronization does not invalidate that
+guidance. Reset confirmation still uses its separate history-bound token.
+Resetting a receiving computer can use **Authorize current pair** on both computers when the same pair
 and certificate owner remain, preserving address, identity and certificates.
 Resetting the certificate owner's identity requires **Start fresh HTTPS setup**
 on the receiving computer first, then the owner, followed by normal setup; the
