@@ -1575,6 +1575,9 @@ test('background native sampling recovers clock-aligned-only idle telemetry with
   assert.equal(meterRequests(client).length, initial + 1);
   f.now = at + 60_000; f.elapsed = 60_000;
   await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
+  assert.equal(meterRequests(client).length, initial + 1, 'Allow the next periodic report to arrive before querying');
+  f.now = at + 75_000; f.elapsed = 75_000;
+  await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
   assert.equal(meterRequests(client).length, initial + 2);
   assert.deepEqual(f.local.snapshot().filter(row => row.id !== 250), original.filter(row => row.id !== 250));
 });
@@ -1583,9 +1586,12 @@ test('healthy periodic native reports avoid background sampling and wall jumps c
   t.mock.timers.enable({ apis: ['setInterval'] });
   const f = await fixture(t), client = await f.connect();
   await client.call('StatusNotification', connector('Available')); await flushCalls(client);
+  await client.call('MeterValues', meter(samples, f.now));
   const initial = meterRequests(client).length;
   for (let step = 1; step <= 3; step++) {
     f.now = at + step * 30_000; f.elapsed = step * 30_000;
+    await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
+    assert.equal(meterRequests(client).length, initial, 'Maintenance before the periodic packet must not race its boundary');
     await client.call('MeterValues', meter(samples, f.now));
     t.mock.timers.tick(1000); await flushCalls(client);
   }
@@ -1596,6 +1602,26 @@ test('healthy periodic native reports avoid background sampling and wall jumps c
   f.now = at + 600_000; f.elapsed = 120_001;
   await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
   assert.equal(meterRequests(client).length, initial + 1, 'Forward wall correction cannot consume the monotonic cooldown');
+});
+
+test('a fresh phase conflict waits for the next periodic report instead of synchronizing another trigger race', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Available')); await flushCalls(client);
+  await client.call('MeterValues', meter(samples));
+  const initial = meterRequests(client).length;
+  f.now = at + 30_000; f.elapsed = 30_000;
+  await client.call('MeterValues', meter(samples, f.now));
+  await client.call('MeterValues', meter(samples.map(row => row.measurand === 'Current.Import' && row.phase === 'L3'
+    ? { ...row, value: '9.999', context: 'Trigger' } : { ...row, context: 'Trigger' }), f.now));
+  assert.equal(f.local.currentSupplySnapshot().readings.find(row => row.id === 185).value, null);
+  t.mock.timers.tick(1000); await flushCalls(client);
+  assert.equal(meterRequests(client).length, initial);
+  f.now = at + 60_000; f.elapsed = 60_000;
+  await client.call('Heartbeat', {}); t.mock.timers.tick(1000); await flushCalls(client);
+  assert.equal(meterRequests(client).length, initial, 'A fresh conflicting phase must not trigger at the next periodic boundary');
+  await client.call('MeterValues', meter(samples, f.now));
+  assert(f.local.snapshot());
 });
 
 test('native controls preempt a silent background meter read and its late reply grants nothing', async t => {

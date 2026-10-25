@@ -12,6 +12,10 @@ const MAX_FUTURE_MS = MAX_SOURCE_AHEAD_MS;
 const CALL_TIMEOUT_MS = 15_000;
 const SNAPSHOT_ADMISSION_MS = 1000;
 const METER_REFRESH_MS = 30_000;
+// Give a normal 30-second report time to arrive before requesting another
+// instantaneous sample. Requests on the periodic boundary can share its
+// whole-second timestamp while measuring slightly different values.
+const METER_REFRESH_AGE_MS = 45_000;
 const FIRST_MESSAGE_TIMEOUT_MS = 30_000;
 const NO_TRANSACTION_STATUSES = new Set(['Available', 'Finishing']);
 const RECOVERABLE_STATUSES = new Set(['Charging', 'SuspendedEVSE', 'SuspendedEV']);
@@ -123,10 +127,12 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   let observedTransaction = null, connectionId = null, authenticatedConnectionId = null, transactionEvidence = null;
   let recoveryCandidate = null, recoveryConflict = false, evidenceBoundaryAt = null;
   let currentSupplyBoundaryAt = null;
+  let phaseWeightBoundaryAt = null;
   const instanceId = randomUUID(); let connectionSequence = 0;
   let receivedFrameSequence = 0;
   let statusTransition = 0;
   const values = new Map(), replies = new Map(), pendingCalls = new Map();
+  const previousPhaseValues = new Map();
   const deferredTransactions = new Map();
   const futureReadings = [];
   const callQueue = [];
@@ -344,13 +350,13 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     for (const pending of deferredTransactions.values()) clearTimeout(pending.timer);
     deferredTransactions.clear();
     rejectRequests('ocpp-disconnected');
-    booted = false; values.clear(); futureReadings.length = 0; replies.clear();
+    booted = false; values.clear(); previousPhaseValues.clear(); futureReadings.length = 0; replies.clear();
     configurationFailures.clear(); lastMessageAt = null; connectedAt = null; telemetryConfigured = false; meterTriggerUnsupported = false;
     meterRequestedAt = null;
     connectorStatus = null; connectorStatusAt = null; connectorReceivedAt = null; connectorStatusExplicit = false;
     observedTransaction = null; connectionId = null; authenticatedConnectionId = null; transactionEvidence = null;
     recoveryCandidate = null; recoveryConflict = false; evidenceBoundaryAt = null;
-    currentSupplyBoundaryAt = null;
+    currentSupplyBoundaryAt = null; phaseWeightBoundaryAt = null;
     preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
     onDisconnect();
   }
@@ -462,7 +468,9 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     const now = clock();
     return [120, 183, 184, 185, 194, 195, 196].some(id => {
       const row = values.get(id), at = instant(row?.timestamp);
-      return row?.value == null || !Number.isFinite(at) || at > now || now - at >= METER_REFRESH_MS;
+      // A fresh contradiction remains unknown, but the next periodic report
+      // gets the same opportunity to resolve it as an unchanged measurement.
+      return !Number.isFinite(at) || at > now || now - at >= METER_REFRESH_AGE_MS;
     });
   }
   function refreshMeterReadback() {
@@ -555,7 +563,12 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     }
     for (const row of readings) {
       const before = values.get(row.id), at = instant(row.timestamp), priorAt = instant(before?.timestamp);
-      if (!before || at > priorAt) values.set(row.id, { ...row, receivedAt });
+      if (!before || at > priorAt) {
+        if ([183, 184, 185].includes(row.id) && before?.value !== null && Number.isFinite(priorAt)
+          && priorAt >= Math.max(connectedAt ?? 0, phaseWeightBoundaryAt ?? 0))
+          previousPhaseValues.set(row.id, { ...before });
+        values.set(row.id, { ...row, receivedAt });
+      }
       else if (at === priorAt && row.value !== before.value) values.set(row.id, { ...row, value: null, receivedAt });
     }
     return true;
@@ -723,7 +736,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       if (typeof payload.chargePointVendor !== 'string' || typeof payload.chargePointModel !== 'string') {
         send([4, id, 'FormationViolation', 'Missing product fields', {}]); return;
       }
-      values.clear(); futureReadings.length = 0; rejectRequests('ocpp-reconfigured'); booted = true; onDisconnect();
+      values.clear(); previousPhaseValues.clear(); phaseWeightBoundaryAt = receivedAt;
+      futureReadings.length = 0; rejectRequests('ocpp-reconfigured'); booted = true; onDisconnect();
       for (const pending of deferredTransactions.values()) clearTimeout(pending.timer);
       deferredTransactions.clear();
       connectionId = `${instanceId}:${++connectionSequence}`;
@@ -829,6 +843,9 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         && (connectorStatusAt === null || at >= connectorStatusAt)) {
         const status = payload.errorCode === 'NoError' ? payload.status : 'Faulted';
         if (connectorStatus !== status) { preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++; }
+        if (NO_TRANSACTION_STATUSES.has(status) || status === 'Preparing' && connectorStatus !== status) {
+          previousPhaseValues.clear(); phaseWeightBoundaryAt = at;
+        }
         connectorStatus = status; connectorStatusAt = at; connectorReceivedAt = receivedAt; connectorStatusExplicit = payload.timestamp !== undefined;
         if (['Available', 'Reserved', 'Unavailable'].includes(status)) observedTransaction = null;
         if (!activeTransaction() && NO_TRANSACTION_STATUSES.has(status) && connectorStatusExplicit
@@ -1061,17 +1078,26 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     },
     readSnapshot({ signal } = {}) {
       signal?.throwIfAborted(); cancellation.signal.throwIfAborted();
-      const connection = socket, generation = connectionId, snapshot = this.snapshot();
+      const connection = socket, generation = connectionId, snapshot = this.snapshot({ recording: true });
       return maintenance.has('future-readings')
-        ? readAdmittedSnapshot(() => this.snapshot(), connection, generation, signal) : snapshot;
+        ? readAdmittedSnapshot(() => this.snapshot({ recording: true }), connection, generation, signal) : snapshot;
     },
-    snapshot() {
+    snapshot({ recording = false } = {}) {
       if (!refreshAuthority() || socket?.readyState !== 1 || lastMessageAt === null
         || clock() < lastMessageAt || clock() - lastMessageAt > MAX_AGE_MS) return null;
       if (releaseFutureReadings() === false) return null;
       if (!stateReady) return null;
       const rows = [...values.values()].filter(row => row.value !== null && clock() - instant(row.timestamp) <= MAX_AGE_MS && instant(row.timestamp) <= clock());
       const power = rows.find(row => row.id === 120);
+      if (recording && power?.value > 0) for (const id of [183, 184, 185]) {
+        const current = values.get(id), previous = previousPhaseValues.get(id);
+        // Only a prior, unambiguous sample from this connection can estimate
+        // phase allocation. Keep the conflicting current unknown everywhere
+        // else, including control and live household headroom.
+        if (current?.value === null && previous && instant(previous.timestamp) < instant(current.timestamp)
+          && instant(previous.timestamp) <= clock() && clock() - instant(previous.timestamp) <= MAX_AGE_MS)
+          rows.push({ ...previous, phaseWeightOnly: true });
+      }
       if (!power || power.value > 0 && ![183, 184, 185].every(id => rows.some(row => row.id === id))) return null;
       return [...rows, { id: 250, value: true, timestamp: new Date(lastMessageAt).toISOString() }];
     },

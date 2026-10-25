@@ -95,6 +95,7 @@ fixture.setCase = name => {
       item.progress = { estimatedSoc: 56, hasEnergyEstimate: true, deliveredGridKwh: 0.8,
         retainedVehicleReference: name !== 'schedule-overview', referenceSoc: item.values.soc };
       item.sessionCost = { recordedGridKwh: 0.8, deliveredGridKwh: 0.8 };
+      if (name === 'schedule-gaps') item.progress.basis = { energyCoverageIncomplete: true };
       if (item.provider === 'shelly-evse') item.limiter = { mode: 'unrestricted', allowanceA: 16,
         appliedCurrentA: 16, applicationStatus: 'confirmed' };
       if (name === 'schedule-outage') item.mqtt = { reason: 'disconnected' };
@@ -496,8 +497,12 @@ try {
       assert.equal(await evaluate(`document.getElementById('${id}-control-message').textContent`), '', 'Success and failure receipts expire after 24 hours');
       await receiptFits(id, `${width}px ${theme} ${id} expired receipt`);
     }
-    for (const state of ['ordinary', 'backend-readings', 'idle-current', 'schedule-overview', 'schedule-outage', 'schedule-recorded', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'identify-native-schedule', 'identify-offline', 'identify-unknown', 'remaining-cost', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'vehicle-reference', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
+    for (const state of ['ordinary', 'backend-readings', 'idle-current', 'schedule-overview', 'schedule-gaps', 'schedule-outage', 'schedule-recorded', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'identify-native-schedule', 'identify-offline', 'identify-unknown', 'remaining-cost', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'vehicle-reference', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
+      if (state === 'schedule-gaps') for (const id of ['charger1', 'charger2']) {
+        assert.equal(await evaluate(`document.getElementById('${id}-sources').textContent`), 'Energy gaps · charge may be higher');
+        assert.match(await evaluate(`document.getElementById('${id}-energy-label').textContent`), /Remaining · energy gaps/);
+      }
       const layout = await evaluate(`(() => {
         const cards = [...document.querySelectorAll('.charging-device')];
         return { overflow: document.documentElement.scrollWidth > innerWidth, cards: cards.map(card => {

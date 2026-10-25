@@ -1028,6 +1028,8 @@ test('estimated current charge progresses beyond the requested target and identi
   assert.equal(result.minimumSource, 'Requested target');
   assert.equal(result.readiness, 'Estimated target reached'); assert.match(result.event, /estimated target reached$/);
   assert.match(result.notes.join(' '), /Energy measurements have gaps/);
+  assert.equal(result.incompleteChargeEstimate, true);
+  assert.match(result.energyNote, /Charge may be higher and remaining energy may be lower/);
   assert(!result.sources.includes('fallback'));
 });
 

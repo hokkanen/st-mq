@@ -141,7 +141,8 @@ export class ElectricityAccumulator {
         used = [power, ...currents, ...(haveVoltage ? voltages : [])];
         quality.push('reported_active_power', haveVoltage ? 'voltage_current_phase_weights' : 'current_phase_weights');
         if (heldCurrents.some(row => row.value === 0)) quality.push('last_reported_zero_phase_weights');
-        if (heldCurrents.some(row => row.value !== 0)) quality.push('last_reported_phase_weights');
+        if (heldCurrents.some(row => row.value !== 0) || currents.some(row => row.raw?.phaseWeightOnly === true))
+          quality.push('last_reported_phase_weights');
       } else if (haveVoltage) {
         powers = weights.map(value => value / 1000);
         used = [...currents, ...voltages];

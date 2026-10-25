@@ -12,7 +12,7 @@ import { helperAuthorizationUrl } from './authorization-url.js';
 import { validateCertificate, inspectCertificate, certificateHostname, renewalMinimumValidity } from './certificates.js';
 
 const HOUR = 3600000; const DAY = 24 * HOUR;
-const ACTIONS = ['enable', 'disable', 'recheck', 'retry', 'check-updates', 'update-now', 'set-update-policy', 'restore-identity'];
+const ACTIONS = ['enable', 'disable', 'recheck', 'retry', 'check-updates', 'update-now', 'set-update-policy', 'restore-identity', 'reauthorize-pair'];
 const STATE_KEYS = ['version', 'enabled', 'hostname', 'ownerId', 'pairId', 'localId', 'peerId', 'peerRenewalRequired', 'machineName', 'certificate', 'runtime', 'previousRuntime', 'highestVersion', 'seen', 'updates', 'operation', 'transaction', 'quarantined'];
 function initialState() {
   return { version: 1, enabled: false, hostname: null, ownerId: null, pairId: null, localId: null, peerId: null, peerRenewalRequired: false,
@@ -170,7 +170,10 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     const missing = Symbol('missing HTTPS state');
     const saved = await readJson(statePath(), { missing });
     if (saved === missing) { loaded = true; return; }
-    state = validateState(saved); validatePairBinding();
+    state = validateState(saved);
+    let bindingChanged = false;
+    try { validatePairBinding(); }
+    catch (error) { if (errorCode(error) !== 'https_pair_identity_changed') throw error; bindingChanged = true; }
     const active = state.certificate;
     let acceptedMaterial = null;
     if (active) {
@@ -190,6 +193,12 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     // Schema, raw certificate shape and its complete derived metadata are
     // checked before lock/storage/operation-journal mutation. Genuine expiry is
     // a lifecycle condition; malformed cached state remains untouched.
+    if (bindingChanged) {
+      // Current-format material is admitted for explicit recovery only. No
+      // listener, helper, publication or durable write precedes approval.
+      certificate = acceptedMaterial; loaded = true;
+      lastError = 'https_pair_identity_changed'; phase = 'degraded'; return;
+    }
     await prepareStorage(); loaded = true;
     if (state.operation?.state === 'running') { state.operation.state = 'interrupted'; state.operation.completedAt = clock(); state.operation.error = 'https_operation_interrupted'; await persist(); }
     if (acceptedMaterial) {
@@ -567,6 +576,41 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     if (!state.pairId && config().topology === 'pair' && (state.enabled || state.runtime || state.certificate)) throw httpsError('https_pair_owner_setup_required');
     if (state.pairId && (current?.pairId !== state.pairId || current.localId !== state.localId || current.peerId && current.peerId !== state.peerId)) throw httpsError('https_pair_identity_changed');
   }
+  function pairReauthorization() {
+    const current = pairConfiguration();
+    if (invalid || state.transaction || config().topology !== 'pair' || !state.pairId || current?.pairId !== state.pairId
+      || !current.localId || !current.peerId || current.localId === current.peerId
+      || ![current.localId, current.peerId].includes(state.ownerId)
+      || (state.ownerId === state.localId) !== (state.ownerId === current.localId)
+      || current.localId === state.localId && current.peerId === state.peerId) return null;
+    return { token: createHash('sha256').update(JSON.stringify([state.pairId, state.localId, state.peerId,
+      state.ownerId, current.localId, current.peerId, state.hostname, state.certificate?.fingerprint ?? null])).digest('hex') };
+  }
+  async function reauthorizePair(input) {
+    const approval = pairReauthorization();
+    if (!approval || input.confirmed !== true || input.token !== approval.token)
+      throw httpsError('https_pair_reauthorization_required');
+    const current = { ...pairConfiguration() };
+    const peerState = await peerRequest('status', {});
+    assertOpen();
+    if (pairReauthorization()?.token !== input.token) throw httpsError('https_pair_identity_changed');
+    if (peerState.nodeId !== current.peerId || peerState.pairId !== current.pairId
+      || peerState.ownerId !== state.ownerId || peerState.hostname !== state.hostname)
+      throw httpsError('https_peer_identity_mismatch');
+    const next = { ...state, localId: current.localId, peerId: current.peerId };
+    await atomicJson(statePath(), next);
+    state = next; lastError = null;
+    validatePairBinding();
+    if (certificate) {
+      publishedCertificate = { record: clone(state.certificate),
+        material: { cert: certificate.cert, key: certificate.key }, hostname: state.hostname };
+      if (state.enabled) await activate(certificate, state.certificate.generation);
+    }
+    if (responsible()) await renew({ authorize: false });
+    else if (state.enabled && !certificate) await pullPeer();
+    phase = state.enabled ? certificate ? 'ready' : 'peer_certificate_pending' : 'disabled';
+    await checkDns();
+  }
   async function receive(envelope) {
     validatePairBinding();
     if (!state.pairId || localOwner() || !envelope || envelope.pairId !== state.pairId || envelope.ownerId !== state.ownerId ||
@@ -578,6 +622,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     await installCertificate(envelope.certificate, { generation: envelope.generation, hostname });
   }
   async function work(action, input) {
+    if (action === 'reauthorize-pair') return reauthorizePair(input);
     validatePairBinding();
     if (action === 'enable') {
       if (typeof config().token !== 'string' || config().token.length < 24) throw httpsError('credentials_required');
@@ -711,10 +756,11 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
         securityCoverage: 'incomplete', bulletinUrl: 'https://tailscale.com/security-bulletins' },
       dns: { ...clone(dns), resolver: config().web?.lanResolver || null, expectedAddress: expectedDnsAddress() },
       busy: Boolean(busy || admission), operation: clone(state.operation), error: certificateError ?? lastError, pair: state.pairId ? { paired: true, ownerId: state.ownerId,
-        localOwner: localOwner(), peerRenewalRequired: state.peerRenewalRequired, peer: clone(peerStatus) } : { paired: config().topology === 'pair' } };
+        localOwner: localOwner(), peerRenewalRequired: state.peerRenewalRequired, peer: clone(peerStatus),
+        reauthorization: pairReauthorization() } : { paired: config().topology === 'pair' } };
   }
   async function action(input) {
-    const actionFields = { enable: ['owner'], disable: [], recheck: [], retry: [], 'check-updates': [], 'update-now': ['retry'], 'set-update-policy': ['policy'], 'restore-identity': ['confirmedPeerFenced'] };
+    const actionFields = { enable: ['owner'], disable: [], recheck: [], retry: [], 'check-updates': [], 'update-now': ['retry'], 'set-update-policy': ['policy'], 'restore-identity': ['confirmedPeerFenced'], 'reauthorize-pair': ['token', 'confirmed'] };
     if (!input || !ACTIONS.includes(input.action) || Object.keys(input).some(key => !['action', ...actionFields[input.action]].includes(key)) ||
         input.retry !== undefined && typeof input.retry !== 'boolean') throw httpsError('https_action_invalid');
     if (input.action === 'set-update-policy' && !['automatic', 'manual'].includes(input.policy)) throw httpsError('https_update_policy_invalid');
@@ -722,6 +768,10 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     admissionKind = 'action';
     admission = (async () => {
       await initialize(); assertOpen(); if (invalid) throw httpsError(lastError ?? 'https_state_invalid');
+      if (input.action === 'reauthorize-pair') {
+        if (input.confirmed !== true || !input.token || input.token !== pairReauthorization()?.token)
+          throw httpsError('https_pair_reauthorization_required');
+      } else validatePairBinding();
       if (busy) {
         if (state.operation?.state === 'running') return clone(state.operation);
         throw httpsError('https_manager_busy');
@@ -747,7 +797,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
     // durable renewal duty even if the owner has disabled its local TLS. Do not
     // assume an offline peer disabled its entrance or erase this responsibility.
     await initialize(); assertOpen();
-    certificateEnvelope();
+    validatePairBinding(); certificateEnvelope();
     if (!state.peerRenewalRequired || admissionKind === 'export') {
       while (busy || admission) {
         if (state.peerRenewalRequired && admissionKind !== 'export') break;

@@ -411,6 +411,17 @@ depends on helper or TLS readiness. Loss of the renewal owner leaves the other
 node usable only until its stored certificate expires. Disabling local HTTPS on
 an owner with a known enabled recipient retains the renewal responsibility.
 
+If pairing reset or replacement changes a computer's node identity, HTTPS reports
+`https_pair_identity_changed` and blocks its listener and helper startup. Review
+**Authorize current pair** in Web access on each computer. This explicit admin
+action verifies the connected peer over the authenticated pair channel and binds
+approval to the displayed current identities. The pair ID and certificate owner
+must remain unchanged; a changed owner requires separate setup. Certificates,
+the enrolled helper identity, address and renewal duties are preserved. Ordinary
+Retry, polling and controller handover never authorize new identities. A peer
+outage or an identity change during review rejects recovery. An interrupted
+approved binding update remains a complete atomic state and can restart normally.
+
 A standalone HTTPS state cannot silently become paired certificate ownership
 after a topology change. Preserve the existing private directory, explicitly
 select a fresh `web.https_directory`, then choose the paired owner during setup.

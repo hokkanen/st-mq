@@ -1,5 +1,14 @@
 # Development validation
 
+OCPP recording-admission regressions cover periodic/triggered samples sharing a
+whole-second timestamp: valid total power retains exact integrated energy using
+earlier labelled phase weights while current control retains the conflict.
+Missing, expired and replaced connection evidence still produces gaps. The native
+sampling suite also runs maintenance before the next periodic packet arrives.
+HTTPS runtime and UI tests cover explicit current-pair authorization, unchanged
+owner/certificate/runtime, restart, stale approval, peer loss and identity races.
+Ordinary Retry cannot authorize replacement identities.
+
 `test/learning-checkpoint-display.test.js` checks the recorded-model metadata
 reader: exact display parity, detached results, current manifest rejection,
 missing references, indexed bounded reference batches and concurrent replacement

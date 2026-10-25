@@ -497,6 +497,38 @@ test('disabled certificate owner shows retained peer renewal and confirms that d
   assert.equal(secureWebAccessView(source).peerRenewal, '', 'Family gets no owner details');
 });
 
+test('pair recovery needs explicit current-token confirmation and is unavailable to family users', async () => {
+  const { document, nodes } = fixture(), writes = [];
+  let access = admin, accepted = false, confirmation;
+  const source = { ...ready, phase: 'degraded', error: 'https_pair_identity_changed',
+    pair: { paired: true, ownerId: 'fixture-owner', localOwner: true, reauthorization: { token: 'fixture-current-binding' } } };
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => access,
+    confirm: async details => { confirmation = details; return accepted; }, request: async (_path, body) => {
+      if (body) writes.push(body); return structuredClone(source);
+    } });
+  await panel.refresh({ force: true });
+  assert.equal(nodes.get('secure-web-access-reauthorize-pair').hidden, false);
+  assert.equal(nodes.get('secure-web-access-retry').hidden, true);
+  assert.equal(await panel.run('reauthorize-pair'), false); assert.deepEqual(writes, []);
+  assert.match(confirmation.message, /retains the existing certificate owner.*does not grant heating or charging authority/);
+  accepted = true; assert.equal(await panel.run('reauthorize-pair'), true);
+  assert.deepEqual(writes, [{ action: 'reauthorize-pair', token: 'fixture-current-binding', confirmed: true }]);
+  access = family; panel.update({});
+  assert.equal(nodes.get('secure-web-access-reauthorize-pair').hidden, true);
+  assert.equal(await panel.run('reauthorize-pair'), false);
+});
+
+test('pair recovery cannot approve a binding that changes while the confirmation is open', async () => {
+  const { document } = fixture(), writes = [];
+  const source = { ...ready, phase: 'degraded', error: 'https_pair_identity_changed',
+    pair: { paired: true, ownerId: 'fixture-owner', localOwner: true, reauthorization: { token: 'fixture-original-binding' } } };
+  const panel = createSecureWebAccessPanel({ document, getAccess: () => admin,
+    confirm: async () => { source.pair.reauthorization.token = 'fixture-replacement-binding'; await panel.refresh({ force: true }); return true; },
+    request: async (_path, body) => { if (body) writes.push(body); return structuredClone(source); } });
+  await panel.refresh({ force: true });
+  assert.equal(await panel.run('reauthorize-pair'), false); assert.deepEqual(writes, []);
+});
+
 test('restored identity requires a separate fenced-owner confirmation and never turns a plain retry into approval', async () => {
   const { document, nodes } = fixture(), writes = [];
   let access = admin, accepted = false, confirmation;

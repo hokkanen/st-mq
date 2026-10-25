@@ -1272,6 +1272,97 @@ test('a stored valid peer certificate restarts offline without depending on the 
   assert.equal(await readFile(resolve(context.directory, 'https', 'state.json'), 'utf8'), before);
 });
 
+for (const role of ['owner', 'recipient']) test(`explicit pair reauthorization preserves the ${role} certificate and survives restart`, async t => {
+  let changed = false;
+  const owner = 'fixture-owner', oldRecipient = 'fixture-old-recipient', recipient = () => changed ? 'fixture-new-recipient' : oldRecipient;
+  const pair = { configuration: () => ({ pairId: 'recovery-pair', vipAddress: '192.0.2.100',
+    localId: role === 'owner' ? owner : recipient(), peerId: role === 'owner' ? recipient() : owner }),
+    request: async operation => operation === 'status' ? { nodeId: role === 'owner' ? recipient() : owner,
+      pairId: 'recovery-pair', ownerId: owner, hostname, enabled: false }
+      : { pairId: 'recovery-pair', ownerId: owner, hostname, generation: 3,
+        certificate: { cert: 'fixture-peer-cert', key: 'fixture-peer-key' } } };
+  const context = await setup(t, { pair }); context.config.topology = 'pair';
+  await context.manager.action({ action: 'enable', owner: role === 'owner' ? 'local' : 'peer' });
+  assert.equal((await settled(t, context.manager)).phase, 'ready'); await context.manager.close();
+  const path = resolve(context.directory, 'https', 'state.json'), before = await readFile(path, 'utf8');
+  const saved = JSON.parse(before); changed = true;
+  const recovered = restart(t, context, { pair }); recovered.start();
+  assert.equal((await diagnosed(t, recovered)).error, 'https_pair_identity_changed');
+  assert.equal(recovered.status().certificate, null);
+  assert.equal(await readFile(path, 'utf8'), before);
+  await assert.rejects(recovered.action({ action: 'retry' }), { code: 'https_pair_identity_changed' });
+  await assert.rejects(recovered.action({ action: 'reauthorize-pair', confirmed: true, token: 'stale' }), { code: 'https_pair_reauthorization_required' });
+  assert.equal(await readFile(path, 'utf8'), before, 'Rejected approvals cannot write state');
+  const token = recovered.status().pair.reauthorization.token;
+  await assert.rejects(recovered.action({ action: 'reauthorize-pair', token }), { code: 'https_pair_reauthorization_required' });
+  await recovered.action({ action: 'reauthorize-pair', token, confirmed: true });
+  const result = await settled(t, recovered);
+  assert.equal(result.operation.state, 'completed'); assert.equal(result.phase, 'ready');
+  assert.equal(result.pair.reauthorization, null);
+  const updated = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(updated.localId, pair.configuration().localId); assert.equal(updated.peerId, pair.configuration().peerId);
+  for (const key of ['ownerId', 'hostname', 'certificate', 'runtime', 'machineName']) assert.deepEqual(updated[key], saved[key]);
+  assert.equal(context.calls.install, role === 'owner' ? 1 : 0, 'Recovery does not reinstall or enroll the helper');
+  await recovered.close();
+  const resumed = restart(t, context, { pair }); resumed.start();
+  for (let i = 0; i < 100 && resumed.status().phase !== 'ready'; i++) await wait(5);
+  assert.equal(resumed.status().phase, 'ready');
+  await settled(t, resumed); await resumed.close();
+});
+
+for (const order of ['owner-first', 'recipient-first']) test(`both current HTTPS managers recover a changed recipient ${order}`, async t => {
+  let recipientId = 'old-recipient', ownerManager, recipientManager;
+  const request = (other, id) => async (operation, body) => operation === 'status'
+    ? { ...other().pairStatus(), nodeId: id() } : operation === 'get'
+      ? other().exportCertificate() : other().acceptCertificate(body);
+  const ownerPair = { configuration: () => ({ pairId: 'paired-recovery', localId: 'owner', peerId: recipientId, vipAddress: '192.0.2.100' }),
+    request: request(() => recipientManager, () => recipientId) };
+  const recipientPair = { configuration: () => ({ pairId: 'paired-recovery', localId: recipientId, peerId: 'owner', vipAddress: '192.0.2.100' }),
+    request: request(() => ownerManager, () => 'owner') };
+  const a = await setup(t, { pair: ownerPair }), b = await setup(t, { pair: recipientPair });
+  a.config.topology = b.config.topology = 'pair'; ownerManager = a.manager; recipientManager = b.manager;
+  await ownerManager.action({ action: 'enable', owner: 'local' }); await settled(t, ownerManager);
+  await recipientManager.action({ action: 'enable', owner: 'peer' }); await settled(t, recipientManager);
+  await ownerManager.close(); await recipientManager.close(); recipientId = 'new-recipient';
+  ownerManager = restart(t, a, { pair: ownerPair }); recipientManager = restart(t, b, { pair: recipientPair });
+  ownerManager.start(); recipientManager.start();
+  await Promise.all([diagnosed(t, ownerManager), diagnosed(t, recipientManager)]);
+  const managers = order === 'owner-first' ? [ownerManager, recipientManager] : [recipientManager, ownerManager];
+  for (const manager of managers) {
+    await manager.action({ action: 'reauthorize-pair', token: manager.status().pair.reauthorization.token, confirmed: true });
+    assert.equal((await settled(t, manager)).operation.state, 'completed');
+  }
+  for (const manager of managers) { assert.equal(manager.status().phase, 'ready'); assert.equal(manager.status().pair.ownerId, 'owner'); }
+  assert.equal(a.calls.install, 1); assert.equal(b.calls.install, 0);
+  await ownerManager.close(); await recipientManager.close();
+});
+
+for (const failure of ['changed-owner', 'changed-pair', 'peer-offline', 'peer-mismatch', 'changed-during-check'])
+  test(`pair reauthorization refuses ${failure} without changing its saved binding`, async t => {
+    let peerId = 'original-peer', pairId = 'recovery-pair', failing = false;
+    const pair = { configuration: () => ({ pairId, vipAddress: '192.0.2.100', localId: 'owner', peerId }),
+      request: async () => {
+        if (failing && failure === 'peer-offline') throw Object.assign(Error(), { code: 'https_peer_unavailable' });
+        const nodeId = failing && failure === 'peer-mismatch' ? 'wrong-peer' : peerId;
+        if (failing && failure === 'changed-during-check') peerId = 'another-peer';
+        return { nodeId, pairId, ownerId: 'owner', hostname, enabled: false };
+      } };
+    const context = await setup(t, { pair }); context.config.topology = 'pair';
+    await context.manager.action({ action: 'enable', owner: 'local' }); await settled(t, context.manager); await context.manager.close();
+    const path = resolve(context.directory, 'https', 'state.json'), before = JSON.parse(await readFile(path, 'utf8'));
+    peerId = 'replacement-peer';
+    if (failure === 'changed-pair') pairId = 'another-pair';
+    if (failure === 'changed-owner') pair.configuration = () => ({ pairId, localId: 'new-owner', peerId });
+    const manager = restart(t, context, { pair }); manager.start(); await diagnosed(t, manager);
+    const approval = manager.status().pair.reauthorization; failing = true;
+    if (!approval) await assert.rejects(manager.action({ action: 'reauthorize-pair', confirmed: true, token: 'synthetic-unapproved' }), { code: 'https_pair_reauthorization_required' });
+    else { await manager.action({ action: 'reauthorize-pair', confirmed: true, token: approval.token });
+      assert.equal((await settled(t, manager)).operation.state, 'failed'); }
+    const after = JSON.parse(await readFile(path, 'utf8'));
+    for (const key of ['pairId', 'localId', 'peerId', 'ownerId', 'certificate', 'runtime']) assert.deepEqual(after[key], before[key]);
+    assert.equal(manager.status().certificate, null);
+  });
+
 test('altered cached certificate metadata is rejected before lock or interrupted-operation mutation', async t => {
   const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(t, context.manager); await context.manager.close();
   const path = resolve(context.directory, 'https', 'state.json'); const value = JSON.parse(await readFile(path, 'utf8'));

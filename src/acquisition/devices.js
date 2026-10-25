@@ -204,8 +204,11 @@ function electricalObservations(payload, device, prefix, fields, receivedAt, vol
     }
     if (value === null) quality.push('missing');
     if (name.startsWith('current_')) quality.push('current_snapshot_not_energy');
-    return { source: 'easee', device, signal: `${prefix}_${name}`, value, unit, sourceTime: at, receivedAt,
+    if (picked?.row.phaseWeightOnly === true) quality.push('last_reported_phase_weights');
+    return { source: 'easee', device, signal: `${prefix}_${name}`, value, unit, sourceTime: at,
+      receivedAt: picked?.row.phaseWeightOnly === true ? picked.row.receivedAt : receivedAt,
       quality, raw: { observationId: id, acquisitionOnly: true, auditOnly: counter, deviceConnection: { ...connection }, deviceTelemetryAt: telemetryAt,
+        ...(picked?.row.phaseWeightOnly === true ? { phaseWeightOnly: true } : {}),
         ...(sourceTimeAdmission({ sourceTime: at, receivedAt, now, deferred: now > receivedAt }) ? { timeAdmission: sourceTimeAdmission({ sourceTime: at, receivedAt, now, deferred: now > receivedAt }) } : {}),
         ...(prefix === 'ev1' && name === 'active_power' ? sessions : {}),
         ...(unit === 'V' ? { voltageMapping: prefix === 'property' || voltageVerified ? 'phase-neutral' : 'terminal-pair-unverified' } : {}) } };

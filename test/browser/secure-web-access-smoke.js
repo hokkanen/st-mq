@@ -467,8 +467,15 @@ try {
     ['expired-certificate', { ...readyFixture, certificate: { expiresAt: '2026-10-13T12:00:00Z' } }],
     ['peer-certificate', { ...readyFixture, certificate: null, phase: 'peer_certificate_pending', pair: { paired: true, ownerId: 'synthetic-peer', localOwner: false }, transport: { ...readyFixture.transport, https: { listening: false } } }],
     ['identity-repair', { ...readyFixture, phase: 'degraded', error: 'identity_restore_required' }],
+    ['pair-reauthorization', { ...readyFixture, certificate: null, phase: 'degraded', error: 'https_pair_identity_changed',
+      pair: { paired: true, ownerId: 'fixture-owner', localOwner: true, reauthorization: { token: 'fixture-pair-binding' } } }],
   ]) {
     installFixture(changes); await evaluate('webBrowser.panel.refresh({force:true})');
+    if (name === 'pair-reauthorization') {
+      assert.equal(await evaluate("document.getElementById('secure-web-access-reauthorize-pair').hidden"), false);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-retry').hidden"), true);
+      assert.equal(await evaluate("document.getElementById('secure-web-access-next-title').textContent"), 'Review the current paired computers');
+    }
     assert.equal(await evaluate("document.querySelector('#secure-web-access-details > summary > small').textContent"),
       'HTTPS & remote access', 'The setup subtitle describes contents in every status');
     if (name === 'remote-configured') {

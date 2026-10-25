@@ -30,6 +30,8 @@ const failures = {
   https_setup_required: 'Set up HTTPS on the certificate owner before installing a helper update.',
   https_helper_owner_required: 'Manage certificate helper updates on the paired certificate-owner computer.',
   https_pair_owner_setup_required: 'This HTTPS state was set up for standalone use. Preserve its directory, configure a fresh external web.https_directory and restart, then explicitly select the paired certificate owner in Web access.',
+  https_pair_identity_changed: 'The paired computer identities changed. Review and authorize the current pair on each computer to retain the same certificate owner. Retry setup cannot approve this change. Keep the saved identity and certificates.',
+  https_pair_reauthorization_required: 'The pair changed or its approval is missing. Refresh Web access and review the current pair before authorizing it.',
   https_certificate_owner_fixed: 'This HTTPS state already has a fixed certificate owner. Re-enable it using that owner. Changing the owner requires preserving the current state and explicitly setting up fresh HTTPS state.',
   https_peer_owner_conflict: 'The paired computer reports a different certificate owner. Review Web access on both computers and agree on one owner before retrying setup.',
   helper_authorization_start_failed: 'The certificate helper could not start Tailscale authorization. No sign-in link was received. Choose Retry setup; the installed helper and saved identity are preserved.',
@@ -90,7 +92,7 @@ function releaseDifference(candidate, installed) {
 
 const actionLabels = { enable: 'Set up HTTPS', disable: 'Disable HTTPS', retry: 'Retry setup', recheck: 'Recheck',
   'check-updates': 'Check releases', 'update-now': 'Install helper update', 'set-update-policy': 'Change update policy',
-  'restore-identity': 'Restore saved identity' };
+  'restore-identity': 'Restore saved identity', 'reauthorize-pair': 'Authorize current pair' };
 
 function operationReceipt(operation, now) {
   if (!operation || !actionLabels[operation.action] || !['completed', 'failed', 'interrupted'].includes(operation.state)) return null;
@@ -110,6 +112,12 @@ function nextStep(state, { tlsReady, certificateValid, certificateExpired, uncon
     help: 'Preparing this computer’s certificate access. Status updates when the operation completes.' };
   if (state.busy === true) return { title: 'Checking web access',
     help: 'Background web access maintenance is running. Actions become available when it finishes; current listener readiness is shown separately.' };
+  if (errorCode === 'https_pair_identity_changed' || state.pair?.reauthorization) return {
+    title: 'Review the current paired computers',
+    help: state.pair?.reauthorization
+      ? 'Authorize the current pair on each computer. The selected certificate owner, saved identity and HTTPS address are retained. This does not change heating or charging authority.'
+      : 'The original certificate owner and a matching, connected pair must be confirmed before recovery is available. Keep the saved HTTPS directory; a changed certificate owner requires separate setup.',
+  };
   if (errorCode === 'helper_hostname_changed') return { title: 'Update the HTTPS hostname',
     help: failures.helper_hostname_changed };
   if (errorCode === 'helper_tailnet_changed') return { title: 'Review the Tailscale network',
@@ -239,7 +247,7 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     authorizationUrl,
     next: admin && Object.hasOwn(phases, state.phase) ? nextStep(state, { tlsReady, certificateValid, certificateExpired, unconfirmed, peerOwner, retainedRenewal, savedSetup, authorizationUrl, errorCode, localDestination }) : null,
     setupAvailable: Object.hasOwn(phases, state.phase) && state.setup?.credentialsReady !== false,
-    retryAvailable: state.enabled === true && !['helper_hostname_changed', 'helper_tailnet_changed'].includes(errorCode) && (Boolean(errorCode) || unavailable
+    retryAvailable: state.enabled === true && !state.pair?.reauthorization && !['helper_hostname_changed', 'helper_tailnet_changed', 'https_pair_identity_changed'].includes(errorCode) && (Boolean(errorCode) || unavailable
       || ['degraded', 'repair_required', 'certificate_settings_required'].includes(state.phase)
       || state.phase === 'authorization_required' && !authorizationUrl),
     accountLinks: admin && !peerOwner && ['approval_or_connection_pending', 'certificate_settings_required'].includes(state.phase),
@@ -294,6 +302,7 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
       : state.updates?.policy === 'manual' ? 'Signed stable releases wait for explicit installation approval.'
       : 'Signed stable releases are checked and installed automatically. Existing HTTPS can keep using a valid stored certificate after a helper update fails; some helper failures require repair.',
     restoreIdentity: admin && errorCode === 'identity_restore_required',
+    pairReauthorization: admin ? state.pair?.reauthorization ?? null : null,
     receipt,
     problemCode: admin && typeof errorCode === 'string' && errorCode ? errorCode : receipt?.error ?? '',
     historicalProblem: !errorCode && Boolean(receipt?.error),
@@ -329,11 +338,13 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     setText('secure-web-access-security-reported', view.securityReported);
     $('secure-web-access-security-warning').hidden = !view.securityWarning;
     const available = admin && !pending && !view.busy && Object.hasOwn(phases, state.phase);
-    for (const action of ['enable', 'recheck', 'retry', 'disable', 'check-updates', 'update-now', 'restore-identity'])
+    for (const action of ['enable', 'recheck', 'retry', 'disable', 'check-updates', 'update-now', 'restore-identity', 'reauthorize-pair'])
       $(`secure-web-access-${action}`).disabled = !available || action === 'update-now' && !view.updateAvailable
         || action === 'enable' && !view.setupAvailable;
     $('secure-web-access-restore-identity').hidden = !view.restoreIdentity;
     $('secure-web-access-restore-identity').disabled = !available || !view.restoreIdentity;
+    $('secure-web-access-reauthorize-pair').hidden = !view.pairReauthorization;
+    $('secure-web-access-reauthorize-pair').disabled = !available || !view.pairReauthorization;
     $('secure-web-access-enable').hidden = view.enabled;
     setText('secure-web-access-enable', view.enableLabel);
     $('secure-web-access-disable').hidden = !view.enabled;
@@ -417,10 +428,12 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     if (action === 'enable' && !actionView.setupAvailable) return false;
     if (action === 'update-now' && !actionView.updateAvailable || action === 'set-update-policy' && !actionView.updatePolicyAvailable) return false;
     if (action === 'restore-identity' && !secureWebAccessView(state, { admin: true }).restoreIdentity) return false;
+    if (action === 'reauthorize-pair' && !actionView.pairReauthorization) return false;
+    const pairToken = actionView.pairReauthorization?.token;
     const generation = epoch;
     const previousFocus = document.activeElement;
     pending = true;
-    if (!['disable', 'restore-identity'].includes(action)) render();
+    if (!['disable', 'restore-identity', 'reauthorize-pair'].includes(action)) render();
     try {
       if (action === 'disable' && !await confirm({ document, title: 'Disable HTTPS on this computer?',
         message: 'The HTTPS entrance closes. The certificate helper identity and valid certificate stay saved for re-enabling. Loopback recovery, Home Assistant ingress and any explicitly configured LAN HTTP backup remain available.'
@@ -431,8 +444,12 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
       if (action === 'restore-identity' && !await confirm({ document, title: 'Restore the saved certificate identity here?',
         message: 'Continue only after the previous certificate-owner process is stopped and fenced from restarting. This rebinds the saved certificate helper identity to this computer. Running the old owner at the same time could allow two computers to use the same identity. Confirm that the previous owner is fenced before restoring.',
         action: 'Previous owner fenced · restore identity' })) return false;
+      if (action === 'reauthorize-pair' && !await confirm({ document, title: 'Authorize HTTPS for the current pair?',
+        message: 'Confirm that these are the intended paired computers. This authorizes their current identities for HTTPS and retains the existing certificate owner, saved helper identity, certificates and address. It does not grant heating or charging authority. Complete this review on both computers.',
+        action: 'Authorize current pair' })) return false;
       if (generation !== epoch || getAccess()?.role !== 'admin') return false;
       if (action === 'restore-identity' && !secureWebAccessView(state, { admin: true }).restoreIdentity) return false;
+      if (action === 'reauthorize-pair' && pairToken !== secureWebAccessView(state, { admin: true }).pairReauthorization?.token) return false;
       render();
       localReceipt = null;
       setText('secure-web-access-message', 'Web access request in progress…');
@@ -440,6 +457,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
       const owner = action === 'enable' && state.pair?.paired === true && !state.pair.ownerId
         ? { owner: $('secure-web-access-owner-select').value } : {};
       await request('/api/web-access', { action, ...owner, ...extra,
+        ...(action === 'reauthorize-pair' ? { token: pairToken, confirmed: true } : {}),
         ...(action === 'restore-identity' ? { confirmedPeerFenced: true } : {}) });
       if (generation !== epoch) return false;
       if (reading) await reading;
@@ -464,7 +482,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
       }
     }
   }
-  for (const action of ['enable', 'recheck', 'retry', 'disable', 'check-updates', 'update-now', 'restore-identity'])
+  for (const action of ['enable', 'recheck', 'retry', 'disable', 'check-updates', 'update-now', 'restore-identity', 'reauthorize-pair'])
     $(`secure-web-access-${action}`).addEventListener('click', () => { void run(action); });
   $('secure-web-access-update-policy').addEventListener('change', () => {
     void run('set-update-policy', { policy: $('secure-web-access-update-policy').value });

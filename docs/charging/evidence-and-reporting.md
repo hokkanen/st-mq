@@ -57,6 +57,11 @@ reference, but does not reset this tile. The recorded total remains after chargi
 finishes, reaching the target, or passing ready-by; confirmed disconnection ends
 it. Energy inferred only for a cost estimate is not shown as recorded energy.
 
+Incomplete energy coverage is shown beside the charge percentage and remaining
+energy. Charge may be higher, and remaining energy lower, than the estimate.
+The estimate cannot establish a missed target without suitable vehicle evidence.
+Existing gaps remain unknown; this warning does not fill them with assumed energy.
+
 ## Session reports
 
 Every ordinary connection also gets a passive **Session report**, opened with

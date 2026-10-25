@@ -280,6 +280,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const creditedGridKwh = progress.deliveredGridKwh ?? progress.creditedGridKwh;
   const hasProgress = finite(creditedGridKwh) && creditedGridKwh > 0;
   const estimatedSoc = currentChargeEstimate(charger) !== null;
+  const incompleteChargeEstimate = estimatedSoc && progress.basis?.energyCoverageIncomplete === true;
   const target = chargingTargetStatus(charger), deviceHoldOnly = chargingDeviceHoldOnly(charger);
   const requiredGridKwh = target.remaining, targetReached = target.reached;
   const minimum = values.minimumSoc?.value, socKnown = finite(soc.value) && (soc.available || soc.source === 'manual-fallback');
@@ -566,12 +567,13 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   ].filter(Boolean).join('\n\n') : '';
   const vehicle = vehiclePresentation(charger, { now, timezone });
   return { id: charger.id, label: charger.label, sessionPause, target, deviceHoldOnly, state, event, eventAt, eventKind, activityTiming, summary: `${state} · ${event}`, risk, showMetrics, defaultsPreview, vehicle, identification,
-    soc: estimatedSoc ? `≈${Math.round(progress.estimatedSoc)} %` : socKnown ? number(soc.value, '%') : 'Unknown', socSource, minimum: number(minimum, '%'),
+    soc: estimatedSoc ? `≈${Math.round(progress.estimatedSoc)} %` : socKnown ? number(soc.value, '%') : 'Unknown', socSource, incompleteChargeEstimate, minimum: number(minimum, '%'),
     minimumSource: targetSource, sources: socSource, targetHeld, targetDetail,
     gridEnergy: `${estimatedSoc && requiredGridKwh > 0 ? '≈' : ''}${number(requiredGridKwh, 'kWh')}`, deadline, readiness, readingTime, periodCount, periodRows,
     priority: activeManual && showMetrics ? resumption : '',
     energyLabel: hasProgress ? 'Grid remaining' : 'Grid to target',
-    energyNote: targetReached ? target.detail : 'Includes losses', problem,
+    energyNote: incompleteChargeEstimate ? 'Energy coverage is incomplete. Charge may be higher and remaining energy may be lower than shown'
+      : targetReached ? target.detail : 'Includes losses', problem,
     rows, notes: [...new Set(notes)].filter(note => note !== event), vehicleNotes, recordedVehicleFeed, explanations, yielded: activeManual, supported, controlDetail,
     controlReason: [chargingStatusReason(charger), chargingRecordedDetail(charger)].filter(Boolean).join('\n\n') };
 }
@@ -1092,14 +1094,16 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const defaultsPreview = view.defaultsPreview;
       device.metrics.soc.value.textContent = view.showMetrics ? view.soc : defaultsPreview?.soc ?? '—';
       device.metrics.minimum.value.textContent = view.showMetrics ? view.minimum : defaultsPreview?.minimum ?? '—';
-      device.sources.textContent = defaultsPreview ? 'Configured defaults' : !view.showMetrics ? 'Awaiting data' : view.soc.startsWith('≈') ? 'Estimated charge' : view.sources;
+      device.sources.textContent = defaultsPreview ? 'Configured defaults' : !view.showMetrics ? 'Awaiting data'
+        : view.incompleteChargeEstimate ? 'Energy gaps · charge may be higher' : view.soc.startsWith('≈') ? 'Estimated charge' : view.sources;
       device.metrics.minimum.value.dataset.state = view.showMetrics && view.targetHeld ? 'attention' : 'normal';
       device.targetSource.textContent = view.showMetrics && view.targetHeld ? 'Held BMW target' : '';
       device.targetSource.hidden = !device.targetSource.textContent;
       device.completion.textContent = defaultsPreview?.capacity ?? presentation.completion.value;
       const sourceDetail = defaultsPreview ? 'Configured starting charge for planning a new connection. Current vehicle charge is unknown.'
         : !view.showMetrics ? 'A confirmed vehicle connection is needed before a remembered charge reading can be shown as current.'
-        : [view.soc.startsWith('≈') ? `${view.socSource}, allowing for charging losses. The battery estimate advances from the latest charge reference; Added energy covers the whole connection.` : view.socSource, view.readingTime].filter(Boolean).join('\n');
+        : [view.soc.startsWith('≈') ? `${view.socSource}, allowing for charging losses. The battery estimate advances from the latest charge reference; Added energy covers the whole connection.` : view.socSource,
+          view.incompleteChargeEstimate ? view.energyNote + '. This estimate cannot establish a missed target.' : '', view.readingTime].filter(Boolean).join('\n');
       metricDetail(device.chargeLabel, { label: defaultsPreview ? 'Starting charge' : 'Charge', title: defaultsPreview ? 'Configured starting charge' : 'Current charge', detail: sourceDetail, key: `${charger.id}:source` });
       metricDetail(device.targetLabel, { label: 'Target', title: 'Target charge', detail: defaultsPreview ? 'Configured target for a new connection. This planning default does not set the vehicle’s charge limit.'
         : !view.showMetrics ? 'The target will be shown for the connected vehicle. Configured defaults are shown in Session settings.' : [`${view.minimumSource}. Estimates cover reaching this charge, which is not a command to stop the vehicle.`, view.targetDetail].filter(Boolean).join('\n\n'), key: `${charger.id}:target` });
@@ -1121,7 +1125,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       energyText(device.deliveredValue, view.showMetrics && finite(deliveredEnergy) ? number(deliveredEnergy, 'kWh') : '—');
       metricDetail(device.deliveredLabel, { label: 'Added energy', title: 'Energy added since plugging in',
         detail: view.showMetrics && finite(deliveredEnergy) ? 'Recorded grid energy since plugging in, including charging losses. It remains after charging ends and after the ready-by time, until the vehicle disconnects. New battery readings do not reset it; missing measurements are not estimated.' : 'No recorded energy total is available for this connection.', key: `${charger.id}:delivered` });
-      metricDetail(device.energyLabel, { label: view.energyLabel === 'Grid remaining' ? 'Remaining' : 'To target', title: view.energyLabel,
+      metricDetail(device.energyLabel, { label: view.incompleteChargeEstimate ? 'Remaining · energy gaps'
+        : view.energyLabel === 'Grid remaining' ? 'Remaining' : 'To target', title: view.energyLabel,
         detail: `${view.energyNote}. ${explanation['Energy estimate'] ?? ''}`, key: `${charger.id}:energy` });
       const cost = chargingCost(charger, view, presentation, { now: next.now, prices: next.prices });
       device.cost.textContent = cost.value;

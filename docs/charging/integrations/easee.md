@@ -894,17 +894,29 @@ transaction confirmation.
 An idle native charger may send only those clock-aligned intervals. The existing
 one-second connection maintenance requests a native `TriggerMessage` for
 connector 1's `MeterValues` when required instantaneous power, phase current or
-voltage has not advanced for 30 seconds. A background request waits at least
-30 monotonic seconds after any actual dispatched sample request, including setup
+voltage has not advanced for 45 seconds. This gives the normal 30-second periodic
+report time to arrive before another sample is requested. A background request
+waits at least 30 monotonic seconds after any actual dispatched sample request, including setup
 and the independently bounded, more frequent probe reads. Fresh
-complete periodic reports prevent background requests. Only actual received
-instantaneous values restore measurements; accepted requests, aligned intervals
+complete periodic reports prevent background requests. A fresh contradictory
+field waits for the next periodic opportunity rather than immediately requesting
+another colliding sample. Only received instantaneous values restore
+measurements; accepted requests, aligned intervals
 and heartbeats do not. One background read uses the existing ordered command
 transport and 15-second acknowledgement timeout. Any queued control or explicit
 read preempts that background read, so a silent acknowledgement cannot hold
 Pause, Start or restoration. Rejected/unsupported sampling is suppressed for the
 current native connection; reconnect discards all earlier measurement evidence.
 Status and acquisition snapshot reads do not initiate these background queries.
+If two instantaneous reports at one whole-second timestamp disagree on a phase
+current, that current remains unknown for control and household headroom. With
+valid measured total power, recording alone may use that phase's earlier
+unambiguous current from the same connection as an estimated allocation weight.
+The earlier measurement and receipt clocks stay unchanged, its age must not
+exceed 60 seconds, and the interval is labelled `last_reported_phase_weights`.
+Boot, reconnect, unplug and a new connection discard these weights. Without
+eligible weights, or with conflicting total power, recording retains a gap.
+No value is invented for current control and no historical gap is backfilled.
 Both the socket and the measured fields must remain current;
 heartbeats do not renew an old power/current sample. Missing or unsupported phases
 stay missing, and a local/cloud transition breaks energy integration rather than

@@ -208,3 +208,51 @@ test('admitting contradictory instantaneous power still withdraws electricity ev
   assert.equal(await f.local.readSnapshot(), null);
   assert.equal(f.local.snapshot(), null, 'A completed admission cannot hide a genuine conflict');
 });
+
+test('same-second phase conflicts retain only earlier recording weights and never current-control evidence', async t => {
+  const f = await fixture(t), accumulator = new ElectricityAccumulator();
+  let cloudRequests = 0;
+  const providers = createDeviceProviders({ connections: { easee: { charger_id: 'fixture-charger', access_token: 'fixture-token',
+    charger_voltage_ids: [194, 195, 196] } }, clock: () => f.now, ocppFactory: () => f.local,
+    http: { json: async () => { cloudRequests++; throw new Error('Unexpected cloud fallback'); } } });
+  t.after(() => providers.close());
+  await f.client.call('MeterValues', meter(START));
+  accumulator.sample(await providers.electricity({ now: f.now }), f.now);
+  f.now = START + 30_000;
+  await f.client.call('MeterValues', meter(f.now));
+  const trigger = meter(f.now, 6900, 'Trigger');
+  trigger.meterValue[0].sampledValue.find(row => row.measurand === 'Current.Import' && row.phase === 'L3').value = '9.999';
+  await f.client.call('MeterValues', trigger);
+  assert.equal(f.local.snapshot(), null, 'The strict snapshot still rejects the current conflict');
+  assert.equal(f.local.currentSupplySnapshot().readings.find(row => row.id === 185).value, null);
+  const recording = await f.local.readSnapshot(), weight = recording.find(row => row.id === 185);
+  assert.equal(weight.phaseWeightOnly, true); assert.equal(weight.value, 10);
+  assert.equal(weight.timestamp, new Date(START).toISOString()); assert.equal(weight.receivedAt, START);
+  const rows = await providers.electricity({ now: f.now });
+  const current = rows.find(row => row.signal === 'ev1_current_l3');
+  assert.equal(current.raw.phaseWeightOnly, true); assert.equal(current.sourceTime, START); assert.equal(current.receivedAt, START);
+  const integrated = accumulator.sample(rows, f.now);
+  assert.equal(cloudRequests, 0); assert.deepEqual(integrated.gaps, []);
+  assert.equal(integrated.intervals[0].transport, 'ocpp');
+  assert(integrated.intervals[0].quality.includes('last_reported_phase_weights'));
+  assert(Math.abs(integrated.intervals[0].energies.reduce((a, b) => a + b) - 6.9 / 120) < 1e-12);
+});
+
+for (const boundary of ['no-earlier-sample', 'expired', 'reconnect', 'boot', 'unplug', 'authority']) {
+  test(`recording phase weights cannot cross ${boundary}`, async t => {
+    const f = await fixture(t);
+    if (boundary !== 'no-earlier-sample') await f.client.call('MeterValues', meter(START));
+    f.now = START + 30_000; await f.client.call('MeterValues', meter(f.now));
+    const trigger = meter(f.now, 6900, 'Trigger');
+    trigger.meterValue[0].sampledValue.find(row => row.measurand === 'Current.Import' && row.phase === 'L3').value = '9.999';
+    await f.client.call('MeterValues', trigger);
+    if (boundary === 'expired') { f.now = START + 61_000;
+      await f.client.call('MeterValues', { connectorId: 1, meterValue: [{ timestamp: new Date(f.now).toISOString(),
+        sampledValue: [{ measurand: 'Power.Active.Import', unit: 'W', value: '6900' }] }] }); }
+    if (boundary === 'reconnect') await f.connect();
+    if (boundary === 'boot') await f.client.call('BootNotification', { chargePointVendor: 'Fixture', chargePointModel: 'Fixture' });
+    if (boundary === 'unplug') await f.client.call('StatusNotification', { connectorId: 1, status: 'Available', errorCode: 'NoError', timestamp: new Date(f.now).toISOString() });
+    if (boundary === 'authority') f.revoke();
+    assert.equal(await f.local.readSnapshot(), null);
+  });
+}

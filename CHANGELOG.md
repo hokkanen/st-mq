@@ -6,6 +6,16 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Avoid racing normal local charger reports with extra meter requests. Keep
+  valid measured power recordable through a phase-current conflict using recent,
+  earlier phase readings only as labelled estimates; control still sees the
+  conflict. Show incomplete energy coverage beside charge and remaining energy.
+
+- Recover HTTPS after a paired computer identity changes through explicit
+  administrator authorization on each computer. Verify the connected pair and
+  retain the unchanged certificate owner, enrolled identity and certificates.
+  Ordinary Retry never approves a changed identity.
+
 - Identify retained uploaded recovery sources by their upload receipt time, with
   distinct copy labels for matching timestamps. Keep the selected source identity
   and show the same description in its review.
