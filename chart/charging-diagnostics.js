@@ -297,6 +297,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   let status = null, selectedCharger = null, selectedReport = null, opener = null, guidedVehicle = null, guidedRunId = null, switchingDialog = false, renderedScope = null;
   let remoteReports = [], remoteReport = null, events = [], reportsBefore = null, reportsAfter = null, eventsBefore = null, loaded = false, missing = false;
   let reportPages = [], listed = false, listDirection = null, listError = null;
+  let listedCurrentId = null;
   let listSequence = 0, detailSequence = 0, eventsSequence = 0, loadingList = false, loadingEvents = false, mutating = false, pendingAction = null;
   let newEventsPending = false, eventsFailed = false;
   let apiReadOnly = false, error = '', refreshToken = null, selectionEpoch = 0, loadingDetail = false;
@@ -470,6 +471,8 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     selector.value = selectedReport ?? ''; selector.disabled = !choices.length && !loadingList && !listError || mutating; selectorLabel.hidden = !choices.length && !loadingList && !listError;
     setSelectPaging(selector, { older: Boolean(reportsBefore), newer: Boolean(reportsAfter),
       loading: loadingList ? listDirection : null, error: listError, disabled: mutating,
+      refresh: listed && slot()?.current?.id !== listedCurrentId && Boolean(slot()?.current)
+        && (collection.value === 'recent' || slot().current.saved === true),
       load: direction => { void loadReports(direction); } });
     collection.disabled = mutating;
     const summary = chargingReportSummary(report, status?.charging?.diagnostics?.available !== false);
@@ -548,8 +551,9 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
         : direction === 'newer' ? [page, ...reportPages].slice(0, 5) : [page];
       remoteReports = [...new Map(reportPages.flatMap(page => page.reports).map(row => [row.id, row])).values()];
       reportsBefore = reportPages.at(-1).before; reportsAfter = reportPages[0].after;
+      if (response.reports.some(row => row.id === slot()?.current?.id)) listedCurrentId = slot().current.id;
       listed = true; loadingList = false; render();
-      if (!loaded && !loadingDetail && selectedReport) await loadDetail();
+      if (!loaded && !loadingDetail && !loadingEvents && selectedReport) await loadDetail();
     } catch (failure) { if (ticket === listSequence) { loadingList = false; listError = direction; render(); } }
   }
   async function loadEvents(append = false, refresh = false) {
@@ -612,6 +616,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     finally {
       mutating = false; if (dialog.open) render();
       if (epoch === selectionEpoch && dialog.open && !missing && !loaded) void loadDetail();
+      if (epoch === selectionEpoch && dialog.open && !listed && !loadingList) void loadReports();
     }
   }
   function ask(action, text) {
@@ -623,6 +628,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     if (!['charger1', 'charger2'].includes(chargerId)) return;
     selectedCharger = chargerId; selectedReport = reportId; renderedScope = null;
     invalidateSelection(); listSequence++; remoteReports = []; reportPages = []; listed = false; reportsBefore = reportsAfter = listError = null; collection.value = 'recent'; filter.value = 'all';
+    listedCurrentId = slot()?.current?.id ?? null;
     const focused = document.activeElement;
     opener = origin?.isConnected ? origin
       : focused?.isConnected && focused !== document.body && !focused.closest?.('dialog') ? focused : buttons.get(chargerId);
@@ -634,7 +640,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   closeButton.addEventListener('click', close);
   guidedButton.addEventListener('click', () => { switchingDialog = true; close(); onOpenTest(guidedVehicle, guidedRunId); });
   selector.addEventListener('change', () => { selectedReport = selector.value; invalidateSelection(); render(); void loadDetail(); });
-  collection.addEventListener('change', () => { selectedReport = null; remoteReports = []; reportPages = []; listed = false; reportsBefore = reportsAfter = listError = null; invalidateSelection(); render(); void loadReports(); });
+  collection.addEventListener('change', () => { selectedReport = null; remoteReports = []; reportPages = []; listed = false; listedCurrentId = slot()?.current?.id ?? null; reportsBefore = reportsAfter = listError = null; invalidateSelection(); render(); void loadReports(); });
   filter.addEventListener('change', () => { eventsSequence++; events = []; eventsBefore = null; loaded = false; newEventsPending = false; void loadEvents(); });
   currentFindings.addEventListener('click', () => { filter.value = 'findings'; events = []; eventsBefore = null; loaded = false; newEventsPending = false; void loadEvents(); filter.focus(); });
   refreshEvents.addEventListener('click', () => {

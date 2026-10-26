@@ -191,6 +191,20 @@ test('scroll paging requires new browsing intent and is suspended while loading 
   f.emit(f.popup(), 'wheel', { deltaY: 100 }); f.emit(f.popup(), 'scroll'); assert.equal(calls.length, 2);
 });
 
+test('new-session notice offers an explicit keyboard refresh without changing the selected report', () => {
+  const f = fixture(), requests = [];
+  const state = { older: false, newer: false, refresh: false, load: direction => requests.push(direction) };
+  setSelectPaging(f.source, state); f.click();
+  assert.equal(f.popup().querySelector('.app-select-latest').hidden, true);
+  state.refresh = true; setSelectPaging(f.source, state);
+  assert.equal(f.popup().querySelector('.app-select-latest').hidden, false);
+  assert.deepEqual(requests, []); assert.equal(f.source.value, 'a');
+  f.key('Tab'); assert.equal(f.document.activeElement.textContent, 'Show latest');
+  f.emit(f.document.activeElement, 'click');
+  assert.deepEqual(requests, ['initial']); assert.equal(f.source.value, 'a');
+  assert.equal(f.document.activeElement, f.button(f.source));
+});
+
 test('typeahead, disabled options, pointer choice and focus transfer use current source options', () => {
   const f = fixture(), editor = f.document.createElement('input'); f.document.body.append(editor);
   f.source.options[1].disabled = true;

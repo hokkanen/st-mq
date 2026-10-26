@@ -77,6 +77,8 @@ test('reports API pages persisted sessions and events, scopes chargers and valid
   const newer = await (await f.request(path('', '', `&limit=2&after=${encodeURIComponent(second.nextAfter)}`))).json();
   assert.deepEqual(newer.reports, first.reports);
   assert.equal(newer.nextAfter, null);
+  for (const field of ['before', 'after']) for (const suffix of ['!', '==', ' ', '\n'])
+    assert.equal((await f.request(path('', '', `&${field}=${encodeURIComponent(first.nextBefore + suffix)}`))).status, 400);
   const detail = await (await f.request(path(ids[0]))).json();
   assert.equal(detail.id, ids[0]); assert.ok(detail.counts.events > 2);
   assert.equal(Object.hasOwn(detail, 'timeline'), false);

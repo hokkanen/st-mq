@@ -184,6 +184,37 @@ test('a failed empty collection read remains unavailable with an enabled retry s
   assert.equal(selector.disabled, false); assert.equal(selector.parent.hidden, false);
 });
 
+test('saving while the initial list is pending restarts that read and ignores its late reply', async () => {
+  let f, resolveList, listReads = 0;
+  f = setup({ request: async (path, body) => {
+    if (path.startsWith('/api/charging/reports?') && ++listReads === 1)
+      return new Promise(resolve => { resolveList = resolve; });
+    return f.request(path, body);
+  } });
+  await f.open();
+  f.document.getElementById('charging-report-save').dispatch('click'); await flush(); await flush();
+  assert.equal(listReads, 2, 'The cancelled initial list must be fetched again after saving');
+  const selected = f.document.getElementById('charging-report-session').children.find(row => row.value === 'current');
+  assert.match(selected.textContent, /Saved/);
+  resolveList({ reports: [structuredClone(f.previous)], nextBefore: null, nextAfter: null }); await flush();
+  assert.match(selected.textContent, /Saved/);
+  assert.equal(f.document.getElementById('charging-report-session').value, 'current');
+  assert.equal(f.calls.filter(call => /^\/api\/charging\/reports\/current\?/.test(call.path)).length, 1);
+  assert.equal(f.calls.filter(call => call.path.includes('/current/events?')).length, 1);
+});
+
+test('a new current session poll preserves the report and list until explicit browsing refresh', async () => {
+  const f = setup(); await f.open();
+  const selector = f.document.getElementById('charging-report-session'), choices = [...selector.children];
+  const next = { ...structuredClone(f.current), id: 'new-current', startedAt: now + 1000 };
+  f.reports.set(next.id, next); f.state.charging.diagnostics.chargers[0].current = next;
+  const listReads = f.calls.filter(call => call.path.startsWith('/api/charging/reports?')).length;
+  f.dialog.scrollTop = 150; f.panel.update(f.state); await flush();
+  assert.equal(selector.value, 'current'); assert.deepEqual(selector.children, choices);
+  assert.equal(f.dialog.scrollTop, 150);
+  assert.equal(f.calls.filter(call => call.path.startsWith('/api/charging/reports?')).length, listReads);
+});
+
 test('receipt clocks appear once in expanded report evidence', async () => {
   const f = setup(); await f.open();
   const text = textOf(f.dialog.querySelector('.charging-report-raw').children[0]);

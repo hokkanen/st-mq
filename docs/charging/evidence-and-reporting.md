@@ -105,6 +105,10 @@ choices; browsing back upward reloads newer pages. The selected report remains
 selected even outside that window. Opening the dropdown or receiving a page
 does not fetch the whole archive, select another report or load other reports'
 events. Paging preserves the highlighted choice and visible reading position.
+If a new physical session appears while the report stays open, the dropdown offers
+**New session available · Show latest**. Polling preserves the selected report and
+reading position; Show latest refreshes the choices without selecting a different
+report or replacing its expanded events.
 Events retain their separate paging controls. An expired or deleted selection
 stays explicitly unavailable instead of opening another session. The guided-test link
 opens the assessment attached to that exact report. Session choices include the

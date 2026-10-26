@@ -129,8 +129,13 @@ export function createSelectPickers(document) {
       if (retry.disabled !== isDisabled) retry.disabled = isDisabled;
       attribute(entry.list, 'aria-busy', state?.loading ? 'true' : null);
     }
+    const latestHidden = state?.refresh !== true, latestDisabled = Boolean(state?.loading || state?.disabled);
+    if (entry.latest.container.hidden !== latestHidden) entry.latest.container.hidden = latestHidden;
+    if (entry.latest.button.disabled !== latestDisabled) entry.latest.button.disabled = latestDisabled;
     if (anchor) entry.popup.scrollTop = anchor.offsetTop - offset;
   }
+  const pagingActions = entry => [entry.paging.newer, entry.latest, entry.paging.older]
+    .filter(part => !part.container.hidden).map(part => part.retry ?? part.button).filter(button => !button.hidden && !button.disabled);
   function nameFor(entry) {
     const { select, button } = entry;
     const explicit = select.getAttribute('aria-label');
@@ -197,8 +202,8 @@ export function createSelectPickers(document) {
     const open = active === entry;
     if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); dismiss(); return; }
     if (event.key === 'Tab') {
-      const retry = Object.values(entry.paging).find(part => !part.container.hidden && !part.retry.hidden)?.retry;
-      if (open && retry && !event.shiftKey) { event.preventDefault(); retry.focus(); return; }
+      const action = pagingActions(entry)[0];
+      if (open && action && !event.shiftKey) { event.preventDefault(); action.focus(); return; }
       dismiss(); return;
     }
     if (event.key === 'Enter' || event.key === ' ' && (!entry.search || Date.now() - entry.searchAt >= 700)) {
@@ -245,10 +250,14 @@ export function createSelectPickers(document) {
       container.hidden = true; retry.hidden = true; container.append(status, retry);
       return [direction, { container, status, retry }];
     }));
-    popup.append(paging.newer.container, list, paging.older.container);
+    const latest = { container: make('div', 'app-select-paging app-select-latest'), status: make('span'),
+      button: make('button', 'app-select-retry', 'Show latest') };
+    latest.container.hidden = true; latest.status.textContent = 'New session available'; attribute(latest.status, 'role', 'status');
+    latest.button.type = 'button'; latest.button.setAttribute('aria-label', 'Show latest sessions'); latest.container.append(latest.status, latest.button);
+    popup.append(paging.newer.container, latest.container, list, paging.older.container);
     if (typeof popup.showPopover === 'function') popup.setAttribute('popover', 'manual');
     const error = make('span', 'app-select-error'); error.id = `${id}-error`; error.hidden = true; error.setAttribute('role', 'alert');
-    const entry = { select, button, value, popup, list, paging, error, rows: new Map(), removers: [], search: '', searchAt: 0,
+    const entry = { select, button, value, popup, list, paging, latest, error, rows: new Map(), removers: [], search: '', searchAt: 0,
       attributes: { tabindex: select.getAttribute('tabindex'), 'aria-hidden': select.getAttribute('aria-hidden') } };
     entries.set(select, entry); select.after(button, error); select.classList.add('app-select-source');
     pagingListeners.set(select, () => { entry.pageIntent = null; sync(entry); });
@@ -284,10 +293,16 @@ export function createSelectPickers(document) {
         button.focus({ preventScroll: true });
       }, false, entry.removers);
     }
+    listen(latest.button, 'click', () => {
+      if (pagingStates.get(select)?.refresh) requestPage(entry, 'initial', true);
+      button.focus({ preventScroll: true });
+    }, false, entry.removers);
     listen(popup, 'keydown', event => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); dismiss(); button.focus({ preventScroll: true }); }
       else if (event.key === 'Tab') {
-        if (event.shiftKey) { event.preventDefault(); button.focus({ preventScroll: true }); }
+        const actions = pagingActions(entry), index = actions.indexOf(event.target), next = actions[index + (event.shiftKey ? -1 : 1)];
+        if (next) { event.preventDefault(); next.focus(); }
+        else if (event.shiftKey) { event.preventDefault(); button.focus({ preventScroll: true }); }
         else { dismiss(); button.focus({ preventScroll: true }); }
       }
     }, false, entry.removers);

@@ -823,8 +823,12 @@ export class ChargingSessionDiagnostics {
     if (savedOnly) clauses.push('saved_at IS NOT NULL');
     const base = clauses.join(' AND '), baseValues = [...values];
     if (before !== null || after !== null) {
+      const token = before ?? after;
+      if (typeof token !== 'string' || token.length > 256 || !/^[A-Za-z0-9_-]+$/.test(token)) throw new TypeError('Invalid report cursor');
+      const bytes = Buffer.from(token, 'base64url');
+      if (bytes.toString('base64url') !== token) throw new TypeError('Invalid report cursor');
       let cursor;
-      try { cursor = JSON.parse(Buffer.from(before ?? after, 'base64url').toString()); } catch { throw new TypeError('Invalid report cursor'); }
+      try { cursor = JSON.parse(bytes.toString()); } catch { throw new TypeError('Invalid report cursor'); }
       if (!Array.isArray(cursor) || cursor.length !== 2 || !time(cursor[0])) throw new TypeError('Invalid report cursor');
       reportId(cursor[1]); clauses.push(`(started_at,report_id)${after !== null ? '>' : '<'}(?,?)`); values.push(...cursor);
     }

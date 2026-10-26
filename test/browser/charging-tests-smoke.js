@@ -1009,6 +1009,7 @@ try {
   assert.match(await evaluate("document.querySelector('.charging-report-result').textContent"), /could not be saved|unavailable/i);
   await evaluate('chargingFixture.diagnosticsAvailable = true; chargingFixture.second = { current:null, recent:[] }');
   await poll(); await keyPress('Escape'); await click('#charger2-session-report'); await pause(40);
+  await until("!/Loading/.test(document.querySelector('.charging-report-result').textContent)");
   assert.equal(await evaluate("document.getElementById('charging-report-session').options.length"), 0);
   assert.match(await evaluate("document.querySelector('.charging-report-result').textContent"), /No .*session|No .*report/i);
   await keyPress('Escape');
@@ -1430,6 +1431,29 @@ try {
   await evaluate('chargingFixture.resolveReportList();delete chargingFixture.resolveReportList'); await pause(80);
   assert.equal(await evaluate("document.getElementById('charging-report-session').value"),'archive-000','A late Recent response cannot replace Saved selection');
   await keyPress('Escape');
+  await click('#charger1-session-report');
+  await until("document.getElementById('charging-report-session').options.length===20");
+  const oldCurrent = await evaluate("document.getElementById('charging-report-session').value");
+  const beforeNewSession = await evaluate(`(() => {const f=chargingFixture, d=document.getElementById('charging-report-dialog');
+    globalThis.readingEvent=document.querySelector('.charging-report-timeline > li > details');
+    if(readingEvent)readingEvent.open=true;d.scrollTop=150;
+    const state={options:[...document.getElementById('charging-report-session').options].map(row=>row.value),scroll:d.scrollTop,reads:f.reportListReads.length};
+    f.recent.unshift(f.report);f.report={...structuredClone(f.report),id:'new-current',startedAt:${now},endedAt:null,saved:false};return state;})()`);
+  await poll();
+  assert.equal(await evaluate("document.getElementById('charging-report-session').value"),oldCurrent);
+  assert.deepEqual(await evaluate("[...document.getElementById('charging-report-session').options].map(row=>row.value)"),beforeNewSession.options);
+  assert.equal(await evaluate("document.getElementById('charging-report-dialog').scrollTop"),beforeNewSession.scroll);
+  assert.equal(await evaluate('chargingFixture.reportListReads.length'),beforeNewSession.reads,'Polling offers discovery without refreshing the list underneath the reader');
+  await pointerClick(sessionTrigger);
+  await until(`document.querySelector('${sessionPopup} .app-select-latest:not([hidden])')`);
+  await keyPress('Tab');
+  assert.equal(await evaluate('document.activeElement.textContent'),'Show latest');
+  await keyPress('Enter');
+  await until("[...document.getElementById('charging-report-session').options].some(row=>row.value==='new-current')");
+  assert.equal(await evaluate("document.getElementById('charging-report-session').value"),oldCurrent);
+  assert.equal(await evaluate('!readingEvent||readingEvent.isConnected&&readingEvent.open'),true,'Refreshing choices preserves expanded report events');
+  assert.equal(await evaluate(`document.querySelector('${sessionPopup} .app-select-latest').hidden`),true);
+  await keyPress('Escape');await keyPress('Escape');
   assert.equal(await evaluate('chargingFixture.mutations.length'),inspectionMutations,'Automatic session browsing sends no charger instructions');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'charging-browser-smoke-passed', artifacts, checks: [
@@ -1455,6 +1479,7 @@ try {
     'modal-switching-focus-and-exact-linked-run', 'long-expanded-details-fit-all-viewports', 'sticky-heading-keeps-history-and-close-action-visible',
     'minimum-current-setting-distinct-from-Tesla-evidence', 'current-restoration-after-unplug', 'uncertain-current-review-without-false-retry-promise',
     'automatic-session-paging-and-keyboard-retry', 'bounded-bidirectional-saved-session-window', 'late-session-read-fence',
+    'new-session-notice-preserves-selection-and-reading',
     '320-390-1440-light-dark-layouts' ] }));
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
