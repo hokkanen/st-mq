@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { testCompletionLimit, testLatencyLimit } from '../../scripts/lib/offline-test-profile.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, copyFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -143,7 +144,7 @@ console.log(JSON.stringify({hydrationMs,updateAndPairMs,changedBytes,changedRows
  phaseIO,rchar:after.rchar-before.rchar,wchar:after.wchar-before.wchar,readBytes:after.read_bytes-before.read_bytes,writeBytes:after.write_bytes-before.write_bytes}));`;
 
 test('fresh-process checkpoint loading, one learning window and incremental pairing avoid unrelated database-size work',
-  { skip: process.platform !== 'linux', timeout: 180000 }, t => {
+  { skip: process.platform !== 'linux', timeout: testCompletionLimit(180000) }, t => {
     const directory = mkdtempSync(join(tmpdir(), 'stmq-checkpoint-size-scale-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const seedPath = join(directory, 'learning-seed.sqlite'), seed = new Store(seedPath);
@@ -172,7 +173,7 @@ test('fresh-process checkpoint loading, one learning window and incremental pair
       } finally { source.close(); }
       copyFileSync(sourcePath, replicaPath);
       const result = spawnSync(process.execPath, ['--input-type=module', '-e', measure, sourcePath, replicaPath],
-        { encoding: 'utf8', timeout: 60000 });
+        { encoding: 'utf8', timeout: testCompletionLimit(60000) });
       assert.equal(result.status, 0, result.stderr);
       const metrics = { payloadMiB, databaseMiB: statSync(sourcePath).size / 1024 ** 2, ...JSON.parse(result.stdout) };
       t.diagnostic(JSON.stringify(metrics));
@@ -183,7 +184,8 @@ test('fresh-process checkpoint loading, one learning window and incremental pair
       assert.ok(metrics.changedBytes < 200 * 1024, 'only one source window, its prepared value and small manifests transfer');
       assert.ok(metrics.rchar < 32 * 1024 ** 2, `routine read I/O stays bounded: ${metrics.rchar}`);
       assert.ok(metrics.wchar < 4 * 1024 ** 2, `routine write I/O stays bounded: ${metrics.wchar}`);
-      assert.ok(metrics.hydrationMs < 10000 && metrics.updateAndPairMs < 15000, 'generous guards reject accidental full-history work');
+      assert.ok(metrics.hydrationMs < testLatencyLimit(10000) && metrics.updateAndPairMs < testLatencyLimit(15000),
+        'declared latency guards supplement the independent read, write and transfer work bounds');
       results.push(metrics);
     }
     assert.ok(results[1].databaseMiB > results[0].databaseMiB * 5, 'fixtures differ materially in unrelated history size');

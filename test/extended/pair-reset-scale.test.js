@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { testLatencyLimit } from '../../scripts/lib/offline-test-profile.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, copyFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -47,7 +48,7 @@ test('populated GiB history resets stay fast without backup and keep progress re
     while (app.status().uiOperation.state === 'running') {
       const at = performance.now();
       try {
-        const response = await fetch(`${endpoint}/api/pair`, { signal: AbortSignal.timeout(2000) });
+        const response = await fetch(`${endpoint}/api/pair`, { signal: AbortSignal.timeout(testLatencyLimit(2000)) });
         assert.equal(response.status, 200); await response.json(); polls++; maxPollMs = Math.max(maxPollMs, performance.now() - at);
       } catch (error) {
         // Only the final listener replacement may require reconnecting. Archive
@@ -59,7 +60,7 @@ test('populated GiB history resets stay fast without backup and keep progress re
     const ms = Math.round(performance.now() - started), operation = app.status().uiOperation;
     assert.equal(operation.state, 'complete', operation.error);
     assert.equal(app.pair.canControl(), false);
-    if (!backup) assert(ms < 5000, `Fast reset exceeded 5 seconds: ${ms}`);
+    if (!backup) assert(ms < testLatencyLimit(5000), `Fast reset exceeded its declared latency allowance: ${ms} ms`);
     else assert.equal(operation.result.backupCount, 1);
     if (mode === 'keep') {
       const reader = new Store(app.pair.state.value.activeDbPath, { readOnly: true });

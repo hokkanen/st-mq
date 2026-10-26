@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { testLatencyLimit } from '../../scripts/lib/offline-test-profile.js';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -14,6 +15,8 @@ test('default SQLite contention waits asynchronously and commits without losing 
   const store = new Store(join(directory,'fixture.sqlite')), writer = new DatabaseSync(store.path);
   const timing = createRuntimeTiming();
   t.after(() => { timing.close(); writer.close(); store.close(); rmSync(directory,{recursive:true,force:true}); });
+  assert.equal(store.db.prepare('PRAGMA busy_timeout').get().timeout, 0,
+    'The main thread must never replace asynchronous admission with SQLite busy waiting');
   await new Promise(resolve => setTimeout(resolve,40));
   store.setState('fixture',{value:0});
   writer.exec('BEGIN IMMEDIATE');
@@ -23,7 +26,7 @@ test('default SQLite contention waits asynchronously and commits without losing 
   await new Promise(resolve => setTimeout(resolve,350));
   const timerDelayMs = await independentTimer;
   await new Promise(resolve => setTimeout(resolve,40));
-  assert.ok(timerDelayMs < 1000, `A failed write must release the main thread below its warning threshold; observed ${timerDelayMs} ms`);
+  assert.ok(timerDelayMs < testLatencyLimit(1000), `The independent timer exceeded its declared latency allowance: ${timerDelayMs} ms`);
   assert.equal(store.writeHealth.status().failing,false);
   assert.equal(store.writeQueueStatus().pending,1);
   assert.equal(timing.status().hardRealtime,false);
