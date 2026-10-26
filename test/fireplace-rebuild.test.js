@@ -125,9 +125,67 @@ test('failed rebuild state is durable and late messages from replaced workers ca
   workers[0].emit('message', { type: 'ready', revision: first.revision, head: 0, checkpoint: { stale: true } });
   assert.equal(manager.takeReady(), null);
   workers[1].emit('error', new Error('Invented worker failure'));
+  await store.runWrite(() => {});
   assert.equal(manager.status().status, 'failed');
   assert.equal(manager.status().revision, second.revision);
   assert.equal(store.getState('adaptive:mqtt'), null);
+});
+
+test('worker failure waits for storage admission and preserves the published model and durable retry intent', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-rebuild-error-admission-'));
+  const filename = join(directory, 'history.sqlite');
+  let store = new Store(filename), manager, release, lease;
+  const workerFactory = () => {
+    const worker = new EventEmitter();
+    worker.postMessage = () => {};
+    worker.terminate = async () => 0;
+    return worker;
+  };
+  t.after(async () => {
+    release?.(); await lease;
+    await manager?.close(); await store.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const load = addFireplace(store, 'mqtt', { requestId: 'invented-held-load', kg: 4 }, at);
+  sample(store, 1);
+  const checkpoint = replayLearningJournal(store, 'mqtt');
+  const coefficients = readCoefficientEvents(store, { input: 'mqtt' });
+  const correction = removeFireplace(store, 'mqtt', { requestId: 'invented-held-remove', id: load.id }, at + 900_001);
+  await store.startWriter();
+  manager = new FireplaceRebuildManager({ store, input: 'mqtt', workerFactory });
+  assert.equal(await store.runWrite(() => manager.start()), true);
+  const running = manager.status();
+  let entered;
+  const admitted = new Promise(resolve => { entered = resolve; });
+  lease = store.runStorageTask(() => new Promise(resolve => { release = resolve; entered(); }), { kind: 'history' });
+  await admitted;
+  manager.worker.emit('error', new Error('Invented worker failure while history owns admission'));
+  assert.deepEqual(manager.status(), running, 'A queued failure cannot change durable job state before admission');
+  assert.equal(store.writeQueueStatus().active.kind, 'history');
+  assert(store.writeQueueStatus().lanes.normal.queued >= 1, 'The worker failure waits in the ordinary write lane');
+  assert.deepEqual(store.getState('adaptive:mqtt'), checkpoint);
+  assert.deepEqual(readCoefficientEvents(store, { input: 'mqtt' }), coefficients);
+  release(); await lease;
+  const failed = await store.runWrite(() => {
+    const state = manager.status();
+    assert.equal(state.status, 'failed');
+    assert.equal(state.revision, correction.revision);
+    assert.deepEqual(store.getState('fireplace:rebuild:mqtt'), state);
+    return state;
+  });
+  assert.equal(manager.worker, null);
+  assert.deepEqual(store.getState('adaptive:mqtt'), checkpoint);
+  assert.deepEqual(readCoefficientEvents(store, { input: 'mqtt' }), coefficients);
+  await manager.close(); await store.close();
+  store = new Store(filename);
+  manager = new FireplaceRebuildManager({ store, input: 'mqtt', workerFactory });
+  assert.deepEqual(manager.status(), failed, 'A fresh Store and manager recover the exact committed failure');
+  assert.deepEqual(store.getState('adaptive:mqtt'), checkpoint);
+  assert.deepEqual(readCoefficientEvents(store, { input: 'mqtt' }), coefficients);
+  assert.equal(manager.start(), true, 'Restart retains the explicit retry obligation');
+  assert.equal(manager.status().status, 'running');
+  assert.equal(manager.status().revision, failed.revision);
+  assert.deepEqual(store.getState('adaptive:mqtt'), checkpoint);
 });
 
 for (const storage of ['memory', 'disk']) test(`joint sensor and fireplace corrections replay deterministically and catch up (${storage})`,
@@ -195,31 +253,47 @@ test('epoch switches and stale responses replace workers; failed joint jobs can 
   };
   let manager = new FireplaceRebuildManager({ store, input: 'mqtt', workerFactory });
   t.after(async () => { await manager.close(); store.close(); });
-  const respond = (worker, type = 'ready') => {
+  let requestId = 0;
+  const respond = async (worker, type = 'ready') => {
     const { revision, sensorRevision, epoch } = worker.messages.findLast(message=>['rebuild','catchup'].includes(message.type));
-    if(type==='ready')worker.emit('message',{type:'coefficient-start',revision,sensorRevision,epoch,requestId:1,prefixCursor:0,projection:emptyCoefficientProjection()});
-    const coefficientGeneration=worker.messages.findLast(message=>message.type==='coefficient-ack')?.generation;
-    worker.emit('message', { type, revision, sensorRevision, epoch, head: 0, checkpoint: null, processed: 0,coefficientGeneration });
+    let coefficientGeneration;
+    if (type === 'ready') {
+      const stagingRequest = ++requestId;
+      worker.emit('message', { type: 'coefficient-start', revision, sensorRevision, epoch,
+        requestId: stagingRequest, prefixCursor: 0, projection: emptyCoefficientProjection() });
+      await store.runWrite(() => {});
+      const ack = worker.messages.findLast(message => message.type === 'coefficient-ack' && message.requestId === stagingRequest);
+      assert.ok(ack, 'The fake worker waits for the actual committed coefficient acknowledgement');
+      assert.notEqual(ack.error, true);
+      coefficientGeneration = ack.generation;
+    }
+    const response = { type, revision, sensorRevision, epoch, head: 0, checkpoint: null, processed: 0, coefficientGeneration };
+    worker.emit('message', response);
+    await store.runWrite(() => {});
+    return response;
   };
   manager.start();
-  respond(workers[0]);
+  const firstResponse = await respond(workers[0]);
   assert.ok(manager.takeReady());
   store.db.prepare('INSERT INTO learning_epochs(input,epoch) VALUES(?,?)').run('mqtt', 'invented-recovery');
   assert.equal(manager.takeReady(), null);
   assert.equal(workers.length, 2);
   assert.equal(workers[1].messages[0].epoch, 'invented-recovery');
-  respond(workers[0]);
+  workers[0].emit('message', firstResponse);
+  await store.runWrite(() => {});
   assert.equal(manager.takeReady(), null, 'The previous epoch cannot publish a late result');
-  respond(workers[1], 'stale');
+  await respond(workers[1], 'stale');
   assert.equal(workers.length, 3, 'A worker reporting stale must be replaced even when revisions match');
   workers[2].emit('error', new Error('Invented correction failure'));
+  await store.runWrite(() => {});
   assert.equal(manager.status().status, 'failed');
   const failed = manager.status();
   await manager.close();
   assert.deepEqual(store.getState('fireplace:rebuild:mqtt'), failed, 'Failure intent is durable');
   manager = new FireplaceRebuildManager({ store, input: 'mqtt', workerFactory });
+  assert.deepEqual(manager.status(), failed);
   assert.equal(manager.start(), true);
-  respond(workers[3]);
+  await respond(workers[3]);
   const candidate = manager.takeReady();
   assert.equal(candidate.epoch, 'invented-recovery');
   assert.equal(candidate.sensorRevision, 0);

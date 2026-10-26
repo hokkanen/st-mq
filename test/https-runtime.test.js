@@ -1449,13 +1449,13 @@ test('pending startup enrollment renders progress and an unavailable link keeps 
   const preparing = secureWebAccessView(current.status(), { admin: true });
   assert.equal(preparing.next.title, 'Setting up HTTPS'); assert.equal(preparing.busy, true);
   assert.equal(preparing.authorizationUrl, null, 'The old daemon link is not reused during restart');
-  release(); await diagnosed(t, current); await wait(10);
+  release(); await diagnosed(t, current); await settled(t, current);
   assert.equal(JSON.stringify(current.status()).includes('private authorization detail'), false);
   const failed = secureWebAccessView(current.status(), { admin: true });
   assert.equal(failed.busy, false); assert.equal(failed.authorizationUrl, null); assert.equal(failed.retryAvailable, true);
   assert.match(failed.error, /Retry setup/);
-  const beforeReads = reads; await current.configure(); await wait(20);
-  await current.configure(); await wait(20);
+  const beforeReads = reads; await current.configure(); await settled(t, current);
+  await current.configure(); await settled(t, current);
   assert(reads > beforeReads, 'Current status was polled after the failed startup attempt');
   assert.equal(authorizations, 1, 'Polling cannot repeatedly start interactive authorization');
   successful = true; await current.action({ action: 'retry' }); const retried = await settled(t, current);
