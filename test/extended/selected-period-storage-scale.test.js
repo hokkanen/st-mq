@@ -18,9 +18,10 @@ const checkPayload = (start, end, complete = true) => ({ version: 1, source: 'ea
   estimatedKwh: complete ? 1.1 : null, referenceKwh: complete ? 1 : null,
   complete, quality: complete ? [] : ['incomplete-coverage'] });
 
-async function completed(service, args) {
+async function completed(service, args, checkRecording) {
   const deadline = performance.now() + 90_000;
   while (performance.now() < deadline) {
+    checkRecording();
     const state = await service.view(args);
     if (state.job.state === 'failed') assert.fail(JSON.stringify(state.job.error));
     if (state.job.state === 'completed') return state;
@@ -77,35 +78,84 @@ test('fixed one-day Energy checks read bounded evidence across mixed retained pr
       assert.equal(expected[1].summary.recordedSessions, 1);
       await store.startWriter();
       service = createEnergyChecksService({ store });
-      let beats = 0, lastBeat = performance.now(), maxHeartbeatGapMs = 0;
+      let beats = 0, lastBeat = performance.now(), maxHeartbeatGapMs = 0, maxAcknowledgementMs = 0;
+      let pendingSave = null, recordingError = null, lastSubmittedBeat = null, peakQueue = 0;
+      const historyTurns = [], acknowledgements = [];
+      const began = performance.now();
+      const observeQueue = () => { peakQueue = Math.max(peakQueue, store.writeQueueStatus().pending); };
+      const save = origin => {
+        // This controlled liveness probe keeps one unresolved save while its
+        // independent heartbeat continues throughout every worker stage.
+        const submittedBeat = beats, submittedAt = performance.now();
+        lastSubmittedBeat = submittedBeat;
+        const saving = store.runWrite(() => store.setState('synthetic:concurrent-period-check', { beat: submittedBeat }));
+        pendingSave = saving; writes.push(saving); observeQueue();
+        saving.then(() => {
+          const acknowledgedAt = performance.now();
+          maxAcknowledgementMs = Math.max(maxAcknowledgementMs, acknowledgedAt - submittedAt);
+          acknowledgements.push({ origin, at: acknowledgedAt,
+            releasedTurns: historyTurns.filter(turn => turn.releasedAt !== undefined).length });
+          if (pendingSave === saving) pendingSave = null;
+        }, error => {
+          recordingError ??= error;
+          if (pendingSave === saving) pendingSave = null;
+        });
+      };
+      const runStorageTask = store.runStorageTask.bind(store);
+      store.runStorageTask = (operation, options) => options?.kind !== 'history' ? runStorageTask(operation, options)
+        : runStorageTask(async () => {
+          const turn = { startedAt: performance.now() }; historyTurns.push(turn); observeQueue();
+          // Queue a real foreground save inside a known history lease. Its
+          // durable acknowledgement must precede a later actual history turn.
+          if (historyTurns.length === 1) save('first-history-turn');
+          try { return await operation(); }
+          finally { turn.releasedAt = performance.now(); observeQueue(); }
+        }, options);
       heartbeat = setInterval(() => {
         beats++;
         const tick = performance.now(); maxHeartbeatGapMs = Math.max(maxHeartbeatGapMs, tick - lastBeat); lastBeat = tick;
-        const saving = store.runWrite(() => store.setState('synthetic:concurrent-period-check', { beat: beats }));
-        writes.push(saving); saving.catch(() => {});
+        observeQueue();
+        if (historyTurns.length && !pendingSave && !recordingError) save('heartbeat');
       }, 5);
-      const args = { now, startDate: date, endDate: date }, began = performance.now();
+      const args = { now, startDate: date, endDate: date };
       const first = await service.view(args), initialViewMs = performance.now() - began;
       assert.equal(first.result, null, 'A foreground view starts background work without synchronously copying history');
-      const result = await completed(service, args);
+      const result = await completed(service, args, () => { if (recordingError) throw recordingError; });
+      const workerCompletedAt = performance.now();
       clearInterval(heartbeat); heartbeat = null; await Promise.all(writes);
+      const recordingDrainedAt = performance.now();
+      if (recordingError) throw recordingError;
+      const firstHistorySave = acknowledgements.find(value => value.origin === 'first-history-turn');
+      assert(firstHistorySave?.releasedTurns > 0, 'The foreground save commits after the first actual history lease is released');
+      assert(historyTurns.some(turn => turn.startedAt > firstHistorySave.at),
+        'A later actual history lease starts after the foreground save commits, before the worker can finish');
+      const commitsBetweenHistoryTurns = acknowledgements.filter(value => value.releasedTurns > 0
+        && historyTurns.some(turn => turn.startedAt > value.at)).length;
+      assert(commitsBetweenHistoryTurns > 0, 'Recording durably progresses between real history turns');
+      assert(peakQueue <= 3, `Only one recording save, one history lease and one WAL-maintenance turn may be outstanding: ${peakQueue}`);
+      // Generous synthetic Ubuntu qualification bounds; these do not claim
+      // installed-device timing or hard real-time scheduling.
+      assert(maxAcknowledgementMs < 2000, `Recording acknowledgement was delayed ${maxAcknowledgementMs}ms`);
+      assert(maxHeartbeatGapMs < 2000, `The independent heartbeat was delayed ${maxHeartbeatGapMs}ms`);
       assert.deepEqual(result.result, expected);
       if (previousResult) assert.deepEqual(result.result, previousResult, 'Unrelated older prefixes cannot alter the selected result');
       previousResult = result.result;
       assert(result.job.processed < 512,
-        `${result.job.processed} copied rows must stay bounded by selected evidence and its small counter guard`);
+        `${result.job.processed} inspected source rows must stay bounded by selected evidence and its small counter guard`);
       assert(beats > 0 && writes.length > 0, 'Timers and admitted recording saves continue while the history job runs');
-      assert.equal(store.getState('synthetic:concurrent-period-check').beat, beats);
+      assert.equal(acknowledgements.length, writes.length, 'Every submitted recording save receives its durable acknowledgement');
+      assert.equal(store.getState('synthetic:concurrent-period-check').beat, lastSubmittedBeat);
       metrics.push({ oldRowsPerTable: oldRows, databaseMiB: statSync(store.path).size / 1024 ** 2,
-        initialViewMs, completedMs: performance.now() - began, processedRows: result.job.processed,
-        concurrentWrites: writes.length, maxHeartbeatGapMs });
+        initialViewMs, workerMs: workerCompletedAt - began, drainMs: recordingDrainedAt - workerCompletedAt,
+        processedRows: result.job.processed, concurrentWrites: writes.length, commitsBetweenHistoryTurns,
+        historyTurns: historyTurns.length, peakQueue, maxAcknowledgementMs, maxHeartbeatGapMs });
+      t.diagnostic(JSON.stringify(metrics.at(-1)));
     } finally {
       clearInterval(heartbeat); await Promise.allSettled(writes); await service?.close(); await store.close();
     }
   }
   assert(Math.abs(metrics[1].processedRows - metrics[0].processedRows) <= 2,
     'Increasing only unrelated retained history cannot enlarge a selected-period evidence copy');
-  for (const metric of metrics) t.diagnostic(JSON.stringify(metric));
 });
 
 test('recent Home savings seek the same long-start outcomes and selected assessments across growing older cycle archives', t => {
