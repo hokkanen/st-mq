@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import mqtt from 'mqtt';
 import mqttPacket from 'mqtt-packet';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
@@ -15,15 +16,14 @@ import { floorOverrideConfiguration, FLOOR_MQTT_TOPICS } from '../src/control/fl
 const KEY = 'floor-override:v1', DEVICE = '02:00:00:00:00:01';
 const GENERATION = 'a'.repeat(32), TOKEN = 'b'.repeat(32), CHALLENGE = 'c'.repeat(32);
 const flush = () => new Promise(resolve => setImmediate(resolve));
-async function until(predicate) {
-  const end = performance.now() + 3000;
-  while (!predicate()) {
-    assert(performance.now() < end, 'The isolated MQTT/writer boundary did not settle');
-    await new Promise(resolve => setTimeout(resolve, 5));
-  }
+async function waitUntil(predicate, signal) {
+  while (!predicate()) await delay(5, undefined, { signal });
 }
 
 async function fixture(t, { deferAcquireReply = false } = {}) {
+  // Completion of received MQTT/writer work belongs to the case deadline, not
+  // an independent three-second poll. Native request/lease timers stay real.
+  const until = predicate => waitUntil(predicate, t.signal);
   const directory = mkdtempSync(join(tmpdir(), 'stmq-floor-mqtt-writer-'));
   const store = new Store(join(directory, 'history.sqlite'));
   let authority = true, acquisition, client, stream, readOnly, acquireSignal, bytes = 0;
@@ -131,7 +131,7 @@ async function fixture(t, { deferAcquireReply = false } = {}) {
     return row ? JSON.parse(row.value) : null;
   };
   const lastRecordedAt = () => readOnly.prepare("SELECT MAX(received_at) AS at FROM observations WHERE source='sonoff-floor'").get().at;
-  return { store, acquisition, wire, held, acquireReplies, releaseOutgoing, state, lastRecordedAt,
+  return { store, acquisition, wire, held, acquireReplies, releaseOutgoing, state, lastRecordedAt, until,
     get expectedIngress() { return expectedIngress; }, get receivedIngress() { return receivedIngress; },
     advance(ms) { clock.wall += ms; clock.mono += ms; },
     authority(value) { authority = value; },
@@ -179,7 +179,7 @@ async function fixture(t, { deferAcquireReply = false } = {}) {
 
 test('actual acquisition and installed MQTT dispatch a committed floor lease after outgoing storage releases', async t => {
   const f = await fixture(t), action = f.manual('mqtt-writer-control');
-  await until(() => f.held.length === 1);
+  await f.until(() => f.held.length === 1);
   assert.equal(f.state().outstanding.phase, 'acquiring', 'The obligation is independently visible before transport admission');
   assert.equal(f.store.canDispatch(), true);
   assert.equal(f.wire.some(row => row.op === 'acquire'), false);
@@ -196,13 +196,13 @@ test('actual acquisition and installed MQTT dispatch a committed floor lease aft
 
 test('new floor ingress awaiting real writer COMMIT cancels delayed MQTT activation before its first byte', async t => {
   const f = await fixture(t), action = f.manual('mqtt-writer-pending-input');
-  await until(() => f.held.length === 1);
+  await f.until(() => f.held.length === 1);
   assert.equal(f.state().outstanding.phase, 'acquiring');
   const before = { recordedAt: f.lastRecordedAt(), observed: f.observations,
     floorAt: f.acquisition.floorOverride.status().devices[0].at };
   const commit = f.holdNextCommit();
   f.reportCurrentState();
-  await until(() => commit.entered);
+  await f.until(() => commit.entered);
   assert.equal(f.store.canDispatch(), false, 'A real received floor report is not committed');
   assert(f.observations >= before.observed + 4, 'The real acquisition handler reached the Recorder');
   assert.equal(f.lastRecordedAt(), before.recordedAt, 'The independent reader cannot observe provisional input');
@@ -228,13 +228,13 @@ test('new floor ingress awaiting real writer COMMIT cancels delayed MQTT activat
 
 async function timedOutAcquire(t, { unsent = false } = {}) {
   const f = await fixture(t, { deferAcquireReply: true }), action = f.manual('late-acquire');
-  await until(() => f.held.length === 1);
+  await f.until(() => f.held.length === 1);
   const original = structuredClone(f.state().outstanding);
   assert.equal(original.phase, 'acquiring');
   if (unsent) f.primeUnsentAcquire();
   else {
     f.releaseOutgoing();
-    await until(() => f.acquireReplies.length === 1);
+    await f.until(() => f.acquireReplies.length === 1);
     assert.equal(f.wire.filter(row => row.op === 'acquire').length, 1);
   }
   f.advance(1801);
@@ -251,7 +251,7 @@ async function settledInput(f) {
   // Stream parsing can arrive after an event-loop turn. A rejected ingress can
   // also queue its diagnostic after the current transaction has settled. Wait
   // for actual receipt and the entire writer queue, including that follow-up.
-  await until(() => f.receivedIngress === f.expectedIngress
+  await f.until(() => f.receivedIngress === f.expectedIngress
     && f.store.writeQueueStatus().pending === 0 && !f.store.writeQueue.running && !f.store.writePending);
 }
 
@@ -261,7 +261,7 @@ test('a late acquire capability commits through real acquisition only for fresh-
     saved: structuredClone(f.state()), wire: f.wire.length };
   const commit = f.holdNextCommit();
   f.deliverAcquireReply();
-  await until(() => commit.entered);
+  await f.until(() => commit.entered);
   assert.equal(f.store.canDispatch(), false);
   assert.deepEqual(f.state(), before.saved, 'The independent reader retains the failed obligation');
   assert.equal(f.wire.length, before.wire);
@@ -282,18 +282,18 @@ test('a late acquire capability commits through real acquisition only for fresh-
 
 test('timely acquire ingress whose real COMMIT outlives the request can still release safely', async t => {
   const f = await fixture(t, { deferAcquireReply: true }), action = f.manual('commit-delayed-acquire');
-  await until(() => f.held.length === 1);
+  await f.until(() => f.held.length === 1);
   f.releaseOutgoing();
-  await until(() => f.acquireReplies.length === 1);
+  await f.until(() => f.acquireReplies.length === 1);
   const original = structuredClone(f.state().outstanding), beforeBytes = f.byteCount;
   const commit = f.holdNextCommit();
   f.deliverAcquireReply();
-  await until(() => commit.entered);
+  await f.until(() => commit.entered);
   assert.equal(f.state().outstanding.phase, 'acquiring');
   assert.equal(f.store.canDispatch(), false);
   // Observe the unchanged real 1800ms request timer. It starts restoration,
   // whose normal state write queues behind this actual ingress COMMIT.
-  await until(() => f.acquireCancelled);
+  await f.until(() => f.acquireCancelled);
   f.advance(1801);
   assert.equal(f.byteCount, beforeBytes, 'No replacement or release bypasses the held COMMIT');
   commit.release();
@@ -311,7 +311,7 @@ test('timely acquire ingress whose real COMMIT outlives the request can still re
 test('rolled-back late acquire ingress cannot supply a release capability', async t => {
   const { f } = await timedOutAcquire(t), commit = f.holdNextCommit({ fail: true });
   f.deliverAcquireReply();
-  await until(() => commit.entered);
+  await f.until(() => commit.entered);
   commit.release();
   await settledInput(f);
   f.reportCurrentState();
@@ -363,7 +363,7 @@ for (const boundary of ['authority-loss', 'connection-change', 'closed']) {
   test(`late acquire COMMIT cannot cross ${boundary}`, async t => {
     const { f } = await timedOutAcquire(t), commit = f.holdNextCommit();
     f.deliverAcquireReply();
-    await until(() => commit.entered);
+    await f.until(() => commit.entered);
     if (boundary === 'authority-loss') f.authority(false);
     if (boundary === 'connection-change') {
       f.acquisition.floorOverride.setConnected(false);
@@ -387,9 +387,9 @@ test('retiring the original duty prevents its old acquire reply from changing a 
   assert.equal((await f.acquisition.floorOverride.release()).released, true);
   assert.equal(f.nativeMask, 0);
   const next = f.manual('replacement-duty', 2);
-  await until(() => f.held.length === 1);
+  await f.until(() => f.held.length === 1);
   f.releaseOutgoing();
-  await until(() => f.acquireReplies.length === 2);
+  await f.until(() => f.acquireReplies.length === 2);
   const old = f.acquireReplies.shift();
   f.deliverAcquireReply();
   assert.equal((await next).error, undefined);

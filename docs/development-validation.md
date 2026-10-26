@@ -915,6 +915,12 @@ The held manual-current publication fixture controls the adapter's periodic
 poll timer explicitly. Its positive case admits a normal poll before takeover;
 the competing-input case injects a newer native reading during the held COMMIT.
 Real RPC, persistence and instruction checks remain active in both cases.
+Equipment shutdown fixtures drain received native replies and writer effects
+under case cancellation before asserting restoration-before-close ordering.
+The real MQTT/floor writer-boundary fixture likewise waits for actual ingress
+and committed effects without a separate short poll deadline; its 1,800 ms
+acquire timer, unchanged lease, known-unsent and late-release refusal checks
+remain independent and active.
 
 JSONL receipts identify runtime, architecture, source revision/dirty state,
 resource limits, selected budgets, file exits, failed case names, nesting and

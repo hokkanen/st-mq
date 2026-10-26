@@ -17,6 +17,8 @@ import { CONTROL_SCOPE } from '../src/control/authority.js';
 import { idleIdentityClient, identityConnection } from './helpers/identity-mqtt.js';
 import { bluHtEquipment } from '../integrations/shelly/blu-ht.js';
 import { EQUIPMENT_COMMAND_ERRORS } from '../src/domain/equipment-command-errors.js';
+import { setTimeout as delay } from 'node:timers/promises';
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 
 const INITIAL = Date.parse('2026-09-13T10:00:00Z');
 const KEY = 'equipment-tests:v1', TOKEN = 'synthetic-equipment-api-access-token';
@@ -278,11 +280,14 @@ async function runtimeFixture(t, devices = [native()]) {
     // Native replies are received in microtasks, then admitted by the real
     // writer. Commit effects may request another reply (identity -> status),
     // so one event-loop turn cannot establish completed acquisition.
-    for (let attempt = 0; attempt < 100; attempt++) {
-      await flush(); await app.store.runWrite(() => {}); await flush();
+    while (!t.signal.aborted) {
+      await flush(); await app.store.runWrite(() => {}, { signal: t.signal }); await flush();
       if (app.store.writeQueueStatus().pending === 0) return;
+      // A fixed count of writer turns is not a completion deadline. Let the
+      // already received reply/commit waves drain under the case cancellation.
+      await delay(5, undefined, { signal: t.signal });
     }
-    assert.fail('Synthetic equipment acquisition did not settle');
+    t.signal.throwIfAborted();
   };
   let expectedCleanupFailure = false;
   t.after(async () => {
@@ -461,8 +466,7 @@ test('configuration reload refuses to swap routes while the equipment test comma
   const f = await runtimeFixture(t);
   f.mqtt.holdReadbacks(true);
   const pending = f.post('/api/equipment/test', TEST);
-  for (let i = 0; i < 100 && !f.app.engine.equipmentTests.status().busy; i++)
-    await new Promise(resolve => setTimeout(resolve, 5));
+  while (!f.app.engine.equipmentTests.status().busy) await delay(5, undefined, { signal: t.signal });
   const oldEngine = f.app.engine;
   f.write([native('caravan', 'invented-replacement')]);
   const rejected = await f.post('/api/settings/reload');
@@ -566,12 +570,12 @@ test('shutdown still closes the runtime when restoration and its diagnostic writ
   assert.equal(f.app.engine.equipmentTests.status().active.status, 'restoration-pending');
 });
 
-test('authority demotion cancels an in-flight equipment readback and keeps its obligation without further commands', { timeout: 5000 }, async t => {
+test('authority demotion cancels an in-flight equipment readback and keeps its obligation without further commands', { timeout: testCompletionLimit(5000) }, async t => {
   const f = await runtimeFixture(t);
   f.mqtt.holdReadbacks(true);
   const pending = f.post('/api/equipment/test', TEST);
-  for (let i = 0; i < 100 && !f.mqtt.events.some(row => row.type === 'publish' && row.frame?.method === 'Switch.GetStatus'); i++)
-    await new Promise(resolve => setTimeout(resolve, 5));
+  while (!f.mqtt.events.some(row => row.type === 'publish' && row.frame?.method === 'Switch.GetStatus'))
+    await delay(5, undefined, { signal: t.signal });
   assert.equal(f.mqtt.commands().length, 1);
   const topic = `st-mq/control-authority/${createHash('sha256').update(CONTROL_SCOPE).digest('hex').slice(0, 32)}`;
   const identity = f.mqtt.identities[0];
