@@ -1349,6 +1349,30 @@ test('rejoin after both branches compact preserves unique excluded history and r
     recoveryPreview:async()=>({previewId:randomBytes(32).toString('hex'),status:'checked',model:{status:'not-assessed'}}),
   }});
   const donor=await manager(t,root,'donor',{role:'slave'});connect(primary,donor);
+  // Diagnose only fetch failures before response headers; later RPC failures
+  // and the deliberately lost release response keep their existing handling.
+  const traceFetch = (peer, label) => {
+    const fetch = peer.fetchImpl.bind(peer);
+    peer.fetchImpl = async (...args) => {
+      const began = performance.now();
+      try { return await fetch(...args); }
+      catch (error) {
+        try {
+          const name = value => ['Error', 'AbortError', 'TimeoutError'].includes(value) ? value : 'unknown';
+          const code = value => ['ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'EPIPE', 'ETIMEDOUT',
+            'ENOTFOUND', 'EAI_AGAIN', 'ERR_STREAM_PREMATURE_CLOSE', 'ERR_SOCKET_CLOSED', 'ABORT_ERR'].includes(value) ? value : 'unknown';
+          const signal = args[1]?.signal, elapsed = performance.now() - began;
+          t.diagnostic(JSON.stringify({ event: 'rejoin-pre-header-transport-failure', peer: label,
+            elapsedMs: Number.isFinite(elapsed) ? Math.max(0, Math.round(elapsed)) : 0,
+            name: name(error?.name), code: code(error?.code), causeCode: code(error?.cause?.code),
+            aborted: Boolean(signal?.aborted), reasonName: name(signal?.reason?.name), reasonCode: code(signal?.reason?.code) }));
+        } catch { /* Diagnostics must preserve the original transport rejection. */ }
+        throw error;
+      }
+    };
+  };
+  traceFetch(primary.peer, 'primary');
+  traceFetch(donor.peer, 'donor');
   await donor.synchronize(primary.state.claim());await donor.action('promote',command());
   const originalPath=donor.state.value.activeDbPath;
   const history=new Store(originalPath);
