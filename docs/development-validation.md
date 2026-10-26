@@ -927,6 +927,10 @@ HTTPS replacement fixtures use the production root/non-root helper identity
 location and ownership policy, including unprivileged helper state when run as
 root. Restart validation must accept a faithful fixture without weakening its
 path, permission or installation-binding checks.
+The paired deployment API fixture shares an explicit clock between the status
+producer and deployment validator. Synthetic builds do not age a peer that has
+no polling loop; an explicit expiry still proves that reading cached status
+cannot renew the original peer observation or authorize deployment.
 
 JSONL receipts identify runtime, architecture, source revision/dirty state,
 resource limits, selected budgets, file exits, failed case names, nesting and
