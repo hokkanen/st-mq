@@ -940,18 +940,22 @@ provider network, on the native ARM64 host; an emulator is supplementary evidenc
 
 `test/Dockerfile.qualification` packages the same pinned Node/Alpine runtime as
 the add-on, locked development dependencies and native test prerequisites
-(including OpenSSL, Python Jinja2/PyYAML, SSH, MQTT and SQLite replication). Build it from the selected
-source on the target architecture, then run without household mounts:
+(including OpenSSL, Python Jinja2/PyYAML, SSH, MQTT and SQLite replication). Build
+the selected committed source on the target architecture, excluding ignored and
+untracked installation files from the build context, then run without household
+mounts:
 
 ```sh
-docker build -f test/Dockerfile.qualification -t stmq:qualification .
+git archive HEAD | docker build -f test/Dockerfile.qualification -t stmq:qualification -
 docker run --detach --name stmq-qualification --network none --cpus 2 --memory 2g stmq:qualification
 docker wait stmq-qualification
 docker cp stmq-qualification:/qualification/. /private/results/
 ```
 
 The image runs build, routine and extended checks, preserving each log and
-receipt even after a failure. Its synthetic Git commit supports installer
+receipt even after a failure. It supplies an isolated home/configuration path
+and clears add-on mode for ordinary standalone fixtures; add-on-specific tests
+select their own synthetic configuration explicitly. Its synthetic Git commit supports installer
 fixtures; compare `sourceDigest` to identify the actual tested source. Retain
 the exit status and inspect declared optional-prerequisite skips. Remove only
 the disposable qualification container after copying its results. Do not mount
