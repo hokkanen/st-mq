@@ -210,17 +210,18 @@ test('managed backup folder changes require restart and preserve existing destin
 });
 
 function fakeMqtt() {
-  const clients = [], packets = [];
+  const clients = [], identityClients = [], packets = [];
   const connect = (address, options) => {
     const client = new EventEmitter();
     Object.assign(client, { address, options, connected: true, endCalls: 0, subscriptions: [] });
     client.subscribe = (topic, options, done) => { client.subscriptions.push(topic); done(); };
-    client.publish = (topic, payload, options, done) => { packets.push({ address, topic, payload }); done?.(); };
+    const connectionRole = options?.clientId?.startsWith('stmq-identity-') ? 'identity' : 'acquisition';
+    client.publish = (topic, payload, options, done) => { packets.push({ address, topic, payload, connectionRole }); done?.(); };
     client.end = (force, options, done) => { client.endCalls++; done(); };
-    if (!options?.clientId?.startsWith('stmq-identity-')) clients.push(client);
+    (connectionRole === 'identity' ? identityClients : clients).push(client);
     return client;
   };
-  return { clients, packets, connect };
+  return { clients, identityClients, packets, connect };
 }
 
 test('reload reconnects subscriptions and command transport, ignores late old publications and retains pending restoration', async t => {
@@ -255,9 +256,16 @@ test('reload reconnects subscriptions and command transport, ignores late old pu
   await saved(app.store);
   assert.equal(app.engine.latest.indoor_temperature.value, 22);
   assert.notEqual(app.engine.executor.commandTransport, oldEngine.executor.commandTransport);
-  const before = mqtt.packets.length;
+  const commandPackets = () => mqtt.packets.filter(packet => packet.connectionRole !== 'identity');
+  const before = commandPackets().length;
   await assert.rejects(app.engine.testHeating({ command: 'circulation' }), /target is unavailable|target changed/i);
-  assert.equal(mqtt.packets.length, before, 'A broker alone cannot supply circulation authority without a configured relay');
+  // An authority heartbeat can arrive during the asynchronous rejection on a
+  // slower host. Keep discovery traffic observable and distinguish its owner
+  // from the acquisition/command connection, rather than timing this assertion.
+  const totalBeforeAnnouncement = mqtt.packets.length;
+  mqtt.identityClients.at(-1).publish('st-mq/control-authority/synthetic', '{}', { retain: false });
+  assert(mqtt.packets.length > totalBeforeAnnouncement, 'the fixture includes independent identity traffic');
+  assert.equal(commandPackets().length, before, 'A broker alone cannot supply circulation authority without a configured relay');
   await app.close();
   assert.equal(replacement.endCalls, 1);
 });

@@ -907,6 +907,10 @@ stall to the card nor establishes normal household responsiveness. Deterministic
 contention tests must still prove writer admission and progress between batches.
 Fixture completion waits use the case's cancellation rather than an unrelated
 short polling count; safety ordering remains asserted before held cleanup ends.
+Settings-reload fixtures record identity announcements separately from the
+acquisition/command connection and deliberately include discovery traffic in
+the no-circulation-command case. A periodic identity heartbeat cannot become
+evidence that a relay command was dispatched.
 
 JSONL receipts identify runtime, architecture, source revision/dirty state,
 resource limits, selected budgets, file exits, failed case names, nesting and
