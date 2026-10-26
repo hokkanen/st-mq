@@ -1,3 +1,4 @@
+import { testLatencyLimit, testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
@@ -7,7 +8,7 @@ import { fixture, observation, start } from './helpers/recovery-fixture.js';
 // Bulk completion includes durable journal fsyncs under shared CI I/O load.
 // Use the suite's completion budget; bound actual controller responsiveness
 // independently below, rather than treating background throughput as a lock.
-test('recovery releases SQLite for progress persistence and concurrent controller writes between batches', { timeout: 60000 }, async t => {
+test('recovery releases SQLite for progress persistence and concurrent controller writes between batches', { timeout: testCompletionLimit(60000) }, async t => {
   let phase = 'source-setup', phaseAt = performance.now();
   const phases = [];
   const setPhase = next => {
@@ -80,16 +81,16 @@ test('recovery releases SQLite for progress persistence and concurrent controlle
   assert.deepEqual(failures, [], 'controller and progress writes never exhaust SQLite lock waiting');
   assert.ok(progressWrites > 1, 'progress persisted between multiple batches with no lock-wait allowance');
   assert.ok(beats > 0, 'the controller kept writing during recovery');
-  assert.ok(maxWriteMs < 1000, 'bounded recovery batches keep controller write waits below the event-loop warning threshold');
-  assert(maxHeartbeatGapMs < 1000, 'controller heartbeat remains responsive');
-  assert(maxCommitWaitMs < 1500, 'controller writes actually commit between bounded recovery batches');
+  assert.ok(maxWriteMs < testLatencyLimit(1000), 'bounded recovery batches keep controller write waits below the event-loop warning threshold');
+  assert(maxHeartbeatGapMs < testLatencyLimit(1000), 'controller heartbeat remains responsive');
+  assert(maxCommitWaitMs < testLatencyLimit(1500), 'controller writes actually commit between bounded recovery batches');
   assert.equal(result.report.imported, rows);
   assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n, rows);
   assert.equal(f.master.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
 });
 
 
-test('a delayed controller retry commits before recovery receives its next writer turn', { timeout: 15000 }, async t => {
+test('a delayed controller retry commits before recovery receives its next writer turn', { timeout: testCompletionLimit(15000) }, async t => {
   const f = fixture(t), donor = await f.donor();
   donor.transaction(() => { for (let i = 0; i < 192; i++) observation(donor, start + i * 60000); });
   const donorPath = await f.snapshot(donor);

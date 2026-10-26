@@ -21,6 +21,8 @@
     "test:unit": "npm test --",
     "test:extended": "node scripts/test-offline.js --extended",
     "test:all": "npm test && npm run test:extended",
+    "test:ha": "node scripts/test-offline.js --profile=ha-sd",
+    "test:ha:extended": "node scripts/test-offline.js --profile=ha-sd --extended",
     "test:live": "node scripts/test-live.js",
     "deploy:ha": "node scripts/deploy-ha.js",
     "setup:linux": "node scripts/setup-linux.js",

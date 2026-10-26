@@ -1,3 +1,4 @@
+import { testLatencyLimit } from '../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { recoveryWorkload } from './helpers/recovery-workload.js';
@@ -15,11 +16,11 @@ test('backup, recovery and reversible corrections retain live writes while statu
     assert(stage.heartbeatTicks > 1, `${stage.name}: the event loop keeps running`);
     assert(stage.httpRequests > 0, `${stage.name}: status requests are served`);
     assert(stage.writes > 0, `${stage.name}: recording continues`);
-    // This generous regression budget catches the former five-second SQLite
-    // busy waits without requiring production-speed storage in shared CI.
-    assert(stage.maxHeartbeatGapMs < 1500, `${stage.name}: heartbeat stalled ${stage.maxHeartbeatGapMs} ms`);
-    assert(stage.maxLiveWriteMs < 1000, `${stage.name}: live write stalled ${stage.maxLiveWriteMs} ms`);
-    assert(stage.maxHttpMs < 1500, `${stage.name}: status response stalled ${stage.maxHttpMs} ms`);
+    // Standard hosts retain the original latency guard. The explicit SD profile
+    // admits storage tails; deterministic lock/order checks remain independent.
+    assert(stage.maxHeartbeatGapMs < testLatencyLimit(1500), `${stage.name}: heartbeat stalled ${stage.maxHeartbeatGapMs} ms`);
+    assert(stage.maxLiveWriteMs < testLatencyLimit(1000), `${stage.name}: live write stalled ${stage.maxLiveWriteMs} ms`);
+    assert(stage.maxHttpMs < testLatencyLimit(1500), `${stage.name}: status response stalled ${stage.maxHttpMs} ms`);
   }
 });
 

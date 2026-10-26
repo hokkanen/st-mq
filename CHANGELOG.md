@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Add an explicit Home Assistant SD-card test profile and a disposable native
+  qualification image. Retain test results and measured timings while allowing
+  slower fixture completion and intermittent storage delays; production control
+  deadlines and correctness checks are unchanged.
+
 - Recover a locally refused automatic charger start when the charger remains
   suspended after deauthorization. Require current session permission and fresh
   stopped evidence, retain one durable attempt per instruction, and preserve

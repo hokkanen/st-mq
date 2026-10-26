@@ -1,3 +1,4 @@
+import { testLatencyLimit } from '../../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
@@ -135,8 +136,8 @@ test('fixed one-day Energy checks read bounded evidence across mixed retained pr
       assert(peakQueue <= 3, `Only one recording save, one history lease and one WAL-maintenance turn may be outstanding: ${peakQueue}`);
       // Generous synthetic Ubuntu qualification bounds; these do not claim
       // installed-device timing or hard real-time scheduling.
-      assert(maxAcknowledgementMs < 2000, `Recording acknowledgement was delayed ${maxAcknowledgementMs}ms`);
-      assert(maxHeartbeatGapMs < 2000, `The independent heartbeat was delayed ${maxHeartbeatGapMs}ms`);
+      assert(maxAcknowledgementMs < testLatencyLimit(2000), `Recording acknowledgement was delayed ${maxAcknowledgementMs}ms`);
+      assert(maxHeartbeatGapMs < testLatencyLimit(2000), `The independent heartbeat was delayed ${maxHeartbeatGapMs}ms`);
       assert.deepEqual(result.result, expected);
       if (previousResult) assert.deepEqual(result.result, previousResult, 'Unrelated older prefixes cannot alter the selected result');
       previousResult = result.result;

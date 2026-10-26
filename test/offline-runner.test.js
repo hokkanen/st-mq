@@ -6,6 +6,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { offlineTestProfile, testLatencyLimit, testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 
 const execute = promisify(execFile);
 const runner = new URL('../scripts/test-offline.js', import.meta.url).href;
@@ -21,6 +22,44 @@ async function fixture(t, files) {
 }
 const command = options => ['--input-type=module', '-e',
   `import {runOfflineTests} from ${JSON.stringify(runner)}; process.exitCode = await runOfflineTests(${JSON.stringify(options)});`];
+
+test('HA SD qualification selects explicit completion budgets and rejects unknown profiles', () => {
+  assert.deepEqual(offlineTestProfile('standard'), { name: 'standard', concurrency: 4,
+    caseTimeoutMs: 60_000, extendedCaseTimeoutMs: 180_000 });
+  assert.deepEqual(offlineTestProfile('ha-sd'), { name: 'ha-sd', concurrency: 2,
+    caseTimeoutMs: 180_000, extendedCaseTimeoutMs: 900_000 });
+  assert.throws(() => offlineTestProfile('invented'), /Unknown offline test profile/);
+  assert.equal(testLatencyLimit(1500, 'standard'), 1500);
+  assert.equal(testLatencyLimit(1500, 'ha-sd'), 12_000);
+  assert.equal(testCompletionLimit(60_000, 'standard'), 60_000);
+  assert.equal(testCompletionLimit(60_000, 'ha-sd'), 300_000);
+});
+
+test('qualification receipts retain failed cases, cancellation relationships and remaining files', async t => {
+  const f = await fixture(t, {
+    failed: `import test from 'node:test'; test('synthetic parent', async t => {
+      await t.test('synthetic child failure', () => { throw Error('synthetic failure evidence'); }); });`,
+    passed: `import test from 'node:test'; import assert from 'node:assert/strict';
+      test('synthetic architecture case', () => { assert.equal(process.env.STMQ_TEST_PROFILE, 'ha-sd'); });
+      test('synthetic optional prerequisite', { skip: 'synthetic missing prerequisite' }, () => {});`,
+  });
+  const report = join(f.directory, 'receipt.jsonl');
+  await assert.rejects(execute(process.execPath, command({ files: f.paths, profile: 'ha-sd', report, concurrency: 1 }),
+    { timeout: 10000 }), { code: 1 });
+  const rows = (await readFile(report, 'utf8')).trim().split('\n').map(row => JSON.parse(row));
+  assert.equal(rows[0].event, 'suite-start');
+  assert.equal(rows[0].profile, 'ha-sd'); assert.equal(rows[0].architecture, process.arch);
+  assert.equal(rows[0].node, process.version); assert.equal(rows[0].timeoutMs, 180_000);
+  assert.match(rows[0].sourceDigest, /^[a-f0-9]{64}$/);
+  const failed = rows.filter(row => row.result === 'fail');
+  assert(failed.some(row => row.name === 'synthetic child failure' && row.nesting === 1));
+  assert(failed.some(row => row.name === 'synthetic parent' && row.error.failureType === 'subtestsFailed'));
+  assert(rows.some(row => row.event === 'file-end' && row.file === f.paths[1] && row.code === 0));
+  assert(rows.some(row => row.result === 'skip' && row.name === 'synthetic optional prerequisite'
+    && row.reason === 'synthetic missing prerequisite'));
+  assert.deepEqual(rows.at(-1), { at: rows.at(-1).at, event: 'suite-end', completed: 2, failed: 1,
+    unstarted: 0, interrupted: false, code: 1 });
+});
 
 test('offline runner gives each case its timeout and each file its own process', async t => {
   const f = await fixture(t, {

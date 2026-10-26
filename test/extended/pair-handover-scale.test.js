@@ -1,3 +1,4 @@
+import { testLatencyLimit } from '../../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
@@ -134,7 +135,7 @@ for (const payloadMiB of [1, ...scales.filter(size => size !== 1)]) {
     assert.equal(f.receiver.canControl(), false);
     assert.equal(f.source.state.value.activeDbPath, retainedPath);
     assert.equal((await stat(retainedPath)).ino, retainedInode, 'warm handover reuses the receiver file');
-    assert(metrics.maxHeartbeatMs < 2000, 'large transfer leaves the loop responsive within a generous offline bound');
+    assert(metrics.maxHeartbeatMs < testLatencyLimit(2000), 'large transfer leaves the loop responsive within a generous offline bound');
     t.diagnostic(JSON.stringify({ payloadMiB, databaseMiB: +(f.bytes / 1024 ** 2).toFixed(2),
       elapsedMs: +elapsedMs.toFixed(1), preflightMs: +(metrics.stoppedAt - started).toFixed(1),
       simulatedControlGapMs: +(metrics.activatedAt - metrics.stoppedAt).toFixed(1),

@@ -16,7 +16,9 @@ test('optional synchronization failure leaves the primary running and control AP
   const config = loadConfig({ STMQ_CONFIG: path, STMQ_PORT: '0', STMQ_DATA_DIR: join(directory, 'data') }, directory);
   const app = await start({ config });
   t.after(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
-  for (let attempt = 0; attempt < 200 && app.mirror.status().state !== 'error'; attempt++) await delay(5);
+  // Observe completion under the case deadline, rather than adding a one-second
+  // filesystem/process startup deadline unrelated to the mirror's own timeout.
+  while (app.mirror.status().state !== 'error') await delay(10, undefined, { signal: t.signal });
   assert.equal(app.mirror.status().error, 'connection_failed');
   const endpoint = `http://127.0.0.1:${app.server.address().port}`;
   let response = await fetch(`${endpoint}/api/status`);
@@ -37,7 +39,7 @@ test('optional synchronization failure leaves the primary running and control AP
   app.mirror.stop = async () => { await stop(); await copyCleanup; };
   const closing = app.close();
   try {
-    for (let attempt = 0; attempt < 200 && !app.engine.executor.closed; attempt++) await delay(5);
+    while (!app.engine.executor.closed) await delay(10, undefined, { signal: t.signal });
     assert.equal(app.engine.executor.closed, true, 'Equipment shutdown precedes slow replication cleanup');
   } finally { finishCopyCleanup(); await closing; }
 });

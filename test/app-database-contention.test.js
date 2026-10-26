@@ -6,13 +6,10 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
-const until = async predicate => {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (predicate()) return;
-    await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  assert.fail('Scheduled controller did not settle');
+const until = async (t, predicate) => {
+  while (!predicate()) await delay(10, undefined, { signal: t.signal });
 };
 
 test('a scheduled controller survives SQLite contention and resumes after the writer releases its lock', async t => {
@@ -37,13 +34,13 @@ test('a scheduled controller survives SQLite contention and resumes after the wr
   t.after(() => clearInterval(heartbeat));
   writer.exec('BEGIN IMMEDIATE'); locked = true;
   now += 59_999; app.engine.onTemporaryChange();
-  await until(() => app.store.writeQueueStatus().waitingSince !== null);
-  await new Promise(resolve => setTimeout(resolve, 350));
+  await until(t, () => app.store.writeQueueStatus().waitingSince !== null);
+  await until(t, () => turns > 20);
   assert(turns > 20, 'SQLite acquisition leaves the event loop responsive');
   assert.equal(ticks, 0, 'The tick does not start before write admission');
   assert.deepEqual(reports, [], 'Waiting for the lock is not a failed write');
   writer.exec('ROLLBACK'); locked = false;
-  await until(() => ticks > 0);
+  await until(t, () => ticks > 0);
   assert(app.server.listening);
   assert.equal(app.store.db.isTransaction, false);
 });
@@ -61,6 +58,7 @@ test('failed error persistence cannot terminate the controller or expose the ori
   t.mock.method(app.engine, 'tick', () => {
     attempts++;
     if (attempts === 1) throw new Error('synthetic-sensitive-controller-detail');
+    if (attempts === 2) now++;
     return tick();
   });
   const event = app.store.event.bind(app.store);
@@ -69,7 +67,7 @@ test('failed error persistence cannot terminate the controller or expose the ori
     return event(...args);
   });
   now += 59_999; app.engine.onTemporaryChange();
-  await until(() => reports.length > 0 && attempts > 1);
+  await until(t, () => reports.length > 0 && attempts > 1);
   assert.deepEqual(reports, [{ event: 'controller-error', reason: 'controller-tick-failed', eventStored: false }]);
   assert(app.server.listening);
 });
@@ -94,7 +92,7 @@ test('stored controller errors retain a fixed reason without exposing exception 
     return tick();
   });
   now += 59_999; app.engine.onTemporaryChange();
-  await until(() => attempts > 1 && app.store.events().some(event => event.type === 'controller-error'));
+  await until(t, () => attempts > 1 && app.store.events().some(event => event.type === 'controller-error'));
   const stored = app.store.events().find(event => event.type === 'controller-error');
   assert.deepEqual(stored.payload, { reason: 'controller-tick-failed' });
   assert.doesNotMatch(JSON.stringify(app.store.events()), /synthetic-sensitive/);

@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -6,7 +7,7 @@ import { JOURNAL_RETENTION } from '../../src/storage/journal.js';
 
 const benchmark = fileURLToPath(new URL('../../scripts/benchmarks/adaptive-journal.js', import.meta.url));
 const run = args => {
-  const result = spawnSync(process.execPath, [benchmark, ...args], { encoding: 'utf8', timeout: 160_000, maxBuffer: 16 * 1024 * 1024 });
+  const result = spawnSync(process.execPath, [benchmark, ...args], { encoding: 'utf8', timeout: testCompletionLimit(160_000), maxBuffer: 16 * 1024 * 1024 });
   assert.equal(result.status, 0, result.stderr || result.error?.message);
   return result.stdout.trim().split('\n').map(line => JSON.parse(line)).filter(row => row.workload);
 };

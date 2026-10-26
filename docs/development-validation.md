@@ -884,6 +884,55 @@ and newer versions; Node 22's default isolated runner also applies the command-l
 timeout to the entire file, which can cancel a long file of successful short tests.
 Use `npm test -- --test-name-pattern=...` to select matching cases.
 
+For native Home Assistant / ARM64 qualification on SD storage, use the explicit
+test profile (also available as `npm run test:ha` and `npm run test:ha:extended`):
+
+```sh
+node scripts/test-offline.js --profile=ha-sd --report=/private/results/routine.jsonl
+node scripts/test-offline.js --profile=ha-sd --extended --report=/private/results/extended.jsonl
+```
+
+This runs two routine files or one extended file at a time, with three-minute
+routine and fifteen-minute extended case budgets. Explicit bulk-fixture process
+budgets use five times their standard allowance. Selected synthetic latency
+guards use the larger of twelve seconds or four times their standard bound to
+admit occasional several-second storage or scheduling stalls. The standard
+profile retains its existing bounds. These are test qualification limits, never
+changes to production freshness, device, SQLite lock or control deadlines.
+
+Both profiles retain exact results, reconstruction, integrity, authority,
+transaction ordering, bounded rows/bytes and actual concurrent-work assertions.
+Always report measured timings; passing the SD allowance neither attributes a
+stall to the card nor establishes normal household responsiveness. Deterministic
+contention tests must still prove writer admission and progress between batches.
+Fixture completion waits use the case's cancellation rather than an unrelated
+short polling count; safety ordering remains asserted before held cleanup ends.
+
+JSONL receipts identify runtime, architecture, source revision/dirty state,
+resource limits, selected budgets, file exits, failed case names, nesting and
+parent/cancellation failure types. Retain original failures separately from
+corrected reruns. Run in a disposable container with no household mounts or
+provider network, on the native ARM64 host; an emulator is supplementary evidence.
+
+`test/Dockerfile.qualification` packages the same pinned Node/Alpine runtime as
+the add-on, locked development dependencies and native test prerequisites
+(including OpenSSL, SSH, MQTT and SQLite replication). Build it from the selected
+source on the target architecture, then run without household mounts:
+
+```sh
+docker build -f test/Dockerfile.qualification -t stmq:qualification .
+docker run --detach --name stmq-qualification --network none --cpus 2 --memory 2g stmq:qualification
+docker wait stmq-qualification
+docker cp stmq-qualification:/qualification/. /private/results/
+```
+
+The image runs build, routine and extended checks, preserving each log and
+receipt even after a failure. Its synthetic Git commit supports installer
+fixtures; compare `sourceDigest` to identify the actual tested source. Retain
+the exit status and inspect declared optional-prerequisite skips. Remove only
+the disposable qualification container after copying its results. Do not mount
+the Docker socket, installed configuration or household databases into it.
+
 HTTPS fixture completion waits observe the original accepted operation until its
 terminal state is published, under the test case's cancellation and deadline.
 They do not impose a separate one-second poll limit on filesystem publication.
@@ -916,7 +965,7 @@ Extended tests live in `test/extended/`, run one file at a time, and retain
 a three-minute deadline per test case. Serial files keep unrelated bulk fixture writes
 from contaminating another benchmark's latency measurements. Each workload still
 exercises its concurrent recording, HTTP requests, transfers and failure cases;
-the latency guards are unchanged. These measurements do not establish latency
+the selected profile declares its latency guards. These measurements do not establish latency
 under arbitrary competing host I/O. They cover recovery at larger history volumes,
 full persisted-learning replay across a restart, and real SQLite mirroring
 through SSH. Sensor duplicate delivery, independent broker routing and paired
@@ -928,19 +977,22 @@ data and local processes; they make no paid model or provider API calls.
 
 The larger recovery responsiveness case uses 4,000 observations, 672 learning
 windows and one attempted concurrent event write every 100 ms. Its heartbeat
-still samples every 10 ms, and its 1.5-second write and 2-second heartbeat/HTTP
-limits remain unchanged. This is a bounded synthetic regression workload, not a
+still samples every 10 ms. Standard hosts retain the 1.5-second write and
+2-second heartbeat/HTTP limits; the explicit SD profile uses its declared
+allowance while retaining the raw measurements. This is a bounded synthetic regression workload, not a
 measured household traffic profile. The shared helper defaults to the heavier
 10 ms write interval for the routine workload and optional benchmark. Retain
 actual write overlap, replay, backup and historical-evidence assertions when
 changing these fixtures; reducing write frequency must not reduce heartbeat
 sampling or manufacture overlap after an operation has finished.
 
-A failed latency guard remains a failed check even when the baseline also shows
-slow storage. Compare the same workload and runtime, separating writer admission,
+A failed guard remains a failure against its declared profile even when the
+baseline also shows slow storage. Compare the same workload and runtime, separating writer admission,
 transaction execution and event-loop delay. Syscall tracing can attribute a wait
 but changes execution timing; retain the original failure alongside diagnostic
-runs. Do not weaken durability or raise a deadline simply to obtain a passing run.
+runs. Do not weaken durability or production deadlines; change a test budget
+only as an explicit supported-hardware qualification choice with retained
+correctness and bounded-work checks.
 
 `test/storage-transaction-timing.test.js` injects bounded waits separately into
 the production journal seal and raw native COMMIT, checks attribution within the

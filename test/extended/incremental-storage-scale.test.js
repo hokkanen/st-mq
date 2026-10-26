@@ -1,3 +1,4 @@
+import { testCompletionLimit, testLatencyLimit } from '../../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync,copyFileSync,rmSync,statSync } from 'node:fs';
@@ -45,13 +46,13 @@ test('startup and consolidated replication use bounded I/O across large historic
     // One deliberately seeded fixture, outside measured routine work. The last
     // connection is closed; there is no live WAL or installation data here.
     copyFileSync(path,replica);
-    const result=spawnSync(process.execPath,['--input-type=module','-e',measure,path,replica],{encoding:'utf8',timeout:60000});
+    const result=spawnSync(process.execPath,['--input-type=module','-e',measure,path,replica],{encoding:'utf8',timeout:testCompletionLimit(60000)});
     assert.equal(result.status,0,result.stderr);
     const metrics={payloadMiB:mib,databaseMiB:statSync(path).size/1024**2,...JSON.parse(result.stdout)};
     assert(metrics.bytes<4096,'Only the small suffix should be transferred');
     assert(metrics.rchar<8*1024**2,`Routine read I/O must stay bounded; ${metrics.rchar}`);
     assert(metrics.wchar<2*1024**2,`Routine write I/O must stay bounded; ${metrics.wchar}`);
-    assert(metrics.startupMs<5000 && metrics.applyMs<5000,'Generous latency guard catches accidental full work');
+    assert(metrics.startupMs<testLatencyLimit(5000) && metrics.applyMs<testLatencyLimit(5000),'Generous latency guard catches accidental full work');
     results.push(metrics);t.diagnostic(JSON.stringify(metrics));
   }
   if(results.length>1) {
