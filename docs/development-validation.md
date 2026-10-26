@@ -899,6 +899,8 @@ guards use the larger of twelve seconds or four times their standard bound to
 admit occasional several-second storage or scheduling stalls. The standard
 profile retains its existing bounds. These are test qualification limits, never
 changes to production freshness, device, SQLite lock or control deadlines.
+CI permits forty-five minutes for each complete routine/extended job, including
+setup; individual standard-profile case and latency limits remain unchanged.
 
 Both profiles retain exact results, reconstruction, integrity, authority,
 transaction ordering, bounded rows/bytes and actual concurrent-work assertions.

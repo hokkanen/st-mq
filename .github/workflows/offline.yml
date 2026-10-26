@@ -23,7 +23,7 @@ jobs:
       - run: node scripts/check-secrets.js --history HEAD
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     strategy:
       matrix:
         node: [22, 24]
