@@ -51,8 +51,16 @@ const EVENTS = {
   'shared-charging-evidence': 'Shared charging evidence changed',
   ...OUTCOMES, ...COVERAGE };
 const validTime = value => Number.isFinite(value) && Math.abs(value) <= 8.64e15;
-const timeFormatter = (timezone, seconds = false) => new Intl.DateTimeFormat('en-GB', {
-  timeZone: timezone, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', ...(seconds ? { second: '2-digit' } : {}) });
+const timeFormatters = new Map();
+function timeFormatter(timezone, seconds = false) {
+  const key = JSON.stringify([timezone, seconds]);
+  if (!timeFormatters.has(key)) {
+    if (timeFormatters.size >= 8) timeFormatters.delete(timeFormatters.keys().next().value);
+    timeFormatters.set(key, new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', ...(seconds ? { second: '2-digit' } : {}) }));
+  }
+  return timeFormatters.get(key);
+}
 const time = (value, timezone = 'Europe/Helsinki', seconds = false) => validTime(value)
   ? timeFormatter(timezone, seconds).format(value) : 'Unknown';
 const number = value => Number.isFinite(value) ? Number(value.toFixed(4)) : null;
@@ -302,7 +310,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   let status = null, selectedCharger = null, selectedReport = null, opener = null, guidedVehicle = null, guidedRunId = null, switchingDialog = false, renderedScope = null;
   let remoteReports = [], remoteReport = null, events = [], reportsBefore = null, eventsBefore = null, loaded = false, missing = false;
   let listSequence = 0, detailSequence = 0, eventsSequence = 0, loadingList = false, loadingEvents = false, mutating = false, pendingAction = null;
-  let newEventsPending = false;
+  let newEventsPending = false, eventsFailed = false;
   let apiReadOnly = false, error = '', refreshToken = null, selectionEpoch = 0, loadingDetail = false;
   const chargerLabel = () => status?.charging?.chargers?.find(row => row.id === selectedCharger)?.label
     ?? ({ charger1: 'Charger 1', charger2: 'Charger 2' })[selectedCharger] ?? 'Charger';
@@ -361,7 +369,6 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     if (Number.isFinite(row.startAt)) details.push(`Start sent ${time(row.startAt, timezone, true)}`);
     if (Number.isFinite(row.acceptedAt)) details.push(`Acknowledged ${time(row.acceptedAt, timezone, true)}`);
     if (Number.isFinite(row.sourceAt)) details.push(`Native event ${time(row.sourceAt, timezone, true)}`);
-    if (Number.isFinite(row.receivedAt)) details.push(`Received ${time(row.receivedAt, timezone, true)}`);
     if (row.model) details.push(`Model ${row.model}`);
     if (row.firmware) details.push(`Firmware ${row.firmware}`);
     if (Number.isFinite(row.powerKw)) details.push(`Measured draw ${number(row.powerKw)} kW`);
@@ -477,7 +484,12 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     moreReports.hidden = !reportsBefore; moreReports.disabled = loadingList; collection.disabled = loadingList || mutating;
     const summary = chargingReportSummary(report, status?.charging?.diagnostics?.available !== false);
     if (!report && selectedReport !== null && status?.charging?.diagnostics?.available !== false) { summary.outcome = missing ? 'This session report is no longer retained' : 'Loading session report'; summary.behavior = missing ? 'Select another recorded session for this charger.' : 'Fetching the selected report.'; }
-    else if (!report && status?.charging?.diagnostics?.available !== false) { summary.outcome = `No session report for ${chargerLabel()}`; summary.behavior = 'A report begins when a connection is observed.'; }
+    else if (!report && status?.charging?.diagnostics?.available !== false) {
+      summary.outcome = loadingList ? collection.value === 'saved' ? 'Loading saved reports' : 'Loading session reports'
+        : collection.value === 'saved' ? `No saved reports for ${chargerLabel()}` : `No session report for ${chargerLabel()}`;
+      summary.behavior = loadingList ? 'Fetching the selected collection.' : collection.value === 'saved'
+        ? 'No saved reports are available in this collection. Recent sessions are listed separately.' : 'A report begins when a connection is observed.';
+    }
     setText(outcome, summary.outcome); setText(behavior, summary.behavior); result.dataset.state = summary.state;
     setText(context, report ? `${report.recorded ? 'Recorded master report · ' : ''}${report.previousEquipment ? 'Previous charger equipment · ' : ''}${report.vehicleId ? vehicleName(report.vehicleId) : 'Vehicle unconfirmed'} · ${report.endedAt === null ? report.recorded ? 'Connected at snapshot' : 'Connected' : `Ended ${time(report.endedAt, timezone)}`} · Last assessed ${time(report.evaluatedAt, timezone)}` : '');
     const run = status?.charging?.physicalTests?.runs?.find(row => row.chargerId === selectedCharger && report && row.report?.id === report.id);
@@ -497,15 +509,23 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     const history = projectChargingReportHistory({ events }, { filter: filter.value });
     sync(timeline, history.timeline, row => row.id, (node, row, key) => historyItem(node, row, key, timezone));
     timelineDetails.hidden = !report;
-    setText(eventScope, loadingEvents && !events.length ? 'Loading events…' : !events.length ? 'No events of this type recorded.'
-      : `${events.length} ${newEventsPending ? 'previously loaded ' : eventsBefore ? 'latest ' : ''}recorded events loaded · ${history.timeline.length} displayed ${history.timeline.length === 1 ? 'entry' : 'entries'}${filter.value === 'findings' ? ' · Episode groups describe the loaded history' : ''}`);
-    refreshEvents.hidden = !newEventsPending;
+    setText(eventScope, loadingEvents && !events.length ? 'Loading events…' : eventsFailed && !events.length ? 'Events could not be loaded. Try Refresh events.' : !events.length ? 'No events of this type recorded.'
+      : `${events.length} ${newEventsPending || eventsFailed ? 'previously loaded ' : eventsBefore ? 'latest ' : ''}recorded events loaded · ${history.timeline.length} displayed ${history.timeline.length === 1 ? 'entry' : 'entries'}${filter.value === 'findings' ? ' · Episode groups describe the loaded history' : ''}`);
+    refreshEvents.hidden = !newEventsPending && !eventsFailed;
+    refreshEvents.disabled = loadingEvents || mutating;
+    setText(refreshEvents, newEventsPending ? 'New events available · Refresh events' : 'Refresh events');
     moreEvents.hidden = !eventsBefore; moreEvents.disabled = loadingEvents; filter.disabled = !report || mutating;
     const days = report?.retention?.days ?? status?.charging?.diagnostics?.retention?.days ?? 30;
     const expiresAt = report?.endedAt === null ? null : report?.endedAt + days * 86_400_000;
     setText(retention, !report ? '' : report.saved ? 'Saved permanently in this database. Saving protects this report and its future events from automatic expiry.'
       : report.endedAt === null ? `Active reports are retained. Completed reports expire after ${days} days unless saved.` : `Automatically expires ${time(expiresAt, timezone)} unless saved.`);
     actions.hidden = !report; save.disabled = remove.disabled = !canManage() || mutating;
+    if (!canManage() && pendingAction) {
+      const restoreFocus = confirmation.contains(document.activeElement);
+      pendingAction = null; confirmation.hidden = true;
+      if (restoreFocus) closeButton.focus({ preventScroll: true });
+    }
+    confirm.disabled = !canManage() || mutating;
     remove.disabled ||= report?.endedAt === null; remove.title = report?.endedAt === null ? 'Active reports cannot be deleted' : '';
     setText(save, report?.saved ? 'Remove from saved' : 'Save report');
     const receipt = receipts.get(scope);
@@ -517,7 +537,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   }
   const isMissing = failure => failure?.status === 404 || failure?.statusCode === 404 || /not found|no longer retained/i.test(failure?.message ?? '');
   function invalidateSelection() {
-    newEventsPending = false; selectionEpoch++; detailSequence++; eventsSequence++; loadingDetail = false; remoteReport = null; events = []; eventsBefore = null; loaded = false; missing = false;
+    newEventsPending = false; eventsFailed = false; selectionEpoch++; detailSequence++; eventsSequence++; loadingDetail = false; remoteReport = null; events = []; eventsBefore = null; loaded = false; missing = false;
     loadingEvents = false; pendingAction = null; confirmation.hidden = true; error = ''; refreshToken = null;
   }
   async function loadReports(append = false) {
@@ -536,7 +556,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   async function loadEvents(append = false, refresh = false) {
     if (typeof request !== 'function' || !selectedReport || missing) return;
     const ticket = ++eventsSequence, scope = `${selectedCharger}:${selectedReport}:${filter.value}`;
-    loadingEvents = true; render();
+    loadingEvents = true; eventsFailed = false; render();
     try {
       const path = `/api/charging/reports/${encodeURIComponent(selectedReport)}/events`;
       const response = await request(`${path}?${query({ filter: filter.value, before: append ? eventsBefore : null, limit: 50 })}`);
@@ -559,7 +579,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
       events = [...new Map([...existing, ...response.events].map(row => [row.id, row])).values()].sort((a, b) => b.id - a.id);
       if (!refresh || !loaded) eventsBefore = response.nextBefore;
       loaded = true; loadingEvents = false; error = ''; render();
-    } catch (failure) { if (ticket === eventsSequence) { loadingEvents = false; if (isMissing(failure)) { missing = true; remoteReport = null; events = []; } error = failure.message; render(); } }
+    } catch (failure) { if (ticket === eventsSequence) { loadingEvents = false; eventsFailed = true; if (isMissing(failure)) { missing = true; remoteReport = null; events = []; } error = failure.message; render(); } }
   }
   async function loadDetail({ refresh = false } = {}) {
     if (typeof request !== 'function' || !selectedReport) return;
@@ -584,7 +604,8 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
       if (response.deleted) { missing = true; remoteReport = null; events = []; remoteReports = remoteReports.filter(row => row.id !== selectedReport); }
       else { remoteReport = response; remoteReports = remoteReports.map(row => row.id === response.id ? response : row).filter(row => collection.value !== 'saved' || row.saved); }
       receipts.set(scope, { at: Date.now(), text: response.deleted ? 'Session report and its events deleted.' : action === 'save' ? 'Report saved permanently in this database, including future events for this session.' : 'Report removed from saved. Ordinary retention applies.', failed: false });
-      await afterMutation();
+      try { await afterMutation(); }
+      catch { error = 'The report change was saved, but dashboard status could not be refreshed.'; }
     } catch (failure) { if (epoch === selectionEpoch && scope === `${selectedCharger}:${selectedReport}`) receipts.set(scope, { at: Date.now(), text: failure.message, failed: true }); }
     finally {
       mutating = false; render();
@@ -593,14 +614,15 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   }
   function ask(action, text) {
     pendingAction = action; setText(confirmationText, text); setText(confirm, action === 'delete' ? 'Delete report' : 'Remove from saved');
-    confirmation.hidden = false; confirm.focus();
+    confirmation.hidden = false; cancel.focus();
   }
   function close() { if (dialog.open) dialog.close(); }
   function open(chargerId, reportId = null) {
     if (!['charger1', 'charger2'].includes(chargerId)) return;
     selectedCharger = chargerId; selectedReport = reportId; renderedScope = null;
     invalidateSelection(); listSequence++; remoteReports = []; reportsBefore = null; collection.value = 'recent'; filter.value = 'all';
-    opener = buttons.get(chargerId) ?? document.activeElement;
+    const focused = document.activeElement;
+    opener = focused?.isConnected && focused !== document.body && !focused.closest?.('dialog') ? focused : buttons.get(chargerId);
     render(); if (!dialog.open) dialog.showModal();
     for (const [id, button] of buttons) button.setAttribute('aria-expanded', String(id === chargerId));
     closeButton.focus();
@@ -613,7 +635,10 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   filter.addEventListener('change', () => { eventsSequence++; events = []; eventsBefore = null; loaded = false; newEventsPending = false; void loadEvents(); });
   currentFindings.addEventListener('click', () => { filter.value = 'findings'; events = []; eventsBefore = null; loaded = false; newEventsPending = false; void loadEvents(); filter.focus(); });
   moreReports.addEventListener('click', () => { void loadReports(true); });
-  refreshEvents.addEventListener('click', () => { eventsSequence++; events = []; eventsBefore = null; loaded = false; newEventsPending = false; void loadEvents(); });
+  refreshEvents.addEventListener('click', () => {
+    if (newEventsPending) { eventsSequence++; events = []; eventsBefore = null; loaded = false; newEventsPending = false; }
+    void loadEvents(false, loaded);
+  });
   moreEvents.addEventListener('click', () => { void loadEvents(true); });
   save.addEventListener('click', () => {
     const report = remoteReport ?? reports().find(row => row.id === selectedReport); if (!report || !canManage()) return;
@@ -623,7 +648,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   });
   remove.addEventListener('click', () => { if (!canManage() || (remoteReport ?? reports().find(row => row.id === selectedReport))?.endedAt === null) return; ask('delete', 'Delete this completed session report and all its events permanently? Energy history is kept.'); });
   confirm.addEventListener('click', () => { if (pendingAction) void mutate(pendingAction); });
-  cancel.addEventListener('click', () => { confirmation.hidden = true; pendingAction = null; save.focus(); });
+  cancel.addEventListener('click', () => { const origin = pendingAction === 'delete' ? remove : save; confirmation.hidden = true; pendingAction = null; origin.focus(); });
   dialog.addEventListener('close', () => {
     selectionEpoch++; listSequence++; detailSequence++; eventsSequence++; loadingList = loadingEvents = loadingDetail = false;
     for (const button of buttons.values()) button.setAttribute('aria-expanded', 'false');

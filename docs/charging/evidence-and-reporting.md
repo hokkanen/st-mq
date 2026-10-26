@@ -105,6 +105,13 @@ never identifies a vehicle, changes a schedule or sends a charger instruction.
 Normal dashboard refreshes preserve open disclosures, keyboard focus and the
 report's scroll position. Each event starts as a compact timestamp and title;
 expand it for its explanation, planning snapshot and original evidence.
+Closing a report returns to the link that opened it, including a link in Event
+log. Empty Saved collections are distinct from missing session history. A failed
+event read retains the loaded evidence and offers **Refresh events**; it does not
+claim that no events exist. A successful report-management receipt remains valid
+if the following dashboard refresh fails. Cancelling deletion returns focus to
+**Delete report** without changing retained history. Destructive review initially
+focuses **Cancel**.
 Automatic refresh loads only a bounded number of new event pages. After a large
 burst or a long browser pause, **Refresh events** loads the latest page explicitly;
 older records remain available through **Load older events**.

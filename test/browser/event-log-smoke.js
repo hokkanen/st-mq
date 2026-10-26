@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { start } from '../../src/main.js';
 import { loadConfig } from '../../src/app/config.js';
+import { ChargingSessionDiagnostics } from '../../src/charging/session-diagnostics.js';
 import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 
 const firefox = process.argv.includes('--firefox');
@@ -39,6 +40,18 @@ try {
     }, initial - index * 1000);
     app.store.event('controller-error', { message: '<img src=x onerror="window.eventLogInjected=true">synthetic-private-detail' }, initial);
   }));
+  // An ordinary current-format synthetic report exercises links into the real
+  // report API without any provider, vehicle or equipment connection.
+  const field = value => ({ value, available: true, source: 'simulation', measuredAt: initial, receivedAt: initial });
+  await app.store.runWrite(() => new ChargingSessionDiagnostics({ store: app.store,
+    key: 'charging:simulated:session-diagnostics', clock: () => initial }).observe([{
+    id: 'charger1', association: 'synthetic-report-equipment', request: { sessionId: 'synthetic-report-session', revision: 1 },
+    settings: { enabled: false }, control: { phase: 'off', session: { connectedAt: initial, connected: true },
+      snapshot: { online: true, readAt: initial } }, telemetry: { providerConnected: true },
+    values: { connected: field(true), charging: field(false), powerKw: field(0) },
+    vehicle: { state: 'unidentified' }, progress: { remainingGridKwh: 0, deliveredGridKwh: 0, connectionAt: initial,
+      basis: { energyCoverageIncomplete: true, lastMeasuredAt: initial } },
+  }], initial));
   const upstream = `http://127.0.0.1:${app.server.address().port}`;
   proxy = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://fixture');
@@ -182,6 +195,13 @@ try {
   assert.equal(await evaluate('document.querySelectorAll("#events li").length'), 40);
   assert.equal(await evaluate('document.getElementById("events").textContent.includes("synthetic-private-detail")'), false);
   assert.equal(await evaluate('document.getElementById("events").querySelectorAll("img").length'), 0);
+  await evaluate("window.logReportOpener=document.querySelector('#events .event-log-report:not([hidden])');window.logReportOpener.closest('details').open=true;window.logReportOpener.focus();window.logReportOpener.click();true");
+  await until("document.getElementById('charging-report-dialog').open && document.querySelectorAll('.charging-report-raw>li').length>0", 'linked session report');
+  assert.equal(await evaluate("[...document.querySelectorAll('.charging-report-raw>li')].some(n=>(n.textContent.match(/Received /g)||[]).length>1)"), false, 'Each receipt clock appears once');
+  await filter('charging-report-collection', 'saved');
+  await until("document.querySelector('.charging-report-result strong').textContent.startsWith('No saved reports')", 'empty saved collection');
+  await evaluate("document.querySelector('.charging-report-heading button').click();true");
+  await until("document.activeElement===window.logReportOpener", 'report returns focus to its log link');
   const offscreenReads = requests.length;
   await evaluate("window.scrollTo(0,0);true"); await pause(100);
   await evaluate("window.dispatchEvent(new Event('online'));true"); await pause(250);

@@ -60,7 +60,7 @@ const now = Date.parse('2026-09-28T18:00:00Z');
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const textOf = node => [node.textContent, ...descendants(node).map(child => child.textContent)].join('\n');
-function setup() {
+function setup(options = {}) {
   const document = fixture(), calls = [];
   const current = { id: 'current', startedAt: now, observedFrom: now, endedAt: null, evaluatedAt: now, chargerId: 'charger1', saved: false,
     behavior: 'expected', outcome: { state: 'in-progress' }, coverage: { initialRelease: { state: 'verified' } }, findings: [], counts: { events: 1, findings: 0, plans: 0 } };
@@ -89,7 +89,7 @@ function setup() {
     if (url.pathname.endsWith('/delete')) { reports.delete(id); return { deleted: true }; }
     return structuredClone(report);
   };
-  const panel = createChargingDiagnosticsPanel({ document, request }); panel.update(state);
+  const panel = createChargingDiagnosticsPanel({ document, request, ...options }); panel.update(state);
   return { document, calls, state, current, previous, reports, records, request, panel,
     dialog: document.getElementById('charging-report-dialog'), async open(id = 'current') { panel.open('charger1', id); await flush(); } };
 }
@@ -141,6 +141,80 @@ test('report buttons retain their label, report state and dialog behavior across
   f.state.charging.diagnostics.available = false; f.panel.update(f.state);
   assert.equal(statusText.textContent, 'Report unavailable'); assert.equal(button.dataset.state, 'unknown');
   assert.equal(label.textContent, 'Session report');
+});
+
+test('closing a linked report restores its actual timeline opener', async () => {
+  const f = setup(), opener = f.document.createElement('button'); f.document.body.append(opener); opener.focus();
+  await f.open('previous');
+  assert.equal(f.document.activeElement, f.dialog.querySelector('.charging-report-heading').children[1]);
+  f.panel.close(); assert.equal(f.document.activeElement, opener);
+});
+
+test('receipt clocks appear once in expanded report evidence', async () => {
+  const f = setup(); await f.open();
+  const text = textOf(f.dialog.querySelector('.charging-report-raw').children[0]);
+  assert.equal((text.match(/Received /g) ?? []).length, 1);
+});
+
+test('empty Saved collection and pending collection reads describe the selected collection', async () => {
+  const f = setup(); await f.open();
+  const collection = f.document.getElementById('charging-report-collection');
+  collection.value = 'saved'; collection.dispatch('change');
+  assert.match(f.dialog.querySelector('.charging-report-result').children[0].textContent, /Loading saved reports/);
+  await flush();
+  assert.match(f.dialog.querySelector('.charging-report-result').children[0].textContent, /No saved reports for Charger 1/);
+  assert.match(f.dialog.querySelector('.charging-report-result').children[1].textContent, /Recent sessions are listed separately/);
+  assert.equal(f.reports.size, 2, 'Filtering cannot discard existing session reports');
+});
+
+test('delete cancellation returns focus to Delete and permission loss dismisses a pending confirmation', async () => {
+  const f = setup(); await f.open('previous');
+  const remove = f.document.getElementById('charging-report-delete'), confirmation = f.dialog.querySelector('.charging-report-confirm');
+  remove.dispatch('click'); assert.equal(f.document.activeElement, confirmation.children[2]);
+  confirmation.children[2].dispatch('click');
+  assert.equal(f.document.activeElement, remove);
+  remove.dispatch('click'); f.state.webAccess.role = 'family'; f.panel.update(structuredClone(f.state));
+  assert.equal(confirmation.hidden, true); assert.equal(confirmation.children[1].disabled, true);
+  assert.equal(f.document.activeElement, f.dialog.querySelector('.charging-report-heading').children[1]);
+  confirmation.children[1].dispatch('click'); await flush();
+  assert.equal(f.calls.filter(row => row.body).length, 0);
+});
+
+test('a successful report save remains successful when the following dashboard read fails', async () => {
+  const f = setup({ afterMutation: async () => { throw Error('Synthetic status failure'); } }); await f.open();
+  f.document.getElementById('charging-report-save').dispatch('click'); await flush();
+  assert.equal(f.current.saved, true);
+  const message = f.dialog.querySelector('.charging-report-message');
+  assert.match(message.textContent, /Report saved permanently/); assert.match(message.textContent, /dashboard status could not be refreshed/);
+  assert.equal(message.dataset.state, 'saved');
+});
+
+test('event read failures retain evidence and offer retry without claiming an empty result', async () => {
+  const f = setup(); let fail = true;
+  const panel = createChargingDiagnosticsPanel({ document: f.document, request: (path, body) =>
+    path.includes('/events?') && fail ? Promise.reject(Error('Synthetic event read failure')) : f.request(path, body) });
+  panel.update(f.state); panel.open('charger1'); await flush();
+  const dialog = f.document.body.children.at(-1), scope = dialog.querySelector('.charging-report-event-scope');
+  assert.match(scope.textContent, /Events could not be loaded/); assert.doesNotMatch(scope.textContent, /No events/);
+  const refresh = dialog.querySelector('.charging-report-events').children.find(node => node.id === 'charging-report-refresh-events');
+  assert.equal(refresh.hidden, false); assert.equal(refresh.textContent, 'Refresh events');
+  fail = false; refresh.dispatch('click'); await flush();
+  assert.equal(dialog.querySelector('.charging-report-timeline').children.length, 1);
+  fail = true; f.current.evaluatedAt++; panel.update(structuredClone(f.state)); await flush();
+  const retained = dialog.querySelector('.charging-report-timeline').children[0];
+  assert.equal(refresh.hidden, false); assert.match(scope.textContent, /previously loaded/);
+  fail = false; refresh.dispatch('click'); await flush();
+  assert.equal(dialog.querySelector('.charging-report-timeline').children[0], retained);
+});
+
+test('repeated report formatting reuses bounded timezone formatters', t => {
+  const Native = Intl.DateTimeFormat; let created = 0;
+  t.mock.method(Intl, 'DateTimeFormat', function(...args) { created++; return new Native(...args); });
+  for (let i = 0; i < 500; i++) {
+    const facts = chargingReportFacts({ startedAt: now, observedFrom: now, current: { deadlineAt: now, power: { measuredAt: now }, physicalFresh: true, powerKw: 0 } }, 'Atlantic/Reykjavik');
+    assert.match(Object.fromEntries(facts)['Ready by'], /28 Sept, 18:00/);
+  }
+  assert(created <= 2, `Repeated identical timezone/options constructed ${created} formatters`);
 });
 
 test('one event section contains full plan details exactly once and filtering replaces its rows', async () => {

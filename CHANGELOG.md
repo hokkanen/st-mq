@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep session-report navigation anchored to the link that opened it and return
+  deletion cancellation to the Delete button. Distinguish empty Saved collections,
+  loading and failed event reads, offer an event retry, and retain successful
+  report-change receipts if a later dashboard refresh fails. Show each receipt
+  clock once and reuse bounded date formatters when refreshing report history.
+
 - Keep the Event log focused on significant changes by default, with routine
   charging diagnostics available under All events and in session reports. Read
   events only while the panel and browser tab are visible, seek older pages
