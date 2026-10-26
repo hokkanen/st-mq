@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { learningVersion } from '../src/app/committed-learning.js';
+import { fixture as recoveryFixture, observation as recoveryObservation, recover } from './helpers/recovery-fixture.js';
+import { previewRecoveryRevision, reviseRecovery } from '../src/recovery/service.js';
 import { recoveryCoverageEvidence, recoveryEvidenceVersion } from '../src/recovery/ledger.js';
 import { publicationRestorationProof, compatibleRestorationTail,
   laterObservation, coverageAfter, compatibleCoverage,
@@ -47,6 +49,48 @@ function proof(store, extra) {
 function compatible(store, previous, now = AT + 20_000) {
   return store.transaction(() => compatibleRestorationTail(store, previous, { now }));
 }
+
+for (const storage of ['direct', 'worker']) test(`verified restoration admits before an ordinary backlog can stale its bounded proof (${storage})`, async t => {
+  const f = recoveryFixture(t), pending = [];
+  if (storage === 'worker') await f.master.startWriter();
+  const donor = await f.donor();
+  donor.transaction(() => {
+    for (let index = 0; index < 8; index++) recoveryObservation(donor, AT + index, 20);
+  });
+  const accepted = await recover(f, await f.snapshot(donor));
+  const args = { store: f.master, input: 'mqtt', recoveryId: accepted.report.recoveryId, signal: t.signal };
+  const revert = { ...args, active: false };
+  await reviseRecovery({ ...revert, preview: await previewRecoveryRevision(revert) });
+  const restore = { ...args, active: true }, preview = await previewRecoveryRevision(restore);
+  const original = f.master.runPublication.bind(f.master);
+  let attempts = 0, release = () => {};
+  f.master.runPublication = async (operation, options) => {
+    if (++attempts !== 1) return original(operation, options);
+    let entered;
+    const boundary = new Promise(resolve => { entered = resolve; });
+    const blocked = original(async () => { entered(); await new Promise(resolve => { release = resolve; }); });
+    await boundary;
+    for (let index = 0; index <= RESTORATION_PUBLICATION_TAIL; index++) {
+      const saved = f.master.runWrite(() => recoveryObservation(f.master, AT + 10000 + index, 22,
+        { device: 'synthetic-later-live-sensor' }));
+      pending.push(saved); void saved.catch(() => {});
+    }
+    const published = original(operation, options);
+    release(); await blocked;
+    return published;
+  };
+  try {
+    await reviseRecovery({ ...restore, preview });
+    await Promise.all(pending);
+    assert.equal(attempts, 1, 'ordinary queued saves cannot overtake every verified publication candidate');
+    assert.equal(f.master.db.prepare("SELECT COUNT(*) n FROM active_observations WHERE device='invented-house'").get().n, 8);
+    assert.equal(f.master.db.prepare("SELECT COUNT(*) n FROM active_observations WHERE device='synthetic-later-live-sensor'").get().n,
+      RESTORATION_PUBLICATION_TAIL + 1, 'publication preserves every queued observation');
+  } finally {
+    release(); f.master.runPublication = original;
+    await Promise.allSettled(pending);
+  }
+});
 
 test('unknown and nonfinite source/receipt or coverage clocks cannot qualify a supposedly later suffix', () => {
   for (const invalid of [null, undefined, 'unknown', NaN, Infinity, -Infinity]) {

@@ -944,6 +944,11 @@ cannot renew the original peer observation or authorize deployment.
 The live mirror fixture admits its intentional master deletion through the real
 writer queue. A concurrent asynchronous checkpoint must not turn that fixture
 edit into an attempted synchronous write across the protected writer boundary.
+Recovery publication tests hold an actual writer-admission turn, queue more
+harmless observations than the bounded proof can bridge, and require publication
+before those observations overtake the candidate. Every queued observation must
+still commit. This covers direct and worker-backed recording without expanding
+the 64-row proof limit, relaxing source checks or depending on a wall-clock race.
 
 JSONL receipts identify runtime, architecture, source revision/dirty state,
 resource limits, selected budgets, file exits, failed case names, nesting and

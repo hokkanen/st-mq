@@ -36,8 +36,8 @@ export function publishCorrection(store, input, candidate) {
 export function publishLearning({ store, input, kind, message, context = {}, signal, isCurrent = () => true,
   onPublish = () => {}, workerFactory = options => new Worker(new URL('./learning-publication-worker.js', import.meta.url), options) }) {
   const databaseId = store.checkpoint().databaseId, token = randomUUID();
-  // A ready correction is valid at an exact journal head. Admit this bounded
-  // publication handoff before further ordinary learning, or a continuously
+  // A ready publication is valid at an exact journal/evidence boundary. Admit
+  // this bounded handoff before more ordinary recording, or a continuously
   // changing controller can overtake every candidate. Existing queue fairness
   // still admits normal work; source/head/authority checks remain unchanged.
   const observation = storageOperationHealth.begin('learning-publication', { queued: true });
@@ -103,7 +103,7 @@ export function publishLearning({ store, input, kind, message, context = {}, sig
     }
     if (error) throw error;
     return null;
-  }, { signal, isCurrent, priority: kind === 'correction' ? 'control' : 'normal' }); }
+  }, { signal, isCurrent, priority: 'control' }); }
   catch (error) { observation.finish('failed', { reason: 'operation-failed' }); throw error; }
   return publication.then(result => {
     observation.finish(result ? 'completed' : 'superseded', { reason: result ? null : 'stale', committed: Boolean(result) });

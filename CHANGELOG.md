@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Prevent ordinary recording backlogs from repeatedly overtaking verified
+  recovery publication. Preserve bounded proof checks, atomic model adoption
+  and normal queue fairness while live observations continue.
+
 - Add an explicit Home Assistant SD-card test profile and a disposable native
   qualification image. Retain test results and measured timings while allowing
   slower fixture completion and intermittent storage delays; production control

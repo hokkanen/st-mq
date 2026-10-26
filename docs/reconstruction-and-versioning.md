@@ -141,9 +141,11 @@ learning; only this final publication turn queues subsequent writes. Timers and
 read-only requests remain available, but write-dependent work waits for storage.
 Committed replay-ready notifications schedule publication between controller
 updates, so catch-up does not depend on a later update having no new learning.
-Ready correction admission, reconciliation and final publication use the queue's
-bounded control priority; progress notifications and ordinary cache saves retain
-normal priority. Queue fairness can still interleave a learning update, so the
+Ready correction admission and reconciliation, and final correction, recovery
+and revision publication, use the queue's bounded control priority. Ordinary
+queued observations cannot repeatedly age a verified restoration proof beyond
+its bounded suffix before admission. Progress notifications and ordinary cache
+saves retain normal priority. Queue fairness can still interleave a learning update, so the
 exact-head fence and catch-up retry remain mandatory before publication.
 A single latest publication receipt per input commits with the model. The owner
 joins worker exit and checks that receipt before releasing queued updates, so a
