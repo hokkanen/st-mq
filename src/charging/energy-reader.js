@@ -19,9 +19,13 @@ export function createRecordedChargingEnergyReader(store) {
     // energy. Keep all three availability clocks, but seek the session before
     // testing them; an old deferred admission must not be silently discarded.
     const source = future ? 'observations INDEXED BY observations_signal_time' : 'active_observations AS observations';
+    // Warm reads inspect the new global ID suffix. Stream indexes can instead
+    // walk and sort the retained meter archive before returning that suffix.
+    // Keep device TEXT affinity while making these stream filters residual.
+    const stream = future ? '' : '+';
     return store.db.prepare(`SELECT id,source_time,received_at,raw FROM ${source}
-      WHERE signal IN (?,?,?) AND source=? AND import_id IS NULL
-      ${query.device != null ? 'AND device=?' : ''}
+      WHERE ${stream}signal IN (?,?,?) AND ${stream}source=? AND import_id IS NULL
+      ${query.device != null ? `AND ${future ? 'device' : 'CAST(device AS TEXT)'}=?` : ''}
       AND ${future ? `source_time>? AND ${selectedHistoryPredicate('observations', 'observations')}
         AND (source_time>? OR received_at>? OR ${admission}>?)` : 'id>? AND id<=?'}
       ${future ? '' : 'ORDER BY id'} LIMIT ?`).all(...signals, prefix === 'ev1' ? 'easee' : 'shelly-evse',

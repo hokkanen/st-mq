@@ -25,7 +25,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   writable startup. The approved installation conversion is a separate offline
   operation with verified backups and rollback, with no automatic migration.
   Reconnect checks use their receipt window, and unchanged learning replay avoids
-  reloading the retained firewood log.
+  reloading the retained firewood log. For an already loaded charging session,
+  energy refreshes seek newly appended rows instead of scanning older meter
+  history; work still depends on the new rows.
 
 - Keep recorder health and pending-energy reads, indoor availability checks,
   recent coefficient charts, offline session reports and model-verification
