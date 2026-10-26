@@ -38,7 +38,10 @@ test('HA SD qualification selects explicit completion budgets and rejects unknow
 test('qualification receipts retain failed cases, cancellation relationships and remaining files', async t => {
   const f = await fixture(t, {
     failed: `import test from 'node:test'; test('synthetic parent', async t => {
-      await t.test('synthetic child failure', () => { throw Error('synthetic failure evidence'); }); });`,
+      await t.test('synthetic child failure', () => { throw Error('synthetic failure evidence'); }); });
+      test('synthetic cancelling parent', async t => {
+        void t.test('synthetic cancelled child', () => new Promise(()=>{}));
+        throw Error('synthetic parent failure'); });`,
     passed: `import test from 'node:test'; import assert from 'node:assert/strict';
       test('synthetic architecture case', () => { assert.equal(process.env.STMQ_TEST_PROFILE, 'ha-sd'); });
       test('synthetic optional prerequisite', { skip: 'synthetic missing prerequisite' }, () => {});`,
@@ -54,11 +57,33 @@ test('qualification receipts retain failed cases, cancellation relationships and
   const failed = rows.filter(row => row.result === 'fail');
   assert(failed.some(row => row.name === 'synthetic child failure' && row.nesting === 1));
   assert(failed.some(row => row.name === 'synthetic parent' && row.error.failureType === 'subtestsFailed'));
+  assert(failed.some(row => row.name === 'synthetic cancelled child' && row.nesting === 1
+    && row.error.failureType === 'cancelledByParent'));
   assert(rows.some(row => row.event === 'file-end' && row.file === f.paths[1] && row.code === 0));
   assert(rows.some(row => row.result === 'skip' && row.name === 'synthetic optional prerequisite'
     && row.reason === 'synthetic missing prerequisite'));
   assert.deepEqual(rows.at(-1), { at: rows.at(-1).at, event: 'suite-end', completed: 2, failed: 1,
     unstarted: 0, interrupted: false, code: 1 });
+});
+
+test('HA qualification accepts a several-second synthetic delay while retaining correctness failures', async t => {
+  const limits = new URL('../scripts/lib/offline-test-profile.js', import.meta.url).href;
+  const f = await fixture(t, {
+    delayed: `import test from 'node:test'; import assert from 'node:assert/strict';
+      import {testLatencyLimit} from ${JSON.stringify(limits)};
+      test('delayed synthetic fixture', async () => { const began=performance.now();
+        await new Promise(resolve=>setTimeout(resolve,5200));
+        assert(performance.now()-began < testLatencyLimit(1000), 'synthetic latency exceeds the declared profile'); });`,
+    incorrect: `import test from 'node:test'; import assert from 'node:assert/strict';
+      test('synthetic data mismatch', () => { assert.equal(1,2,'synthetic incorrect result'); });`,
+  });
+  await assert.rejects(execute(process.execPath, command({ files: [f.paths[0]], profile: 'standard' }),
+    { timeout: 20000 }), { code: 1 });
+  await execute(process.execPath, command({ files: [f.paths[0]], profile: 'ha-sd' }), { timeout: 20000 });
+  await assert.rejects(execute(process.execPath, command({ files: [f.paths[1]], profile: 'ha-sd' }),
+    { timeout: 10000 }), error => {
+    assert.equal(error.code, 1); assert.match(error.stdout, /synthetic incorrect result/); return true;
+  });
 });
 
 test('offline runner gives each case its timeout and each file its own process', async t => {
