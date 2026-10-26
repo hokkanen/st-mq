@@ -12,7 +12,7 @@ import { createHttpsManager } from '../src/https/manager.js';
 import { verifySigningBundle, verifyArtifactHash, releaseCandidate, architecture } from '../src/https/distribution.js';
 import { validateCertificate, renewalMinimumValidity } from '../src/https/certificates.js';
 import { privateDirectory, atomicJson, outsideCheckout } from '../src/https/storage.js';
-import { CertificateHelper, effectiveRestrictions, restrictedEnvironment, helperLocations, installationBinding } from '../src/https/helper.js';
+import { CertificateHelper, effectiveRestrictions, restrictedEnvironment, helperLocations, helperIdentityDirectory, installationBinding } from '../src/https/helper.js';
 import { runtimeTask } from '../src/https/worker.js';
 import { secureWebAccessView } from '../chart/secure-web-access.js';
 
@@ -69,6 +69,11 @@ async function actionWhenIdle(t, manager, input) {
     }
   }
 }
+async function writeHelperState(locations, contents = '{}') {
+  const path = resolve(locations.identity, 'tailscaled.state');
+  await writeFile(path, contents, { mode: 0o600 });
+  if (locations.uid !== process.getuid()) await chown(path, locations.uid, locations.gid);
+}
 function restart(t, context, { pair = null, dependencies = {}, onCertificate } = {}) {
   const manager = createHttpsManager({ getConfig: () => context.config, pair,
     onCertificate: onCertificate ?? (async ({ certificate }) => ({ listening: true, fingerprint: certificate.metadata.fingerprint })),
@@ -77,7 +82,11 @@ function restart(t, context, { pair = null, dependencies = {}, onCertificate } =
 }
 async function setup(t, changes = {}) {
   const directory = await mkdtemp(resolve(tmpdir(), 'stmq-https-manager-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const identities = new Set();
+  t.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+    for (const identity of identities) await rm(identity, { recursive: true, force: true });
+  });
   const config = { dataDir: directory, token: 'synthetic-admin-password-long-enough', topology: 'standalone', web: { httpsHost: '127.0.0.1', httpsPort: 8443, lanResolver: '' } };
   const calls = { install: 0, discover: 0, helperStart: 0, helperStop: 0, certificate: 0, certificateNames: [], activations: [], activationNames: [], remoteAccess: [], disabled: 0, preflight: 0 };
   let installNotify; const installStarted = new Promise(ready => { installNotify = ready; });
@@ -102,15 +111,22 @@ async function setup(t, changes = {}) {
         archiveSha256: 'a'.repeat(64), archiveLength: 1, blake2s256: 'b'.repeat(64), signingBundleSha256: 'c'.repeat(64), signature: Buffer.alloc(64).toString('base64'), verifierRevision: 'f'.repeat(40), verifiedAt: Date.now(), files: { tailscale: 'd'.repeat(64), tailscaled: 'e'.repeat(64) } };
       await atomicJson(resolve(staging, 'accepted.json'), evidence); return { staging, evidence };
     },
-    helperLocations: async () => {
-      const identity = resolve(directory, 'https', 'identity'); await privateDirectory(identity);
-      return { identity, socketDirectory: identity, socket: resolve(identity, 's'), uid: process.getuid(), gid: process.getgid(), root: false };
+    helperLocations: async (dataDir, managerDirectory) => {
+      // Match the same deterministic root/non-root identity policy used when
+      // the manager resumes before starting a helper. Files written by the fake
+      // helper must belong to its declared uid just as native helper files do.
+      const root = process.getuid() === 0, uid = root ? 65534 : process.getuid(), gid = root ? 65534 : process.getgid();
+      const identity = helperIdentityDirectory(dataDir, managerDirectory);
+      identities.add(identity);
+      await mkdir(identity, { recursive: true, mode: 0o700 });
+      if (root) await chown(identity, uid, gid);
+      return { identity, socketDirectory: identity, socket: resolve(identity, 's'), uid, gid, root };
     },
     preflightRuntime: async () => { calls.preflight++; if (calls.preflight <= (changes.preflightFailures ?? 0)) throw Object.assign(Error(), { code: 'helper_command_failed' }); },
     validateCertificate: async (material, expectedHostname) => { if (material.cert === 'invalid') throw Object.assign(Error(), { code: 'certificate_chain_untrusted' }); return metadata(material, expectedHostname); },
     inspectCertificate: (material, expectedHostname) => metadata(material, expectedHostname),
     createHelper: ({ locations }) => ({
-      start: async () => { calls.helperStart++; await writeFile(resolve(locations.identity, 'tailscaled.state'), '{}', { mode: 0o600 }); },
+      start: async () => { calls.helperStart++; await writeHelperState(locations); },
       remoteAccess: async remote => { calls.remoteAccess.push(remote); },
       restrictions: async () => {}, status: async () => ({ Version: '1.104.1-fixture', BackendState: running ? 'Running' : 'NeedsLogin', CertDomains: running ? [reportedHostname] : [], AuthURL: running ? '' : 'https://login.tailscale.com/a/synthetic' }),
       authorize: async () => ({ Version: '1.104.1-fixture', BackendState: running ? 'Running' : 'NeedsLogin', CertDomains: running ? [reportedHostname] : [], AuthURL: running ? '' : 'https://login.tailscale.com/a/synthetic' }),
@@ -1002,7 +1018,7 @@ test('explicit rename requires a fresh successful effective restriction readback
     helper.remoteAccess = async () => {};
     helper.start = async () => {
       activeHelper = helper; helper.expectedStop = false;
-      await writeFile(resolve(options.locations.identity, 'tailscaled.state'), '{}', { mode: 0o600 });
+      await writeHelperState(options.locations);
       if (!server.listening) await new Promise(done => server.listen(options.locations.socket, done));
     };
     helper.cli = async () => {};
@@ -1039,7 +1055,7 @@ for (const scenario of ['enable', 'retry', 'stale-pending-recheck', 'restriction
     helper.remoteAccess = async () => {};
     helper.start = async () => {
       activeHelper = helper; helper.expectedStop = false;
-      await writeFile(resolve(options.locations.identity, 'tailscaled.state'), '{}', { mode: 0o600 });
+      await writeHelperState(options.locations);
       if (!server.listening) await new Promise(done => server.listen(options.locations.socket, done));
     };
     helper.cli = async args => {
@@ -1301,7 +1317,7 @@ test('restart resumes previously requested HTTPS enrollment when the helper lost
       starts++; identities.push(options.locations.identity); activeHelper = helper; helper.expectedStop = false;
       AuthURL = '';
       const path = resolve(options.locations.identity, 'tailscaled.state');
-      if (!(await lstat(path).catch(() => null))) await writeFile(path, 'synthetic unchanged managed identity', { mode: 0o600 });
+      if (!(await lstat(path).catch(() => null))) await writeHelperState(options.locations, 'synthetic unchanged managed identity');
       if (!server.listening) await new Promise(done => server.listen(options.locations.socket, done));
     };
     helper.cli = async args => {

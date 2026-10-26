@@ -921,6 +921,10 @@ The real MQTT/floor writer-boundary fixture likewise waits for actual ingress
 and committed effects without a separate short poll deadline; its 1,800 ms
 acquire timer, unchanged lease, known-unsent and late-release refusal checks
 remain independent and active.
+HTTPS replacement fixtures use the production root/non-root helper identity
+location and ownership policy, including unprivileged helper state when run as
+root. Restart validation must accept a faithful fixture without weakening its
+path, permission or installation-binding checks.
 
 JSONL receipts identify runtime, architecture, source revision/dirty state,
 resource limits, selected budgets, file exits, failed case names, nesting and
