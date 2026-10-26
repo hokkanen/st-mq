@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import { fixture } from './helpers/charging-joint-fixture.js';
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 
 const deferred = () => {
   let resolve;
@@ -16,13 +17,13 @@ async function stage(promise, label) {
   let timer;
   try {
     return await Promise.race([promise, new Promise((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(`Synthetic setup did not reach ${label}`)), 5000);
+      timer = setTimeout(() => reject(new Error(`Synthetic setup did not reach ${label}`)), testCompletionLimit(5000));
     })]);
   } finally { clearTimeout(timer); }
 }
 
 async function settleReceivedWork(f) {
-  const deadline = performance.now() + 10_000;
+  const deadline = performance.now() + testCompletionLimit(10_000);
   while (performance.now() < deadline) {
     // Household completion can start another plan and native reconciliation
     // after a writer barrier. Finish that received work before selecting the
