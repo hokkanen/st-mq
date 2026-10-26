@@ -111,7 +111,11 @@ event read retains the loaded evidence and offers **Refresh events**; it does no
 claim that no events exist. A successful report-management receipt remains valid
 if the following dashboard refresh fails. Cancelling deletion returns focus to
 **Delete report** without changing retained history. Destructive review initially
-focuses **Cancel**.
+focuses **Cancel**. Expanded events include the year, UTC offset and original
+UTC clocks, so saved reports and daylight-saving transitions remain unambiguous.
+Finding names and qualified measured-draw labels are shared with Event log.
+Closing the window releases its loaded event data and mounted history; reopening
+fetches the current first page.
 Automatic refresh loads only a bounded number of new event pages. After a large
 burst or a long browser pause, **Refresh events** loads the latest page explicitly;
 older records remain available through **Load older events**.

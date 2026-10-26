@@ -1,3 +1,4 @@
+import { chargingFindingLabel, chargingPhysicalLabel } from '../charging/report-presentation.js';
 import { GARAGE_NATIVE_SETTINGS } from '../garage/native-settings.js';
 import { heatingErrorCode, heatingErrorMessage } from '../domain/heating-errors.js';
 
@@ -200,12 +201,11 @@ function importantCharging(p) {
 }
 export function presentCharging(row, p) {
   const charger = row.charger_id === 'charger1' ? 'Charger 1' : 'Charger 2';
-  const label = lookup(CHARGING_CODES, p.code) ?? (p.kind === 'finding' || p.kind === 'finding-update' ? 'Finding recorded' : p.kind === 'recovery' ? 'Finding no longer active in this assessment' : 'Session event recorded');
+  const label = chargingFindingLabel(p) ?? chargingPhysicalLabel(p) ?? lookup(CHARGING_CODES, p.code) ?? (p.kind === 'finding' || p.kind === 'finding-update' ? 'Finding recorded' : p.kind === 'recovery' ? 'Finding no longer active in this assessment' : 'Session event recorded');
   const finding = ['finding', 'finding-update'].includes(p.kind), physical = p.kind === 'physical';
   const simulated = row.namespace === 'charging:simulated:session-diagnostics';
-  const physicalKnown = physical && ['charging-started', 'charging-observed', 'charging-stopped', 'not-charging-observed'].includes(p.code) && Number.isFinite(p.powerKw);
-  const ending = p.kind === 'recovery' ? ' · finding ended' : '';
-  const out = fixed('charging', `${charger} · ${label}${ending}`, simulated ? 'This charging-session entry was produced by the simulation. It is not physical device evidence.' : physicalKnown ? 'This entry records source evidence of draw at the time shown.'
+  const physicalKnown = physical && ['charging-started', 'charging-observed', 'charging-stopped', 'not-charging-observed'].includes(p.code) && Number.isFinite(p.powerKw) && p.powerKw >= 0;
+  const out = fixed('charging', `${charger} · ${label}`, simulated ? 'This charging-session entry was produced by the simulation. It is not physical device evidence.' : physicalKnown ? 'This entry records source evidence of draw at the time shown.'
     : physical ? 'Physical charging evidence was unavailable. Missing evidence does not establish that charging stopped.'
     : p.kind === 'recovery' ? 'A recorded finding ceased to apply. This does not establish the charger’s current condition.'
       : p.kind === 'outcome' ? 'The session report preserves the evidence and assumptions behind this outcome.'

@@ -277,7 +277,8 @@ test('original source and receipt clocks distinguish zero draw and charger statu
   { id: 2, kind: 'charger-status', code: 'charger-reports-charging', at: now + 20_000, powerKw: 0, source: 'easee', measuredAt: now + 1000, receivedAt: now + 2000 }]);
   await f.open(); const text = textOf(f.dialog.querySelector('.charging-report-timeline'));
   assert.match(text, /No draw measured/); assert.match(text, /Charger status reports charging/);
-  assert.match(text, /Measured 28 Sept, 21:00:03 · Received 28 Sept, 21:00:05/);
+  assert.match(text, /Measured 28 Sept 2026, 21:00:03 GMT\+3 \(2026-09-28T18:00:03.000Z\)/);
+  assert.match(text, /Received 28 Sept 2026, 21:00:05 GMT\+3 \(2026-09-28T18:00:05.000Z\)/);
 });
 
 test('recurring findings show unique issues and total episodes with a scoped filter', async () => {
@@ -448,4 +449,62 @@ test('material finding evidence changes stay visible without a new detected epis
 test('saved history identifies previous charger equipment separately from its current card label', async () => {
   const f = setup(); f.previous.previousEquipment = true; await f.open('previous');
   assert.match(f.dialog.querySelector('.charging-report-context').textContent, /Previous charger equipment/);
+});
+
+
+test('closing releases paged report nodes, and late reads cannot remount them', async () => {
+  const f = setup();
+  f.records.set('current', Array.from({ length: 130 }, (_, i) => ({ id: i + 1, at: now + i, kind: 'physical', code: 'charging-observed', powerKw: i + 1, source: 'easee' })));
+  await f.open();
+  for (let i = 0; i < 2; i++) { f.document.getElementById('charging-report-more-events').dispatch('click'); await flush(); }
+  const timeline = f.dialog.querySelector('.charging-report-timeline');
+  assert.equal(timeline.children.length, 130);
+  f.panel.close(); assert.equal(timeline.children.length, 0);
+  f.panel.update(structuredClone(f.state)); await flush(); assert.equal(timeline.children.length, 0);
+  await f.open(); assert.equal(timeline.children.length, 50);
+  let resolveLate;
+  const late = setup({ request: () => new Promise(resolve => { resolveLate = resolve; }) });
+  late.panel.open('charger1'); late.panel.close();
+  resolveLate({ reports: [late.current], nextBefore: null }); await flush();
+  assert.equal(late.dialog.querySelector('.charging-report-timeline').children.length, 0);
+});
+
+test('unrecognized enum and plan field names stay neutral instead of inheriting object methods', async () => {
+  for (const value of ['constructor', '__proto__', 'toString']) {
+    assert.deepEqual(chargingPlanChanges([{ field: value, before: 1, after: 2 }]), []);
+    const facts = chargingReportFacts({ outcome: { state: value }, behavior: value, current: { vehicleId: value, identification: value, identificationReason: value, scheduleState: value, soc: { value: 30, source: value } } });
+    assert.doesNotMatch(JSON.stringify(facts), /native code|function|\[object/);
+    const f = setup();
+    f.records.set('current', [{ id: 1, at: now, kind: 'control', code: value, origin: value, policy: value, source: value }]);
+    await f.open(); const text = textOf(f.dialog);
+    assert.match(text, /Control state recorded/); assert.match(text, /Policy not recognized/); assert.match(text, /Instruction origin not recognized/);
+    assert.doesNotMatch(text, /native code|function Object|function toString/);
+  }
+});
+
+test('session report and main log use the same finding and qualified physical labels', async () => {
+  const { presentCharging } = await import('../src/app/event-log-presentation.js');
+  const f = setup();
+  const cases = [{ kind: 'finding', code: 'deadline-unverified' }, { kind: 'finding-update', code: 'target-conflict' },
+    { kind: 'recovery', code: 'deadline-missed', resolution: 'request-changed' },
+    { kind: 'recovery', code: 'telemetry-unavailable', resolution: 'evidence-reconciled' },
+    ...['charging-started', 'charging-stopped'].flatMap(code => [0, .05, 7, -1, null].map(powerKw => ({ kind: 'physical', code, powerKw })))];
+  f.records.set('current', cases.map((row, i) => ({ ...row, id: i + 1, at: now + i * 60000, source: 'easee' })));
+  await f.open();
+  const text = textOf(f.dialog.querySelector('.charging-report-timeline'));
+  for (const row of cases) {
+    const view = presentCharging({ namespace: 'charging:mqtt:session-diagnostics', charger_id: 'charger1' }, row);
+    assert(text.includes(view.title.replace('Charger 1 · ', '')), view.title);
+    if (row.powerKw === -1 || row.powerKw === null) assert.equal(view.evidence, 'Physical evidence unavailable');
+  }
+  assert.match(text, /request changed/); assert.doesNotMatch(text, /deadline.*recovered/i);
+});
+
+test('invalid shared evidence clocks remain unknown without crashing the report', () => {
+  return import('../chart/charging-shared.js').then(({ chargingSharedText, chargingSharedSummary }) => {
+    const shared = { selectedPriority: 'constructor', execution: { reportedCurrentA: 6, measuredAt: Number.MAX_SAFE_INTEGER }, proposed: { state: 'toString' } };
+    assert.match(chargingSharedText(shared), /unknown time/);
+    assert.doesNotMatch(chargingSharedText(shared), /native code|function/);
+    assert.match(chargingSharedSummary(null), /overlap unconfirmed/);
+  });
 });

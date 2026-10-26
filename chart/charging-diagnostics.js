@@ -1,3 +1,4 @@
+import { chargingFinding, chargingFindingLabel, chargingPhysicalLabel } from '../src/charging/report-presentation.js';
 import { CHARGING_CONTROL_CAUSES as CONTROL_CAUSES } from './charging-status.js';
 import { isReadOnlyReplica } from './replica-status.js';
 import { projectChargingReportHistory, CHARGING_EVENT_FILTERS, chargingFindingCounts } from './charging-report-history.js';
@@ -11,25 +12,7 @@ const BEHAVIOR = { observing: 'Observing', expected: 'Observed checks passed', e
 const COVERAGE = { identification: 'Vehicle identification', initialRelease: 'Draw observed while charging allowed', pause: 'Intermediate pause',
   resume: 'Draw resumed after pause', lateReplan: 'Inputs reassessed after identification', targetAttainment: 'Requested target reached',
   completion: 'Native vehicle limit reached and stopped', energy: 'Recorded energy coverage' };
-const FINDINGS = {
-  'sys-pause-interruption': ['SYS pause interruption', 'A system permission transition interrupted an owned pause. The controller invalidated continuous-pause proof and retained the original identification bounds.'],
-  'sys-permission-interruption': ['SYS permission interruption', 'The charger reported a system permission Stop. This records native provenance, not who caused it.'],
-  'sys-startup-recovery': ['SYS startup recovery', 'Bounded recovery followed a system permission Stop after an acknowledged Start. The events retain each attempt and its observed outcome.'],
-  'shared-priority-mismatch': ['Shared priority mismatch', 'A joint model did not reflect the selected shared priority. The shared charging event retains the proposed and adopted assessments.'],
-  'shared-allocation-inconsistent': ['Shared allocation evidence inconsistent', 'A joint allocation or reported cost bound did not agree with its recorded inputs. This checks the model, not physical delivery.'],
-  'shared-current-mismatch': ['Shared current limit not respected', 'Fresh Charger 2 current readback exceeded its active current ceiling after settling. Review the recorded shared context and charger evidence.'],
-  'charging-during-hold': ['Charging during a planned pause', 'The charger continued drawing power after the pause settling period. Check the recorded plan and charger confirmation.'],
-  'control-unconfirmed': ['Control remained unconfirmed', 'A command, readback or charger error remained unresolved beyond the settling period. An acknowledgement alone does not prove a physical response.'],
-  'telemetry-unavailable': ['Physical evidence unavailable', 'Fresh charger readings were missing. Charging and stopping could not be assessed during this interval.'],
-  'permitted-without-draw': ['Charging allowed, no draw observed', 'Charging permission was confirmed but the vehicle did not draw power for ten minutes. A vehicle timer, limit or another restriction is possible; its cause is unconfirmed.'],
-  'vehicle-timer': ['Known vehicle start time', 'The reported vehicle start was still in the future while charger permission was open.'],
-  'supply-unavailable': ['No reported supply allowance', 'The charger reported zero available current. This is separate from an economic pause.'],
-  'manual-priority': ['Manual instruction has priority', 'The automatic plan was suspended while a manual charger instruction had priority.'],
-  'target-conflict': ['Vehicle target readings disagree', 'The production target filter retained a stable target while conflicting vehicle readings were observed.'],
-  'identification-inconclusive': ['Identification inconclusive', 'The identification attempt ended without a confirmed vehicle. Ordinary charging continued with the available inputs.'],
-  'identity-unavailable': ['Vehicle identity no longer confirmed', 'The current connection lost its confirmed assignment. Previous readings do not establish a new match.'],
-  'deadline-unverified': ['Ready-by outcome unconfirmed', 'The deadline passed without an applicable vehicle reading proving whether the requested target had been reached.'],
-  'deadline-missed': ['Target missed at ready-by', 'An applicable vehicle reading after ready-by was below the requested target. Reaching the target later does not remove this event.'] };
+
 const EVENTS = {
   'shelly-pause-interrupted': 'SYS transition interrupted an owned pause',
   'shelly-sys-off': 'SYS permission Stop observed', 'shelly-sys-on': 'SYS permission Enable observed',
@@ -50,6 +33,7 @@ const EVENTS = {
   'shared-charging-context': 'Both chargers and shared priority',
   'shared-charging-evidence': 'Shared charging evidence changed',
   ...OUTCOMES, ...COVERAGE };
+const lookup = (map, value) => typeof value === 'string' && Object.hasOwn(map, value) ? map[value] : undefined;
 const validTime = value => Number.isFinite(value) && Math.abs(value) <= 8.64e15;
 const timeFormatters = new Map();
 function timeFormatter(timezone, seconds = false) {
@@ -57,17 +41,18 @@ function timeFormatter(timezone, seconds = false) {
   if (!timeFormatters.has(key)) {
     if (timeFormatters.size >= 8) timeFormatters.delete(timeFormatters.keys().next().value);
     timeFormatters.set(key, new Intl.DateTimeFormat('en-GB', {
-      timeZone: timezone, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', ...(seconds ? { second: '2-digit' } : {}) }));
+      timeZone: timezone, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', ...(seconds ? { second: '2-digit' } : {}), ...(seconds === 'precise' ? { year: 'numeric', timeZoneName: 'shortOffset' } : {}) }));
   }
   return timeFormatters.get(key);
 }
 const time = (value, timezone = 'Europe/Helsinki', seconds = false) => validTime(value)
   ? timeFormatter(timezone, seconds).format(value) : 'Unknown';
+const evidenceTime = (value, timezone) => validTime(value) ? `${time(value, timezone, 'precise')} (${new Date(value).toISOString()})` : 'Unknown';
 const number = value => Number.isFinite(value) ? Number(value.toFixed(4)) : null;
 const percent = value => Number.isFinite(value) ? `${number(value)}%` : 'Unknown';
-const vehicleName = value => ({ bmw: 'BMW', tesla: 'Tesla' })[value] ?? 'Unidentified';
-const sourceName = value => ({ 'bmw-cardata': 'BMW', teslamate: 'TeslaMate', 'bmw-target-filter': 'BMW target filter',
-  mqtt: 'Vehicle', vehicle: 'Vehicle', easee: 'Easee', 'easee-ocpp': 'Local OCPP', 'shelly-evse': 'Shelly EVSE' })[value] ?? null;
+const vehicleName = value => lookup({ bmw: 'BMW', tesla: 'Tesla' }, value) ?? 'Unidentified';
+const sourceName = value => lookup({ 'bmw-cardata': 'BMW', teslamate: 'TeslaMate', 'bmw-target-filter': 'BMW target filter',
+  mqtt: 'MQTT', vehicle: 'Vehicle', simulation: 'Simulation', 'easee-equalizer': 'Equalizer', easee: 'Easee', 'easee-ocpp': 'Local OCPP', 'shelly-evse': 'Shelly EVSE' }, value) ?? null;
 const STATE_LABELS = { disabled: 'Automatic off', unknown: 'Unknown', none: 'No charging periods',
   unavailable: 'Unavailable', release: 'Release requested', waiting: 'Waiting for a period', planned: 'Periods proposed',
   complete: 'Requested charge estimated complete', disconnected: 'Disconnected', manual: 'Manual instruction',
@@ -127,7 +112,7 @@ function controlText(value = {}, snapshot = false) {
   const permission = automatic === true ? 'Automatic charging on' : automatic === false ? 'Automatic charging off' : 'Automatic charging state unknown';
   const extra = value.chargeNow === true ? ' · Charge now on' : '';
   const pausedHere = !snapshot && value.reasonCode === 'session-pause';
-  const schedule = pausedHere ? 'Paused here until unplugging' : SCHEDULE_LABELS[value.scheduleState] ?? 'Schedule state unknown';
+  const schedule = pausedHere ? 'Paused here until unplugging' : lookup(SCHEDULE_LABELS, value.scheduleState) ?? 'Schedule state unknown';
   const priority = value.manual === true && !pausedHere ? ' · Manual charger instruction has priority' : '';
   const identification = value.identificationActive === true ? ' · Identification check in progress'
     : value.identification === 'observing' ? ' · Identification awaiting matching reports' : '';
@@ -157,11 +142,11 @@ export function chargingReportFacts(report, timezone = 'Europe/Helsinki') {
     : current.reportedCharging === false ? ' · Charger status reports not charging' : ' · Charger status unknown';
   return [
     ['Control at last assessment', controlText(current)],
-    ...(report.planning?.plannerReason ? [['Planning reason', PLAN_CAUSES[report.planning.plannerReason] ?? 'Planning reason unavailable']] : []),
+    ...(report.planning?.plannerReason ? [['Planning reason', lookup(PLAN_CAUSES, report.planning.plannerReason) ?? 'Planning reason unavailable']] : []),
     ...(report.planning?.assumptions?.length ? [['Planning assumptions', planningAssumptions(report.planning.assumptions)]] : []),
     ['Vehicle', `${vehicleName(current.vehicleId)} · ${actual}`],
-    ...(current.identification ? [['Identification', [EVENTS[current.identification] ?? 'Identification state unknown',
-      IDENTIFICATION_CAUSES[current.identificationReason]].filter(Boolean).join(' · ')]] : []),
+    ...(current.identification ? [['Identification', [lookup(EVENTS, current.identification) ?? 'Identification state unknown',
+      lookup(IDENTIFICATION_CAUSES, current.identificationReason)].filter(Boolean).join(' · ')]] : []),
     ['Battery input', inputText(current.soc)],
     ['Requested target', inputText(current.target)],
     ['Ready by', Number.isFinite(current.deadlineAt) ? time(current.deadlineAt, timezone) : 'Unavailable'],
@@ -183,11 +168,11 @@ const priceText = (rows, timezone) => Array.isArray(rows) && rows.length
 export function chargingPlanChanges(changes, timezone = 'Europe/Helsinki') {
   const fields = { automatic: ['Automatic charging', value => value === true ? 'On' : value === false ? 'Off' : 'Unknown'],
     chargeNow: ['Charge now', value => value === true ? 'On' : value === false ? 'Off' : 'Unknown'],
-    state: ['Planner state', value => STATE_LABELS[value] ?? 'Unknown'],
-    schedule: ['Controller schedule', value => SCHEDULE_LABELS[value] ?? 'Unknown'],
+    state: ['Planner state', value => lookup(STATE_LABELS, value) ?? 'Unknown'],
+    schedule: ['Controller schedule', value => lookup(SCHEDULE_LABELS, value) ?? 'Unknown'],
     readyBy: ['Ready by', value => time(value, timezone)],
     flexibility: ['One-day flexibility', value => !value ? 'No active allowance'
-      : `${({ allow: 'One extra day approved', cancel: 'Allowance canceled', consume: 'Approved deadline is now normal' })[value.action] ?? 'Deadline permission recorded'} · ready by ${time(value.effectiveReadyByAt, timezone)}`
+      : `${lookup({ allow: 'One extra day approved', cancel: 'Allowance canceled', consume: 'Approved deadline is now normal' }, value.action) ?? 'Deadline permission recorded'} · ready by ${time(value.effectiveReadyByAt, timezone)}`
         + (value.action === 'allow' && Number.isFinite(value.checkpointAt) ? ` · +1 day marker until ${time(value.checkpointAt, timezone)}` : '')],
     startingSoc: ['Starting-charge input', percent],
     soc: ['Battery input', percent],
@@ -200,11 +185,11 @@ export function chargingPlanChanges(changes, timezone = 'Europe/Helsinki') {
     priceAvailability: ['Price availability', value => priceText(value, timezone)],
     feasible: ['Ready-by forecast', value => value === true ? 'Target feasible' : value === false ? 'Shortfall forecast' : 'Unknown'],
     provisional: ['Provisional release', value => value === true ? 'Requested' : value === false ? 'Not requested' : 'Unknown'],
-    plannerReason: ['Planning reason', value => PLAN_CAUSES[value] ?? 'Planning reason unavailable'],
+    plannerReason: ['Planning reason', value => lookup(PLAN_CAUSES, value) ?? 'Planning reason unavailable'],
     warnings: ['Planning warnings', value => Array.isArray(value) && value.length ? value.join(' ') : 'None recorded'],
     assumptions: ['Planning assumptions', value => planningAssumptions(value) || 'No current assumption recorded'] };
   return (Array.isArray(changes) ? changes : []).flatMap(change => {
-    const definition = fields[change?.field];
+    const definition = lookup(fields, change?.field);
     if (!definition || JSON.stringify(change.before) === JSON.stringify(change.after)) return [];
     const [label, format] = definition, before = format(change.before), after = format(change.after);
     return before === after ? [] : [{ field: change.field, label, before, after, complex: ['periods', 'prices', 'priceAvailability'].includes(change.field) }];
@@ -219,7 +204,7 @@ export function chargingPlanPresentation(plan, timezone = 'Europe/Helsinki') {
     vehicle: `${vehicleName(plan?.vehicleId)}${plan?.vehicleId ? '' : ' · these inputs do not establish the vehicle’s actual battery charge'}`,
     deadline: Number.isFinite(plan?.deadlineAt) ? `Ready by ${time(plan.deadlineAt, timezone)}` : 'Ready-by occurrence unavailable',
     periods: periodText(plan?.periods, timezone),
-    plannerReason: plan?.plannerReason ? `Planning reason: ${PLAN_CAUSES[plan.plannerReason] ?? 'Unavailable'}` : 'Planning reason was not recorded.',
+    plannerReason: plan?.plannerReason ? `Planning reason: ${lookup(PLAN_CAUSES, plan.plannerReason) ?? 'Unavailable'}` : 'Planning reason was not recorded.',
     assumptions: planningAssumptions(plan?.assumptions),
     warnings: Array.isArray(plan?.warnings) ? plan.warnings.join(' ') : '',
     periodLabel: plan?.scheduleState === 'installed' ? 'Periods adopted by the controller · physical execution is checked separately'
@@ -239,10 +224,10 @@ export function chargingReportSummary(report, available = true) {
         : report.behavior === 'expected' ? 'Checks passed' : 'Session report';
   return { label, state: report.attentionCount ? 'attention' : report.evidenceStale || report.behavior === 'insufficient-evidence' ? 'unknown'
     : degraded ? 'unknown'
-    : report.behavior === 'expected' ? 'good' : 'quiet', outcome: OUTCOMES[report.outcome?.state] ?? 'Completion unknown',
+    : report.behavior === 'expected' ? 'good' : 'quiet', outcome: lookup(OUTCOMES, report.outcome?.state) ?? 'Completion unknown',
     behavior: report.evidenceStale ? 'Observation is no longer current' : degraded
       ? 'Price scheduling is limited. Observed draw checks do not establish that the schedule met the request.'
-      : BEHAVIOR[report.behavior] ?? 'Evidence incomplete' };
+      : lookup(BEHAVIOR, report.behavior) ?? 'Evidence incomplete' };
 }
 
 /** Observational report UI. Reading a report never identifies a vehicle or
@@ -313,7 +298,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   let newEventsPending = false, eventsFailed = false;
   let apiReadOnly = false, error = '', refreshToken = null, selectionEpoch = 0, loadingDetail = false;
   const chargerLabel = () => status?.charging?.chargers?.find(row => row.id === selectedCharger)?.label
-    ?? ({ charger1: 'Charger 1', charger2: 'Charger 2' })[selectedCharger] ?? 'Charger';
+    ?? lookup({ charger1: 'Charger 1', charger2: 'Charger 2' }, selectedCharger) ?? 'Charger';
   const slot = () => status?.charging?.diagnostics?.chargers?.find(row => row.id === selectedCharger);
   const reports = () => {
     const local = collection.value === 'saved' ? [] : [slot()?.current, ...(slot()?.recent ?? [])].filter(Boolean);
@@ -331,15 +316,11 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     : changes.length > 1 ? `${changes.length} plan & input changes` : fallback;
   const eventLabel = row => {
     const changes = chargingPlanChanges(row.changes);
-    if (row.kind === 'physical' && ['charging-started', 'charging-observed'].includes(row.code) && Number.isFinite(row.powerKw) && row.powerKw <= .1)
-      return 'Charging status recorded; draw unconfirmed';
-    if (row.kind === 'physical' && Number.isFinite(row.powerKw) && row.powerKw === 0) return 'No draw measured';
-    if (row.kind === 'finding-update') return `${FINDINGS[row.code]?.[0] ?? 'Finding'} · Evidence changed`;
-    if (row.kind === 'finding') return FINDINGS[row.code]?.[0] ?? 'Finding recorded';
-    if (row.kind === 'recovery') return `${FINDINGS[row.code]?.[0] ?? 'Issue'} · ${row.resolution === 'request-changed' ? 'request changed' : row.resolution === 'evidence-reconciled' ? 'evidence reconciled' : 'recovered'}`;
+    const label = chargingPhysicalLabel(row) ?? chargingFindingLabel(row);
+    if (label) return label;
     if (row.kind === 'plan') return row.code === 'initial-plan' ? 'Initial planning state' : changeTitle(changes, 'Planning record');
-    if (row.kind === 'control') return `${controlLabels[row.code] ?? 'Control state recorded'}${row.code !== 'unavailable' && row.availability === 'unavailable' ? ' · control unavailable' : ''}`;
-    return EVENTS[row.code] ?? 'Observation recorded';
+    if (row.kind === 'control') return `${lookup(controlLabels, row.code) ?? 'Control state recorded'}${row.code !== 'unavailable' && row.availability === 'unavailable' ? ' · control unavailable' : ''}`;
+    return lookup(EVENTS, row.code) ?? 'Observation recorded';
   };
   const eventKey = row => `${row.at}:${row.kind}:${row.code}`;
   function changesInto(container, changes) {
@@ -358,36 +339,36 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   function rawEvent(node, row, timezone) {
     if (!node) { node = make('li'); const label = make('p'), evidence = make('p', '', 'muted'); node.append(label, evidence); parts.set(node, { label, evidence }); }
     const p = parts.get(node), details = [], evidenceRow = row.context ? { ...row.context, ...row } : row;
-    if (['finding', 'finding-update', 'recovery'].includes(row.kind)) details.push(FINDINGS[row.code]?.[1] ?? 'Finding recorded.');
+    if (['finding', 'finding-update', 'recovery'].includes(row.kind)) details.push(chargingFinding(row.code)?.[1] ?? 'Finding recorded.');
     if (row.kind === 'finding-update') details.push('The same episode remains active; its recorded evidence changed.');
     if (row.shared) details.push(chargingSharedText(row.shared, selectedCharger));
-    setText(p.label, `${time(row.at, timezone, true)} · ${eventLabel(row)}`);
-    if (row.policy) details.push(row.policy === 'startup-retry' ? 'Startup retry recovery' : 'Permission-transition reconciliation');
-    if (row.origin) details.push(row.origin === 'charge-now' ? 'Charge now' : 'Scheduled charging');
+    setText(p.label, `${evidenceTime(row.at, timezone)} · ${eventLabel(row)}`);
+    if (row.policy) details.push(lookup({ 'startup-retry': 'Startup retry recovery', 'permission-transition': 'Permission-transition reconciliation' }, row.policy) ?? 'Policy not recognized');
+    if (row.origin) details.push(lookup({ 'charge-now': 'Charge now', scheduled: 'Scheduled charging' }, row.origin) ?? 'Instruction origin not recognized');
     if (Number.isInteger(row.attempt)) details.push(`Retry ${row.attempt} of 3`);
     if (Number.isFinite(row.currentA)) details.push(`Current setting ${number(row.currentA)} A`);
-    if (Number.isFinite(row.startAt)) details.push(`Start sent ${time(row.startAt, timezone, true)}`);
-    if (Number.isFinite(row.acceptedAt)) details.push(`Acknowledged ${time(row.acceptedAt, timezone, true)}`);
-    if (Number.isFinite(row.sourceAt)) details.push(`Native event ${time(row.sourceAt, timezone, true)}`);
+    if (Number.isFinite(row.startAt)) details.push(`Start sent ${evidenceTime(row.startAt, timezone)}`);
+    if (Number.isFinite(row.acceptedAt)) details.push(`Acknowledged ${evidenceTime(row.acceptedAt, timezone)}`);
+    if (Number.isFinite(row.sourceAt)) details.push(`Native event ${evidenceTime(row.sourceAt, timezone)}`);
     if (row.model) details.push(`Model ${row.model}`);
     if (row.firmware) details.push(`Firmware ${row.firmware}`);
     if (Number.isFinite(row.powerKw)) details.push(`Measured draw ${number(row.powerKw)} kW`);
     const source = sourceName(row.source);
     if (source) details.push(source);
     // A timestamp without source attribution cannot prove a meter measurement.
-    if (Number.isFinite(row.measuredAt)) details.push(`${row.code === 'physical-evidence-lost' ? 'Last power sample' : source ? 'Measured' : 'Saved time'} ${time(row.measuredAt, timezone, true)}`);
-    if (Number.isFinite(row.receivedAt)) details.push(`Received ${time(row.receivedAt, timezone, true)}`);
+    if (Number.isFinite(row.measuredAt)) details.push(`${row.code === 'physical-evidence-lost' ? 'Last power sample' : source ? 'Measured' : 'Saved time'} ${evidenceTime(row.measuredAt, timezone)}`);
+    if (Number.isFinite(row.receivedAt)) details.push(`Received ${evidenceTime(row.receivedAt, timezone)}`);
     if (row.kind === 'physical' || row.kind === 'charger-status') {
       if (!source) details.push('Source attribution not recorded');
       if (!Number.isFinite(row.receivedAt)) details.push('Receipt time not recorded');
     }
-    if (Number.isFinite(row.powerMeasuredAt)) details.push(`Power measured ${time(row.powerMeasuredAt, timezone, true)}`);
-    if (Number.isFinite(row.powerReceivedAt)) details.push(`Power received ${time(row.powerReceivedAt, timezone, true)}`);
+    if (Number.isFinite(row.powerMeasuredAt)) details.push(`Power measured ${evidenceTime(row.powerMeasuredAt, timezone)}`);
+    if (Number.isFinite(row.powerReceivedAt)) details.push(`Power received ${evidenceTime(row.powerReceivedAt, timezone)}`);
     if (typeof evidenceRow.automaticEnabled === 'boolean') details.push(`Automatic charging ${evidenceRow.automaticEnabled ? 'on' : 'off'}`);
     if (evidenceRow.chargeNow === true) details.push('Charge now on');
     if (['available', 'unavailable', 'unknown'].includes(evidenceRow.availability)) details.push(`Control evidence ${evidenceRow.availability}`);
     for (const code of new Set([evidenceRow.errorCode, evidenceRow.reasonCode].filter(Boolean)))
-      details.push((row.kind === 'identification' ? IDENTIFICATION_CAUSES : CONTROL_CAUSES)[code] ?? 'Detailed cause unavailable');
+      details.push(lookup(row.kind === 'identification' ? IDENTIFICATION_CAUSES : CONTROL_CAUSES, code) ?? 'Detailed cause unavailable');
     if (evidenceRow.handoverConfirmed === true) details.push('Control handover confirmed');
     if (evidenceRow.handoverConfirmed === false) details.push('Control handover unconfirmed');
     if (evidenceRow.basis === 'installed-execution') details.push('Instruction basis: adopted controller plan');
@@ -409,7 +390,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     const p = parts.get(node), rows = group.events, first = rows[0] ?? {}, changeRows = chargingPlanChanges(first.changes, timezone);
     const range = validTime(group.startAt) && validTime(group.endAt) && group.endAt > group.startAt
       ? timeFormatter(timezone).formatRange(group.startAt, group.endAt) : time(group.startAt, timezone);
-    setText(p.stamp, `${range} · `); p.stamp.dateTime = validTime(group.startAt) ? new Date(group.startAt).toISOString() : '';
+    setText(p.stamp, `${range} · `); p.stamp.title = `${evidenceTime(group.startAt, timezone)}${group.endAt > group.startAt ? ` → ${evidenceTime(group.endAt, timezone)}` : ''}`; p.stamp.dateTime = validTime(group.startAt) ? new Date(group.startAt).toISOString() : '';
     let label = eventLabel(first), detail = '';
     if (group.type === 'low-draw-pulse') {
       label = group.pulseCount > 1 ? `${group.pulseCount} brief charger-status changes` : 'Brief charger-status change';
@@ -421,9 +402,9 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
       detail = Number.isFinite(group.recoveredAt) ? 'Evidence became available again.' : 'Recovery has not been observed in these records.';
     } else if (group.type === 'finding-series' || group.type === 'confirmation-series') {
       const finding = rows.find(row => row.kind === 'finding') ?? first;
-      label = `${group.type === 'confirmation-series' ? 'Control confirmation changed repeatedly' : FINDINGS[finding.code]?.[0] ?? 'Finding'} · ${group.episodeCount || group.count} ${group.episodeCount ? group.episodeCount === 1 ? 'episode' : 'episodes' : 'control changes'}`;
+      label = `${group.type === 'confirmation-series' ? 'Control confirmation changed repeatedly' : chargingFinding(finding.code)?.[0] ?? 'Finding'} · ${group.episodeCount || group.count} ${group.episodeCount ? group.episodeCount === 1 ? 'episode' : 'episodes' : 'control changes'}`;
       if (first.kind === 'finding-update') label += ' · Evidence changed';
-      const cause = first.context?.errorCode; if (cause) label += ` · ${CONTROL_CAUSES[cause] ?? cause}`;
+      const cause = first.context?.errorCode; if (cause) label += ` · ${lookup(CONTROL_CAUSES, cause) ?? 'Detailed cause unavailable'}`;
       detail = 'Separate recorded occurrences in the loaded events; this does not mean the condition was continuous. Expand for each detection and clearing.' + (group.startsMissing ? ' Episode starts may be in older events.' : '');
     } else if (group.type === 'repeated-control') { label += ` · ${group.count} occurrences`; detail = 'Equivalent recorded control evidence; individual timestamps are preserved below.';
     } else if (first.code === 'observation-gap') detail = 'Behavior during the missing interval is unverified.';
@@ -458,7 +439,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     for (const key of ['control', 'vehicle', 'inputs', 'deadline', 'periodLabel', 'periods', 'plannerReason', 'assumptions', 'warnings']) setText(p[key], view[key]);
     p.assumptions.hidden = !view.assumptions; p.warnings.hidden = !view.warnings;
     p.periods.hidden = plan.scheduleState === 'none';
-    setText(p.state, `Planner state: ${STATE_LABELS[plan.state] ?? 'Unknown'} · Planning inputs ${plan.inputStatus ?? 'unknown'}`);
+    setText(p.state, `Planner state: ${lookup(STATE_LABELS, plan.state) ?? 'Unknown'} · Planning inputs ${plan.inputStatus ?? 'unknown'}`);
     setText(p.clocks, [['soc', 'Charge input'], ['target', 'Target'], ['capacity', 'Capacity']].map(([key, label]) => {
       const input = plan.inputs?.[key];
       return `${label}: measured ${time(input?.measuredAt, timezone, true)} · received ${time(input?.receivedAt, timezone, true)}`;
@@ -481,7 +462,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     if (selectedReport !== null && !choices.some(row => row.id === selectedReport)) choices.unshift({ id: selectedReport, label: missing ? 'Selected report is no longer retained' : collection.value === 'saved' && report?.saved === false ? 'Selected report · no longer saved' : 'Selected session' });
     sync(selector, choices, row => row.id, (node, row) => { node ??= make('option'); node.value = row.id; setText(node, missing && row.id === selectedReport ? 'Selected report is no longer retained' : row.label); return node; });
     selector.value = selectedReport ?? ''; selector.disabled = !choices.length || mutating; selectorLabel.hidden = !choices.length;
-    moreReports.hidden = !reportsBefore; moreReports.disabled = loadingList; collection.disabled = loadingList || mutating;
+    moreReports.hidden = !reportsBefore; moreReports.disabled = loadingList || mutating; collection.disabled = loadingList || mutating;
     const summary = chargingReportSummary(report, status?.charging?.diagnostics?.available !== false);
     if (!report && selectedReport !== null && status?.charging?.diagnostics?.available !== false) { summary.outcome = missing ? 'This session report is no longer retained' : 'Loading session report'; summary.behavior = missing ? 'Select another recorded session for this charger.' : 'Fetching the selected report.'; }
     else if (!report && status?.charging?.diagnostics?.available !== false) {
@@ -500,7 +481,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     const factRows = chargingReportFacts(report, timezone).flatMap(([label, value]) => [{ key: `${label}:label`, tag: 'dt', text: label }, { key: `${label}:value`, tag: 'dd', text: value }]);
     sync(facts, factRows, row => row.key, (node, row) => { node ??= make(row.tag); setText(node, row.text); return node; }); facts.hidden = !report;
     const findingCounts = chargingFindingCounts(report);
-    currentFindings.hidden = !findingCounts.issues;
+    currentFindings.hidden = !findingCounts.issues; currentFindings.disabled = mutating;
     setText(currentFindings, `${findingCounts.active} unresolved ${findingCounts.active === 1 ? 'finding' : 'findings'} · ${findingCounts.issues} ${findingCounts.issues === 1 ? 'issue' : 'issues'}, ${findingCounts.episodes} recorded ${findingCounts.episodes === 1 ? 'episode' : 'episodes'} · View findings`);
     sync(coverage, Object.entries(COVERAGE).flatMap(([key, label]) => {
       const check = report?.coverage?.[key]; return [{ key: `${key}:label`, tag: 'dt', text: label }, { key: `${key}:value`, tag: 'dd', text: check?.state === 'verified' ? 'Observed' : check?.state === 'insufficient-evidence' ? 'Insufficient evidence' : 'Not exercised', state: check?.state ?? 'not-exercised' }];
@@ -514,7 +495,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     refreshEvents.hidden = !newEventsPending && !eventsFailed;
     refreshEvents.disabled = loadingEvents || mutating;
     setText(refreshEvents, newEventsPending ? 'New events available · Refresh events' : 'Refresh events');
-    moreEvents.hidden = !eventsBefore; moreEvents.disabled = loadingEvents; filter.disabled = !report || mutating;
+    moreEvents.hidden = !eventsBefore; moreEvents.disabled = loadingEvents || mutating; filter.disabled = !report || mutating;
     const days = report?.retention?.days ?? status?.charging?.diagnostics?.retention?.days ?? 30;
     const expiresAt = report?.endedAt === null ? null : report?.endedAt + days * 86_400_000;
     setText(retention, !report ? '' : report.saved ? 'Saved permanently in this database. Saving protects this report and its future events from automatic expiry.'
@@ -608,7 +589,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
       catch { error = 'The report change was saved, but dashboard status could not be refreshed.'; }
     } catch (failure) { if (epoch === selectionEpoch && scope === `${selectedCharger}:${selectedReport}`) receipts.set(scope, { at: Date.now(), text: failure.message, failed: true }); }
     finally {
-      mutating = false; render();
+      mutating = false; if (dialog.open) render();
       if (epoch === selectionEpoch && dialog.open && !missing && !loaded) void loadDetail();
     }
   }
@@ -651,6 +632,8 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   cancel.addEventListener('click', () => { const origin = pendingAction === 'delete' ? remove : save; confirmation.hidden = true; pendingAction = null; origin.focus(); });
   dialog.addEventListener('close', () => {
     selectionEpoch++; listSequence++; detailSequence++; eventsSequence++; loadingList = loadingEvents = loadingDetail = false;
+    remoteReports = []; remoteReport = null; events = []; reportsBefore = eventsBefore = null; loaded = false;
+    sync(timeline, [], () => '', () => null);
     for (const button of buttons.values()) button.setAttribute('aria-expanded', 'false');
     if (switchingDialog) { switchingDialog = false; return; }
     if (!document.querySelector('dialog[open]') && opener?.isConnected && !opener.disabled) opener.focus({ preventScroll: true });

@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Use the same finding names and power-evidence qualifications in Event log and
+  session reports. Keep original report clocks unambiguous across years and clock
+  changes, handle unknown labels neutrally, and release loaded history on close.
+
 - Keep session-report navigation anchored to the link that opened it and return
   deletion cancellation to the Delete button. Distinguish empty Saved collections,
   loading and failed event reads, offer an event retry, and retain successful

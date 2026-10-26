@@ -198,10 +198,12 @@ try {
   await evaluate("window.logReportOpener=document.querySelector('#events .event-log-report:not([hidden])');window.logReportOpener.closest('details').open=true;window.logReportOpener.focus();window.logReportOpener.click();true");
   await until("document.getElementById('charging-report-dialog').open && document.querySelectorAll('.charging-report-raw>li').length>0", 'linked session report');
   assert.equal(await evaluate("[...document.querySelectorAll('.charging-report-raw>li')].some(n=>(n.textContent.match(/Received /g)||[]).length>1)"), false, 'Each receipt clock appears once');
+  assert.equal(await evaluate("[...document.querySelectorAll('.charging-report-raw>li')].some(n=>/2026.*GMT/.test(n.textContent)&&n.textContent.includes('2026-10-25T'))"), true, 'Expanded original clocks include year, offset and UTC');
   await filter('charging-report-collection', 'saved');
   await until("document.querySelector('.charging-report-result strong').textContent.startsWith('No saved reports')", 'empty saved collection');
   await evaluate("document.querySelector('.charging-report-heading button').click();true");
   await until("document.activeElement===window.logReportOpener", 'report returns focus to its log link');
+  assert.equal(await evaluate("document.querySelectorAll('.charging-report-timeline>li').length"), 0, 'Closed history nodes are released');
   const offscreenReads = requests.length;
   await evaluate("window.scrollTo(0,0);true"); await pause(100);
   await evaluate("window.dispatchEvent(new Event('online'));true"); await pause(250);

@@ -1,11 +1,12 @@
-const priorityName = value => ({ balanced: 'Balanced', charger1: 'Charger 1', charger2: 'Charger 2' })[value] ?? 'Unknown';
+const lookup = (map, value) => typeof value === 'string' && Object.hasOwn(map, value) ? map[value] : undefined;
+const priorityName = value => lookup({ balanced: 'Balanced', charger1: 'Charger 1', charger2: 'Charger 2' }, value) ?? 'Unknown';
 const amount = value => Number.isFinite(value) ? Number(value.toFixed(3)).toString() : 'unknown';
-const timestamp = value => Number.isSafeInteger(value) ? new Date(value).toISOString().replace('T', ' ').replace('.000Z', ' UTC') : 'unknown time';
+const timestamp = value => Number.isSafeInteger(value) && Math.abs(value) <= 8.64e15 ? new Date(value).toISOString().replace('T', ' ').replace('.000Z', ' UTC') : 'unknown time';
 
 export function chargingSharedSummary(shared) {
   const current = shared?.current ?? shared;
   const overlap = current?.overlap === 'observed' ? 'overlapping draw observed'
-    : current?.overlap === 'unknown' ? 'overlap unconfirmed' : 'no overlap observed';
+    : current?.overlap === 'not-observed' ? 'no overlap observed' : 'overlap unconfirmed';
   const issue = [current?.priority, current?.execution?.state, current?.proposed?.state, current?.adopted?.state].includes('inconsistent');
   return `Both chargers · Priority ${priorityName(current?.selectedPriority)} · ${issue ? 'shared check needs attention' : overlap}`;
 }
@@ -18,15 +19,15 @@ export function chargingSharedText(shared, focus) {
   const peerText = peer?.connected === false ? `${peerName} is unplugged.` : peer?.drawing === true
     ? `${peerName} draw: ${amount(peer.powerKw)} kW.` : peer?.drawing === false ? `${peerName}: no draw measured.` : `${peerName} evidence is unavailable.`;
   const overlap = shared?.coverage?.overlap === 'observed' ? 'Overlapping draw was observed.'
-    : current.overlap === 'unknown' ? 'Overlapping draw cannot currently be assessed.' : 'Overlapping draw has not been observed.';
+    : current.overlap === 'not-observed' ? 'Overlapping draw has not been observed.' : 'Overlapping draw cannot currently be assessed.';
   const consistency = current.priority === 'consistent' ? 'Both joint models use the selected priority.'
     : current.priority === 'inconsistent' ? 'The joint models do not both use the selected priority.'
       : current.priority === 'settling' ? 'The joint models are updating to the selected priority.'
       : current.priority === 'not-exercised' ? 'Priority sharing has not been exercised by two connected chargers.'
         : 'Priority handling is unconfirmed.';
   const models = [['Proposed', current.proposed], ['Adopted', current.adopted]].map(([name, model]) => {
-    const state = ({ feasible: 'allocation covers both requests', shortfall: 'allocation has a readiness shortfall',
-      inconsistent: 'allocation evidence is inconsistent', 'not-exercised': 'no connected request', unknown: 'joint evidence unavailable' })[model?.state] ?? 'joint evidence unavailable';
+    const state = lookup({ feasible: 'allocation covers both requests', shortfall: 'allocation has a readiness shortfall',
+      inconsistent: 'allocation evidence is inconsistent', 'not-exercised': 'no connected request', unknown: 'joint evidence unavailable' }, model?.state) ?? 'joint evidence unavailable';
     return `${name} model: ${state}${Number.isFinite(model?.costCents) ? `; combined cost ${amount(model.costCents)} cents` : ''}.`;
   });
   const solver = current.proposed;
@@ -41,9 +42,9 @@ export function chargingSharedText(shared, focus) {
   const setting = Number.isFinite(current.execution?.reportedCurrentA)
     ? `Confirmed current setting ${amount(current.execution.reportedCurrentA)} A, measured ${timestamp(current.execution.measuredAt)}.`
     : 'Confirmed current setting unknown.';
-  const blocked = ({ 'provider-offline': 'provider evidence unavailable', 'input-processing': 'waiting for input processing',
+  const blocked = lookup({ 'provider-offline': 'provider evidence unavailable', 'input-processing': 'waiting for input processing',
     'source-time-pending': 'waiting for source time admission', 'device-permission-held': 'device permission held',
-    'readback-unavailable': 'current readback unavailable', 'control-unavailable': 'command readiness unavailable' })[current.execution?.commandBlockReason];
+    'readback-unavailable': 'current readback unavailable', 'control-unavailable': 'command readiness unavailable' }, current.execution?.commandBlockReason);
   const command = current.execution?.commandReady === true ? 'Current adjustment ready.'
     : `Current adjustment blocked: ${blocked ?? 'readiness unknown'}.`;
   const readback = execution === 'consistent' ? 'Charger 2 current readback respects its active current ceiling.'
