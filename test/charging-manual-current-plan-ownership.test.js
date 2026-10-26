@@ -45,6 +45,12 @@ async function settleReceivedWork(f) {
 }
 
 async function ready(t) {
+  // The acquisition clock and every native reply in this fixture are already
+  // controlled explicitly. Keep the adapter's autonomous five-second poll from
+  // injecting unrelated received input between the displayed token and the
+  // deliberately held publication. The newer-input case below supplies that
+  // competing read explicitly, with its own exact admission boundary.
+  t.mock.timers.enable({ apis: ['setInterval'] });
   const directory = mkdtempSync(join(tmpdir(), 'stmq-manual-current-plan-'));
   const store = new Store(join(directory, 'fixture.sqlite'));
   const f = await fixture(t, { store, budgetA: 25 });
@@ -133,7 +139,10 @@ async function atPublication(f, duringHold = () => {}) {
 }
 
 test('the explicit manual-current takeover owns its initial committed plan', async t => {
-  const f = await ready(t), result = await atPublication(f);
+  const f = await ready(t);
+  t.mock.timers.tick(5000);
+  await settleReceivedWork(f);
+  const result = await atPublication(f);
   if (result.error) throw result.error;
   const current = f.view('charger2'), saved = readChargingRuntime(f.store, f.runtime.key).chargers.charger2;
   assert.equal(result.completionView.control.takeover.state, 'confirmed');

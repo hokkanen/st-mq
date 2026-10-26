@@ -911,6 +911,10 @@ Settings-reload fixtures record identity announcements separately from the
 acquisition/command connection and deliberately include discovery traffic in
 the no-circulation-command case. A periodic identity heartbeat cannot become
 evidence that a relay command was dispatched.
+The held manual-current publication fixture controls the adapter's periodic
+poll timer explicitly. Its positive case admits a normal poll before takeover;
+the competing-input case injects a newer native reading during the held COMMIT.
+Real RPC, persistence and instruction checks remain active in both cases.
 
 JSONL receipts identify runtime, architecture, source revision/dirty state,
 resource limits, selected budgets, file exits, failed case names, nesting and
