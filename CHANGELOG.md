@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Browse Recent and Saved charger sessions in the Session dropdown. Older and
+  newer sessions load while scrolling or using the keyboard, with inline retry
+  and a bounded list that preserves the selected report. A new-session notice
+  refreshes choices without changing the report being read. History labels show
+  years and UTC offsets; event loading and report retention remain independent.
+
 - Load selected-period Energy checks without copying unrelated older evidence,
   seek Home savings by cycle completion, and keep completed-cycle metrics,
   temperature status, voltage/energy metadata, sensor-change actions and committed control reads bounded
