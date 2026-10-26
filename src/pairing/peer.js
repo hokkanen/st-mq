@@ -104,9 +104,11 @@ export class PairPeer {
     this.port = port;
     this.timeoutMs = timeoutMs;
     this.clock = clock;
+    // A finite idle budget lets the native agents apply shorter server
+    // keep-alive hints. Active sockets use the operation deadline above.
     this.agents = fetchImpl ? null : {
-      http: new HttpAgent({ keepAlive: true, maxSockets: 8, maxFreeSockets: 2, timeout: 0 }),
-      https: new HttpsAgent({ keepAlive: true, maxSockets: 8, maxFreeSockets: 2, timeout: 0 }),
+      http: new HttpAgent({ keepAlive: true, maxSockets: 8, maxFreeSockets: 2, timeout: timeoutMs }),
+      https: new HttpsAgent({ keepAlive: true, maxSockets: 8, maxFreeSockets: 2, timeout: timeoutMs }),
     };
     this.fetchImpl = fetchImpl ?? ((url, options) => requestPeer(url, options, this.agents));
     this.handler = handler;

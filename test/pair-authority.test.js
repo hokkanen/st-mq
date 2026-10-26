@@ -1369,6 +1369,7 @@ test('rejoin after both branches compact preserves unique excluded history and r
     return result;
   };
   await assert.rejects(primary.action('rejoin',action),{code:'peer_unavailable'});
+  assert.equal(lose,false,'First rejoin failure must be the injected lost release response');
   await primary.action('rejoin',action);
   assert.equal(donor.state.value.role,'slave');assert.equal(donor.canControl(),false);
   const retained=new Store(originalPath,{readOnly:true});

@@ -12,6 +12,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   refreshes choices without changing the report being read. History labels show
   years and UTC offsets; event loading and report retention remain independent.
 
+- Expire unused peer connections within their configured timeout and the
+  advertised server keep-alive limit. Long verification and recovery operations
+  retain their explicit request deadlines.
+
 - Load selected-period Energy checks without copying unrelated older evidence,
   seek Home savings by cycle completion, and keep completed-cycle metrics,
   temperature status, voltage/energy metadata, sensor-change actions and committed control reads bounded
