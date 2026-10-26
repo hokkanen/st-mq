@@ -492,7 +492,7 @@ test('normal mirror checks preserve unavailable evidence and never restore delib
     await slave.pair.synchronize(master.pair.state.claim());
   }
   const removed = master.store.db.prepare("SELECT id FROM observations WHERE source='synthetic' AND value=0").get().id;
-  master.store.db.prepare('DELETE FROM observations WHERE id=?').run(removed);
+  await master.store.runWrite(() => master.store.db.prepare('DELETE FROM observations WHERE id=?').run(removed));
   await apiAction(t, master, command('check-recovery'));
   assert.equal(master.status().recovery.preview.counts, undefined, 'The source inventory does not grant recovery authority');
   assert.equal(master.status().actions.recover, false, 'A snapshot difference cannot authorize importing an old master deletion');

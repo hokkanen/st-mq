@@ -941,6 +941,9 @@ The paired deployment API fixture shares an explicit clock between the status
 producer and deployment validator. Synthetic builds do not age a peer that has
 no polling loop; an explicit expiry still proves that reading cached status
 cannot renew the original peer observation or authorize deployment.
+The live mirror fixture admits its intentional master deletion through the real
+writer queue. A concurrent asynchronous checkpoint must not turn that fixture
+edit into an attempted synchronous write across the protected writer boundary.
 
 JSONL receipts identify runtime, architecture, source revision/dirty state,
 resource limits, selected budgets, file exits, failed case names, nesting and
