@@ -215,6 +215,17 @@ test('a new current session poll preserves the report and list until explicit br
   assert.equal(f.calls.filter(call => call.path.startsWith('/api/charging/reports?')).length, listReads);
 });
 
+test('a queued close event cannot clear a report that has already reopened', async () => {
+  const f = setup(); await f.open();
+  f.dialog.close = () => { f.dialog.open = false; };
+  f.panel.close(); await f.open();
+  assert(f.dialog.querySelector('.charging-report-timeline').children.length > 0);
+  f.dialog.dispatch('close');
+  assert(f.dialog.querySelector('.charging-report-timeline').children.length > 0,
+    'An old native close event must not release the reopened report');
+  assert.equal(f.document.activeElement, f.dialog.querySelector('.charging-report-heading').children[1]);
+});
+
 test('receipt clocks appear once in expanded report evidence', async () => {
   const f = setup(); await f.open();
   const text = textOf(f.dialog.querySelector('.charging-report-raw').children[0]);

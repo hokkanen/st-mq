@@ -203,6 +203,8 @@ test('new-session notice offers an explicit keyboard refresh without changing th
   f.emit(f.document.activeElement, 'click');
   assert.deepEqual(requests, ['initial']); assert.equal(f.source.value, 'a');
   assert.equal(f.document.activeElement, f.button(f.source));
+  f.popup().scrollTop = 200; f.key('Escape'); f.click();
+  assert.equal(f.popup().scrollTop, 0, 'Reopening exposes the new-session notice above a previously scrolled list');
 });
 
 test('typeahead, disabled options, pointer choice and focus transfer use current source options', () => {
@@ -256,6 +258,8 @@ test('modal and fullscreen owners contain popups and bounded positioning fits sm
   const f = fixture(), dialog = f.document.createElement('dialog'); dialog.open = true; f.document.body.append(dialog);
   const modal = f.makeSelect(dialog); f.controller.refresh(); f.click(modal);
   assert.equal(f.popup().parentNode, dialog);
+  f.emit(dialog, 'close'); assert.equal(f.popup().hidden, false, 'An old close event cannot dismiss a reopened owner');
+  dialog.open = false;
   f.emit(dialog, 'close'); assert.equal(f.popup().hidden, true);
   f.document.fullscreenElement = f.document.body;
   f.window.innerWidth = 240; f.window.innerHeight = 200;

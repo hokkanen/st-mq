@@ -1446,6 +1446,9 @@ try {
   assert.equal(await evaluate('chargingFixture.reportListReads.length'),beforeNewSession.reads,'Polling offers discovery without refreshing the list underneath the reader');
   await pointerClick(sessionTrigger);
   await until(`document.querySelector('${sessionPopup} .app-select-latest:not([hidden])')`);
+  assert.equal(await evaluate(`(() => {const p=document.querySelector('${sessionPopup}').getBoundingClientRect(),
+    b=document.querySelector('${sessionPopup} .app-select-latest button').getBoundingClientRect();
+    return b.top>=p.top&&b.bottom<=p.bottom;})()`),true,'New-session discovery is visible when opening the dropdown');
   await keyPress('Tab');
   assert.equal(await evaluate('document.activeElement.textContent'),'Show latest');
   await keyPress('Enter');

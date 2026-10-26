@@ -181,7 +181,9 @@ export function createSelectPickers(document) {
     entry.popup.showPopover?.();
     attribute(entry.button, 'aria-expanded', 'true');
     entry.highlighted = entry.select.options[entry.select.selectedIndex];
-    renderOptions(entry, false); position(); entry.button.focus({ preventScroll: true });
+    renderOptions(entry, false);
+    if (pagingStates.get(entry.select)?.refresh) entry.popup.scrollTop = 0;
+    position(); entry.button.focus({ preventScroll: true });
   }
   function commit(entry, option, pointer = false) {
     if (!available(entry) || !options(entry).includes(option) || optionDisabled(option) || optionHidden(option)) return;
@@ -350,7 +352,7 @@ export function createSelectPickers(document) {
   listen(document, 'scroll', position, true); listen(window, 'resize', position);
   if (window.visualViewport) { listen(window.visualViewport, 'resize', position); listen(window.visualViewport, 'scroll', position); }
   listen(document, 'fullscreenchange', dismiss);
-  listen(document, 'close', event => { if (active && event.target.contains(active.select)) dismiss(); }, true);
+  listen(document, 'close', event => { if (!event.target.open && active && event.target.contains(active.select)) dismiss(); }, true);
   const observer = new window.MutationObserver(records => {
     if (records.some(record => record.type === 'childList' && [...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1 && (node.matches('select, option, optgroup') || node.querySelector('select')))
       || record.target.closest?.('select') || record.type === 'attributes' && ['hidden', 'inert', 'open', 'disabled'].includes(record.attributeName))) refresh();

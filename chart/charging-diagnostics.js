@@ -658,6 +658,9 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   confirm.addEventListener('click', () => { if (pendingAction) void mutate(pendingAction); });
   cancel.addEventListener('click', () => { const origin = pendingAction === 'delete' ? remove : save; confirmation.hidden = true; pendingAction = null; origin.focus(); });
   dialog.addEventListener('close', () => {
+    // Native close events are queued. A quick reopen owns new requests and
+    // evidence; an older close must not clear them or restore its old focus.
+    if (dialog.open) return;
     selectionEpoch++; listSequence++; detailSequence++; eventsSequence++; loadingList = loadingEvents = loadingDetail = false;
     remoteReports = []; reportPages = []; listed = false; listError = null; remoteReport = null; events = []; reportsBefore = reportsAfter = eventsBefore = null; loaded = false;
     setSelectPaging(selector, null);
