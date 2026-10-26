@@ -815,25 +815,29 @@ export class ChargingSessionDiagnostics {
     this.state = state;
     return project ? this.status(now) : null;
   }
-  listReports({ chargerId: id, savedOnly = false, before = null, limit = 20 } = {}) {
+  listReports({ chargerId: id, savedOnly = false, before = null, after = null, limit = 20 } = {}) {
     chargerId(id); pageLimit(limit);
     if (typeof savedOnly !== 'boolean') throw new TypeError('savedOnly must be boolean');
+    if (before !== null && after !== null) throw new TypeError('Select one report paging direction');
     const clauses = ['namespace=?', 'charger_id=?'], values = [this.key, id];
     if (savedOnly) clauses.push('saved_at IS NOT NULL');
-    if (before !== null) {
+    const base = clauses.join(' AND '), baseValues = [...values];
+    if (before !== null || after !== null) {
       let cursor;
-      try { cursor = JSON.parse(Buffer.from(before, 'base64url').toString()); } catch { throw new TypeError('Invalid report cursor'); }
+      try { cursor = JSON.parse(Buffer.from(before ?? after, 'base64url').toString()); } catch { throw new TypeError('Invalid report cursor'); }
       if (!Array.isArray(cursor) || cursor.length !== 2 || !time(cursor[0])) throw new TypeError('Invalid report cursor');
-      reportId(cursor[1]); clauses.push('(started_at<? OR (started_at=? AND report_id<?))'); values.push(cursor[0], cursor[0], cursor[1]);
+      reportId(cursor[1]); clauses.push(`(started_at,report_id)${after !== null ? '>' : '<'}(?,?)`); values.push(...cursor);
     }
     const rows = this.store.db.prepare(`SELECT report_id,association,started_at,summary FROM charging_reports WHERE ${clauses.join(' AND ')}
-      ORDER BY started_at DESC,report_id DESC LIMIT ?`).all(...values, limit + 1);
-    const more = rows.length > limit; if (more) rows.pop();
-    const last = rows.at(-1);
+      ORDER BY started_at ${after !== null ? 'ASC' : 'DESC'},report_id ${after !== null ? 'ASC' : 'DESC'} LIMIT ?`).all(...values, limit);
+    if (after !== null) rows.reverse();
+    const cursor = (row, operator) => row && this.store.db.prepare(`SELECT 1 FROM charging_reports WHERE ${base}
+      AND (started_at,report_id)${operator}(?,?) LIMIT 1`).get(...baseValues, row.started_at, row.report_id)
+      ? Buffer.from(JSON.stringify([row.started_at, row.report_id])).toString('base64url') : null;
     const active = this.state.chargers[id]?.current;
     return { reports: rows.map(row => active?.id === row.report_id
       ? this.present(active, this.clock()) : this.present(JSON.parse(row.summary), this.clock(), row.association)),
-      nextBefore: more ? Buffer.from(JSON.stringify([last.started_at, last.report_id])).toString('base64url') : null };
+      nextBefore: cursor(rows.at(-1), '<'), nextAfter: cursor(rows[0], '>') };
   }
   getReport({ chargerId: id, reportId: report } = {}) {
     chargerId(id); reportId(report);

@@ -72,6 +72,11 @@ test('reports API pages persisted sessions and events, scopes chargers and valid
   assert.ok(first.nextBefore);
   const second = await (await f.request(path('', '', `&limit=2&before=${encodeURIComponent(first.nextBefore)}`))).json();
   assert.deepEqual(second.reports.map(row => row.id), ids.slice(-4, -2).reverse());
+  assert.equal(first.nextAfter, null);
+  assert.ok(second.nextAfter);
+  const newer = await (await f.request(path('', '', `&limit=2&after=${encodeURIComponent(second.nextAfter)}`))).json();
+  assert.deepEqual(newer.reports, first.reports);
+  assert.equal(newer.nextAfter, null);
   const detail = await (await f.request(path(ids[0]))).json();
   assert.equal(detail.id, ids[0]); assert.ok(detail.counts.events > 2);
   assert.equal(Object.hasOwn(detail, 'timeline'), false);
@@ -84,9 +89,11 @@ test('reports API pages persisted sessions and events, scopes chargers and valid
     || event.kind === 'shared' && event.shared?.peers.length === 2 && event.shared.proposed && event.shared.adopted));
   assert.ok(plans.events.some(event => event.kind === 'shared'), 'Plans include the recorded peer and shared-priority assessment');
   assert.equal((await f.request(path(ids[0]).replace('charger1', 'charger2'))).status, 404);
-  for (const query of ['&limit=0', '&limit=101', '&savedOnly=yes', '&unknown=1', '&chargerId=charger2'])
+  for (const query of ['&limit=0', '&limit=101', '&savedOnly=yes', '&unknown=1', '&chargerId=charger2',
+    '&after=', '&after=bad-cursor', '&after=1&before=2', '&after=1&after=2', `&after=${'a'.repeat(257)}`])
     assert.equal((await f.request(path('', '', query))).status, 400, query);
   assert.equal((await f.request(path(ids[0], 'events', '&filter=unknown'))).status, 400);
+  assert.equal((await f.request(path(ids[0], 'events', '&after=1'))).status, 400);
   assert.equal((await f.request('/api/charging/reports')).status, 400);
 });
 

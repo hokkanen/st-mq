@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSelectPickers } from '../chart/select-picker.js';
+import { createSelectPickers, setSelectPaging } from '../chart/select-picker.js';
 
 function fixture({ popovers = true } = {}) {
   const observers = [];
@@ -110,7 +110,7 @@ function fixture({ popovers = true } = {}) {
   return { document, window, source, controller, makeSelect, makeOption, button, popup, emit,
     key: (key, fields = {}, select = source) => emit(button(select), 'keydown', { key, ...fields }),
     click: (select = source) => emit(button(select), 'click'),
-    row: index => popup().children.find(node => node.dataset.index === String(index)),
+    row: index => popup().querySelectorAll('[data-index]').find(node => node.dataset.index === String(index)),
     mutate: (target, properties = {}) => observers[0].callback([{ target, type: 'attributes', attributeName: 'disabled', ...properties }]), observers };
 }
 
@@ -126,6 +126,14 @@ test('the themed control keeps form values and immediate programmatic updates au
   f.source.hidden = false; f.source.focus(); assert.equal(f.document.activeElement, trigger);
 });
 
+test('label activation opens the visible selector and interactive label children retain their action', () => {
+  const f = fixture(), label = f.document.createElement('label'); label.control = f.source; label.textContent = 'Session'; f.document.body.append(label);
+  f.emit(label, 'click'); assert.equal(f.button(f.source).getAttribute('aria-expanded'), 'true');
+  f.key('Escape');
+  const link = f.document.createElement('a'); label.append(link);
+  f.emit(link, 'click'); assert.equal(f.button(f.source).getAttribute('aria-expanded'), 'false');
+});
+
 test('keyboard browsing and dismissal do not commit; Enter commits one input/change pair', () => {
   const f = fixture(), changes = [];
   for (const type of ['input', 'change']) f.source.addEventListener(type, () => changes.push(type));
@@ -136,6 +144,51 @@ test('keyboard browsing and dismissal do not commit; Enter commits one input/cha
   assert.equal(f.source.value, 'c'); assert.deepEqual(changes, ['input', 'change']);
   assert.equal(f.popup().hidden, true); assert.equal(f.document.activeElement, f.button(f.source));
   f.click(); f.emit(f.row(2), 'click'); assert.deepEqual(changes, ['input', 'change']);
+});
+
+test('paged keyboard browsing requests one page, retains focus, and retries without selecting a session', () => {
+  const f = fixture(), requests = [], changes = [];
+  const state = { older: true, newer: false, loading: null, error: null, load(direction) {
+    requests.push(direction); state.loading = direction; setSelectPaging(f.source, state);
+  } };
+  f.source.addEventListener('change', () => changes.push(f.source.value));
+  setSelectPaging(f.source, state);
+  f.click(); assert.deepEqual(requests, [], 'Opening does not drain history');
+  f.key('End'); f.key('ArrowDown');
+  assert.deepEqual(requests, ['older']); assert.equal(f.source.value, 'a');
+  assert.match(f.popup().textContent, /Loading older sessions/);
+  const highlighted = f.document.activeElement.getAttribute('aria-activedescendant');
+  f.source.append(f.makeOption('d', 'Delta'));
+  f.mutate(f.source, { type: 'childList', addedNodes: [], removedNodes: [] });
+  state.loading = null; state.older = false; state.newer = true; setSelectPaging(f.source, state);
+  assert.equal(f.document.activeElement.getAttribute('aria-activedescendant'), highlighted);
+  assert.deepEqual(requests, ['older'], 'Adding options does not request another page');
+  f.key('Home'); assert.deepEqual(requests, ['older', 'newer']);
+  state.loading = null; state.error = 'newer'; setSelectPaging(f.source, state);
+  f.key('ArrowUp'); assert.equal(requests.length, 2, 'A failed page waits for explicit retry');
+  f.key('Tab'); assert.equal(f.document.activeElement.className, 'app-select-retry');
+  f.emit(f.document.activeElement, 'click');
+  assert.deepEqual(requests, ['older', 'newer', 'newer']);
+  assert.equal(f.document.activeElement, f.button(f.source));
+  f.key('Escape'); assert.equal(f.popup().hidden, true); assert.deepEqual(changes, []);
+});
+
+test('scroll paging requires new browsing intent and is suspended while loading or closed', () => {
+  const f = fixture(), calls = [];
+  const state = { older: true, newer: true, load(direction) { calls.push(direction); state.loading = direction; setSelectPaging(f.source, state); } };
+  setSelectPaging(f.source, state); f.click();
+  Object.defineProperty(f.popup(), 'scrollHeight', { value: 1000 });
+  Object.assign(f.popup(), { scrollTop: 800, clientHeight: 200 });
+  f.emit(f.popup(), 'scroll'); assert.deepEqual(calls, []);
+  f.emit(f.popup(), 'wheel', { deltaY: 100 }); f.emit(f.popup(), 'scroll');
+  assert.deepEqual(calls, ['older']);
+  f.emit(f.popup(), 'wheel', { deltaY: 100 }); f.emit(f.popup(), 'scroll'); assert.equal(calls.length, 1);
+  state.loading = null; setSelectPaging(f.source, state);
+  f.emit(f.popup(), 'scroll'); assert.equal(calls.length, 1, 'An arriving page cannot start a fetch loop');
+  f.popup().scrollTop = 0; f.emit(f.popup(), 'touchmove'); f.emit(f.popup(), 'scroll');
+  assert.deepEqual(calls, ['older', 'newer']);
+  f.key('Escape'); state.loading = null; setSelectPaging(f.source, state);
+  f.emit(f.popup(), 'wheel', { deltaY: 100 }); f.emit(f.popup(), 'scroll'); assert.equal(calls.length, 2);
 });
 
 test('typeahead, disabled options, pointer choice and focus transfer use current source options', () => {

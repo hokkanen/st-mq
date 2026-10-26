@@ -1,4 +1,12 @@
 let nextPickerId = 0;
+const pagingStates = new WeakMap(), pagingListeners = new WeakMap();
+
+/** Only explicitly configured selectors fetch pages. The owning panel retains
+ * cursors and data; the picker reports browsing intent and displays its state. */
+export function setSelectPaging(select, state) {
+  if (state) pagingStates.set(select, state); else pagingStates.delete(select);
+  pagingListeners.get(select)?.();
+}
 
 const optionDisabled = option => option.disabled || option.parentElement?.tagName === 'OPTGROUP' && option.parentElement.disabled;
 const optionHidden = option => option.hidden || option.parentElement?.tagName === 'OPTGROUP' && option.parentElement.hidden;
@@ -18,7 +26,7 @@ export function createSelectPickers(document) {
     node.addEventListener(type, listener, capture);
     removers.push(() => node.removeEventListener(type, listener, capture));
   };
-  const make = (tag, className, text) => {
+  const make = (tag, className = '', text) => {
     const node = document.createElement(tag); node.className = className;
     if (text !== undefined) node.textContent = text;
     return node;
@@ -41,6 +49,7 @@ export function createSelectPickers(document) {
     attribute(entry.button, 'aria-expanded', 'false');
     attribute(entry.button, 'aria-activedescendant', null);
     entry.search = '';
+    entry.pageIntent = null;
   }
   function position() {
     if (!active) return;
@@ -70,26 +79,57 @@ export function createSelectPickers(document) {
         entry.popup.scrollTop = row.offsetTop + row.offsetHeight - entry.popup.clientHeight;
     }
   }
-  function renderOptions(entry) {
-    const { popup, select } = entry;
-    entry.rows.clear(); popup.replaceChildren();
-    let group;
+  function renderOptions(entry, preserveScroll = true) {
+    const { popup, select, list } = entry, oldRows = entry.rows;
+    const anchor = [...oldRows].find(([, row]) => row.offsetTop + row.offsetHeight > popup.scrollTop);
+    const anchorOffset = anchor ? anchor[1].offsetTop - popup.scrollTop : null;
+    const oldScroll = popup.scrollTop;
+    const nextRows = new Map(), nodes = []; let group;
     for (const [index, option] of options(entry).entries()) {
       if (optionHidden(option)) continue;
       const parent = option.parentElement;
       if (parent.tagName === 'OPTGROUP' && parent !== group) {
-        popup.append(make('div', 'app-select-group', parent.label)); group = parent;
+        nodes.push(make('div', 'app-select-group', parent.label)); group = parent;
       }
-      const row = make('div', 'app-select-option', option.label);
+      const row = oldRows.get(option) ?? make('div', 'app-select-option');
+      if (row.textContent !== option.label) row.textContent = option.label;
       row.id = `${popup.id}-option-${index}`; row.dataset.index = String(index);
       attribute(row, 'role', 'option'); attribute(row, 'aria-selected', String(option.selected));
       attribute(row, 'aria-disabled', String(optionDisabled(option)));
-      entry.rows.set(option, row); popup.append(row);
+      nextRows.set(option, row); nodes.push(row);
     }
+    entry.rows = nextRows; list.replaceChildren(...nodes);
     const candidates = choices(entry);
     const selected = select.options[select.selectedIndex];
     position();
     highlight(entry, candidates.includes(entry.highlighted) ? entry.highlighted : candidates.includes(selected) ? selected : candidates[0]);
+    if (preserveScroll && anchor && nextRows.has(anchor[0])) popup.scrollTop = nextRows.get(anchor[0]).offsetTop - anchorOffset;
+    else if (preserveScroll && Number.isFinite(oldScroll) && !entry.highlighted) popup.scrollTop = oldScroll;
+  }
+  function requestPage(entry, direction, retry = false) {
+    const state = pagingStates.get(entry.select);
+    if (active !== entry || !state || state.disabled || state.loading || !retry && state.error
+      || !retry && !state[direction]) return;
+    entry.pageIntent = null;
+    state.load(direction);
+  }
+  function syncPaging(entry) {
+    const state = pagingStates.get(entry.select);
+    const anchor = active === entry ? [...entry.rows.values()].find(row => row.offsetTop + row.offsetHeight > entry.popup.scrollTop) : null;
+    const offset = anchor ? anchor.offsetTop - entry.popup.scrollTop : null;
+    for (const direction of ['newer', 'older']) {
+      const { container, status, retry } = entry.paging[direction];
+      const failed = state?.error === direction || direction === 'older' && state?.error === 'initial';
+      const loading = state?.loading === direction || direction === 'older' && state?.loading === 'initial';
+      const hidden = !failed && !loading, text = failed ? 'Sessions could not be loaded.' : loading ? `Loading ${direction === 'newer' ? 'newer' : 'older'} sessions…` : '';
+      if (container.hidden !== hidden) container.hidden = hidden;
+      if (status.textContent !== text) status.textContent = text;
+      if (retry.hidden !== !failed) retry.hidden = !failed;
+      const isDisabled = Boolean(state?.disabled || state?.loading);
+      if (retry.disabled !== isDisabled) retry.disabled = isDisabled;
+      attribute(entry.list, 'aria-busy', state?.loading ? 'true' : null);
+    }
+    if (anchor) entry.popup.scrollTop = anchor.offsetTop - offset;
   }
   function nameFor(entry) {
     const { select, button } = entry;
@@ -124,6 +164,7 @@ export function createSelectPickers(document) {
         position();
       }
     }
+    syncPaging(entry);
   }
   function show(entry) {
     sync(entry);
@@ -135,7 +176,7 @@ export function createSelectPickers(document) {
     entry.popup.showPopover?.();
     attribute(entry.button, 'aria-expanded', 'true');
     entry.highlighted = entry.select.options[entry.select.selectedIndex];
-    renderOptions(entry); position(); entry.button.focus({ preventScroll: true });
+    renderOptions(entry, false); position(); entry.button.focus({ preventScroll: true });
   }
   function commit(entry, option, pointer = false) {
     if (!available(entry) || !options(entry).includes(option) || optionDisabled(option) || optionHidden(option)) return;
@@ -155,7 +196,11 @@ export function createSelectPickers(document) {
     if (event.ctrlKey || event.metaKey || !available(entry)) return;
     const open = active === entry;
     if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); dismiss(); return; }
-    if (event.key === 'Tab') { dismiss(); return; }
+    if (event.key === 'Tab') {
+      const retry = Object.values(entry.paging).find(part => !part.container.hidden && !part.retry.hidden)?.retry;
+      if (open && retry && !event.shiftKey) { event.preventDefault(); retry.focus(); return; }
+      dismiss(); return;
+    }
     if (event.key === 'Enter' || event.key === ' ' && (!entry.search || Date.now() - entry.searchAt >= 700)) {
       event.preventDefault();
       if (open) commit(entry, entry.highlighted); else show(entry);
@@ -168,7 +213,10 @@ export function createSelectPickers(document) {
       const candidates = choices(entry), index = candidates.indexOf(entry.highlighted);
       const target = event.key === 'Home' ? 0 : event.key === 'End' ? candidates.length - 1
         : !open ? Math.max(0, index) : Math.max(0, Math.min(candidates.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)));
-      highlight(entry, candidates[target]); return;
+      highlight(entry, candidates[target]);
+      if ((event.key === 'ArrowDown' || event.key === 'End') && target >= candidates.length - 3) requestPage(entry, 'older');
+      else if ((event.key === 'ArrowUp' || event.key === 'Home') && target < 3) requestPage(entry, 'newer');
+      return;
     }
     if (event.key.length === 1 && !event.altKey) {
       event.preventDefault(); if (!open) show(entry);
@@ -188,13 +236,22 @@ export function createSelectPickers(document) {
     button.type = 'button'; button.id = `${id}-trigger`; value.id = `${id}-value`;
     const arrow = make('span', 'app-select-arrow', '⌄'); arrow.setAttribute('aria-hidden', 'true'); button.append(value, arrow);
     const popup = make('div', 'app-select-popup'); popup.id = `${id}-list`; popup.hidden = true;
-    attribute(button, 'role', 'combobox'); attribute(button, 'aria-haspopup', 'listbox'); attribute(button, 'aria-expanded', 'false'); attribute(button, 'aria-controls', popup.id);
-    attribute(popup, 'role', 'listbox'); attribute(popup, 'aria-labelledby', button.id);
+    const list = make('div', 'app-select-options'); list.id = `${id}-options`;
+    attribute(button, 'role', 'combobox'); attribute(button, 'aria-haspopup', 'listbox'); attribute(button, 'aria-expanded', 'false'); attribute(button, 'aria-controls', list.id);
+    attribute(list, 'role', 'listbox'); attribute(list, 'aria-labelledby', button.id);
+    const paging = Object.fromEntries(['newer', 'older'].map(direction => {
+      const container = make('div', 'app-select-paging'), status = make('span'), retry = make('button', 'app-select-retry', 'Retry');
+      attribute(status, 'role', 'status'); retry.type = 'button'; retry.setAttribute('aria-label', `Retry loading ${direction} sessions`);
+      container.hidden = true; retry.hidden = true; container.append(status, retry);
+      return [direction, { container, status, retry }];
+    }));
+    popup.append(paging.newer.container, list, paging.older.container);
     if (typeof popup.showPopover === 'function') popup.setAttribute('popover', 'manual');
     const error = make('span', 'app-select-error'); error.id = `${id}-error`; error.hidden = true; error.setAttribute('role', 'alert');
-    const entry = { select, button, value, popup, error, rows: new Map(), removers: [], search: '', searchAt: 0,
+    const entry = { select, button, value, popup, list, paging, error, rows: new Map(), removers: [], search: '', searchAt: 0,
       attributes: { tabindex: select.getAttribute('tabindex'), 'aria-hidden': select.getAttribute('aria-hidden') } };
     entries.set(select, entry); select.after(button, error); select.classList.add('app-select-source');
+    pagingListeners.set(select, () => { entry.pageIntent = null; sync(entry); });
     select.tabIndex = -1; select.setAttribute('aria-hidden', 'true');
     // Programmatic assignments do not emit DOM mutations or change events.
     // Observe only these instances, leaving the browser prototypes untouched.
@@ -212,7 +269,28 @@ export function createSelectPickers(document) {
     }
     listen(button, 'click', () => { if (active === entry) dismiss(); else show(entry); }, false, entry.removers);
     listen(button, 'keydown', event => keydown(entry, event), false, entry.removers);
-    listen(popup, 'pointerdown', event => event.preventDefault(), false, entry.removers);
+    listen(popup, 'pointerdown', event => { if (event.target.closest('[data-index]')) event.preventDefault(); else entry.pageIntent = 'pointer'; }, false, entry.removers);
+    listen(popup, 'wheel', event => { entry.pageIntent = event.deltaY < 0 ? 'newer' : 'older'; }, false, entry.removers);
+    listen(popup, 'touchmove', () => { entry.pageIntent = 'pointer'; }, false, entry.removers);
+    listen(popup, 'scroll', () => {
+      if (!entry.pageIntent) return;
+      if (entry.pageIntent !== 'newer' && popup.scrollHeight - popup.scrollTop - popup.clientHeight < 120) requestPage(entry, 'older');
+      else if (entry.pageIntent !== 'older' && popup.scrollTop < 120) requestPage(entry, 'newer');
+    }, false, entry.removers);
+    for (const direction of ['newer', 'older']) {
+      listen(paging[direction].retry, 'click', () => {
+        const retryDirection = pagingStates.get(select)?.error;
+        requestPage(entry, retryDirection ?? direction, true);
+        button.focus({ preventScroll: true });
+      }, false, entry.removers);
+    }
+    listen(popup, 'keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); dismiss(); button.focus({ preventScroll: true }); }
+      else if (event.key === 'Tab') {
+        if (event.shiftKey) { event.preventDefault(); button.focus({ preventScroll: true }); }
+        else { dismiss(); button.focus({ preventScroll: true }); }
+      }
+    }, false, entry.removers);
     listen(popup, 'click', event => {
       const row = event.target.closest('[data-index]');
       if (row && popup.contains(row)) commit(entry, select.options[Number(row.dataset.index)], true);
@@ -228,6 +306,7 @@ export function createSelectPickers(document) {
     if (active === entry) dismiss();
     for (const remove of entry.removers) remove();
     entry.button.remove(); entry.popup.remove(); entry.error.remove();
+    pagingListeners.delete(entry.select);
     entry.select.classList.remove('app-select-source');
     for (const [name, value] of Object.entries(entry.attributes)) attribute(entry.select, name, value);
     entries.delete(entry.select);
@@ -243,6 +322,13 @@ export function createSelectPickers(document) {
   };
   listen(document, 'pointerdown', outside, true);
   listen(document, 'focusin', outside);
+  listen(document, 'click', event => {
+    const label = event.target.closest?.('label'), entry = entries.get(label?.control ?? label?.querySelector('select'));
+    if (!entry || event.target === entry.select || event.target.closest('a, button, input, textarea, select')) return;
+    // The native source is hidden. Forward its label activation to the visible
+    // control instead of relying on browser clicks on an undisplayed select.
+    event.preventDefault(); show(entry);
+  });
   listen(document, 'change', event => { const entry = entries.get(event.target); if (entry) sync(entry); });
   listen(document, 'input', event => { const entry = entries.get(event.target); if (entry) sync(entry); });
   listen(document, 'reset', () => window.queueMicrotask(refresh));

@@ -5,6 +5,9 @@ button.app-select-trigger { display: flex; align-items: center; justify-content:
 button.app-select-trigger:hover, button.app-select-trigger[aria-expanded="true"] { border-color: var(--muted); background: var(--surface-soft); }
 button.app-select-trigger:disabled { cursor: default; opacity: .6; }
 button.app-select-trigger[hidden], .app-select-popup[hidden], .app-select-error[hidden] { display: none; }
+.app-select-paging[hidden], .app-select-retry[hidden] { display: none; }
+.app-select-paging { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 40px; padding: 6px 10px; color: var(--muted); font-size: 12px; }
+button.app-select-retry { flex: none; min-height: 44px; margin: 0; padding: 6px 10px; font: inherit; }
 button.app-select-trigger[aria-invalid="true"] { border-color: var(--danger, #c74747); }
 .app-select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .app-select-arrow { flex: none; color: var(--muted); font-size: 17px; line-height: 1; }

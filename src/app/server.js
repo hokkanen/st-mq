@@ -86,7 +86,7 @@ function optionalTimestampParam(url, key) {
   return Number(value);
 }
 function chargingReportQuery(url, kind) {
-  const accepted = kind === 'list' ? ['chargerId', 'savedOnly', 'before', 'limit']
+  const accepted = kind === 'list' ? ['chargerId', 'savedOnly', 'before', 'after', 'limit']
     : kind === 'events' ? ['chargerId', 'filter', 'before', 'limit'] : ['chargerId'];
   for (const key of url.searchParams.keys()) {
     if (!accepted.includes(key) || url.searchParams.getAll(key).length !== 1)
@@ -102,6 +102,9 @@ function chargingReportQuery(url, kind) {
     if (query.before !== null && (!query.before || query.before.length > 256)) throw new TypeError('Invalid before');
   }
   if (kind === 'list') {
+    query.after = url.searchParams.get('after');
+    if (query.after !== null && (!query.after || query.after.length > 256)) throw new TypeError('Invalid after');
+    if (query.before !== null && query.after !== null) throw new TypeError('Select one report paging direction');
     const savedOnly = url.searchParams.get('savedOnly');
     if (savedOnly !== null && !['true', 'false'].includes(savedOnly)) throw new TypeError('Invalid savedOnly');
     query.savedOnly = savedOnly === 'true';

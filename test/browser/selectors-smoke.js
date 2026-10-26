@@ -146,15 +146,16 @@ try {
     return [node.className, style.backgroundColor, style.borderRadius, style.width]; })()`);
   await click(`${datePopup} [data-date="2026-09-05"]`);
   assert.equal(await evaluate("document.getElementById('date-start').value"), '2026-09-05');
-  assert.equal(await evaluate("document.getElementById('date-end').dataset.singleDay"), 'true');
+  assert.equal(await evaluate("document.getElementById('date-end').value"), '2026-09-05',
+    'Choosing a start date selects that calendar day');
   const suggestion = await evaluate("document.getElementById('date-end').value");
   await click('#date-end'); await bounds(datePopup, 'End date');
   assert.deepEqual(await evaluate(`(() => { const node = document.querySelector('${datePopup}'), style = getComputedStyle(node);
     return [node.className, style.backgroundColor, style.borderRadius, style.width]; })()`), startStyle,
   'Start and end use identical calendar styling');
   await click(`${datePopup} [data-date="${suggestion}"]`);
-  assert.equal(await evaluate("document.getElementById('date-end').dataset.singleDay"), 'false',
-    'Choosing the suggested end date explicitly activates the range');
+  assert.equal(await evaluate("document.getElementById('date-start').value"), '2026-09-05',
+    'Choosing the displayed end date preserves the selected start');
   assert.equal(await evaluate("document.getElementById('date-end').value"), suggestion);
   await click('#date-start'); await key('ArrowRight'); await key('Escape');
   assert.equal(await evaluate("document.querySelector('.date-picker:not([hidden])') === null && document.activeElement.id === 'date-start'"), true,

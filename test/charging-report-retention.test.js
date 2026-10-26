@@ -122,6 +122,62 @@ test('paged reports and filtered events are stable with equal timestamps and con
   assert.throws(() => f.observer.reportEvents({ ...ref(report), filter: 'retired-filter' }), /filter/);
 });
 
+test('report cursors seek both directions through large archives and sparse saved collections without writes', () => {
+  const f = fixture(), seed = f.tick(START).chargers[0].current;
+  f.finish(START + MINUTE);
+  const row = f.store.db.prepare('SELECT * FROM charging_reports WHERE report_id=?').get(seed.id);
+  const insert = f.store.db.prepare(`INSERT INTO charging_reports
+    (namespace,charger_id,report_id,association,started_at,ended_at,saved_at,summary,checkpoint) VALUES(?,?,?,?,?,?,?,?,?)`);
+  const expected = [];
+  for (let batch = 0; batch < 2500; batch += 20) f.store.transaction(() => {
+    for (let index = batch + 1; index <= batch + 20; index++) {
+      const id = index.toString(16).padStart(64, '0'), startedAt = START + Math.floor(index / 2) * MINUTE;
+      const summary = { ...JSON.parse(row.summary), id, startedAt, endedAt: startedAt + 1000, saved: index % 17 === 0 };
+      insert.run(row.namespace, 'charger1', id, row.association, startedAt, summary.endedAt,
+        summary.saved ? startedAt : null, JSON.stringify(summary), row.checkpoint);
+      expected.push(summary);
+    }
+  });
+  expected.sort((a, b) => b.startedAt - a.startedAt || b.id.localeCompare(a.id));
+  const beforeChanges = f.store.db.prepare('SELECT total_changes() AS n').get().n;
+  for (const savedOnly of [false, true]) {
+    const ordered = expected.filter(row => !savedOnly || row.saved);
+    const first = f.observer.listReports({ chargerId: 'charger1', savedOnly, limit: 20 });
+    assert.deepEqual(first.reports.map(row => row.id), ordered.slice(0, 20).map(row => row.id));
+    assert.equal(first.nextAfter, null);
+    let page = first;
+    for (let index = 1; index < 6; index++) page = f.observer.listReports({ chargerId: 'charger1', savedOnly, before: page.nextBefore, limit: 20 });
+    assert.deepEqual(page.reports.map(row => row.id), ordered.slice(100, 120).map(row => row.id));
+    for (let index = 0; index < 5; index++) page = f.observer.listReports({ chargerId: 'charger1', savedOnly, after: page.nextAfter, limit: 20 });
+    assert.deepEqual(page.reports, first.reports);
+    assert.equal(page.nextAfter, null);
+  }
+  for (const [operator, order] of [['<', 'DESC'], ['>', 'ASC']]) {
+    const plan = f.store.db.prepare(`EXPLAIN QUERY PLAN SELECT report_id,summary FROM charging_reports
+      WHERE namespace=? AND charger_id=? AND (started_at,report_id)${operator}(?,?)
+      ORDER BY started_at ${order},report_id ${order} LIMIT 20`).all(row.namespace, 'charger1', START, seed.id);
+    assert(plan.some(row => /charging_reports_history.*started_at/.test(row.detail)), JSON.stringify(plan));
+    assert(!plan.some(row => /TEMP B-TREE|SCAN charging_reports/.test(row.detail)), JSON.stringify(plan));
+  }
+  assert.equal(f.store.db.prepare('SELECT total_changes() AS n').get().n, beforeChanges);
+});
+
+test('session cursors remain usable when their boundary report is deleted', () => {
+  const f = fixture(), reports = [];
+  for (let index = 0; index < 9; index++) {
+    reports.push(f.start(START + index * 2 * MINUTE, `cursor-session-${index}`));
+    f.finish(START + (index * 2 + 1) * MINUTE);
+  }
+  const first = f.observer.listReports({ chargerId: 'charger1', limit: 3 });
+  f.observer.deleteReport({ chargerId: 'charger1', reportId: first.reports.at(-1).id });
+  const second = f.observer.listReports({ chargerId: 'charger1', before: first.nextBefore, limit: 3 });
+  assert.deepEqual(second.reports.map(row => row.id), reports.slice(3, 6).reverse().map(row => row.id));
+  f.observer.deleteReport({ chargerId: 'charger1', reportId: second.reports[0].id });
+  const newer = f.observer.listReports({ chargerId: 'charger1', after: second.nextAfter, limit: 3 });
+  assert.deepEqual(newer.reports.map(row => row.id), first.reports.slice(0, 2).map(row => row.id));
+  assert.equal(newer.nextAfter, null);
+});
+
 test('price contexts are reused without changing event horizons, bounded pages or report ownership', t => {
   const f = fixture(), horizon = START + DAY;
   f.view.deadlineAt = horizon;

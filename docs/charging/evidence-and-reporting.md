@@ -97,11 +97,20 @@ inherit an unconfirmed schedule or a lower-priority native instruction. Actual
 pending commands, uncertain outcomes and unavailable or positive measured draw
 still prevent the report from confirming physical stopping.
 
-The session selector offers recent and saved reports for that charger, loading
-older sessions and events in pages. An expired or deleted selection stays
-explicitly unavailable instead of opening another session. The guided-test link
-opens the assessment attached to that exact report. Opening or saving a report
-never identifies a vehicle, changes a schedule or sends a charger instruction.
+The session selector offers recent and saved reports for that charger. Scrolling
+or keyboard browsing near the end of its dropdown loads older sessions inside
+the same dropdown, with inline loading and retry feedback instead of a separate
+button. It reads 20 summaries at a time and retains a window of at most 100
+choices; browsing back upward reloads newer pages. The selected report remains
+selected even outside that window. Opening the dropdown or receiving a page
+does not fetch the whole archive, select another report or load other reports'
+events. Paging preserves the highlighted choice and visible reading position.
+Events retain their separate paging controls. An expired or deleted selection
+stays explicitly unavailable instead of opening another session. The guided-test link
+opens the assessment attached to that exact report. Session choices include the
+year and UTC offset to distinguish saved years and repeated daylight-saving hours.
+Opening or saving a report never identifies a vehicle, changes a schedule or
+sends a charger instruction.
 Normal dashboard refreshes preserve open disclosures, keyboard focus and the
 report's scroll position. Each event starts as a compact timestamp and title;
 expand it for its explanation, planning snapshot and original evidence.

@@ -185,10 +185,22 @@ try {
       const method = options.method ?? (input instanceof Request ? input.method : 'GET');
       if (path.startsWith('/api/charging/reports')) {
         const url = new URL(typeof input === 'string' ? input : input.url, location.href), f = chargingFixture;
-        const all = (url.searchParams.get('chargerId') === 'charger2' ? [f.second.current,...f.second.recent] : [f.report,...f.recent])
-          .filter(row=>row&&!f.deletedReports.includes(row.id));
+        const chargerId = url.searchParams.get('chargerId');
+        const all = [...(chargerId === 'charger2' ? [f.second.current,...f.second.recent] : [f.report,...f.recent]), ...(f.archives?.[chargerId]??[])]
+          .filter(row=>row&&!f.deletedReports.includes(row.id)).sort((a,b)=>b.startedAt-a.startedAt||b.id.localeCompare(a.id));
         const json = (value,status=200) => new Response(JSON.stringify(value),{status,headers:{'Content-Type':'application/json'}});
-        if (path === '/api/charging/reports') return json({reports:all.filter(row=>url.searchParams.get('savedOnly')!=='true'||row.saved).map(summaryFor),nextBefore:null,readOnly:f.readOnly});
+        if (path === '/api/charging/reports') {
+          (f.reportListReads??=[]).push(Object.fromEntries(url.searchParams));
+          if(f.deferReportList) {f.deferReportList=false;await new Promise(resolve=>{f.resolveReportList=resolve;});}
+          if(f.failReportList) {f.failReportList=false;return json({error:'Synthetic unavailable report list'},503);}
+          if(f.emptyReportPage) {f.emptyReportPage=false;return json({reports:[],nextBefore:null,nextAfter:null,readOnly:f.readOnly});}
+          const rows=all.filter(row=>url.searchParams.get('savedOnly')!=='true'||row.saved), limit=Number(url.searchParams.get('limit')??20);
+          const before=url.searchParams.get('before'), after=url.searchParams.get('after');
+          const start=before?rows.findIndex(row=>row.id===before)+1:after?Math.max(0,rows.findIndex(row=>row.id===after)-limit):0;
+          const end=after?rows.findIndex(row=>row.id===after):Math.min(rows.length,start+limit), page=rows.slice(start,end);
+          return json({reports:page.map(summaryFor),nextBefore:end<rows.length?page.at(-1)?.id??null:null,
+            nextAfter:start>0?page[0]?.id??null:null,readOnly:f.readOnly});
+        }
         const id=decodeURIComponent(path.split('/')[4]), report=all.find(row=>row.id===id);
         if (!report) return json({error:'Report not found'},404);
         if (method.toUpperCase()==='POST') {
@@ -1329,6 +1341,96 @@ try {
   assert.equal(await evaluate('chargingFixture.declarationChecks.length === chargingFixture.mutations.length && chargingFixture.declarationChecks.every(row => row.unchanged)'), true,
     'Every preparation, arm, schedule, target and cancellation declaration preserves ordinary charging status and configuration');
   assert.equal(await evaluate('chargingFixture.mutations.length'), inspectionMutations, 'All report history inspection remains read-only');
+  // A session picker browses a large saved archive without growing its retained
+  // window, fetching every report body, or exposing a separate paging button.
+  await evaluate(`(() => {
+    const f=chargingFixture; f.family=false;f.readOnly=false;f.deletedReports=[];f.recent=[];
+    f.archives={charger1:Array.from({length:125},(_,index)=>({...structuredClone(f.report),
+      id:'archive-'+String(index).padStart(3,'0'), startedAt:${now}-86400000*(index+1),
+      endedAt:${now}-86400000*(index+1)+3600000,saved:true,timeline:[],plans:[],findings:[]}))};
+    f.reportListReads=[];
+  })()`);
+  await poll(); await click('#charger1-session-report');
+  await until("document.getElementById('charging-report-session').options.length===20");
+  const sessionTrigger = '#charging-report-session + .app-select-trigger';
+  const sessionPopup = '.app-select-popup:not([hidden])';
+  const selectedSession = await evaluate("document.getElementById('charging-report-session').value");
+  assert.equal(await evaluate("document.getElementById('charging-report-more-sessions')"), null);
+  await pointerClick(sessionTrigger);
+  await keyPress('End');
+  await until("document.getElementById('charging-report-session').options.length===40");
+  await pause(80);
+  assert.equal(await evaluate('chargingFixture.reportListReads.length'), 2, 'One boundary gesture requests one page, without draining history');
+  for(let page=0;page<4;page++) {
+    const reads=await evaluate('chargingFixture.reportListReads.length');
+    await keyPress('End'); await until(`chargingFixture.reportListReads.length===${reads+1}`);
+    await until(`document.querySelector('${sessionPopup} [role=listbox]').getAttribute('aria-busy')!=='true'`);
+  }
+  assert.equal(await evaluate("[...document.getElementById('charging-report-session').options].filter(row=>!row.hidden).length"),100);
+  assert.equal(await evaluate("document.getElementById('charging-report-session').options.length"),101,'Only the selected report may be retained outside the 100-option window');
+  assert.equal(await evaluate("document.getElementById('charging-report-session').value"),selectedSession);
+  assert.equal(await evaluate("document.querySelector('#charging-report-session + button').getAttribute('aria-expanded')"),'true');
+  const oldestBefore=await evaluate("[...document.getElementById('charging-report-session').options].filter(row=>!row.hidden).at(-1).value");
+  await keyPress('Home');
+  await until("chargingFixture.reportListReads.at(-1).after");
+  await until(`document.querySelector('${sessionPopup} [role=listbox]').getAttribute('aria-busy')!=='true'`);
+  assert.notEqual(await evaluate("[...document.getElementById('charging-report-session').options].filter(row=>!row.hidden).at(-1).value"),oldestBefore);
+  await evaluate('chargingFixture.failReportList=true'); await keyPress('End');
+  await until(`document.querySelector('${sessionPopup} .app-select-paging:not([hidden]) .app-select-retry:not([hidden])')`);
+  await keyPress('Tab');
+  assert.equal(await evaluate('document.activeElement.className'),'app-select-retry');
+  await keyPress('Enter');
+  await until(`!document.querySelector('${sessionPopup} .app-select-paging:not([hidden])')`);
+  assert.equal(await evaluate("document.getElementById('charging-report-session').value"),selectedSession);
+  await keyPress('Escape');
+  assert.equal(await evaluate("document.getElementById('charging-report-dialog').open"),true,'Escape closes only the dropdown');
+  await evaluate("document.getElementById('charging-report-collection').value='saved';document.getElementById('charging-report-collection').dispatchEvent(new Event('change'))");
+  await until("document.getElementById('charging-report-session').options.length===20");
+  await pointerClick(sessionTrigger);
+  const savedBefore=await evaluate('chargingFixture.reportListReads.length');
+  const wheelPoint=await evaluate(`(() => {const r=document.querySelector('${sessionPopup}').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+  await send('Input.dispatchMouseEvent',{type:'mouseWheel',deltaX:0,deltaY:1000,...wheelPoint});
+  await until(`chargingFixture.reportListReads.length===${savedBefore+1}`);
+  await until("document.getElementById('charging-report-session').options.length===40");
+  for(const width of [320,390,1440]) for(const theme of ['light','dark']) {
+    await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.documentElement.dataset.theme='${theme}'`);
+    await fits('#charging-report-dialog');
+    assert.equal(await evaluate(`(() => {const r=document.querySelector('${sessionPopup}').getBoundingClientRect();
+      return r.left>=7&&r.right<=innerWidth-7&&r.top>=7&&r.bottom<=innerHeight-7;})()`),true,'Paged dropdown fits the viewport');
+    await screenshot(`session-picker-${width}-${theme}`,'#charging-report-dialog',{viewport:true});
+  }
+  await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
+  await send('Emulation.setTouchEmulationEnabled',{enabled:true});
+  const touchBefore=await evaluate('chargingFixture.reportListReads.length');
+  const touchPoint=await evaluate(`(() => {const p=document.querySelector('${sessionPopup}');
+    p.scrollTop=p.scrollHeight-p.clientHeight-180;const r=p.getBoundingClientRect();return {x:r.x+r.width/2,y:r.bottom-35};})()`);
+  await send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{...touchPoint,radiusX:1,radiusY:1}]});
+  for(const offset of [40,80,120,160,200]) await send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:touchPoint.x,y:touchPoint.y-offset,radiusX:1,radiusY:1}]});
+  await send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+  await until(`chargingFixture.reportListReads.length===${touchBefore+1}`);
+  await until("document.getElementById('charging-report-session').options.length===60");
+  await send('Emulation.setTouchEmulationEnabled',{enabled:false});
+  for(const length of [80,100]) {
+    await keyPress('End'); await until(`document.getElementById('charging-report-session').options.length===${length}`);
+  }
+  await evaluate('chargingFixture.emptyReportPage=true'); await keyPress('End');
+  await until(`document.querySelector('${sessionPopup} [role=listbox]').getAttribute('aria-busy')!=='true'`);
+  assert.equal(await evaluate("document.getElementById('charging-report-session').options.length"),100,'An empty page after expiry cannot evict loaded sessions');
+  await keyPress('Escape'); await keyPress('Escape');
+  await evaluate('chargingFixture.deferReportList=true'); await click('#charger1-session-report');
+  await until('typeof chargingFixture.resolveReportList===\'function\'');
+  await keyPress('Escape'); await evaluate('chargingFixture.resolveReportList();delete chargingFixture.resolveReportList'); await pause(80);
+  assert.equal(await evaluate("document.getElementById('charging-report-dialog').open"),false,'A late list response cannot reopen a closed report');
+  assert.equal(await evaluate("document.querySelectorAll('#charging-report-dialog .charging-report-timeline > li').length"),0);
+  await evaluate('chargingFixture.deferReportList=true'); await click('#charger1-session-report');
+  await until('typeof chargingFixture.resolveReportList===\'function\'');
+  await evaluate("document.getElementById('charging-report-collection').value='saved';document.getElementById('charging-report-collection').dispatchEvent(new Event('change'))");
+  await until("document.getElementById('charging-report-session').value==='archive-000'");
+  await evaluate('chargingFixture.resolveReportList();delete chargingFixture.resolveReportList'); await pause(80);
+  assert.equal(await evaluate("document.getElementById('charging-report-session').value"),'archive-000','A late Recent response cannot replace Saved selection');
+  await keyPress('Escape');
+  assert.equal(await evaluate('chargingFixture.mutations.length'),inspectionMutations,'Automatic session browsing sends no charger instructions');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'charging-browser-smoke-passed', artifacts, checks: [
     'shared-device-card-style', 'reported-firmware-source-clock-and-unknown', 'local-documentation-destinations',
@@ -1352,6 +1454,7 @@ try {
     'family-report-management-disabled', 'explicit-saved-report-deletion-and-cancel', 'expired-unsave-confirmation', 'report-actions-preserve-production-charging',
     'modal-switching-focus-and-exact-linked-run', 'long-expanded-details-fit-all-viewports', 'sticky-heading-keeps-history-and-close-action-visible',
     'minimum-current-setting-distinct-from-Tesla-evidence', 'current-restoration-after-unplug', 'uncertain-current-review-without-false-retry-promise',
+    'automatic-session-paging-and-keyboard-retry', 'bounded-bidirectional-saved-session-window', 'late-session-read-fence',
     '320-390-1440-light-dark-layouts' ] }));
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

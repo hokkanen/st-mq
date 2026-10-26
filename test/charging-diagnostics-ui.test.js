@@ -150,6 +150,40 @@ test('closing a linked report restores its actual timeline opener', async () => 
   f.panel.close(); assert.equal(f.document.activeElement, opener);
 });
 
+test('a report button remains its own opener when another charger was previously focused', async () => {
+  const f = setup(), opener = f.document.getElementById('charger1-session-report');
+  f.document.getElementById('charger2-session-report').focus();
+  opener.dispatch('click', { preventDefault() {}, stopPropagation() {} }); await flush();
+  f.panel.close(); assert.equal(f.document.activeElement, opener);
+});
+
+test('session choices distinguish saved years and repeated daylight-saving hours', async () => {
+  const f = setup();
+  f.current.startedAt = Date.parse('2026-10-25T00:30:00Z');
+  f.previous.startedAt = Date.parse('2026-10-25T01:30:00Z');
+  const older = { ...structuredClone(f.previous), id: 'older-year', startedAt: Date.parse('2025-10-25T00:30:00Z') };
+  f.reports.set(older.id, older); await f.open();
+  const labels = f.document.getElementById('charging-report-session').children.map(row => row.textContent);
+  assert.match(labels[0], /2026.*03:30.*GMT\+3/);
+  assert.match(labels[1], /2026.*03:30.*GMT\+2/);
+  assert.match(labels[2], /2025/);
+});
+
+test('a failed empty collection read remains unavailable with an enabled retry selector', async () => {
+  let f;
+  f = setup({ request: async (path, body) => {
+    if (path.startsWith('/api/charging/reports?') && path.includes('savedOnly=true')) throw new Error('Synthetic list failure');
+    return f.request(path, body);
+  } });
+  await f.open();
+  const collection = f.document.getElementById('charging-report-collection');
+  collection.value = 'saved'; collection.dispatch('change'); await flush();
+  assert.match(textOf(f.dialog.querySelector('.charging-report-result')), /Session list unavailable.*selector to retry/s);
+  assert.doesNotMatch(textOf(f.dialog.querySelector('.charging-report-result')), /No saved reports/);
+  const selector = f.document.getElementById('charging-report-session');
+  assert.equal(selector.disabled, false); assert.equal(selector.parent.hidden, false);
+});
+
 test('receipt clocks appear once in expanded report evidence', async () => {
   const f = setup(); await f.open();
   const text = textOf(f.dialog.querySelector('.charging-report-raw').children[0]);
