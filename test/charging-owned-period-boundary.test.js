@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,7 +16,7 @@ async function stage(promise, name) {
   let timer;
   try {
     return await Promise.race([promise, new Promise((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(`Fixture stage not reached: ${name}`)), 5000);
+      timer = setTimeout(() => reject(new Error(`Fixture stage not reached: ${name}`)), testCompletionLimit(5000));
     })]);
   } finally { clearTimeout(timer); }
 }
@@ -217,7 +218,9 @@ test(`accepted Shelly period end while planning is held: ${condition}`, async t 
 });
 
 async function until(predicate, name) {
-  const end = performance.now() + 5000;
+  // These waits include planning and durable writer settlement. Native RPC,
+  // accepted-period and command-expiry deadlines keep their original clocks.
+  const end = performance.now() + testCompletionLimit(5000);
   while (!predicate()) {
     if (performance.now() >= end) throw new Error(`Fixture stage not reached: ${name}`);
     await new Promise(resolve => setTimeout(resolve, 10));

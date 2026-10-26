@@ -927,6 +927,10 @@ The held manual-current publication fixture controls the adapter's periodic
 poll timer explicitly. Its positive case admits a normal poll before takeover;
 the competing-input case injects a newer native reading during the held COMMIT.
 Real RPC, persistence and instruction checks remain active in both cases.
+Accepted-period fixture preparation and Stop-completion waits use the same
+declared completion budget. The held planner and native transport boundaries,
+accepted gaps, original RPC deadlines, authority and fallback-setting assertions
+remain independent of that test-only allowance.
 Equipment shutdown fixtures drain received native replies and writer effects
 under case cancellation before asserting restoration-before-close ordering.
 The real MQTT/floor writer-boundary fixture likewise waits for actual ingress
@@ -1031,6 +1035,10 @@ measured household traffic profile. The shared helper defaults to the heavier
 actual write overlap, replay, backup and historical-evidence assertions when
 changing these fixtures; reducing write frequency must not reduce heartbeat
 sampling or manufacture overlap after an operation has finished.
+Slow-write diagnostics retain the queue owner observed before admission and the
+completed write's BEGIN, body, journal-seal and native-COMMIT timings. These help
+separate queue delay from transaction execution without attributing a storage
+stall from total elapsed time alone.
 
 A failed guard remains a failure against its declared profile even when the
 baseline also shows slow storage. Compare the same workload and runtime, separating writer admission,

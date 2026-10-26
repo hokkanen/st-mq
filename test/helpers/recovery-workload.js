@@ -64,15 +64,20 @@ export async function recoveryWorkload(t, { records = 1024, windows = 32, payloa
     };
     const record = async () => {
       const then = performance.now();
+      const queuedBehind = f.master.writeQueue.status().active;
+      let saved = false;
       try {
         await f.master.runWrite(() => f.master.event('synthetic-recovery-live-tick', { sequence: ++sequence }, start + 400 * W + sequence), { signal: f.signal });
-        writes++;
+        writes++; saved = true;
       } catch (error) { failure ??= error; }
       const elapsedMs = performance.now() - then;
       maxLiveWriteMs = Math.max(maxLiveWriteMs, elapsedMs);
       if (elapsedMs >= 50) {
+        const timing = f.master.writeHealth.status().transactions;
+        const transaction = saved ? Object.fromEntries(['beginMs', 'bodyMs', 'commitMs', 'journalSealMs', 'nativeCommitMs', 'totalMs']
+          .map(key => [key, timing[key].last === null ? null : round(timing[key].last)])) : null;
         slowWrites.push({ phase: currentProgress?.phase ?? null, processed: currentProgress?.processed ?? null,
-          elapsedMs: round(elapsedMs) });
+          elapsedMs: round(elapsedMs), queuedBehind, transaction });
         slowWrites.sort((a, b) => b.elapsedMs - a.elapsedMs); slowWrites.length = Math.min(slowWrites.length, 5);
       }
     };
