@@ -5,7 +5,7 @@ COPY scripts/build-sqlite-rsync.js /build-sqlite-rsync.js
 RUN node /build-sqlite-rsync.js --output /usr/local/bin/sqlite3_rsync
 
 FROM node:22.23.2-alpine
-RUN apk add --no-cache bash git openssl python3 openssh-client openssh-server mosquitto \
+RUN apk add --no-cache bash git openssl python3 py3-jinja2 py3-yaml openssh-client openssh-server mosquitto \
     && mkdir -p /run/sshd /qualification
 COPY --from=sqlite-tools /usr/local/bin/sqlite3_rsync /usr/local/bin/sqlite3_rsync
 WORKDIR /st-mq

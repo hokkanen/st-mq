@@ -924,7 +924,7 @@ provider network, on the native ARM64 host; an emulator is supplementary evidenc
 
 `test/Dockerfile.qualification` packages the same pinned Node/Alpine runtime as
 the add-on, locked development dependencies and native test prerequisites
-(including OpenSSL, SSH, MQTT and SQLite replication). Build it from the selected
+(including OpenSSL, Python Jinja2/PyYAML, SSH, MQTT and SQLite replication). Build it from the selected
 source on the target architecture, then run without household mounts:
 
 ```sh
