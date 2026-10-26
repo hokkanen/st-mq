@@ -19,6 +19,16 @@ import { localPromotion } from '../scripts/lib/linux-setup.js';
 
 const W = LEARNING_WINDOW_MS, now = Date.parse('2026-01-09T12:00Z');
 
+async function assertReconstructedLearning(app) {
+  await app.store.runWrite(() => {
+    const before = app.store.db.prepare('SELECT total_changes() AS n').get().n;
+    assert.deepEqual(replayLearningJournal(app.store, 'mqtt', null,
+      { rebuild: true, persistCheckpoint: false, persistCoefficients: false }), app.engine.checkpoint);
+    assert.equal(app.store.db.prepare('SELECT total_changes() AS n').get().n, before,
+      'Independent reconstruction verifies committed evidence without republishing model state');
+  });
+}
+
 test('initializing pair status identifies its configured pair without inventing authority', () => {
   const status = PairManager.prototype.status.call({ config: { pairId: 'synthetic-initializing-pair' }, state: { value: null } });
   assert.equal(status.pairId, 'synthetic-initializing-pair');
@@ -409,7 +419,7 @@ test('outage promotion, returning Hassio, manual gap recovery and exact rejoin r
   assert.equal(b.pair.state.value.role, 'protected');
   assert.equal(returned.store.observations().find(row => row.sourceTime === now - 3 * W).value, 21);
   assert.equal(returned.store.observations().find(row => row.sourceTime === now - 2 * W).value, 22);
-  assert.deepEqual(replayLearningJournal(returned.store, 'mqtt', null, { rebuild: true }), returned.engine.checkpoint);
+  await assertReconstructedLearning(returned);
   await apiAction(t, returned, command('rejoin', { verifyWithFullSnapshot: true }));
   assert.equal(b.pair.state.value.role, 'slave');
   const publication = await readReplicaPublication(b.pair.config.snapshotDirectory);
@@ -570,7 +580,15 @@ test('both computers can keep-reset, explicitly select one master, recover retai
   assert.equal(preview.status, 'checked');
   await apiAction(t, master, command('recover', { previewId: preview.previewId }));
   assert.equal(master.store.observations().find(row => row.sourceTime === now - 3 * W).value, 21);
-  assert.deepEqual(replayLearningJournal(master.store, 'mqtt', null, { rebuild: true }), master.engine.checkpoint);
+  let signalBodyStarted;
+  const bodyStarted = new Promise(resolve => { signalBodyStarted = resolve; });
+  const pendingWrite = master.store.runWrite(() => {
+    master.store.setState('synthetic-reconstruction-boundary', { at: now });
+    signalBodyStarted();
+  });
+  await bodyStarted;
+  assert.equal(master.store.writePending, true, 'Reconstruction starts while the preceding native write is still pending');
+  await Promise.all([assertReconstructedLearning(master), pendingWrite]);
   await apiAction(t, master, command('rejoin'));
   assert.equal(slave.status().role, 'slave'); assert.equal(slave.pair.sync.state, 'ready');
   assert.equal(master.pair.canControl(), true); assert.equal(slave.pair.canControl(), false);
