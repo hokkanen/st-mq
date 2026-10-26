@@ -2,6 +2,7 @@ import { committedStatus } from './helpers/committed-status.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,11 +17,11 @@ import { providerFixture } from '../scripts/lib/provider-fixture.js';
 import { isolatedGarageAdapter } from './helpers/garage-mqtt.js';
 
 const initial = Date.parse('2026-09-07T12:00:00Z');
-async function saved(store) {
-  const until = performance.now() + 3000;
+async function saved(store, signal) {
+  // Wait for received observations to commit under the case deadline. Storage
+  // latency is not sensor freshness, and must not renew the observation clock.
   while (store.writeQueueStatus().pending) {
-    assert.ok(performance.now() < until, 'Acquisition save did not finish');
-    await new Promise(resolve => setTimeout(resolve, 5));
+    await delay(5, undefined, { signal });
   }
 }
 function broker({ rejectedTopic } = {}) {
@@ -71,12 +72,12 @@ test('standalone entry receives indoor and garage MQTT temperatures without an H
     assert.equal(client.publications.length, 0, 'Standalone temperature acquisition sends no H66 commands');
     client.emit('message', 'invented/indoor', Buffer.from('20.25'));
     client.emit('message', 'invented/garage', Buffer.from('10.5'));
-    await saved(app.store);
+    await saved(app.store, t.signal);
     assert.equal(app.engine.recorder.latestCommitted('indoor_temperature').value, 20.25);
     assert.equal(app.engine.recorder.latestCommitted('garage_temperature').value, 10.5);
     now += 15_000;
     client.emit('offline'); client.emit('close');
-    await saved(app.store);
+    await saved(app.store, t.signal);
     for (const signal of ['indoor_temperature', 'garage_temperature']) {
       const committed = app.engine.recorder.latestCommitted(signal);
       assert.equal(committed.value, null);
@@ -87,12 +88,12 @@ test('standalone entry receives indoor and garage MQTT temperatures without an H
     assert.equal(app.store.db.prepare("SELECT COUNT(*) AS n FROM observations WHERE source='mqtt-temperature' AND value IS NULL").get().n, 2);
     now += 15_000;
     client.emit('connect');
-    await saved(app.store);
+    await saved(app.store, t.signal);
     assert.equal(app.engine.recorder.latestCommitted('indoor_temperature').value, 20.25, 'Successful subscription restores a signed room report within its original deadline');
     assert.equal((await committedStatus(app.engine)).observations.upstairs.observedAt, initial, 'Recovery does not become a new measurement');
     assert.equal(app.engine.recorder.latestCommitted('garage_temperature').value, null, 'Garage requires its own live sensor report');
     client.emit('message', 'invented/indoor', Buffer.from('20.25'));
-    await saved(app.store);
+    await saved(app.store, t.signal);
     assert.equal(app.engine.recorder.latestCommitted('indoor_temperature').value, 20.25);
     assert.equal(app.engine.latest.indoor_temperature.value, 20.25);
     assert.equal(app.engine.recorder.latestCommitted('garage_temperature').value, null, 'Each sensor must recover independently');
