@@ -10,6 +10,7 @@ import { createChartService } from '../src/app/chart-service.js';
 import { createAppServer } from '../src/app/server.js';
 import { energyCheckSummaries } from '../src/app/energy-checks.js';
 import { recordChargingSessionCheck } from '../src/app/charging-session-checks.js';
+import { chartRange } from '../src/app/chart-data.js';
 
 const start = Date.parse('2026-09-01T00:00:00Z');
 const signal = 'property_import_energy_counter';
@@ -388,9 +389,169 @@ test('date-scoped jobs share bounded work without cancelling another period or a
   assert.notEqual(changed.job.id, first.job.id);
   assert.equal(changed.result[0].summary.status, 'no-readings');
   assert.equal(changed.result[1].summary.recordedSessions, 0);
+  assert.equal(changed.job.processed, 0, 'An empty selected period does not copy another period\'s meter or energy archive');
   for (const [day, hours] of [['2026-03-29', 23], ['2026-10-25', 25]]) {
     const state = await finished(service, { now: Date.parse('2026-11-01T12:00:00Z'), startDate: day, endDate: day });
     assert.equal(state.range.to - state.range.from, hours * 3600_000);
   }
   await assert.rejects(service.view({ ...args, endDate: '2026-02-30' }));
+});
+
+test('selected periods preserve and replace the true upper-side prior-counter guard for delayed readings', async t => {
+  const { store, service } = fixture(t), hour = 3600_000;
+  const range = chartRange({ startDate: '2026-09-01', endDate: '2026-09-01' });
+  const audit = (sourceTime, receivedAt, value) => store.energyAudit({ source: 'easee', device: 'invented-property',
+    signal, sourceTime, receivedAt, value });
+  audit(range.from + hour, range.from + hour, 10);
+  audit(range.from + 2 * hour, range.from + 2 * hour, 11);
+  energy(store, range.from + hour, range.from + 2 * hour);
+  audit(range.to + hour, range.to + hour, 12);
+  audit(range.from + 1.5 * hour, range.to + 2 * hour, 10.5);
+  const args = { now: range.to + 4 * hour, startDate: range.startDate, endDate: range.endDate };
+  const oracle = () => energyCheckSummaries(store, { now: args.now, range });
+  const initial = await finished(service, args);
+  assert.deepEqual(initial.result, oracle());
+  assert.equal(initial.result[0].summary.status, 'out-of-order-counter');
+  assert.equal(initial.result[0].summary.readingCount, 3, 'The guard is evidence, not an additional selected reading');
+  assert.equal(initial.result[0].summary.previousReading.valueKwh, 12);
+  assert(initial.result[0].summary.lastSuccessfulComparison, 'The earlier selected success remains visible');
+
+  audit(range.to + 1.5 * hour, range.to + 1.5 * hour, 13);
+  for (let refresh = 0; refresh < 3; refresh++) {
+    await service.action({ action: 'refresh' }, args);
+    const state = await finished(service, args);
+    assert.deepEqual(state.result, oracle());
+    assert.equal(state.result[0].summary.previousReading.valueKwh, 13);
+    assert(state.job.processed <= 6, 'Only a new suffix, selected energy and bounded guard context are inspected; guard rows do not accumulate');
+  }
+});
+
+test('the prior-counter guard completes a source-time tie cohort across bounded native pages before choosing receipt order', async t => {
+  const { store, service } = fixture(t), hour = 3600_000;
+  const range = chartRange({ startDate: '2026-09-01', endDate: '2026-09-01' });
+  const audit = (sourceTime, receivedAt, value) => store.energyAudit({ source: 'easee', device: 'invented-property',
+    signal, sourceTime, receivedAt, value });
+  audit(range.from + hour, range.from + hour, 1);
+  audit(range.from + 2 * hour, range.to + 2 * hour, 2);
+  store.transaction(() => {
+    for (let n = 0; n < 140; n++) audit(range.to + hour, range.to + hour + n, 100 + n);
+  });
+  const args = { now: range.to + 3 * hour, startDate: range.startDate, endDate: range.endDate };
+  const initial = await finished(service, args);
+  assert.deepEqual(initial.result, energyCheckSummaries(store, { now: args.now, range }));
+  assert.equal(initial.result[0].summary.previousReading.valueKwh, 100,
+    'The earliest receipt in the highest source-time cohort can be on a later native page');
+  audit(range.to + hour, range.to + hour - 1, 90);
+  audit(range.to + hour, range.to + hour - 1, 89);
+  await service.action({ action: 'refresh' }, args);
+  const refreshed = await finished(service, args);
+  assert.deepEqual(refreshed.result, energyCheckSummaries(store, { now: args.now, range }));
+  assert.equal(refreshed.result[0].summary.previousReading.valueKwh, 90, 'Equal receipt clocks retain the earliest ID');
+});
+
+test('an old selected period admits bounded raw suffix candidates and foreground commits before rejecting later overlaps', async t => {
+  const { store, service } = fixture(t), minute = 60_000, day = 86400_000;
+  const range = chartRange({ startDate: '2026-09-01', endDate: '2026-09-01' });
+  for (const [offset, value] of [[1, 1], [2, 2]]) store.energyAudit({ source: 'easee', device: 'invented-property',
+    signal, sourceTime: range.from + offset * minute, receivedAt: range.from + offset * minute, value });
+  energy(store, range.from + minute, range.from + 2 * minute);
+  const insert = store.db.prepare(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality,raw)
+    VALUES('easee',?,?,0.1,'kWh',?,?,'[]',?)`);
+  const sourceAdmission = store.runStorageTask.bind(store);
+  let intervals = 0, turns = 0, maximumTurn = 0, checking = false, write = null, writeDuringCheck = false;
+  store.runStorageTask = (operation, options) => sourceAdmission(async () => {
+    const began = performance.now();
+    try { return await operation(); }
+    finally {
+      turns++; maximumTurn = Math.max(maximumTurn, performance.now() - began);
+      if (checking && turns > 30 && !write) write = store.runWrite(() => store.event('decision', { syntheticForeground: true }))
+        .then(() => { writeDuringCheck = checking; });
+    }
+  }, options);
+  for (const count of [1000, 30000]) {
+    for (let first = intervals; first < count; first += 64) store.transaction(() => {
+      for (let n = first; n < Math.min(count, first + 64); n++) {
+        const from = range.from + 2 * day + n * minute, to = from + minute;
+        for (const phase of [1, 2, 3]) insert.run(n % 2 ? 'other-property' : 'invented-property', `property_energy_l${phase}`,
+          to, to, JSON.stringify({ intervalStart: from, intervalEnd: to }));
+      }
+    });
+    intervals = count; turns = 0; maximumTurn = 0; write = null; writeDuringCheck = false;
+    const args = { now: range.from + 3 * day + count * minute, startDate: range.startDate, endDate: range.endDate };
+    const began = performance.now(); checking = true;
+    let completed;
+    try {
+      await service.action({ action: 'refresh' }, args);
+      completed = await finished(service, args);
+    } finally { checking = false; }
+    await write;
+    assert(write && writeDuringCheck, 'A real queued foreground commit finishes before the history check');
+    assert(turns > count * 3 / 128, 'Discarded later and wrong-device rows still yield bounded native candidate pages');
+    assert.equal(completed.job.processed, count * 3 + 5, 'Progress counts inspected candidates rather than only retained overlaps');
+    assert.deepEqual(completed.result, energyCheckSummaries(store, { now: args.now, range }));
+    assert.equal(completed.result[0].summary.status, 'compared');
+    assert.equal(completed.result[0].summary.readingCount, 2);
+    t.diagnostic(JSON.stringify({ laterIntervals: count, inspectedRows: completed.job.processed, admittedTurns: turns,
+      maximumTurnMs: maximumTurn, elapsedMs: performance.now() - began, foregroundCommittedDuringCheck: writeDuringCheck }));
+  }
+});
+
+for (const pending of [false, true]) test(`selected-period ${pending ? 'pending' : 'recorded'} long intervals retain later overlap conflicts in fallback comparisons`, async t => {
+  const { store, service } = fixture(t), minute = 60_000, hour = 60 * minute;
+  const range = chartRange({ startDate: '2026-09-01', endDate: '2026-09-01' });
+  for (const [offset, value] of [[10, 0], [20, 1], [30, 0.5]]) store.energyAudit({ source: 'easee', device: 'invented-property',
+    signal, sourceTime: range.from + offset * minute, receivedAt: range.from + offset * minute, value });
+  if (pending) store.setState(`recorder:energy:${JSON.stringify(['easee', 'invented-property', 'property'])}`, {
+    pending: { start: range.from + 10 * minute, end: range.to + hour, receivedAt: range.to + hour,
+      energies: [1 / 3, 1 / 3, 1 / 3], quality: ['estimated'] } });
+  else energy(store, range.from + 10 * minute, range.to + hour);
+  energy(store, range.to + 30 * minute, range.to + 2 * hour);
+  const args = { now: range.to + 3 * hour, startDate: range.startDate, endDate: range.endDate };
+  const initial = await finished(service, args);
+  assert.deepEqual(initial.result, energyCheckSummaries(store, { now: args.now, range }));
+  assert.equal(initial.result[0].summary.status, 'counter-reset');
+  assert.equal(initial.result[0].summary.lastSuccessfulComparison, null,
+    'A later cohort outside the dates still conflicts with the long interval in the existing fallback interpretation');
+
+  store.transaction(() => store.db.prepare('DELETE FROM observations WHERE source_time=?').run(range.to + 2 * hour));
+  await service.action({ action: 'refresh' }, args);
+  const changed = await finished(service, args);
+  assert.deepEqual(changed.result, energyCheckSummaries(store, { now: args.now, range }));
+  assert(changed.result[0].summary.lastSuccessfulComparison, 'Removing the actual conflict restores the earlier selected comparison');
+});
+
+test('period-owned evidence reconsiders delayed and source-admitted energy on refresh and survives range switches', async t => {
+  const { store, service } = fixture(t), hour = 3600_000;
+  const range = chartRange({ startDate: '2026-09-01', endDate: '2026-09-01' });
+  for (const [offset, value] of [[1, 0], [2, 1]]) store.energyAudit({ source: 'easee', device: 'invented-property',
+    signal, sourceTime: range.from + offset * hour, receivedAt: range.from + offset * hour, value });
+  const delayedAt = range.from + 3 * hour;
+  energy(store, range.from + hour, range.from + 2 * hour, { receivedAt: delayedAt });
+  const args = { now: delayedAt - 1, startDate: range.startDate, endDate: range.endDate };
+  const check = async (options, selectedRange) => {
+    const result = await finished(service, options);
+    assert.deepEqual(result.result, energyCheckSummaries(store, { now: options.now, range: selectedRange }));
+    return result;
+  };
+  assert.equal((await check(args, range)).result[0].summary.status, 'incomplete-coverage');
+  args.now = delayedAt;
+  await service.action({ action: 'refresh' }, args);
+  assert.equal((await check(args, range)).result[0].summary.status, 'compared');
+
+  const end = range.from + 4 * hour;
+  store.energyAudit({ source: 'easee', device: 'invented-property', signal, sourceTime: end, receivedAt: end, value: 2 });
+  energy(store, range.from + 2 * hour, end, { receivedAt: end - 1, raw: { intervalStart: range.from + 2 * hour,
+    intervalEnd: end, timeAdmission: { sourceTime: end, receivedAt: end - 1, admittedAt: end } } });
+  args.now = end - 1;
+  await service.action({ action: 'refresh' }, args);
+  await check(args, range);
+  args.now = end;
+  await service.action({ action: 'refresh' }, args);
+  assert.equal((await check(args, range)).result[0].summary.comparison.meteredKwh, 1);
+
+  const other = { ...args, startDate: '2026-09-02', endDate: '2026-09-02' };
+  await check(other, chartRange(other));
+  assert.equal((await check(args, range)).result[0].summary.readingCount, 3);
+  await check({ now: args.now }, null);
+  await check(args, range);
 });

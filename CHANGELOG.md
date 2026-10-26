@@ -6,6 +6,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Load selected-period Energy checks without copying unrelated older evidence,
+  seek Home savings by cycle completion, and keep voltage/history metadata and
+  committed control reads bounded as history grows. Preserve long crossing
+  intervals, delayed counter baselines, recovery selections and original clocks.
+  This requires physical schema 36; incompatible databases are rejected before
+  writable startup. The approved installation conversion is a separate offline
+  operation with verified backups and rollback, with no automatic migration.
+
 - Keep recorder health and pending-energy reads, indoor availability checks,
   recent coefficient charts, offline session reports and model-verification
   status responsive as history grows. Seek the requested state, time window or

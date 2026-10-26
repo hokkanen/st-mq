@@ -47,7 +47,7 @@ test('current schema contains the acquisition lookup index and no historical tab
 
 test('physical index schema and the one current journaled data layout have distinct identities', t => {
   const { store, path } = fixture(t);
-  assert.equal(SCHEMA_VERSION, 35);
+  assert.equal(SCHEMA_VERSION, 36);
   assert.equal(JOURNALED_DATA_VERSION, 31);
   const meta = store.db.prepare('SELECT * FROM journal_meta WHERE id=1').get();
   const expected = createHash('sha256').update(JSON.stringify({ version: JOURNAL_VERSION,
@@ -64,6 +64,18 @@ test('physical index schema and the one current journaled data layout have disti
   try { assert.deepEqual(reopened.checkpoint(), committed); }
   finally { reopened.close(); }
 });
+
+for (const name of ['energy_audits_signal_time', 'learning_cycles_completed_at', 'learning_cycles_active_at', 'observations_voltage_available']) {
+  test(`the selected-period index ${name} is required before writable startup`, t => {
+    const { store, path } = fixture(t);
+    store.close();
+    const raw = new DatabaseSync(path);
+    raw.exec(`DROP INDEX ${name}`); raw.close();
+    const before = readFileSync(path);
+    assert.throws(() => new Store(path), { code: 'database_schema_invalid' });
+    assert.deepEqual(readFileSync(path), before, 'An incomplete current physical schema cannot be repaired on startup');
+  });
+}
 
 test('the required chronological coverage index is validated before writable setup', t => {
   const { store, path } = fixture(t);

@@ -17,13 +17,20 @@ export function getHeatingBenefit({ store, input = 'offline', range, now = Date.
 
   // Extract only compact assessment fields inside SQLite; observation tapes,
   // frozen models, credentials and device identifiers never enter the result.
+  // Completed cycles seek completion time independently of their duration;
+  // active cycles use their own sparse index rather than scanning old outcomes.
   const row = store.db.prepare(`WITH selected AS (
     SELECT status, started_at, ended_at, ${cycleAssessmentExcluded('learning_cycles.id')} AS recoveryExcluded,
       CASE WHEN json_valid(payload) THEN payload ELSE '{}' END AS data
     FROM active_learning_cycles AS learning_cycles
     WHERE input=? AND started_at<=? AND started_at<?
-      AND ((status IN ('completed','incomplete') AND ended_at>=? AND ended_at<? AND ended_at<=?)
-        OR (status='active' AND ended_at IS NULL))
+      AND status IN ('completed','incomplete') AND ended_at IS NOT NULL
+      AND ended_at>=? AND ended_at<? AND ended_at<=?
+    UNION ALL
+    SELECT status, started_at, ended_at, ${cycleAssessmentExcluded('learning_cycles.id')} AS recoveryExcluded,
+      CASE WHEN json_valid(payload) THEN payload ELSE '{}' END AS data
+    FROM active_learning_cycles AS learning_cycles
+    WHERE input=? AND started_at<=? AND started_at<? AND status='active' AND ended_at IS NULL
   ), assessments AS (
     SELECT *,
       json_extract(data,'$.assessment.profitCents') AS profit,
@@ -51,7 +58,7 @@ export function getHeatingBenefit({ store, input = 'offline', range, now = Date.
     SUM(referenceCost) FILTER (WHERE assessed) AS referenceCents,
     COUNT(*) FILTER (WHERE assessed AND json_type(data,'$.assessment.actualSpaceHeatingCostCents') IN ('integer','real')) AS actualCount,
     SUM(actualCost) FILTER (WHERE assessed) AS actualCents
-    FROM assessments`).get(input, now, range.to, range.from, range.to, now, range.from);
+    FROM assessments`).get(input, now, range.to, range.from, range.to, now, input, now, range.to, range.from);
 
   result.counts = { assessed: row.assessed, completed: row.completed, unassessed: row.completed - row.assessed,
     incomplete: row.incomplete, active: row.active, startedBeforeSelection: row.earlier };

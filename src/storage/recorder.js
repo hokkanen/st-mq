@@ -1045,12 +1045,19 @@ export class Recorder {
 
   committedAt(signal,at) {
     if (!finiteTime(at)) throw new TypeError('Invalid committed timestamp');
-    let o = null;
-    for (const row of this.store.db.prepare(`SELECT * FROM active_observations AS observations WHERE signal=? AND source_time<=? AND received_at<=?
-      AND import_id IS NULL ORDER BY source_time DESC,id DESC`).iterate(signal,at,at)) {
+    // The writer bridge materializes iterate() before returning it. Seek one
+    // candidate at a time so an ordinary control read cannot transfer its past.
+    const query = this.store.db.prepare(`SELECT * FROM active_observations AS observations
+      WHERE signal=? AND (source_time,id)<=(?,?) AND received_at<=?
+        AND import_id IS NULL ORDER BY source_time DESC,id DESC LIMIT 1`);
+    let o = null, time = at, id = Number.MAX_SAFE_INTEGER;
+    for (;;) {
+      const row = query.get(signal,time,id,at);
+      if (!row) break;
       const candidate = {id:row.id,source:row.source,device:row.device,signal:row.signal,value:row.value,unit:row.unit,
         sourceTime:row.source_time,receivedAt:row.received_at,quality:JSON.parse(row.quality),raw:row.raw ? JSON.parse(row.raw) : null};
       if (observationTimeAdmitted(candidate, at)) { o = candidate; break; }
+      time = row.source_time; id = row.id - 1;
     }
     if (!o) return null;
     if (o.raw?.acquisitionOnly || o.raw?.auditOnly) return null;

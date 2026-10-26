@@ -172,6 +172,33 @@ test('a long coefficient chart streams each selected source once instead of repe
     'One native time-window cursor supplies all drawing events without an archive-sized JavaScript array');
 });
 
+test('coefficient first and next-entry metadata seek selected prefixes without sorting or loading journal bodies', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  store.transaction(() => {
+    entry(store, 'original', at + 10);
+    const prefix = entry(store, 'original', at + 20);
+    entry(store, 'original', at + 30); // This old-epoch suffix is unselected.
+    store.db.prepare("INSERT INTO learning_epochs VALUES('mqtt','corrected')").run();
+    store.db.prepare("INSERT INTO learning_epoch_segments VALUES('corrected','mqtt','original',0,?)").run(prefix);
+    entry(store, 'corrected', at + 40);
+    const generation = createCoefficientGeneration(store, 'mqtt');
+    store.db.prepare('UPDATE coefficient_generations SET cursor=?,through_at=? WHERE id=?').run(prefix, at + 20, generation);
+    store.db.prepare("INSERT INTO coefficient_selection VALUES('mqtt',?)").run(generation);
+  });
+  const { reader, plans } = tracked(store);
+  const result = readCoefficientHistory({ store: reader, input: 'mqtt', range: { from: at, to: at + 100 },
+    now: at + 100, envelopes: { model_coefficient_heat_loss: { add() {} } } });
+  assert.equal(result.state, 'behind', 'The selected new-epoch suffix remains unconsumed');
+  assert.equal(result.records, 0);
+  assert(!plans.some(plan => /FROM learning_journal_all\b|COALESCE\(e.payload,s.payload\)/.test(plan.sql)));
+  const metadata = plans.filter(plan => /SELECT id,at FROM learning_journal_entries/.test(plan.sql));
+  assert(metadata.length > 0);
+  for (const plan of metadata) {
+    assert(plan.details.some(row => /learning_entries_epoch_input.*id>.*id</.test(row)));
+    assert(!plan.details.some(row => /TEMP B-TREE/.test(row)));
+  }
+});
+
 test('recorder health and pending-energy reads seek their state namespaces despite unrelated historical keys', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const recorder = new Recorder(store);

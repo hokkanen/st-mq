@@ -38,7 +38,17 @@ test('Home starts paused and persists for unchanged equipment; Garage has no aut
   const overview = getDatabaseOverview({ store, now: engine.clock() });
   assert.equal(overview.catalogueComplete, true, overview.inventoryIssues.join('; '));
   const history = overview.groups.flatMap(group => group.items).find(row => row.id === 'events-heating-automation');
-  assert.deepEqual(history.breakdown.map(row => [row.label, row.count]), [['heating-automation-changed', 2]]);
+  assert.deepEqual(history.breakdown.map(row => [row.label, row.count]), [
+    ['heating-automation-changed', 2], ['heating-phase-changed', 1],
+  ]);
+  const events = store.events();
+  assert.deepEqual(events.filter(row => row.type === 'heating-automation-changed').map(row => row.payload.enabled), [true, false]);
+  // First recording of the simulated controller phase is retained separately
+  // from the saved dashboard choices; it is not physical heat confirmation.
+  assert.deepEqual(events.filter(row => row.type === 'heating-phase-changed').map(row => ({ at: row.at,
+    input: row.payload.input, phase: row.payload.phase, previousPhase: row.payload.previousPhase })), [
+    { at: engine.clock(), input: 'simulated', phase: 'normal', previousPhase: null },
+  ]);
 });
 
 test('device destination changes invalidate only the affected heating permission', async t => {

@@ -139,6 +139,20 @@ newly admitted non-dehumidifier observations and control intent, before stopping
 both applications for activation. Keep conversion tools outside the repository
 and Git; add no runtime migration, old decoder or mixed-version bridge.
 
+For bounded selected-period Energy checks and Home savings reads on 2026-10-26,
+the owner approved one installation-only offline conversion from physical schema
+35 to 36, adding only the counter-time, two cycle-selection and sparse voltage
+availability indexes. Preserve
+verified backups, exact source/learning and journal row identities, dashboard
+choices, restoration duties and pairing identity/authority. Rehearse forward
+conversion and rollback, including new observations and control intent, before
+stopping both paired applications for coordinated activation. Refresh only the
+replica's physical-file accounting through current publication helpers while
+preserving its accepted checkpoint. The disposable conversion tool stays outside
+the repository and Git. Journaled layout 31 and the learning algorithm remain
+unchanged; this exception adds no runtime conversion, old decoder, migration
+ladder or permission to convert other installations.
+
 Use one current persisted/configuration/API contract. Unknown or retired fields
 and payload versions must fail closed at their relevant boundary, not silently
 be translated, ignored or granted authority. Genuinely missing optional current

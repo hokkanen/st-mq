@@ -1,7 +1,7 @@
 import { RECOVERY_DEPENDENCY_SCHEMA } from '../recovery/dependencies.js';
 import { journalSchema } from './journal-schema.js';
 // One current physical schema. Startup never converts an existing database.
-export const SCHEMA_VERSION = 35;
+export const SCHEMA_VERSION = 36;
 // Coverage evidence is part of the one current journaled row layout.
 // This is one current layout, not a decoder for an earlier database schema.
 export const JOURNALED_DATA_VERSION = 31;
@@ -173,6 +173,7 @@ CREATE INDEX charging_report_events_prices ON charging_report_events(price_conte
 CREATE INDEX charging_report_events_proposed ON charging_report_events(proposed_context_id) WHERE proposed_context_id IS NOT NULL;
 CREATE INDEX charging_report_events_adopted ON charging_report_events(adopted_context_id) WHERE adopted_context_id IS NOT NULL;
 CREATE INDEX energy_audits_device_time ON energy_audits(device,source_time,id);
+CREATE INDEX energy_audits_signal_time ON energy_audits(signal,source_time,id);
 CREATE INDEX events_type_time ON events(type,at,id);
 CREATE INDEX events_type_id ON events(type,id);
 CREATE INDEX fireplace_events_input_time ON fireplace_events(input,at,id);
@@ -181,6 +182,10 @@ CREATE INDEX fireplace_events_kind_time ON fireplace_events(input,kind,at,id);
 CREATE INDEX fireplace_events_target_time ON fireplace_events(input,target_id,at,id);
 CREATE INDEX fireplace_events_target_id ON fireplace_events(input,target_id,id,at);
 CREATE INDEX learning_cycles_input_at ON learning_cycles(input, started_at);
+CREATE INDEX learning_cycles_completed_at ON learning_cycles(input,ended_at)
+ WHERE status IN ('completed','incomplete') AND ended_at IS NOT NULL;
+CREATE INDEX learning_cycles_active_at ON learning_cycles(input,started_at)
+ WHERE status='active' AND ended_at IS NULL;
 CREATE INDEX learning_entries_algorithm
           ON learning_journal_entries(epoch,input,algorithm_version,id);
 CREATE INDEX learning_entries_global_algorithm ON learning_journal_entries(algorithm_version);
@@ -198,6 +203,8 @@ CREATE INDEX observations_recovery_energy ON observations(device,signal,
  WHERE CASE WHEN json_valid(raw) THEN json_extract(raw,'$.intervalEnd') END IS NOT NULL;
 CREATE INDEX observations_signal_id ON observations(signal, id);
 CREATE INDEX observations_signal_time ON observations(signal, source_time, id);
+CREATE INDEX observations_voltage_available ON observations(device,signal,MAX(source_time,received_at),id)
+ WHERE source='voltage-estimate' AND unit='V';
 CREATE INDEX observations_energy_geometry ON observations(
   json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.intervalStart'),
   source_time,source,device,CASE WHEN signal LIKE 'ev1_%' THEN 'ev1'

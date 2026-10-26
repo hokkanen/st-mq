@@ -1,4 +1,3 @@
-import { selectedHistoryPredicate } from './schema.js';
 import { voltageInput, validVoltageProvenance } from '../domain/voltage-provenance.js';
 import { observationTimeAdmitted, observationAvailableAt, validateAdmittedSourceTime } from '../domain/time-evidence.js';
 
@@ -340,10 +339,25 @@ function resultOf(phases) {
 export function createVoltageReader(store, { input = 'live', now = Date.now(), pageRows = 0 } = {}) {
   if (!Number.isInteger(pageRows) || pageRows < 0 || pageRows > 512) throw new RangeError('Invalid voltage read page size');
   const scope = input === 'simulated' ? "device='simulated'" : "device IN ('mqtt','providers','live')";
+  const devices = input === 'simulated' ? ['simulated'] : ['mqtt', 'providers', 'live'];
   const where = `source='voltage-estimate' AND ${scope} AND unit='V' AND received_at<=?`;
   const availableAt = 'MAX(source_time,received_at)';
-  const before = store.db.prepare(`SELECT *,${availableAt} AS available_at FROM active_observations AS observations WHERE ${where} AND signal=?
-    AND source_time<=? ORDER BY available_at DESC,id DESC LIMIT 1`);
+  const physical = store.journalSource !== true;
+  // Proposed recovery views can select a generation independently of the
+  // published history_selection. Seek physical candidates, then check their
+  // membership through the caller's actual active view by primary key.
+  const selectedVoltage = 'EXISTS(SELECT 1 FROM active_observations selected_voltage WHERE selected_voltage.id=observations.id)';
+  const physicalWhere = device => `${where} AND device='${device}' AND ${selectedVoltage}`;
+  const before = !physical ? store.db.prepare(`SELECT *,${availableAt} AS available_at FROM active_observations AS observations WHERE ${where} AND signal=?
+    AND source_time<=? ORDER BY available_at DESC,id DESC LIMIT 1`) : (() => {
+    const queries = devices.map(device => store.db.prepare(`SELECT *,${availableAt} AS available_at
+      FROM observations INDEXED BY observations_voltage_available WHERE ${physicalWhere(device)} AND signal=?
+      AND source_time<=? AND ${availableAt}<=? ORDER BY ${availableAt} DESC,id DESC LIMIT 1`));
+    return { get(receivedThrough, signal, through) {
+      return queries.map(query => query.get(receivedThrough, signal, through, through)).filter(Boolean)
+        .sort((a,b) => b.available_at-a.available_at || b.id-a.id)[0];
+    } };
+  })();
   const firstUsable = `value BETWEEN 200 AND 250 AND json_extract(raw,'$.voltageEstimate.version')='${VOLTAGE_VERSION}'
     AND json_type(raw,'$.voltageMature') IS NULL
     AND json_type(raw,'$.voltageEstimate.input')='integer' AND json_extract(raw,'$.voltageEstimate.input') IN (1,2,4,8)
@@ -358,8 +372,7 @@ export function createVoltageReader(store, { input = 'live', now = Date.now(), p
     // prefix: future source leads retain exact MAX-clock/ID ordering without
     // sorting ordinary later history or another physical stream's archive.
     const policy = "json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.recorder.policy')";
-    const selected = selectedHistoryPredicate('observations', 'observations');
-    const eligible = `source='voltage-estimate' AND unit='V' AND received_at<=? AND signal=? AND source_time<=? AND ${selected}`;
+    const eligible = `source='voltage-estimate' AND unit='V' AND received_at<=? AND signal=? AND source_time<=? AND ${selectedVoltage}`;
     const seed = store.db.prepare(`SELECT * FROM observations INDEXED BY observations_stream_receipt
       WHERE ${eligible} AND device=? AND ${policy} IS ? AND ${firstUsable}
       ORDER BY received_at,id LIMIT 1`);
@@ -392,8 +405,16 @@ export function createVoltageReader(store, { input = 'live', now = Date.now(), p
       return earliest;
     } };
   })();
-  const next = store.db.prepare(`SELECT ${availableAt} AS available_at FROM active_observations AS observations WHERE ${where} AND signal=?
-    AND ${availableAt}>? AND source_time<=? ORDER BY available_at,id LIMIT 1`);
+  const next = !physical ? store.db.prepare(`SELECT ${availableAt} AS available_at FROM active_observations AS observations WHERE ${where} AND signal=?
+    AND ${availableAt}>? AND source_time<=? ORDER BY available_at,id LIMIT 1`) : (() => {
+    const queries = devices.map(device => store.db.prepare(`SELECT id,${availableAt} AS available_at
+      FROM observations INDEXED BY observations_voltage_available WHERE ${physicalWhere(device)} AND signal=?
+      AND source_time<=? AND ${availableAt}>? ORDER BY ${availableAt},id LIMIT 1`));
+    return { get(receivedThrough, signal, after, sourceThrough) {
+      return queries.map(query => query.get(receivedThrough, signal, sourceThrough, after)).filter(Boolean)
+        .sort((a,b) => a.available_at-b.available_at || a.id-b.id)[0];
+    } };
+  })();
   const cached = [null, null, null], firstRows = [undefined, undefined, undefined];
   // Energy streams and chart passes revisit earlier times. Keep the checked
   // intervals, rather than repeating two SQL queries every time their cursors
@@ -438,32 +459,26 @@ export function createVoltageReader(store, { input = 'live', now = Date.now(), p
     }
     return row;
   };
-  // MAX(source_time, received_at) cannot seek the existing chronological
-  // indexes. Split its two disjoint cases, seek each original clock and merge
-  // a bounded page. This preserves late-publication ordering without repeatedly
-  // sorting the complete voltage history or adding a persisted index. Recovery
-  // TEMP overlays keep their existing point-reader semantics without index hints.
-  const page = pageRows > 0 && store.journalSource !== true ? ['source_time', 'received_at'].map(clock => {
-    const ordinary = clock === 'source_time';
-    const classification = ordinary ? 'received_at<=source_time' : 'received_at>source_time';
-    const selected = selectedHistoryPredicate('observations', 'observations');
-    const eligible = `${where} AND source_time<=? AND ${classification} AND ${selected}`;
-    return { firstAt: new Map(),
-      first: store.db.prepare(`SELECT MIN(${clock}) AS at FROM observations INDEXED BY observations_signal_time
+  // Seek availability directly for each supported physical prefix, including
+  // empty ordinary/late cohorts. MAX-clock ordering and independent source and
+  // receipt cutoffs remain exact. Recovery overlays retain their point reader.
+  const page = pageRows > 0 && physical ? devices.flatMap(device => VOLTAGE_SIGNALS.map(signal => {
+    const eligible = `${where} AND device='${device}' AND source_time<=? AND ${selectedVoltage}`;
+    return { signals: [signal], firstAt: new Map(),
+      first: store.db.prepare(`SELECT MIN(${availableAt}) AS at FROM observations INDEXED BY observations_voltage_available
         WHERE ${eligible} AND signal=?`),
-      before: store.db.prepare(`SELECT *,${clock} AS available_at FROM observations
-        INDEXED BY ${ordinary ? 'observations_signal_time' : 'observations_receipt'}
-        WHERE ${eligible} AND signal=? AND ${clock}<=? ORDER BY ${clock} DESC,id DESC LIMIT 1`),
-      forward: store.db.prepare(`SELECT *,${clock} AS available_at FROM observations
-        INDEXED BY ${ordinary ? 'observations_time' : 'observations_receipt'} WHERE ${eligible}
-        AND signal IN ('voltage_estimate_l1','voltage_estimate_l2','voltage_estimate_l3')
-        AND ${clock}>? ORDER BY ${clock},id LIMIT ${pageRows}`),
+      before: store.db.prepare(`SELECT *,${availableAt} AS available_at FROM observations
+        INDEXED BY observations_voltage_available
+        WHERE ${eligible} AND signal=? AND ${availableAt}<=? ORDER BY ${availableAt} DESC,id DESC LIMIT 1`),
+      forward: store.db.prepare(`SELECT *,${availableAt} AS available_at FROM observations
+        INDEXED BY observations_voltage_available WHERE ${eligible} AND signal='${signal}'
+        AND ${availableAt}>? ORDER BY ${availableAt},id LIMIT ${pageRows}`),
     };
-  }) : null;
+  })) : null;
   const fillPage = at => {
     const merged = []; let end = Infinity;
     for (const stream of page) {
-      for (const signal of VOLTAGE_SIGNALS) if (!stream.firstAt.has(signal))
+      for (const signal of stream.signals) if (!stream.firstAt.has(signal))
         stream.firstAt.set(signal, stream.first.get(now, now, signal).at);
       if (![...stream.firstAt.values()].some(value => value !== null)) continue;
       let bytes = 0, count = 0;
@@ -479,7 +494,7 @@ export function createVoltageReader(store, { input = 'live', now = Date.now(), p
     for (const [phase, signal] of VOLTAGE_SIGNALS.entries()) {
       let previous = null;
       for (const stream of page) {
-        const first = stream.firstAt.get(signal);
+        const first = stream.firstAt.get(signal) ?? null;
         const row = first !== null && first <= at ? stream.before.get(now, now, signal, at) : null;
         if (row && (!previous || row.available_at > previous.available_at
           || row.available_at === previous.available_at && row.id > previous.id)) previous = row;
@@ -520,9 +535,17 @@ export function createVoltageReader(store, { input = 'live', now = Date.now(), p
     return firstRows[phase].row;
   }));
   const boundaryPages = [];
-  const boundaryQuery = store.db.prepare(`SELECT DISTINCT ${availableAt} AS at FROM active_observations AS observations WHERE ${where}
+  const boundaryQuery = !physical ? store.db.prepare(`SELECT DISTINCT ${availableAt} AS at FROM active_observations AS observations WHERE ${where}
       AND signal IN ('voltage_estimate_l1','voltage_estimate_l2','voltage_estimate_l3')
-      AND ${availableAt}>? AND ${availableAt}<? ORDER BY at LIMIT 1024`);
+      AND ${availableAt}>? AND ${availableAt}<? ORDER BY at LIMIT 1024`) : (() => {
+    const queries = devices.flatMap(device => VOLTAGE_SIGNALS.map(signal => store.db.prepare(`SELECT DISTINCT ${availableAt} AS at
+      FROM observations INDEXED BY observations_voltage_available WHERE ${physicalWhere(device)} AND signal='${signal}'
+      AND ${availableAt}>? AND ${availableAt}<? ORDER BY at LIMIT 1024`)));
+    return { all(receivedThrough, after, through) {
+      const clocks = new Set(queries.flatMap(query => query.all(receivedThrough, after, through).map(row => row.at)));
+      return [...clocks].sort((a,b) => a-b).slice(0,1024).map(at => ({at}));
+    } };
+  })();
   lookup.boundaries = function* (from, to) {
     if (cached.every((_, phase) => (remembered(phase, from)?.to ?? -Infinity) >= to)) return;
     const end = Math.min(to, now + 1); let cursor = from;

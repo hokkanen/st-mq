@@ -1,5 +1,16 @@
 # Development validation
 
+Selected-period regressions cover exact Energy-check parity across range changes,
+outside-period prior counters, long crossing intervals and pending/conflicting
+evidence. `test/extended/selected-period-storage-scale.test.js` grows unrelated
+counter, energy, session and cycle prefixes while holding the selected result
+fixed, admitting concurrent recording and checking index/transfer bounds.
+Voltage cases cover ordinary/late/missing physical streams and exact availability
+ordering; proposed recovery views retain their own selection. Real writer-backed
+committed-reading tests exceed the former frame limit without transferring the
+retained room-setting history. These are synthetic qualification, not installed
+hardware timing or a proof of every possible history distribution.
+
 `test/database-growth-reads.test.js` checks indexed recorder-state prefixes,
 receipt-bounded indoor availability, time-bounded coefficient reads and direct
 pages of selected learning prefixes, plus indexed offline report discovery.

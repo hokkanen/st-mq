@@ -224,6 +224,19 @@ export function discardCoefficientGeneration(store,generation,{limit=128}={}) {
   return{removed:rows.length,complete:!remaining};
 }
 
+/** Metadata seeks must not sort an inherited journal or hydrate sample bodies. */
+function coefficientJournalEntry(store, input, epoch = epochOf(store, input), after = 0) {
+  const query = store.db.prepare(`SELECT id,at FROM learning_journal_entries
+    WHERE epoch=? AND input=? AND id>? AND id<=? ORDER BY id LIMIT 1`);
+  let selected;
+  for (const range of learningPrefixRanges(store.db, input, epoch, Number.MAX_SAFE_INTEGER)) {
+    if (range.through <= after) continue;
+    const row = query.get(range.sourceEpoch, input, Math.max(after, range.after), range.through);
+    if (row && (!selected || row.id < selected.id)) selected = row;
+  }
+  return selected;
+}
+
 /** Direct indexed projection of the selected, committed model interpretation. */
 export function readCoefficientHistory({ store, range, now, input, envelopes }) {
   const selected = Object.keys(MODEL_COEFFICIENT_INFO).filter(key => envelopes[key]);
@@ -232,18 +245,15 @@ export function readCoefficientHistory({ store, range, now, input, envelopes }) 
   const primary = input === 'offline' ? 'history' : input;
   // An explicit selected epoch lets SQLite seek each UNION branch without
   // materializing the entire journal through its correlated selection view.
-  const first = store.db.prepare('SELECT id,at FROM learning_journal_all WHERE epoch=? AND input=? AND id>0 ORDER BY id LIMIT 1')
-    .get(epochOf(store,primary),primary);
+  const first = coefficientJournalEntry(store, primary);
   const end = Math.min(now,range.to);
   const streams = ['providers','mqtt'].includes(primary) && (!first || first.at > range.from)
     ? [{input:'history',end:Math.min(end,first?first.at-1:end)},...(first?[{input:primary,from:first.at,end}]:[])] : [{input:primary,end}];
   const sources = {history:'Imported history',mqtt:'Recorded MQTT inputs',providers:'Recorded provider inputs',simulated:'Simulation'};
   for (const stream of streams) {
     const coverage = readCoefficientCoverage(store,{input:stream.input});
-    if (!coverage) { if (store.db.prepare('SELECT id FROM learning_journal_all WHERE epoch=? AND input=? AND id>0 ORDER BY id LIMIT 1')
-      .get(epochOf(store,stream.input),stream.input)) stats.state='missing'; continue; }
-    const next=store.db.prepare('SELECT id,at FROM learning_journal_all WHERE epoch=? AND input=? AND id>? ORDER BY id LIMIT 1')
-      .get(coverage.epoch,stream.input,coverage.cursor);
+    if (!coverage) { if (coefficientJournalEntry(store, stream.input)) stats.state='missing'; continue; }
+    const next=coefficientJournalEntry(store, stream.input, coverage.epoch, coverage.cursor);
     const through=next?Math.min(stream.end,Math.max(coverage.throughAt??-Infinity,next.at)-1):stream.end;
     if(next&&stats.state!=='missing')stats.state='behind';
     const from = Math.max(range.from,stream.from??range.from);

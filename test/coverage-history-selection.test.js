@@ -11,6 +11,8 @@ import { lastIndoorReading } from '../src/app/indoor-readings.js';
 import { openJournalSource } from '../src/recovery/incremental-source.js';
 import { enrollJournalPeer } from '../src/storage/journal-peer.js';
 import { PeerTransfers } from '../src/replication/coalesced.js';
+import { createVoltageReader } from '../src/storage/voltage.js';
+import { seedVoltage } from './voltage-fixture.js';
 import { fixture, start } from './helpers/recovery-fixture.js';
 
 const MINUTE = 60_000;
@@ -33,6 +35,25 @@ function installActualProposedViews(db) {
   new Function('db', 'generation', 'RECOVERABLE_TABLES', 'recoveryRecordKey',
     `${producer}; selectProposedViews();`)(db, proposed, RECOVERABLE_TABLES, recoveryRecordKey);
 }
+
+for (const excludeProposed of [true, false]) test(`indexed voltage respects proposed ${excludeProposed ? 'exclusion' : 'inclusion'} independently of the published generation`, t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  seedVoltage(store, start, [221, 232, 243]);
+  const ids = store.db.prepare("SELECT id FROM observations WHERE source='voltage-estimate'").all().map(row => row.id);
+  store.transaction(() => {
+    for (const id of ids) store.db.prepare('INSERT INTO recovery_exclusions(generation,table_name,record_key) VALUES(?,?,?)')
+      .run(excludeProposed ? proposed : 'original', 'observations', String(id));
+  });
+  installActualProposedViews(store.db);
+  const expected = excludeProposed ? [null, null, null] : [221, 232, 243];
+  for (const pageRows of [0, 192]) {
+    const reader = createVoltageReader(store, { input: 'providers', now: start + MINUTE, pageRows });
+    assert.deepEqual(reader(start + 1000).voltageV, expected);
+    assert.deepEqual(reader.firstUsable().voltageV, expected);
+    assert.deepEqual([...reader.boundaries(start - 1, start + 1)], excludeProposed ? [] : [start]);
+  }
+  assert.equal(store.db.prepare('SELECT generation FROM main.history_selection WHERE id=1').get().generation, 'original');
+});
 
 for (const excludeProposed of [true, false]) test(`coverage selection follows proposed ${excludeProposed ? 'exclusion' : 'inclusion'} independently of the published generation`, t => {
   const store = new Store(':memory:'); t.after(() => store.close());

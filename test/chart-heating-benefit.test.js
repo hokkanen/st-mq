@@ -44,6 +44,36 @@ test('heating model totals full cycles by completion date, with exact range and 
   assert(!JSON.stringify(result).includes('synthetic-'), 'Private cycle identifiers are not returned');
 });
 
+test('recent benefit reads seek completion and active indexes while retaining arbitrarily old cycle starts', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const old = range.from - 10 * 365 * 24 * HOUR;
+  save(store, 'long-completed', { startedAt: old, endedAt: range.from });
+  save(store, 'long-incomplete', { startedAt: old, endedAt: range.from + HOUR, status: 'incomplete' });
+  save(store, 'long-active', { startedAt: old, endedAt: null, status: 'active' });
+  save(store, 'old-outcome', { startedAt: old, endedAt: old + HOUR });
+  save(store, 'future-start', { startedAt: now + HOUR, endedAt: null, status: 'active' });
+  const excluded = save(store, 'excluded-cycle');
+  store.db.prepare("INSERT INTO recovery_exclusions(generation,table_name,record_key) VALUES('original','learning_cycles',?)").run(excluded.id);
+  const before = store.checkpoint();
+  let plan;
+  const reader = { db: { prepare(sql) {
+    const statement = store.db.prepare(sql);
+    return { get(...params) {
+      plan = store.db.prepare('EXPLAIN QUERY PLAN ' + sql).all(...params).map(row => row.detail);
+      return statement.get(...params);
+    } };
+  } } };
+  const result = summary(reader);
+  assert.deepEqual(result.counts, { assessed: 1, completed: 1, unassessed: 0, incomplete: 1, active: 1, startedBeforeSelection: 1 });
+  assert.equal(result.valueEuro, 1.25);
+  assert.equal(result.firstStartedAt, old);
+  assert.equal(result.lastEndedAt, range.from);
+  assert(plan.some(row => /learning_cycles_completed_at.*input=.*ended_at>.*ended_at</.test(row)), plan.join('\n'));
+  assert(plan.some(row => /learning_cycles_active_at.*input=.*started_at</.test(row)), plan.join('\n'));
+  assert(!plan.some(row => /SCAN (?:r|learning_cycles)\b/.test(row)), 'A recent selection must not walk historical outcomes');
+  assert.deepEqual(store.checkpoint(), before, 'Read-only summaries preserve the committed source boundary');
+});
+
 test('uncorrected comparable assessments alone contribute; excluded attempts stay visible as counts', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   save(store, 'active', { status: 'active', endedAt: null });

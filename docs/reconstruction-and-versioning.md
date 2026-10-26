@@ -24,8 +24,9 @@ learning epoch. Original observations, frozen forecasts, corrections and their
 provenance keep their historical meaning throughout an upgrade.
 
 The current physical SQLite schema and the current journaled data layout have
-separate identifiers. Physical schema 35 and journaled layout 31 add the compact
-independent-evidence endpoint to recording coverage. They retain indexed
+separate identifiers. Physical schema 36 and journaled layout 31 retain the compact
+independent-evidence endpoint to recording coverage, with indexed selected-period
+counter, completed/active cycle and voltage-availability reads. They retain indexed
 manual-firewood, coefficient-history, chronological coverage and bounded
 journal/recovery reads. Every fresh database uses this one current layout and
 its matching genesis/hash interpretation. There is no older-schema runtime
@@ -55,6 +56,15 @@ with verified backups and rehearsed rollback. The operational replication
 journal may be reanchored; its original history remains in those backups.
 No conversion, journal translation, backfill or reset-on-startup is supplied
 by the application, and this exception does not cover other installations.
+
+For schema 36, the owner separately approved one installation-only offline,
+index-only conversion on 2026-10-26 under [F1](../AGENTS.md#f1). Stop both paired
+applications for coordinated code/schema activation after rehearsing forward
+conversion and rollback. Verify backups, exact source/learning and journal row
+parity, unchanged checkpoints, control/restoration state and pair authority;
+refresh only replica physical-file accounting through current publication
+helpers. Conversion tools remain outside Git. Journaled layout 31 and numerical
+learning are unchanged. Startup rejects incompatible files without conversion.
 
 Given an intact committed learning journal, its saved configuration and initial
 seed, the selected fireplace and sensor-correction revisions, and the matching

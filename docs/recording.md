@@ -2786,7 +2786,7 @@ representation change needs current-schema validation and an intentional fresh
 development database when incompatible; no cleanup should add a migration or
 silently remove evidence.
 
-Current physical schema 35 retains a chronological coverage index for seeking
+Current physical schema 36 retains a chronological coverage index for seeking
 the next boundary in one source/device/signal stream. Charts retain the original
 recovery selection, equal-start ID precedence and full successor timestamps,
 including boundaries beyond the drawn range. They do not materialize all retained
@@ -2813,6 +2813,22 @@ each selected immutable learning prefix directly rather than sorting the complet
 inherited journal. Fixed snapshot cutoffs and original historical meaning remain.
 Offline session-report discovery seeks each recorded namespace and its latest
 charger report instead of sorting the complete saved-report archive.
+Selected-period Energy checks keep disposable evidence for that period, with
+an exact outside-period counter baseline when needed for a delayed reading.
+Long crossing intervals and their admitted conflict cluster remain part of the
+same comparison; a date boundary never truncates their historical meaning.
+Changing periods replaces only scratch evidence. Counter/session refreshes use
+their verified new ID suffix, while range energy refreshes re-evaluate eligible
+overlap evidence. An ancient selection can still require scanning later interval
+ends because the current chronological indexes do not provide a two-dimensional
+interval-overlap search. Copied scratch rows remain period/overlap-owned; no
+universal range-independent scan bound is claimed.
+Home savings seek completed cycles by end time and active cycles separately,
+including arbitrarily old starts. Voltage readers seek each physical device and
+phase by the exact maximum of source/receipt clocks, then retain caller-selected
+history membership. Empty ordinary or late cohorts do not scan the other cohort.
+First/next coefficient metadata uses ID/time-only immutable-prefix seeks, and
+committed control readings transfer one candidate at a time through the writer.
 Fireplace rebuild-existence checks seek each selected epoch/prefix by sample time;
 an empty result cannot walk all samples belonging to another input environment.
 Household forecast refreshes also seek source and receipt clocks independently
