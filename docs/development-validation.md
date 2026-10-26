@@ -904,6 +904,11 @@ the same declared allowance. Independent read/write/transfer bounds, reset
 ownership and retained history remain exact. The contention fixture also
 requires zero synchronous SQLite busy-wait time and timer progress before the
 external lock is released; a wider wall-clock guard cannot permit busy waiting.
+The GiB reset fixture records generation and per-scenario preparation separately
+from reset latency. Its existing ten-minute parent budget uses the declared bulk
+completion allowance on HA, and each of the three independent reset scenarios
+has its own completion budget and awaited application cleanup. Cancellation
+cannot leave a late startup using files already removed by parent cleanup.
 CI permits forty-five minutes for each complete routine/extended job, including
 setup; individual standard-profile case and latency limits remain unchanged.
 
