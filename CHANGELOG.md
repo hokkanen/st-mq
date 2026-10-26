@@ -6,6 +6,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep the Event log focused on significant changes by default, with routine
+  charging diagnostics available under All events and in session reports. Read
+  events only while the panel and browser tab are visible, seek older pages
+  efficiently, reuse the replica reader across history updates, share concurrent
+  checks and cancel abandoned reads after safe cleanup. Recording rules, retained
+  evidence and report expiry are unchanged.
+
 - Keep historical charts available when a queued read encounters a newer database
   checkpoint. Retry once from a fresh verified snapshot, retain the failed
   attempt's specific diagnostic, and preserve refusal on changed identity,

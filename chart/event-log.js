@@ -35,7 +35,8 @@ function checkedPage(value) {
 /** A bounded, read-only presentation of the current selected history. Refreshes
  * reconcile visible IDs at the server's read boundary, including entries that
  * have moved beyond the newest page. They never establish device authority. */
-export function createEventLog({ document, request, onOpenReport = () => {} }) {
+export function createEventLog({ document, request, onOpenReport = () => {},
+  IntersectionObserverClass = document.defaultView?.IntersectionObserver }) {
   const $ = id => document.getElementById(id);
   const list = $('events'), status = $('event-log-status'), message = $('event-log-message');
   const view = $('event-log-view'), area = $('event-log-area');
@@ -45,6 +46,8 @@ export function createEventLog({ document, request, onOpenReport = () => {} }) {
   let epoch = 0, pending = null, cancellation = null, closed = false;
   let context = null, rows = [], nextBefore = null, hasNewEvents = false, hasSuccessfulCheck = false;
   let browsingHistory = false, failed = false, historyNotice = false;
+  let enabled = false, inView = !IntersectionObserverClass;
+  const readable = () => enabled && inView && !document.hidden && !closed;
 
   const make = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -192,7 +195,7 @@ export function createEventLog({ document, request, onOpenReport = () => {} }) {
     controls();
   }
   async function load(kind = 'refresh') {
-    if (closed) return;
+    if (!readable()) return;
     if (pending) return pending;
     if (kind === 'older' && !nextBefore) return;
     const captured = epoch, controller = cancellation = new AbortController();
@@ -223,6 +226,17 @@ export function createEventLog({ document, request, onOpenReport = () => {} }) {
     status.textContent = 'Loading this view…'; coverage.textContent = '';
     void load();
   }
+  function visibilityChanged() {
+    if (!readable()) { invalidate(); controls(); return; }
+    void load();
+  }
+  const observer = IntersectionObserverClass ? new IntersectionObserverClass(entries => {
+    const entry = entries.find(value => value.target === $('event-log-panel'));
+    if (!entry || inView === entry.isIntersecting) return;
+    inView = entry.isIntersecting; visibilityChanged();
+  }) : null;
+  observer?.observe($('event-log-panel'));
+  document.addEventListener?.('visibilitychange', visibilityChanged);
   view.addEventListener('change', changeFilter); area.addEventListener('change', changeFilter);
   refreshButton.addEventListener('click', () => { void load(); });
   olderButton.addEventListener('click', () => { void load('older'); });
@@ -238,16 +252,19 @@ export function createEventLog({ document, request, onOpenReport = () => {} }) {
   });
   controls();
   return {
-    refresh: () => load(),
+    refresh() { enabled = true; return load(); },
     clear() {
-      invalidate(); clearRows(); context = null; hasSuccessfulCheck = false; failed = false; historyNotice = false;
+      enabled = false; invalidate(); clearRows(); context = null; hasSuccessfulCheck = false; failed = false; historyNotice = false;
       status.textContent = 'No event history loaded'; status.title = ''; coverage.textContent = '';
       showMessage(''); controls();
     },
     unavailable(text = 'Waiting for a verified history snapshot.') {
-      invalidate(); failed = true;
+      enabled = false; invalidate(); failed = true;
       showMessage(rows.length ? `${text} Showing previously fetched events.` : text, true); controls();
     },
-    close() { closed = true; invalidate(); },
+    close() {
+      closed = true; invalidate(); observer?.disconnect();
+      document.removeEventListener?.('visibilitychange', visibilityChanged);
+    },
   };
 }

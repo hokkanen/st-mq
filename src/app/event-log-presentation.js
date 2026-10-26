@@ -183,7 +183,21 @@ const CHARGING_CODES = {
   'energy-coverage-gap': 'Charging energy coverage was incomplete', 'shared-current-mismatch': 'Reported current exceeded the active ceiling',
   'shared-priority-mismatch': 'Shared priority assessment did not match', 'shared-allocation-inconsistent': 'Shared allocation evidence was inconsistent',
   identified: 'Vehicle identified', completed: 'Identification completed', failed: 'Identification could not finish',
+  'observation-gap': 'Session observation gap recorded',
+  'shared-charging-evidence': 'Shared current evidence changed', 'shared-charging-context': 'Shared charging plan changed',
 };
+// Presentation only: every source event keeps its report-owned lifetime. Routine
+// readback/allocation changes and repeated observations belong in All events.
+const IMPORTANT_CHARGING_CODES = {
+  session: ['connected', 'observation-started', 'unplugged', 'interrupted'],
+  physical: ['charging-started', 'charging-stopped'],
+  evidence: ['physical-evidence-lost', 'physical-evidence-restored', 'observation-gap'],
+  vehicle: ['identified'], identification: ['failed', 'inconclusive'],
+};
+function importantCharging(p) {
+  return ['finding', 'finding-update', 'recovery', 'outcome'].includes(p.kind)
+    || Object.hasOwn(IMPORTANT_CHARGING_CODES, p.kind) && IMPORTANT_CHARGING_CODES[p.kind].includes(p.code);
+}
 export function presentCharging(row, p) {
   const charger = row.charger_id === 'charger1' ? 'Charger 1' : 'Charger 2';
   const label = lookup(CHARGING_CODES, p.code) ?? (p.kind === 'finding' || p.kind === 'finding-update' ? 'Finding recorded' : p.kind === 'recovery' ? 'Finding no longer active in this assessment' : 'Session event recorded');
@@ -197,12 +211,18 @@ export function presentCharging(row, p) {
       : p.kind === 'outcome' ? 'The session report preserves the evidence and assumptions behind this outcome.'
         : finding ? 'Review the session report for the recorded circumstances and outcome. Native system provenance does not identify an actor.'
           : 'A charging-session milestone was recorded. Review its report for complete context.',
-    { severity: finding ? 'warning' : 'info', evidence: simulated ? 'Simulation' : physicalKnown ? 'Measured power evidence' : physical ? 'Physical evidence unavailable' : p.kind === 'outcome' && p.code === 'target-confirmed' ? 'Vehicle observation' : 'Recorded session assessment', important: !['control', 'charger-status', 'check'].includes(p.kind) });
+    { severity: finding ? 'warning' : 'info', evidence: simulated ? 'Simulation' : physicalKnown ? 'Measured power evidence' : physical ? 'Physical evidence unavailable' : p.kind === 'outcome' && p.code === 'target-confirmed' ? 'Vehicle observation' : 'Recorded session assessment', important: importantCharging(p) });
   out.details.push(...detail('Data context', simulated ? 'Simulation' : ['charging:mqtt:session-diagnostics', 'charging:providers:session-diagnostics'].includes(row.namespace) ? 'Physical-source input' : 'Not recorded for this event'));
   const source = lookup({ easee: 'Charger 1 telemetry', 'easee-ocpp': 'Charger 1 local OCPP', 'easee-equalizer': 'Equalizer-derived evidence',
     'shelly-evse': 'Native Charger 2 telemetry', 'bmw-cardata': 'Vehicle telemetry via BMW', teslamate: 'Vehicle telemetry via TeslaMate', simulation: 'Simulation' }, p.source);
   out.details.push(...detail('Evidence source', source ?? 'Not recorded or not recognized'));
   out.details.push(...detail('Measured power', physical ? reading(p.powerKw, 'kW') : null));
+  if (['shared-charging-evidence', 'shared-charging-context'].includes(p.code)) {
+    const execution = p.shared?.execution;
+    out.details.push(...detail('Assessed current allowance', reading(execution?.expectedCurrentA, 'A')),
+      ...detail('Reported current setting', reading(execution?.reportedCurrentA, 'A')),
+      ...detail('Adjustment readiness', execution?.commandReady === true ? 'Ready' : execution?.commandReady === false ? 'Not ready' : 'Unknown'));
+  }
   for (const [key, label] of [['measuredAt', 'Source observation'], ['receivedAt', 'Received']]) if (validTime(p[key])) out.details.push(...detail(label, new Date(p[key]).toISOString()));
   if (/^[a-f0-9]{64}$/.test(row.report_id)) out.related = { kind: 'charging-report', chargerId: row.charger_id, reportId: row.report_id };
   return out;

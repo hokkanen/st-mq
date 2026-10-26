@@ -823,29 +823,34 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (req.method === 'POST' && url.pathname === '/api/heating-test') return await mutate(async (current, input) => json(200, await current.testHeating(input)));
         if (req.method === 'GET' && url.pathname === '/api/events') {
           const query = eventLogQuery(url);
-          for (let attempt = 0; ; attempt++) {
-            if (res.destroyed || res.writableEnded || !stillAuthorized()) return;
-            const currentEngine = readContext?.engine ?? engine, currentStore = readContext?.store ?? readerStore;
-            const snapshot = Boolean(readContext) || currentEngine.config.input === 'offline';
-            try {
-              const result = await eventLog(currentStore).query({ input: currentEngine.config.input, now: currentEngine.clock(), checkedAt: clock(),
-                query, scope: snapshot ? 'snapshot' : 'live', snapshotAt: readContext ? currentEngine.clock() : null,
-                checkpoint: readContext ? currentStore.expectedCheckpoint : undefined });
-              if (!res.destroyed && !res.writableEnded && stillAuthorized()) return json(200, result);
-              return;
-            } catch (error) {
-              if (attempt || !getReadContext || !readContext || error.code !== 'event_log_checkpoint_advanced') throw error;
+          const cancellation = new AbortController();
+          const cancel = () => cancellation.abort();
+          res.once('close', cancel);
+          try {
+            for (let attempt = 0; ; attempt++) {
               if (res.destroyed || res.writableEnded || !stillAuthorized()) return;
-              // A same-database forward-checkpoint hint gets one fresh verified
-              // lease; the hint itself supplies no source or lineage proof.
-              const previous = readContext.store?.expectedCheckpoint;
-              readContext.release(); readContext = null;
-              readContext = await getReadContext();
-              if (res.destroyed || res.writableEnded || !stillAuthorized()) return;
-              const next = readContext?.store?.expectedCheckpoint;
-              if (!previous || !next || next.databaseId !== previous.databaseId || next.sequence <= previous.sequence) throw error;
+              const currentEngine = readContext?.engine ?? engine, currentStore = readContext?.store ?? readerStore;
+              const snapshot = Boolean(readContext) || currentEngine.config.input === 'offline';
+              try {
+                const result = await (readContext?.eventLogService ?? eventLog(currentStore)).query({ input: currentEngine.config.input, now: currentEngine.clock(), checkedAt: clock(),
+                  query, scope: snapshot ? 'snapshot' : 'live', snapshotAt: readContext ? currentEngine.clock() : null,
+                  checkpoint: readContext ? currentStore.expectedCheckpoint : undefined }, { signal: cancellation.signal });
+                if (!res.destroyed && !res.writableEnded && stillAuthorized()) return json(200, result);
+                return;
+              } catch (error) {
+                if (attempt || !getReadContext || !readContext || error.code !== 'event_log_checkpoint_advanced') throw error;
+                if (res.destroyed || res.writableEnded || !stillAuthorized()) return;
+                // A same-database forward-checkpoint hint gets one fresh verified
+                // lease; the hint itself supplies no source or lineage proof.
+                const previous = readContext.store?.expectedCheckpoint;
+                readContext.release(); readContext = null;
+                readContext = await getReadContext();
+                if (res.destroyed || res.writableEnded || !stillAuthorized()) return;
+                const next = readContext?.store?.expectedCheckpoint;
+                if (!previous || !next || next.databaseId !== previous.databaseId || next.sequence <= previous.sequence) throw error;
+              }
             }
-          }
+          } finally { res.removeListener('close', cancel); }
         }
         if (req.method === 'GET' && url.pathname === '/api/history') {
           const now = engine.clock();

@@ -163,7 +163,7 @@ try {
   };
   const refresh = async () => {
     const previous = requests.length;
-    await evaluate("window.dispatchEvent(new Event('online'));true");
+    await evaluate("document.getElementById('event-log-panel').scrollIntoView({block:'center'});window.dispatchEvent(new Event('online'));true");
     await until('document.getElementById("event-log-refresh").disabled===false');
     for (let attempt = 0; requests.length === previous && attempt < 400; attempt++) await pause(30);
     assert(requests.length > previous); await until('document.getElementById("event-log-refresh").disabled===false');
@@ -174,10 +174,19 @@ try {
   };
   await navigate(); await until('document.getElementById("auth")?.hidden===false');
   await evaluate(`document.getElementById('token').value=${JSON.stringify(admin)};document.getElementById('auth').requestSubmit();true`);
-  await until('document.body?.dataset.authenticated==="true" && document.querySelectorAll("#events li").length>0');
+  await until('document.body?.dataset.authenticated==="true"');
+  await pause(150);
+  assert.equal(requests.length, 0, 'The event log does not read while the panel is off screen');
+  await evaluate("document.getElementById('event-log-panel').scrollIntoView({block:'center'});true");
+  await until('document.querySelectorAll("#events li").length>0');
   assert.equal(await evaluate('document.querySelectorAll("#events li").length'), 40);
   assert.equal(await evaluate('document.getElementById("events").textContent.includes("synthetic-private-detail")'), false);
   assert.equal(await evaluate('document.getElementById("events").querySelectorAll("img").length'), 0);
+  const offscreenReads = requests.length;
+  await evaluate("window.scrollTo(0,0);true"); await pause(100);
+  await evaluate("window.dispatchEvent(new Event('online'));true"); await pause(250);
+  assert.equal(requests.length, offscreenReads, 'Status refreshes do not poll an offscreen log');
+  await refresh();
   await evaluate('document.getElementById("event-log-refresh").focus();true'); await press('Tab');
   assert.equal(await evaluate('document.activeElement.id'), 'events', 'Keyboard can enter the labelled event region');
   await evaluate('document.querySelector("#events summary").focus();true'); await press('Enter');
@@ -236,7 +245,9 @@ try {
   for (const role of ['admin', 'family']) {
     if (role === 'family') {
       await evaluate(`sessionStorage.setItem('stmq-token',${JSON.stringify(family)});true`); await navigate();
-      await until('document.body?.dataset.authenticated==="true" && document.querySelectorAll("#events li").length>0');
+      await until('document.body?.dataset.authenticated==="true"');
+      await evaluate("document.getElementById('event-log-panel').scrollIntoView({block:'center'});true");
+      await until('document.querySelectorAll("#events li").length>0');
     }
     for (const theme of ['light', 'dark']) for (const width of [320, 390, 768, 1440]) {
       await send(firefox ? 'browsingContext.setViewport' : 'Emulation.setDeviceMetricsOverride', firefox
@@ -274,13 +285,13 @@ try {
   let started;
   const blocked = new Promise(resolve => { started = resolve; }); let release;
   hold = { started, wait: new Promise(resolve => { release = resolve; }) };
-  await evaluate("window.dispatchEvent(new Event('online'));true"); await blocked;
+  await evaluate("document.getElementById('event-log-panel').scrollIntoView({block:'center'});window.dispatchEvent(new Event('online'));true"); await blocked;
   await evaluate('document.getElementById("web-logout").click();true');
   release(); await until('document.body?.dataset.authenticated==="false"');
   assert.equal(await evaluate('document.getElementById("events").children.length'), 0, 'Sign-out discards history and fences delayed responses');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ browser: firefox ? 'Firefox' : 'Chromium', layouts: layoutCases,
-    checks: 'Real API, safe projection, stable reading, new events, older paging beyond 200, local failure/recovery, successful action receipt, filters, replica advancement, family access, enlarged text and sign-out fencing passed.', artifacts }));
+    checks: 'Real API, visible-only reads, safe projection, stable reading, new events, older paging beyond 200, local failure/recovery, successful action receipt, filters, replica advancement, family access, enlarged text and sign-out fencing passed.', artifacts }));
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   if (browser && browser.exitCode === null) { const done = new Promise(resolve => browser.once('exit', resolve)); browser.kill(); await done; }

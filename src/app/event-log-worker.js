@@ -14,7 +14,8 @@ parentPort.on('message', ({ id, args }) => {
     const result = readEventLog({ db, ...args });
     response = { id, result };
   } catch (error) {
-    const code = ['event_log_context_changed', 'event_log_query_invalid', 'event_log_checkpoint_advanced'].includes(error?.code) ? error.code : 'event_log_unavailable';
+    const code = error?.name === 'AbortError' ? 'event_log_aborted'
+      : ['event_log_context_changed', 'event_log_query_invalid', 'event_log_checkpoint_advanced'].includes(error?.code) ? error.code : 'event_log_unavailable';
     response = { id, error: { code } };
   } finally {
     setStorageRequestActive(false);

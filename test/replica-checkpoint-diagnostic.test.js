@@ -397,12 +397,16 @@ async function eventAdmission(promise) {
 }
 
 test('event log reacquires once after a real verified publication advances behind queued worker admission', async t => {
-  const f = await fixture(t), entered = deferred(), released = deferred();
+  let f;
+  const entered = deferred(), released = deferred();
   const native = Store.prototype.runStorageTask; let held = false;
+  // Physical-file owners capture admission at construction, before any event
+  // request. Install the gate before opening this fixture's owner.
   t.mock.method(Store.prototype, 'runStorageTask', async function(operation, options) {
-    if (!held && this.readOnly && this.path === f.publication.dbPath) { held = true; entered.resolve(); await released.promise; }
+    if (f && !held && this.readOnly && this.path === f.publication.dbPath) { held = true; entered.resolve(); await released.promise; }
     return native.call(this, operation, options);
   });
+  f = await fixture(t);
   const request = f.request('/api/events?view=all');
   try {
     await eventAdmission(entered.promise);
@@ -418,15 +422,17 @@ test('event log reacquires once after a real verified publication advances behin
 });
 
 test('a second queued event-log checkpoint advance is refused without an unbounded retry loop', async t => {
-  const f = await fixture(t), entered = [deferred(), deferred()], released = [deferred(), deferred()];
+  let f;
+  const entered = [deferred(), deferred()], released = [deferred(), deferred()];
   const native = Store.prototype.runStorageTask, seen = new WeakSet(); let attempts = 0;
   t.mock.method(Store.prototype, 'runStorageTask', async function(operation, options) {
-    if (this.readOnly && this.path === f.publication.dbPath && !seen.has(f.app.store)) {
+    if (f && this.readOnly && this.path === f.publication.dbPath && !seen.has(f.app.store)) {
       seen.add(f.app.store); const index = attempts++;
       if (index < 2) { entered[index].resolve(); await released[index].promise; }
     }
     return native.call(this, operation, options);
   });
+  f = await fixture(t);
   const request = f.request('/api/events?view=all');
   try {
     for (let index = 0; index < 2; index++) {

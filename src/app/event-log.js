@@ -57,7 +57,7 @@ function cursorBound(source, before, asOf) {
   const old = parseId(before.id), order = source < old.source ? -1 : source > old.source ? 1 : 0;
   return order < 0 ? { sql: 'at<=?', values: [maximum] }
     : order > 0 ? { sql: 'at<?', values: [maximum] }
-      : { sql: '(at<? OR (at=? AND id<?))', values: [maximum, maximum, old.id] };
+      : { sql: '(at,id)<(?,?)', values: [maximum, old.id] };
 }
 function exclusions(db, generation, table, rows) {
   const excluded = new Set();
@@ -124,7 +124,7 @@ export function readEventLog({ db, input = 'mqtt', now = Date.now(), checkedAt =
   const known = new Set(GENERAL_EVENT_TYPES);
   for (const type of GENERAL_EVENT_TYPES) {
     const preview = presentGeneral(type);
-    if (!admitted(preview, query) && !['heating-phase-changed', 'heating-automation-changed', 'heating-pause-changed', 'occupancy-changed', 'charging-control-changed', 'caravan-control-changed'].includes(type)) continue;
+    if (!admitted(preview, query)) continue;
     const rows = db.prepare(`SELECT id,at,type,substr(payload,1,?) payload FROM events
       WHERE type=? AND ${bound.sql} ORDER BY at DESC,id DESC LIMIT ?`).all(MAX_PAYLOAD, type, ...bound.values, perType);
     let accepted = 0;

@@ -27,7 +27,10 @@ function chargingRecord(store, { charger = 'charger2', report = 'a'.repeat(64), 
     store.db.prepare(`INSERT OR IGNORE INTO charging_reports(namespace,charger_id,report_id,association,started_at,summary,checkpoint)
       VALUES(?,?,?,?,?,'{}','{}')`).run(namespace, charger, report, 'synthetic-association', NOW - 10000);
     store.db.prepare(`INSERT INTO charging_report_events(namespace,charger_id,report_id,at,category,payload)
-      VALUES(?,?,?,?,?,?)`).run(namespace, charger, report, at, ['finding', 'recovery'].includes(kind) ? 'findings' : 'charging', JSON.stringify({ kind, code, powerKw, measuredAt: at - 1000, receivedAt: at, privateText }));
+      VALUES(?,?,?,?,?,?)`).run(namespace, charger, report, at, ['finding', 'finding-update', 'recovery'].includes(kind) ? 'findings'
+        : ['physical', 'charger-status', 'outcome', 'session', 'check'].includes(kind) ? 'charging'
+          : ['vehicle', 'identification'].includes(kind) ? 'vehicle' : kind === 'shared' || kind === 'plan' ? 'plans' : kind,
+      JSON.stringify({ kind, code, powerKw, measuredAt: at - 1000, receivedAt: at, privateText }));
   });
   return Number(store.db.prepare('SELECT MAX(id) id FROM charging_report_events').get().id);
 }
@@ -66,6 +69,61 @@ test('occurrence-time paging retains recovered old timestamps and exact same-tim
   assert.equal(collected.at(-1).at, NOW - 86400000);
 });
 
+test('older operational and firewood pages seek an indexed time range rather than scanning the type or input prefix', t => {
+  const { store, read } = fixture(t);
+  for (let n = 0; n < 8; n++) store.event('settings-reloaded', { input: 'mqtt' }, NOW - n * 1000);
+  const context = read().context, plans = [];
+  const db = new Proxy(store.db, { get(target, key) {
+    if (key === 'prepare') return sql => {
+      const statement = target.prepare(sql);
+      if (!/FROM (events|fireplace_events)\s+WHERE/.test(sql)) return statement;
+      return { all(...args) {
+        plans.push({ sql, details: target.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args).map(row => row.detail).join(' ') });
+        return statement.all(...args);
+      } };
+    };
+    const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  for (const source of ['event', 'firewood']) {
+    plans.length = 0;
+    const before = Buffer.from(JSON.stringify({ context, view: 'all', area: 'home', at: NOW - 3000, id: id(source, 4) })).toString('base64url');
+    readEventLog({ db, input: 'mqtt', now: NOW, query: query(`view=all&area=home&before=${before}`) });
+    assert(plans.length > 0);
+    for (const plan of plans) assert.match(plan.details, /at[<=>]/, plan.details);
+  }
+});
+
+test('Important selects charging instructions, incidents and transitions without altering stored reports', t => {
+  const { store, read } = fixture(t);
+  const retained = [
+    ['session', 'connected'], ['physical', 'charging-started'], ['physical', 'charging-stopped'],
+    ['evidence', 'physical-evidence-lost'], ['evidence', 'physical-evidence-restored'], ['evidence', 'observation-gap'],
+    ['vehicle', 'identified'], ['identification', 'failed'], ['outcome', 'target-confirmed'],
+    ['finding', 'control-unconfirmed'], ['recovery', 'control-unconfirmed'],
+  ];
+  const routine = [['evidence', 'shared-charging-evidence'], ['shared', 'shared-charging-context'],
+    ['physical', 'not-charging-observed'], ['physical', 'physical-unknown'], ['charger-status', 'charger-reports-not-charging'],
+    ['control', 'waiting'], ['check', 'pause'], ['identification', 'completed']];
+  for (const [kind, code] of [...retained, ...routine]) chargingRecord(store, { kind, code });
+  store.event('charging-control-changed', { input: 'mqtt', chargerId: 'charger2', action: 'pause' }, NOW);
+  const checkpoint = readCheckpoint(store.db);
+  const important = read('area=charging'), all = read('area=charging&view=all');
+  assert.equal(important.events.length, retained.length + 1);
+  assert.equal(all.events.length, retained.length + routine.length, 'Full planning snapshots stay in the session report');
+  assert(important.events.some(row => row.title.includes('Pause requested')));
+  assert(!important.events.some(row => row.title.includes('Shared current evidence')));
+  assert(all.events.some(row => row.title.includes('Shared current evidence changed')));
+  assert.equal(store.db.prepare('SELECT count(*) n FROM charging_report_events').get().n, retained.length + routine.length);
+  assert.deepEqual(readCheckpoint(store.db), checkpoint);
+  const detailed = presentCharging({ namespace: 'charging:mqtt:session-diagnostics', charger_id: 'charger2' }, {
+    kind: 'evidence', code: 'shared-charging-evidence', shared: { execution: { expectedCurrentA: 0, reportedCurrentA: 6, commandReady: false } },
+  });
+  assert.deepEqual(detailed.details.slice(-3), [
+    { label: 'Assessed current allowance', value: '0 A' }, { label: 'Reported current setting', value: '6 A' },
+    { label: 'Adjustment readiness', value: 'Not ready' },
+  ]);
+});
+
 test('dataset and selected-history context invalidates cursors but ordinary commits retain it', t => {
   const { store, read } = fixture(t);
   for (let n = 0; n < 3; n++) store.event('settings-reloaded', { input: 'mqtt' }, NOW - n);
@@ -99,7 +157,7 @@ test('charging milestones preserve measured-zero and unknown evidence and link t
   const { store, read } = fixture(t);
   chargingRecord(store, { privateText: 'synthetic-private-device-identifier' });
   chargingRecord(store, { kind: 'physical', code: 'physical-unknown', powerKw: null, at: NOW - 2000 });
-  const events = read('area=charging').events;
+  const events = read('view=all&area=charging').events;
   assert.equal(events.length, 2);
   assert.equal(events[0].evidence, 'Physical evidence unavailable');
   assert.match(events[0].summary, /does not establish that charging stopped/);
@@ -235,7 +293,7 @@ test('large charging histories inspect a fixed fair summary budget and retain on
 
 test('a long charging stream pages its fixed summary tail by occurrence time beyond two pages', t => {
   const { store, read } = fixture(t);
-  for (let n = 0; n < 150; n++) chargingRecord(store, { at: NOW - 1000 - (n % 11) * 100, code: 'charging-observed', powerKw: 7 });
+  for (let n = 0; n < 150; n++) chargingRecord(store, { at: NOW - 1000 - (n % 11) * 100, code: 'charging-started', powerKw: 7 });
   const expected = read('area=charging&limit=200').events, collected = [];
   let before;
   do {
@@ -301,6 +359,41 @@ test('closing an active worker joins its exit before its owner can release the r
   const pending = service.query({ input: 'mqtt', now: NOW, query: query('') });
   const rejected = assert.rejects(pending, error => { assert.equal(exited, true); return error.code === 'event_log_unavailable'; });
   await began; assert(worker); const closing = service.close(); release(); await closing; await rejected;
+});
+
+test('cancelling the last file reader waits for rollback and reuses the healthy worker for the next read', async t => {
+  const { store } = fixture(t, { disk: true });
+  // The production HTTP socket keeps its request alive; this direct worker
+  // fixture has no socket while waiting for its deliberately held SQL turn.
+  const keepAlive = setInterval(() => {}, 1000); t.after(() => clearInterval(keepAlive));
+  store.event('settings-reloaded', { input: 'mqtt' }, NOW - 1000);
+  let calls = 0, workers = 0, completed = false, cancelledSettled = false, running = 0, release, entered;
+  const gate = new Promise(resolve => { release = resolve; }), began = new Promise(resolve => { entered = resolve; });
+  const run = store.runStorageTask.bind(store);
+  store.runStorageTask = (operation, options) => run(async () => {
+    running++;
+    try { if (++calls === 10) { entered(); await gate; } return await operation(); }
+    finally { running--; }
+  }, options);
+  class ObservedWorker extends Worker {
+    constructor(url, options) {
+      super(url, { ...options, workerData: { ...options.workerData, storageLeaseMs: 0 } }); workers++;
+      this.on('message', message => { if (message.error || message.result) completed = true; });
+    }
+  }
+  const service = createEventLogService({ store, WorkerClass: ObservedWorker }); t.after(() => service.close());
+  const controller = new AbortController(), args = { input: 'mqtt', now: NOW, query: query('') };
+  const pending = service.query(args, { signal: controller.signal }).finally(() => { cancelledSettled = true; });
+  const checked = assert.rejects(pending, error => {
+    assert.equal(completed, true); assert.equal(running, 0); return error.name === 'AbortError';
+  });
+  try {
+    await began; controller.abort(); await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(cancelledSettled, false);
+  } finally { release(); }
+  await checked;
+  const next = await service.query(args);
+  assert.equal(next.events.length, 1); assert.equal(workers, 1); assert.equal(running, 0);
 });
 
 test('current HTTP envelope is authenticated for admin and family and never exposes raw payloads', async t => {

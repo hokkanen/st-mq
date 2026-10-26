@@ -7,7 +7,7 @@ import { Store } from '../storage/store.js';
 import { readReplicaPublication, configurePublicationRoots } from '../replication/publication.js';
 import { createChartService } from './chart-service.js';
 import { derivedCacheId } from '../storage/derived-cache-anchor.js';
-import { createReplicaChartOwner, leaseReplicaCharts, continuesReplicaCharts } from './replica-chart-owner.js';
+import { createReplicaChartOwner, leaseReplicaCharts, leaseReplicaEvents, continuesReplicaCharts } from './replica-chart-owner.js';
 import { createWebAccess } from './web-access.js';
 import { fireplaceView } from './fireplace.js';
 import { sensorChangesView } from './sensor-changes.js';
@@ -362,6 +362,7 @@ export async function startReplica({ config, clock = Date.now,
     }
     let released = false;
     return { store: snapshot?.store, chartService: snapshot?.chartService,
+      eventLogService: snapshot ? leaseReplicaEvents(snapshot.chartOwner, snapshot.publication.checkpoint) : null,
       checkpoint: snapshot?.publication.checkpoint, snapshotAt: snapshot?.publication.sourceAt,
       fileGeneration: snapshot?.publication.fileGeneration,
       engine: { clock: () => snapshot?.publication.sourceAt ?? clock(), config: { input: snapshot?.input ?? 'offline' }, plant: null,

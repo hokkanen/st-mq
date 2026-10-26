@@ -8,10 +8,12 @@ authority and is not a complete archive of every physical action.
 ## Reading events
 
 **Important** shows meaningful instructions, controller phase changes, recorded
-problems, source corrections and retained charging milestones. **All events**
-also shows routine controller decisions and other supported diagnostics. The
-area filter selects Home, Charging, Garage, Caravan or System. Filtering changes
-presentation, never retained source records.
+problems, source corrections, charging start/stop transitions, evidence outages
+and session outcomes. Routine shared current/readiness assessments, repeated draw
+observations, charger status and verification checks are excluded from Important.
+**All events** also shows routine controller decisions and other supported
+diagnostics. The area filter selects Home, Charging, Garage, Caravan or System.
+Filtering changes presentation, never retained source records.
 
 Each entry has an occurrence time, area, readable explanation and evidence
 classification. Expand it for structured facts and a complete timestamp in
@@ -41,6 +43,12 @@ shows the source snapshot time, independently of when its events were fetched.
 A failed event read retains the last fetched evidence with an explicit message;
 it cannot undo a successful action receipt.
 
+Events are fetched only while the log panel is on screen and the browser tab is
+visible, after dashboard history becomes available. Returning to the panel checks
+again; Refresh remains available. Leaving the panel or hiding the tab cancels
+unused reads while preserving fetched rows and their original check time. This
+does not change any recording cadence, retention or charging behavior.
+
 Refreshing retains matching row nodes, open details, focus and reading position.
 New entries wait behind **New events** while the user reads. **Load older events**
 continues through available pages with at most 200 rows mounted; advancing
@@ -50,7 +58,8 @@ and invalidate older cursors. Ordinary snapshot advancement is not a new
 dataset. Membership validation removes excluded or deleted displayed records
 even when new events have pushed the remaining records outside the head page.
 
-General events and firewood use existing time indexes. Sparse sensor and
+General events and firewood use existing time indexes, including direct time/ID
+range seeks for older pages. Sparse sensor and
 charging summaries have explicit read bounds and disclose limited coverage in
 the log. Further source-history and charging-report views retain their evidence.
 An empty or exhausted view does not prove there was no activity. No history
@@ -75,7 +84,14 @@ error text are public fallbacks. A nonempty old dashboard document needs a reloa
 after updating; there is no earlier array-response or `after` query bridge.
 
 Historical file reads run in an admitted read-only worker with bounded queue,
-memory and work. Replica requests pin the verified checkpoint; worker cleanup
+memory and work. A physical replica file shares its event worker across ordinary
+verified publication advances; replacing the file retires its owner. Concurrent
+matching requests share only an in-flight read and its original check time, never
+a cached completed response. Filters, visible membership, source/snapshot clocks
+and checkpoint identity retain their boundaries. Queueing counts toward the read
+deadline. Cancelling one subscriber preserves other subscribers; the last active
+subscriber waits for database cleanup before releasing its read context.
+Replica requests pin the verified checkpoint; worker cleanup
 finishes before publishing its result. A same-database forward-checkpoint hint
 can trigger one fresh verified read context, including when a legitimate
 coalesced publication has pruned the old transaction prefix. The hint supplies
@@ -85,7 +101,8 @@ refuse. In-memory offline fixtures use the same
 query and presentation contract at one read boundary. No read creates a saved
 choice, observation, event, correction, command or learning input.
 
-Validation: `test/event-log.test.js`, `test/event-log-ui.test.js` and
+Validation: `test/event-log.test.js`, `test/event-log-service.test.js`,
+`test/event-log-ui.test.js`, replica-owner/viewer regressions and
 `node test/browser/event-log-smoke.js` exercise source selection, privacy,
 pagination, failure handling and the real dashboard. Add `--firefox` to use an
 isolated Firefox session. Browser fixtures use synthetic data and do not qualify

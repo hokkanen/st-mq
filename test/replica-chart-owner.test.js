@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { continuesReplicaCharts, createReplicaChartOwner, leaseReplicaCharts } from '../src/app/replica-chart-owner.js';
+import { continuesReplicaCharts, createReplicaChartOwner, leaseReplicaCharts, leaseReplicaEvents } from '../src/app/replica-chart-owner.js';
 
 test('replica cache continuity rejects replacement, identity changes, rewinds and conflicting equal boundaries', () => {
   const publication = { dbPath: '/synthetic/file', fileGeneration: 'synthetic-file',
@@ -16,6 +16,30 @@ test('replica cache continuity rejects replacement, identity changes, rewinds an
     { checkpoint: null },
   ]) assert.equal(continuesReplicaCharts(previous, { ...publication, ...changes }, '1:2'), false);
   assert.equal(continuesReplicaCharts(previous, publication, '1:3'), false);
+});
+
+test('event reads share the physical owner across publication leases and retain each requested checkpoint', async () => {
+  const reads = [], order = []; let made = 0, release;
+  const exit = new Promise(resolve => { release = resolve; });
+  const store = { db: {}, path: '/synthetic/file', runStorageTask: operation => operation(),
+    storageStatus() {}, writeQueueStatus() {}, writeHealth: { status() {} }, close() { order.push('store'); } };
+  const owner = createReplicaChartOwner(store, () => ({ close: async () => { order.push('charts'); } }), {}, ({ store: admission }) => {
+    assert.equal(admission.path, store.path); made++;
+    return { query: (args, options) => { reads.push({ args, options }); return Promise.resolve('events'); },
+      close: async () => { await exit; order.push('events'); } };
+  });
+  const one = { databaseId: 'synthetic', sequence: 1 }, two = { databaseId: 'synthetic', sequence: 2 };
+  const first = leaseReplicaCharts(owner, store, one), second = leaseReplicaCharts(owner, { writeHealth: {} }, two);
+  const firstEvents = leaseReplicaEvents(owner, one), secondEvents = leaseReplicaEvents(owner, two);
+  const controller = new AbortController();
+  assert.equal(await firstEvents.query({ now: 1 }, { signal: controller.signal }), 'events');
+  assert.equal(await secondEvents.query({ now: 2, checkpoint: one }), 'events');
+  assert.equal(made, 1); assert.deepEqual(reads.map(row => row.args.checkpoint), [one, two]);
+  assert.equal(reads[0].options.signal, controller.signal);
+  await first.close(); assert.deepEqual(order, []);
+  const closing = second.close(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(order, ['charts']); release(); await closing;
+  assert.deepEqual(order, ['charts', 'events', 'store']);
 });
 
 test('publication chart leases capture boundaries, share queue diagnostics and close the backing owner exactly once', async () => {

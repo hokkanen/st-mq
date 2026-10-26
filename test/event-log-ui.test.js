@@ -9,8 +9,11 @@ const row = (n, extra = {}) => ({ id: id(n), at: NOW + n * 1000, area: 'home', s
   details: [{ label: 'Scope', value: 'Until Automatic resumes.' }], ...extra });
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture() {
-  const document = { activeElement: null };
+function fixture(options = {}) {
+  const listeners = new Map();
+  const document = { activeElement: null, hidden: false,
+    addEventListener: (name, listener) => listeners.set(name, listener),
+    removeEventListener: name => listeners.delete(name), dispatch: name => listeners.get(name)?.() };
   class Node {
     constructor(tag) { Object.assign(this, { tagName: tag.toUpperCase(), children: [], dataset: {}, attributes: {}, listeners: new Map(),
       className: '', textContent: '', open: false, hidden: false, disabled: false, value: '', scrollTop: 0, clientHeight: 340 }); }
@@ -36,7 +39,7 @@ function fixture() {
   document.body = document.createElement('body');
   const elements = new Map();
   for (const name of ['events', 'event-log-status', 'event-log-message', 'event-log-view', 'event-log-area',
-    'event-log-refresh', 'event-log-older', 'event-log-new', 'event-log-coverage', 'event-log-range']) {
+    'event-log-refresh', 'event-log-older', 'event-log-new', 'event-log-coverage', 'event-log-range', 'event-log-panel']) {
     const node = document.createElement(name === 'events' ? 'ol' : name.includes('view') || name.includes('area') ? 'select' : 'div');
     node.id = name; elements.set(name, node); document.body.append(node);
   }
@@ -45,7 +48,7 @@ function fixture() {
   document.getElementById = $;
   const requests = [], reports = [];
   const panel = createEventLog({ document, request: (path, options) => new Promise((resolve, reject) => requests.push({ path, options, resolve, reject })),
-    onOpenReport: (...args) => reports.push(args) });
+    onOpenReport: (...args) => reports.push(args), ...options });
   const answer = async (events, extra = {}, index = requests.length - 1) => {
     const request = requests[index], query = new URL(request.path, 'http://fixture').searchParams;
     request.resolve({ context: 'current-history', checkedAt: NOW, scope: 'live', snapshotAt: null, events,
@@ -58,6 +61,30 @@ function fixture() {
 }
 const descendants = node => node.children.flatMap(child => [child, ...descendants(child)]);
 const textOf = node => [node.textContent, ...descendants(node).map(child => child.textContent)].join('\n');
+
+test('offscreen and hidden event logs do no automatic reads, abort unused work and resume without losing evidence', async () => {
+  let visibility, disconnected = false;
+  class Observer {
+    constructor(callback) { visibility = visible => callback([{ target: f.$('event-log-panel'), isIntersecting: visible }]); }
+    observe() {} disconnect() { disconnected = true; }
+  }
+  const f = fixture({ IntersectionObserverClass: Observer });
+  await f.panel.refresh(); assert.equal(f.requests.length, 0);
+  visibility(true); await settle(); assert.equal(f.requests.length, 1);
+  await f.answer([row(3)]);
+  const checked = f.$('event-log-status').textContent, node = f.list.children[0]; node.querySelector('details').open = true;
+  const pending = f.panel.refresh(); await settle(); visibility(false); await pending;
+  assert.equal(f.requests[1].options.signal.aborted, true);
+  await f.panel.refresh(); assert.equal(f.requests.length, 2);
+  f.document.hidden = true; visibility(true); await f.panel.refresh(); assert.equal(f.requests.length, 2);
+  assert.equal(f.$('event-log-status').textContent, checked); assert.equal(f.list.children[0], node);
+  f.document.hidden = false; f.document.dispatch('visibilitychange'); await settle();
+  assert.equal(f.requests.length, 3); await f.answer([row(3)]);
+  assert.equal(node.querySelector('details').open, true);
+  f.panel.clear(); visibility(false); visibility(true); await settle(); assert.equal(f.requests.length, 3);
+  const reopened = f.panel.refresh(); await settle(); await f.answer([row(4)]); await reopened;
+  f.panel.close(); assert.equal(disconnected, true);
+});
 
 test('event history distinguishes loading, empty filters and snapshot time from its own successful check', async () => {
   const f = fixture(), pending = f.panel.refresh(); await settle();

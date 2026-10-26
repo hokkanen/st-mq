@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import workerThreads from 'node:worker_threads';
+import { syncBuiltinESMExports } from 'node:module';
 import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
 import { startReplica } from '../src/app/replica.js';
 import { createChartService } from '../src/app/chart-service.js';
@@ -709,6 +711,31 @@ test('verified incremental publications retain an idle chart cache and admit ove
   const changed=await request(chartPath);
   assert.equal(changed.status,200); assert.equal(created,1);
   assert(changed.body.series.indoor_temperature.some(point=>point.y===25));
+});
+
+test('event HTTP reads reuse one worker across verified publications and retire it on physical replacement', async t => {
+  const directory = fixture(t), initial = journalSnapshot(directory, 'event-owner');
+  let publication = { ...initial, fileGeneration: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa' }, created = 0;
+  const OriginalWorker = workerThreads.Worker;
+  workerThreads.Worker = class extends OriginalWorker {
+    constructor(url, options) { super(url, options); if (String(url).endsWith('/event-log-worker.js')) created++; }
+  };
+  syncBuiltinESMExports();
+  t.after(() => { workerThreads.Worker = OriginalWorker; syncBuiltinESMExports(); });
+  const { app, request } = await viewer(t, directory, () => publication);
+  const first = await request('/api/events?view=all'); assert.equal(first.status, 200); assert.equal(created, 1);
+  const oldStore = app.store, writer = new Store(initial.dbPath); t.after(() => writer.close());
+  writer.event('heating-automation-changed', { input: 'mqtt', enabled: false }, at);
+  publication = { ...publication, generation: 'event-owner-next', checkpoint: writer.checkpoint() };
+  const next = await request('/api/events');
+  assert.equal(next.status, 200); assert.equal(next.body.events[0].title, 'Automatic heating paused');
+  assert.notEqual(app.store, oldStore); assert.equal(created, 1, 'An ordinary manifest advance keeps its physical reader');
+  assert.equal(next.body.context, first.body.context);
+  publication = journalSnapshot(directory, 'event-owner-replacement');
+  const replaced = await request('/api/events?view=all');
+  assert.equal(replaced.status, 200); assert.equal(created, 2);
+  assert.notEqual(replaced.body.context, first.body.context);
+  await app.close(); assert.equal(oldStore.db.isOpen, false); assert.equal(app.store.db.isOpen, false);
 });
 
 test('an archive response can retain its old publication while the next publication keeps the recent cache', async t => {

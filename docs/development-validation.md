@@ -17,6 +17,15 @@ admin/family layouts and sign-out fencing. Add `--firefox` for the same fixture
 through Firefox BiDi. Synthetic checks never establish physical equipment
 outcomes. See [Event log](event-log.md) for evidence and coverage boundaries.
 
+Event-log read regressions also cover indexed older-page query plans, selective
+Important filtering without changing source rows, offscreen/hidden-tab suspension,
+bounded concurrent subscribers, queued deadlines, per-subscriber cancellation and
+native rollback before the last read lease is released. Replica HTTP checks reuse
+one event worker across verified publication advances and replace it for a new
+physical file. Run `test/event-log-service.test.js`, `test/replica-chart-owner.test.js`
+and `test/replica-viewer.test.js` alongside the event-log API/UI tests. The browser
+fixture explicitly opens the panel before expecting reads.
+
 OCPP recording-admission regressions cover periodic/triggered samples sharing a
 whole-second timestamp: valid total power retains exact integrated energy using
 earlier labelled phase weights while current control retains the conflict.

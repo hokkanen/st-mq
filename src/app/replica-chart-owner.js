@@ -1,11 +1,22 @@
-/** One physical replica file owns its chart workers. Publication leases keep
+import { createEventLogService } from './event-log-service.js';
+
+/** One physical replica file owns its history workers. Publication leases keep
  * separate native read transactions and capture their own verified boundary;
  * advancing the manifest must not retire a cache used by another request. */
-export function createReplicaChartOwner(store, makeChartService, options) {
+export function createReplicaChartOwner(store, makeChartService, options, makeEventLogService = createEventLogService) {
   const admission = Object.create(store);
   admission.runStorageTask = store.runStorageTask.bind(store);
   const service = makeChartService({ ...options, store: admission });
-  return { store, admission, service, references: 0 };
+  return { store, admission, service, makeEventLogService, events: null, references: 0 };
+}
+
+// The snapshot's existing file-owner lease also owns this reader. A manifest
+// advance changes its verified arguments, never the lifetime of the worker.
+export function leaseReplicaEvents(owner, checkpoint) {
+  return { query: (args, options) => {
+    owner.events ??= owner.makeEventLogService({ store: owner.admission });
+    return owner.events.query({ ...args, checkpoint }, options);
+  } };
 }
 
 export function leaseReplicaCharts(owner, store, checkpoint) {
@@ -29,7 +40,12 @@ export function leaseReplicaCharts(owner, store, checkpoint) {
   let closing;
   service.close = () => closing ??= (async () => {
     if (--owner.references) return;
-    try { await owner.service.close(); }
+    try {
+      const results = await Promise.allSettled([owner.service, owner.events].filter(Boolean)
+        .map(reader => Promise.resolve().then(() => reader.close())));
+      const errors = results.filter(result => result.status === 'rejected').map(result => result.reason);
+      if (errors.length) throw new AggregateError(errors, 'History readers could not finish cleanup.');
+    }
     finally { await owner.store.close(); }
   })();
   return service;
