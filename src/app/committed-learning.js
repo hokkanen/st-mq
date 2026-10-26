@@ -588,7 +588,14 @@ export function* replayLearningJournalSteps(store, input, checkpoint = null,
   if (!rebuild && checkpoint && ['importing', 'rebuilding', 'catching-up'].includes(recovery?.status)) {
     fireplaceRevision = checkpoint.fireplaceRevision ?? 0; sensorRevision = checkpoint.sensorRevision ?? 0;
   }
-  const fireplaceContext = { ...fireplaceLearningContext(store, input, fireplaceRevision), ...sensorLearningContext(store, input, sensorRevision) };
+  // Revision and checkpoint fences need only the selected source head. A
+  // current checkpoint may have no journal tail, so do not materialize its
+  // entire manual firewood history unless an entry will actually consume it.
+  const fireplaceHead = store.db.prepare(`SELECT id FROM active_fireplace_events
+    WHERE input=? AND id<=? AND at<=? ORDER BY id DESC LIMIT 1`)
+    .get(input, fireplaceRevision ?? Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)?.id ?? 0;
+  const sensorContext = sensorLearningContext(store, input, sensorRevision);
+  let fireplaceContext = { fireplaceRevision: fireplaceHead, ...sensorContext }, fireplaceHydrated = false;
   if (checkpoint?.algorithmVersion && checkpoint.algorithmVersion !== LEARNING_ALGORITHM)
     throw new Error('Unsupported Home checkpoint algorithm; start fresh.');
   let next = rebuild ? null : checkpoint;
@@ -620,6 +627,10 @@ export function* replayLearningJournalSteps(store, input, checkpoint = null,
     if (!entries.length && !publishRevision) break;
     const baseCursor = next?.journalCursor ?? 0, events = [];
     for (const entry of entries) {
+      if (!fireplaceHydrated) {
+        fireplaceContext = { ...fireplaceLearningContext(store, input, fireplaceHead), ...sensorContext };
+        fireplaceHydrated = true;
+      }
       const prior = next;
       next = applyLearningRecord(next, entry, fireplaceContext);
       const event = projectCoefficientTransition(projection, entry, prior, next);

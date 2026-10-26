@@ -10,6 +10,23 @@ ordering; proposed recovery views retain their own selection. Real writer-backed
 committed-reading tests exceed the former frame limit without transferring the
 retained room-setting history. These are synthetic qualification, not installed
 hardware timing or a proof of every possible history distribution.
+Energy-start metadata tests keep the first usable charger interval fixed while
+growing unrelated property history, preserving recovery membership, pending energy
+and original admission clocks with a signal-scoped index seek.
+Completed-cycle summaries retain their exact latest-30 ordering and selected
+assessments while incomplete-attempt archives grow, including no completed cycles.
+Temperature-status regressions grow old weather and room archives while holding
+the selected receipt window and exact source/device result fixed; current report,
+outage, import and recovery-selection semantics remain part of the checks.
+Saved charging-report pages keep their selected reports and keyset cursor meaning
+while newer unsaved reports grow; the saved subset has its own sparse history index.
+Replica equipment tests hold missing and inactive configured streams fixed while
+another protocol's archive grows, preserving actual device IDs, selected imports
+and source/receipt cutoffs in both exact-device and source-only projections.
+Sensor-action cases retain direct/inherited request precedence and rollback
+while ordinary controller contexts grow. Replay hydration cases compare exact
+checkpoints and coefficient batches for no-op, real-tail and rebuild paths;
+no-op projections return no full firewood rows.
 
 `test/database-growth-reads.test.js` checks indexed recorder-state prefixes,
 receipt-bounded indoor availability, time-bounded coefficient reads and direct

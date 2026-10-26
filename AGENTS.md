@@ -141,8 +141,9 @@ and Git; add no runtime migration, old decoder or mixed-version bridge.
 
 For bounded selected-period Energy checks and Home savings reads on 2026-10-26,
 the owner approved one installation-only offline conversion from physical schema
-35 to 36, adding only the counter-time, two cycle-selection and sparse voltage
-availability indexes. Preserve
+35 to 36, adding only the counter-time, three cycle-selection, sparse voltage
+availability, signal-scoped energy-start, three sparse temperature-receipt
+and saved charging-report history and scoped equipment-time indexes. Preserve
 verified backups, exact source/learning and journal row identities, dashboard
 choices, restoration duties and pairing identity/authority. Rehearse forward
 conversion and rollback, including new observations and control intent, before

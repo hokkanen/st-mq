@@ -17,7 +17,7 @@ import { CHART_SOURCE_COVERAGE_SQL, chartReportAge } from './chart-coverage.js';
 import { hasCaravanEvidence, caravanCoverageDeadline } from '../domain/caravan-recording-evidence.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
 import { ENERGY_SIGNALS, HISTORY_AXIS_BY_KEY, MODEL_COEFFICIENT_INFO } from '../domain/history-series.js';
-import { createChartQueryContext } from './chart-query-context.js';
+import { createChartQueryContext, garageIntentRevision } from './chart-query-context.js';
 import { buildHeatingSavings } from './garage-reporting.js';
 import { ChartSourceCache } from './chart-source-cache.js';
 import { ChartVoltageCache } from './chart-voltage-cache.js';
@@ -238,10 +238,11 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
     const coefficientSelection = selectedSignals.some(key => Object.hasOwn(MODEL_COEFFICIENT_INFO, key));
     const coefficientRevision = coefficientSelection ? db.prepare(`SELECT group_concat(g.id||':'||g.cursor) revision
       FROM coefficient_selection s JOIN coefficient_generations g ON g.id=s.generation`).get().revision : null;
+    const garageIntent = selectedSignals.includes('garage_away_mode')
+      ? garageIntentRevision(db, args.input ?? 'offline', Math.min(args.now, range.to)) : null;
     const currentVersion = JSON.stringify({ coefficientRevision, providers: providerFingerprint(args, range), state: db.prepare(`SELECT
       (SELECT generation FROM history_selection WHERE id=1) recoverySelection,
-      CASE WHEN ? THEN (SELECT MAX(id) FROM active_events WHERE type='garage-intent' AND at<=?
-        AND json_extract(payload,'$.input')=?) END garageIntent,
+      ? garageIntent,
       (SELECT MAX(id) FROM active_fireplace_events AS fireplace_events) fireplaceRevision,
       (SELECT CASE WHEN ? THEN group_concat(CASE WHEN json_valid(value) THEN json_extract(value,'$.checkpointDigest') ELSE 'invalid' END) END
         FROM state WHERE key IN ('adaptive:mqtt','adaptive:providers','adaptive:simulated')) adaptiveModels,
@@ -250,7 +251,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       (SELECT MAX(id) FROM active_energy_audits AS energy_audits) energyAudits,
       (SELECT MAX(id) FROM active_events AS events WHERE type='charging-session-check') chargingSessionChecks,
       (SELECT COUNT(*) FROM active_imports AS imports WHERE status='complete' AND completed_at<=?) imports`).get(
-        Number(selectedSignals.includes('garage_away_mode')), Math.min(args.now, range.to), args.input ?? 'offline',
+        garageIntent,
         Number(assessments), Number(assessments), args.now) });
     // Historical views survive second-by-second clock movement. Current/future
     // views renew within fifteen seconds, preserving acquisition timestamps.

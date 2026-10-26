@@ -26,8 +26,9 @@ provenance keep their historical meaning throughout an upgrade.
 The current physical SQLite schema and the current journaled data layout have
 separate identifiers. Physical schema 36 and journaled layout 31 retain the compact
 independent-evidence endpoint to recording coverage, with indexed selected-period
-counter, completed/active cycle and voltage-availability reads. They retain indexed
-manual-firewood, coefficient-history, chronological coverage and bounded
+counter, completed/active cycle, temperature-receipt, voltage-availability and
+per-signal energy-start reads. They retain indexed manual-firewood,
+coefficient-history, chronological coverage and bounded
 journal/recovery reads. Every fresh database uses this one current layout and
 its matching genesis/hash interpretation. There is no older-schema runtime
 branch or alternate journal decoder. Strict physical-schema

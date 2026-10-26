@@ -1,5 +1,5 @@
 import { appendLearningRecord, LEARNING_ALGORITHM } from './committed-learning.js';
-import { sensorChangeEvents, sensorRevision, affectsThermalLearning } from './sensor-inputs.js';
+import { findSensorEntry, sensorChangeEvents, sensorRevision, affectsThermalLearning } from './sensor-inputs.js';
 import { TEMPERATURE_SENSORS, SENSOR_SETTLING_MS, indoorWeights } from '../domain/indoor-sensors.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated']);
@@ -14,11 +14,9 @@ export function addSensorChange(store, input, payload, now, { config = {}, seed 
     || typeof payload.requestId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(payload.requestId)
     || !Number.isSafeInteger(now) || now < 0) throw new TypeError('Choose a temperature sensor, change reason and valid request ID');
   return store.transaction(() => {
-    const previous = store.db.prepare(`SELECT id,at,json_extract(payload,'$.value.sensorChange') AS change
-      FROM learning_journal WHERE input=? AND kind='context'
-      AND json_extract(payload,'$.value.sensorChange.requestId')=? LIMIT 1`).get(input, payload.requestId);
+    const previous = findSensorEntry(store, input, { kind: 'sensorChange', requestId: payload.requestId });
     if (previous) {
-      const change = JSON.parse(previous.change);
+      const change = previous.payload.value.sensorChange;
       if (change.signal !== payload.signal || change.reason !== payload.reason)
         throw Object.assign(new Error('Conflicting sensor-change request ID'), { statusCode: 409 });
       return { id: previous.id, at: previous.at, ...change, repeated: true };
@@ -37,27 +35,22 @@ export function revertSensorChange(store, input, payload, now, { config = {}, se
     || typeof payload.requestId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(payload.requestId)
     || !Number.isSafeInteger(now) || now < 0) throw new TypeError('Choose a recorded sensor change and valid request ID');
   return store.transaction(() => {
-    const target = store.db.prepare(`SELECT id,at,algorithm_version,json_extract(payload,'$.value.sensorChange') AS change
-      FROM learning_journal WHERE input=? AND id=? AND kind='context'
-      AND json_type(payload,'$.value.sensorChange')='object'`).get(input, payload.id);
+    const target = findSensorEntry(store, input, { kind: 'sensorChange', id: payload.id });
     if (!target) throw new TypeError('Sensor change was not found for this input');
     if (target.algorithm_version !== LEARNING_ALGORITHM)
       throw Object.assign(new Error('Unsupported Home learning journal algorithm; start with a fresh development database.'), { statusCode: 409 });
-    const previous = store.db.prepare(`SELECT id,at,json_extract(payload,'$.value.sensorRevert.id') target
-      FROM learning_journal WHERE input=? AND kind='context'
-      AND json_extract(payload,'$.value.sensorRevert.requestId')=? LIMIT 1`).get(input, payload.requestId);
-    if (previous && previous.target !== payload.id)
+    const previous = findSensorEntry(store, input, { kind: 'sensorRevert', requestId: payload.requestId });
+    if (previous && previous.payload.value.sensorRevert.id !== payload.id)
       throw Object.assign(new Error('Conflicting sensor-reversal request ID'), { statusCode: 409 });
-    const first = previous ?? store.db.prepare(`SELECT id,at FROM learning_journal WHERE input=? AND kind='context'
-      AND json_extract(payload,'$.value.sensorRevert.id')=? ORDER BY id LIMIT 1`).get(input, payload.id);
-    const change = JSON.parse(target.change);
+    const first = previous ?? findSensorEntry(store, input, { kind: 'sensorRevert', targetId: payload.id });
+    const change = target.payload.value.sensorChange;
     if (first) return { id: target.id, signal: change.signal, at: target.at, revertedAt: first.at,
       revision: first.id, repeated: true, requiresRebuild: ['pending','running','ready','failed'].includes(store.getState(jobKey(input))?.status) };
     const revision = appendLearningRecord(store, input, 'context', { timestamp: now, sensorRevert: { ...payload } }, { config, seed });
     const previousJob = store.getState(jobKey(input));
     const pending = ['pending','running','ready','failed'].includes(previousJob?.status);
     const fireplaceRevision = store.db.prepare('SELECT COALESCE(MAX(id),0) revision FROM active_fireplace_events AS fireplace_events WHERE input=?').get(input).revision;
-    const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
+    const epoch = store.learningEpoch(input);
     store.setState(jobKey(input), { status: 'pending', revision: fireplaceRevision, sensorRevision: revision, epoch,
       requestedAt: now, affectedAt: Math.min(target.at, pending ? previousJob?.affectedAt ?? target.at : target.at), requiresRebuild: true });
     return { id: target.id, signal: change.signal, at: target.at, revertedAt: now, revision, repeated: false, requiresRebuild: true };

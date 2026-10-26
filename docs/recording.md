@@ -2824,11 +2824,34 @@ ends because the current chronological indexes do not provide a two-dimensional
 interval-overlap search. Copied scratch rows remain period/overlap-owned; no
 universal range-independent scan bound is claimed.
 Home savings seek completed cycles by end time and active cycles separately,
-including arbitrarily old starts. Voltage readers seek each physical device and
+including arbitrarily old starts. Routine cycle metrics seek the latest completed
+cycles without traversing retained incomplete attempts. First-energy metadata seeks each signal's interval
+starts directly, without traversing another device's earlier energy history;
+selected history and source/receipt/admission clocks still decide its first usable
+interval. Temperature status seeks receipt ranges and predecessors by signal,
+source or exact device stream, including unavailable-sensor attempts. It preserves
+invalid-unit and retained-report diagnostics without traversing an older archive.
+Saved charging-report pages seek the saved subset directly, including when newer
+unsaved reports remain in the same charger's history.
+Replica equipment evidence seeks its configured source/device/signal directly.
+A source-only temperature selection merges device-prefix candidates without
+assuming a provenance device ID; missing or old configured streams do not walk
+another protocol's newer archive.
+Garage chart versions use the latest active intent directly when it proves the
+requested maximum ID. Historical and mixed-input cases retain the exact
+time-bounded fallback; event ID order never replaces occurrence clocks.
+Voltage readers seek each physical device and
 phase by the exact maximum of source/receipt clocks, then retain caller-selected
 history membership. Empty ordinary or late cohorts do not scan the other cohort.
 First/next coefficient metadata uses ID/time-only immutable-prefix seeks, and
 committed control readings transfer one candidate at a time through the writer.
+Sensor-change actions project only sparse selected sensor sources and their
+ordering references, preserving request identity through epoch changes.
+An unchanged learning replay does not hydrate manual firewood arrays. Real
+journal tails and rebuilds still load their full bounded-revision firewood
+context once; routine sensor-boundary checks still project the sparse manual
+sensor log. Those costs grow with manual-source history and need a separate
+cache/projection lifecycle design to remove safely.
 Fireplace rebuild-existence checks seek each selected epoch/prefix by sample time;
 an empty result cannot walk all samples belonging to another input environment.
 Household forecast refreshes also seek source and receipt clocks independently

@@ -2,6 +2,17 @@ import { releaseStorageLease, checkStorageRequest } from '../storage/worker-admi
 import { recordedEnergyGroups, recordedEnergyStart } from '../storage/energy-history.js';
 import { createChartVoltageReader } from './chart-voltage-cache.js';
 
+export function garageIntentRevision(db, input, at) {
+  const latest = db.prepare(`SELECT id,at,json_extract(payload,'$.input') AS input
+    FROM active_events AS events WHERE type='garage-intent' ORDER BY id DESC LIMIT 1`).get();
+  // If the largest active ID itself qualifies, it is also the largest eligible
+  // ID. Otherwise retain the time-bounded lookup: occurrence order and journal
+  // IDs can diverge, and an old selection must not scan every later event.
+  if (latest && latest.input === input && latest.at <= at) return latest.id;
+  return db.prepare(`SELECT MAX(id) AS revision FROM active_events AS events
+    WHERE type='garage-intent' AND at<=? AND json_extract(payload,'$.input')=?`).get(at, input).revision;
+}
+
 // Reuse source interpretation within an immutable chart request. The worker may
 // retain a bounded context only while selection/import revisions, pending energy
 // and receipt cutoffs still match. Dense histories retain the streaming path.

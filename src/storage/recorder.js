@@ -392,8 +392,10 @@ export class Recorder {
         return { changed: false };
       const previousReport = s.lastReportTime;
       if (!previousReport || previousReport.sourceTime !== s.lastSourceTime) return { changed: false };
+      // This bounded safety window includes every unit/policy and malformed
+      // attempt. Seek receipts instead of sorting the retained stream prefix.
       for (const attempt of this.store.db.prepare(`SELECT value,quality,raw,received_at FROM active_observations
-        WHERE source=? AND device=? AND signal=? AND received_at>=? AND received_at<=? ORDER BY received_at,id`)
+        WHERE +source=? AND +device=? AND +signal=? AND received_at>=? AND received_at<=? ORDER BY received_at,id`)
         .iterate(reading.source, reading.device, reading.signal, Math.max(previousReport.receivedAt, prior.end_at), at)) {
         const raw = attempt.raw ? JSON.parse(attempt.raw) : {}, quality = JSON.parse(attempt.quality);
         const fresh = attempt.value !== null && raw.recorder?.status === 'fresh' && quality.every(flag => flag === 'good');
@@ -500,6 +502,7 @@ export class Recorder {
         // A subsequent disconnect must not hide an earlier invalid payload.
         // Start at the genuine receipt, not a later policy/recovery event time.
         const attempts = this.store.db.prepare(`SELECT quality,raw FROM active_observations AS observations WHERE source=? AND device=? AND signal=?
+          AND signal IN ('indoor_temperature','downstairs_temperature','bedroom_temperature','garage_temperature','garage_temperature_2','outdoor_temperature')
           AND received_at>=? AND received_at<=? AND id>? ORDER BY received_at,id`)
           .all(reading.source, reading.device, reading.signal, receivedAt, at, span?.observation_id ?? reading.id ?? 0);
         for (const attempt of attempts) {

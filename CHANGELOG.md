@@ -7,12 +7,15 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 ## Unreleased
 
 - Load selected-period Energy checks without copying unrelated older evidence,
-  seek Home savings by cycle completion, and keep voltage/history metadata and
-  committed control reads bounded as history grows. Preserve long crossing
+  seek Home savings by cycle completion, and keep completed-cycle metrics,
+  temperature status, voltage/energy metadata, sensor-change actions and committed control reads bounded
+  as history grows. Preserve long crossing
   intervals, delayed counter baselines, recovery selections and original clocks.
   This requires physical schema 36; incompatible databases are rejected before
   writable startup. The approved installation conversion is a separate offline
   operation with verified backups and rollback, with no automatic migration.
+  Reconnect checks use their receipt window, and unchanged learning replay avoids
+  reloading the retained firewood log.
 
 - Keep recorder health and pending-energy reads, indoor availability checks,
   recent coefficient charts, offline session reports and model-verification

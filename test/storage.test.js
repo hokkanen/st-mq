@@ -65,7 +65,10 @@ test('physical index schema and the one current journaled data layout have disti
   finally { reopened.close(); }
 });
 
-for (const name of ['energy_audits_signal_time', 'learning_cycles_completed_at', 'learning_cycles_active_at', 'observations_voltage_available']) {
+for (const name of ['charging_reports_saved_history', 'energy_audits_signal_time', 'learning_cycles_completed_at', 'learning_cycles_completed_start',
+  'learning_cycles_active_at', 'observations_voltage_available', 'observations_energy_start',
+  'observations_temperature_receipt', 'observations_temperature_source_receipt', 'observations_temperature_stream_receipt',
+  'observations_equipment_time']) {
   test(`the selected-period index ${name} is required before writable startup`, t => {
     const { store, path } = fixture(t);
     store.close();

@@ -26,6 +26,18 @@ const decode = row => row ? { id: row.id, source: row.source, device: row.device
   value: row.value, unit: row.unit, sourceTime: row.source_time, receivedAt: row.received_at,
   quality: JSON.parse(row.quality), raw: row.raw ? JSON.parse(row.raw) : null } : null;
 
+// Receipt order differs from measurement order, including failed attempts with
+// no source clock. Seek the sparse physical stream before resolving the actual
+// selected view by ID; proposed recovery views own their own membership. Journal
+// sources overlay observations with a TEMP view and retain its unhinted reader.
+function temperatureCandidates(store, index) {
+  const candidate = store.journalSource === true ? 'o' : 'candidate';
+  return { candidate, from: candidate === 'o' ? 'active_observations o'
+    : `observations candidate INDEXED BY ${index} CROSS JOIN active_observations o ON o.id=candidate.id`,
+  signals: `${candidate}.signal IN ('indoor_temperature','downstairs_temperature','bedroom_temperature',
+    'garage_temperature','garage_temperature_2','outdoor_temperature')` };
+}
+
 /** Display diagnostics use fixed codes only. Never expose a provider's raw
  * payload, device identity or arbitrary quality/error strings in status text. */
 export function temperatureFailureReasons(observation, now) {
@@ -81,10 +93,12 @@ export function indoorStatusMetadata(reading, now, { latest = reading, store, kn
       // later endpoint cannot reveal the actual last report known then.
       lastReportAt = null; reportExpiresAt = reading.reportExpiresAt ?? knownAt;
     } else if (span && span.source_time >= lastReportAt) lastReportAt = span.source_time;
-    latest = decode(store.db.prepare(`SELECT * FROM active_observations AS observations WHERE source=? AND device=? AND signal=?
-      AND received_at>=? AND received_at<=? AND COALESCE(json_extract(raw,'$.retained'),0)<>1
-      AND NOT EXISTS(SELECT 1 FROM json_each(quality) WHERE value='retained')
-      ORDER BY received_at DESC,id DESC LIMIT 1`)
+    const { candidate, from, signals } = temperatureCandidates(store, 'observations_temperature_stream_receipt');
+    latest = decode(store.db.prepare(`SELECT o.* FROM ${from} WHERE ${signals}
+      AND ${candidate}.source=? AND ${candidate}.device=? AND ${candidate}.signal=?
+      AND ${candidate}.received_at>=? AND ${candidate}.received_at<=? AND COALESCE(json_extract(o.raw,'$.retained'),0)<>1
+      AND NOT EXISTS(SELECT 1 FROM json_each(o.quality) WHERE value='retained')
+      ORDER BY ${candidate}.received_at DESC,${candidate}.id DESC LIMIT 1`)
       .get(reading.source, reading.device, reading.signal, reading.receivedAt, knownAt)) ?? latest;
   }
   if (maxAge === null) metadata.attentionAfterMs = INDOOR_ATTENTION_MS;
@@ -127,10 +141,13 @@ export function temperatureBoundaryStatus(reading, changedAt, now, { clearValue 
 }
 
 export function recordedTemperatureAttempt(store, signal, knownAt, input) {
-  return decode(store.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
-    WHERE o.signal=? AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete')
-    AND ${input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'"}
-    ORDER BY o.received_at DESC,o.id DESC LIMIT 1`).get(signal, knownAt));
+  const { candidate, from, signals } = temperatureCandidates(store,
+    input === 'simulated' ? 'observations_temperature_source_receipt' : 'observations_temperature_receipt');
+  return decode(store.db.prepare(`SELECT o.* FROM ${from} LEFT JOIN active_imports i ON i.id=o.import_id
+    WHERE ${signals} AND ${candidate}.signal=? AND ${candidate}.received_at<=?
+    AND (o.import_id IS NULL OR i.status='complete')
+    AND ${candidate}.source${input === 'simulated' ? "='simulation'" : "<>'simulation'"}
+    ORDER BY ${candidate}.received_at DESC,${candidate}.id DESC LIMIT 1`).get(signal, knownAt));
 }
 
 const outdoorTrustworthy = (row, now) => Boolean(row && Number.isFinite(row.value)
@@ -164,20 +181,24 @@ export function recordedOutdoorObservation(store, now, { knownAt = now, input } 
   const candidates = [];
   const scopes = sources ?? [input === 'simulated' ? 'simulation' : null];
   for (const source of scopes) {
-    const scope = source ? 'AND o.source=?' : "AND o.source<>'simulation'";
+    const { candidate, from, signals } = temperatureCandidates(store,
+      source ? 'observations_temperature_source_receipt' : 'observations_temperature_receipt');
+    const scope = source ? `AND ${candidate}.source=?` : `AND ${candidate}.source<>'simulation'`;
+    const coverageScope = source ? 'AND o.source=?' : "AND o.source<>'simulation'";
     const since = knownAt - OUTDOOR_MAX_AGE_MS;
-    const rows = store.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
-      WHERE o.signal='outdoor_temperature' AND o.received_at>=? AND o.received_at<=?
+    const rows = store.db.prepare(`SELECT o.* FROM ${from} LEFT JOIN active_imports i ON i.id=o.import_id
+      WHERE ${signals} AND ${candidate}.signal='outdoor_temperature'
+      AND ${candidate}.received_at>=? AND ${candidate}.received_at<=?
       AND (o.import_id IS NULL OR i.status='complete') ${scope}
-      ORDER BY o.received_at,o.id`).all(since, knownAt, ...(source ? [source] : [])).map(decode);
-    const earlier = decode(store.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
-      WHERE o.signal='outdoor_temperature' AND o.received_at<?
+      ORDER BY ${candidate}.received_at,${candidate}.id`).all(since, knownAt, ...(source ? [source] : [])).map(decode);
+    const earlier = decode(store.db.prepare(`SELECT o.* FROM ${from} LEFT JOIN active_imports i ON i.id=o.import_id
+      WHERE ${signals} AND ${candidate}.signal='outdoor_temperature' AND ${candidate}.received_at<?
       AND (o.import_id IS NULL OR i.status='complete') ${scope}
-      ORDER BY o.received_at DESC,o.id DESC LIMIT 1`).get(since, ...(source ? [source] : [])));
+      ORDER BY ${candidate}.received_at DESC,${candidate}.id DESC LIMIT 1`).get(since, ...(source ? [source] : [])));
     if (earlier) rows.unshift(earlier);
     for (const span of store.db.prepare(`SELECT o.*,c.source_time AS report_time,c.end_at,c.status
       FROM active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id
-      WHERE c.signal='outdoor_temperature' AND c.end_at>=? AND c.end_at<=? ${scope}
+      WHERE c.signal='outdoor_temperature' AND c.end_at>=? AND c.end_at<=? ${coverageScope}
       ORDER BY c.end_at,c.id`).all(since, knownAt, ...(source ? [source] : []))) {
       const row = decode(span);
       rows.push(span.status === 'fresh' ? { ...row, sourceTime: span.report_time, receivedAt: span.end_at } : row);

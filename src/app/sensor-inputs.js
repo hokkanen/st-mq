@@ -10,18 +10,37 @@ const selected = alias => `(${alias}.epoch=? OR EXISTS(SELECT 1 FROM learning_ep
     AND ${alias}.id>g.after_id AND ${alias}.id<=g.through_id))`;
 
 /** Ordinary controller contexts are not sensor changes. Start from the sparse
- * sensor source index, then resolve only their selected ordering references. */
-function sensorEntries(store, input, epoch) {
+ * sensor source index, then resolve only their selected ordering references.
+ * CROSS JOIN keeps those sources outside the growing general reference index. */
+function sensorSources(store, input, epoch) {
   epoch ??= store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
-  return store.db.prepare(`WITH sensor_sources AS MATERIALIZED (
+  return { epoch, bindings: [input, epoch, epoch, epoch, epoch], sql: `WITH sensor_sources AS MATERIALIZED (
     SELECT id,input,epoch,at,algorithm_version,payload FROM learning_journal_entries INDEXED BY learning_sensor_contexts
     WHERE input=? AND kind='context' AND (json_type(payload,'$.value.sensorChange')='object'
-      OR json_type(payload,'$.value.sensorRevert')='object'))
-    SELECT s.id,s.at,s.algorithm_version,s.payload FROM sensor_sources s WHERE ${selected('s')}
-    UNION ALL SELECT e.id,e.at,e.algorithm_version,s.payload FROM sensor_sources s
-      JOIN learning_journal_entries e INDEXED BY recovery_learning_source ON e.source_entry_id=s.id AND e.input=s.input
-      WHERE e.payload IS NULL AND ${selected('e')} ORDER BY id`)
-    .all(input, epoch, epoch, epoch, epoch).map(row => ({ ...row, payload: JSON.parse(row.payload) }));
+      OR json_type(payload,'$.value.sensorRevert')='object')), selected_sensor_sources AS (
+    SELECT s.id,s.epoch,s.at,s.algorithm_version,s.payload FROM sensor_sources s WHERE ${selected('s')}
+    UNION ALL SELECT e.id,e.epoch,e.at,e.algorithm_version,s.payload FROM sensor_sources s
+      CROSS JOIN learning_journal_entries e INDEXED BY recovery_learning_source ON e.source_entry_id=s.id AND e.input=s.input
+      WHERE e.payload IS NULL AND ${selected('e')})` };
+}
+function sensorEntries(store, input, epoch) {
+  const source = sensorSources(store, input, epoch);
+  return store.db.prepare(`${source.sql} SELECT * FROM selected_sensor_sources ORDER BY id`)
+    .all(...source.bindings).map(row => ({ ...row, payload: JSON.parse(row.payload) }));
+}
+
+/** Actions retain the same sparse selection, but return only their candidate
+ * across the writer bridge even when manual source history itself is large. */
+export function findSensorEntry(store, input, { kind, id, requestId, targetId }) {
+  if (!['sensorChange', 'sensorRevert'].includes(kind)) throw new TypeError('Invalid sensor source kind');
+  const source = sensorSources(store, input), path = `$.value.${kind}`;
+  const filter = id !== undefined ? 'id=?' : requestId !== undefined
+    ? `json_extract(payload,'${path}.requestId')=?` : `json_extract(payload,'${path}.id')=?`;
+  const row = store.db.prepare(`${source.sql} SELECT * FROM selected_sensor_sources
+    WHERE json_type(payload,'${path}')='object' AND ${filter}
+    ORDER BY ${requestId === undefined ? '' : '(epoch=?) DESC,'}id LIMIT 1`)
+    .get(...source.bindings, id ?? requestId ?? targetId, ...(requestId === undefined ? [] : [source.epoch]));
+  return row ? { ...row, payload: JSON.parse(row.payload) } : null;
 }
 const reversals = (store, input, epoch) => sensorEntries(store, input, epoch)
   .filter(row => row.payload.value.sensorRevert).map(row => ({ id: row.id, at: row.at, target: row.payload.value.sensorRevert.id }));

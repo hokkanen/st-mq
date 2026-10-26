@@ -166,6 +166,8 @@ CREATE TABLE recovery_exclusions (
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
 CREATE INDEX annotations_time ON annotations(start_at, end_at);
 CREATE INDEX charging_reports_history ON charging_reports(namespace,charger_id,started_at DESC,report_id DESC);
+CREATE INDEX charging_reports_saved_history ON charging_reports(namespace,charger_id,started_at DESC,report_id DESC)
+ WHERE saved_at IS NOT NULL;
 CREATE INDEX charging_reports_expiry ON charging_reports(namespace,ended_at) WHERE saved_at IS NULL AND ended_at IS NOT NULL;
 CREATE INDEX charging_report_events_report ON charging_report_events(namespace,charger_id,report_id,id DESC);
 CREATE INDEX charging_report_events_category ON charging_report_events(namespace,charger_id,report_id,category,id DESC);
@@ -184,6 +186,8 @@ CREATE INDEX fireplace_events_target_id ON fireplace_events(input,target_id,id,a
 CREATE INDEX learning_cycles_input_at ON learning_cycles(input, started_at);
 CREATE INDEX learning_cycles_completed_at ON learning_cycles(input,ended_at)
  WHERE status IN ('completed','incomplete') AND ended_at IS NOT NULL;
+CREATE INDEX learning_cycles_completed_start ON learning_cycles(input,started_at)
+ WHERE status='completed';
 CREATE INDEX learning_cycles_active_at ON learning_cycles(input,started_at)
  WHERE status='active' AND ended_at IS NULL;
 CREATE INDEX learning_entries_algorithm
@@ -205,6 +209,9 @@ CREATE INDEX observations_signal_id ON observations(signal, id);
 CREATE INDEX observations_signal_time ON observations(signal, source_time, id);
 CREATE INDEX observations_voltage_available ON observations(device,signal,MAX(source_time,received_at),id)
  WHERE source='voltage-estimate' AND unit='V';
+CREATE INDEX observations_energy_start ON observations(signal,
+  json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.intervalStart'))
+ WHERE signal IN ('property_energy_l1','ev1_energy_l1','ev2_energy_l1','caravan_energy') AND import_id IS NULL;
 CREATE INDEX observations_energy_geometry ON observations(
   json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.intervalStart'),
   source_time,source,device,CASE WHEN signal LIKE 'ev1_%' THEN 'ev1'
@@ -213,6 +220,14 @@ CREATE INDEX observations_energy_geometry ON observations(
   WHERE signal IN ('property_energy_l1','property_energy_l2','property_energy_l3','ev1_energy_l1','ev1_energy_l2','ev1_energy_l3','ev2_energy_l1','ev2_energy_l2','ev2_energy_l3','caravan_energy') AND import_id IS NULL;
 CREATE INDEX observations_time ON observations(source_time, id);
 CREATE INDEX observations_receipt ON observations(received_at);
+CREATE INDEX observations_temperature_receipt ON observations(signal,received_at,id)
+ WHERE signal IN ('indoor_temperature','downstairs_temperature','bedroom_temperature','garage_temperature','garage_temperature_2','outdoor_temperature');
+CREATE INDEX observations_temperature_source_receipt ON observations(signal,source,received_at,id)
+ WHERE signal IN ('indoor_temperature','downstairs_temperature','bedroom_temperature','garage_temperature','garage_temperature_2','outdoor_temperature');
+CREATE INDEX observations_temperature_stream_receipt ON observations(source,device,signal,received_at,id)
+ WHERE signal IN ('indoor_temperature','downstairs_temperature','bedroom_temperature','garage_temperature','garage_temperature_2','outdoor_temperature');
+CREATE INDEX observations_equipment_time ON observations(source,device,signal,source_time,id)
+ WHERE source IN ('mqtt-equipment','mqtt-temperature','shelly-mqtt');
 CREATE INDEX observations_stream_receipt ON observations(source,device,signal,unit,
   json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.recorder.policy'),received_at,import_id);
 CREATE INDEX recorder_coverage_outages ON recorder_coverage(start_at,id) WHERE status<>'fresh';

@@ -31,13 +31,48 @@ export function snapshotState(snapshot, key) {
  * publication boundary; incomplete imports never become dashboard evidence. */
 function observationReader(snapshot) {
   if (!snapshot) return () => null;
-  const query = snapshot.store.db.prepare(`SELECT o.* FROM active_observations o
+  const db = snapshot.store.db;
+  const equipmentSources = ['mqtt-equipment', 'mqtt-temperature', 'shelly-mqtt'];
+  const equipmentScope = "source IN ('mqtt-equipment','mqtt-temperature','shelly-mqtt')";
+  const physical = snapshot.store.journalSource !== true;
+  const equipment = physical && db.prepare(`SELECT o.* FROM observations candidate INDEXED BY observations_equipment_time
+    CROSS JOIN active_observations o ON o.id=candidate.id LEFT JOIN active_imports i ON i.id=o.import_id
+    WHERE candidate.${equipmentScope} AND candidate.source=? AND candidate.device=? AND candidate.signal=?
+    AND candidate.source_time<=? AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete')
+    ORDER BY candidate.source_time DESC,candidate.id DESC LIMIT 1`);
+  const firstDevice = db.prepare('SELECT device FROM observations WHERE source=? ORDER BY device LIMIT 1');
+  const nextDevice = db.prepare('SELECT device FROM observations WHERE source=? AND device>? ORDER BY device LIMIT 1');
+  const present = db.prepare('SELECT 1 FROM observations WHERE source=? AND device=? AND signal=? LIMIT 1');
+  // A missing provider signal cannot require walking another source's archive.
+  // Physical presence grants no evidence: selection and both clocks remain on
+  // the actual lookup, including incomplete imports and excluded rows.
+  const hasScopedSignal = (signal, source, device) => {
+    if (device !== null) return Boolean(present.get(source, device, signal));
+    for (let prefix = firstDevice.get(source); prefix; prefix = nextDevice.get(source, prefix.device))
+      if (present.get(source, prefix.device, signal)) return true;
+    return false;
+  };
+  const query = db.prepare(`SELECT o.* FROM active_observations o
     LEFT JOIN active_imports i ON i.id=o.import_id WHERE o.signal=? AND o.source_time<=? AND o.received_at<=?
     AND (? IS NULL OR o.source=?) AND (? IS NULL OR o.device=?)
     AND (o.import_id IS NULL OR i.status='complete') ORDER BY o.source_time DESC,o.id DESC LIMIT 1`);
   return (signal, source = null, device = null) => {
     const at = snapshot.publication.sourceAt;
-    const row = query.get(signal, at, at, source, source, device, device);
+    let row;
+    if (physical && equipmentSources.includes(source)) {
+      if (device !== null) row = equipment.get(source, device, signal, at, at);
+      else {
+        // Canonical temperature mappings preserve the actual historical device
+        // identity. Merge one candidate per indexed prefix instead of scanning
+        // other protocols or assigning the configured equipment's ID to it.
+        for (let prefix = firstDevice.get(source); prefix; prefix = nextDevice.get(source, prefix.device)) {
+          const candidate = equipment.get(source, prefix.device, signal, at, at);
+          if (candidate && (!row || candidate.source_time > row.source_time
+            || candidate.source_time === row.source_time && candidate.id > row.id)) row = candidate;
+        }
+      }
+    } else if (!physical || source === null || hasScopedSignal(signal, source, device))
+      row = query.get(signal, at, at, source, source, device, device);
     if (!row) return null;
     const raw = JSON.parse(row.raw ?? '{}');
     return { value: row.value, signal, source: row.source, unit: row.unit,

@@ -57,24 +57,28 @@ function energyRow(row) {
 export function recordedEnergyStart(store, prefix, input, now) {
   if (!Number.isFinite(now)) throw new TypeError('Energy selection requires an explicit receipt cutoff');
   const signal = totalOnly(prefix) ? `${prefix}_energy` : `${prefix}_energy_l1`;
-  // The earliest start is already ordered by the geometry index. MIN() on the
-  // signal index used to parse every retained interval on each chart pass. A
-  // cheap existence check prevents scanning all other devices for an absent
-  // prefix (the selected-history predicate remains on the actual lookup).
-  const present = store.db.prepare(`SELECT 1 FROM observations INDEXED BY observations_signal_time
-    WHERE signal=? AND import_id IS NULL AND ${scope(input)} AND received_at<=? AND source_time<=? LIMIT 1`)
-    .get(signal, now, now);
-  const geometry = "json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.intervalStart')";
+  // Seek this signal's earliest geometry, including a long interval whose end
+  // is later than shorter intervals. The global geometry index would traverse
+  // every other signal's earlier archive before reaching this prefix.
+  const geometry = "json_extract(CASE WHEN json_valid(candidate.raw) THEN candidate.raw ELSE '{}' END,'$.intervalStart')";
+  const overlay = store.journalSource === true, observed = overlay ? 'candidate' : 'o';
+  // Proposed recovery views own actual selection membership. A journal donor's
+  // active view instead contains only its changed-key closure; its unhinted raw
+  // TEMP overlay and donor selection retain the complete source context.
+  const from = overlay ? 'observations candidate' : `observations candidate INDEXED BY observations_energy_start
+    CROSS JOIN active_observations o ON o.id=candidate.id`;
   let firstAt = Infinity;
-  const candidates = present && store.db.prepare(`SELECT ${geometry} AS at,source_time,received_at,raw FROM observations INDEXED BY observations_energy_geometry
-    WHERE signal IN (${ENERGY_SIGNALS.map(name => `'${name}'`).join(',')}) AND import_id IS NULL
-    AND ${selectedHistoryPredicate('observations', 'observations')}
-    AND signal=? AND ${scope(input)} AND ${physicalWriter} AND received_at<=? AND source_time<=?
-    AND json_valid(raw) AND json_type(raw,'$.intervalStart')='integer'
-    AND json_extract(raw,'$.intervalEnd')=source_time
-    AND source_time>json_extract(raw,'$.intervalStart')
+  const candidates = store.db.prepare(`SELECT ${geometry} AS at,${observed}.source_time,${observed}.received_at,${observed}.raw
+    FROM ${from}
+    WHERE candidate.signal IN ('property_energy_l1','ev1_energy_l1','ev2_energy_l1','caravan_energy') AND candidate.import_id IS NULL
+    ${overlay ? `AND ${selectedHistoryPredicate('observations', 'candidate')}` : ''}
+    AND candidate.signal=? AND ${scope(input).replaceAll('source', `${observed}.source`)}
+    AND ${physicalWriter.replaceAll('raw', `${observed}.raw`)} AND ${observed}.received_at<=? AND ${observed}.source_time<=?
+    AND json_valid(${observed}.raw) AND json_type(${observed}.raw,'$.intervalStart')='integer'
+    AND json_extract(${observed}.raw,'$.intervalEnd')=${observed}.source_time
+    AND ${observed}.source_time>json_extract(${observed}.raw,'$.intervalStart')
     ORDER BY ${geometry}`).iterate(signal, now, now);
-  if (candidates) for (const row of candidates) {
+  for (const row of candidates) {
     if (observationTimeAdmitted({ sourceTime: row.source_time, receivedAt: row.received_at, raw: JSON.parse(row.raw) }, now)) {
       firstAt = row.at; break;
     }
