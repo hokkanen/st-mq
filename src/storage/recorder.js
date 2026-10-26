@@ -1025,7 +1025,7 @@ export class Recorder {
       this.flushMetadata(now, { force });
       this.flushMetrics(now, { force });
       let budget = this.adaptiveBudgetState() ? this.adaptiveBudget(now) : null;
-      for (const row of this.store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%'").all()) {
+      for (const row of this.store.db.prepare("SELECT key,value FROM state WHERE key GLOB 'recorder:energy:*'").all()) {
         const s = JSON.parse(row.value), p = s.pending;
         if (!p || !force) continue;
         const [recordSource,recordDevice,recordPrefix] = JSON.parse(row.key.slice('recorder:energy:'.length));
@@ -1086,7 +1086,7 @@ export class Recorder {
   /** Current committed source evidence only. No statistics/history scans,
    * storage accounting, acquisition or coverage writes run in health reads. */
   sourceStatus(now = this.clock()) {
-    const states = this.store.db.prepare("SELECT value FROM state WHERE key LIKE 'recorder:signal:%'").all()
+    const states = this.store.db.prepare("SELECT value FROM state WHERE key GLOB 'recorder:signal:*'").all()
       .map(row=>JSON.parse(row.value)).filter(isRecordedDataset);
     const latestCoverage = this.store.db.prepare('SELECT source_time,evidence FROM recorder_coverage WHERE id=?');
     const parameters = states.map(state=>sourceParameter(state,
@@ -1102,12 +1102,12 @@ export class Recorder {
     const historySelection = this.store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation;
     const revision = this.store.db.prepare(`SELECT (SELECT MAX(id) FROM observations) observations,
       (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,(SELECT MAX(id) FROM recorder_coverage) coverage`).get();
-    const rows = this.store.db.prepare("SELECT value FROM state WHERE key LIKE 'recorder:signal:%'").all();
+    const rows = this.store.db.prepare("SELECT value FROM state WHERE key GLOB 'recorder:signal:*'").all();
     const states = rows.map(row=>JSON.parse(row.value)).filter(isRecordedDataset);
     const voltageStatuses = new Map(states.filter(voltageEstimate).map(s => [s.device, null]));
     for (const input of voltageStatuses.keys()) voltageStatuses.set(input, voltageRecordingStatus(this.store,input,now));
     const openEnergy = new Map();
-    for (const row of this.store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%'").all()) {
+    for (const row of this.store.db.prepare("SELECT key,value FROM state WHERE key GLOB 'recorder:energy:*'").all()) {
       const [source,device,prefix] = JSON.parse(row.key.slice('recorder:energy:'.length));
       const pending = JSON.parse(row.value).pending;
       if (!pending || !validateAdmittedSourceTime({ sourceTime: pending.end, receivedAt: pending.receivedAt,

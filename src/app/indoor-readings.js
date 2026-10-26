@@ -195,8 +195,11 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
   });
   // Direct committed observations (including fixtures/imports) still establish
   // their own bounded interval. Recorder observations use their coverage only.
+  // The stream index places unit/policy before receipt; without those prefixes
+  // it scans the complete sensor archive. Leave receipt as the indexed seek;
+  // the selected view may also be a current recovery overlay without that index.
   for (const row of store.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
-    WHERE o.source=? AND o.device=? AND o.signal=? AND o.received_at<=? AND o.received_at>=?
+    WHERE +o.source=? AND +o.device=? AND +o.signal=? AND o.received_at<=? AND o.received_at>=?
       AND (o.import_id IS NULL OR i.status='complete')
       AND NOT EXISTS (SELECT 1 FROM active_recorder_coverage c WHERE c.observation_id=o.id)
     ORDER BY o.received_at,o.id`).all(reading.source, reading.device, reading.signal, at, from - age)) {

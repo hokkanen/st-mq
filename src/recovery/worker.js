@@ -106,7 +106,7 @@ async function checkSource(donorDigest) {
   tables.push({ name: 'learning_journal', count: donor.db.prepare(`SELECT COUNT(*) count FROM ${donor.recoveryJournal ?? 'learning_journal'} WHERE input=?`).get(workerData.input).count });
   tables.push({ name: 'charging_session_keys', count: donor.db.prepare(`SELECT COUNT(*) count FROM ${donor.recoveryState ?? 'state'} WHERE key LIKE 'charging-session-check:%'`).get().count });
   tables.push({ name: 'recorder_pending_energy', count: donor.db.prepare(`SELECT COUNT(*) count FROM ${donor.recoveryState ?? 'state'}
-    WHERE key LIKE 'recorder:energy:%' AND json_valid(value) AND json_type(value,'$.pending')='object'`).get().count });
+    WHERE key GLOB 'recorder:energy:*' AND json_valid(value) AND json_type(value,'$.pending')='object'`).get().count });
   if (sourceAssessment.skippedLearningRecords)
     tables.push({ name: 'other_learning_inputs', count: sourceAssessment.skippedLearningRecords });
   const unsupported = ['charging_reports', 'charging_report_events', 'charging_report_contexts'].map(name => ({ name,

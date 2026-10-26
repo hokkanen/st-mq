@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import { Store } from '../storage/store.js';
+import { Store, learningJournalRows } from '../storage/store.js';
 import { ModelVerificationWork } from '../storage/model-verification-work.js';
 import { readCoefficientEvents, readCoefficientCoverage } from '../storage/coefficient-history.js';
 import { reconstructionSource, decodeReconstructionEntry } from './model-reconstruction-source.js';
@@ -90,8 +90,8 @@ async function fingerprint(target, { includeChart = true, progressCursor = 0, ph
     if (stopped()) throw failure('model_reconstruction_cancelled');
     const page = await read((store, lease) => {
       const { ancestryProven } = checked(store, lease);
-      const rows = store.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id>? AND id<=? ORDER BY id LIMIT 128')
-        .all(target.source.input, cursor, target.cursor).map(decodeReconstructionEntry);
+      const rows = learningJournalRows(store.db, { input: target.source.input,
+        epoch: target.source.epoch, after: cursor, through: target.cursor, limit: 128 }).map(decodeReconstructionEntry);
       return { rows, ancestryProven };
     });
     const { rows } = page; ancestryProven &&= page.ancestryProven;
@@ -202,8 +202,8 @@ async function run() {
       if (stopped()) { save(); return { paused: true }; }
       const { rows, context } = await read((store, lease) => {
         const { context } = checkedSource(store, lease, target);
-        const rows = store.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id>? AND id<=? ORDER BY id LIMIT 16')
-          .all(target.source.input, progress.state.cursor, target.cursor).map(decodeReconstructionEntry);
+        const rows = learningJournalRows(store.db, { input: target.source.input,
+          epoch: target.source.epoch, after: progress.state.cursor, through: target.cursor, limit: 16 }).map(decodeReconstructionEntry);
         return { rows, context };
       });
       if (!rows.length) throw failure('model_reconstruction_source_changed');

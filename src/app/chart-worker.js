@@ -152,7 +152,7 @@ const pendingEnergyFingerprint = (args,range) => JSON.stringify(pendingEnergyObs
   .filter(row=>row.source_time>range.from&&JSON.parse(row.raw).intervalStart<range.to));
 const latestSourceCoverage=db.prepare(`SELECT c.*,o.unit,o.value,o.raw,o.source_time AS observed_at,o.received_at AS observed_received_at FROM state s
   JOIN active_recorder_coverage c ON c.id=json_extract(s.value,'$.coverageId')
-  JOIN active_observations o ON o.id=c.observation_id WHERE s.key LIKE 'recorder:signal:%'
+  JOIN active_observations o ON o.id=c.observation_id WHERE s.key GLOB 'recorder:signal:*'
     AND ${CHART_SOURCE_COVERAGE_SQL} ORDER BY c.id`);
 function sourceCoverageFingerprint(args,range) {
   const spans=[];

@@ -128,10 +128,10 @@ export function compatibleRestorationTail(store, previous, { now }) {
   const observationHead = store.db.prepare('SELECT COALESCE(MAX(id),0) n FROM observations').get().n;
   if (observationHead < previous.observationHead) return false;
   const sizes = store.db.prepare(`SELECT length(CAST(key AS BLOB)) key_bytes,length(CAST(value AS BLOB)) value_bytes
-    FROM state WHERE key LIKE 'recorder:energy:%' ORDER BY key LIMIT ?`).all(RESTORATION_PUBLICATION_STREAMS + 1);
+    FROM state WHERE key GLOB 'recorder:energy:*' ORDER BY key LIMIT ?`).all(RESTORATION_PUBLICATION_STREAMS + 1);
   let bytes = sizes.reduce((total, row) => total + row.key_bytes + row.value_bytes, 0);
   if (sizes.length > RESTORATION_PUBLICATION_STREAMS || bytes > RESTORATION_PUBLICATION_BYTES) return false;
-  const states = store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%' ORDER BY key LIMIT ?")
+  const states = store.db.prepare("SELECT key,value FROM state WHERE key GLOB 'recorder:energy:*' ORDER BY key LIMIT ?")
     .all(RESTORATION_PUBLICATION_STREAMS + 1);
   if (!compatiblePendingStates(previous, states, now)) return false;
   const sizesCoverage = recoveryCoverageEvidence(store, { limit: RESTORATION_PUBLICATION_STREAMS + 1, sizesOnly: true });

@@ -16,7 +16,7 @@ import { createBackupCatalog } from '../storage/backup-catalog.js';
 import { backupDirectory } from '../storage/backup-directory.js';
 import { createBackupInspection } from './backup-inspection.js';
 import { familyRouteAllowed, familyActionAllowed, fireplaceAccess, FAMILY_FIREWOOD_REMOVAL_MS } from './web-permissions.js';
-import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
+import { ChargingSessionDiagnostics, recordedChargingReportNamespace } from '../charging/session-diagnostics.js';
 import { electricityForecastView } from './electricity-forecast-view.js';
 import { recoveryFailure } from '../recovery/errors.js';
 import { EQUIPMENT_COMMAND_ERRORS } from '../domain/equipment-command-errors.js';
@@ -625,7 +625,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           // A history viewer has its own offline runtime. Its reports belong to
           // the recorded producer; never use that empty runtime's status cache.
           const key = engine.config.input === 'offline'
-            ? readerStore.db.prepare('SELECT namespace FROM charging_reports WHERE charger_id=? ORDER BY started_at DESC LIMIT 1').get(query.chargerId)?.namespace
+            ? recordedChargingReportNamespace(readerStore, query.chargerId)
               ?? 'charging:offline:session-diagnostics'
             : `charging:${engine.config.input}:session-diagnostics`;
           const readOnly = writesBlocked() || recovering() || engine.config.input === 'offline';

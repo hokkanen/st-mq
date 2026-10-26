@@ -83,7 +83,7 @@ export async function recoverySourceSummary({ donor, input, now = Date.now(), yi
     await yieldControl();
   }
   const pending = pendingEnergyObservationsFromStates(donor.db.prepare(`SELECT key,value FROM ${donor.recoveryState}
-    WHERE key LIKE 'recorder:energy:%'`).iterate(), { now, input }).filter(pendingUsable);
+    WHERE key GLOB 'recorder:energy:*'`).iterate(), { now, input }).filter(pendingUsable);
   rows.push({ name: 'recorder_pending_energy', ...pendingRange(pending) });
   return { checkedAt: now, categories: rows };
 }

@@ -107,7 +107,7 @@ function equipmentSnapshot(config, read, snapshot) {
   // A history-only computer may have no local equipment mapping. Preserve
   // recorded streams in the inventory without borrowing control capabilities
   // or pretending the old mapping is this computer's installation config.
-  const saved = snapshot?.store.db.prepare("SELECT value FROM state WHERE key LIKE 'recorder:signal:%'").all() ?? [];
+  const saved = snapshot?.store.db.prepare("SELECT value FROM state WHERE key GLOB 'recorder:signal:*'").all() ?? [];
   for (const { value } of saved) {
     const stream = JSON.parse(value);
     if (!['mqtt-equipment', 'shelly-mqtt'].includes(stream.source) || typeof stream.device !== 'string') continue;

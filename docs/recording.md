@@ -2803,6 +2803,16 @@ continues through invalid or retained candidates. Charging-energy cache creation
 seeks intervals ending after the physical session's start before checking source,
 receipt and deferred-admission clocks. It retains arbitrarily long intervals
 crossing that start. These changes use the existing indexes and current schema.
+Indoor report coverage also seeks its receipt window before selecting the physical
+stream; direct-observation fallback still excludes rows with selected recorder
+coverage. Recorder state readers seek their exact case-sensitive namespaces,
+without walking unrelated durable charging-session identities. Coefficient chart
+windows seek event time and retain cursor ordering inside the selection; complete
+verification keeps cursor seeks. Model-verification status and replay pages seek
+each selected immutable learning prefix directly rather than sorting the complete
+inherited journal. Fixed snapshot cutoffs and original historical meaning remain.
+Offline session-report discovery seeks each recorded namespace and its latest
+charger report instead of sorting the complete saved-report archive.
 Fireplace rebuild-existence checks seek each selected epoch/prefix by sample time;
 an empty result cannot walk all samples belonging to another input environment.
 Household forecast refreshes also seek source and receipt clocks independently

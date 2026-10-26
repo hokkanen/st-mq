@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep recorder health and pending-energy reads, indoor availability checks,
+  recent coefficient charts, offline session reports and model-verification
+  status responsive as history grows. Seek the requested state, time window or
+  journal page through existing indexes while preserving recorded gaps,
+  corrections and snapshot boundaries.
+
 - Use the same finding names and power-evidence qualifications in Event log and
   session reports. Keep original report clocks unambiguous across years and clock
   changes, handle unknown labels neutrally, and release loaded history on close.

@@ -542,7 +542,7 @@ export class HistoryMerge {
     // The donor connection is a frozen, read-only snapshot. Its bounded open
     // interval contains accepted measurements that may span days; it is source
     // history even though the adaptive writer has not closed it yet.
-    for (const checkpoint of this.donor.db.prepare(`SELECT key,value FROM ${this.donor.recoveryState ?? 'state'} WHERE key LIKE 'recorder:energy:%' ORDER BY key`).iterate()) {
+    for (const checkpoint of this.donor.db.prepare(`SELECT key,value FROM ${this.donor.recoveryState ?? 'state'} WHERE key GLOB 'recorder:energy:*' ORDER BY key`).iterate()) {
       let identity, state, rows = [], valid = false;
       try {
         identity = decode(checkpoint.key.slice('recorder:energy:'.length)); state = decode(checkpoint.value);

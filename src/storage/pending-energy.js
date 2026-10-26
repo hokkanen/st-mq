@@ -5,7 +5,7 @@ import { validateAdmittedSourceTime, sourceTimeAdmission } from '../domain/time-
 export function pendingEnergyObservations(store, { now, input, prefix, source, device } = {}) {
   if (!Number.isSafeInteger(now)) throw new TypeError('Pending energy requires an explicit receipt cutoff');
   return pendingEnergyObservationsFromStates(
-    store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%'").iterate(),
+    store.db.prepare("SELECT key,value FROM state WHERE key GLOB 'recorder:energy:*'").iterate(),
     { now, input, prefix, source, device });
 }
 

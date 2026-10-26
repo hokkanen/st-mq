@@ -1,5 +1,14 @@
 # Development validation
 
+`test/database-growth-reads.test.js` checks indexed recorder-state prefixes,
+receipt-bounded indoor availability, time-bounded coefficient reads and direct
+pages of selected learning prefixes, plus indexed offline report discovery.
+It covers inherited payloads, fixed journal boundaries, nonmonotonic source
+times, selected generations, long chart streaming and reporting gaps.
+Full verification retains cursor paging; recent chart reads seek time before
+sorting their selected cursors. Query plans establish the intended access paths,
+not installed Raspberry Pi latency or physical equipment outcomes.
+
 `test/chart-replica-retry.test.js` exercises queued chart reads during real
 incremental and coalesced replica publication, including pruned transaction
 prefixes. Only an authored forward-checkpoint hint can request one freshly

@@ -47,7 +47,7 @@ const sourceFireplace = fireplaceLearningContext(store, input).fireplaceRevision
 let sourceHead = head(), checkpoint = null, prefix = null, prefixCheckpoint = null, report, source, processed = 0, busy = false, closed = false;
 let coefficientGeneration = null, coefficientSource = null, coefficients = null;
 let restorationToken = null, restorationVerified = null;
-const pendingStates = source => source.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%' ORDER BY key").all();
+const pendingStates = source => source.db.prepare("SELECT key,value FROM state WHERE key GLOB 'recorder:energy:*' ORDER BY key").all();
 const observationHead = source => source.db.prepare('SELECT COALESCE(MAX(id),0) n FROM observations').get().n;
 const excluded = db.prepare('SELECT 1 FROM recovery_exclusions WHERE generation=? AND table_name=? AND record_key=?');
 const exclude = db.prepare('INSERT OR IGNORE INTO recovery_exclusions(generation,table_name,record_key) VALUES(?,?,?)');

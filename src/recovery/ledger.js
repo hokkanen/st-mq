@@ -19,7 +19,7 @@ export const recoveryCoverageEvidence = (store, { limit, sizesOnly = false } = {
   // those bounded IDs first rather than scanning retained coverage history.
   rows: store.db.prepare(`WITH current_ids AS MATERIALIZED (
     SELECT DISTINCT json_extract(value,'$.coverageId') id FROM state
-    WHERE key LIKE 'recorder:signal:%' AND json_valid(value) AND json_type(value,'$.coverageId')='integer')
+    WHERE key GLOB 'recorder:signal:*' AND json_valid(value) AND json_type(value,'$.coverageId')='integer')
     SELECT ${sizesOnly ? `c.id,${['id','source','device','signal','status','start_at','end_at','source_time','observation_id']
       .map(name => `COALESCE(length(CAST(c.${name} AS BLOB)),0)`).join('+')} bytes`
       : 'c.id,c.source,c.device,c.signal,c.status,c.start_at,c.end_at,c.source_time,c.observation_id'}
@@ -27,7 +27,7 @@ export const recoveryCoverageEvidence = (store, { limit, sizesOnly = false } = {
     .all(...(limit === undefined ? [] : [limit])),
 });
 export function recoveryEvidenceVersion(store, { now = Date.now() } = {}) {
-  const energy = store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%' ORDER BY key").all();
+  const energy = store.db.prepare("SELECT key,value FROM state WHERE key GLOB 'recorder:energy:*' ORDER BY key").all();
   return learningVersion({
     observations: store.db.prepare('SELECT COALESCE(MAX(id),0) n FROM observations').get().n,
     energy,

@@ -71,20 +71,21 @@ export function hasLearningSampleAfter(db, input, at) {
 
 /** Each immutable prefix range supplies at most one page. A UNION query with
  * an outer LIMIT can sort every inherited row before yielding its first entry. */
-export function learningJournalRows(db, { input, epoch, after = 0, limit = 256 }) {
-  label(input, 'input'); integer(after, 'after'); limit=limitValue(limit);
-  if (!limit) return [];
+export function learningJournalRows(db, { input, epoch, after = 0, through = Number.MAX_SAFE_INTEGER, limit = 256 }) {
+  label(input, 'input'); integer(after, 'after'); integer(through, 'through'); limit=limitValue(limit);
+  if (!limit || through <= after) return [];
   epoch ??= db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
   const ranges=db.prepare(`SELECT source_epoch,after_id,through_id FROM learning_epoch_segments
     WHERE epoch=? AND input=? AND through_id>?`).all(epoch,input,after);
-  ranges.push({source_epoch:epoch,after_id:after,through_id:Number.MAX_SAFE_INTEGER});
+  ranges.push({source_epoch:epoch,after_id:after,through_id:through});
   const page=db.prepare(`SELECT e.id,e.input,e.key,e.kind,e.at,e.algorithm_version,
     COALESCE(e.config_version,s.config_version) AS config_version,
     COALESCE(e.forecast_version,s.forecast_version) AS forecast_version,
     COALESCE(e.payload,s.payload) AS payload,e.source_entry_id
     FROM learning_journal_entries e LEFT JOIN learning_journal_entries s ON s.id=e.source_entry_id
     WHERE e.epoch=? AND e.input=? AND e.id>? AND e.id<=? ORDER BY e.id LIMIT ?`);
-  return ranges.flatMap(range=>page.all(range.source_epoch,input,Math.max(after,range.after_id),range.through_id,limit))
+  return ranges.filter(range=>range.after_id<through)
+    .flatMap(range=>page.all(range.source_epoch,input,Math.max(after,range.after_id),Math.min(through,range.through_id),limit))
     .sort((a,b)=>a.id-b.id).slice(0,limit);
 }
 

@@ -77,21 +77,28 @@ function ranges(store, generation, through = Number.MAX_SAFE_INTEGER) {
       .all(generation, through).map(row => ({ ...row, through_cursor: Math.min(row.through_cursor, through) }))]
     .sort((a,b)=>a.after_cursor-b.after_cursor);
 }
-export function readCoefficientEvents(store, { input, epoch = epochOf(store, input), generation,
+function* coefficientEvents(store, { input, epoch = epochOf(store, input), generation,
   afterCursor = 0, throughCursor = Number.MAX_SAFE_INTEGER, from = Number.MIN_SAFE_INTEGER, to = Number.MAX_SAFE_INTEGER, limit } = {}) {
   const coverage = readCoefficientCoverage(store, { input, epoch, generation });
-  if (!coverage) return [];
+  if (!coverage) return;
+  // Recent chart windows seek time before sorting their selected cursors. Full
+  // verification pages retain cursor seeks and never sort the complete archive.
+  const ranged = from > Number.MIN_SAFE_INTEGER;
+  const cursor = ranged ? '+cursor' : 'cursor';
   const statement = store.db.prepare(`SELECT cursor,at,coefficients FROM coefficient_events WHERE generation=?
-    AND cursor>? AND cursor<=? AND at>=? AND at<=? ORDER BY cursor LIMIT ?`);
+    AND ${cursor}>? AND ${cursor}<=? AND at>=? AND at<=? ORDER BY ${cursor} LIMIT ?`);
   const maximum = limit ?? Number.MAX_SAFE_INTEGER;
-  const rows=[];
+  let supplied=0;
   for(const range of ranges(store, coverage.generation, Math.min(throughCursor, coverage.cursor))) {
-    if(rows.length>=maximum)break;
+    if(supplied>=maximum)break;
     if(range.through_cursor<=afterCursor)continue;
-    rows.push(...statement.all(range.source_generation,Math.max(afterCursor,range.after_cursor),range.through_cursor,from,to,maximum-rows.length));
+    for(const row of statement.iterate(range.source_generation,Math.max(afterCursor,range.after_cursor),range.through_cursor,from,to,maximum-supplied)) {
+      const coefficients=JSON.parse(row.coefficients);if(!validValues(coefficients))throw failure();
+      supplied++;yield{cursor:row.cursor,at:row.at,coefficients};
+    }
   }
-  return rows.map(row => {const coefficients=JSON.parse(row.coefficients);if(!validValues(coefficients))throw failure();return{cursor:row.cursor,at:row.at,coefficients};});
 }
+export function readCoefficientEvents(store, options) { return [...coefficientEvents(store, options)]; }
 function eventBefore(store, coverage, at) {
   const query=store.db.prepare(`SELECT cursor,at,coefficients FROM coefficient_events
     WHERE generation=? AND cursor>? AND cursor<=? AND at<? ORDER BY at DESC,cursor DESC LIMIT 1`);
@@ -246,9 +253,12 @@ export function readCoefficientHistory({ store, range, now, input, envelopes }) 
     const add = (at,values) => { for (const key of selected) { const value=values?.[key];envelopes[key].add(at,value?.value??null,value?{
       modelCoefficient:true,coefficientStatus:value.status,modelUpdatedAt:value.updatedAt,inputSource:sources[stream.input],algorithmVersion:LEARNING_ALGORITHM}:undefined); } };
     const emit=row=>{stats.records++;if(row.coefficients===null)stats.invalidRecords++;if(!started&&row.at>from)add(from,previous);if(row.at>from)add(row.at-1,previous);add(row.at,row.coefficients);previous=row.coefficients;started=true;};
-    let cursor=0,pending;
-    for(;;){const rows=readCoefficientEvents(store,{input:stream.input,from,to:through,afterCursor:cursor,limit:128});if(!rows.length)break;
-      for(const row of rows){if(pending&&pending.at!==row.at)emit(pending);pending=row;cursor=row.cursor;}}
+    // Keep one native cursor per selected source range. Reopening a time seek
+    // for each small page would repeatedly sort the same long chart selection.
+    let pending;
+    for(const row of coefficientEvents(store,{input:stream.input,from,to:through})) {
+      if(pending&&pending.at!==row.at)emit(pending);pending=row;
+    }
     if(pending)emit(pending);
     if(previous){if(!started)add(from,previous);add(through,previous);}
     if(through<stream.end)add(through+1,null);

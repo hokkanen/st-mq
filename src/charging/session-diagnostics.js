@@ -2,6 +2,21 @@ import { createHash } from 'node:crypto';
 import { sharedChargingAssessment, advanceSharedAssessment, sharedAssessmentKey, sharedPlanningKey, validSharedAssessment } from './shared-assessment.js';
 import { compactReportEvent, expandReportEvents } from './report-contexts.js';
 
+/** The history index begins with namespace. Seek one latest report per
+ * namespace instead of sorting every saved report to open an offline viewer. */
+export function recordedChargingReportNamespace(store, chargerId) {
+  const first = store.db.prepare('SELECT namespace FROM charging_reports ORDER BY namespace LIMIT 1');
+  const next = store.db.prepare('SELECT namespace FROM charging_reports WHERE namespace>? ORDER BY namespace LIMIT 1');
+  const latest = store.db.prepare(`SELECT started_at FROM charging_reports WHERE namespace=? AND charger_id=?
+    ORDER BY started_at DESC,report_id DESC LIMIT 1`);
+  let selected = null, startedAt = -Infinity;
+  for (let row = first.get(); row; row = next.get(row.namespace)) {
+    const report = latest.get(row.namespace, chargerId);
+    if (report && report.started_at > startedAt) { selected = row.namespace; startedAt = report.started_at; }
+  }
+  return selected;
+}
+
 const VERSION = 3, MINUTE = 60_000, DAY = 24 * 60 * MINUTE, EXPIRY_BATCH = 1;
 const FILTERS = new Set(['all', 'findings', 'plans', 'charging', 'control', 'vehicle', 'evidence']);
 const COVERAGE = ['identification', 'initialRelease', 'pause', 'resume', 'lateReplan', 'targetAttainment', 'completion', 'energy'];
