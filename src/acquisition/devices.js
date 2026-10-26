@@ -275,6 +275,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   const local = ocppFactory({ config: localConfig, chargerId: easee.charger_id, clock, virtualTag: ocppInstallation?.virtualTag,
     controlAttempt,
     canControl: () => !closed && !nativeStopped && !invalidOcppSetup && canControl(), state: ocppState,
+    startRecoveryScope: () => nativeStartPermission?.recovery ?? null,
     canStart: () => {
       const permission = nativeStartPermission, current = local.controlSnapshot?.();
       observeNativeStop(current);
@@ -792,7 +793,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       nativeStartPermission = snapshot && typeof options.guard === 'function' && Number.isSafeInteger(options.until)
         && snapshot.instructionRevision === instructionRevision
         ? { connectionId: snapshot.connectionId, instructionRevision,
-          issuedAt: clock(), until: options.until, guard: options.guard } : null;
+          issuedAt: clock(), until: options.until, guard: options.guard, recovery: options.recovery ?? null } : null;
     },
     request: (...args) => local.request(...args),
     requestMeterReadback: options => local.request('TriggerMessage', { requestedMessage: 'MeterValues', connectorId: 1 }, options),

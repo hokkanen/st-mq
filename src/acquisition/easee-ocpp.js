@@ -109,7 +109,7 @@ export function ocppMeterReadings(payload, now) {
  * remote authorization with a known private tag. This endpoint does not infer
  * charging-profile support or silently convert an existing cloud schedule. */
 export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, canControl = () => false,
-  canStart = () => false, onDisconnect = () => {}, state, virtualTag = '',
+  canStart = () => false, startRecoveryScope = () => null, onDisconnect = () => {}, state, virtualTag = '',
   controlAttempt = () => createControlAttempt(), monotonicClock = () => performance.now() } = {}) {
   const config = localOcppConfiguration(input);
   if (typeof virtualTag !== 'string' || virtualTag.length > 20) throw new TypeError('Invalid private OCPP virtual tag');
@@ -207,7 +207,11 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   }
   const configurationFailures = new Set();
   const validLedger = value => value && value.version === 4 && value.scope === scope
-    && Object.keys(value).every(key => ['version', 'scope', 'nextId', 'latestStartAt', 'activeId', 'transactions', 'recovered'].includes(key))
+    && Object.keys(value).every(key => ['version', 'scope', 'nextId', 'latestStartAt', 'activeId', 'transactions', 'recovered', 'automaticStartRecovery'].includes(key))
+    && (value.automaticStartRecovery === undefined || value.automaticStartRecovery
+      && Object.keys(value.automaticStartRecovery).sort().join(',') === 'at,key'
+      && /^[a-f0-9]{64}$/.test(value.automaticStartRecovery.key)
+      && Number.isSafeInteger(value.automaticStartRecovery.at) && value.automaticStartRecovery.at >= 0)
     && Number.isSafeInteger(value.nextId) && value.nextId > 0 && value.nextId < 2147483647
     && Number.isSafeInteger(value.latestStartAt) && value.latestStartAt >= 0
     && (value.activeId === null || Number.isSafeInteger(value.activeId))
@@ -394,6 +398,27 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       && !futureReadings.some(pending => Number.isSafeInteger(pending.transactionId) && pending.transactionId > 0
         && instant(pending.row.timestamp) >= intent.requestedAt);
   }
+  function blockedStartRecovery(allowedAttempt = null) {
+    const context = startRecoveryScope(), now = clock();
+    if (!context || !Number.isSafeInteger(context.connectedAt) || context.connectedAt > now
+      || !/^[a-f0-9]{64}$/.test(context.key) || activeTransaction() || recoveryConflict
+      || ledger.automaticStartRecovery?.key === context.key && context.key !== allowedAttempt) return null;
+    const row = ledger.transactions.at(-1), power = values.get(120), powerAt = instant(power?.timestamp);
+    // Recover only our own refused automatic start, never an accepted session's
+    // external Stop or an unexplained native suspension. Original source clocks
+    // and the controller's physical connection fence all of this evidence.
+    if (row?.status !== 'Blocked' || row.tagHash !== digest({ scope, idTag: virtualTag })
+      || row.startedAt < context.connectedAt || row.stopReason !== 'DeAuthorized'
+      || !Number.isSafeInteger(row.stoppedAt) || !Number.isSafeInteger(row.stopReceivedAt)
+      || connectorStatus !== 'SuspendedEVSE' || !connectorStatusExplicit
+      || connectorStatusAt < row.stoppedAt || connectorReceivedAt < row.stopReceivedAt
+      || connectorStatusAt > now || power?.value !== 0 || powerAt < row.stoppedAt
+      || !Number.isFinite(powerAt) || powerAt > now || now - powerAt > MAX_AGE_MS) return null;
+    return { row, key: context.key };
+  }
+  const remoteStartStateReady = call => call.recoveryKey
+    ? blockedStartRecovery(call.recoveryCommitted ? call.recoveryKey : null)?.key === call.recoveryKey
+    : connectorStatus === 'Preparing';
   function sendNextCall() {
     if (state?.runWrite && !admitted) { scheduleState('send', sendNextCall); return; }
     // Background sampling has no physical effect. A missing acknowledgement
@@ -409,13 +434,18 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       finishRequest(call, 'ocpp-request-revoked'); sendNextCall(); return;
     }
     if (action === 'RemoteStartTransaction') {
-      if (!stateReady || !authorizationReady || !permittedBy(canStart) || !canRequestRemoteStart() || connectorStatus !== 'Preparing'
+      if (!stateReady || !authorizationReady || !permittedBy(canStart) || !canRequestRemoteStart() || !remoteStartStateReady(call)
         || transition !== statusTransition || clock() < connectorStatusAt || !transportFresh()) {
         preparingAttempted = false; remoteStartStatus = 'cancelled'; sendNextCall(); return;
       }
       // A start permission must not outlive durable transaction storage.
       const active = activeTransaction();
-      try { persist(active ? updateTransaction({ ...active, modeDisableIntent: { ...active.modeDisableIntent, attemptedAt: clock() } }) : ledger, call.attempt); }
+      try {
+        const recovery = call.recoveryKey ? blockedStartRecovery() : null;
+        persist(recovery ? { ...ledger, automaticStartRecovery: { key: recovery.key, at: clock() } }
+          : active ? updateTransaction({ ...active, modeDisableIntent: { ...active.modeDisableIntent, attemptedAt: clock() } }) : ledger, call.attempt);
+        if (recovery) call.recoveryCommitted = true;
+      }
       catch { remoteStartStatus = 'unavailable'; sendNextCall(); return; }
       remoteStartStatus = 'pending';
     }
@@ -433,7 +463,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         || call.connection !== socket || !transportFresh() || !permittedBy(call.guard)
         || !permittedBy(call.beforeSend))
         || action === 'RemoteStartTransaction' && (!stateReady || !authorizationReady || !permittedBy(canStart)
-          || connectorStatus !== 'Preparing' || transition !== statusTransition || !transportFresh());
+          || !remoteStartStateReady(call) || transition !== statusTransition || !transportFresh());
       if (revoked) {
         if (pendingCalls.get(id) === call) pendingCalls.delete(id);
         if (action === 'RemoteStartTransaction') { preparingAttempted = false; remoteStartStatus = 'cancelled'; }
@@ -446,10 +476,15 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   }
   function requestRemoteStart() {
     reconcileTransactionStatus();
-    if (!plugAndCharge || !authorizationReady || !stateReady || !permittedBy(canStart) || preparingAttempted
-      || connectorStatus !== 'Preparing' || !canRequestRemoteStart() || clock() < connectorStatusAt || !transportFresh()) return;
+    const context = startRecoveryScope();
+    if (context && ledger?.automaticStartRecovery?.key === context.key) return;
+    const recovery = connectorStatus === 'SuspendedEVSE' && blockedStartRecovery();
+    if (!plugAndCharge || !authorizationReady || !stateReady || !permittedBy(canStart) || preparingAttempted && !recovery
+      || [...pendingCalls.values(), ...callQueue].some(call => call.action === 'RemoteStartTransaction')
+      || connectorStatus !== 'Preparing' && !recovery || !canRequestRemoteStart() || clock() < connectorStatusAt || !transportFresh()) return;
     preparingAttempted = true; remoteStartStatus = 'queued';
     callQueue.unshift({ action: 'RemoteStartTransaction', payload: { connectorId: 1, idTag: virtualTag }, transition: statusTransition,
+      ...(recovery ? { recoveryKey: recovery.key } : {}),
       connection: socket, attempt: controlAttempt() });
     sendNextCall();
   }

@@ -436,6 +436,17 @@ the site operator. `easee.local_ocpp.authorization_mode` selects authorization:
   accepted transaction retries keep their original durable reply. Configured RFID
   tags retain their independent authorization rules.
 
+  If the controller refused its own automatic transaction and the charger
+  confirms that transaction ended as `DeAuthorized`, it may recover from
+  `SuspendedEVSE` without waiting for another `Preparing` transition. Recovery
+  requires fresh measured zero power, the same physical connection and current
+  controller start permission. Its single attempt is saved before dispatch and
+  survives restart. A new explicit session action has its own bounded attempt;
+  polling cannot renew the budget. An accepted transaction's external Stop,
+  unexplained suspension, dashboard Pause or expired identification probe never
+  supplies this recovery authority. The original rejection remains historical
+  evidence; a later permission does not rewrite its response.
+
   While this local plug-and-charge controller owns authorization, Easee's
   **Awaiting Authentication** mode (7) and **Pending authorization** reason (55)
   describe approval the controller must supply. They do not independently block

@@ -627,7 +627,9 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     const until = Math.min(now + MAX_AGE_MS,
       desired.enabled && !state.manual && !chargeNowActive() && !identifying ? active?.endAt ?? Infinity : Infinity,
       identifying && identification.mode === 'probe' ? identification.probeUntil : Infinity);
-    adapter.setStartPermission?.(snapshot, { until, guard: () => canWrite(current) });
+    adapter.setStartPermission?.(snapshot, { until, guard: () => canWrite(current),
+      recovery: { connectedAt: state.session.connectedAt,
+        key: hash([state.session.connectedAt, state.nativeTakeoverAt, desired.chargeNow?.requestedAt, identification?.id]) } });
   }
   function observePause() {
     ownsInstruction = ownsInstruction && snapshot.online && fresh(snapshot.readAt, clock()) && snapshot.transactionConfirmed

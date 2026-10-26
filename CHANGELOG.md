@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Recover a locally refused automatic charger start when the charger remains
+  suspended after deauthorization. Require current session permission and fresh
+  stopped evidence, retain one durable attempt per instruction, and preserve
+  Pause, external Stops and identification limits.
+
 - Browse Recent and Saved charger sessions in the Session dropdown. Older and
   newer sessions load while scrolling or using the keyboard, with inline retry
   and a bounded list that preserves the selected report. A new-session notice

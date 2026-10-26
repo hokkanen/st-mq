@@ -11,11 +11,13 @@ import { CHARGING_OBSERVATION_IDS } from '../src/charging/easee.js';
 const START = Date.parse('2026-01-15T12:00:00Z'), MINUTE = 60_000;
 const CHARGER = 'synthetic-approval-charger', PASSWORD = 'synthetic-ocpp-pass';
 
-async function fixture(t) {
+async function fixture(t, { transactionState, controllerState, beforeTransactionSave } = {}) {
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
   const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
   let now = START, remote = null, sequence = 0, admitted = true, authority = true;
   const calls = [], requests = [], states = new Map(), observations = new Map();
+  if (transactionState) states.set('transactions', structuredClone(transactionState));
+  if (controllerState) states.set('controller', structuredClone(controllerState));
   const observe = changes => {
     for (const [id, value] of Object.entries(changes)) observations.set(Number(id),
       { id: Number(id), value, timestamp: new Date(now).toISOString() });
@@ -27,7 +29,7 @@ async function fixture(t) {
     password: PASSWORD, authorization_mode: 'plug-and-charge',
   } } };
   const stateFor = key => ({ get: () => structuredClone(states.get(key) ?? null),
-    set: value => states.set(key, structuredClone(value)) });
+    set: value => { if (key === 'transactions') beforeTransactionSave?.(value); states.set(key, structuredClone(value)); } });
   const http = createHttp({ allowOcppSetup: true, canControl: () => true,
     fetchImpl: async (url, options) => {
       const path = new URL(url).pathname, method = options.method;
@@ -57,7 +59,7 @@ async function fixture(t) {
   await provider.reconcileOcpp();
   assert.equal(provider.localOcppStatus().controlTransport, 'ocpp');
   const adapter = provider.chargerScheduleControl();
-  controller = adapter.createController({ clock: () => now, canControl: () => authority && admitted,
+  controller = adapter.createController({ clock: () => now, initialState: controllerState, canControl: () => authority && admitted,
     hasAuthority: () => authority, saveState: stateFor('controller').set });
   ws = new WebSocket(`ws://127.0.0.1:${port}/ocpp/${CHARGER}`, 'ocpp1.6', {
     headers: { Authorization: `Basic ${Buffer.from(`${CHARGER}:${PASSWORD}`).toString('base64')}` },
@@ -105,6 +107,115 @@ test('committed input restores the original unexpired native Start lease without
     f.advance(60_000);
     assert.equal(await authorize(), 'Blocked', 'Pending refresh cannot extend original expiry');
   } finally { f.admission(true); f.adapter.read = read; }
+});
+
+async function rejectedAutomaticStart(f, { reason = 'DeAuthorized', power = 0 } = {}) {
+  const startAt = f.now + 30 * MINUTE;
+  await f.controller.update({ enabled: true, plan: { startAt, feasible: true, periods: [{ startAt, endAt: null }] } });
+  const reply = await f.call('StartTransaction', { connectorId: 1, idTag: f.installation.virtualTag,
+    timestamp: new Date(f.now).toISOString(), meterStart: 0 });
+  assert.equal(reply[2].idTagInfo.status, 'Blocked');
+  await f.call('StopTransaction', { transactionId: reply[2].transactionId,
+    timestamp: new Date(f.now).toISOString(), meterStop: 0, reason });
+  f.advance(1000); await f.status('SuspendedEVSE'); await f.meter(power);
+  return reply[2].transactionId;
+}
+const openPlan = f => ({ startAt: f.now, feasible: true, periods: [{ startAt: f.now, endAt: null }] });
+const starts = f => f.calls.filter(row => row.action === 'RemoteStartTransaction');
+
+test('a refused automatic transaction recovers from fresh suspension once current permission returns', async t => {
+  const f = await fixture(t);
+  await rejectedAutomaticStart(f);
+  assert.equal(starts(f).length, 0);
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 1);
+  const saved = f.states.get('transactions');
+  assert.equal(saved.automaticStartRecovery.at, f.now);
+  f.advance(1000);
+  const reply = await f.call('StartTransaction', { connectorId: 1, idTag: f.installation.virtualTag,
+    timestamp: new Date(f.now).toISOString(), meterStart: 0 });
+  assert.equal(reply[2].idTagInfo.status, 'Accepted');
+  await f.status('Charging'); await f.meter(6900, reply[2].transactionId);
+  const current = await f.controller.update({ enabled: true, plan: openPlan(f) });
+  assert.equal(current.snapshot.transactionConfirmed, true);
+  assert.equal(f.adapter.normalize(current.snapshot, { now: f.now }).powerKw.value, 6.9);
+  assert.equal(f.requests.filter(row => row.method === 'POST' && row.path.startsWith('/api/')).length, 0);
+});
+
+test('refused-start recovery preserves evidence, instruction and physical-connection fences', async t => {
+  for (const boundary of ['external-stop', 'nonzero-power', 'stale-power', 'expired-permission', 'pause', 'authority', 'pending-input', 'new-connection'])
+    await t.test(boundary, async t => {
+      const f = await fixture(t);
+      await rejectedAutomaticStart(f, { reason: boundary === 'external-stop' ? 'Local' : 'DeAuthorized',
+        power: boundary === 'nonzero-power' ? 1000 : 0 });
+      const input = { enabled: true, plan: openPlan(f) };
+      if (boundary === 'stale-power') f.advance(61_000);
+      if (boundary === 'pause') input.sessionPause = { connectedAt: START, requestedAt: f.now };
+      if (boundary === 'authority') f.authority(false);
+      if (boundary === 'new-connection') {
+        await f.status('Available'); await f.controller.update(input);
+        f.advance(1000); await f.status('Preparing'); await f.meter(0);
+        await f.status('SuspendedEVSE');
+      }
+      await f.controller.update(input);
+      if (boundary === 'expired-permission') { f.advance(61_000); await f.meter(0); }
+      if (boundary === 'pending-input') f.admission(false);
+      await f.status('SuspendedEVSE');
+      assert.equal(starts(f).length, 0);
+      if (boundary === 'pending-input') {
+        f.admission(true); await f.status('SuspendedEVSE');
+        assert.equal(starts(f).length, 1, 'Committing pending input restores the original unexpired permission');
+      }
+    });
+});
+
+test('an accepted transaction ending with DeAuthorized cannot supply refused-start recovery', async t => {
+  const f = await fixture(t);
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  const started = await f.call('StartTransaction', { connectorId: 1, idTag: f.installation.virtualTag,
+    timestamp: new Date(f.now).toISOString(), meterStart: 0 });
+  assert.equal(started[2].idTagInfo.status, 'Accepted');
+  await f.call('StopTransaction', { transactionId: started[2].transactionId,
+    timestamp: new Date(f.now).toISOString(), meterStop: 0, reason: 'DeAuthorized' });
+  f.advance(1000); await f.status('SuspendedEVSE'); await f.meter(0);
+  await f.controller.update({ enabled: true, plan: openPlan(f) }); await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 0);
+  assert.equal(f.states.get('transactions').automaticStartRecovery, undefined);
+});
+
+test('a second refused start cannot loop and the recovery budget survives receiver restart', async t => {
+  const f = await fixture(t); await rejectedAutomaticStart(f);
+  await f.controller.update({ enabled: true, plan: openPlan(f) }); await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 1);
+  f.advance(1000); f.admission(false);
+  const second = await f.call('StartTransaction', { connectorId: 1, idTag: f.installation.virtualTag,
+    timestamp: new Date(f.now).toISOString(), meterStart: 0 });
+  assert.equal(second[2].idTagInfo.status, 'Blocked');
+  await f.call('StopTransaction', { transactionId: second[2].transactionId,
+    timestamp: new Date(f.now).toISOString(), meterStop: 0, reason: 'DeAuthorized' });
+  f.admission(true); await f.meter(0); await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 1);
+  const restarted = await fixture(t, { transactionState: f.states.get('transactions'), controllerState: f.states.get('controller') });
+  restarted.advance(3000); await restarted.status('SuspendedEVSE'); await restarted.meter(0);
+  await restarted.controller.update({ enabled: true, plan: openPlan(restarted) });
+  await restarted.status('SuspendedEVSE');
+  assert.equal(starts(restarted).length, 0);
+  restarted.advance(1000);
+  await restarted.controller.update({ enabled: true, plan: openPlan(restarted),
+    chargeNow: { connectedAt: START, requestedAt: restarted.now } });
+  await restarted.status('SuspendedEVSE');
+  assert.equal(starts(restarted).length, 1, 'A fresh explicit action has an independent bounded attempt');
+});
+
+test('refused-start recovery cannot dispatch before its durable attempt is saved', async t => {
+  const f = await fixture(t, { beforeTransactionSave: value => {
+    if (value.automaticStartRecovery) throw new Error('Synthetic recovery storage failure');
+  } });
+  await rejectedAutomaticStart(f);
+  await f.controller.update({ enabled: true, plan: openPlan(f) }); await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 0);
+  assert.equal(f.provider.localOcppStatus().error, 'transaction-state-unavailable');
 });
 
 test('actual controller authority loss permanently revokes a retained Start lease', async t => {

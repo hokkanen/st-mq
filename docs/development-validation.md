@@ -1,5 +1,14 @@
 # Development validation
 
+`test/easee-ocpp-approval-integration.test.js` exercises a locally refused virtual-tag
+start followed by a confirmed deauthorization and suspension. Recovery requires
+the same physical session, fresh stopped evidence and current permission; Pause,
+external Stops, expired permission and pending input remain fenced. A real local
+OCPP transport verifies the single saved recovery attempt, restart, independent
+explicit requests, failed persistence and subsequent measured charging. These
+synthetic tests do not establish a household charger outcome or reconstruct the
+exact permission subcondition behind an earlier installed rejection.
+
 Selected-period regressions cover exact Energy-check parity across range changes,
 outside-period prior counters, long crossing intervals and pending/conflicting
 evidence. `test/extended/selected-period-storage-scale.test.js` grows unrelated
