@@ -1041,6 +1041,10 @@ The real MQTT/floor writer-boundary fixture likewise waits for actual ingress
 and committed effects without a separate short poll deadline; its 1,800 ms
 acquire timer, unchanged lease, known-unsent and late-release refusal checks
 remain independent and active.
+It also drives installed floor maintenance with alternating one-millisecond
+dispatch jitter. Native queries retain their minimum interval and leave time
+for another poll before the original 90-second evidence deadline, without
+sending any lease mutation.
 HTTPS replacement fixtures use the production root/non-root helper identity
 location and ownership policy, including unprivileged helper state when run as
 root. Restart validation must accept a faithful fixture without weakening its

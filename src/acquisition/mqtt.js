@@ -975,9 +975,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     write(() => shelly.tick(engine.clock()));
   }, 5000) : null;
   shellyMaintenance?.unref?.();
+  // The adapter owns its 30-second poll deadline. Check it more often so
+  // ordinary timer jitter cannot postpone a due poll for another full period.
   const floorMaintenance = setInterval(() => {
     if (!stopped && !stopping) floorOverride.tick(engine.clock()).catch(() => report('mqtt-floor-unavailable'));
-  }, 30_000);
+  }, 5000);
   floorMaintenance.unref?.();
   for (const channel of channels.values()) channel.startIfConnected();
   const brokerStatus = () => Object.fromEntries([...channels].map(([id, channel]) => [id, { connected: channel.connected,

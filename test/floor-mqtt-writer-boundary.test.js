@@ -177,6 +177,35 @@ async function fixture(t, { deferAcquireReply = false } = {}) {
   };
 }
 
+test('routine floor readback retains time for a missed poll despite minor timer jitter', async t => {
+  const interval = globalThis.setInterval, clear = globalThis.clearInterval;
+  let maintenance;
+  t.mock.method(globalThis, 'setInterval', (callback, period, ...args) => {
+    if (!callback.toString().includes('floorOverride.tick')) return interval(callback, period, ...args);
+    maintenance = { callback, period, handle: { unref() {} } };
+    return maintenance.handle;
+  });
+  t.mock.method(globalThis, 'clearInterval', handle => handle === maintenance?.handle ? undefined : clear(handle));
+  const f = await fixture(t), receipts = [0];
+  assert(maintenance, 'Exercise the installed MQTT maintenance callback');
+  let elapsed = 0, queries = f.wire.filter(row => row.op === 'get').length;
+  for (let at = maintenance.period, turn = 1; at <= 180_000; at += maintenance.period, turn++) {
+    const next = at + turn % 2;
+    f.advance(next - elapsed); elapsed = next;
+    maintenance.callback(); await flush();
+    await f.until(() => !f.acquisition.floorOverride.status().busy
+      && f.store.canDispatch() && f.store.writeQueueStatus().pending === 0);
+    const current = f.wire.filter(row => row.op === 'get').length;
+    if (current > queries) { receipts.push(elapsed); queries = current; }
+  }
+  const gaps = receipts.slice(1).map((at, index) => at - receipts[index]);
+  t.diagnostic(JSON.stringify({ polls: receipts.length, maximumGapMs: Math.max(...gaps) }));
+  assert(gaps.length >= 3);
+  assert(gaps.every(ms => ms >= 30_000), 'The native polling interval still bounds request frequency');
+  assert(gaps.every(ms => ms < 45_000), 'Leave another poll before the original 90-second evidence deadline');
+  assert(f.wire.every(row => row.op === 'get'), 'Routine monitoring sends no lease mutation');
+});
+
 test('actual acquisition and installed MQTT dispatch a committed floor lease after outgoing storage releases', async t => {
   const f = await fixture(t), action = f.manual('mqtt-writer-control');
   await f.until(() => f.held.length === 1);
