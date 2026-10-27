@@ -44,12 +44,11 @@ async function mqttFixture(t, { writer = false } = {}) {
     if (directory) await rm(directory, { recursive: true, force: true });
   });
   const flush = async () => {
-    for (let attempt = 0; attempt < 100; attempt++) {
+    do {
       await settle();
-      if (store.writeQueueStatus().pending === 0) return;
-      await new Promise(resolve => setTimeout(resolve, 1));
-    }
-    assert.fail('Actual MQTT admission queue did not settle');
+      await store.writeQueue.idle();
+      await settle();
+    } while (store.writeQueueStatus().pending);
   };
   const send = (topic, body) => client.emit('message', topic,
     Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)), { retain: false });
