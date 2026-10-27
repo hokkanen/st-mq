@@ -576,6 +576,23 @@ test('session report and main log use the same finding and qualified physical la
   assert.match(text, /request changed/); assert.doesNotMatch(text, /deadline.*recovered/i);
 });
 
+test('identity confirmation closes the historical finding without repeating its loss description', async () => {
+  const { presentCharging } = await import('../src/app/event-log-presentation.js');
+  const { chargingFindingLabel } = await import('../src/charging/report-presentation.js');
+  const row = { kind: 'recovery', code: 'identity-unavailable', at: now, id: 1 };
+  const f = setup(); f.records.set('current', [row]); await f.open();
+  const text = textOf(f.dialog.querySelector('.charging-report-timeline'));
+  const view = presentCharging({ namespace: 'charging:mqtt:session-diagnostics', charger_id: 'charger1' }, row);
+  assert.equal(view.title, 'Charger 1 · Vehicle identity confirmed again');
+  assert.match(view.summary, /at the time shown/);
+  assert.equal(view.severity, 'info'); assert.equal(view.evidence, 'Recorded session assessment');
+  assert(text.includes('Vehicle identity confirmed again')); assert(text.includes(view.summary));
+  assert.doesNotMatch(text, /current connection lost|finding ended/);
+  for (const resolution of ['request-changed', 'evidence-reconciled']) {
+    assert.doesNotMatch(chargingFindingLabel({ ...row, resolution }), /confirmed again/);
+  }
+});
+
 test('invalid shared evidence clocks remain unknown without crashing the report', () => {
   return import('../chart/charging-shared.js').then(({ chargingSharedText, chargingSharedSummary }) => {
     const shared = { selectedPriority: 'constructor', execution: { reportedCurrentA: 6, measuredAt: Number.MAX_SAFE_INTEGER }, proposed: { state: 'toString' } };

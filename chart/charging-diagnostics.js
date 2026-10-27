@@ -1,4 +1,4 @@
-import { chargingFinding, chargingFindingLabel, chargingPhysicalLabel } from '../src/charging/report-presentation.js';
+import { chargingFinding, chargingFindingLabel, chargingFindingRecovery, chargingPhysicalLabel } from '../src/charging/report-presentation.js';
 import { CHARGING_CONTROL_CAUSES as CONTROL_CAUSES } from './charging-status.js';
 import { isReadOnlyReplica } from './replica-status.js';
 import { projectChargingReportHistory, CHARGING_EVENT_FILTERS, chargingFindingCounts } from './charging-report-history.js';
@@ -343,7 +343,8 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   function rawEvent(node, row, timezone) {
     if (!node) { node = make('li'); const label = make('p'), evidence = make('p', '', 'muted'); node.append(label, evidence); parts.set(node, { label, evidence }); }
     const p = parts.get(node), details = [], evidenceRow = row.context ? { ...row.context, ...row } : row;
-    if (['finding', 'finding-update', 'recovery'].includes(row.kind)) details.push(chargingFinding(row.code)?.[1] ?? 'Finding recorded.');
+    if (['finding', 'finding-update', 'recovery'].includes(row.kind)) details.push(chargingFindingRecovery(row)?.description
+      ?? chargingFinding(row.code)?.[1] ?? 'Finding recorded.');
     if (row.kind === 'finding-update') details.push('The same episode remains active; its recorded evidence changed.');
     if (row.shared) details.push(chargingSharedText(row.shared, selectedCharger));
     setText(p.label, `${evidenceTime(row.at, timezone)} · ${eventLabel(row)}`);

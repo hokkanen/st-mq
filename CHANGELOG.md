@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Describe restored charging identity as “Vehicle identity confirmed again” in
+  the event log and session report. Keep the original loss and confirmation
+  events, with their historical meaning, instead of repeating the loss headline.
+
 - Preserve reopened windows when an earlier close event arrives late. Keep
   keyboard focus, expanded-state announcements, pairing-reset reviews and the
   guided charging time chooser intact during quick navigation.

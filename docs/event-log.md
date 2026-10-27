@@ -23,6 +23,11 @@ health and restoration status. Missing actor, source context, delivery or outcom
 evidence stays unknown. GPIO feedback, native readback and measured power retain
 their own meanings; none establishes unobserved delivered heat or savings.
 
+“Vehicle identity confirmed again” closes an earlier identity-unavailable
+assessment at the recorded time. A handover can produce a brief unavailable and
+confirmed pair while fresh evidence returns. These historical entries do not
+override the current identity shown on the charger card.
+
 Charging milestones link to the original session report. The log summarizes
 retained report evidence instead of copying its full plans and raw protocol data.
 Report expiry or explicit deletion removes its entries from this projection;

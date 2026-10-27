@@ -21,7 +21,19 @@ const FINDINGS = {
   'deadline-missed': ['Target missed at ready-by', 'An applicable vehicle reading after ready-by was below the requested target. Reaching the target later does not remove this event.'] };
 export const chargingFinding = code => typeof code === 'string' && Object.hasOwn(FINDINGS, code) ? FINDINGS[code] : undefined;
 
+export function chargingFindingRecovery(row) {
+  // This finding closes only when the current assessment has a vehicle ID.
+  // A changed request or reconciled evidence alone is not that confirmation.
+  if (row.kind === 'recovery' && row.code === 'identity-unavailable' && row.resolution === undefined) {
+    return { label: 'Vehicle identity confirmed again',
+      description: 'The session assessment recorded a confirmed vehicle identity again at the time shown. The charger card shows the current identity.' };
+  }
+  return null;
+}
+
 export function chargingFindingLabel(row) {
+  const recovery = chargingFindingRecovery(row);
+  if (recovery) return recovery.label;
   const name = chargingFinding(row.code)?.[0] ?? 'Finding';
   if (row.kind === 'finding-update') return `${name} · Evidence changed`;
   if (row.kind === 'finding') return chargingFinding(row.code)?.[0] ?? 'Finding recorded';

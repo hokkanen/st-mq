@@ -124,6 +124,22 @@ test('Important selects charging instructions, incidents and transitions without
   ]);
 });
 
+test('identity recovery remains a historical confirmation in the main timeline', t => {
+  const { store, read } = fixture(t);
+  chargingRecord(store, { kind: 'finding', code: 'identity-unavailable', at: NOW - 4000 });
+  chargingRecord(store, { kind: 'recovery', code: 'identity-unavailable', at: NOW - 2000 });
+  const checkpoint = readCheckpoint(store.db);
+  const events = read('area=charging').events;
+  assert.equal(events.length, 2);
+  assert.equal(events[0].title, 'Charger 2 · Vehicle identity confirmed again');
+  assert.equal(events[0].at, NOW - 2000);
+  assert.match(events[0].summary, /at the time shown/);
+  assert.equal(events[0].severity, 'info');
+  assert.equal(events[1].title, 'Charger 2 · Vehicle identity no longer confirmed');
+  assert.deepEqual(readCheckpoint(store.db), checkpoint);
+  assert.equal(store.db.prepare('SELECT count(*) n FROM charging_report_events').get().n, 2);
+});
+
 test('dataset and selected-history context invalidates cursors but ordinary commits retain it', t => {
   const { store, read } = fixture(t);
   for (let n = 0; n < 3; n++) store.event('settings-reloaded', { input: 'mqtt' }, NOW - n);

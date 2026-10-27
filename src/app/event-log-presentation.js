@@ -1,4 +1,4 @@
-import { chargingFindingLabel, chargingPhysicalLabel } from '../charging/report-presentation.js';
+import { chargingFindingLabel, chargingFindingRecovery, chargingPhysicalLabel } from '../charging/report-presentation.js';
 import { GARAGE_NATIVE_SETTINGS } from '../garage/native-settings.js';
 import { heatingErrorCode, heatingErrorMessage } from '../domain/heating-errors.js';
 
@@ -207,7 +207,7 @@ export function presentCharging(row, p) {
   const physicalKnown = physical && ['charging-started', 'charging-observed', 'charging-stopped', 'not-charging-observed'].includes(p.code) && Number.isFinite(p.powerKw) && p.powerKw >= 0;
   const out = fixed('charging', `${charger} · ${label}`, simulated ? 'This charging-session entry was produced by the simulation. It is not physical device evidence.' : physicalKnown ? 'This entry records source evidence of draw at the time shown.'
     : physical ? 'Physical charging evidence was unavailable. Missing evidence does not establish that charging stopped.'
-    : p.kind === 'recovery' ? 'A recorded finding ceased to apply. This does not establish the charger’s current condition.'
+    : p.kind === 'recovery' ? chargingFindingRecovery(p)?.description ?? 'A recorded finding ceased to apply. This does not establish the charger’s current condition.'
       : p.kind === 'outcome' ? 'The session report preserves the evidence and assumptions behind this outcome.'
         : finding ? 'Review the session report for the recorded circumstances and outcome. Native system provenance does not identify an actor.'
           : 'A charging-session milestone was recorded. Review its report for complete context.',
