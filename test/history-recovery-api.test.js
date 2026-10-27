@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -24,14 +25,14 @@ async function within(promise, milliseconds = 1500) {
   })]); } finally { clearTimeout(timer); }
 }
 async function waitingForWrite(store) {
-  const deadline = performance.now() + 1500;
+  const deadline = performance.now() + testCompletionLimit(1500);
   while (store.writeQueueStatus().waitingSince === null) {
     assert(performance.now() < deadline, 'The save reached SQLite admission');
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
 async function settledView(coordinator) {
-  const deadline = performance.now() + 5000;
+  const deadline = performance.now() + testCompletionLimit(5000);
   for (;;) {
     const view = await coordinator.view();
     if (!view.operationsLoading && !view.sourcesLoading) return view;
@@ -85,7 +86,7 @@ async function fixture(t, options = {}) {
     loseAuthority: () => { control = false; coordinator.cancel(); }, replaceEngine: () => { currentEngine = { ...engine }; } };
 }
 
-for (const outcome of ['success', 'failure', 'cancelled']) test(`recovery flushes pending source metadata and releases immediate recording after ${outcome}`, { timeout: 15_000 }, async t => {
+for (const outcome of ['success', 'failure', 'cancelled']) test(`recovery flushes pending source metadata and releases immediate recording after ${outcome}`, { timeout: testCompletionLimit(15_000) }, async t => {
   const entered = deferred(), gate = deferred();
   const f = await fixture(t, { module: { recoverHistory: async value => {
     entered.resolve();
@@ -110,7 +111,7 @@ for (const outcome of ['success', 'failure', 'cancelled']) test(`recovery flushe
   await f.post(request('check', { sourceId: source.sourceId, installationConfirmed: true }));
   await f.coordinator.settled();
   await f.post(request('recover', { previewId: 'a'.repeat(64), confirmed: true }));
-  await within(entered.promise, 5000);
+  await within(entered.promise, testCompletionLimit(5000));
   assert.equal(recorder.pendingSignals.size, 0);
   assert.equal(f.store.db.prepare('SELECT samples FROM recorder_coverage').get().samples, 2);
   await put(2000);

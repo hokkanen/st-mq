@@ -909,6 +909,10 @@ write measurements use this allowance too. Journal row/byte admission limits,
 rollback, exact reopened values, real timer overlap and pinned source/history
 checks remain unchanged; the recovery worker's fixture completion budget is
 separate from its measured write latency.
+History-recovery API fixture admission, background-list preparation and the
+metadata-flush scenario use the declared completion allowance. Held-lock
+cancellation checks retain their original short bound and still finish before
+the test releases the lock; recording holds and saved source clocks remain exact.
 The GiB reset fixture records generation and per-scenario preparation separately
 from reset latency. Its existing ten-minute parent budget uses the declared bulk
 completion allowance on HA, and each of the three independent reset scenarios
