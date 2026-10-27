@@ -182,6 +182,14 @@ directory to force a role change; use the explicit management actions.
 | `pair.vip_helper` | `STMQ_PAIR_VIP_HELPER` | `/usr/local/bin/st-mq-vip` |
 | `pair.vip_socket` | `STMQ_PAIR_VIP_SOCKET` | `/run/st-mq-vip/socket` on standalone Linux; empty in the app |
 
+Bulk journal metadata/chunks, snapshot hashes/chunks, source anchors and durable
+acknowledgements use the configured pairing-operation timeout. They can include
+worker preparation and storage settlement and do not inherit the shorter
+ordinary polling timeout. Shutdown and the enclosing synchronization deadline
+still cancel them. Fresh status and authority checks keep their separate short
+budget; transfer expiry cannot activate a peer or restart the former master.
+An expired RPC is not automatically resent within the accepted operation.
+
 Restart after changing pair configuration. The pair state directory must be
 separate from the database directory and `pair.snapshot_directory`. Pair mode
 does not borrow storage or freshness settings from `mirror`. The state directory

@@ -268,7 +268,7 @@ export class SnapshotRepository {
 }
 
 /** Receive an exceptional full seed with bounded frames and resumable progress. */
-async function performReceiveSnapshot({ directory, metadata, peer, signal, guard = async () => {},
+async function performReceiveSnapshot({ directory, metadata, peer, signal, timeoutMs, guard = async () => {},
   publish = true, onProgress = () => {}, commit = action => action() }) {
   validateSnapshot(metadata);
   await guard();
@@ -302,7 +302,7 @@ async function performReceiveSnapshot({ directory, metadata, peer, signal, guard
     for (let offset = 0; offset < count; offset += 128) {
       await guard();
       if (signal?.aborted) throw pairError('stopped');
-      const { hashes } = await peer.request('snapshot-hashes', { generation: metadata.generation, offset }, { signal });
+      const { hashes } = await peer.request('snapshot-hashes', { generation: metadata.generation, offset }, { signal, timeoutMs });
       if (!Array.isArray(hashes) || hashes.length !== Math.min(128, count - offset) ||
           hashes.some(value => !/^[a-f0-9]{64}$/.test(value))) throw pairError('peer_protocol_failed');
       for (let n = 0; n < hashes.length; n++) {
@@ -312,7 +312,7 @@ async function performReceiveSnapshot({ directory, metadata, peer, signal, guard
         let buffer = Buffer.alloc(bytes);
         await file.read(buffer, 0, bytes, index * CHUNK_BYTES);
         if (hash(buffer) !== hashes[n]) {
-          const chunk = await peer.request('snapshot-chunk', { generation: metadata.generation, index }, { signal });
+          const chunk = await peer.request('snapshot-chunk', { generation: metadata.generation, index }, { signal, timeoutMs });
           if (typeof chunk.data !== 'string' || chunk.data.length > Math.ceil(CHUNK_BYTES / 3) * 4) throw pairError('peer_protocol_failed');
           buffer = Buffer.from(chunk.data, 'base64');
           if (buffer.length !== bytes || hash(buffer) !== hashes[n]) throw pairError('verification_failed');

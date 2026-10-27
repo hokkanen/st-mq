@@ -79,9 +79,9 @@ export class PeerTransfers {
     return observeStorageOperation('peer-transfer',()=>onStorage?onStorage(read):read(),{scope:'shared'});
   }
 }
-async function performReceivePeerTransfer({directory,peer,after,signal,refresh=false,guard=async()=>{}}) {
+async function performReceivePeerTransfer({directory,peer,after,signal,timeoutMs,refresh=false,guard=async()=>{}}) {
   await guard();
-  const metadata=await peer.request('peer-transfer',{after,refresh},{signal});
+  const metadata=await peer.request('peer-transfer',{after,refresh},{signal,timeoutMs});
   if(!validPeerTransfer(metadata) || !sameCheckpoint(metadata.base,after))throw replicationError('invalid_protocol');
   await ownedDirectory(directory,'.st-mq-peer-receive');
   const unlock=await acquireReceiverLock(directory);
@@ -91,7 +91,7 @@ async function performReceivePeerTransfer({directory,peer,after,signal,refresh=f
     try {
       for(let offset=0;offset<metadata.bytes;offset+=CHANGE_CHUNK_BYTES) {
         signal?.throwIfAborted();await guard();
-        const value=await peer.request('peer-transfer-chunk',{id:metadata.id,offset},{signal});
+        const value=await peer.request('peer-transfer-chunk',{id:metadata.id,offset},{signal,timeoutMs});
         if(typeof value?.data!=='string' || value.data.length>Math.ceil(CHANGE_CHUNK_BYTES/3)*4)throw replicationError('invalid_protocol');
         const bytes=Buffer.from(value.data,'base64');
         if(bytes.length!==Math.min(CHANGE_CHUNK_BYTES,metadata.bytes-offset))throw replicationError('verification_failed');

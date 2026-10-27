@@ -52,6 +52,122 @@ function connect(left, right) {
   right.peer.peerUrl = `http://127.0.0.1:${left.peer.server.address().port}`;
 }
 
+// Exercise the actual transfer and publication after a deterministic transport
+// delay model. A slow SD preparation must use the configured operation budget;
+// an expired operation must still retain protected authority without replay.
+function delayedBulkRequest(peer, operation, elapsedMs, witness, enabled = () => true) {
+  const request = peer.request.bind(peer);
+  peer.request = async (name, body, options = {}) => {
+    if (name === operation && enabled()) {
+      witness.push({ operation: name, budget: options.timeoutMs ?? peer.timeoutMs, offset: body.offset ?? body.index ?? null });
+      if (elapsedMs > (options.timeoutMs ?? peer.timeoutMs))
+        throw Object.assign(Error('synthetic transfer deadline'), { code: 'peer_unavailable' });
+    }
+    return request(name, body, options);
+  };
+}
+
+for (const operation of ['peer-transfer', 'peer-transfer-chunk', 'peer-ack'])
+test(`bulk journal synchronization keeps its operation deadline: ${operation}`, async t => {
+  const root = await fixture(t), primary = await manager(t, root, 'master', { platform: 'hassio' });
+  const secondary = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, secondary);
+  await secondary.synchronize(primary.state.claim()); assert.equal(secondary.sync.state, 'ready');
+  const store = new Store(primary.state.value.activeDbPath);
+  store.event('synthetic-slow-journal-sync', { operation }, 200); store.close();
+  const witness = [], elapsedMs = secondary.peer.timeoutMs + 1;
+  assert(elapsedMs < secondary.config.timeoutMs);
+  delayedBulkRequest(secondary.peer, operation, elapsedMs, witness);
+  await secondary.synchronize(primary.state.claim());
+  assert.equal(secondary.sync.state, 'ready', JSON.stringify(secondary.sync));
+  assert.equal(witness.length, 1);
+  const publication = await readReplicaPublication(secondary.config.snapshotDirectory);
+  const selected = new Store(publication.dbPath, { readOnly: true });
+  try {
+    assert.deepEqual(selected.events({ type: 'synthetic-slow-journal-sync' }).map(row => row.payload), [{ operation }]);
+    assert.equal(selected.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+  } finally { selected.close(); }
+  assert.equal(primary.canControl(), true); assert.equal(secondary.canControl(), false);
+});
+
+for (const operation of ['peer-transfer', 'peer-transfer-chunk', 'peer-ack']) for (const outcome of ['slow', 'expired'])
+test(`bulk journal handover ${outcome} keeps its operation deadline: ${operation}`, async t => {
+  const root = await fixture(t), primary = await manager(t, root, 'master', { platform: 'hassio' });
+  const secondary = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, secondary);
+  await secondary.synchronize(primary.state.claim()); assert.equal(secondary.sync.state, 'ready');
+  const originalPath = primary.state.value.activeDbPath, stop = primary.hooks.stopControl;
+  let stopped = false;
+  primary.hooks.stopControl = async input => {
+    await stop(input);
+    if (input.restore) {
+      const source = new Store(originalPath);
+      source.event('synthetic-final-handover-evidence', { operation }, 300); source.close();
+      stopped = true;
+    }
+  };
+  const witness = [], elapsedMs = outcome === 'expired' ? secondary.config.timeoutMs + 1 : secondary.peer.timeoutMs + 1;
+  if (outcome === 'slow') assert(elapsedMs < secondary.config.timeoutMs);
+  delayedBulkRequest(secondary.peer, operation, elapsedMs, witness, () => stopped);
+  if (outcome === 'expired') {
+    await assert.rejects(primary.action('handover', command()), { code: 'peer_unavailable' });
+    assert.equal(primary.state.value.role, 'protected'); assert.equal(primary.canControl(), false);
+    assert.equal(secondary.state.value.role, 'slave'); assert.equal(secondary.canControl(), false);
+    assert.equal(primary.calls.filter(([name]) => name === 'master').length, 1, 'Failure never reactivates the former master');
+  } else {
+    await primary.action('handover', command());
+    assert.equal(primary.state.value.role, 'slave'); assert.equal(primary.canControl(), false);
+    assert.equal(secondary.state.value.role, 'master'); assert.equal(secondary.canControl(), true);
+    const selected = new Store(secondary.state.value.activeDbPath, { readOnly: true });
+    try { assert.deepEqual(selected.events({ type: 'synthetic-final-handover-evidence' }).map(row => row.payload), [{ operation }]); }
+    finally { selected.close(); }
+  }
+  assert.equal(witness.length, 1, 'A deadline never authorizes blind transport replay');
+  const source = new Store(originalPath, { readOnly: true });
+  try { assert.equal(source.events({ type: 'synthetic-final-handover-evidence' }).length, 1); }
+  finally { source.close(); }
+});
+
+for (const operation of ['snapshot-hashes', 'snapshot-chunk']) for (const outcome of ['slow', 'expired'])
+test(`bulk snapshot synchronization ${outcome} keeps its operation deadline: ${operation}`, async t => {
+  const root = await fixture(t), primary = await manager(t, root, 'master', { platform: 'hassio' });
+  const secondary = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, secondary);
+  const source = new Store(primary.state.value.activeDbPath, { readOnly: true });
+  const original = source.observations(); source.close();
+  const witness = [], elapsedMs = outcome === 'expired' ? secondary.config.timeoutMs + 1 : secondary.peer.timeoutMs + 1;
+  if (outcome === 'slow') assert(elapsedMs < secondary.config.timeoutMs);
+  delayedBulkRequest(secondary.peer, operation, elapsedMs, witness);
+  await secondary.synchronize(primary.state.claim());
+  assert(witness.length > 0);
+  assert.equal(new Set(witness.map(row => row.offset)).size, witness.length, 'No chunk is replayed after a deadline');
+  assert.equal(secondary.sync.state, outcome === 'slow' ? 'ready' : 'error', JSON.stringify(secondary.sync));
+  if (outcome === 'slow') {
+    const publication = await readReplicaPublication(secondary.config.snapshotDirectory);
+    const selected = new Store(publication.dbPath, { readOnly: true });
+    try { assert.deepEqual(selected.observations(), original); }
+    finally { selected.close(); }
+  } else assert.equal(secondary.sync.error, 'peer_unavailable');
+  assert.equal(primary.canControl(), true); assert.equal(secondary.canControl(), false);
+});
+
+for (const outcome of ['slow', 'expired'])
+test(`bulk journal source anchor ${outcome} keeps its operation deadline`, async t => {
+  const root = await fixture(t);
+  const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
+    recoveryPreview: ({ donorPath, donorJournalPath }) => recoveryPreview({
+      masterPath: primary.state.value.activeDbPath, donorPath, donorJournalPath, signal: t.signal }),
+  } });
+  const secondary = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, secondary);
+  await secondary.synchronize(primary.state.claim()); assert.equal(secondary.sync.state, 'ready');
+  const witness = [], elapsedMs = outcome === 'expired' ? primary.config.timeoutMs + 1 : primary.peer.timeoutMs + 1;
+  if (outcome === 'slow') assert(elapsedMs < primary.config.timeoutMs);
+  delayedBulkRequest(primary.peer, 'peer-anchor', elapsedMs, witness);
+  if (outcome === 'slow') {
+    await primary.action('check-recovery', command());
+    assert.equal(primary.status().recovery.state, 'ready');
+  } else await assert.rejects(primary.action('check-recovery', command()), { code: 'peer_unavailable' });
+  assert(witness.length > 0);
+  assert.equal(primary.canControl(), true); assert.equal(secondary.canControl(), false);
+});
+
 test('a full source check selects current peer metadata after verification while mirroring stays enabled', async t => {
   const root = await fixture(t);
   const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {

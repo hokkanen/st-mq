@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep paired bulk transfers and durable cleanup within the configured operation
+  timeout instead of the short polling budget. Preserve fresh authority checks,
+  cancellation, exact history and protected handover outcomes on expiry.
+
 - Prevent ordinary recording backlogs from repeatedly overtaking verified
   recovery publication. Preserve bounded proof checks, atomic model adoption
   and normal queue fairness while live observations continue.

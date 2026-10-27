@@ -958,6 +958,12 @@ harmless observations than the bounded proof can bridge, and require publication
 before those observations overtake the candidate. Every queued observation must
 still commit. This covers direct and worker-backed recording without expanding
 the 64-row proof limit, relaxing source checks or depending on a wall-clock race.
+Pairing deadline tests model slow bulk work against the real transport's selected
+budget, then execute the current transfer and publication. Journal and snapshot
+metadata/chunks, durable acknowledgements and source anchors retain the configured
+operation scope. Expired final handovers stay protected without reactivation or
+blind replay; successful transfers retain exact source rows and valid databases.
+Ordinary status, source freshness and native control deadlines remain independent.
 
 JSONL receipts identify runtime, architecture, source revision/dirty state,
 resource limits, selected budgets, file exits, failed case names, nesting and

@@ -570,7 +570,7 @@ export class PairManager {
           : validateSnapshot(await this.peer.request('snapshot', { force: true, forPeer: true }, { signal, timeoutMs: this.config.timeoutMs }));
         await this.state.update({ pendingSnapshot: metadata });
         result = await this.installReplica(metadata, { signal });
-        await this.peer.request('peer-ack',{checkpoint:result.checkpoint},{signal});
+        await this.peer.request('peer-ack',{checkpoint:result.checkpoint},{signal,timeoutMs:this.config.timeoutMs});
       } else result = await this.installCheckpoint(metadata, { signal });
       this.sync = { state: 'ready', sourceAt: result.sourceAt, verifiedAt: result.verifiedAt, bytes: result.bytes,
         lastSuccessAt: this.clock(), error: null, transferredBytes: result.transferredBytes };
@@ -594,6 +594,7 @@ export class PairManager {
       if (unchanged) await unchanged();
     };
     return receiveSnapshot({ directory: this.config.snapshotDirectory, metadata, peer: this.peer, signal, guard,
+      timeoutMs: this.config.timeoutMs,
       onProgress: value => { this.sync = { ...this.sync, ...value }; },
       commit: action => this.serialized(async () => {
         await guard();
@@ -621,7 +622,7 @@ export class PairManager {
       if(sameCheckpoint(publication.checkpoint,metadata.checkpoint)) {
         const actual=await databaseCheckpoint({dbPath:publication.dbPath,signal});
         if(!sameCheckpoint(actual,publication.checkpoint))throw pairError('verification_failed');
-        await this.peer.request('peer-ack',{checkpoint:publication.checkpoint},{signal});
+        await this.peer.request('peer-ack',{checkpoint:publication.checkpoint},{signal,timeoutMs:this.config.timeoutMs});
         if(adoptMetadata) {
           await this.state.update({pendingSnapshot:metadata});
           publication=await this.serialized(async()=>{
@@ -637,7 +638,9 @@ export class PairManager {
       let transferredBytes = 0;
       do {
         await guard();
-        const transfer=await receivePeerTransfer({directory:join(this.config.directory,'peer-incoming'),peer:this.peer,
+        // Bulk work owns the configured operation budget. Fresh status proof
+        // below still uses the independent, shorter polling timeout.
+        const transfer=await receivePeerTransfer({directory:join(this.config.directory,'peer-incoming'),peer:this.peer,timeoutMs:this.config.timeoutMs,
           after:publication.checkpoint,signal,guard});
         const target=transfer.metadata.target;
         if(target.sequence<publication.checkpoint.sequence) throw pairError('verification_failed');
@@ -660,7 +663,7 @@ export class PairManager {
             return result;
           });
         } finally {await rm(transfer.path,{force:true});}
-        await this.peer.request('peer-ack',{checkpoint:publication.checkpoint},{signal});
+        await this.peer.request('peer-ack',{checkpoint:publication.checkpoint},{signal,timeoutMs:this.config.timeoutMs});
       } while(publication.checkpoint.sequence<metadata.checkpoint.sequence);
       if(publication.checkpoint.sequence===metadata.checkpoint.sequence && !sameCheckpoint(publication.checkpoint,metadata.checkpoint))
         throw pairError('verification_failed');
@@ -776,7 +779,7 @@ export class PairManager {
       await this.acknowledgePeerTransfer(local.checkpoint,dbPath);
       local=await this.peerOperation('anchor',{dbPath,signal:this.abort.signal});
     }
-    let remote=await this.peer.request('peer-anchor',{}, {signal:this.abort.signal});
+    let remote=await this.peer.request('peer-anchor',{}, {signal:this.abort.signal,timeoutMs:this.config.timeoutMs});
     if(!local || !remote) return null;
     if(!validCheckpoint(remote.checkpoint)) throw pairError('peer_protocol_failed');
     // An acknowledgement may have been lost before either side diverged. The
@@ -786,8 +789,8 @@ export class PairManager {
       local=await this.peerOperation('anchor',{dbPath,signal:this.abort.signal});
     }
     if(remote.pendingTarget && sameCheckpoint(remote.pendingTarget,local.checkpoint)) {
-      await this.peer.request('peer-ack',{checkpoint:local.checkpoint},{signal:this.abort.signal});
-      remote=await this.peer.request('peer-anchor',{}, {signal:this.abort.signal});
+      await this.peer.request('peer-ack',{checkpoint:local.checkpoint},{signal:this.abort.signal,timeoutMs:this.config.timeoutMs});
+      remote=await this.peer.request('peer-anchor',{}, {signal:this.abort.signal,timeoutMs:this.config.timeoutMs});
     }
     if(!sameCheckpoint(local.checkpoint,remote.checkpoint)) return null;
     if(local.contentHash!==remote.contentHash) throw pairError('verification_failed');
@@ -795,7 +798,7 @@ export class PairManager {
   }
 
   async stageRecoveryJournal(metadata,base) {
-    const transfer=await receivePeerTransfer({directory:join(this.config.directory,'peer-recovery'),peer:this.peer,after:base,
+    const transfer=await receivePeerTransfer({directory:join(this.config.directory,'peer-recovery'),peer:this.peer,after:base,timeoutMs:this.config.timeoutMs,
       refresh:true,signal:this.abort.signal,guard:async()=>{if(!this.canControl())throw pairError('not_master');}});
     if(!sameCheckpoint(transfer.metadata.target,metadata.checkpoint)) {
       await rm(transfer.path,{force:true});throw pairError('recovery_required');
@@ -1077,7 +1080,7 @@ export class PairManager {
         // initiated recovery is the exceptional repair that needs a full base.
         metadata = validateSnapshot(await this.peer.request('snapshot', { force: true }, { timeoutMs: this.config.timeoutMs }));
         const donor = await receiveSnapshot({ directory: join(this.config.directory, 'recovery'), metadata,
-          peer: this.peer, signal: this.abort.signal, publish: false,
+          peer: this.peer, signal: this.abort.signal, timeoutMs: this.config.timeoutMs, publish: false,
           guard: async () => { if (!this.canControl()) throw pairError('not_master'); } });
         donorPath = donor.dbPath;
       }
@@ -1266,7 +1269,7 @@ export class PairManager {
       if (!base) throw pairError('lineage_mismatch');
       // Freeze and fully receive the selected target before changing the donor.
       // A later source checkpoint or lost reply cannot invalidate this replay.
-      const transfer=await receivePeerTransfer({directory:join(this.config.directory,'peer-rejoin'),peer:this.peer,
+      const transfer=await receivePeerTransfer({directory:join(this.config.directory,'peer-rejoin'),peer:this.peer,timeoutMs:this.config.timeoutMs,
         after:base,signal:this.abort.signal,guard:async()=>{
           if(this.state.value.role!=='protected')throw pairError('authority_changed');
         }});
