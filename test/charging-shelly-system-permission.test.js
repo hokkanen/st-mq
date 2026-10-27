@@ -217,13 +217,16 @@ async function startedFixture(t, options) {
 
 for (const writer of [false, true])
 test(`queued BMW receipt cannot cancel a healthy identification after newer native admission; writer ${writer}`, async t => {
+  // This case owns the ordering of native rounds around queued admission.
+  // Drive interval polling explicitly; RPC timeouts and writer work stay real.
+  t.mock.timers.enable({ apis: ['setInterval'] });
   const topic = 'synthetic/system/queued-bmw';
   const f = await fixture(t, { durableStorage: true, bmwTopic: topic });
   if (writer) await f.store.startWriter();
   f.setPlanStartAt(START + 3600_000);
   await f.update(); await f.reconnect(); await f.update();
   assert.equal(f.item().controller.status().currentTest.phase, 'active');
-  f.advance(5000); f.measure(6); await f.adapter.refresh();
+  f.advance(5000); f.measure(6); t.mock.timers.tick(5000); await f.adapter.refresh();
   await f.runtime.write(() => f.runtime.persist());
   const before = structuredClone(f.item().identification);
   const expiresAt = f.item().controller.status().currentTest.expiresAt;
@@ -242,7 +245,7 @@ test(`queued BMW receipt cannot cancel a healthy identification after newer nati
   await started;
   // The earlier vehicle arrival reaches admission after the controller has
   // accepted newer native readback. Keep the real writer queue blocked until
-  // 349 ms after receipt; no global timers or native deadlines are frozen.
+  // 349 ms after receipt; writer admission and native RPC timeouts stay real.
   const queued = f.runtime.write(() => {
     assert.ok(f.item().controller.status().snapshot.readAt > receivedAt,
       'Newer controller readback must precede this older receipt');
