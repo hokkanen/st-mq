@@ -140,14 +140,22 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
     const plan = { height: planner.getBoundingClientRect().height,
       fits: [...planner.querySelectorAll('.home-plan-copy > span')].every(node =>
         node.scrollWidth <= node.clientWidth + 1 && node.scrollHeight <= node.clientHeight + 1) };
-    return { cards, footers, overviews, notes, plan, providers: [...document.querySelectorAll('#providers > li')].map(node => node.dataset.provider),
+    return { cards, footers, overviews, notes, plan, width: innerWidth,
+      expanded: [...document.querySelectorAll('.controller-panels details[open]')].some(node => node.checkVisibility()),
+      providers: [...document.querySelectorAll('#providers > li')].map(node => node.dataset.provider),
       chargers: [...document.querySelectorAll('#charging-devices > details')].map(node => node.id),
       headings: ['control-title', 'garage-title'].map(id => document.getElementById(id).getBoundingClientRect().top),
       fits: document.documentElement.scrollWidth <= innerWidth };
   })()`);
+  const naturalColumns = (layout, label) => {
+    if (layout.width < 1280 || layout.expanded) return;
+    const difference = Math.abs(layout.cards[1].bottom - layout.cards[2].bottom);
+    assert.ok(difference <= 1, `${label}: Garage and Home/Data share a natural bottom edge (${difference}px)`);
+  };
   const stable = async (baseline, label) => {
     await settle();
     const actual = await geometry();
+    naturalColumns(actual, label);
     assert.equal(actual.fits, true, `${label}: the dashboard fits the viewport`);
     assert.equal(actual.plan.fits, true, `${label}: complete planned actions remain readable`);
     assert.deepEqual(actual.providers, baseline.providers, `${label}: provider inventory is unchanged`);
@@ -161,6 +169,7 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
   const naturalResize = async (baseline, width, scenario) => {
     await settle();
     const actual = await geometry(), label = `${width}px ${scenario}`;
+    naturalColumns(actual, label);
     assert.equal(actual.fits, true, `${label}: the dashboard fits the viewport`);
     assert.equal(actual.plan.fits, true, `${label}: complete planned actions remain readable`);
     assert.deepEqual(actual.providers, baseline.providers, `${label}: provider inventory is unchanged`);
@@ -270,8 +279,38 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
       if (width > 800) {
         assert.ok(Math.abs(baseline.headings[0] - baseline.headings[1]) <= 1,
           'Desktop Home and Garage headings share a baseline');
-        if (width >= 1280) assert.ok(Math.abs(baseline.cards[1].bottom - baseline.cards[2].bottom) <= 16,
-          `Wide desktop Garage and Data card bottoms remain naturally close (${Math.abs(baseline.cards[1].bottom - baseline.cards[2].bottom)}px)`);
+        if (width >= 1280) {
+          naturalColumns(baseline, `${width}px normal`);
+          const theme = await evaluate('document.documentElement.dataset.theme');
+          try {
+            for (const value of ['dark', 'light']) {
+              await evaluate(`document.documentElement.dataset.theme = '${value}'`); await settle();
+              const themed = await geometry();
+              for (const [index, card] of themed.cards.entries()) assert.ok(Math.abs(card.height - baseline.cards[index].height) <= 1,
+                `${width}px ${value}: ${card.id} retains its natural height`);
+            }
+          } finally {
+            await evaluate(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`); await settle();
+          }
+          // Reduce the other column's grid contribution without hiding its
+          // overview; overview alignment must keep the same input geometry.
+          for (const [columnIndex, visibleCards] of [[0, [1]], [1, [0, 2]]]) {
+            const saved = await evaluate(`(() => {
+              const column = document.querySelectorAll('.controller-column')[${columnIndex}];
+              const saved = { height: column.style.height, overflow: column.style.overflow };
+              column.style.height = '1px'; column.style.overflow = 'hidden'; return saved;
+            })()`);
+            try {
+              await settle();
+              const independent = await geometry();
+              for (const index of visibleCards) assert.ok(Math.abs(independent.cards[index].height - baseline.cards[index].height) <= 1,
+                `${width}px: ${baseline.cards[index].id} keeps its content height without the other column`);
+            } finally {
+              await evaluate(`Object.assign(document.querySelectorAll('.controller-column')[${columnIndex}].style, ${JSON.stringify(saved)}); true`);
+              await settle();
+            }
+          }
+        }
       }
       for (const scenario of ['unavailable', 'not-configured', 'stale', 'indoor-stale', 'garage-stale', 'provider-attention', 'long-plan', 'paused', 'control-unavailable', 'missing-price', 'simulation', 'history', 'replica', 'charging-error', 'normal']) {
         await evaluate(`dashboardHeightFixture.scenario = '${scenario}'`); await refresh();

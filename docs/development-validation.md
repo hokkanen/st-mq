@@ -1590,7 +1590,9 @@ one-sided stale readings, heating plans, provider contexts, missing prices, and
 intercepted charging saves/errors exercise the actual renderers. It checks full
 popup details, focus restoration, aligned values and captions, roof/header
 clearance, buildings centered between their side groups, centered Explore content,
-compact section gaps and approximately balanced desktop columns. Receipts and
+compact section gaps and naturally matching folded column bottoms at 1280 and
+1440 px, within one CSS pixel. Both desktop themes retain the same geometry;
+reducing either column's grid contribution cannot resize the other cards. Receipts and
 popovers must not add space; returning to normal must restore the compact height.
 Charging feedback must leave its current allowance visible and unobstructed.
 Opening a fold must not resize neighboring cards to compensate for its content.

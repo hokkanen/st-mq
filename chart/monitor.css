@@ -1594,7 +1594,7 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 #provider-overview .provider-fold[open] > summary::after { color: var(--accent); transform: rotate(90deg); }
 #provider-overview .provider-fold > summary:hover .provider-category-title { color: var(--accent); }
 #provider-overview .provider-heading { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; flex: 1; min-width: 0; }
-#provider-overview .provider-category-title { grid-column: 1 / -1; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.4; }
+#provider-overview .provider-category-title { grid-column: 1 / -1; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 14px; }
 #provider-overview .provider-category-state { display: inline-flex; align-items: center; gap: 7px; min-width: 0; color: var(--text); font-size: 13px; font-weight: 500; line-height: 1.5; text-align: left; }
 #provider-overview .provider-category-state .status-detail-trigger { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #provider-overview .provider-category-state::before { content: ''; flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--provider-tone, var(--muted)); }
