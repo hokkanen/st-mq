@@ -942,6 +942,9 @@ selecting the displayed scope. Explicit received-poll cases still close native
 readiness behind the held COMMIT and prove that failed intent cannot dispatch.
 Accepted-period cases retain their explicit unrelated native-reply and newer
 instruction races; timer control does not remove those competing inputs.
+Their finite-period setup also joins the independent real household-history
+worker before the first automatic connection. A planner flight alone does not
+prove history is ready; a provisional release is a different accepted program.
 The charging shutdown fixture separates setup and subsequent durable-write
 completion from cancellation: admission must close synchronously, and cancellation
 retains its original two-second deadline with the external writer still held.

@@ -44,6 +44,13 @@ async function acceptedProgram(t, { limiter = true } = {}) {
   // not first adopt an unrelated release program which ordinary replanning
   // correctly retains. The program below still comes from the real planner.
   f.runtime.tick({ prices, force: true }); await f.settle();
+  // A planning flight does not join the independent history worker. Connecting
+  // before it returns can legitimately adopt a provisional release instead of
+  // the finite-period program required by these boundary tests.
+  await until(() => f.runtime.historyReady && f.runtime.historyFlights.size === 0,
+    'real household history before first automatic connection');
+  await stage(f.settle(), 'household-history preparation publication');
+  assert.equal(f.runtime.historyError, null);
   assert.equal(f.cars.charger2.connected, false);
   await f.connect('charger2'); await f.settle();
   let view = f.view('charger2');
