@@ -120,3 +120,52 @@ test('application shutdown fences new heating before waiting for an existing dis
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+for (const boundary of ['shutdown', 'revocation']) test(`scheduled lifecycle cancellation during ${boundary} does not record a controller failure`, { timeout: 10_000 }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-tick-cancellation-'));
+  let now = Date.parse('2026-09-08T12:00:00Z'), release;
+  const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
+  const app = await start({ config, clock: () => now, installSignalHandlers: false });
+  t.after(async () => { release?.(); await app.close(); rmSync(directory, { recursive: true, force: true }); });
+  const reports = [];
+  t.mock.method(console, 'error', message => reports.push(JSON.parse(message)));
+  let enter;
+  const entered = new Promise(resolve => { enter = resolve; }), update = app.engine.update.bind(app.engine);
+  t.mock.method(app.engine, 'update', (...args) => { const pending = update(...args); enter(); return pending; });
+  let admit;
+  const admitted = new Promise(resolve => { admit = resolve; });
+  const publication = app.store.runPublication(() => new Promise(resolve => { release = resolve; admit(); }));
+  await admitted;
+  now += 59_999; app.engine.onTemporaryChange();
+  await entered;
+  assert(app.store.writeQueueStatus().queued > 0, 'The real controller save is queued behind publication');
+  const stopped = boundary === 'shutdown' ? app.close() : app.revokeControl();
+  release(); await Promise.all([publication, stopped]);
+  await app.close();
+  assert.deepEqual(reports, [], 'Cancelling obsolete control work is not a failed controller update');
+  const saved = new DatabaseSync(config.dbPath, { readOnly: true });
+  try { assert.equal(saved.prepare("SELECT count(*) n FROM events WHERE type='controller-error'").get().n, 0); }
+  finally { saved.close(); }
+});
+
+for (const [name, error, shutdown] of [
+  ['a real storage failure during shutdown', { code: 'ERR_SQLITE_ERROR', errcode: 10 }, true],
+  ['an uncertain committed outcome during shutdown', { code: 'STORAGE_WRITE_CANCELLED', committed: true }, true],
+  ['an unexpected cancellation in the current runtime', { code: 'STORAGE_WRITE_CANCELLED' }, false],
+]) test(`scheduled error reporting retains ${name}`, { timeout: 10_000 }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-tick-error-boundary-'));
+  let now = Date.parse('2026-09-08T12:00:00Z'), release, enter;
+  const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
+  const app = await start({ config, clock: () => now, installSignalHandlers: false });
+  t.after(async () => { release?.(); await app.close(); rmSync(directory, { recursive: true, force: true }); });
+  const reports = [], entered = new Promise(resolve => { enter = resolve; });
+  t.mock.method(console, 'error', message => reports.push(JSON.parse(message)));
+  t.mock.method(app.engine, 'update', () => { enter(); return new Promise(resolve => { release = resolve; })
+    .then(() => { throw Object.assign(new Error('synthetic-sensitive-controller-detail'), error); }); });
+  now += 59_999; app.engine.onTemporaryChange(); await entered; now++;
+  const stopping = shutdown ? app.close() : Promise.resolve();
+  release(); await stopping;
+  await until(t, () => reports.length > 0);
+  assert.deepEqual(reports, [{ event: 'controller-error', reason: 'controller-tick-failed', eventStored: false }]);
+  assert.doesNotMatch(JSON.stringify(reports), /synthetic-sensitive/);
+});

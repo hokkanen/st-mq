@@ -262,8 +262,13 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   function tick() {
     if (tickPending) return tickPending;
     const current = engine;
-    tickPending = current.update({
-      isCurrent: () => !closed && !reloadPending && runtimeUsable && current === engine && canControl(),
+    const isCurrent = () => !closed && !reloadPending && runtimeUsable && current === engine && canControl();
+    tickPending = current.update({ isCurrent }).catch(error => {
+      // Shutdown/replacement cancels queued admission and unfinished learning.
+      // Keep real storage failures and committed follow-up failures visible.
+      if (error?.committed !== true && !isCurrent()
+        && ['STORAGE_WRITE_CANCELLED', 'STORAGE_WRITE_STALE'].includes(error?.code)) return;
+      throw error;
     }).finally(() => { tickPending = null; });
     return tickPending;
   }

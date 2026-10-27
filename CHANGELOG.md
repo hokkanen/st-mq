@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep cancellation of an obsolete scheduled update quiet during shutdown,
+  configuration replacement or loss of control authority. Continue reporting
+  genuine storage failures, uncertain committed outcomes and unexpected
+  cancellations while the runtime remains current.
+
 - Describe restored charging identity as “Vehicle identity confirmed again” in
   the event log and session report. Keep the original loss and confirmation
   events, with their historical meaning, instead of repeating the loss headline.
