@@ -30,7 +30,7 @@ test('HA SD qualification selects explicit completion budgets and rejects unknow
     caseTimeoutMs: 180_000, extendedCaseTimeoutMs: 900_000 });
   assert.throws(() => offlineTestProfile('invented'), /Unknown offline test profile/);
   assert.equal(testLatencyLimit(1500, 'standard'), 1500);
-  assert.equal(testLatencyLimit(1500, 'ha-sd'), 12_000);
+  assert.equal(testLatencyLimit(1500, 'ha-sd'), 30_000);
   assert.equal(testCompletionLimit(60_000, 'standard'), 60_000);
   assert.equal(testCompletionLimit(60_000, 'ha-sd'), 300_000);
 });
@@ -66,20 +66,20 @@ test('qualification receipts retain failed cases, cancellation relationships and
     unstarted: 0, interrupted: false, code: 1 });
 });
 
-test('HA qualification accepts a several-second synthetic delay while retaining correctness failures', async t => {
+test('HA qualification accepts a long storage-tail delay while retaining correctness failures', async t => {
   const limits = new URL('../scripts/lib/offline-test-profile.js', import.meta.url).href;
   const f = await fixture(t, {
     delayed: `import test from 'node:test'; import assert from 'node:assert/strict';
       import {testLatencyLimit} from ${JSON.stringify(limits)};
       test('delayed synthetic fixture', async () => { const began=performance.now();
-        await new Promise(resolve=>setTimeout(resolve,5200));
+        await new Promise(resolve=>setTimeout(resolve,17200));
         assert(performance.now()-began < testLatencyLimit(1000), 'synthetic latency exceeds the declared profile'); });`,
     incorrect: `import test from 'node:test'; import assert from 'node:assert/strict';
       test('synthetic data mismatch', () => { assert.equal(1,2,'synthetic incorrect result'); });`,
   });
   await assert.rejects(execute(process.execPath, command({ files: [f.paths[0]], profile: 'standard' }),
-    { timeout: 20000 }), { code: 1 });
-  await execute(process.execPath, command({ files: [f.paths[0]], profile: 'ha-sd' }), { timeout: 20000 });
+    { timeout: 40000 }), { code: 1 });
+  await execute(process.execPath, command({ files: [f.paths[0]], profile: 'ha-sd' }), { timeout: 40000 });
   await assert.rejects(execute(process.execPath, command({ files: [f.paths[1]], profile: 'ha-sd' }),
     { timeout: 10000 }), error => {
     assert.equal(error.code, 1); assert.match(error.stdout, /synthetic incorrect result/); return true;

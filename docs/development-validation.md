@@ -895,8 +895,11 @@ node scripts/test-offline.js --profile=ha-sd --extended --report=/private/result
 This runs two routine files or one extended file at a time, with three-minute
 routine and fifteen-minute extended case budgets. Explicit bulk-fixture process
 budgets use five times their standard allowance. Selected synthetic latency
-guards use the larger of twelve seconds or four times their standard bound to
-admit occasional several-second storage or scheduling stalls. The standard
+guards use the larger of thirty seconds or four times their standard bound to
+admit occasional storage or scheduling stalls, including a measured native
+COMMIT above seventeen seconds. This allowance does not attribute the delay to
+SD-card firmware. A synthetic seventeen-second delay must fail the standard
+profile and pass HA qualification, while incorrect results fail both. The standard
 profile retains its existing bounds. These are test qualification limits, never
 changes to production freshness, device, SQLite lock or control deadlines.
 Checkpoint hydration, reset HTTP probes and contended-write timer samples use

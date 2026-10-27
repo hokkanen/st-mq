@@ -11,7 +11,7 @@ export function offlineTestProfile(name = process.env.STMQ_TEST_PROFILE ?? 'stan
 // correctness, bounded work, overlap and queue-order assertions independent of
 // this wall-clock regression guard; report the original observed timings.
 export function testLatencyLimit(standardMs, profile) {
-  return offlineTestProfile(profile).name === 'ha-sd' ? Math.max(12_000, standardMs * 4) : standardMs;
+  return offlineTestProfile(profile).name === 'ha-sd' ? Math.max(30_000, standardMs * 4) : standardMs;
 }
 
 export function testCompletionLimit(standardMs, profile) {
