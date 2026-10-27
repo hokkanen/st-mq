@@ -59,3 +59,33 @@ export function uiSpacingFailures() {
   }
   return failures;
 }
+
+/** Ordinary navigation inherits themed styling and a visible keyboard focus.
+ * Status-card readings and footer attributions keep their established roles. */
+export function uiLinkFailures() {
+  const failures = [], probe = document.createElement('span');
+  document.body.append(probe);
+  const color = token => { probe.style.color = `var(${token})`; return getComputedStyle(probe).color; };
+  const accent = color('--accent'), focus = color('--focus'), text = color('--text');
+  const previous = document.activeElement, modal = document.querySelector('dialog:modal');
+  for (const link of document.querySelectorAll('a[href]')) {
+    if (!link.checkVisibility()) continue;
+    const style = getComputedStyle(link), name = link.id || link.textContent.trim();
+    const reading = link.matches('.recording-status-reading'), footer = link.closest('footer');
+    const expected = reading ? text : footer ? getComputedStyle(footer).color : accent;
+    if (style.color !== expected) failures.push({ rule: 'themed link', node: name, actual: style.color });
+    if (!reading && !link.matches('.secure-web-access-link-action') && !style.textDecorationLine.includes('underline'))
+      failures.push({ rule: 'recognizable navigation link', node: name });
+    if (style.textDecorationLine.includes('underline') && style.textUnderlineOffset !== '3px')
+      failures.push({ rule: 'link underline', node: name, actual: style.textUnderlineOffset });
+    if (modal && !modal.contains(link)) continue;
+    link.focus({ preventScroll: true });
+    if (link.matches(':focus-visible')) {
+      const focused = getComputedStyle(link);
+      if (focused.outlineStyle !== 'solid' || focused.outlineWidth !== '2px' || focused.outlineColor !== focus)
+        failures.push({ rule: 'link keyboard focus', node: name });
+    }
+  }
+  previous?.focus({ preventScroll: true }); probe.remove();
+  return failures;
+}

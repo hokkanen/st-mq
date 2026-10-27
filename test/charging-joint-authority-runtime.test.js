@@ -39,7 +39,8 @@ test('a native Charger 2 timer retains authority during peer priority and Charge
   const f = await fixture(t);
   await f.automatic('charger1', true); await f.automatic('charger2', true); await f.plan();
   await f.connect('charger1'); await f.connect('charger2'); await f.plan();
-  f.advance(1000); f.schedules.jobs = [{ id: 1, enable: true, timespec: '0 0 4 * * *', calls: [] }];
+  f.advance(1000); f.schedules.jobs = [{ id: 1, enable: true, timespec: '0 0 4 * * *', calls: [
+    { method: 'Boolean.Set', params: { owner: 'service:0', role: 'start_charging', value: true } }] }];
   await f.settle();
   const baseline = f.commands.length;
   await f.priority('charger2');

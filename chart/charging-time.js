@@ -36,6 +36,7 @@ export function createChargingTime({ document, idPrefix = 'charging-time' }) {
     actions.append(cancel, apply); form.append(content, actions); dialog.append(form); document.body.append(dialog);
     bind(cancel, 'click', () => dialog.close());
     bind(dialog, 'close', () => {
+      if (dialog.open) return;
       const opener = active?.opener; active = null;
       if (opener?.isConnected && !opener.disabled) opener.focus({ preventScroll: true });
     });

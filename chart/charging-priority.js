@@ -90,6 +90,7 @@ export function createChargingPriority({ document, save }) {
     bind(cancel, 'click', () => { if (!saving) dialog.close(); });
     bind(dialog, 'cancel', event => { if (saving) event.preventDefault(); });
     bind(dialog, 'close', () => {
+      if (dialog.open) return;
       awaiting = null; edited = false; draft = committed(); refresh();
       if (invoker?.isConnected) invoker.focus({ preventScroll: true });
       invoker = null;

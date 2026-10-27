@@ -294,7 +294,7 @@ export function createDatePicker(input, { onSelect, label = 'Choose date', mode 
   listen(document, 'toggle', event => {
     if (!event.target.open && event.target.contains?.(input)) dismiss();
   }, true);
-  listen(document, 'close', event => { if (event.target.contains?.(input)) dismiss(); }, true);
+  listen(document, 'close', event => { if (!event.target.open && event.target.contains?.(input)) dismiss(); }, true);
   listen(window, 'resize', position);
   if (window.visualViewport) {
     listen(window.visualViewport, 'resize', position);

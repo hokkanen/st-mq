@@ -39,6 +39,7 @@ test('chart stream survives split UTF8 and chunk boundaries and rejects unfinish
     [JSON.stringify(rows[0]), /before the result/],
     [JSON.stringify({ type: 'error', message: 'History unavailable' }), /History unavailable/],
     [JSON.stringify({ type: 'unexpected' }), /Invalid chart stream/],
+    ...[null, false, 0, []].map(value => [JSON.stringify(value), /Invalid chart stream/]),
   ]) await assert.rejects(readChartResponse(new Response(body, { headers: { 'content-type': 'application/x-ndjson' } })), message);
   const revoked = await readChartResponse(new Response(JSON.stringify({ type: 'error', status: 401, message: 'Session expired' }),
     { headers: { 'content-type': 'application/x-ndjson' } }));

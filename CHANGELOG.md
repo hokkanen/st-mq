@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Give ordinary links shared themed styling and keyboard focus across the
+  dashboard. Keep reopened time, priority and cost-comparison windows and nested
+  calendars usable when an earlier close event arrives late. Explain malformed
+  or interrupted chart responses in the same way as other dashboard reads,
+  without displaying raw response content.
+
 - Keep charger-native firmware-update tasks and unrecognized jobs from blocking
   Charger 2 scheduling or vehicle identification. Detect charging schedules from
   calls targeting Start permission, preserve unrelated tasks, and retain takeover

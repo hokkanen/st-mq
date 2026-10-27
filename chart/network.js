@@ -41,28 +41,33 @@ export function withReadDeadline(operation, { signal, timeoutMs = READ_TIMEOUT_M
   });
 }
 
+/** Body failures share wording without exposing raw response fragments. */
+export function responseReadError(error) {
+  if (['AbortError', 'TimeoutError'].includes(error?.name)) return error;
+  return error instanceof SyntaxError
+    ? new SyntaxError('The server returned an unreadable response. Refresh this view to check again.')
+    : new Error('The response ended before it could be read completely. Refresh to check the current result before trying again.');
+}
+
+export async function readJsonResponse(response) {
+  // Expired HA ingress sessions return a plain-text 401 from Supervisor.
+  // Authentication must not depend on decoding (or waiting for) its body.
+  if (response.status === 401) {
+    void response.body?.cancel().catch(() => {});
+    return { response, result: {} };
+  }
+  let result;
+  try { result = await response.json(); }
+  catch (error) {
+    if (response.ok) throw responseReadError(error);
+    // Proxies can also return HTML/text for gateway and other HTTP errors.
+    result = {};
+  }
+  return { response, result };
+}
+
 export function fetchJsonResponse(url, options = {}, { fetchImpl = fetch, timeoutMs = READ_TIMEOUT_MS } = {}) {
-  const execute = async signal => {
-    const response = await fetchImpl(url,{...options,signal});
-    // Expired HA ingress sessions return a plain-text 401 from Supervisor.
-    // Authentication must not depend on decoding (or waiting for) its body.
-    if (response.status === 401) {
-      void response.body?.cancel().catch(() => {});
-      return {response,result:{}};
-    }
-    let result;
-    try { result = await response.json(); }
-    catch (error) {
-      if (response.ok) {
-        if (['AbortError', 'TimeoutError'].includes(error?.name)) throw error;
-        if (error instanceof SyntaxError) throw new SyntaxError('The server returned an unreadable response. Refresh this view to check again.');
-        throw new Error('The response ended before it could be read completely. Refresh to check the current result before trying again.');
-      }
-      // Proxies can also return HTML/text for gateway and other HTTP errors.
-      result = {};
-    }
-    return {response,result};
-  };
+  const execute = async signal => readJsonResponse(await fetchImpl(url, { ...options, signal }));
   return (options.method ?? 'GET') === 'GET' ? withReadDeadline(execute,{signal:options.signal,timeoutMs}) : execute(options.signal);
 }
 

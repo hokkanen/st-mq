@@ -3,6 +3,10 @@
 This is the entry point for the owner's foundational design decisions and AI
 working rules. Read it before changing code, tests, configuration or documentation.
 Apply the relevant linked contracts as part of the task, including delegated work.
+**Codebase-wide consistency is a completion requirement for every task.** Apply
+the [consistency review](#codebase-wide-consistency) before and after every change;
+fixing only the reported location does not complete a task when equivalent paths
+remain inconsistent.
 
 ## Authority and scope
 
@@ -812,9 +816,12 @@ prioritize correctness, reliability and a smaller bug surface over architectural
 novelty or theoretical optimality. Preserve established behavior and ownership
 boundaries. Prefer the smallest coherent change that fixes a demonstrated problem.
 
-- Fix locally first. A defect does not by itself justify redesigning its subsystem.
-  Reuse established pairing, recovery, publication and authority paths instead of
-  adding parallel workflows, speculative fallbacks or generic frameworks.
+- Prefer a focused fix within the affected responsibility, covering every
+  equivalent path identified by the consistency review. Focused does not mean
+  changing only the reported location. A defect does not by itself justify
+  redesigning its subsystem. Reuse established pairing, recovery, publication
+  and authority paths instead of adding parallel workflows, speculative fallbacks
+  or generic frameworks.
 - Keep one implementation per responsibility and one current internal contract.
   Remove redundant states and duplicate ownership when practical without turning
   a focused fix into a broad rewrite. F1 still governs development compatibility.
@@ -862,6 +869,47 @@ from a narrow guard test. Record the change, retained capabilities, relevant
 removals and validation in the issue, pull request or commit body. Track unfinished
 work in issues and user-facing release changes in `CHANGELOG.md`; do not keep a
 completed-task diary in the checkout.
+
+<a id="codebase-wide-consistency"></a>
+
+### Codebase-wide consistency is required for every change
+
+This rule applies to **the entire codebase and every kind of change**, including
+small fixes. The reported location is a starting point, never an assumed scope.
+Do not invent a separate solution before checking the established implementation
+and contract for that responsibility.
+
+1. **Find the whole affected family before editing.** Search for equivalent
+   behavior, parallel implementations, callers, producers, consumers and alternate
+   entry points throughout the repository. Follow the responsibility across its
+   representations and lifecycle, rather than searching only for the reported
+   spelling or nearby files. Identify its existing owner and shared pattern.
+2. **Use one established rule and implementation where the responsibility is
+   the same.** Fix a shared owner when practical and update every affected caller.
+   Do not add copied implementations, local workarounds or competing defaults
+   that allow the same defect or inconsistency to survive elsewhere. Reuse
+   existing shared paths first. Consistency is not permission for broad refactors
+   or wholesale deduplication: prefer small, behavior-preserving fixes and verify
+   parallel paths directly when extracting a new abstraction would add risk.
+3. **Preserve justified differences explicitly.** Different capabilities,
+   authority, evidence or lifecycle contracts can require different behavior.
+   Verify and explain those differences; neither accidental divergence nor
+   forced uniformity is acceptable. An existing difference alone is not proof
+   that it is intentional. Follow the foundation conflict procedure when needed.
+4. **Complete the change across its contract.** Update all affected
+   implementations, persisted and exchanged representations, configuration,
+   presentation, operational tooling, tests and documentation together. Remove
+   superseded paths under F1 instead of hiding them behind compatibility glue.
+5. **Verify the family, not just the reproduction.** Exercise equivalent paths
+   and meaningful differences, including affected failure and recovery cases.
+   Use shared or parameterized regression coverage when it establishes the same
+   requirement across implementations. Scope validation to the actual impact;
+   a passing test at one location cannot establish consistency elsewhere.
+6. **Search again and report evidence.** Check for remaining copies, conflicting
+   rules and missed consumers after the edit. Record the reviewed family,
+   changes, justified differences, validation and unverified paths in the commit
+   or pull-request description. Do not claim whole-codebase correctness from a
+   limited audit or mark unfinished equivalent paths as complete.
 
 ### Issue relevance and triage
 

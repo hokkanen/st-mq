@@ -133,6 +133,7 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     bind(refresh, 'click', () => { if (!refresh.disabled) return loadPreview(); });
     bind(dialog, 'cancel', event => { if (saving) event.preventDefault(); });
     bind(dialog, 'close', () => {
+      if (dialog.open) return;
       generation++; selected = null; loading = false; preview = null; snapshot = null;
       invoker?.setAttribute('aria-expanded', 'false');
       if (invoker?.isConnected && !invoker.hidden && !invoker.disabled) invoker.focus({ preventScroll: true });

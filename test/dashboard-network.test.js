@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readChartResponse } from '../chart/chart-stream.js';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPollingRequest,
   fetchJsonResponse, apiResponseError, withReadDeadline, createCommunicationWatch } from '../chart/network.js';
 import { getEventListeners } from 'node:events';
@@ -85,6 +86,26 @@ test('response parsing distinguishes malformed content, interrupted bodies and d
     });
     const cancellation = new DOMException('Read cancelled', 'AbortError');
     await assert.rejects(read(cancellation), error => error === cancellation);
+  }
+});
+
+test('ordinary and chart reads explain malformed and interrupted responses consistently without echoing content', async () => {
+  for (const type of ['application/json', 'application/x-ndjson']) {
+    for (const cause of [null, new TypeError('private synthetic body failure'), new DOMException('Read cancelled', 'AbortError')]) {
+      const response = () => new Response(cause ? new ReadableStream({ pull() { throw cause; } })
+        : 'private synthetic malformed content', { headers: { 'content-type': type } });
+      let ordinary;
+      await assert.rejects(fetchJsonResponse('/fixture', {}, { fetchImpl: async () => response() }), error => {
+        ordinary = error; return true;
+      });
+      await assert.rejects(readChartResponse(response()), error => {
+        assert.equal(error.name, ordinary.name);
+        assert.equal(error.message, ordinary.message);
+        assert.doesNotMatch(error.message, /private synthetic/);
+        if (cause?.name === 'AbortError') assert(error === cause, 'Cancellation keeps its original identity');
+        return true;
+      });
+    }
   }
 });
 

@@ -364,6 +364,27 @@ try {
       const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip });
       writeFileSync(join(artifacts, `charging-${state}-controls-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
     }
+    await evaluate("chargingFixture.setCase('ordinary'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)");
+    for (const id of ['charger1', 'charger2']) for (const kind of ['time', 'priority']) {
+      const dialogId = kind === 'time' ? 'charging-time-dialog' : 'charging-priority-dialog';
+      const suffix = kind === 'time' ? 'setting-readyBy-choose' : 'shared-priority';
+      const focusId = kind === 'time' ? 'charging-time-minute' : `charging-priority-${id}`;
+      await evaluate(`(() => {
+        document.getElementById('${id === 'charger1' ? 'charger2' : 'charger1'}-${suffix}').click();
+        document.getElementById('${dialogId}').close();
+        document.getElementById('${id}-${suffix}').click();
+        const focused = document.getElementById('${focusId}');
+        if ('${kind}' === 'time') focused.value = '17'; else focused.click();
+        focused.focus();
+      })()`);
+      await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      assert.equal(await evaluate(`document.getElementById('${dialogId}').open && document.activeElement.id === '${focusId}'`), true,
+        `${width}px ${theme}: native quick reopen preserves ${id} ${kind} focus`);
+      assert.equal(await evaluate(kind === 'time' ? "document.getElementById('charging-time-minute').value === '17'"
+        : `document.getElementById('charging-priority-${id}').checked && !document.getElementById('charging-priority-save').disabled`), true,
+      'The reopened draft survives the queued close event');
+      await evaluate(`document.getElementById('${dialogId}').close(); new Promise(resolve => requestAnimationFrame(resolve))`);
+    }
     await evaluate("chargingFixture.setCase('healthy-unplugged')");
     for (const id of ['charger1', 'charger2']) {
       assert.equal(await evaluate(`document.getElementById('${id}-notice').textContent`), 'Ready for the next connection');

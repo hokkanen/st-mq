@@ -846,6 +846,12 @@ review and HTTPS read; Garage-door and heating-explorer browser checks reproduce
 native quick close/reopen. The guided-charging browser fixture verifies that an
 older parent close cannot dismiss its current time chooser. Ordinary closing,
 cancellation and focus restoration remain covered separately.
+Shared ready-by, priority and extra-day windows also retain their current draft,
+comparison and focus through native quick close/reopen from either charger.
+The date-picker unit fixture covers the equivalent containing-window event.
+Network regressions compare ordinary JSON and both chart response formats for
+malformed content, interrupted bodies and cancellation, preserving neutral error
+text without echoing response fragments.
 
 `node test/browser/secure-web-access-smoke.js` loads the dashboard’s actual runtime
 stylesheet imports in their production order. It checks optional HTTPS setup,

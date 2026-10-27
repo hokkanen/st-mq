@@ -1,4 +1,4 @@
-import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
+import { uiSpacingFailures, uiLinkFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Production recording markup, tables and styles in a disposable browser,
 // with synthetic data only. No application or household connections are made.
 import assert from 'node:assert/strict';
@@ -387,6 +387,7 @@ try {
   const captureGlance = name => captureFold('recording-health', name);
   const checkLayout = async label => {
     assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Card padding and nested indentation remain independent');
+    assert.equal(await evaluate(`JSON.stringify((${uiLinkFailures.toString()})())`), '[]', 'Rendered evidence and source links share navigation styling');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${label}: page fits`);
     const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-backup-list, .recording-backup-toolbar, .recording-backup-actions, .recording-source-exceptions, .recording-source-heading, .recording-source-reason, .recording-source-clocks, .recording-source-clocks dd, #recording-recording-unknown, #recording-recording-coverage, .recording-storage-inventory, .recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-data-group, .recording-data-group > summary, .recording-data-group > p, .recording-dataset, .recording-dataset-facts, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents, .recording-operation-list, .recording-operation, .recording-command-coverage')).filter(node => {
       if(!node.checkVisibility()) return false;

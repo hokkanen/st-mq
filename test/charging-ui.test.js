@@ -3002,6 +3002,54 @@ test('ready-by picker is inset in the editable input, uses one dialog and submit
   panel.close(); assert.equal($('charging-time-dialog'), null); assert(!choose.listeners.has('click'));
 });
 
+for (const id of ['charger1', 'charger2']) for (const kind of ['time', 'priority', 'comparison']) {
+  test(`${id} ${kind} keeps the reopened dialog draft and focus after an earlier close event`, async t => {
+    const document = documentFixture(), $ = value => document.getElementById(value);
+    const snapshot = priorityStatus();
+    for (const item of snapshot.charging.chargers) item.flexibility = {
+      ...structuredClone(flexibleCharger().flexibility), comparisonScope: item.request.sessionId,
+    };
+    const panel = createChargingPanel({ document, request: async () => ({ comparison: flexibilityComparison }) });
+    t.after(() => panel.close());
+    panel.update(snapshot);
+    const suffix = { time: 'setting-readyBy-choose', priority: 'shared-priority', comparison: 'flexibility' }[kind];
+    const dialogId = { time: 'charging-time-dialog', priority: 'charging-priority-dialog', comparison: 'charging-flexibility-dialog' }[kind];
+    const first = $(`${id === 'charger1' ? 'charger2' : 'charger1'}-${suffix}`), opener = $(`${id}-${suffix}`);
+    await clickAction(first);
+    const dialog = $(dialogId);
+    // Native close() clears open immediately and queues its close event. Reopen
+    // from the other entry before that event is delivered.
+    dialog.open = false;
+    await clickAction(opener);
+    let focused;
+    if (kind === 'time') {
+      $('charging-time-hour').value = '21'; $('charging-time-minute').value = '7';
+      focused = $('charging-time-minute'); focused.focus();
+    } else if (kind === 'priority') focused = choosePriority(document, id);
+    else {
+      const details = $('charging-flexibility-price-details'); details.open = true;
+      focused = details.querySelector('summary'); focused.focus();
+    }
+    dialog.dispatch('close');
+    assert.equal(dialog.open, true);
+    assert(document.activeElement === focused, 'A previous window lifetime cannot move current focus');
+    if (kind === 'time') {
+      submit($('charging-time-form'));
+      assert.equal($(`${id}-setting-readyBy`).value, '21:07', 'Set still targets the reopened field');
+      assert.equal(document.activeElement, opener);
+    } else if (kind === 'priority') {
+      assert.equal($(`charging-priority-${id}`).checked, true);
+      assert.equal($('charging-priority-save').disabled, false);
+    } else {
+      panel.update(snapshot);
+      assert.equal($('charging-flexibility-apply').disabled, false);
+      assert.match($('charging-flexibility-title').textContent, new RegExp(id === 'charger1' ? 'Charger 1' : 'Charger 2'));
+      assert.equal($('charging-flexibility-price-details').open, true);
+      assert.equal(opener.getAttribute('aria-expanded'), 'true');
+    }
+  });
+}
+
 test('ready-by chooser discards open drafts when session, capability or write authority changes', () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const item = connected(), panel = createChargingPanel({ document, request: async () => assert.fail('No request expected') });

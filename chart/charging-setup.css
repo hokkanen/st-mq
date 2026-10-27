@@ -23,7 +23,6 @@
 .charging-setup-limit { padding-inline-start: var(--ui-inset); border-left: 2px solid var(--border); }
 .charging-setup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 #charging-setup-content .secondary-button { font-size: 12px; }
-#charging-setup-content a, .charging-setup-reference a, .provider-charging-setup a { color: var(--accent); text-underline-offset: 3px; }
 .charging-setup-reference { margin: 14px 0 0; font-size: 11px; }
 .provider-charging-setup { font-size: 11px; }
 #charging-setup-ocpp .provider-local-connection dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: baseline; gap: 8px 12px; margin: 0 0 12px; }

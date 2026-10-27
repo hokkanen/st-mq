@@ -141,6 +141,22 @@ test('an invalid earlier date stays unchanged while its calendar opens at the mi
   assert.equal(f.input.value, '2026-09-11');
 });
 
+test('a reopened containing window keeps its calendar draft through a queued close event', () => {
+  const f = fixture('2026-09-27T09:30', '', { mode: 'datetime-local' });
+  f.open(); f.controller.dismiss();
+  f.panel.open = true; f.open();
+  f.emit(f.day('2026-09-28'), 'click');
+  f.field('hour').value = '18'; f.field('minute').value = '45'; f.field('minute').focus();
+  f.emit(f.panel, 'close');
+  assert.equal(f.popup.hidden, false);
+  assert.equal(f.input.getAttribute('aria-expanded'), 'true');
+  assert.equal(f.document.activeElement, f.field('minute'));
+  f.emit(f.button('Set'), 'click');
+  assert.deepEqual(f.selections, ['2026-09-28T18:45']);
+  f.open(); f.panel.open = false; f.emit(f.panel, 'close');
+  assert.equal(f.popup.hidden, true, 'An actually closed containing window still dismisses its calendar');
+});
+
 test('calendar navigation crosses leap days, month ends and years without timezone drift', () => {
   const f = fixture('2024-03-31', '2023-01-01');
   f.open();

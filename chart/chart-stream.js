@@ -1,22 +1,21 @@
+import { readJsonResponse, responseReadError } from './network.js';
+
 /** Both representations describe the current chart contract. Streaming adds
  * progress envelopes; it never fabricates intermediate chart observations. */
 export async function readChartResponse(response, onProgress = () => {}) {
-  if (response.status === 401) {
-    void response.body?.cancel().catch(() => {});
-    return { response: { status: 401, ok: false }, result: {} };
-  }
   const status = { status: response.status, ok: response.ok };
   if (!response.ok || !response.headers.get('content-type')?.includes('application/x-ndjson')) {
-    let result;
-    try { result = await response.json(); }
-    catch (error) { if (response.ok) throw error; result = {}; }
+    const { result } = await readJsonResponse(response);
     return { response: status, result };
   }
   const reader = response.body.getReader(), decoder = new TextDecoder();
   let fragments = [], result, finished = false, decodedBytes = 0;
   const line = text => {
     if (!text.trim()) return;
-    const message = JSON.parse(text);
+    let message;
+    try { message = JSON.parse(text); }
+    catch (error) { throw responseReadError(error); }
+    if (!message || typeof message !== 'object' || Array.isArray(message)) throw new Error('Invalid chart stream message');
     if (message.type === 'progress') onProgress(message);
     else if (message.type === 'result' && !finished) { result = message.data; finished = true; }
     else if (message.type === 'error') throw Object.assign(new Error(message.message || 'Unable to load chart'), { status: message.status });
@@ -24,7 +23,7 @@ export async function readChartResponse(response, onProgress = () => {}) {
   };
   try {
     while (true) {
-      const { value, done } = await reader.read();
+      const { value, done } = await reader.read().catch(error => { throw responseReadError(error); });
       decodedBytes += value?.byteLength ?? 0;
       if (decodedBytes > 64 * 1024 * 1024) throw new Error('Chart response is too large. Choose a shorter date range.');
       const buffer = decoder.decode(value, { stream: !done });

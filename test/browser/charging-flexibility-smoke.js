@@ -106,6 +106,20 @@ try {
  window.reports.update(window.fixture);
   });
   const measurements = [];
+  for (const id of ['charger1', 'charger2']) {
+    await evaluate(id => {
+      document.getElementById((id === 'charger1' ? 'charger2' : 'charger1') + '-flexibility').click();
+      document.getElementById('charging-flexibility-dialog').close();
+      document.getElementById(id + '-flexibility').click();
+      const details = document.getElementById('charging-flexibility-price-details'); details.open = true;
+      details.querySelector('summary').focus();
+    }, id);
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    assert.equal(await evaluate("document.getElementById('charging-flexibility-dialog').open && document.activeElement === document.querySelector('#charging-flexibility-price-details > summary')"), true);
+    assert.equal(await evaluate("!document.getElementById('charging-flexibility-apply').disabled"), true);
+    assert.match(await evaluate("document.getElementById('charging-flexibility-title').textContent"), new RegExp(id === 'charger1' ? 'Charger 1' : 'Charger 2'));
+    await evaluate("document.getElementById('charging-flexibility-price-details').open = false; document.getElementById('charging-flexibility-dialog').close(); new Promise(resolve => requestAnimationFrame(resolve))");
+  }
   for (const width of [280, 320, 390, 768, 1280]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: false });
     await evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);

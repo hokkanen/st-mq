@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
+import { uiSpacingFailures, uiLinkFailures } from '../../scripts/lib/ui-spacing-checks.js';
 
 const directory = await mkdtemp(join(tmpdir(), 'stmq-spacing-browser-'));
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -59,6 +59,9 @@ try {
   for (let i = 0; i < 200 && !await evaluate("document.readyState === 'complete'"); i++) await pause(20);
   await evaluate(`(() => {
     document.body.dataset.authenticated='true'; document.body.dataset.accessRole='admin';
+    const paragraph=document.createElement('p'), link=document.createElement('a');
+    link.id='shared-default-link'; link.href='#controls-details'; link.textContent='Configuration details';
+    paragraph.append(link); document.querySelector('main').append(paragraph);
     for (const fold of document.querySelectorAll('details')) {
       for(let node=fold;node && node!==document.body;node=node.parentElement) node.hidden=false;
       fold.open=true;
@@ -84,6 +87,7 @@ try {
   const check = async label => {
     await evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
     assert.deepEqual(await evaluate(`(${uiSpacingFailures.toString()})()`), [], label);
+    assert.deepEqual(await evaluate(`(${uiLinkFailures.toString()})()`), [], `${label}: shared navigation styles`);
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'), true, `${label}: page fits`);
   };
   for (const width of [320, 360, 390, 480, 481, 640, 641, 768, 800, 801, 1440]) for (const theme of ['dark', 'light']) {
