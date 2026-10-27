@@ -863,6 +863,69 @@ removals and validation in the issue, pull request or commit body. Track unfinis
 work in issues and user-facing release changes in `CHANGELOG.md`; do not keep a
 completed-task diary in the checkout.
 
+### Issue relevance and triage
+
+Every new or substantially revised GitHub issue must explain its practical
+relevance before technical implementation details. Start with the actual problem,
+the affected user/workflow and triggering situation, what the user sees, and the
+concrete consequences. Explain why those consequences matter, including useful
+workarounds and their limits. A technical mechanism or a generic claim about
+performance, reliability or safety is insufficient without this explanation.
+For an investigation or qualification gap, identify the decision or assurance
+that is missing and its practical importance without inventing an observed defect.
+
+- Keep the title focused on an understandable symptom or missing assurance.
+  Put justified impact and frequency ratings beside the opening explanation,
+  followed by a dated current status. Technical evidence, validation, completion
+  criteria and historical details follow.
+- Use one `impact:` label: `critical` for supported safety, irrecoverable-data or
+  privacy consequences; `high` for major required-service or control failures;
+  `moderate` for material workflow delay or misleading information; `low` for a
+  minor, limited nuisance; `unknown` when the practical impact is not established.
+  Justify the rating from supported consequences and distinguish conditional
+  risks from observed harm. These ratings are independent of frequency.
+- Use one `frequency:` label: `systematic` when the problem follows the stated
+  trigger consistently; `intermittent` for repeated irregular occurrences;
+  `single-observed` for one recorded occurrence with recurrence unestablished;
+  `unknown` when recurrence is not established. State the trigger and evidence
+  scope, including whether it is source inspection, synthetic testing or installed
+  use. A rare operation can have a systematic defect; one observation never
+  establishes that a problem is rare in actual use.
+- Keep observed failures, source-backed findings, suspected risks and untested
+  hardware/platform cases distinct. Describe important unknown consequences
+  explicitly; do not turn a possible failure chain into established severity.
+- Closed issues retain their original problem's impact/frequency with a prominent
+  explanation of what was fixed, mitigated or closed without a current reproducer.
+  Preserve useful dated evidence and original reports/comments; correct obsolete
+  present-tense claims in the current summary and mark superseded history clearly.
+  A closure must state its scope, remaining limits and relevant reopening criteria.
+- Review the opening before publishing: a reader must understand when the issue
+  matters and what it causes without reading source names, traces or commit lists.
+
+### Scoped validation and reuse
+
+Do not restart a completed test sequence because one isolated test fixture needed
+correction. Successful checks remain usable when their inputs and dependencies
+are unchanged. Identify the affected boundary and rerun the smallest relevant
+case/file plus dependent checks; use the whole file when its shared setup or
+ordering is affected. Continue unfinished files instead of repeating completed
+ones, and reuse unchanged builds and platform results where applicable.
+
+Broaden a rerun only for a concrete gap in coverage: changed shared behavior,
+fixtures, test harness, dependencies or runtime; relevant ordering/load concerns;
+or an explicit qualification requirement. State which prior results are
+invalidated and why before launching another large sequence. A new commit hash
+or an isolated fixture edit alone is not a reason to discard unrelated results.
+
+Keep the original failures, cancellations and unfinished work alongside corrected
+reruns, with the tested source, runtime/platform, selected checks and relevant
+budgets identified. Report a completed baseline plus corrected-file checks as
+combined evidence; never describe it as one clean full run of the exact final
+revision. Reuse does not justify weakening assertions, increasing timeouts to
+hide a defect, omitting affected checks or mixing incompatible test conditions.
+See the [validation guide](docs/development-validation.md#selecting-and-reusing-validation)
+for file/case selection and receipts.
+
 ### Required commits for AI tasks
 
 - Every AI task that changes repository files must commit its completed changes

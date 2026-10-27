@@ -733,6 +733,32 @@ deferred-publication revalidation, demotion and reconnect. They preserve interva
 exclusion, original measurement clocks and unknown readings until a genuine
 native report arrives.
 
+### Selecting and reusing validation
+
+Apply the [scoped validation and reuse rule](../AGENTS.md#scoped-validation-and-reuse)
+before starting or repeating a sequence. For a correction confined to one fixture,
+retain completed results for unchanged inputs/dependencies and rerun its affected
+case/file plus dependents. Continue only unfinished files after an interruption.
+Broader requalification needs a stated shared change, coverage gap, relevant
+ordering/load concern or explicit requirement; a changed revision identifier alone
+does not invalidate unrelated results.
+
+The existing runner supports selecting files through `runOfflineTests({ files,
+profile, report, args })`; use its `args` field for `--test-name-pattern=...` when a
+case is independent of the rest of its file. For example, from the repository root:
+
+```sh
+node --input-type=module -e 'import { runOfflineTests } from "./scripts/test-offline.js"; process.exitCode = await runOfflineTests({ files: ["test/energy-checks-worker.test.js"], report: "/private/results/energy-checks-rerun.jsonl" });'
+```
+
+Keep the appropriate original profile and budgets (`profile: "ha-sd"` for native
+HA qualification). Receipts identify the actual tested source, runtime and selected
+files. Retain baseline failures/cancellations and corrected reruns separately,
+including unfinished work and optional-prerequisite skips. A baseline plus a
+corrected-file pass is combined coverage, not a single clean exact-final-revision
+full pass. File/case selection must preserve any shared setup and the concurrency
+conditions needed to investigate an ordering or load-dependent failure.
+
 ### UI messages and evidence
 
 Check the complete path from the producing condition through the public response
