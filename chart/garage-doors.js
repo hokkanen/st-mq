@@ -89,7 +89,7 @@ function createGarageFacade(document, interactive, activate) {
     const row = make('span', 'garage-door-row');
     if (bay.side) row.dataset.side = bay.side;
     const action = make(interactive ? 'button' : 'span', interactive ? 'garage-door-action' : 'garage-door-bay');
-    if (interactive) { action.type = 'button'; action.setAttribute('data-write-control', ''); }
+    if (interactive) { action.type = 'button'; action.setAttribute('data-write-control', ''); action.setAttribute('data-live-door-control', ''); }
     const picture = svg('0 0 112 106', 'garage-door-picture', [
       ['garage-door-recess', 'M1 1h110v104H1Z'],
       ['garage-door-leaf', 'M1 1h110v104H1ZM1 19h110M1 36h110M1 53h110M1 70h110M1 87h110M48 95h16'],

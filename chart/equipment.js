@@ -891,6 +891,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       node.coverButtons.setAttribute('aria-label', `${device.label ?? 'Door'} operation`);
       node.coverAccess.hidden = device.area === 'garage' && device.kind === 'door';
       for (const [action, control] of Object.entries(node.coverActions)) {
+        control.setAttribute('data-live-door-control', '');
         if (device.area !== 'garage' || device.kind !== 'door') control.setAttribute('data-admin-only', '');
         else control.removeAttribute('data-admin-only');
         control.hidden = device.controls?.cover?.[action] !== true;

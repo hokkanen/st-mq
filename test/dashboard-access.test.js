@@ -8,14 +8,16 @@ function fixture() {
     getAttribute(name) { return this.attributes.get(name) ?? null; },
     setAttribute(name, value) { this.attributes.set(name, value); },
     removeAttribute(name) { this.attributes.delete(name); },
-    matches: () => true, closest() { return scopes.includes(this) ? this : null; } });
-  const apply = make(), unsupported = make(), navigate = make(), download = make();
-  unsupported.disabled = true; scopes.push(apply, unsupported);
+    matches: () => true, closest(selector) { return selector === '[data-live-door-control]'
+      ? this.attributes.has('data-live-door-control') ? this : null : scopes.includes(this) ? this : null; } });
+  const apply = make(), unsupported = make(), navigate = make(), download = make(), door = make();
+  door.setAttribute('data-live-door-control', '');
+  unsupported.disabled = true; scopes.push(apply, unsupported, door);
   let render;
   class Observer { constructor(callback) { render = callback; } observe() {} disconnect() {} }
   const document = { body: {}, querySelectorAll: () => scopes, getElementById: () => null,
     addEventListener: (type, handler) => listeners.set(type, handler), removeEventListener: type => listeners.delete(type) };
-  return { document, Observer, apply, unsupported, navigate, download, rerender: () => render(),
+  return { document, Observer, apply, unsupported, navigate, download, door, rerender: () => render(),
     event(type, target) {
       let stopped = false, prevented = false;
       listeners.get(type)?.({ target, preventDefault() { prevented = true; }, stopImmediatePropagation() { stopped = true; } });
@@ -43,6 +45,33 @@ test('read-only permissions survive renderer updates and synthetic events while 
   assert.equal(view.apply.disabled, false);
   assert.equal(view.unsupported.disabled, true, 'native capability checks still apply after promotion');
   assert.deepEqual(view.event('submit', view.apply), { stopped: false, prevented: false });
+  access.close();
+});
+
+test('only live door controls bypass writer loss while replica, context and native locks remain binding', () => {
+  const view = fixture(), access = createReadOnlyControls(view);
+  access.update({ ...writerStatus('unavailable'), role: 'slave' });
+  assert.equal(view.door.disabled, true);
+  for (const state of ['confirming', 'unavailable', 'stopped']) {
+    const status = writerStatus(state);
+    access.update(status);
+    assert.equal(view.door.disabled, false); assert.equal(view.apply.disabled, true);
+    assert.deepEqual(view.event('click', view.door), { prevented: false, stopped: false });
+    assert.doesNotThrow(() => assertDashboardWrite('/api/equipment/cover', { deviceId: 'door', action: 'open' }, status));
+    assert.throws(() => assertDashboardWrite('/api/charging/chargers/charger1/charge-now', {}, status), { status: 503 });
+    assert.throws(() => assertDashboardWrite('/api/garage/heating', {}, status), { status: 503 });
+    access.update({ ...status, storageContextPending: true });
+    assert.equal(view.door.disabled, true);
+    assert.deepEqual(view.event('click', view.door), { prevented: true, stopped: true });
+    assert.throws(() => assertDashboardWrite('/api/equipment/cover', {}, { ...status, storageContextPending: true }), { status: 503 });
+    access.update(status); assert.equal(view.door.disabled, false);
+  }
+  view.door.disabled = true; access.update(writerStatus('unavailable')); view.rerender();
+  assert.equal(view.door.disabled, true, 'Storage independence cannot enable an unavailable native door');
+  for (const status of [null, { ...writerStatus('unavailable'), role: 'slave' },
+    { ...writerStatus('unavailable'), topology: 'pair', pair: { role: 'master', canControl: false } }]) {
+    assert.throws(() => assertDashboardWrite('/api/equipment/cover', {}, status), { status: 403 });
+  }
   access.close();
 });
 

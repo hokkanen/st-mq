@@ -223,8 +223,8 @@ test('SUBACK buffering carries the receipt point without granting pre-subscripti
   const f = await fixture(t, { holdSubscriptions: true });
   f.appliance('off'); await until(() => f.store.writeQueueStatus().pending === 0);
   assert.equal(f.state().temperatureControl.powerRestartNotBefore, null);
-  const receiptPoints = [], receive = f.acquisition.equipment.receive;
-  t.mock.method(f.acquisition.equipment, 'receive', (...args) => { receiptPoints.push(args[6]); return receive(...args); });
+  const receiptPoints = [], receive = f.acquisition.equipment.receiveRecorded;
+  t.mock.method(f.acquisition.equipment, 'receiveRecorded', (...args) => { receiptPoints.push(args[6]); return receive(...args); });
   f.advance(120_000); f.shiftWall(10_000); f.releaseSubscriptions();
   await until(() => f.store.writeQueueStatus().pending === 0);
   assert.equal(receiptPoints.length, 2); assert.equal(receiptPoints.every(point => point === 0), true, 'Buffer replay retains both raw receipt points');

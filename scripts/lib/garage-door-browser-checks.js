@@ -433,6 +433,33 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
     await refresh();
     await close();
 
+    for (const writerState of ['confirming', 'unavailable', 'stopped']) {
+      await evaluate(`(() => {const f=window.equipmentUiFixture;f.now++;
+        f.status.recordingHealth={...f.base.recordingHealth,recording:{...f.base.recordingHealth.recording,writer:{state:'${writerState}'}}};
+        for(const d of f.devices.filter(d=>d.kind==='door')){d.available=true;d.cover.available=true;d.cover.state='closed';d.cover.operation=null;
+          for(const r of Object.values(d.readings))Object.assign(r,{value:0,coverState:'closed',observedAt:f.now,stale:false});}
+        return true;})()`);
+      await refresh(); await open();
+      assert.equal((await buttonState('door1')).disabled, false, `Live door button survives ${writerState}`);
+      assert.equal(await evaluate("[...document.querySelectorAll('button[data-write-control]:not([data-live-door-control])')].every(b=>b.disabled)"), true, 'Other write buttons retain the writer restriction');
+      const before = await evaluate('window.equipmentUiFixture.calls.length');
+      await click(action('door1'));
+      await until(`window.equipmentUiFixture.calls.length===${before + 1}&&window.equipmentUiFixture.devices.find(d=>d.id==='door1').cover.operation?.status==='published'`);
+      assert.equal(await text(`${row('door1')} .garage-door-state`), 'Closed', 'Writer-independent publication never invents movement');
+      await close();
+      await evaluate("(() => {const d=window.equipmentUiFixture.devices.find(d=>d.id==='door1');d.available=false;d.cover.available=false;return true;})()");
+      await refresh(); await open();
+      assert.equal((await buttonState('door1')).disabled, true, 'An unavailable door stays disabled during writer loss');
+      await close();
+      await evaluate("window.equipmentUiFixture.status.role='slave';true"); await refresh();
+      assert.equal(await evaluate(`[...document.querySelectorAll('${panel} .garage-door-action')].every(b=>b.disabled)`), true, 'Writer loss never grants a replica door control');
+      await evaluate("delete window.equipmentUiFixture.status.role;true");
+    }
+    await evaluate('delete window.equipmentUiFixture.status.recordingHealth;true');
+    await reportBoth('closed');
+    await evaluate("for(const d of window.equipmentUiFixture.devices.filter(d=>d.kind==='door')){d.available=true;d.cover.available=true;}true");
+    await refresh();
+
     for (const theme of ['dark', 'light']) {
       await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
       for (const [width, height] of [[1440,1100],[390,844],[320,720],[640,360]]) {

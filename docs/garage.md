@@ -45,6 +45,12 @@ ambiguous reports remain unknown. Sending or acknowledging a command does not
 establish motion or position. Existing command receipts, read-only restrictions
 and device authority checks still apply.
 
+Door controls and fresh door feedback remain available when recording is delayed
+or the recording writer fails, provided this computer still owns control and the
+MQTT route and device evidence are usable. Recording failure does not queue door
+movement for later replay. History may have a gap; command publication and actual
+door feedback remain separate. Other equipment retains its own storage rules.
+
 `garage.door_travel_seconds` is **18 seconds** by default, shared by both doors for
 opening and closing. Travel animation uses constant linear speed; reversing
 direction uses the remaining distance rather than restarting a full travel time.

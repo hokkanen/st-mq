@@ -463,9 +463,10 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         };
         const mutate = async action => {
           const input = await body(req, transportLimits?.bodyTimeoutMs);
+          const liveDoor = url.pathname === '/api/equipment/cover';
           // Action prechecks can read live controller RAM before their own
           // transaction. Do not let them acknowledge another provisional edit.
-          while (store.writePending && !res.destroyed) await store.whenWritesSettled();
+          while (!liveDoor && store.writePending && !res.destroyed) await store.whenWritesSettled();
           if (res.destroyed) return;
           // A credential can be rotated while a client slowly uploads a body.
           // Recheck before any control or configuration mutation is dispatched.
@@ -484,7 +485,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             if (!controlRequestPath(url.pathname)) return;
             try { store.writeHealth?.controlRequestBlocked?.(reason); } catch {}
           };
-          if (store.writerFailed || store.writer?.failed) {
+          if (!liveDoor && (store.writerFailed || store.writer?.failed)) {
             storageRefusal('database-unavailable');
             return json(503, { error: 'Recording storage is unavailable. Check storage and restart the application.' });
           }

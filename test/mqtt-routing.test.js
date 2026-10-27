@@ -171,10 +171,12 @@ test('each broker fences stale SUBACKs, preserves receipt clocks and rejects ret
   f.send('primary', 'fixture/air/state', { temperature: 7, timestamp: initial }); f.doorReport();
   f.advance(1000); f.ack('primary'); await f.reader.ready();
   assert.equal(f.view('air').readings.caravan_temperature.receivedAt, initial);
-  assert.equal(f.view('garage_door1').available, false);
+  assert.equal(f.view('garage_door1').cover.available, false);
+  await assert.rejects(f.reader.equipment.setCover({ deviceId: 'garage_door1', action: 'open' }), /unavailable/);
   const stale = f.clients.get('ha').pending.splice(0); f.clients.get('ha').emit('offline'); f.clients.get('ha').emit('connect');
   for (const { topic, done } of stale) done(null, [{ topic, qos: 1 }]);
   assert.equal(f.reader.status().brokers.ha.ready, false);
+  assert.equal(f.view('garage_door1').cover.available, false);
   f.doorReport('ha', { retain: true }); f.ack('ha');
   assert.equal(f.view('garage_door1').available, false);
   f.doorReport(); assert.equal(f.view('garage_door1').available, true);

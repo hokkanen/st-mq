@@ -1,5 +1,6 @@
 import { createMqttAdmission } from './mqtt-admission.js';
 import { createMqttReception } from './mqtt-reception.js';
+import { createDoorRecording } from './equipment-door-recording.js';
 import { retainStorageWithdrawal } from './storage-withdrawal.js';
 import { createSourceTimePending } from './source-time-pending.js';
 import { classifySourceTime, sourceTimeAdmission, validateAdmittedSourceTime, observationTimeAdmitted } from '../domain/time-evidence.js';
@@ -73,7 +74,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       qualification: createCaravanQualification(null, engine.clock()), qualificationKey: null,
       qualificationSaved: null,
       nativeRestartMonotonicDeadline: null, nativePowerContinuity: false, nativePowerContinuityLostAt: engine.clock() }, recordingLocation: false }));
-  const admission = createMqttAdmission();
+  const admission = createMqttAdmission(), doorAdmission = createMqttAdmission();
   const coverDispatches = new Map();
   const temperatures = devices.filter(canonicalTemperature);
   for (const device of temperatures) {
@@ -86,14 +87,27 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     device: equipmentMeterIdentity({ ...device, readings: device.mappings }, { brokerIdentity: brokerIdentityForDevice(device) }),
     maxGapMs: device.maxAgeMs || settings.maxAgeMs, source: 'mqtt-equipment',
     signal: `${device.id}_energy`, recordDevice: device.id, stateKey: `mqtt:equipment-energy:v1:${device.id}` })]));
-  const reception = createMqttReception({ store, engine, admission, devices, meters: energy });
+  // Door RAM belongs to the live connection, never to a SQLite transaction's
+  // rollback snapshot. All other equipment retains committed admission.
+  const reception = createMqttReception({ store, engine, admission,
+    devices: devices.filter(device => device.kind !== 'door'), meters: energy });
+  const doorRecording = createDoorRecording({ store, engine, canControl, run: action => reception.run(action) });
   const dehumidifierDispatches = new Map();
   const write = (action, options = {}) => {
     if (store.runWrite && !store.transactionDepth) return store.runWrite(action, options);
     try { return Promise.resolve(action()); } catch (error) { return Promise.reject(error); }
   };
   let admittedReceptionAt, pendingSequence = 0;
-  const pendingFor = device => pendingTime.some(row => row.device === device);
+  const pendingFor = device => (device.kind === 'door' ? doorPendingTime : pendingTime).some(row => row.device === device);
+  const doorPendingTime = createSourceTimePending({ clock: engine.clock, monotonicClock,
+    ordered: row => row.device.id,
+    onReject({ device }, reason) { if (reason !== 'cleared') unavailable(device, 'invalid-source-time'); },
+    onReady({ device, topic, body, packet, receivedMonotonicAt }, receivedAt, admittedAt) {
+      if (closed || !device.brokerConnected || ['failed', 'disconnected'].includes(device.subscriptionStatus)) return;
+      const previous = admittedReceptionAt; admittedReceptionAt = admittedAt;
+      try { receiveDevice(device, topic, body, packet, receivedAt, receivedMonotonicAt); }
+      finally { admittedReceptionAt = previous; }
+    } });
   const pendingTime = createSourceTimePending({ clock: engine.clock, dispatch: action => write(() => (store.transaction ?? (fn => fn())).call(store, () => {
     const checkpoint = pendingTime.checkpoint();
     store.afterRollback?.(() => pendingTime.restore(checkpoint)); return action();
@@ -162,7 +176,9 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         ...(device.roomRouteSignature ? { temperatureRouteSignature: device.roomRouteSignature } : {}) } };
     // A contact and its availability may arrive in either order. Keep the
     // candidate here, then publish it to the model only when both are live.
-    if (device.record !== false && definition.record !== false && !(['door', 'dehumidifier'].includes(device.kind) && value !== null)) {
+    if (device.kind === 'door') {
+      if (value === null && device.record !== false && definition.record !== false) doorRecording.save(observation);
+    } else if (device.record !== false && definition.record !== false && !(device.kind === 'dehumidifier' && value !== null)) {
       if (device.id === 'caravan' || definition.signal === 'garage_relay_active')
         engine.rememberObservation?.(observation, receivedAt);
       else {
@@ -174,15 +190,29 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       revision: repeatedSource ? previous.revision : ++sequence,
       ...(observation.raw.eventOnly ? { eventOnly: true } : {}),
       ...(device.kind === 'dehumidifier' ? { stateLabels: CARAVAN_DEHUMIDIFIER_STATES } : {}), ...raw };
-    if (device.kind === 'door' && value !== null) store.setState?.(`equipment:door:v1:${device.id}`, {
-      signature: signature(device.id), reading: device.readings[definition.signal] });
-    if (!repeatedSource) reception.accept();
+    if (!repeatedSource && device.kind !== 'door') reception.accept();
     return true;
   }
   function unavailable(device, reason, receivedAt = engine.clock()) {
     coverDispatches.get(device)?.cancellation.abort();
     dehumidifierDispatches.get(device)?.cancellation.abort();
-    pendingTime.removeWhere(row => row.device === device);
+    (device.kind === 'door' ? doorPendingTime : pendingTime).removeWhere(row => row.device === device);
+    if (device.kind === 'door') {
+      device.liveSinceConnect = false; device.invalid = true;
+      if (device.coverOperation && ['publishing', 'published'].includes(device.coverOperation.status)) {
+        device.coverOperation.status = 'unconfirmed';
+        device.coverOperation.error = 'Door feedback became unavailable. Check its live state.';
+      }
+      for (const waiter of [...device.waiters]) waiter.finish(fail('state confirmation unavailable'));
+      for (const check of [...device.checks]) check.finish('unavailable');
+      for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal]) {
+        const previous = device.readings[definition.signal];
+        record(device, definition, null, null, receivedAt, [reason]);
+        if (previous?.value != null) device.readings[definition.signal] = {
+          ...previous, unavailable: true, quality: [...new Set([...(previous.quality ?? []), reason, 'last-reported'])] };
+      }
+      return;
+    }
     if (store.runWrite && !store.transactionDepth) {
       reception.invalidate(device);
       // Withdraw authority immediately. The original outage boundary then joins
@@ -216,10 +246,6 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       guard.nativePowerContinuityLostAt = Math.max(guard.nativePowerContinuityLostAt, receivedAt);
     }
     energy.get(device.id)?.unavailable?.(receivedAt, reason);
-    if (device.coverOperation && ['publishing', 'published'].includes(device.coverOperation.status)) {
-      device.coverOperation.status = 'unconfirmed';
-      device.coverOperation.error = 'Door feedback became unavailable. Check its live state.';
-    }
     if (device.dehumidifierOperation && ['publishing', 'published'].includes(device.dehumidifierOperation.status)) {
       device.dehumidifierOperation.status = 'unconfirmed';
       device.dehumidifierOperation.error = 'Dehumidifier feedback became unavailable. Check its live state.';
@@ -227,10 +253,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     for (const waiter of [...device.waiters]) reception.afterCommit(() => waiter.finish(fail('state confirmation unavailable')));
     for (const check of [...device.checks]) reception.afterCommit(() => check.finish('unavailable'));
     for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal]) {
-      const previous = device.readings[definition.signal];
       record(device, definition, null, null, receivedAt, [reason]);
-      if (device.kind === 'door' && previous?.value != null) device.readings[definition.signal] = {
-        ...previous, unavailable: true, quality: [...new Set([...(previous.quality ?? []), reason, 'last-reported'])] };
     }
     // Source loss pauses current use immediately. Historical association and
     // failed-check latch have separate continuous-outage/recovery boundaries.
@@ -724,24 +747,23 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       const reading = device.readings[definition.signal];
       if (!fresh(device, reading, now) || reading.availabilityConfirmed) continue;
       reading.availabilityConfirmed = true; reading.confirmedAt = now;
-      if (device.record !== false && definition.record !== false) engine.ingest({ ...identity(device),
+      const observation = device.record !== false && definition.record !== false ? { ...identity(device),
         signal: definition.signal, value: reading.value, unit: reading.unit, sourceTime: reading.observedAt,
         receivedAt: now, quality: reading.quality,
         raw: { timeBasis: 'mqtt-live-status', ...(device.maxAgeMs === 0 ? { eventOnly: true } : {}),
-          availabilityConfirmed: true, confirmedAt: now } });
-      if (definition.signal === device.stateSignal) store.setState?.(`equipment:door:v1:${device.id}`, {
-        signature: signature(device.id), reading });
+          availabilityConfirmed: true, confirmedAt: now,
+          ...(reading.timeAdmission ? { timeAdmission: reading.timeAdmission } : {}) } } : null;
+      const saved = definition.signal === device.stateSignal ? { key: `equipment:door:v1:${device.id}`,
+        value: { signature: signature(device.id), reading } } : null;
+      if (observation || saved) doorRecording.save(observation, saved);
     }
     const operation = device.coverOperation, main = device.readings[device.stateSignal];
     if (operation && scalar(operation.dispatchedAt) && operation.action !== 'stop' && !['failed', 'observed'].includes(operation.status)
       && main.revision > operation.dispatchedRevision
       && main.receivedAt >= operation.dispatchedAt && main.observedAt >= operation.dispatchedAt
       && main.coverState === (operation.action === 'open' ? 'open' : 'closed')) {
-      reception.afterCommit(() => {
-        if (device.coverOperation !== operation) return;
-        operation.observedAt = main.observedAt;
-        if (operation.acknowledgedAt !== undefined) { operation.status = 'observed'; delete operation.error; }
-      });
+      operation.observedAt = main.observedAt;
+      if (operation.acknowledgedAt !== undefined) { operation.status = 'observed'; delete operation.error; }
     }
   }
   function confirmDehumidifier(device, now) {
@@ -856,7 +878,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (packet.retain) device.lastRetainedAt = receivedAt; else device.lastLiveAt = receivedAt;
     for (const check of device.checks) if (packet.retain) check.retainedReceived = true;
     if (topic === mapping.bridgeAvailabilityTopic) {
-      if (['online', 'offline'].includes(body)) reception.accept();
+      if (device.kind !== 'door' && ['online', 'offline'].includes(body)) reception.accept();
       if (body === 'offline') { device.bridgeOnline = false; device.online = null; unavailable(device, 'bridge-offline', receivedAt); }
       else if (body === 'online') {
         const needsReadback = device.bridgeOnline === false || !device.liveSinceConnect;
@@ -864,19 +886,20 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         // Bridge birth restores connectivity context, never the child reading.
         // Ask the explicit endpoint once subscriptions are ready to recover it.
         if (!packet.retain && needsReadback && device.subscriptionStatus === 'subscribed' && mapping.requestTopic && !device.checks.size)
-          reception.afterCommit(() => { void api.recheck({ deviceId: device.id }).catch(() => {}); });
+          if (device.kind === 'door') void api.recheck({ deviceId: device.id }).catch(() => {});
+          else reception.afterCommit(() => { void api.recheck({ deviceId: device.id }).catch(() => {}); });
         completeChecks(device, receivedAt);
       }
       return;
     }
     if (topic === mapping.availabilityTopic) {
-      if ([mapping.onlinePayload, mapping.offlinePayload].includes(body)) reception.accept();
+      if (device.kind !== 'door' && [mapping.onlinePayload, mapping.offlinePayload].includes(body)) reception.accept();
       if (body === mapping.offlinePayload) { device.online = false; unavailable(device, 'device-offline', receivedAt); }
       else if (body === mapping.onlinePayload && !packet.retain) { device.online = true; completeChecks(device, receivedAt); }
       return;
     }
     if (topic === mapping.heartbeatTopic) {
-      if (!packet.retain) reception.accept();
+      if (!packet.retain && device.kind !== 'door') reception.accept();
       if (!packet.retain) { device.heartbeatAt = receivedAt; completeChecks(device, receivedAt); }
       return;
     }
@@ -1049,6 +1072,13 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   }
   function completeChecks(device, now) {
     confirmDoor(device, now);
+    if (device.kind === 'door') {
+      for (const check of [...device.checks]) if (check.ready && definitions(device).filter(row => row.required).every(row => check.reported.has(row.signal))) {
+        if (healthy(device, now)) check.finish('available');
+        else if (device.invalid) check.finish('needs-attention');
+      }
+      return;
+    }
     if (device.kind === 'dehumidifier') confirmDehumidifier(device, now);
     const main = device.readings[device.stateSignal];
     if (device.subscriptionStatus === 'subscribed' && healthy(device, now) && fresh(device, main, now)) for (const waiter of [...device.waiters])
@@ -1234,34 +1264,45 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         || devices.some(device => device.broker === broker && topic === device.mqtt.requestTopic
           && String(payload) === device.mqtt.requestPayload);
     },
+    isDoorCommand(topic, payload, broker) {
+      return devices.some(device => device.kind === 'door' && device.controlsCover && device.broker === broker
+        && topic === device.mqtt.commandTopic && ['openPayload', 'closePayload', 'stopPayload']
+          .some(field => device.mqtt[field] && String(payload) === device.mqtt[field]));
+    },
     topics: [...new Set([...(native?.topics ?? []), ...devices.flatMap(readTopics)])],
     ownsGarage: settings.ownsGarage === true, hasDhwr: Boolean(native?.hasDhwr),
     publishDhwr: (on, options) => native.publishDhwr(on, options), hasHeating: enabled.some(device => device.controlsHeat), signature,
     topicsForBroker(broker) { return [...new Set([...(broker === 'primary' ? native?.topics ?? [] : []),
       ...devices.filter(device => device.broker === broker).flatMap(readTopics)])]; },
-    setConnected(value, broker = null) {
-      pendingTime.clear();
-      const affected = devices.filter(device => broker === null || device.broker === broker);
+    doorTopicsForBroker(broker) { return [...new Set(devices.filter(device => device.kind === 'door' && device.broker === broker).flatMap(readTopics))]; },
+    recordedTopicsForBroker(broker) { return [...new Set([...(broker === 'primary' ? native?.topics ?? [] : []),
+      ...devices.filter(device => device.kind !== 'door' && device.broker === broker).flatMap(readTopics)])]; },
+    setConnected(value, broker = null, group = 'all') {
+      const selected = device => group === 'all' || (device.kind === 'door') === (group === 'doors');
+      (group === 'doors' ? doorPendingTime : pendingTime).clear();
+      if (group === 'all') doorPendingTime.clear();
+      const affected = devices.filter(device => selected(device) && (broker === null || device.broker === broker));
       // Every device loses transport authority even if saving one outage fails.
       for (const device of affected) { reception.invalidate(device); device.brokerConnected = value; }
-      if (broker === null || broker === 'primary') { connected = value; native?.setConnected(value); }
+      if (group !== 'doors' && (broker === null || broker === 'primary')) { connected = value; native?.setConnected(value); }
       for (const device of affected) {
         device.subscriptionRefresh = null;
         device.subscriptionStatus = value ? 'unconfirmed' : 'disconnected';
         if (!value) unavailable(device, 'mqtt-disconnected'); else { device.online = null; device.bridgeOnline = null; device.liveSinceConnect = false; }
       }
     },
-    confirmSubscriptions(topics, broker = null) {
+    confirmSubscriptions(topics, broker = null, group = 'all') {
       if (closed) return;
+      const selected = device => group === 'all' || (device.kind === 'door') === (group === 'doors');
       const confirmed = new Set(topics);
       const requests = [];
-      for (const device of devices) if (device.brokerConnected && (broker === null || device.broker === broker)
+      for (const device of devices) if (selected(device) && device.brokerConnected && (broker === null || device.broker === broker)
         && readTopics(device).every(topic => confirmed.has(topic))) {
         if (device.subscriptionStatus !== 'subscribed' && device.mqtt.requestTopic) requests.push(device.id);
         device.subscriptionStatus = 'subscribed';
         completeChecks(device, engine.clock());
       }
-      for (const device of devices.filter(row => row.brokerConnected && (broker === null || row.broker === broker)
+      for (const device of devices.filter(row => selected(row) && row.brokerConnected && (broker === null || row.broker === broker)
         && row.roomRouteSignature && !row.controlsSwitch && !row.controlsHeat)) {
         if (device.bridgeOnline === false) continue;
         const requiredTopics = [device.topic, device.mqtt.availabilityTopic, device.mqtt.bridgeAvailabilityTopic, device.mqtt.heartbeatTopic,
@@ -1288,19 +1329,44 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       // response topics are subscribed, including on broker reconnection.
       for (const deviceId of requests) void api.recheck({ deviceId }).catch(() => {});
     },
-    subscriptionFailed(topic, broker = null) {
-      if (broker === null || broker === 'primary') native?.subscriptionFailed(topic);
-      for (const device of devices) if ((broker === null || device.broker === broker) && readTopics(device).includes(topic)) {
+    subscriptionFailed(topic, broker = null, group = 'all') {
+      if (group !== 'doors' && (broker === null || broker === 'primary')) native?.subscriptionFailed(topic);
+      for (const device of devices) if ((group === 'all' || (device.kind === 'door') === (group === 'doors'))
+        && (broker === null || device.broker === broker) && readTopics(device).includes(topic)) {
         device.subscriptionStatus = 'failed'; unavailable(device, 'mqtt-subscription-failed');
       }
     },
+    receiveDoors(topic, payload, packet = {}, receivedAt = engine.clock(), broker = null, receivedMonotonicAt = null) {
+      if (closed) return false;
+      if (admittedReceptionAt === undefined) doorPendingTime.drain(engine.clock());
+      const selected = devices.filter(device => device.kind === 'door' && device.brokerConnected
+        && (broker === null || device.broker === broker) && readTopics(device).includes(topic));
+      if (!selected.length) return false;
+      const body = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
+      if (Buffer.byteLength(body) > 65536) return true;
+      const input = parse(body);
+      for (const device of selected) {
+        const at = sourceTime(device.mqtt.timestampPath ? property(input, device.mqtt.timestampPath) : input?.timestamp);
+        const timing = classifySourceTime({ sourceTime: at, receivedAt, now: receivedAt });
+        if (!doorAdmission.admit(`${device.id}:${topic}`, body, packet, receivedAt,
+          { timestamped: ['ready', 'pending'].includes(timing.status) })) continue;
+        if (!packet.retain && (timing.status === 'pending' || timing.status === 'ready' && pendingFor(device))) {
+          doorPendingTime.defer(++pendingSequence, { device, topic, body, packet, receivedMonotonicAt }, { sourceTime: at, receivedAt });
+        } else receiveDevice(device, topic, body, packet, receivedAt, receivedMonotonicAt);
+      }
+      return true;
+    },
     receive(topic, payload, packet = {}, receivedAt = engine.clock(), broker = null, onAccepted = null, receivedMonotonicAt = null) {
+      const doors = api.receiveDoors(topic, payload, packet, receivedAt, broker, receivedMonotonicAt);
+      return api.receiveRecorded(topic, payload, packet, receivedAt, broker, onAccepted, receivedMonotonicAt) || doors;
+    },
+    receiveRecorded(topic, payload, packet = {}, receivedAt = engine.clock(), broker = null, onAccepted = null, receivedMonotonicAt = null) {
       if (admittedReceptionAt === undefined) drainPending(engine.clock());
       if ((broker === null || broker === 'primary') && native?.receive(topic, payload, packet, receivedAt, onAccepted)) {
         confirmCaravanSources(engine.clock());
         return true;
       }
-      const selected = devices.filter(device => device.brokerConnected && (broker === null || device.broker === broker) && readTopics(device).includes(topic));
+      const selected = devices.filter(device => device.kind !== 'door' && device.brokerConnected && (broker === null || device.broker === broker) && readTopics(device).includes(topic));
       if (!selected.length) return false;
       if (closed) return true;
       const body = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
@@ -1327,20 +1393,28 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         return true;
       }, { onAccepted });
     },
+    tickDoors(now = engine.clock()) {
+      if (closed) return;
+      doorPendingTime.drain(now);
+      doorRecording.flush();
+      for (const device of devices.filter(row => row.kind === 'door')) {
+        if (device.liveSinceConnect && (device.mqtt.heartbeatMs && scalar(device.heartbeatAt) && now - device.heartbeatAt > device.mqtt.heartbeatMs
+          || age(device) > 0 && definitions(device).some(definition => definition.required
+            && scalar(device.readings[definition.signal]?.observedAt) && now - device.readings[definition.signal].observedAt >= age(device))))
+          unavailable(device, 'missing-report');
+        if (device.coverOperation?.status === 'published' && device.coverOperation.action !== 'stop' && now - device.coverOperation.requestedAt >= 60_000) {
+          device.coverOperation.status = 'unconfirmed';
+          device.coverOperation.error = 'The requested door state has not been observed. Check its live state.';
+        }
+      }
+    },
     tick(now = engine.clock()) {
       if (closed) return;
+      api.tickDoors(now);
       drainPending(now);
       native?.tick(now); for (const accumulator of energy.values()) accumulator.tick(now);
-      for (const device of devices) if (device.liveSinceConnect && (device.mqtt.heartbeatMs && scalar(device.heartbeatAt) && now - device.heartbeatAt > device.mqtt.heartbeatMs
-        || age(device) > 0 && (now - device.lastAt >= age(device) || device.kind === 'door' && definitions(device).some(definition => {
-          const reading = device.readings[definition.signal];
-          return definition.required && scalar(reading?.observedAt) && now - reading.observedAt >= age(device);
-        })))) unavailable(device, 'missing-report');
-      for (const device of devices) if (device.coverOperation?.status === 'published' && device.coverOperation.action !== 'stop'
-        && now - device.coverOperation.requestedAt >= 60_000) {
-        device.coverOperation.status = 'unconfirmed';
-        device.coverOperation.error = 'The requested door state has not been observed. Check its live state.';
-      }
+      for (const device of devices) if (device.kind !== 'door' && device.liveSinceConnect && (device.mqtt.heartbeatMs && scalar(device.heartbeatAt) && now - device.heartbeatAt > device.mqtt.heartbeatMs
+        || age(device) > 0 && now - device.lastAt >= age(device))) unavailable(device, 'missing-report');
       for (const device of devices) if (['publishing', 'published'].includes(device.dehumidifierOperation?.status)
         && now - device.dehumidifierOperation.requestedAt >= readbackTimeoutMs) {
         device.dehumidifierOperation.status = 'unconfirmed';
@@ -1437,7 +1511,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       const device = devices.find(row => row.id === input.deviceId);
       const payload = device?.mqtt[`${input.action}Payload`];
       if (!device?.controlsCover || !payload) throw fail('door action is not configured');
-      if (closed || !canControl() || !healthy(device, engine.clock())) throw fail('door control is unavailable');
+      if (closed || !canControl() || device.subscriptionStatus !== 'subscribed' || !healthy(device, engine.clock())) throw fail('door control is unavailable');
       const previousDispatch = coverDispatches.get(device);
       // Cancellation reaches the byte-write gate too: an earlier publication
       // may have passed preflight but still be in MQTT's outgoing store.
@@ -1452,20 +1526,20 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       coverDispatches.set(device, dispatch);
       let expired = false;
       const timer = setTimeout(() => { expired = true; cancellation.abort(); }, readbackTimeoutMs);
-      // Storage waits belong to this request only. A newer action cancels an
-      // unsent movement; already dispatched outcomes remain uncertain until
+      // A newer action cancels an unsent movement. Dispatched outcomes remain uncertain until
       // acknowledged/read back. No command is retried or replayed.
-      const beforePublish = () => {
+      const validate = () => {
         const now = engine.clock(), reading = device.readings[device.stateSignal];
         if (cancellation.signal.aborted || now >= deadline || performance.now() >= monotonicDeadline || closed || !canControl()
-          || device.coverOperation !== operation || !healthy(device, now)) throw fail('door control is unavailable');
+          || device.coverOperation !== operation || device.subscriptionStatus !== 'subscribed' || !healthy(device, now)) throw fail('door control is unavailable');
         if (input.action !== 'stop' && (reading?.value !== startingState.value || reading?.coverState !== startingState.coverState))
           throw fail('door state changed before dispatch');
-        operation.dispatchedAt = now; operation.dispatchedRevision = sequence;
       };
+      const beforePublish = () => { validate(); operation.dispatchedAt = engine.clock(); operation.dispatchedRevision = sequence; };
+      const beforeWrite = () => { try { validate(); return true; } catch { return false; } };
       try {
         await publish(device.mqtt.commandTopic, payload,
-          { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal,
+          { qos: 1, retain: false, noReplay: true, beforePublish, beforeWrite, signal: cancellation.signal,
             recordingContext: 'cover-command', recordingDeadlineExpired: () => expired }, device.broker);
         operation.acknowledgedAt = engine.clock();
         if (operation.status === 'publishing') operation.status = operation.observedAt !== undefined ? 'observed' : 'published';
@@ -1576,7 +1650,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           ...(device.kind === 'dehumidifier' ? { dehumidifier: device.controlsDehumidifier } : {}),
           ...(device.kind === 'door' ? { cover: { open: device.controlsCover, close: device.controlsCover,
             stop: Boolean(device.controlsCover && device.mqtt.stopPayload) } } : {}) }, check: device.check,
-        ...(device.kind === 'door' ? { cover: { available: !closed && canControl() && healthy(device, now),
+        ...(device.kind === 'door' ? { cover: { available: !closed && canControl() && device.subscriptionStatus === 'subscribed' && healthy(device, now),
           state: device.readings[device.stateSignal]?.coverState ?? null,
           operation: device.coverOperation ? { ...device.coverOperation } : null } } : {}),
         ...(device.kind === 'dehumidifier' ? { dehumidifier: {
@@ -1637,7 +1711,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         return { restorationPending: pending() };
       } finally { clearTimeout(timeout); if (resume) caravanStopping = false; }
     },
-    close() { if (closed) return; api.setConnected(false); native?.close(); closed = true; },
+    close() { if (closed) return; api.setConnected(false); native?.close(); closed = true; doorRecording.close(); },
   };
   return api;
 }

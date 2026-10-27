@@ -162,7 +162,9 @@ test('buffered offline then genuine room recovery uses event receipt order inste
 });
 
 test('subscription setup buffers are bounded and discarded on broker disconnect', async t => {
-  const rows = [home, { id: 'garage_door1', kind: 'door', connection: 'mqtt:synthetic/door' }];
+  // A recording-dependent peer holds this buffer. Doors now receive and confirm
+  // their own subscriptions independently of ordinary recording admission.
+  const rows = [home, { id: 'other', kind: 'power', connection: 'mqtt:synthetic/other' }];
   const f = fixture(t), live = await f.connect({ rows, deferred: true }); live.ready();
   live.pending.find(entry => entry.topic === 'synthetic/upstairs').done();
   live.publish('synthetic/upstairs', 20);
@@ -173,7 +175,7 @@ test('subscription setup buffers are bounded and discarded on broker disconnect'
   live.client.emit('offline'); f.at(start + 2 * MINUTE); live.ready();
   live.pending.filter(row => row.topic === 'synthetic/upstairs').at(-1).done();
   for (let index = 0; index < 257; index++) live.publish('synthetic/upstairs', 22);
-  live.pending.filter(row => row.topic === 'synthetic/door').at(-1).done();
+  live.pending.filter(row => row.topic === 'synthetic/other').at(-1).done();
   assert.equal((await live.room()).value, null); assert.equal(live.equipment().available, false, 'Overflow cannot silently erase a later invalidation and restore old state');
 });
 

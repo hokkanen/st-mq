@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep garage door Open, Close and configured Stop, live status and command
+  confirmation available during recording delays or writer failure, including
+  MQTT reconnection. Preserve device and master authority, cancellation and no
+  replay; failed recording leaves a history gap without undoing live feedback.
+
 - Resume later recording after a timed-out, uncommitted writer statement once
   worker exit proves rollback and the same database file and journal boundary
   are verified. Reject the failed operation without replay; uncertain COMMIT,

@@ -80,21 +80,17 @@ function failNextCommit(store) {
   }, admission) : transaction(action, admission);
 }
 
-test('a door waits for unrelated recording, sends once and requires committed terminal feedback', async t => {
+test('a door sends once and confirms fresh terminal feedback while unrelated recording is blocked', async t => {
   const f = await fixture(t); f.backlog();
-  let outcome;
-  const pending = f.command('door').then(value => { outcome = value; }, error => { outcome = error; });
-  await delay(30);
-  assert.equal(outcome, undefined, 'A temporary recording backlog must delay this valid door request');
-  assert.equal(f.status('door').cover.available, true);
-  assert.equal(f.mutations('door').length, 0);
-  f.unlock(); await pending;
+  const outcome = await f.command('door');
   assert.equal(outcome.confirmed, false, 'A broker acknowledgement does not establish door movement');
   assert.equal(f.status('door').cover.operation.status, 'published');
   assert.deepEqual(f.mutations('door'), [{ topic: 'fixture/door/set', payload: 'open', options: { qos: 1, retain: false } }]);
-  f.at(START + 2000); f.lock(); f.reportDoor('open'); await delay(30);
-  assert.equal(f.status('door').cover.operation.status, 'published', 'Uncommitted feedback cannot confirm movement');
-  f.unlock(); await until(() => f.status('door').cover.operation.status === 'observed');
+  f.at(START + 2000); f.reportDoor('open');
+  assert.equal(f.status('door').cover.operation.status, 'observed');
+  assert.equal(f.store.writeQueueStatus().waitingSince !== null, true);
+  f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0);
+  assert.equal(f.status('door').cover.operation.status, 'observed');
   assert.equal(f.mutations('door').length, 1);
 });
 
@@ -116,12 +112,11 @@ test('a switch waits for recording and only a committed report after dispatch ca
   assert.equal(f.mutations('switch').length, 1);
 });
 
-for (const device of ['door', 'switch']) for (const interruption of ['timeout', 'expiry', 'authority', 'revocation', 'reconnect', 'shutdown', 'device-offline', 'recording-failure']) {
+for (const device of ['switch']) for (const interruption of ['timeout', 'expiry', 'authority', 'revocation', 'reconnect', 'shutdown', 'device-offline', 'recording-failure']) {
   test(`waiting ${device} rejects ${interruption} without a command after storage recovers`, async t => {
     const f = await fixture(t, { timeoutMs: interruption === 'timeout' ? 100 : 1000 }); f.backlog();
-    let settled = false, failure;
+    let settled = false;
     const rejected = assert.rejects(f.command(device), error => {
-      failure = error;
       const code = interruption === 'timeout' ? 'EQUIPMENT_COMMAND_WAIT_EXPIRED'
         : interruption === 'recording-failure' ? 'EQUIPMENT_COMMAND_RECORDING_FAILED' : 'EQUIPMENT_COMMAND_CANCELLED';
       assert.equal(error.code, code); assert.equal(error.sent, false); assert.equal(error.statusCode, 409);
@@ -143,12 +138,7 @@ for (const device of ['door', 'switch']) for (const interruption of ['timeout', 
     assert.equal(f.mutations(device).length, 0, 'An obsolete request cannot be dispatched when storage recovers');
     assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, interruption === 'timeout' ? 1 : 0,
       'only the witnessed storage-wait timeout qualifies; generic cancellation and unclassified rollback do not');
-    if (device === 'door') {
-      const operation = f.status(device).cover.operation;
-      assert.equal(operation.status, 'failed'); assert.equal(operation.code, failure.code);
-      assert.equal(operation.error, failure.message); assert.equal(operation.dispatchedAt, undefined);
-      assert.equal(operation.observedAt, undefined);
-    }
+
   });
 }
 
@@ -175,48 +165,35 @@ for (const device of ['door', 'switch']) for (const publicationMode of ['fail', 
 
 test('a matching door report received before dispatch cannot confirm the later request', async t => {
   const f = await fixture(t, { doorState: 'open' }); f.backlog(); f.reportDoor('open');
-  let outcome;
-  const pending = f.command('door').then(value => { outcome = value; }, error => { outcome = error; });
-  await delay(20); assert.equal(outcome, undefined);
-  assert.equal(f.status('door').cover.operation.observedAt, undefined);
-  f.unlock(); await pending;
+  const outcome = await f.command('door');
   assert.equal(outcome.confirmed, false); assert.equal(outcome.status, 'published');
   assert.equal(outcome.observedAt, undefined); assert.equal(f.mutations('door').length, 1);
   f.at(START + 2000); f.reportDoor('open');
-  await until(() => f.status('door').cover.operation.status === 'observed');
+  assert.equal(f.status('door').cover.operation.status, 'observed');
+  f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0);
 });
 
-test('rolled-back door readback cannot confirm a later broker acknowledgement', async t => {
+test('failed recording cannot undo fresh door readback or its later broker acknowledgement', async t => {
   const f = await fixture(t, { publicationMode: 'hold' });
-  let outcome;
-  const pending = f.command('door').then(value => { outcome = value; }, error => { outcome = error; });
+  const pending = f.command('door');
   await until(() => f.mutations('door').length === 1);
   f.at(START + 1000); failNextCommit(f.store); f.reportDoor('open');
-  await delay(20);
-  assert.equal(outcome, undefined);
-  assert.equal(f.status('door').cover.operation.observedAt, undefined);
-  assert.notEqual(f.status('door').cover.operation.status, 'observed');
-  f.acknowledge(); await pending;
-  assert.equal(outcome.confirmed, false); assert.notEqual(outcome.status, 'observed');
-  assert.equal(outcome.observedAt, undefined); assert.equal(f.mutations('door').length, 1);
-  assert.equal(f.status('door').cover.operation.status, outcome.status,
-    'Rollback must preserve the operation that receives the later acknowledgement');
+  await until(() => f.store.writeQueueStatus().pending === 0);
+  assert.equal(f.status('door').cover.operation.observedAt, START + 1000);
+  f.acknowledge(); const outcome = await pending;
+  assert.equal(outcome.confirmed, true); assert.equal(outcome.status, 'observed');
+  assert.equal(outcome.observedAt, START + 1000); assert.equal(f.mutations('door').length, 1);
 });
 
-test('Stop supersedes an Open that is still waiting for recording', async t => {
+test('Open and Stop execute during recording backlog without replay after recovery', async t => {
   const f = await fixture(t); f.backlog();
-  let settled = false;
-  const opening = assert.rejects(f.command('door')).then(() => { settled = true; });
-  await delay(20);
-  assert.equal(settled, false);
-  const stopping = f.reader.equipment.setCover({ deviceId: 'door', action: 'stop' });
-  await opening;
-  assert.equal(f.mutations('door').length, 0);
-  f.at(START + 1500); f.reportDoor('opening');
-  f.unlock(); const result = await stopping;
+  await f.command('door');
+  const result = await f.reader.equipment.setCover({ deviceId: 'door', action: 'stop' });
   assert.equal(result.action, 'stop');
   assert.equal(f.status('door').cover.operation.action, 'stop');
-  assert.deepEqual(f.mutations('door').map(row => row.payload), ['stop']);
+  assert.deepEqual(f.mutations('door').map(row => row.payload), ['open', 'stop']);
+  f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0);
+  assert.deepEqual(f.mutations('door').map(row => row.payload), ['open', 'stop']);
 });
 
 test('Stop cancels an older publication after preflight without letting its late acknowledgement replace Stop', async t => {
@@ -232,17 +209,6 @@ test('Stop cancels an older publication after preflight without letting its late
   assert.equal(f.status('door').cover.operation.action, 'stop');
 });
 
-test('a door state change during recording wait cancels the older movement request', async t => {
-  const f = await fixture(t); f.backlog();
-  let settled = false;
-  const rejected = assert.rejects(f.command('door')).then(() => { settled = true; });
-  await delay(20); assert.equal(settled, false);
-  f.at(START + 1500); f.reportDoor('opening');
-  f.unlock(); await rejected; await until(() => f.store.writeQueueStatus().pending === 0);
-  assert.equal(f.status('door').cover.state, 'opening');
-  assert.equal(f.mutations('door').length, 0, 'A movement requested against the previous door state must be cancelled');
-});
-
 test('a newer independent switch state cancels its waiting command', async t => {
   const f = await fixture(t); f.backlog();
   let settled = false;
@@ -254,14 +220,12 @@ test('a newer independent switch state cancels its waiting command', async t => 
   assert.equal(f.mutations('switch').length, 0);
 });
 
-test('an unchanged door report while recording waits preserves the valid movement request', async t => {
+test('an unchanged live door report during recording backlog does not confirm or repeat the movement', async t => {
   const f = await fixture(t); f.backlog();
-  let outcome;
-  const pending = f.command('door').then(value => { outcome = value; }, error => { outcome = error; });
-  await delay(20); assert.equal(outcome, undefined);
+  const outcome = await f.command('door');
   f.at(START + 1500); f.reportDoor('closed');
-  f.unlock(); await pending;
-  assert.equal(outcome.status, 'published');
+  assert.equal(f.status('door').cover.operation.status, 'published');
   assert.equal(outcome.confirmed, false);
+  f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0);
   assert.deepEqual(f.mutations('door').map(row => row.payload), ['open']);
 });

@@ -12,18 +12,22 @@ export function gateMqttPublications(client, { canControl = () => true, timeoutM
     try { return token.beforeWrite?.() !== false; } catch { return false; }
   };
   const failure = () => new Error('MQTT publication unavailable; delivery unconfirmed');
+  function removeStored(id) {
+    // An outgoing-store callback can arrive after end() closed that store.
+    // Cleanup must not throw out of the gate that is refusing its stale bytes.
+    try { client.removeOutgoingMessage?.(id); } catch {}
+    try { client.outgoingStore?.del?.({ messageId: id }, () => {}); } catch {}
+  }
   function remove(token) {
     if (!Number.isInteger(token.id)) return;
     if (ids.has(token.id) && ids.get(token.id) !== token) return;
-    client.removeOutgoingMessage?.(token.id);
     // An asynchronous store.put may finish after cancellation removed outgoing.
     // Delete that late store entry too; the write gate still prevents dispatch.
-    client.outgoingStore?.del?.({ messageId: token.id }, () => {});
+    removeStored(token.id);
   }
   function discard(packet) {
     if (packet.qos > 0 && Number.isInteger(packet.messageId)) {
-      client.removeOutgoingMessage?.(packet.messageId);
-      client.outgoingStore?.del?.({ messageId: packet.messageId }, () => {});
+      removeStored(packet.messageId);
     }
   }
   function finish(token, error) {

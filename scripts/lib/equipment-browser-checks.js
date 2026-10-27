@@ -202,6 +202,8 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
       heatingTests:{available:true,lastResult:fixture.heatingResult},equipmentControls:{available:true,busy:false,lastResult:fixture.lastResult},equipmentTests:{available:true,busy:false}}); };
     window.fetch = async (...args) => {
       const path = new URL(args[0],location.href).pathname;
+      if(path.endsWith('/api/recording-health')&&fixture.status.recordingHealth)
+        return new Response(JSON.stringify(fixture.status.recordingHealth),{status:200});
       if(path.endsWith('/api/status')) {const response=await fixture.fetch(...args);fixture.base=await response.json();fixture.responses++;return new Response(JSON.stringify(fixture.response(fixture.base)),{status:200});}
       if(path.includes('/api/equipment/')||path.endsWith('/api/heating-test')||path.endsWith('/api/dhwr/stop')) {
         const body=JSON.parse(args[1].body);fixture.now++;fixture.calls.push({path,body});

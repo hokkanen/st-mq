@@ -332,7 +332,17 @@ confirm a cached switch value. Restoration can still be attempted when the
 starting state is unknown; its result stays unconfirmed until this evidence arrives.
 
 Every actuator publication is bound to its current runtime and broker connection.
-Door and switch requests use the same bounded observation-storage wait as native
+Door Open, Close and configured Stop use live device evidence independently of
+the recording writer. Their subscription grants, availability, source clocks,
+command receipts and fresh readback remain live during delayed or failed saves,
+including broker reconnection. Recording uses immutable copies through the normal
+bounded writer queue. A failed save cannot undo live state or command confirmation;
+later recording marks the missing interval rather than inventing missed movement.
+Saved and retained door states remain last-reported context after restart, never
+command authority. This behavior requires an already running controller; it does
+not bypass startup storage validation or grant a replica control.
+
+Switch requests use the same bounded observation-storage wait as native
 heating and circulation commands. H66 setting writes, Garage heat-pump commands
 and protection-sender configuration also retain their original deadlines while
 waiting. Before dispatch each adapter rechecks its current authority, connection
@@ -340,7 +350,7 @@ and applicable state, identity, challenge and ownership. Failed observation save
 remain a fence. Continuous traffic or unavailable storage can exhaust the wait;
 the request then ends rather than running unexpectedly after recovery.
 For doors, a newer request cancels an older unsent movement, including when Stop
-supersedes Open. A changed door state cancels a waiting Open/Close request; Stop
+supersedes Open. A changed door state cancels an unsent Open/Close request; Stop
 can follow ongoing movement. Door and switch reports from before dispatch cannot
 confirm the later command. Known unsent door and ordinary MQTT switch requests
 have a distinct receipt; a lost acknowledgement after dispatch remains uncertain.

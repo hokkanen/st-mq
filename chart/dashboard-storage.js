@@ -15,9 +15,9 @@ export function dashboardWriterRestriction(status) {
   if (status?.storageContextPending === true)
     return 'Storage changed. Waiting for a complete dashboard refresh before making changes.';
   const state = dashboardWriterState(status);
-  return state === 'confirming' ? 'Changes are paused while the last save is confirmed. Readings and history remain available.'
+  return state === 'confirming' ? 'Changes are paused while the last save is confirmed. Live door controls, readings and history remain available.'
     : ['unavailable', 'stopped'].includes(state)
-      ? 'Changes are unavailable because recording storage is not ready. Check Storage health. Readings and history remain available.' : '';
+      ? 'Some changes are unavailable because recording storage is not ready. Check Storage health. Live door controls, readings and history remain available.' : '';
 }
 
 /** Action replies omit the separately checked health. Keep its original clock. */
@@ -81,9 +81,9 @@ export function dashboardConnectionView(status) {
     ? 'Recorded snapshot view. Readings keep their original timestamps; current equipment readiness is unavailable here.' : ordinary, pending: false };
   const writer = dashboardWriterState(status);
   const pending = status?.storagePending === true;
-  const detail = writer === 'confirming' ? 'Confirming the last save. Showing the last saved dashboard state.'
+  const detail = writer === 'confirming' ? 'Confirming the last save. Showing saved readings alongside live door reports.'
     : ['unavailable', 'stopped'].includes(writer) ? 'Displayed readings keep their original timestamps.'
-      : pending ? 'Saving updates. Showing the last saved dashboard state.' : '';
+      : pending ? 'Saving updates. Showing saved readings alongside live door reports.' : '';
   return { scope, context: detail ? `${simulation ? 'Simulated devices and example prices. ' : ''}${detail}` : ordinary,
     pending, detail };
 }

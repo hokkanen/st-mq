@@ -228,6 +228,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     const generation = channel.generation;
     const readRequest = decoder && topic === `${deviceId}/HP/CMD` && payload === 'GETALL'
       || equipment?.isReadRequest(topic, payload, broker);
+    const doorCommand = recordingContext === 'cover-command' && noReplay && beforePublish && beforeWrite && signal
+      && equipment?.isDoorCommand(topic, payload, broker);
     const evidence = recordingAttempt ?? createControlAttempt({ store, context: recordingContext, kind: recordingKind === 'query' || readRequest ? 'query' : 'mutation' });
     let lateStorageBlock = null, dispatched = false;
     let finished = false, failed = false, outgoingId = null, outgoingRemoved = false;
@@ -296,7 +298,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       if (!channel.connected || generation !== channel.generation || stopped || !canControl()) {
         finish(new Error('MQTT publication unavailable')); return;
       }
-      if (!readRequest && !controlAllowed()) {
+      if (!readRequest && !doorCommand && !controlAllowed()) {
         prepared = false;
         if (store.writerFailed || [...channels.values()].some(row => row.receptionFailed)) {
           finish(publicationFailure('MQTT_STORAGE_FAILED', 'Device control is blocked by an unsaved observation')); return;
@@ -357,7 +359,9 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     const evidence = options.recordingAttempt ?? createControlAttempt({ store, context: options.recordingContext,
       kind: query ? 'query' : 'mutation' });
     const currentOptions = { ...options, recordingAttempt: evidence };
-    if (!store.transactionDepth || !store.afterCommit) return publishNow(topic, payload, currentOptions, broker);
+    const liveDoor = options.recordingContext === 'cover-command' && options.noReplay && options.beforePublish
+      && options.beforeWrite && options.signal && equipment?.isDoorCommand(topic, payload, broker ?? 'primary');
+    if (liveDoor || !store.transactionDepth || !store.afterCommit) return publishNow(topic, payload, currentOptions, broker);
     return new Promise((resolve, reject) => {
       store.afterCommit(() => { publishNow(topic, payload, currentOptions, broker).then(resolve, reject); });
       store.afterRollback?.(reason => {
@@ -494,6 +498,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     const { client, vehicleSubscriptions } = channel;
     const isPrimary = channel.id === 'primary', ownsTesla = channel.id === routing.teslaBroker;
     const equipmentTopics = shelly?.topicsForBroker(channel.id) ?? [];
+    const doorTopics = shelly?.doorTopicsForBroker(channel.id) ?? [];
+    const recordedEquipmentTopics = shelly?.recordedTopicsForBroker(channel.id) ?? [];
     const vehicleRoutes = (engine.charging?.mqttRoutes() ?? []).filter(route => routing.vehicleBroker(route) === channel.id);
     // The charger adapter subscribes on this same client and owns its own
     // listener. Its frames must not enter this receiver's writer queue or take
@@ -504,6 +510,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       ...(ownsTesla && chargingTesla ? [teslamate.topic] : []),
       ...(isPrimary ? [...floorOverride.topics, ...(garage?.topics ?? []), ...(garageSender?.topics ?? []),
         ...(decoder ? [`${deviceId}/HP/#`] : [])] : [])])];
+    const recordedOwnedTopics = ownedTopics.filter(topic => !doorTopics.includes(topic) || recordedEquipmentTopics.includes(topic)
+      || vehicleRoutes.some(route => route.topic === topic) || isPrimary && [...floorOverride.topics, ...(garage?.topics ?? []), ...(garageSender?.topics ?? [])].includes(topic));
     const vehicleSource = key => {
       if (!key) return null;
       const [kind, topic] = JSON.parse(key);
@@ -612,7 +620,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         };
         store.afterCommit(() => { void Promise.resolve().then(replay).catch(reject); });
       };
-      const subscribe = (topic, options, callback) => {
+      const subscribe = (topic, options, callback, { durable = true, onReceipt } = {}) => {
         pending++;
         countStartup(counts, 'subscriptionRequests');
         let acknowledged = false;
@@ -623,6 +631,12 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
           channel.readinessFailed ||= rejected;
           countStartup(counts, 'subscriptionCallbacks');
           countStartup(counts, rejected ? 'rejectedCallbacks' : 'acceptedCallbacks');
+          onReceipt?.(error, granted);
+          if (!durable) {
+            try { callback(error, granted); }
+            finally { if (--pending === 0 && currentSubscription()) finishReadiness(channel); }
+            return;
+          }
           void write(() => {
             try { callback(error, granted); }
             finally {
@@ -686,26 +700,36 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       }
       write(() => store.event('mqtt-connected', { source, broker: channel.id, writesEnabled: Boolean(isPrimary && h66 && settings.writeEnabled === true) }, engine.clock()), { isCurrent: currentSubscription });
       if (shelly) {
-        let subscriptions = equipmentTopics.length; const failedTopics = [], confirmedTopics = [];
+        let doorSubscriptions = doorTopics.length;
+        const confirmedDoorTopics = [];
+        shelly.setConnected(true, channel.id, 'doors');
+        const doorSubscribed = (topic, error, granted) => {
+          if (subscriptionRejected(topic, error, granted)) shelly.subscriptionFailed(topic, channel.id, 'doors');
+          else confirmedDoorTopics.push(topic);
+          if (--doorSubscriptions === 0) shelly.confirmSubscriptions(confirmedDoorTopics, channel.id, 'doors');
+        };
+        for (const topic of doorTopics.filter(topic => !recordedEquipmentTopics.includes(topic)))
+          subscribe(topic, { qos: 1 }, (error, granted) => doorSubscribed(topic, error, granted), { durable: false });
+        let subscriptions = recordedEquipmentTopics.length; const failedTopics = [], confirmedTopics = [];
         const buffered = { messages: [], bytes: 0, overflow: new Set() };
         channel.equipmentSubscriptionBuffer = subscriptions ? buffered : null;
-        if (!subscriptions) shelly.setConnected(true, channel.id);
-        for (const topic of equipmentTopics) subscribe(topic, { qos: 1 }, (error, granted) => {
+        if (!subscriptions) shelly.setConnected(true, channel.id, 'recorded');
+        for (const topic of recordedEquipmentTopics) subscribe(topic, { qos: 1 }, (error, granted) => {
           if (subscriptionRejected(topic, error, granted)) { failedTopics.push(topic); report('mqtt-shelly-subscribe-error'); }
           else confirmedTopics.push(topic);
           if (--subscriptions === 0) {
             channel.equipmentSubscriptionBuffer = null;
-            shelly.setConnected(true, channel.id);
+            shelly.setConnected(true, channel.id, 'recorded');
             // Retain original receipt clocks across SUBACK buffering.
             for (const message of buffered.messages) {
-              try { shelly.receive(message.topic, message.payload, message.packet, message.receivedAt, channel.id, null, message.receivedMonotonicAt); }
+              try { shelly.receiveRecorded(message.topic, message.payload, message.packet, message.receivedAt, channel.id, null, message.receivedMonotonicAt); }
               catch (cause) { report('mqtt-observation-rejected', cause); }
             }
-            for (const failed of [...failedTopics, ...buffered.overflow]) shelly.subscriptionFailed(failed, channel.id);
-            try { shelly.confirmSubscriptions?.(confirmedTopics.filter(topic => !buffered.overflow.has(topic)), channel.id); }
+            for (const failed of [...failedTopics, ...buffered.overflow]) shelly.subscriptionFailed(failed, channel.id, 'recorded');
+            try { shelly.confirmSubscriptions?.(confirmedTopics.filter(topic => !buffered.overflow.has(topic)), channel.id, 'recorded'); }
             catch (error) { report('mqtt-temperature-recovery-failed', error); }
           }
-        });
+        }, { onReceipt: doorTopics.includes(topic) ? (error, granted) => doorSubscribed(topic, error, granted) : null });
       }
       if (teslamate && ownsTesla) {
         chargingTesla.setConnected(false, 'awaiting-subscription'); channel.teslaSubscriptionBuffer = []; channel.teslaSubscriptionOverflow = false;
@@ -793,7 +817,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       // this delivery admitted a reading, explicit unavailable evidence or a
       // supported health pulse; cached status and SQLite counters cannot.
       let equipmentAccepted = false;
-      if (shelly?.receive(topic, payload, packet, receivedAt, channel.id, () => { equipmentAccepted = true; }, receivedMonotonicAt)) return equipmentAccepted;
+      if (shelly?.receiveRecorded(topic, payload, packet, receivedAt, channel.id, () => { equipmentAccepted = true; }, receivedMonotonicAt)) return equipmentAccepted;
       if (!isPrimary) return;
       if (!decoder || !topic.startsWith(`${deviceId}/HP/`)) return;
       if (topic.startsWith(`${deviceId}/HP/STATUS`) && !packet.retain) lastGatewayStatusAt = receivedAt;
@@ -843,6 +867,9 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       const snapshotRequestedAt = lastSnapshotRequestedAt;
       if (bytes > 65_536) { report('mqtt-observation-rejected'); return; }
       const body = Buffer.from(payload), metadata = { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId };
+      try { shelly?.receiveDoors(topic, body, metadata, receivedAt, channel.id, receivedMonotonicAt); }
+      catch (cause) { report('mqtt-observation-rejected', cause); }
+      if (!recordedOwnedTopics.some(subscription => matchesTopic(topic, subscription))) return;
       const key = receptionKey(topic, body), sequence = ++channel.receiptSequence;
       const source = vehicleSource(key);
       const wasUnavailable = source && (vehicleAdmission(source).pending || vehicleAdmission(source).failed);
@@ -944,6 +971,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   maintenance?.unref?.();
   const shellyMaintenance = shelly ? setInterval(() => {
     if (stopped) return;
+    shelly.tickDoors(engine.clock());
     write(() => shelly.tick(engine.clock()));
   }, 5000) : null;
   shellyMaintenance?.unref?.();

@@ -2018,6 +2018,14 @@ fixture without weakening the behavioral check.
 
 ## Dedicated runtime writer
 
+`test/garage-door-writer-failure.test.js` checks door HTTP and live dashboard
+state through a real stopped writer, held/failed COMMIT and lost COMMIT reply.
+It keeps other equipment behind committed admission, covers shared subscriptions,
+reconnect, family access, stale/retained/future/offline evidence and recording gaps.
+The installed MQTT client exercises delayed outgoing-store bytes through Stop,
+state change, expiry, revocation, reconnect and shutdown without replay. These
+synthetic checks do not move household doors or prove a physical door outcome.
+
 `test/writer-timeout-recovery.test.js` expires a real native SQLite statement in
 an admitted worker transaction. It checks proven rollback before replacement,
 callback-once semantics, rejected descendants, rollback effects before subsequent

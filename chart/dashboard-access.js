@@ -17,19 +17,23 @@ export function assertDashboardWrite(path, data, status) {
     && Object.keys(data).join(',') === 'sourceId' && /^[a-f0-9]{64}$/.test(data.sourceId ?? '')) return;
   if (!status || isReadOnlyReplica(status)) throw Object.assign(new Error(status ? readOnlyMessage
     : 'Wait for the installation status before making changes.'), { status: 403 });
+  if (path === '/api/equipment/cover' && status.storageContextPending !== true) return;
   const writerRestriction = dashboardWriterRestriction(status);
   if (writerRestriction) throw Object.assign(new Error(writerRestriction), { status: 503, code: 'storage_writer_unavailable' });
 }
 
 /** Mark mutations, never whole cards: disclosures, selectors and downloads remain usable. */
 export function createReadOnlyControls({ document, Observer = globalThis.MutationObserver }) {
-  let restricted = true, message = readOnlyMessage, currentStatus;
+  let restricted = true, readOnly = true, message = readOnlyMessage, currentStatus;
   const remembered = new Set(), owner = Symbol('read-only');
+  const blocked = control => readOnly || restricted && !(currentStatus?.storageContextPending !== true
+    && control.closest?.('[data-live-door-control]'));
   function apply() {
     if (!restricted) return;
     for (const scope of document.querySelectorAll('[data-write-control]')) {
       const controls = scope.matches('button,input,select,textarea') ? [scope] : scope.querySelectorAll('button,input,select,textarea');
       for (const control of controls) {
+        if (!blocked(control)) { unlockControl(control, owner); remembered.delete(control); continue; }
         remembered.add(control);
         lockControl(control, owner, message);
       }
@@ -39,7 +43,7 @@ export function createReadOnlyControls({ document, Observer = globalThis.Mutatio
     }
   }
   const block = event => {
-    if (!restricted || !event.target.closest?.('[data-write-control]')) return;
+    if (!restricted || !event.target.closest?.('[data-write-control]') || !blocked(event.target)) return;
     event.preventDefault(); event.stopImmediatePropagation();
   };
   for (const type of ['click', 'submit', 'change', 'input']) document.addEventListener(type, block, true);
@@ -47,7 +51,7 @@ export function createReadOnlyControls({ document, Observer = globalThis.Mutatio
   observer?.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'data-write-control'] });
   return { update(status) {
     currentStatus = retainDashboardHealth(currentStatus, status);
-    const readOnly = !currentStatus || isReadOnlyReplica(currentStatus);
+    readOnly = !currentStatus || isReadOnlyReplica(currentStatus);
     const writerRestriction = dashboardWriterRestriction(currentStatus);
     restricted = readOnly || Boolean(writerRestriction);
     message = readOnly ? readOnlyMessage : writerRestriction;

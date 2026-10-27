@@ -11,7 +11,7 @@ test('responsive committed views preserve their scope and disclose pending state
     const value = status('saving', { input, storagePending: true });
     const view = dashboardConnectionView(value);
     assert.equal(view.scope, input === 'simulated' ? 'Simulation' : 'Live');
-    assert.match(view.context, /Showing the last saved dashboard state/);
+    assert.match(view.context, /Showing saved readings alongside live door reports/);
     assert.equal(value.now, 1000);
   }
   assert.match(dashboardConnectionView(status('confirming')).context, /Confirming the last save/);
