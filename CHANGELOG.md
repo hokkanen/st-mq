@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Resume later recording after a timed-out, uncommitted writer statement once
+  worker exit proves rollback and the same database file and journal boundary
+  are verified. Reject the failed operation without replay; uncertain COMMIT,
+  changed history and other writer failures retain their authority fence.
+
 - Retire expired idle peer connections before reuse even when an event-loop
   delay prevents their timer from running. Open a fresh connection for the next
   request while preserving active deadlines and avoiding automatic replay.

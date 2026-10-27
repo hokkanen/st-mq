@@ -1980,6 +1980,15 @@ fixture without weakening the behavioral check.
 
 ## Dedicated runtime writer
 
+`test/writer-timeout-recovery.test.js` expires a real native SQLite statement in
+an admitted worker transaction. It checks proven rollback before replacement,
+callback-once semantics, rejected descendants, rollback effects before subsequent
+admission, cached statement reuse, journal integrity and no partial save. Changed
+journal history, a replaced physical file, shutdown and either lost COMMIT outcome
+must retain their fences. Nested rollback must preserve the original error without
+a circular cleanup cause. Only the synthetic client's reply bound is shortened;
+production statement and equipment deadlines remain unchanged.
+
 `test/storage-writer-worker.test.js` uses real file-backed writer threads to check
 dependent reads, savepoints, committed external reads, callback-once semantics,
 lock admission, cancellation, failed commits, lost replies and joined shutdown.

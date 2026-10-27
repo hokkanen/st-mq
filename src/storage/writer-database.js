@@ -5,7 +5,7 @@ export const isWriterDatabase = db => connections.has(db);
 
 /** Dependent statements in a synchronous callback use the reserved writer.
  * Other readers see only committed WAL state through their own connection. */
-export function writerDatabase(store, reader, writer) {
+export function writerDatabase(store, reader) {
   let synchronousTransaction = false;
   const writing = () => store.writerBodyActive || synchronousTransaction;
   const writable = () => {
@@ -22,7 +22,7 @@ export function writerDatabase(store, reader, writer) {
       for (const method of ['get', 'all', 'run', 'iterate', 'columns']) statement[method] = (...params) => {
         if (writing() || method === 'run') {
           writable();
-          const result = writer.call('statement', { sql, method, params, settings });
+          const result = store.writer.call('statement', { sql, method, params, settings });
           return method === 'iterate' ? result[Symbol.iterator]() : result;
         }
         local ??= reader.prepare(sql);
@@ -41,7 +41,7 @@ export function writerDatabase(store, reader, writer) {
       if (!writing() && (normalized === 'BEGIN' || normalized === 'BEGIN DEFERRED'
         || reader.isTransaction && ['COMMIT', 'ROLLBACK', 'END'].includes(normalized))) return reader.exec(sql);
       writable();
-      const result = writer.call('exec', { sql });
+      const result = store.writer.call('exec', { sql });
       if (normalized === 'BEGIN IMMEDIATE') synchronousTransaction = true;
       if (['COMMIT', 'ROLLBACK', 'END'].includes(normalized)) synchronousTransaction = false;
       return result;

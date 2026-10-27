@@ -7,6 +7,7 @@ import { WalMaintenance } from './wal-maintenance.js';
 import { storageConfiguration, storageTaskKind } from './storage-policy.js';
 import { validateArchivedLearningCheckpointStorage } from './learning-checkpoint-archive.js';
 import { mkdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { isMainThread } from 'node:worker_threads';
@@ -35,6 +36,11 @@ import { initializeJournal, installJournal, validateCheckpoint, readCheckpoint, 
 export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
 const storeConnections = new WeakMap();
+const writerFiles = new WeakMap(), recoveringWriters = new WeakMap();
+const writerFile = async path => {
+  const { dev, ino } = await stat(path, { bigint: true });
+  return { dev, ino };
+};
 // Carry only an allowlisted cause to work discarded by its parent's rollback.
 // A dependent publication was not itself another attempted SQLite save.
 const rollbackEvidence = error => Object.assign(new Error('The preceding save was rolled back.'),
@@ -333,6 +339,7 @@ export class Store {
     if (this.closePending) return this.closePending;
     this.walMaintenance?.close();
     this.writeQueue.close();
+    void recoveringWriters.get(this)?.terminate().catch(() => {});
     if (!this.writer && !this.writerStartPending && !this.writeQueue.running) { if (this.db.isOpen) this.db.close(); return; }
     this.closePending = (async () => {
       // Startup may own a worker before publishing its connection. Join that
@@ -353,20 +360,25 @@ export class Store {
     if (this.readOnly || this.path === ':memory:' || !isMainThread)
       return Promise.reject(new TypeError('The dedicated writer requires a writable file-backed runtime Store.'));
     this.writerStartPending = this.runPublication(async () => {
+      const identity = await writerFile(this.path);
       const writer = new WriterClient({ path: this.path });
       let reader, ready;
       try {
         ready = await writer.ready;
         if (this.writeQueue.closed) throw Object.assign(new Error('Recording storage is closed.'), { code: 'STORAGE_CLOSED' });
         reader = new Store(this.path, { readOnly: true });
+        if (this.writeQueue.closed || !isDeepStrictEqual(identity, await writerFile(this.path))
+          || !isDeepStrictEqual(reader.checkpoint(), ready.checkpoint))
+          throw Object.assign(new Error('Recording storage changed while its writer was opening.'), { code: 'STORAGE_WRITE_STALE' });
         this.db.close();
       } catch (error) {
         await writer.close().catch(() => {}); reader?.close(); throw error;
       }
       this.writer = writer; this.writerReader = reader;
+      writerFiles.set(this, identity);
       this.storageConfiguration = ready.storageConfiguration;
       this.writePending = false; this.writerFailed = false; this.writeSettledListeners = new Set();
-      this.db = writerDatabase(this, reader.db, writer);
+      this.db = writerDatabase(this, reader.db);
       storeConnections.set(this, this.db);
       this.changeCount = this.db.prepare('SELECT total_changes() AS n');
       this.insertObservation = this.db.prepare(`INSERT INTO observations
@@ -377,6 +389,33 @@ export class Store {
       this.walMaintenance = new WalMaintenance(this);
     });
     return this.writerStartPending;
+  }
+
+  async _recoverWriter(failedWriter, checkpoint) {
+    // Only the owning uncommitted transaction may use this path. Joining the
+    // terminated connection rolls it back; a changed file/head or failed new
+    // connection keeps authority fenced. Never replay the failed callback.
+    let replacement;
+    try {
+      const identity = writerFiles.get(this);
+      if (this.writeQueue.closed || this.writer !== failedWriter || !failedWriter.terminated || !identity
+        || !isDeepStrictEqual(identity, await writerFile(this.path))
+        || !isDeepStrictEqual(this.checkpoint(), checkpoint)) return false;
+      replacement = new WriterClient({ path: this.path });
+      recoveringWriters.set(this, replacement);
+      const ready = await replacement.ready;
+      if (this.writeQueue.closed || this.writer !== failedWriter
+        || !isDeepStrictEqual(identity, await writerFile(this.path))
+        || !isDeepStrictEqual(ready.checkpoint, checkpoint)
+        || !isDeepStrictEqual(this.checkpoint(), checkpoint)) throw new Error('Recording storage changed during writer recovery.');
+      this.writer = replacement;
+      this.storageConfiguration = ready.storageConfiguration;
+      this.writerFailed = false;
+      return true;
+    } catch {
+      await replacement?.terminate().catch(() => {});
+      return false;
+    } finally { recoveringWriters.delete(this); }
   }
 
   canDispatch() { return !this.writePending && !this.writerFailed && !this.writer?.failed && !this.writeQueue.closed; }
@@ -444,7 +483,10 @@ export class Store {
         // No further writer may run until this connection has exited. BEGIN
         // may have succeeded before its acknowledgement was lost; likewise a
         // lost COMMIT reply is not proof of rollback. Never replay the callback.
-        await this.writer.terminate(); this.writerFailed = true;
+        const failedWriter = this.writer;
+        const recoverable = admitted && !commitRequested && failedWriter.failed.code === 'STORAGE_WRITER_TIMEOUT';
+        await failedWriter.terminate(); this.writerFailed = true;
+        if (recoverable) await this._recoverWriter(failedWriter, boundary.checkpoint);
         if (admitted && commitRequested && prepared?.checkpoint && prepared.checkpoint.sequence > boundary.checkpoint.sequence) {
           try {
             const actual = this.checkpointAt(prepared.checkpoint.sequence);
@@ -604,10 +646,10 @@ export class Store {
         }
         this.db.exec(`RELEASE ${savepoint}`); return result;
       } catch (error) {
-        try { this.db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError = cleanupError; }
+        try { this.db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`); } catch (cleanupError) { if (error && typeof error === 'object' && cleanupError !== error) error.cleanupError = cleanupError; }
         this.commitEffects.length = committedBefore;
         for (const effect of this.rollbackEffects.splice(rollbackBefore).reverse()) {
-          try { effect(rollbackEvidence(error)); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError ??= cleanupError; }
+          try { effect(rollbackEvidence(error)); } catch (cleanupError) { if (error && typeof error === 'object' && cleanupError !== error) error.cleanupError ??= cleanupError; }
         }
         const after = this.databaseChanges();
         // total_changes also includes rolled-back savepoint writes. They cannot
@@ -665,9 +707,9 @@ export class Store {
       committed = true; timing.committed = true;
       if (changed) this.writeHealth.success();
     } catch (error) {
-      try { this.db.exec('ROLLBACK'); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError = cleanupError; }
+      try { this.db.exec('ROLLBACK'); } catch (cleanupError) { if (error && typeof error === 'object' && cleanupError !== error) error.cleanupError = cleanupError; }
       for (const effect of this.rollbackEffects.splice(0).reverse()) {
-        try { effect(rollbackEvidence(error)); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError ??= cleanupError; }
+        try { effect(rollbackEvidence(error)); } catch (cleanupError) { if (error && typeof error === 'object' && cleanupError !== error) error.cleanupError ??= cleanupError; }
       }
       this.writeHealth.failure(error);
       throw error;

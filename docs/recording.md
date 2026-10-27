@@ -2390,6 +2390,19 @@ The latest transaction date does not date an earlier rolling maximum. Queue dept
 remain separate asynchronous-admission evidence. Slow successful writes do not
 prove corruption, and these timings do not grant device authority.
 
+A dependent statement retains its five-second synchronous reply bound. If that
+bound expires inside an admitted transaction before COMMIT is requested, the
+operation fails and its callback is never replayed. The Store first joins the
+terminated worker, rolling back its uncommitted transaction, then verifies the
+same physical database file and unchanged journal boundary before and after
+opening a replacement worker. Only this proven rollback permits later queued
+operations to resume. Rollback effects and discarded dependent work still settle
+before subsequent writes; cached statement facades use the replacement connection.
+The failed attempt remains visible and is not reported as a saved observation.
+Changed files/history, shutdown, idle worker loss, protocol failures and uncertain
+COMMIT outcomes retain the unavailable-writer fence. Slow asynchronous COMMIT is
+separate: this recovery does not raise a device deadline or retry an uncertain save.
+
 `storageTimings.slowAttempts` retains the last 16 main Store attempts whose
 measured total duration reached one second, with a cumulative count for this
 Store run. It is memory-only diagnostic evidence, not another warning threshold
