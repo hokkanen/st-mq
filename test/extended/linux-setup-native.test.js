@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { main as setup } from '../../scripts/lib/linux-setup.js';
-import { main as runtimeOperation, readLocalStatus } from '../../scripts/lib/linux-deployment.js';
+import { main as runtimeOperation, readLocalStatus, userServiceEnvironment } from '../../scripts/lib/linux-deployment.js';
 import { runCommand } from '../../scripts/lib/deployment-command.js';
 
 // The actual wizard, staged npm build, application, workers, listener probes and
@@ -18,6 +18,8 @@ test('native wizard installs and deploys the actual application in isolated stan
   const source = resolve(import.meta.dirname, '../..');
   assert.equal(await runCommand('git', ['status', '--porcelain'], { cwd: source }), '', 'Native setup requires the committed source checkout.');
   const root = mkdtempSync(join(tmpdir(), 'st-mq-native-setup-'));
+  const userCommand = (exe, args, options = {}) => runCommand(exe, args,
+    { ...options, env: userServiceEnvironment() });
   const serviceName = 'synthetic-st-mq-setup-' + randomUUID() + '.service';
   const unit = `/run/user/${process.getuid()}/systemd/user/${serviceName}`;
   const privateDirectory = join(root, 'private config'), runtime = join(root, 'runtime with spaces'), data = join(root, 'isolated data');
@@ -37,11 +39,11 @@ test('native wizard installs and deploys the actual application in isolated stan
     return runCommand(exe, args, options);
   };
   t.after(async () => {
-    try { await runCommand('systemctl', ['--user', 'stop', serviceName], { timeout: 30000 }); } catch { /* Unit might not have been installed. */ }
-    try { await runCommand('systemctl', ['--user', 'disable', serviceName], { timeout: 10000 }); } catch { /* No enabled unit may exist. */ }
+    try { await userCommand('systemctl', ['--user', 'stop', serviceName], { timeout: 30000 }); } catch { /* Unit might not have been installed. */ }
+    try { await userCommand('systemctl', ['--user', 'disable', serviceName], { timeout: 10000 }); } catch { /* No enabled unit may exist. */ }
     rmSync(unit, { force: true });
-    try { await runCommand('systemctl', ['--user', 'daemon-reload']); } catch { /* Preserve the original assertion. */ }
-    try { await runCommand('systemctl', ['--user', 'reset-failed', serviceName]); } catch { /* No failed unit may exist. */ }
+    try { await userCommand('systemctl', ['--user', 'daemon-reload']); } catch { /* Preserve the original assertion. */ }
+    try { await userCommand('systemctl', ['--user', 'reset-failed', serviceName]); } catch { /* No failed unit may exist. */ }
     rmSync(root, { recursive: true, force: true });
   });
   const io = {
@@ -73,13 +75,13 @@ test('native wizard installs and deploys the actual application in isolated stan
   try { result = await setup(['--connection', connectionPath], dependencies); }
   catch (error) {
     t.diagnostic(transcript.join('\n'));
-    try { t.diagnostic(await runCommand('journalctl', ['--user', '-u', serviceName, '-n', '20', '--no-pager', '-o', 'cat'])); } catch { /* No private or household logs. */ }
+    try { t.diagnostic(await userCommand('journalctl', ['--user', '-u', serviceName, '-n', '20', '--no-pager', '-o', 'cat'])); } catch { /* No private or household logs. */ }
     throw error;
   }
   assert.equal(result.state, 'ready'); assert.equal(result.topology, 'standalone');
   assert.equal(result.connectionPath, connectionPath); assert.ok(events.includes('reviewed-sudo-skipped'));
   assert.ok(events.includes('reviewed-linger-skipped')); assert.ok(transcript.some(line => line.includes('simulation; equipment has not been commissioned')));
-  await runCommand('systemd-analyze', ['--user', 'verify', unit]);
+  await userCommand('systemd-analyze', ['--user', 'verify', unit]);
   const installed = JSON.parse(readFileSync(connectionPath, 'utf8'));
   const status = await readLocalStatus(installed);
   assert.equal(status.input, 'simulated'); assert.equal(status.environment, 'simulation'); assert.equal(status.automation.home.enabled, false);
@@ -89,9 +91,9 @@ test('native wizard installs and deploys the actual application in isolated stan
   await runtimeOperation('deploy', ['--connection', connectionPath], runOptions);
   assert.equal((await readLocalStatus(installed)).input, 'simulated'); assert.equal(lstatSync(database).ino, inode);
   assert.deepEqual(readFileSync(secrets), savedConfiguration);
-  await runCommand('systemctl', ['--user', 'stop', serviceName], { timeout: 30000 });
+  await userCommand('systemctl', ['--user', 'stop', serviceName], { timeout: 30000 });
   await runtimeOperation('deploy', ['--connection', connectionPath, '--stopped'], runOptions);
-  assert.equal(await runCommand('systemctl', ['--user', 'show', serviceName, '--property=ActiveState', '--value']), 'inactive');
+  assert.equal(await userCommand('systemctl', ['--user', 'show', serviceName, '--property=ActiveState', '--value']), 'inactive');
   assert.equal(lstatSync(database).ino, inode); assert.deepEqual(readFileSync(secrets), savedConfiguration);
   for (const path of [secrets, environment, connectionPath]) assert.equal(lstatSync(path).mode & 0o777, 0o600);
 });

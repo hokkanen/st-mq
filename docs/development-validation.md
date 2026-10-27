@@ -1989,13 +1989,11 @@ Current limits to retain when reviewing results:
   hardware deadline or proof of exact optimization. Rebenchmark material changes.
 - Vite reports a large-main-bundle advisory. A successful build does not resolve
   that performance concern.
-- The full Firefox chart sweep currently stops at the Garage Close keyboard
-  check, after successful database download/save, recording and initial chart
-  checks. The same failure reproduces before and after the access-lock fix;
-  the Firefox automation cause remains unresolved. Focused Chrome Garage checks
-  pass. Later landscape legend-focus and Save-view follow-ups remain open until
-  the complete sweep passes; a targeted UI check is insufficient evidence to
-  close them.
+- The full Firefox chart fixture covers Garage Close keyboard activation,
+  landscape legend focus, Save view and the current comparison periods. Its
+  event-log reads require a visible panel. A focused UI pass does not qualify
+  unrun later checks or installed browsers; retain failed runs beside corrected
+  full-sweep results.
 - The floor controller uses the Sonoff lease protocol; GPIO confirmation and
   software checks do not qualify physical contacts, wiring, valves or flow.
   Installed local-expiry and thermostat-path checks remain required. H66, CN105/protection and charging
