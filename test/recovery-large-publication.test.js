@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
@@ -43,7 +44,7 @@ function richSample(at) {
 }
 
 
-test('recovery, revert and restore publish incident-sized checkpoints atomically and retain exact replay', { timeout: 60000 }, async t => {
+test('recovery, revert and restore publish incident-sized checkpoints atomically and retain exact replay', { timeout: testCompletionLimit(60000) }, async t => {
   const f = fixture(t), config = { indoorSensorWeights: { indoor_temperature: 1 } };
   const append = (store, index) => store.transaction(() => appendLearningRecord(store, 'mqtt', 'sample',
     richSample(start + index * WINDOW), { config }));

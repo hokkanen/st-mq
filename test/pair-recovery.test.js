@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, writeFileSync } from 'node:fs';
@@ -17,7 +18,7 @@ import { Engine } from '../src/app/engine.js';
 
 import { fixture, observation, sample, recover, learningCatchup, energyCatchup, start, HOUR, W } from './helpers/recovery-fixture.js';
 
-test('source check creates no trial database and the single merge preserves master conflicts', { timeout: 10000 }, async t => {
+test('source check creates no trial database and the single merge preserves master conflicts', { timeout: testCompletionLimit(10000) }, async t => {
   const f = fixture(t);
   observation(f.master, start);
   const donor = await f.donor();

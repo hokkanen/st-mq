@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -88,7 +89,7 @@ function pureReplay(store) {
 }
 
 test('sensor undo keeps the old model available, catches up and atomically republishes corrected eligibility with retained knowledge',
-  { timeout: 30_000 }, async t => {
+  { timeout: testCompletionLimit(30_000) }, async t => {
     const f = await fixture(t);
     const changed = f.engine.changeSensor({ requestId: 'invented-reset', signal: 'indoor_temperature', reason: 'replacement' });
     await f.engine.refreshLearning();
@@ -139,7 +140,7 @@ test('sensor undo keeps the old model available, catches up and atomically repub
   });
 
 test('sensor reversal clears obsolete availability reasons when the corrected checkpoint publishes',
-  { timeout: 30_000 }, async t => {
+  { timeout: testCompletionLimit(30_000) }, async t => {
     const f = await fixture(t), observedAt = f.now - 60_000;
     f.engine.ingest({ source: 'mqtt-temperature', device: 'invented-room', signal: 'indoor_temperature',
       value: 21.5, unit: 'degC', sourceTime: observedAt, receivedAt: observedAt, quality: [] });
@@ -165,7 +166,7 @@ test('sensor reversal clears obsolete availability reasons when the corrected ch
   });
 
 test('restart resumes a sensor reversal with both source revisions pinned until reconstruction completes',
-  { timeout: 30_000 }, async t => {
+  { timeout: testCompletionLimit(30_000) }, async t => {
     const f = await fixture(t);
     const changed = f.engine.changeSensor({ requestId: 'invented-restart-reset', signal: 'outdoor_temperature', reason: 'calibration' });
     await f.engine.refreshLearning();
@@ -188,7 +189,7 @@ test('restart resumes a sensor reversal with both source revisions pinned until 
     assert.deepEqual(current, pureReplay(f.store));
   });
 
-test('reverting a reset leaves its cancelled cycle and frozen observations intact', { timeout: 30_000 }, async t => {
+test('reverting a reset leaves its cancelled cycle and frozen observations intact', { timeout: testCompletionLimit(30_000) }, async t => {
   const f = await fixture(t), cycleStart = start - HOUR;
   const plan = { model: f.initial.model, intervals: Array.from({ length: 8 }, (_, i) => ({
     start: cycleStart + i * HOUR / 4, end: cycleStart + (i + 1) * HOUR / 4,
@@ -213,7 +214,7 @@ test('reverting a reset leaves its cancelled cycle and frozen observations intac
 });
 
 for (const race of ['journal suffix', 'sensor correction']) test(`publication rejects a ${race} committed after candidate selection but before the writer lock`,
-  { timeout: 30_000 }, async t => {
+  { timeout: testCompletionLimit(30_000) }, async t => {
     const f = await fixture(t);
     const first = f.engine.changeSensor({ requestId: 'invented-race-first', signal: 'indoor_temperature', reason: 'replacement' });
     let second;

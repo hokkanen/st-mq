@@ -913,6 +913,18 @@ History-recovery API fixture admission, background-list preparation and the
 metadata-flush scenario use the declared completion allowance. Held-lock
 cancellation checks retain their original short bound and still finish before
 the test releases the lock; recording holds and saved source clocks remain exact.
+Recovery assessment catch-up uses the declared whole-case completion allowance
+for its fixture, reversal and subsequent restoration. It records each stage's
+elapsed time and still requires publication during actual continuing learning,
+forced catch-up, exact replay, unchanged source cycles, restored assessments and
+database integrity. The independent recovery-publication liveness guards remain.
+Selected whole-case budgets for checkpoint/replay, sensor/fireplace correction,
+publication admission and bulk pairing/rsync/SSH/cross-runtime fixtures use that
+same completion allowance. Their original standard bounds remain unchanged.
+These wrappers include setup and cleanup; actual transport, writer, cancellation
+and equipment deadlines retain their own ownership. In particular, the separate
+continuous-recording recovery guard is unchanged and cannot pass publication
+after its source producer has stopped.
 The GiB reset fixture records generation and per-scenario preparation separately
 from reset latency. Its existing ten-minute parent budget uses the declared bulk
 completion allowance on HA, and each of the three independent reset scenarios
@@ -928,6 +940,11 @@ stall to the card nor establishes normal household responsiveness. Deterministic
 contention tests must still prove writer admission and progress between batches.
 Fixture completion waits use the case's cancellation rather than an unrelated
 short polling count; safety ordering remains asserted before held cleanup ends.
+Peer transport cases use an independent server process while deliberately
+delaying the client event loop. Expired client-idle and server-idle sockets must
+be retired before the next request, with exactly two server-handled requests and
+no replay. Existing immediate reuse, active-request deadline and cancellation
+cases remain independent of that idle retirement.
 Settings-reload fixtures record identity announcements separately from the
 acquisition/command connection and deliberately include discovery traffic in
 the no-circulation-command case. A periodic identity heartbeat cannot become

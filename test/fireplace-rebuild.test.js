@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -35,7 +36,7 @@ function sample(store, i, input = 'mqtt') {
     targetC: 21, roomBoostC: 0, actualModeKnown: false, powerKw: 3, energyBasis: 'estimated' });
 }
 
-test('background replay is deterministic, leaves the old checkpoint active, and catches up journal suffixes', { timeout: 30_000 }, async t => {
+test('background replay is deterministic, leaves the old checkpoint active, and catches up journal suffixes', { timeout: testCompletionLimit(30_000) }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-fireplace-rebuild-'));
   const store = new Store(join(directory, 'invented.sqlite'));
   const manager = new FireplaceRebuildManager({ store, input: 'mqtt' });
@@ -67,7 +68,7 @@ test('background replay is deterministic, leaves the old checkpoint active, and 
 });
 
 test('a failed coefficient staging transaction releases its waiting worker and preserves the published model',
-  {timeout:15_000}, async t=>{
+  {timeout: testCompletionLimit(15_000) }, async t=>{
     const store=new Store(':memory:');
     const manager=new FireplaceRebuildManager({store,input:'mqtt'});
     t.after(async()=>{await manager.close();store.close();});
@@ -86,7 +87,7 @@ test('a failed coefficient staging transaction releases its waiting worker and p
     assert.deepEqual(readCoefficientEvents(store,{input:'mqtt'}),events);
   });
 
-test('restart restores pending work and source changes invalidate completed worker candidates', { timeout: 30_000 }, async t => {
+test('restart restores pending work and source changes invalidate completed worker candidates', { timeout: testCompletionLimit(30_000) }, async t => {
   const store = new Store(':memory:');
   let manager = new FireplaceRebuildManager({ store, input: 'mqtt' });
   t.after(async () => { await manager.close(); store.close(); });
@@ -189,7 +190,7 @@ test('worker failure waits for storage admission and preserves the published mod
 });
 
 for (const storage of ['memory', 'disk']) test(`joint sensor and fireplace corrections replay deterministically and catch up (${storage})`,
-  { timeout: 30_000 }, async t => {
+  { timeout: testCompletionLimit(30_000) }, async t => {
     const directory = mkdtempSync(join(tmpdir(), 'stmq-joint-rebuild-'));
     const store = new Store(storage === 'memory' ? ':memory:' : join(directory, 'invented.sqlite'));
     const manager = new FireplaceRebuildManager({ store, input: 'mqtt' });
@@ -223,7 +224,7 @@ for (const storage of ['memory', 'disk']) test(`joint sensor and fireplace corre
   });
 
 test('a later sensor correction invalidates a ready worker even when the fireplace revision is unchanged',
-  { timeout: 30_000 }, async t => {
+  { timeout: testCompletionLimit(30_000) }, async t => {
     const store = new Store(':memory:');
     const manager = new FireplaceRebuildManager({ store, input: 'mqtt' });
     t.after(async () => { await manager.close(); store.close(); });
@@ -330,7 +331,7 @@ test('rebuild teardown preserves durable job intent without waiting for a foreig
 });
 
 for (const correction of ['fireplace', 'sensor']) test(`late ${correction} corrections reuse sparse prefixes after compaction and worker restart`,
-  { timeout: 30_000 }, async t => {
+  { timeout: testCompletionLimit(30_000) }, async t => {
     const directory = mkdtempSync(join(tmpdir(), 'stmq-late-correction-'));
     const store = new Store(join(directory, 'invented.sqlite'));
     let manager = new FireplaceRebuildManager({ store, input: 'mqtt' });
@@ -379,7 +380,7 @@ for (const correction of ['fireplace', 'sensor']) test(`late ${correction} corre
     }
   });
 
-test('queued catch-up cannot replace a correction candidate while prefix lookup yields', { timeout: 30_000 }, async t => {
+test('queued catch-up cannot replace a correction candidate while prefix lookup yields', { timeout: testCompletionLimit(30_000) }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-correction-queue-'));
   const store = new Store(join(directory, 'invented.sqlite'));
   const worker = new Worker(new URL('../src/app/fireplace-worker.js', import.meta.url),

@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -58,7 +59,7 @@ function portReady(port) {
   });
 }
 
-test('real SSH transport seeds SQLite and incrementally catches up after receiver outage', { timeout: 60_000 }, async t => {
+test('real SSH transport seeds SQLite and incrementally catches up after receiver outage', { timeout: testCompletionLimit(60_000) }, async t => {
   const tools = await prerequisites();
   if (tools.missing.length) {
     const reason = `Real SSH replication test requires ${tools.missing.join(', ')}.`;

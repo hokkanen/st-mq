@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -55,7 +56,7 @@ function publicationWorker(options) {
   return new Worker(new URL('../src/app/learning-publication-worker.js', import.meta.url), options);
 }
 
-test('backup during a pending writer commit contains only one complete committed boundary', { timeout: 20_000 }, async t => {
+test('backup during a pending writer commit contains only one complete committed boundary', { timeout: testCompletionLimit(20_000) }, async t => {
   const { directory, store, stores } = await fixture(t);
   await store.runWrite(() => store.setState('value', 'previous'));
   const before = store.checkpoint(), gate = holdCommit(store);
@@ -77,7 +78,7 @@ test('backup during a pending writer commit contains only one complete committed
   verifyJournal(snapshot.db); verifyJournal(store.db);
 });
 
-test('peer export and acknowledgement retain changes made by the dedicated runtime writer', { timeout: 20_000 }, async t => {
+test('peer export and acknowledgement retain changes made by the dedicated runtime writer', { timeout: testCompletionLimit(20_000) }, async t => {
   const { directory, store, stores } = await fixture(t);
   await peerOperation('enroll', { dbPath: store.path, signal: t.signal });
   const base = store.checkpoint(), replicaPath = join(directory, 'replica.sqlite');
@@ -104,7 +105,7 @@ test('peer export and acknowledgement retain changes made by the dedicated runti
   verifyJournal(replica.db); verifyJournal(store.db);
 });
 
-test('paired MQTT context waits for admitted durability and retains source identity through verified handover', { timeout: 20_000 }, async t => {
+test('paired MQTT context waits for admitted durability and retains source identity through verified handover', { timeout: testCompletionLimit(20_000) }, async t => {
   const { directory, store } = await fixture(t), gate = holdCommit(store);
   const first = { topology: 'pair', input: 'mqtt', pair: { pairId: 'synthetic-pair',
     token: 'synthetic-pair-token-only', vip: { address: '192.0.2.30' } },
@@ -129,7 +130,7 @@ test('paired MQTT context waits for admitted durability and retains source ident
   verifyJournal(store.db);
 });
 
-test('failed paired MQTT seed durability remains unbound and can retry the same initialization', { timeout: 20_000 }, async t => {
+test('failed paired MQTT seed durability remains unbound and can retry the same initialization', { timeout: testCompletionLimit(20_000) }, async t => {
   const { directory, store } = await fixture(t);
   const config = { topology: 'pair', input: 'mqtt', pair: { pairId: 'synthetic-failed-seed',
     token: 'synthetic-pair-token-only', vip: { address: '192.0.2.30' } },
@@ -154,7 +155,7 @@ test('failed paired MQTT seed durability remains unbound and can retry the same 
   verifyJournal(store.db);
 });
 
-test('correction publication waits for active durability and adopts before the next admitted write', { timeout: 20_000 }, async t => {
+test('correction publication waits for active durability and adopts before the next admitted write', { timeout: testCompletionLimit(20_000) }, async t => {
   const { store } = await fixture(t), message = await correction(store), gate = holdCommit(store), order = [];
   const pending = store.runWrite(() => { store.setState('before-publication', true); store.afterCommit(() => order.push('saved')); });
   await gate.ready;
@@ -178,7 +179,7 @@ test('correction publication waits for active durability and adopts before the n
   verifyJournal(store.db);
 });
 
-test('a correction without complete staged coefficient history cannot publish a model or durable receipt', { timeout:20_000 }, async t => {
+test('a correction without complete staged coefficient history cannot publish a model or durable receipt', { timeout: testCompletionLimit(20_000) }, async t => {
   const {store}=await fixture(t), message=await correction(store);
   delete message.coefficientGeneration;
   const checkpoint=store.getState('adaptive:mqtt'), coverage=readCoefficientCoverage(store,{input:'mqtt'});
@@ -191,7 +192,7 @@ test('a correction without complete staged coefficient history cannot publish a 
   verifyJournal(store.db);
 });
 
-test('a correction cancelled behind active writer durability never starts publication', { timeout: 20_000 }, async t => {
+test('a correction cancelled behind active writer durability never starts publication', { timeout: testCompletionLimit(20_000) }, async t => {
   const { store } = await fixture(t), message = await correction(store), gate = holdCommit(store);
   const pending = store.runWrite(() => store.setState('before-cancel', true));
   await gate.ready;
@@ -208,7 +209,7 @@ test('a correction cancelled behind active writer durability never starts public
 });
 
 for (const boundary of ['lost-reply', 'cancel-after-commit']) test(`correction ${boundary} adopts its durable receipt once before queued writes`,
-  { timeout: 20_000 }, async t => {
+  { timeout: testCompletionLimit(20_000) }, async t => {
     const { store } = await fixture(t), message = await correction(store), cancellation = new AbortController();
     let adopted = 0, intercepted = false;
     const publishing = publishLearning({ store, input: 'mqtt', kind: 'correction', message,
@@ -237,7 +238,7 @@ for (const boundary of ['lost-reply', 'cancel-after-commit']) test(`correction $
     verifyJournal(store.db);
   });
 
-test('revoked authority at specialized worker admission preserves the previous selected model', { timeout: 20_000 }, async t => {
+test('revoked authority at specialized worker admission preserves the previous selected model', { timeout: testCompletionLimit(20_000) }, async t => {
   const { store } = await fixture(t), message = await correction(store);
   let current = true, reached = false;
   await assert.rejects(publishLearning({ store, input: 'mqtt', kind: 'correction', message,
@@ -253,7 +254,7 @@ test('revoked authority at specialized worker admission preserves the previous s
   verifyJournal(store.db);
 });
 
-test('a nonempty corrected model and shared sample bodies publish atomically and reconstruct exactly', { timeout: 20_000 }, async t => {
+test('a nonempty corrected model and shared sample bodies publish atomically and reconstruct exactly', { timeout: testCompletionLimit(20_000) }, async t => {
   const { store } = await fixture(t), at = Date.parse('2026-01-01T00:00:00Z');
   let load, previous;
   await store.runWrite(() => {
@@ -296,7 +297,7 @@ test('a nonempty corrected model and shared sample bodies publish atomically and
   verifyJournal(store.db);
 });
 
-test('shutdown terminates an uncommitted specialized publication before closing writer storage', { timeout: 20_000 }, async t => {
+test('shutdown terminates an uncommitted specialized publication before closing writer storage', { timeout: testCompletionLimit(20_000) }, async t => {
   const { store, stores } = await fixture(t), message = await correction(store);
   let entered, adopted = false;
   const ready = new Promise(resolve => { entered = resolve; });
@@ -321,7 +322,7 @@ test('shutdown terminates an uncommitted specialized publication before closing 
   verifyJournal(reopened.db);
 });
 
-test('history recovery shares publication admission with the dedicated writer and preserves controller state', { timeout: 30_000 }, async t => {
+test('history recovery shares publication admission with the dedicated writer and preserves controller state', { timeout: testCompletionLimit(30_000) }, async t => {
   const { directory, store, stores } = await fixture(t);
   await store.runWrite(() => store.setState('controller:sentinel', { permission: 'paused', identity: 'invented-equipment' }));
   const donorPath = join(directory, 'donor.sqlite');
@@ -349,7 +350,7 @@ test('history recovery shares publication admission with the dedicated writer an
   verifyJournal(store.db);
 });
 
-test('restoration publishes once when an earlier admitted commit extends already checked evidence', { timeout: 30_000 }, async t => {
+test('restoration publishes once when an earlier admitted commit extends already checked evidence', { timeout: testCompletionLimit(30_000) }, async t => {
   const { directory, store, stores } = await fixture(t), donorPath = join(directory, 'queued-proof-donor.sqlite');
   await store.backup(donorPath, { signal: t.signal });
   const donor = new Store(donorPath); stores.push(donor);

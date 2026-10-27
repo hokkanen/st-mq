@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import { fixtureMqttFrontend, fixtureMqttSourceContext } from './helpers/pair-frontend.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -36,7 +37,7 @@ test('initializing pair status identifies its configured pair without inventing 
   assert.equal(status.phase, 'initializing'); assert.equal(status.busy, true);
 });
 
-test('the real paired runtime API exposes configured pair identity without changing peer claims or authority', { timeout: 30_000 }, async t => {
+test('the real paired runtime API exposes configured pair identity without changing peer claims or authority', { timeout: testCompletionLimit(30_000) }, async t => {
   const f = await fixture(t), app = await f.open('status-identity', 'slave', 'ubuntu');
   const response = await fetch(`${url(app)}/api/pair`, { signal: t.signal });
   assert.equal(response.status, 200);
@@ -48,7 +49,7 @@ test('the real paired runtime API exposes configured pair identity without chang
   assert.equal(Object.hasOwn(app.pair.state.claim(), 'pairId'), false, 'Web status identity does not alter the encrypted peer claim contract');
 });
 
-test('a read-only paired viewer registers only derived cache proofs through its current writable peer', {timeout:30_000},async t=>{
+test('a read-only paired viewer registers only derived cache proofs through its current writable peer', {timeout: testCompletionLimit(30_000)},async t=>{
   const f=await fixture(t),primary=await f.open('cache-primary','master','hassio'),secondary=await f.open('cache-secondary','slave','ubuntu');
   connect(primary,secondary);
   await secondary.pair.synchronize(primary.pair.state.claim());
@@ -555,7 +556,7 @@ test('completed recovery stays protected without rejoin through rejected actions
   assert.doesNotMatch(pairDisplay(donor.status()).sync, /blocked/i);
 });
 
-test('both computers can keep-reset, explicitly select one master, recover retained additions and resume mirroring', { timeout: 90000 }, async t => {
+test('both computers can keep-reset, explicitly select one master, recover retained additions and resume mirroring', { timeout: testCompletionLimit(90000) }, async t => {
   const f = await fixture(t), master = await f.open('reset-master', 'master', 'hassio'), slave = await f.open('reset-slave', 'slave', 'ubuntu');
   connect(master, slave);
   await observation(master.store, now - 4 * W, 20);

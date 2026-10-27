@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -82,7 +83,7 @@ async function closeEngine(engine) {
 }
 
 for (const correction of ['fireplace', 'sensor']) test(`incident-sized ${correction} correction publishes through the Engine while retaining charging controls`,
-  { timeout: 30_000 }, async t => {
+  { timeout: testCompletionLimit(30_000) }, async t => {
     const directory = mkdtempSync(join(tmpdir(), 'stmq-engine-correction-'));
     const store = new Store(join(directory, 'synthetic.sqlite'));
     let now = START - 49 * WINDOW, commands = 0;

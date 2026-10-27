@@ -4,6 +4,7 @@ import { Worker } from 'node:worker_threads';
 import { fixture, sample, recover, start, W } from './helpers/recovery-fixture.js';
 import { previewRecoveryRevision, reviseRecovery } from '../src/recovery/service.js';
 import { replayLearningJournal } from '../src/app/committed-learning.js';
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 
 const cycle = (id, index = 0) => ({
   id, input: 'mqtt', status: 'completed', startedAt: start + (index + 3) * W,
@@ -12,6 +13,7 @@ const cycle = (id, index = 0) => ({
 });
 
 async function recoveredCycles(t) {
+  const started = performance.now();
   const f = fixture(t);
   sample(f.master, start + W);
   const donor = await f.donor();
@@ -20,7 +22,9 @@ async function recoveredCycles(t) {
   const frozen = Array.from({ length: 130 }, (_, index) => cycle(`invented-cycle-${String(index).padStart(3, '0')}`, index));
   f.master.transaction(() => { for (const value of frozen) f.master.cycle('mqtt', value); });
   const args = { store: f.master, recoveryId: recovered.report.recoveryId, active: false, signal: t.signal };
-  return { ...f, args, frozen, preview: await previewRecoveryRevision(args) };
+  const preview = await previewRecoveryRevision(args);
+  t.diagnostic(JSON.stringify({ stage: 'recovered-assessment-fixture-ready', elapsedMs: performance.now() - started }));
+  return { ...f, args, frozen, preview };
 }
 
 // Drive the existing worker handshake directly so redundant batches are counted
@@ -49,7 +53,7 @@ function revisionWorker(data) {
     close: () => worker.terminate() };
 }
 
-test('revision catch-up skips invalidated assessment batches and admits newly affected cycles', { timeout: 30000 }, async t => {
+test('revision catch-up skips invalidated assessment batches and admits newly affected cycles', { timeout: testCompletionLimit(30000) }, async t => {
   const f = await recoveredCycles(t);
   const worker = revisionWorker({ mode: 'revision', masterPath: f.master.path, input: 'mqtt',
     recoveryId: f.args.recoveryId, active: false, preview: f.preview });
@@ -82,7 +86,7 @@ test('revision catch-up skips invalidated assessment batches and admits newly af
   }
 });
 
-test('reversal publishes during continuing learning and preserves assessment evidence through restoration', { timeout: 30000 }, async t => {
+test('reversal publishes during continuing learning and preserves assessment evidence through restoration', { timeout: testCompletionLimit(30000) }, async t => {
   const f = await recoveredCycles(t);
   const late = cycle('a-cycle-recorded-during-reversal', 131);
   let timer = null, pending = null, streaming = true, failure = null, nextWindow = 3;
@@ -97,6 +101,7 @@ test('reversal publishes during continuing learning and preserves assessment evi
       .finally(() => { pending = null; });
   };
   let result;
+  const revisionStarted = performance.now();
   try {
     result = await reviseRecovery({ ...f.args, preview: f.preview,
       async onProgress(value) {
@@ -111,7 +116,10 @@ test('reversal publishes during continuing learning and preserves assessment evi
           }, { signal: t.signal });
         }
       },
-      onPublish() { publishedWhileStreaming = streaming && timer !== null; stop(); },
+      onPublish() {
+        publishedWhileStreaming = streaming && timer !== null; stop();
+        t.diagnostic(JSON.stringify({ stage: 'reversal-published', elapsedMs: performance.now() - revisionStarted, liveWrites }));
+      },
     });
   } finally { stop(); await pending; }
   assert.ifError(failure);
@@ -127,7 +135,9 @@ test('reversal publishes during continuing learning and preserves assessment evi
   assert(summaries.every(row => row.actualCostCents === 80), 'observed costs survive assessment invalidation');
 
   const restore = { ...f.args, active: true };
+  const restoreStarted = performance.now();
   const restored = await reviseRecovery({ ...restore, preview: await previewRecoveryRevision(restore) });
+  t.diagnostic(JSON.stringify({ stage: 'assessments-restored', elapsedMs: performance.now() - restoreStarted }));
   assert.deepEqual(replayLearningJournal(f.master, 'mqtt', null, { rebuild: true }), restored.checkpoint);
   assert(f.master.cycleSummaries({ input: 'mqtt', limit: 200 }).every(row => row.profitCents === 20));
   assert.deepEqual(f.master.cycles({ input: 'mqtt', limit: 200 }), frozen);

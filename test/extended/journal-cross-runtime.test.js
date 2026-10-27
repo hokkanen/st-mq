@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -32,7 +33,7 @@ function run(source, directory, signal) {
 }
 
 test('compact learning checkpoints transfer and hydrate exactly across Node/SQLite runtimes',
-  { skip: !otherNode && !required && 'Set STMQ_OTHER_NODE to another supported Node executable.', timeout: 60_000 }, async t => {
+  { skip: !otherNode && !required && 'Set STMQ_OTHER_NODE to another supported Node executable.', timeout: testCompletionLimit(60_000) }, async t => {
     assert.ok(otherNode, 'Set STMQ_OTHER_NODE for required cross-runtime validation.');
     const directory = await mkdtemp(join(tmpdir(), 'stmq-learning-cross-runtime-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
@@ -82,7 +83,7 @@ test('compact learning checkpoints transfer and hydrate exactly across Node/SQLi
   });
 
 test('different Node/SQLite runtimes seed, compact, catch up and reverse direction without losing stored precision',
-  { skip: !otherNode && !required && 'Set STMQ_OTHER_NODE to another supported Node executable.', timeout: 60_000 }, async t => {
+  { skip: !otherNode && !required && 'Set STMQ_OTHER_NODE to another supported Node executable.', timeout: testCompletionLimit(60_000) }, async t => {
     assert.ok(otherNode, 'Cross-runtime validation is required: set STMQ_OTHER_NODE to another supported Node executable.');
     const directory = await mkdtemp(join(tmpdir(), 'stmq-cross-runtime-'));
     t.after(() => rm(directory, { recursive: true, force: true }));

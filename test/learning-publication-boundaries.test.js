@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -55,7 +56,7 @@ function fixture(t) {
   return { store, original, checkpoint, candidate, launch, workers };
 }
 
-test('publication keeps queued controller writes behind committed model adoption', { timeout: 20_000 }, async t => {
+test('publication keeps queued controller writes behind committed model adoption', { timeout: testCompletionLimit(20_000) }, async t => {
   const f = fixture(t);
   let adopted = null, ran = false;
   const task = f.launch('after-commit', { onPublish: value => { adopted = value.checkpoint; } });
@@ -75,7 +76,7 @@ test('publication keeps queued controller writes behind committed model adoption
   assert.equal(ran, true);
 });
 
-test('committed receipt recovers a lost worker reply and abnormal exit before releasing updates', { timeout: 20_000 }, async t => {
+test('committed receipt recovers a lost worker reply and abnormal exit before releasing updates', { timeout: testCompletionLimit(20_000) }, async t => {
   const f = fixture(t);
   let adopted;
   const task = f.launch('lost-reply', { onPublish: value => { adopted = value.checkpoint; } });
@@ -90,7 +91,7 @@ test('committed receipt recovers a lost worker reply and abnormal exit before re
   } finally { restarted.close(); }
 });
 
-test('cancellation before publication commit joins the worker and preserves previous state', { timeout: 20_000 }, async t => {
+test('cancellation before publication commit joins the worker and preserves previous state', { timeout: testCompletionLimit(20_000) }, async t => {
   const f = fixture(t), cancel = new AbortController();
   let adopted = false;
   const task = f.launch('before-commit', { signal: cancel.signal, onPublish: () => { adopted = true; } });
@@ -105,7 +106,7 @@ test('cancellation before publication commit joins the worker and preserves prev
   await f.store.runWrite(() => f.store.event('synthetic-controller-after-cancellation', {}, start + 3 * W));
 });
 
-test('cancellation after commit still adopts the durable result and joins before releasing updates', { timeout: 20_000 }, async t => {
+test('cancellation after commit still adopts the durable result and joins before releasing updates', { timeout: testCompletionLimit(20_000) }, async t => {
   const f = fixture(t), cancel = new AbortController();
   let adopted;
   const task = f.launch('after-commit', { signal: cancel.signal, onPublish: value => { adopted = value.checkpoint; } });
@@ -119,7 +120,7 @@ test('cancellation after commit still adopts the durable result and joins before
   assert.deepEqual(f.store.getState('adaptive:mqtt'), f.checkpoint);
 });
 
-test('failed atomic publication rolls back checkpoint, status, plan and receipt together', { timeout: 20_000 }, async t => {
+test('failed atomic publication rolls back checkpoint, status, plan and receipt together', { timeout: testCompletionLimit(20_000) }, async t => {
   const f = fixture(t);
   let adopted = false;
   const task = f.launch('rollback', { onPublish: () => { adopted = true; } });
@@ -153,7 +154,7 @@ test('outer and nested rollback never start a publication worker', async t => {
 });
 
 for (const changed of ['journal head', 'fireplace revision', 'selected history', 'learning epoch'])
-test(`publication rejects an obsolete ${changed} without replacing the active model`, { timeout: 20_000 }, async t => {
+test(`publication rejects an obsolete ${changed} without replacing the active model`, { timeout: testCompletionLimit(20_000) }, async t => {
   const f = fixture(t);
   if (changed === 'journal head') sample(f.store, start + 3 * W);
   else if (changed === 'fireplace revision') addFireplace(f.store, 'mqtt', { requestId: 'synthetic-source-edit', kg: 2 }, start);
@@ -173,7 +174,7 @@ test(`publication rejects an obsolete ${changed} without replacing the active mo
   assert.equal(f.store.getState(publicationKey('mqtt')), null);
 });
 
-test('closing write admission cancels and joins an active publication worker', { timeout: 20_000 }, async t => {
+test('closing write admission cancels and joins an active publication worker', { timeout: testCompletionLimit(20_000) }, async t => {
   const f = fixture(t);
   let adopted = false;
   const task = f.launch('before-commit', { onPublish: () => { adopted = true; } });

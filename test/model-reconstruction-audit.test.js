@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import { Worker } from 'node:worker_threads';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -325,7 +326,7 @@ test('independent audit: readonly live replay stages every intermediate event in
 });
 
 for (const cause of ['write failure', 'authority superseded'])
-  test('independent audit: coefficient staging ' + cause + ' cannot hang or publish a partial timeline', { timeout: 20_000 }, async t => {
+  test('independent audit: coefficient staging ' + cause + ' cannot hang or publish a partial timeline', { timeout: testCompletionLimit(20_000) }, async t => {
     const f = fixture(t); context(f.store, start, 0.025);
     const checkpoint = replayLearningJournal(f.store, 'mqtt');
     const coverage = readCoefficientCoverage(f.store, { input: 'mqtt' });

@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
@@ -38,7 +39,7 @@ async function fixture(t) {
   return { directory, source, db, config };
 }
 
-test('real sqlite3_rsync seeds once then journal transfer catches up inserts and deletions without snapshots', { skip: skipRsync, timeout: 60_000 }, async t => {
+test('real sqlite3_rsync seeds once then journal transfer catches up inserts and deletions without snapshots', { skip: skipRsync, timeout: testCompletionLimit(60_000) }, async t => {
   assert.ok(available, 'STMQ_REQUIRE_RSYNC_TESTS requires a working sqlite3_rsync on PATH or STMQ_TEST_RSYNC');
   const { directory, source, db, config } = await fixture(t);
   const commands = [];
@@ -94,7 +95,7 @@ test('real sqlite3_rsync seeds once then journal transfer catches up inserts and
   assert.ok(ssh.args.includes('ServerAliveCountMax=3'));
 });
 
-test('private SSH config is selected on both channels without changing the parent environment', { skip: skipRsync, timeout: 60_000 }, async t => {
+test('private SSH config is selected on both channels without changing the parent environment', { skip: skipRsync, timeout: testCompletionLimit(60_000) }, async t => {
   assert.ok(available);
   const { directory, source, config } = await fixture(t);
   const sshConfigPath = join(directory, 'private ssh config'), capture = join(directory, 'ssh-arguments.jsonl');
@@ -108,7 +109,7 @@ test('private SSH config is selected on both channels without changing the paren
   assert.equal(process.env.STMQ_MIRROR_SSH_CONFIG, previous);
 });
 
-test('offline peer fails before creating a source snapshot and resumes at the next attempt', { skip: skipRsync, timeout: 60_000 }, async t => {
+test('offline peer fails before creating a source snapshot and resumes at the next attempt', { skip: skipRsync, timeout: testCompletionLimit(60_000) }, async t => {
   assert.ok(available);
   const { source, config } = await fixture(t);
   let snapshots = 0;
@@ -122,7 +123,7 @@ test('offline peer fails before creating a source snapshot and resumes at the ne
   assert.equal((await readReplicaPublication(config.remoteDirectory)).generation, recovered.generation);
 });
 
-test('timed out sync leaves publication intact and the next real transfer recovers', { skip: skipRsync, timeout: 60_000 }, async t => {
+test('timed out sync leaves publication intact and the next real transfer recovers', { skip: skipRsync, timeout: testCompletionLimit(60_000) }, async t => {
   assert.ok(available);
   const { source, config } = await fixture(t);
   const first = await synchronizeReplica({ signal: t.signal, dbPath: source, config });

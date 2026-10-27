@@ -1,3 +1,4 @@
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -12,7 +13,7 @@ import { sample, start, W } from './helpers/recovery-fixture.js';
 import { addFireplace, removeFireplace, FireplaceRebuildManager } from '../src/app/fireplace.js';
 
 test('ordinary minute controller updates publish a correction after crossing a learning-window boundary',
-  { timeout: 20_000 }, async t => {
+  { timeout: testCompletionLimit(20_000) }, async t => {
     const directory = mkdtempSync(join(tmpdir(), 'stmq-correction-progress-'));
     const store = new Store(join(directory, 'history.sqlite'));
     let now = start;
@@ -58,7 +59,7 @@ test('ordinary minute controller updates publish a correction after crossing a l
     t.diagnostic(JSON.stringify({ controllerTicksToPublish: ticks }));
   });
 
-test('correction publication does not require a quiet controller update', { timeout: 20_000 }, async t => {
+test('correction publication does not require a quiet controller update', { timeout: testCompletionLimit(20_000) }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-correction-moving-context-'));
   const store = new Store(join(directory, 'history.sqlite'));
   let now = start;
@@ -102,7 +103,7 @@ test('correction publication does not require a quiet controller update', { time
 });
 
 test('correction catches up a controller write admitted at the control-priority fairness boundary',
-  { timeout: 20_000 }, async t => {
+  { timeout: testCompletionLimit(20_000) }, async t => {
     const directory = mkdtempSync(join(tmpdir(), 'stmq-correction-fairness-'));
     const store = new Store(join(directory, 'history.sqlite'));
     let now = start;
