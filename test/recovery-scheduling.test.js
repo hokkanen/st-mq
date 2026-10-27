@@ -23,7 +23,9 @@ test('recovery releases SQLite for progress persistence and concurrent controlle
   const preview = await recoveryPreview({ masterPath: f.master.path, donorPath, signal: t.signal });
   const failures = [], deferredWrites = [];
   const busyTimeout = f.master.db.prepare('PRAGMA busy_timeout').get().timeout;
-  let beats = 0, progressWrites = 0, maxWriteMs = 0, maxCommitWaitMs = 0, maxHeartbeatGapMs = 0, lastBeat = performance.now();
+  let beats = 0, controllerWrites = 0, controllerPending = null, progressWrites = 0;
+  let maxWriteMs = 0, maxCommitWaitMs = 0, maxHeartbeatGapMs = 0, lastBeat = performance.now();
+  const controllerAdmissionRows = [];
   let maxSynchronousCommitMs = 0, maxProgressWriteMs = 0, worstHeartbeat = null;
   const slowWrites = [];
   const committed = (kind, started) => {
@@ -44,20 +46,29 @@ test('recovery releases SQLite for progress persistence and concurrent controlle
   t.after(() => {
     f.master.writeQueue.transaction = transaction;
     setPhase('done');
-    t.diagnostic(JSON.stringify({ controllerWrites: beats, progressWrites, maxWriteMs: Math.round(maxWriteMs),
+    t.diagnostic(JSON.stringify({ controllerWrites, heartbeatTicks: beats, progressWrites, maxWriteMs: Math.round(maxWriteMs),
       maxCommitWaitMs: Math.round(maxCommitWaitMs), maxHeartbeatGapMs: Math.round(maxHeartbeatGapMs),
       maxSynchronousCommitMs: Math.round(maxSynchronousCommitMs), maxProgressWriteMs: Math.round(maxProgressWriteMs),
       worstHeartbeat, slowWrites, phases }));
   });
   const timer = setInterval(() => {
-    const before = performance.now(), tick = ++beats;
+    const before = performance.now(); beats++;
     if (before - lastBeat > maxHeartbeatGapMs) {
       maxHeartbeatGapMs = before - lastBeat; worstHeartbeat = { phase, pending: f.master.writeQueueStatus().pending };
     }
     lastBeat = before;
-    deferredWrites.push(f.master.runWrite(() => f.master.event('synthetic-control-tick', { tick }, start + 10_000_000 + tick))
+    // Measure one controller's admission latency independently of service
+    // capacity. An unbounded 100Hz producer turns a slow COMMIT into a growing
+    // synthetic backlog; heartbeat sampling must continue while this waits.
+    if (controllerPending) return;
+    const tick = ++controllerWrites;
+    controllerPending = f.master.runWrite(() => {
+      controllerAdmissionRows.push(f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n);
+      f.master.event('synthetic-control-tick', { tick }, start + 10_000_000 + tick);
+    })
       .then(() => { maxCommitWaitMs = Math.max(maxCommitWaitMs, performance.now() - before); })
-      .catch(error => failures.push(error.code)));
+      .catch(error => failures.push(error.code)).finally(() => { controllerPending = null; });
+    deferredWrites.push(controllerPending);
     maxWriteMs = Math.max(maxWriteMs, performance.now() - before);
   }, 10);
   let result;
@@ -80,7 +91,12 @@ test('recovery releases SQLite for progress persistence and concurrent controlle
   await Promise.all(deferredWrites);
   assert.deepEqual(failures, [], 'controller and progress writes never exhaust SQLite lock waiting');
   assert.ok(progressWrites > 1, 'progress persisted between multiple batches with no lock-wait allowance');
-  assert.ok(beats > 0, 'the controller kept writing during recovery');
+  assert.ok(beats > 0, 'the controller heartbeat kept running during recovery');
+  assert(controllerWrites > 1);
+  assert(controllerAdmissionRows.some(count => count > 0 && count < rows), 'controller admission actually overlaps separate import batches');
+  assert.equal(controllerAdmissionRows.length, controllerWrites);
+  assert.equal(f.master.db.prepare("SELECT COUNT(*) n FROM events WHERE type='synthetic-control-tick'").get().n, controllerWrites,
+    'Every submitted controller write is retained');
   assert.ok(maxWriteMs < testLatencyLimit(1000), 'bounded recovery batches keep controller write waits below the event-loop warning threshold');
   assert(maxHeartbeatGapMs < testLatencyLimit(1000), 'controller heartbeat remains responsive');
   assert(maxCommitWaitMs < testLatencyLimit(1500), 'controller writes actually commit between bounded recovery batches');
@@ -90,16 +106,19 @@ test('recovery releases SQLite for progress persistence and concurrent controlle
 });
 
 
-test('a delayed controller retry commits before recovery receives its next writer turn', { timeout: testCompletionLimit(15000) }, async t => {
+for (const queuedWrites of [1, 3])
+test(`a delayed controller retry commits before recovery receives its next writer turn (${queuedWrites} queued writes)`,
+  { timeout: testCompletionLimit(15000) }, async t => {
   const f = fixture(t), donor = await f.donor();
   donor.transaction(() => { for (let i = 0; i < 192; i++) observation(donor, start + i * 60000); });
   const donorPath = await f.snapshot(donor);
   const preview = await recoveryPreview({ masterPath: f.master.path, donorPath, signal: t.signal });
   const transaction = f.master.writeQueue.transaction;
-  let pending, release, atYield, atAdmission, admitted = false;
+  let pending = [], release, atYield, admitted = false;
+  const atAdmission = [];
   t.after(() => { clearTimeout(release); f.master.writeQueue.transaction = transaction; });
   const result = await recoverHistory({ store: f.master, donorPath, preview, signal: t.signal, onProgress(value) {
-    if (value.phase !== 'importing' || pending) return;
+    if (value.phase !== 'importing' || pending.length) return;
     atYield = f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n;
     // Model a delayed retry after admission has seen contention. The worker is
     // free to write; only the controller's previously queued job is delayed.
@@ -107,14 +126,14 @@ test('a delayed controller retry commits before recovery receives its next write
       if (!admitted) throw Object.assign(new Error('Synthetic delayed writer admission'), { code: 'ERR_SQLITE_ERROR', errcode: 5 });
       return transaction(fn);
     };
-    pending = f.master.runWrite(() => {
-      atAdmission = f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n;
+    pending = Array.from({ length: queuedWrites }, () => f.master.runWrite(() => {
+      atAdmission.push(f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n);
       f.master.event('synthetic-admitted-controller-write', {});
-    });
+    }));
     release = setTimeout(() => { admitted = true; }, 250);
   } });
-  await pending;
-  assert.equal(atAdmission, atYield, 'recovery cannot consume the retry interval before the queued controller write');
+  await Promise.all(pending);
+  assert.deepEqual(atAdmission, Array(queuedWrites).fill(atYield), 'recovery cannot consume the retry interval before the queued controller writes');
   assert.equal(result.report.imported, 192);
-  assert.equal(f.master.db.prepare("SELECT COUNT(*) n FROM events WHERE type='synthetic-admitted-controller-write'").get().n, 1);
+  assert.equal(f.master.db.prepare("SELECT COUNT(*) n FROM events WHERE type='synthetic-admitted-controller-write'").get().n, queuedWrites);
 });

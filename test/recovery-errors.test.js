@@ -12,6 +12,8 @@ import { PairPeer, publicPairError } from '../src/pairing/peer.js';
 import { pairDisplay, pairIssueHelp } from '../chart/pair-status.js';
 import { recoveryJobText } from '../chart/history-recovery.js';
 import { sample, start, W } from './helpers/recovery-fixture.js';
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-recovery-errors-'));
@@ -70,7 +72,7 @@ test('a damaged donor reports its cause through the recovery worker without chan
   assert.equal(master.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
 });
 
-test('a real database lock is distinguished from corruption and a later source check succeeds', { timeout: 15000 }, async t => {
+test('a real database lock is distinguished from corruption and a later source check succeeds', { timeout: testCompletionLimit(15000) }, async t => {
   const { directory, master, donorPath } = fixture(t);
   const source = new Store(donorPath); source.close();
   const lock = new DatabaseSync(donorPath);
@@ -127,30 +129,44 @@ test('a publication transaction failure keeps its cause and the previous model s
   assert.equal(master.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
 });
 
-test('cancelled recovery skips failure bookkeeping behind an external SQLite writer', { timeout: 5000 }, async t => {
+for (const preparationDelayMs of [0, 1600])
+test(`cancelled recovery skips failure bookkeeping behind an external SQLite writer${preparationDelayMs ? ' after delayed preparation' : ''}`,
+  { timeout: testCompletionLimit(5000 + preparationDelayMs) }, async t => {
   const { master, donorPath } = fixture(t), donor = new Store(`${donorPath}.working`);
   donor.observation({ source: 'synthetic', device: 'cancellation-fixture', signal: 'indoor_temperature',
     value: 21, unit: 'degC', sourceTime: 1000, receivedAt: 1000 });
   await donor.backup(donorPath); donor.close();
   const preview = await recoveryPreview({ masterPath: master.path, donorPath, signal: t.signal });
   const lock = new DatabaseSync(master.path), cancellation = new AbortController();
-  let timer, locked = false;
+  let prepared = false;
+  let timer, outcome, cancellationAt, locked = false;
+  let rejectCancellation;
+  const cancellationDeadline = new Promise((_resolve, reject) => { rejectCancellation = reject; });
   try {
-    const outcome = recoverHistory({ store: master, donorPath, preview, signal: cancellation.signal,
-      onProgress(value) {
+    outcome = recoverHistory({ store: master, donorPath, preview, signal: AbortSignal.any([cancellation.signal, t.signal]),
+      async onProgress(value) {
+        if (!prepared) {
+          prepared = true;
+          if (preparationDelayMs) await delay(preparationDelayMs, undefined, { signal: t.signal });
+        }
         if (locked || value.phase !== 'importing') return;
         assert.match(master.getState('recovery:active:mqtt').operationToken, /^[a-f0-9-]{36}$/);
-        lock.exec('BEGIN IMMEDIATE'); locked = true; cancellation.abort();
+        lock.exec('BEGIN IMMEDIATE'); locked = true;
+        cancellationAt = performance.now();
+        timer = setTimeout(() => rejectCancellation(new Error('Cancelled recovery waited for SQLite diagnostics')), 1500);
+        cancellation.abort();
       } }).catch(error => error);
-    const error = await Promise.race([outcome, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('Cancelled recovery waited for SQLite diagnostics')), 1500);
-    })]);
+    const error = await Promise.race([outcome, cancellationDeadline]);
     assert.equal(error.code, 'recovery_invalid');
     assert.equal(locked, true, 'Cancellation happens after a durable recovery operation exists');
     assert.equal(master.observations().length, 1, 'Already committed source evidence survives cancellation');
     assert.equal(master.writeQueueStatus().pending, 0);
     assert.deepEqual(master.getState('adaptive:mqtt'), { synthetic: 'previous-model' });
-  } finally { clearTimeout(timer); if (locked) lock.exec('ROLLBACK'); lock.close(); }
+    t.diagnostic(JSON.stringify({ preparationDelayMs, cancellationMs: performance.now() - cancellationAt }));
+  } finally {
+    clearTimeout(timer); if (locked) lock.exec('ROLLBACK');
+    cancellation.abort(); await outcome; lock.close();
+  }
 });
 
 test('cancellation after publication commit reports the completed recovery and joins model adoption', async t => {

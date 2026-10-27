@@ -918,6 +918,14 @@ for its fixture, reversal and subsequent restoration. It records each stage's
 elapsed time and still requires publication during actual continuing learning,
 forced catch-up, exact replay, unchanged source cycles, restored assessments and
 database integrity. The independent recovery-publication liveness guards remain.
+Recovery cancellation starts its original 1,500 ms guard at the actual abort,
+after durable preparation and external-lock acquisition. An explicitly delayed
+preparation case must reach that boundary; cancellation still finishes with the
+lock held and leaves no pending diagnostic write. The scheduling fixture samples
+heartbeats independently of one outstanding synthetic controller write, retains
+its original standard admission bound, and checks actual between-batch admission
+and persistence of every submitted write. The delayed-retry race retains its
+original checks and also covers three queued writes.
 Selected whole-case budgets for checkpoint/replay, sensor/fireplace correction,
 publication admission and bulk pairing/rsync/SSH/cross-runtime fixtures use that
 same completion allowance. Their original standard bounds remain unchanged.
