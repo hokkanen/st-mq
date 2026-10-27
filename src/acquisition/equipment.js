@@ -1079,7 +1079,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       }
       return;
     }
-    if (device.kind === 'dehumidifier') confirmDehumidifier(device, now);
+    // A queued delivery can follow a newer meter admission. Its original
+    // receipt still belongs to the report, not to current Caravan readiness.
+    const caravanNow = engine.clock();
+    if (device.kind === 'dehumidifier') confirmDehumidifier(device, caravanNow);
     const main = device.readings[device.stateSignal];
     if (device.subscriptionStatus === 'subscribed' && healthy(device, now) && fresh(device, main, now)) for (const waiter of [...device.waiters])
       if (waiter.dispatched && main.revision > waiter.revision && main.receivedAt >= waiter.at
@@ -1091,8 +1094,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       else if (device.invalid) reception.afterCommit(() => check.finish('needs-attention'));
     }
     for (const appliance of devices.filter(row => row.temperatureControl)) {
-      confirmDehumidifier(appliance, now);
-      controlTemperature(appliance, now);
+      confirmDehumidifier(appliance, caravanNow);
+      controlTemperature(appliance, caravanNow);
     }
   }
   async function switchDevice(device, on, { beforePublish: validate = () => {} } = {}) {

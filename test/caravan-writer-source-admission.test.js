@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
@@ -10,8 +13,11 @@ import { classifySourceTime } from '../src/domain/time-evidence.js';
 const START = Date.parse('2026-10-09T10:00:00Z'), IDENTITY = 'a'.repeat(64), METER = 'invented-caravan-meter';
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function mqttFixture(t) {
-  const store = new Store(':memory:'), client = new EventEmitter(), publications = [], commands = [];
+async function mqttFixture(t, { writer = false } = {}) {
+  const directory = writer ? await mkdtemp(join(tmpdir(), 'stmq-caravan-admission-')) : null;
+  const store = new Store(directory ? join(directory, 'history.sqlite') : ':memory:');
+  if (writer) await store.startWriter();
+  const client = new EventEmitter(), publications = [], commands = [];
   let now = START;
   const recorder = new Recorder(store, { clock: () => now });
   const settings = equipmentConfiguration({ devices: [
@@ -33,7 +39,10 @@ async function mqttFixture(t) {
     engine: { clock: () => now, recorder, ingest: row => recorder.record(row), rememberObservation() {} },
     config: { connections: { mqtt: { address: 'mqtt://synthetic.invalid' }, equipment: settings } },
     connect: () => client });
-  t.after(async () => { await reader.close({ restore: false }); store.close(); });
+  t.after(async () => {
+    await reader.close({ restore: false }); await store.close();
+    if (directory) await rm(directory, { recursive: true, force: true });
+  });
   const flush = async () => {
     for (let attempt = 0; attempt < 100; attempt++) {
       await settle();
@@ -49,6 +58,7 @@ async function mqttFixture(t) {
     state: () => reader.equipment.status().devices.find(row => row.id === 'caravan_dehumidifier').dehumidifier.temperatureControl,
     dehumidifier: () => reader.equipment.status().devices.find(row => row.id === 'caravan_dehumidifier').dehumidifier,
     air: () => send('fixture/air', { value: 10, timestamp: now }),
+    dryerOnline: () => send('fixture/dryer/online', 'online'),
     dryer: power => send('fixture/dryer', { identity: IDENTITY, power, fanSpeed: 'low', timestamp: now,
       fieldTimestamps: { power: now, fanSpeed: now }, capabilities: { power: ['off', 'on'], fanSpeed: ['low'] } }),
     meter: (watts = 51, lead = 0, partial = false, total = 1000) => send('fixture/caravan/events/rpc', {
@@ -77,8 +87,8 @@ async function mqttFixture(t) {
 }
 
 
-async function qualifiedManagedOn(t) {
-  const f = await mqttFixture(t);
+async function qualifiedManagedOn(t, options) {
+  const f = await mqttFixture(t, options);
   while (f.commands.length < 2) {
     f.advance(60_000); f.air(); f.dryer('off'); f.meter(51); await f.flush();
   }
@@ -218,3 +228,44 @@ test('a real meter disconnect cancels the original pending report without regain
   assert.notEqual(f.native().readings.caravan_current.observedAt, receipt + 801);
   assert.equal(f.recorder.latestCommitted('caravan_dehumidifier_state').value, null);
 });
+
+for (const writer of [false, true]) for (const delivery of ['snapshot', 'availability', 'temperature'])
+  test(`queued ${delivery} checks current Caravan readiness after meter admission${writer ? ' with dedicated writer' : ''}`, async t => {
+    const f = await qualifiedManagedOn(t, { writer }), commandCount = f.commands.length;
+    f.advance(1000);
+    const receipt = f.now();
+    f.meter(400, 80); await f.flush();
+    await f.store.runWrite(() => f.reader.equipment.tick(f.now())); await f.flush();
+    assert.equal(f.state().recording, false);
+    let release, started = false;
+    const held = new Promise(resolve => { release = resolve; });
+    const owner = f.store.runPublication(async () => { started = true; await held; });
+    try {
+      await settle(); assert.equal(started, true);
+      f.advance(40);
+      // Queue automatic meter admission first, then a delivery whose original
+      // receipt precedes that meter's source clock. Both await the real writer.
+      for (let attempt = 0; attempt < 100 && f.store.writeQueueStatus().pending < 2; attempt++) await delay(10);
+      assert.ok(f.store.writeQueueStatus().pending >= 2);
+      if (delivery === 'snapshot') f.dryer('on');
+      else if (delivery === 'availability') f.dryerOnline();
+      else f.air();
+      f.advance(100);
+    } finally { release(); await owner; }
+    await f.flush();
+    const signal = 'caravan_dehumidifier_state', power = f.native().readings.caravan_power;
+    assert.equal(power.observedAt, receipt + 80);
+    assert.equal(power.receivedAt, receipt);
+    assert.equal(power.timeAdmission.admittedAt, receipt + 140);
+    assert.equal(f.native().available, true);
+    assert.equal(f.state().qualified, true);
+    assert.equal(f.state().qualification.unavailableSince, null);
+    assert.equal(f.state().recording, true);
+    assert.equal(f.state().desiredPower, 'on');
+    assert.equal(f.commands.length, commandCount, 'Queued evidence must not send a protective Off');
+    assert.equal(f.recorder.status(f.now()).exactParameters.find(row => row.signal === signal).freshness.status, 'fresh');
+    assert.equal(f.recorder.committedAt(signal, receipt + 139).value, null, 'The real quarantine remains a historical gap');
+    assert.equal(f.recorder.committedAt(signal, receipt + 140).value, 1);
+    const gap = f.store.observations({ signal }).findLast(row => row.value === null);
+    assert.equal(gap.receivedAt, receipt, 'The older queued receipt must not create a second gap');
+  });

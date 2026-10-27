@@ -465,6 +465,12 @@ It also injects a synchronous delay at the real Store COMMIT entry, without
 claiming a measured disk or fsync delay. Both paths preserve original clocks,
 qualified demand and the historical gap; expired required evidence and a real
 disconnect remain unavailable.
+The same fixture queues appliance snapshots, availability and temperature
+messages behind a newer meter admission, using both the in-memory Store and a
+dedicated file-backed writer. Current qualification and demand survive without
+an extra command; original source/receipt/admission clocks and the quarantine
+gap remain intact. These synthetic orderings do not establish the exact cause
+of every installed recording gap.
 The temperature-control fixtures hold the actual publisher before its final
 admission gate, and separately combine missing-air then warm reports in one real
 Store transaction. Warm unqualified recovery preserves the native baseline,

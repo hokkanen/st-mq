@@ -19,6 +19,9 @@ changing a report's source or receipt clock. When processing a queued vehicle
 report, evaluate current charger readiness against the processing clock: a newer
 admitted native readback must not appear future-dated against the older packet's
 receipt. Source-time admission still validates the original clocks independently.
+Queued equipment snapshots, availability and temperature messages likewise check
+current Caravan qualification against processing time. A newer admitted meter
+must not become unavailable merely because another message arrived earlier.
 Heating's staged control preparation rechecks its five-second age limit inside
 writer admission, before continuing. A stale preparation restarts control from
 fresh observations without retiming committed learning inputs or checkpoints.
