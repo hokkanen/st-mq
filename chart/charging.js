@@ -1085,7 +1085,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       metricDetail(device.state, { label: presentation.roleLabel, title: 'Charging control', detail: presentation.roleDetail, key: `${charger.id}:role` });
       device.state.dataset.state = presentation.roleState;
       const limiter = shellyLimiterDisplay(charger.limiter);
-      const timedEvent = presentation.activity.match(/^(Starts|Scheduled start|Proposed start|Last confirmed start|Resumes|Last confirmed resume) (.+)$/);
+      const timedEvent = presentation.activity.match(/^(Starts|Scheduled start|Proposed start|Last confirmed start|Resumes|Last confirmed resume) (.+)$/)
+        ?? presentation.activity.match(/^(Paused between periods) · (.+)$/);
       device.eventLabel.textContent = view.activityTiming?.label ?? (timedEvent ? timedEvent[1] === 'Scheduled start' ? 'Starts' : timedEvent[1] : '');
       device.eventLabel.hidden = !device.eventLabel.textContent;
       device.event.dataset.timing = view.activityTiming ? 'approval-pending' : 'ordinary';

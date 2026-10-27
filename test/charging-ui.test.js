@@ -694,6 +694,20 @@ test('confirmed periods describe the next pause or resumption and keep the final
   const paused = view({ ...item, plan: { ...item.plan, periods: pausedPeriods }, control: { phase: 'paused', owned: { startAt, periods: pausedPeriods } } });
   assert.equal(paused.state, 'Paused between periods'); assert.equal(paused.event, 'Resumes 23:00');
   assert.equal(paused.deadline, 'Ready by tomorrow 06:00');
+  const document = documentFixture(), panel = createChargingPanel({ document, request: async () => status() });
+  const pausedItem = { ...item, plan: { ...item.plan, periods: pausedPeriods },
+    control: { phase: 'paused', owned: { startAt, periods: pausedPeriods } } };
+  panel.update(status(pausedItem));
+  assert.equal(document.getElementById('charger1-event-label').textContent, 'Paused between periods');
+  assert.equal(document.getElementById('charger1-event-value').textContent, 'Resumes 23:00');
+  assert.equal(document.getElementById('charger1-event').dataset.timing, 'ordinary');
+  document.getElementById('charger1-event-value').querySelector('.status-detail-trigger').dispatch('click');
+  assert.match(document.getElementById('status-detail-popover').querySelector('.status-detail-body').textContent, /Paused between periods · Resumes 23:00/);
+  panel.update(status({ ...pausedItem, control: { ...pausedItem.control, phase: 'waiting' } }));
+  assert.equal(document.getElementById('charger1-event-label').hidden, true);
+  assert.match(document.getElementById('charger1-event-value').textContent, /pause awaiting confirmation/);
+  panel.close();
+
   const released = view({ ...item, control: { phase: 'released' }, values: { ...item.values, charging: reading(true), powerKw: reading(8.2) } });
   assert(!released.event.includes('pauses')); assert.equal(released.periodRows.length, 0);
 });

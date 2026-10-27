@@ -50,6 +50,11 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
         const startAt = at + 3600000, finishAt = at + 3 * 3600000, deadlineAt = at + 5 * 3600000;
         charger.plan = { startAt, finishAt, deadlineAt, periods: [{ startAt, endAt: null }], feasible: true };
         charger.control = { phase: 'waiting', confirmed: true, owned: { startAt, periods: [{ startAt, endAt: null }] } };
+        if (state.scenario === 'charging-paused-periods' && charger.id === 'charger1') {
+          const periods = [{ startAt: at - 3600000, endAt: at - 1800000 }, { startAt, endAt: null }];
+          charger.plan.periods = periods;
+          charger.control = { phase: 'paused', confirmed: true, owned: { startAt, periods } };
+        }
         charger.forecast = { state: 'planned', controlled: true, startAt, finishAt, feasible: true, requiredGridKwh: 20 };
         charger.progress = { deliveredGridKwh: 4.2, remainingGridKwh: 20, estimatedSoc: 47, hasEnergyEstimate: true };
         charger.sessionCost = { totalCents: 343.64, recordedGridKwh: 4.2 };
@@ -144,6 +149,7 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
       expanded: [...document.querySelectorAll('.controller-panels details[open]')].some(node => node.checkVisibility()),
       providers: [...document.querySelectorAll('#providers > li')].map(node => node.dataset.provider),
       chargers: [...document.querySelectorAll('#charging-devices > details')].map(node => node.id),
+      chargingHeight: document.getElementById('charging-devices').getBoundingClientRect().height,
       headings: ['control-title', 'garage-title'].map(id => document.getElementById(id).getBoundingClientRect().top),
       fits: document.documentElement.scrollWidth <= innerWidth };
   })()`);
@@ -312,11 +318,31 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
           }
         }
       }
-      for (const scenario of ['unavailable', 'not-configured', 'stale', 'indoor-stale', 'garage-stale', 'provider-attention', 'long-plan', 'paused', 'control-unavailable', 'missing-price', 'simulation', 'history', 'replica', 'charging-error', 'normal']) {
+      for (const scenario of ['unavailable', 'not-configured', 'stale', 'indoor-stale', 'garage-stale', 'provider-attention', 'long-plan', 'paused', 'control-unavailable', 'missing-price', 'simulation', 'history', 'replica', 'charging-error', 'charging-paused-periods', 'normal']) {
         await evaluate(`dashboardHeightFixture.scenario = '${scenario}'`); await refresh();
         if (['unavailable', 'not-configured', 'stale', 'indoor-stale', 'garage-stale', 'missing-price', 'simulation', 'history', 'replica', 'charging-error'].includes(scenario))
           await naturalResize(baseline, width, scenario);
-        else await stable(baseline, `${width}px ${scenario}`);
+        else if (scenario === 'charging-paused-periods' && width < 1280) {
+          const actual = await geometry();
+          for (const index of [0, 2]) assert.ok(Math.abs(actual.cards[index].height - baseline.cards[index].height) <= 1,
+            `${width}px: paused charging does not resize Home or Data & settings`);
+          assert.ok(Math.abs(actual.cards[1].height - baseline.cards[1].height
+            - actual.chargingHeight + baseline.chargingHeight) <= 1,
+          `${width}px: Garage grows only by its naturally wrapped charger content`);
+        } else await stable(baseline, `${width}px ${scenario}`);
+        if (scenario === 'charging-paused-periods') {
+          assert.equal(await evaluate("document.getElementById('charger1-event-label').textContent"), 'Paused between periods');
+          assert.match(await evaluate("document.getElementById('charger1-event-value').textContent"), /^Resumes /);
+          if (width >= 1280) {
+            const theme = await evaluate('document.documentElement.dataset.theme');
+            try {
+              for (const value of ['dark', 'light']) {
+                await evaluate(`document.documentElement.dataset.theme = '${value}'`); await settle();
+                await stable(baseline, `${width}px ${scenario} ${value}`);
+              }
+            } finally { await evaluate(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`); }
+          }
+        }
         await checkDashboardCompactLayout({ evaluate, width });
         if (artifacts) writeFileSync(join(artifacts, `dashboard-${width}-${scenario}.json`), JSON.stringify(await geometry(), null, 2));
         if (['unavailable', 'stale', 'indoor-stale', 'garage-stale', 'control-unavailable'].includes(scenario))
