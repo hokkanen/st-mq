@@ -975,6 +975,11 @@ Before installing synthetic same-session restart ownership, the Shelly writer
 fixture drains received preparation and joins the previous controller's shutdown.
 An in-flight prior save must finish before the artificial disk record is seeded;
 it cannot overwrite that restart record during the subsequent adapter replacement.
+Equipment-route replacement checks join acquisition after the refused restoration
+before reading the public status. During another writer transaction, that public
+projection intentionally retains its preceding complete view. The HTTP refusal,
+durable route error, current owner error and absence of replacement-device
+commands remain independent assertions.
 The Shelly intent-COMMIT and accepted-period fixtures likewise own the periodic
 reader while holding their selected boundaries, and admit a normal poll before
 selecting the displayed scope. Explicit received-poll cases still close native

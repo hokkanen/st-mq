@@ -531,7 +531,14 @@ test('native hardware replacement on the existing broker connection invalidates 
   await f.settleAcquisition();
   const restored = await f.post('/api/equipment/test/restore');
   assert.equal(restored.status, 400);
+  assert.match(restored.body.error, /original equipment connection is unavailable or has changed/);
+  // The failed restoration is durable, but another acquisition write may
+  // temporarily retain the preceding complete public view. Join that write
+  // before asserting its replacement; never publish provisional controller RAM.
+  await f.settleAcquisition();
   assert.equal(f.app.store.getState(KEY).active.status, 'restoration-pending');
+  assert.equal(f.app.store.getState(KEY).lastResult.code, 'EQUIPMENT_TEST_ROUTE');
+  assert.equal(f.app.engine.equipmentTests.status().lastResult.code, 'EQUIPMENT_TEST_ROUTE');
   assert.equal(f.app.engine.status().equipmentTests.lastResult.code, 'EQUIPMENT_TEST_ROUTE');
   assert.equal(f.mqtt.commands().length, before);
   await f.app.close({ restore: false });
