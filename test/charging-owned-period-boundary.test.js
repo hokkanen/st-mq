@@ -22,6 +22,9 @@ async function stage(promise, name) {
 }
 
 async function acceptedProgram(t, { limiter = true } = {}) {
+  // Native observations in these held-plan/transport races arrive explicitly.
+  // Admit an ordinary periodic poll before selecting their controlled boundary.
+  t.mock.timers.enable({ apis: ['setInterval'] });
   const directory = mkdtempSync(join(tmpdir(), 'stmq-owned-period-end-'));
   const store = new Store(join(directory, 'fixture.sqlite'));
   const f = await fixture(t, { store, budgetA: 25, limiter });
@@ -69,6 +72,10 @@ async function acceptedProgram(t, { limiter = true } = {}) {
   assert.equal(view.control.identification, null);
   assert.ok(!view.control.currentTest || view.control.currentTest.phase === 'restored');
   await store.runWrite(() => {}); await store.startWriter();
+  t.mock.timers.tick(5000);
+  await f.settle();
+  assert.equal(await f.runtime.chargers.charger2.adapter.waitForInputAdmission(), true);
+  assert.deepEqual(f.view('charger2').control.execution.periods, view.control.execution.periods);
   return Object.assign(f, { store, adapter: f.runtime.chargers.charger2.adapter,
     execution: structuredClone(view.control.execution), initialCurrent: f.fields.current_limit.value });
 }

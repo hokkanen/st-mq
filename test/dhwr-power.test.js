@@ -8,18 +8,21 @@ import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { createHeatingTransport } from '../src/control/mqtt.js';
 import { validateOptionFields } from '../src/app/configuration-source.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const INITIAL = Date.parse('2026-10-06T10:00:00Z'), PREFIX = 'fixture/home/circulation';
 const device = { id: 'dhwr', kind: 'switch', connection: `shelly:${PREFIX}`, generation: 3, switch_id: 0,
   record: false, max_age_seconds: 120,
   readings: [{ key: 'power', label: 'Pump power', unit: 'W', component: 'switch:0', path: 'apower', required: true, record: false }] };
 const settle = () => new Promise(resolve => setImmediate(resolve));
-function fixture(t, { identify = true } = {}) {
+// Successful commands retain the actual native deadline. Expiry cases below
+// own their deliberately short timers instead of racing wall-clock scheduling.
+function fixture(t, { identify = true, readbackTimeoutMs = 10_000 } = {}) {
   const store = new Store(':memory:'), publications = [], observations = [];
   let now = INITIAL, nativeId = 'shelly1pmg3-fixture';
   const settings = equipmentConfiguration({ devices: [device] });
   const capture = createEquipmentCapture({ store, settings, brokerIdentity: 'fixture-broker',
-    engine: { clock: () => now, ingest: row => observations.push(row) }, readbackTimeoutMs: 40,
+    engine: { clock: () => now, ingest: row => observations.push(row) }, readbackTimeoutMs,
     publish: async (topic, payload, options) => { publications.push({ topic, frame: JSON.parse(payload), options }); } });
   const context = { config: { connections: { equipment: settings } }, clock: () => now,
     executor: { pulseMs: 600000, status: () => ({ dhwrOutstanding: true, pulseUntil: INITIAL + 600000 }) }, equipmentStatus: () => capture.status() };
@@ -112,6 +115,7 @@ test('matching command readback confirms after newer equal notifications without
     const readback = f.publications.findLast(row => row.frame.method === 'Switch.GetStatus');
     f.at(notificationAt); f.report(output ? 26 : 0, output);
     await settle(); assert.equal(finished, false, 'Notification alone cannot confirm the command');
+    if (index === 0) await delay(60); // A valid reply need not arrive inside the former 40ms fixture budget.
     f.at(at + 20); f.reply(readback, { id: 0, output, apower: output ? 25 : 0 });
     assert.equal((await action).confirmed, true);
     const readings = f.capture.status().devices[0].readings;
@@ -122,26 +126,31 @@ test('matching command readback confirms after newer equal notifications without
 });
 
 test('older command readback cannot override a newer contradictory notification', async t => {
-  const f = fixture(t); f.report(0); f.at(INITIAL + 1000);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(t, { readbackTimeoutMs: 40 }); f.report(0); f.at(INITIAL + 1000);
   const action = assert.rejects(f.capture.publishDhwr(true), { code: 'SHELLY_READBACK_TIMEOUT' });
   f.reply(f.publications.findLast(row => row.frame.method === 'Switch.Set'), { was_on: false });
   await settle();
   const readback = f.publications.findLast(row => row.frame.method === 'Switch.GetStatus');
   f.at(INITIAL + 1010); f.report(0, false);
   f.at(INITIAL + 1020); f.reply(readback, { id: 0, output: true, apower: 25 });
+  t.mock.timers.tick(40);
   await action;
   assert.equal(f.status().actualOn, false);
 });
 
 test('failed native readback preserves durable OFF and clears it only after confirmed retry', async t => {
-  const f = fixture(t); f.report(0);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(t, { readbackTimeoutMs: 40 }); f.report(0);
   const transport = createHeatingTransport(); transport.setDhwrRelay(f.capture.publishDhwr, () => f.capture.signature('dhwr'));
   const executor = new Executor({ store: f.store, input: 'mqtt', clock: () => INITIAL, commandTransport: transport });
   t.after(() => executor.close({ restore: false }));
-  const on = executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: INITIAL });
+  const on = assert.rejects(executor.execute({ commands: ['circulation'] },
+    { automationEnabled: false, manualTest: true, now: INITIAL }), { code: 'SHELLY_READBACK_TIMEOUT' });
   await settle();
   assert.equal(f.store.getState('executor:home').dhwrOutstanding, true);
-  await assert.rejects(on, { code: 'SHELLY_READBACK_TIMEOUT' });
+  t.mock.timers.tick(40);
+  await on;
   assert.equal(executor.status().dhwrOutstanding, true);
   const off = executor.stopDhwr(INITIAL + 1000); await settle();
   const command = f.publications.findLast(row => row.frame.method === 'Switch.Set');

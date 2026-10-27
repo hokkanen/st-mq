@@ -936,6 +936,18 @@ The held manual-current publication fixture controls the adapter's periodic
 poll timer explicitly. Its positive case admits a normal poll before takeover;
 the competing-input case injects a newer native reading during the held COMMIT.
 Real RPC, persistence and instruction checks remain active in both cases.
+The Shelly intent-COMMIT and accepted-period fixtures likewise own the periodic
+reader while holding their selected boundaries, and admit a normal poll before
+selecting the displayed scope. Explicit received-poll cases still close native
+readiness behind the held COMMIT and prove that failed intent cannot dispatch.
+Accepted-period cases retain their explicit unrelated native-reply and newer
+instruction races; timer control does not remove those competing inputs.
+The charging shutdown fixture separates setup and subsequent durable-write
+completion from cancellation: admission must close synchronously, and cancellation
+retains its original two-second deadline with the external writer still held.
+Circulation confirmation fixtures use the native ten-second readback deadline for
+successful commands. Expiry cases explicitly advance their short timer and retain
+the original rejection, source-clock and durable OFF-restoration assertions.
 Accepted-period fixture preparation and Stop-completion waits use the same
 declared completion budget. The held planner and native transport boundaries,
 accepted gaps, original RPC deadlines, authority and fallback-setting assertions

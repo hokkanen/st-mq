@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,7 +9,7 @@ import { readChargingRuntime } from '../src/charging/runtime-storage.js';
 import { fixture } from './helpers/charging-joint-fixture.js';
 
 async function settleReceivedWork(f) {
-  const deadline = performance.now() + 10_000;
+  const deadline = performance.now() + testCompletionLimit(10_000);
   while (performance.now() < deadline) {
     // Returning household history schedules another planning/reconciliation
     // turn. Join that publication too before capturing a displayed token.
@@ -38,6 +39,9 @@ function selectedIntent(f, action) {
 }
 
 async function readyFixture(t, action) {
+  // Own the periodic reader while deliberately holding an intent COMMIT.
+  // A received poll has its own admission fence, exercised explicitly below.
+  t.mock.timers.enable({ apis: ['setInterval'] });
   const directory = mkdtempSync(join(tmpdir(), 'stmq-shelly-writer-action-'));
   const store = new Store(join(directory, 'fixture.sqlite'));
   const f = await fixture(t, { store, budgetA: 25 });
@@ -62,6 +66,8 @@ async function readyFixture(t, action) {
   await store.runWrite(() => {}); await store.startWriter();
   // Initial cache preparation is independent of the explicit action under test.
   // Its completion must not change the selected instruction during that action.
+  await settleReceivedWork(f);
+  t.mock.timers.tick(5000);
   await settleReceivedWork(f);
   const view = f.view('charger2'), adapter = f.runtime.chargers.charger2.adapter;
   assert.equal(view.control.takeover.available, true);
@@ -114,7 +120,8 @@ for (const action of ['automatic', 'charge-now']) test(`real writer admits Shell
 });
 
 for (const action of ['automatic', 'charge-now']) for (const failed of [false, true])
-test(`Shelly ${action} cannot dispatch before its ${failed ? 'failed' : 'held'} intent commit`, async t => {
+for (const receivedPoll of (failed ? [false, true] : [false]))
+test(`Shelly ${action} cannot dispatch before its ${failed ? 'failed' : 'held'} intent commit${receivedPoll ? ' with a received native poll' : ''}`, async t => {
   const f = await readyFixture(t, action), request = f.store.writer.request.bind(f.store.writer);
   let enter, release, intercepted = false;
   const entered = new Promise(resolve => { enter = resolve; }), resumed = new Promise(resolve => { release = resolve; });
@@ -148,6 +155,15 @@ test(`Shelly ${action} cannot dispatch before its ${failed ? 'failed' : 'held'} 
   assert.equal(f.commands.length, before, 'Even a direct native mutation stays behind the unchanged dispatch fence');
   assert.deepEqual(readChargingRuntime(f.store, f.runtime.key).chargers.charger2, savedBefore,
     'The reader retains the committed intent while the writer turn is held');
+  if (receivedPoll) {
+    t.mock.timers.tick(5000);
+    await new Promise(resolve => setImmediate(resolve));
+    const snapshot = f.adapter.snapshot();
+    assert.equal(snapshot.commandBlockReason, 'evse-input-persistence-pending');
+    assert.equal(snapshot.currentControlReady, false, 'Received input keeps its own native admission fence');
+    assert.equal(snapshot.commissioning.currentControlReady, false);
+    assert.equal(f.commands.length, before);
+  }
   // Cancel the independent direct attempt before releasing the writer. It must
   // not supply a second Start after the actual action takes over.
   current = false;

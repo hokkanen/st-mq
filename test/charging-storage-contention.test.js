@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../src/storage/store.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-charging-contention-'));
@@ -91,12 +92,22 @@ test('closing charging aborts queued permission without waiting for an external 
   assert.equal(readChargingRuntime(f.store, f.runtime.key), null);
 });
 
-test('charging shutdown fences admission immediately before slower shared-runtime cleanup', { timeout: 2000 }, async t => {
+test('charging shutdown fences admission immediately before slower shared-runtime cleanup', { timeout: testCompletionLimit(2000) }, async t => {
   const f = fixture(t);
   f.writer.exec('BEGIN IMMEDIATE');
   const pending = f.runtime.setControl('charger1', f.input()).catch(error => error);
-  f.runtime.beginShutdown(); f.runtime.beginShutdown();
-  assert.equal((await pending).code, 'STORAGE_WRITE_CANCELLED');
+  // Fixture creation and the subsequent durable write may encounter an SD
+  // stall. Cancellation itself must still finish within the original bound,
+  // without releasing the external writer or waiting for shared cleanup.
+  let timer;
+  const cancellationDeadline = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('Charging cancellation exceeded 2000ms')), 2000);
+  });
+  try {
+    f.runtime.beginShutdown(); f.runtime.beginShutdown();
+    assert.equal(f.store.writeQueueStatus().pending, 0, 'Shutdown synchronously fences queued admission');
+    assert.equal((await Promise.race([pending, cancellationDeadline])).code, 'STORAGE_WRITE_CANCELLED');
+  } finally { clearTimeout(timer); }
   assert.equal(f.store.writeQueueStatus().pending, 0);
   assert.equal(f.writer.isTransaction, true);
   assert.deepEqual(f.dispatches(), []);
