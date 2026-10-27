@@ -245,8 +245,11 @@ automatic pause. Polling freshness cannot supply the missing instruction. This
 is an unresolved detection limitation; genuinely observed native Stop still
 prevents automatic resumption. Missing provenance is not attributed to the application.
 Vehicle timers and targets, faults, electrical limits and authorization
-remain authoritative. Unsupported native schedule shapes stay visible as blocked
-rather than being silently removed. See the [Easee takeover constraints](integrations/easee.md#ownership-and-manual-controls)
+remain authoritative. Unsupported native charging schedule shapes stay visible as
+blocked rather than being silently removed. Shelly jobs require a direct call to
+the discovered Start permission to establish a charging schedule; unknown or
+maintenance jobs alone grant no charging priority and remain untouched.
+See the [Easee takeover constraints](integrations/easee.md#ownership-and-manual-controls)
 and [Shelly command contract](integrations/shelly.md#mqtt-and-commands).
 
 ## Shelly system permission changes

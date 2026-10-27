@@ -228,7 +228,18 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     store.afterRollback?.(() => { persistedMeaning = previous; });
   };
   function scheduleKind(job) {
-    if (!Array.isArray(job?.calls) || !job.calls.length || job.calls.length > 5) return 'unsupported';
+    const targetsPermission = call => {
+      const params = call?.params;
+      return ['Boolean.Set', 'Boolean.Toggle'].includes(call?.method)
+        && params && typeof params === 'object' && !Array.isArray(params)
+        && (params.owner === `service:${config.serviceId}` && params.role === 'start_charging'
+          || Number.isSafeInteger(params.id) && componentRoles.get(`boolean:${params.id}`) === 'start_charging');
+    };
+    // A Schedule.List entry is not evidence of a charging instruction by itself.
+    // Maintenance and opaque jobs stay untouched and cannot acquire charging
+    // priority. Only a direct reference to this permission establishes scope.
+    if (!Array.isArray(job?.calls) || !job.calls.some(targetsPermission)) return 'unrelated';
+    if (job.calls.length > 5) return 'unsupported';
     const kinds = job.calls.map(call => {
       const params = call?.params;
       if (!params || typeof params !== 'object' || Array.isArray(params)) return 'unsupported';
@@ -238,15 +249,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         const keys = roleTarget ? ['owner', 'role', 'value'] : ['id', 'value'];
         return typeof params.value === 'boolean' && Object.keys(params).every(key => keys.includes(key)) ? 'charging' : 'unsupported';
       }
-      // Direct writes to other components have a known, separate owner. Opaque
-      // script/service calls cannot be assumed unrelated to start permission.
-      if (/^(Boolean|Number|Enum|Switch|Light|Cover)\.(Set|Toggle|Open|Close|Stop)$/.test(call.method ?? '')
-        && (Number.isSafeInteger(params.id) && params.id >= 0
-          || typeof params.owner === 'string' && typeof params.role === 'string')
-        && !roleTarget && !(call.method.startsWith('Boolean.') && componentTarget)) return 'unrelated';
+      // A mixed job demonstrably controls charging, but disabling the complete
+      // job would also supersede operations outside the supported takeover.
       return 'unsupported';
     });
-    if (kinds.every(kind => kind === 'unrelated')) return 'unrelated';
     return kinds.every(kind => kind === 'charging') && Number.isSafeInteger(job.id) && job.id >= 0
       && typeof job.timespec === 'string' && job.timespec.length > 0 ? 'charging' : 'unsupported';
   }

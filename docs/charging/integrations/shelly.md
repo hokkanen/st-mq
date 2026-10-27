@@ -147,8 +147,13 @@ in the native app takes priority for the connection; turning Automatic charging
 on does not clear a native Stop or a current choice made during that connection.
 Takeover waits while an earlier command still needs native readback; it becomes
 available again for the newly confirmed instruction state.
-Enabled native schedules own start/stop until
-removed; removal gives the app release priority for the current connection.
+Only enabled native jobs with a Boolean Set or Toggle targeting the discovered Start
+permission count as charging schedules. Maintenance tasks, opaque calls and
+unrecognized entries do not establish a charging instruction or block charging;
+they remain untouched. A job that targets Start permission but contains mixed
+or unsupported operations blocks takeover rather than being disabled wholesale.
+Enabled charging schedules own start/stop until removed; removal gives the app
+release priority for the current connection.
 Shelly schedule windows are not inferred from unverified cron semantics.
 
 `limiterEnabled:true` is the default and enables current adjustment independently
@@ -350,8 +355,9 @@ Ordinary mutations use `Number.Set` for `current_limit` and `Boolean.Set` for
 explicit **Use automatic** or scoped **Charge now** takeover additionally permit
 [`Schedule.Update`](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Schedule/)
 with `{id, enable:false}` for verified charging-only jobs. It reads the complete
-job list and revision before and after each change, preserves unrelated jobs,
-and refuses mixed or opaque jobs that cannot safely be attributed to charging.
+job list and revision before and after each change and preserves unrelated and
+unrecognized jobs. A charging job that also contains unrelated or opaque calls
+refuses takeover because disabling it would supersede those calls as well.
 When the price plan requires waiting, takeover first confirms native start
 permission is off before disabling those jobs. A rejected or unconfirmed stop
 leaves the schedules intact; uncertain commands retain their durable record.

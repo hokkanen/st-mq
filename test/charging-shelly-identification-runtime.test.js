@@ -14,7 +14,7 @@ const START = 1_800_000_000_000, MINUTE = 60_000, FUTURE = START + 60 * MINUTE;
 
 // Exercise the real MQTT RPC adapter, controller, vehicle ingestion and runtime.
 // Only the broker/device and economic price result are synthetic.
-async function fixture(t, { charging = true, retainedOnly = false, enabled = true, inserted = false, durable = false, initialMeterFresh = true } = {}) {
+async function fixture(t, { charging = true, retainedOnly = false, enabled = true, inserted = false, durable = false, initialMeterFresh = true, nativeJobs = [] } = {}) {
   let now = START, runtime, failSave = false, vehicleAllows = charging || inserted, planOverride = null, meterFresh = initialMeterFresh;
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: { mqtt: { address: 'mqtt://synthetic.invalid', user: 'synthetic-user' } },
@@ -43,7 +43,7 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
     fields.start_charging = { value: false, at: START };
     fields.work_state = { value: 'charger_insert', at: START };
   }
-  const schedules = { rev: 1, jobs: [] }, serviceStatus = { state: 'running' };
+  const schedules = { rev: 1, jobs: structuredClone(nativeJobs) }, serviceStatus = { state: 'running' };
   const service = { id: 0, auto_balance: { enable: false }, auto_charge: !inserted };
   const components = Object.fromEntries(Object.keys(roles).map(role => [role, { id: ids[role], owner: 'service:0', access: 'crw', options: ['charger_free', 'charger_insert', 'charger_charging', 'charger_pause', 'charger_wait', 'charger_end'], min: 6, max: 16, meta: { ui: { step: 1 } } }]));
   const status = role => ({ value: structuredClone(fields[role].value), last_update_ts: (role === 'phase_info' ? meterFresh ? now : START - 61_000 : fields[role].at) / 1000 });
@@ -574,10 +574,30 @@ test('Use automatic disables Shelly charging timers permanently without restorin
   assert.equal(f.writes.filter(row => row.method === 'Schedule.Update').length, 1);
 });
 
-test('Shelly native schedules and faults withhold active identification commands', async t => {
+test('Shelly firmware maintenance preserves a bounded identification probe and its economic return', async t => {
+  const job = { id: 1, enable: true, timespec: '0 0 0 * * 0,1,2,3,4,5,6',
+    calls: [{ method: 'Shelly.Update', params: { stage: 'beta' } }] };
+  const f = await fixture(t, { charging: false, inserted: true, nativeJobs: [job] });
+  await f.update();
+  assert.equal(f.adapter.snapshot().nativeScheduleActive, false);
+  assert.equal(f.item().identification.action, 'allow');
+  assert.ok(f.item().identification.probe);
+  assert.ok(starts(f).length, 'The maintenance job does not block the bounded identification Start');
+  f.start(); f.setNow(f.now + 1000); await f.update();
+  assert.equal(f.item().identification.phase, 'pausing');
+  await f.confirm();
+  assert.equal(f.card().vehicle.id, 'bmw');
+  assert.equal(f.item().identification.phase, 'completed');
+  assert.equal(f.fields.start_charging.value, false, 'Identification returns to its economic wait');
+  assert.deepEqual(f.schedules.jobs, [job]);
+  assert.equal(f.writes.some(row => row.method === 'Schedule.Update'), false);
+});
+
+test('unsupported Shelly native charging schedules and faults withhold active identification commands', async t => {
   for (const cause of ['native-schedule', 'fault']) {
     const f = await fixture(t);
-    if (cause === 'native-schedule') f.schedules.jobs.push({ enable: true });
+    if (cause === 'native-schedule') f.schedules.jobs.push({ id: 1, enable: true, timespec: '0 0 22 * * *', calls: [
+      { method: 'Boolean.Set', params: { owner: 'service:0', role: 'start_charging', value: true, toggle_after: 60 } }] });
     else f.serviceStatus.errors = ['synthetic-fault'];
     f.setNow(START + 1000); await f.update();
     assert.equal(f.writes.length, 0, cause); assert.equal(f.card().identification.available, false, cause);

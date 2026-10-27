@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Keep charger-native firmware-update tasks and unrecognized jobs from blocking
+  Charger 2 scheduling or vehicle identification. Detect charging schedules from
+  calls targeting Start permission, preserve unrelated tasks, and retain takeover
+  protection for mixed or unsupported charging jobs.
+
 - Keep cancellation of an obsolete scheduled update quiet during shutdown,
   configuration replacement or loss of control authority. Continue reporting
   genuine storage failures, uncertain committed outcomes and unexpected

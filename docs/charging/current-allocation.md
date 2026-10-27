@@ -188,8 +188,10 @@ do not wait for the increase dwell; increases ramp by the configured step budget
 after dwell, and resumption also requires dwell and permission. Native lower
 current choices made during the connection retain their session precedence;
 start/stop, energy/time caps, faults and schedules retain their authority.
-Enabled native schedules conservatively own start/stop until
-disabled/removed; ST-MQ does not guess their cron window or rewrite them.
+Enabled native charging schedules conservatively own start/stop until
+disabled/removed; the controller does not guess their cron window. Shelly
+maintenance and unrecognized jobs do not establish charging priority and remain
+untouched; only direct Start-permission writes establish a charging schedule.
 Current limiting remains separate.
 
 When fresh native permission is off and healthy physical readback confirms an
