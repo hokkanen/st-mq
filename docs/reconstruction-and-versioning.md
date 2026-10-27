@@ -16,6 +16,14 @@ Live learning and reconstruction must use the same ordered entry function.
 Checkpoints are replaceable caches with integrity digests and journal cursors;
 they are not the only source of model history.
 
+Retain the committed inputs, source context and configuration history needed for
+corrected reconstruction from the supported seed. Telemetry CSV or fitted
+coefficients alone are insufficient; a retention change that narrows the guarantee
+needs an explicit owner scope decision. The deliberate
+[Start fresh reset](pairing.md#reset-pairing) affects only intentionally discarded
+local history. Reconstruction promises neither missing physical outcomes nor
+receipt of attempted commands.
+
 The persisted checkpoint is a compact manifest over shared, content-addressed
 prepared fitting samples. Hydration restores the exact working checkpoint,
 including invalid barriers, historical normalization and episode membership,
@@ -360,6 +368,50 @@ commands, revert configuration, grant control authority or erase restoration dut
 They correct the retained interpretation, not the physical actions already taken.
 
 ## Current formats and installation exceptions
+
+Before the first actual production release, v1.0.0, [F1](../AGENTS.md#f1) permits
+one current internal schema, algorithm, persisted-state, configuration and API
+contract. A package-version edit alone is not a production release. Development
+databases/checkpoints are disposable; an intentional owner database reset is an
+operational action, not a reset-on-startup subsystem. Fresh databases initialize
+directly with the final current schema.
+Reject incompatible, malformed or nonempty unversioned databases before mutation,
+with actionable fresh-start guidance; never delete, truncate, recreate, migrate
+or overwrite them automatically.
+
+Obsolete development representations have no compatibility promise: schema-upgrade
+ladders, development backfills/repair passes, old-path migrations, old payload
+decoders or algorithm interpreters, settings translators, renamed-field aliases,
+mixed-version bridges, old runtime entrypoints and historical development-data
+presentation. Current callers and unsupported-input rejection follow the current
+contract; tests requiring an obsolete design do not preserve it. Unknown/retired
+fields and payload versions fail closed at their boundary. Documented defaults
+for genuinely absent optional current fields or new state do not recognize an old
+shape. Old slots, associations, ownership or permissions cannot authorize a newly
+configured actuator.
+
+The sole historical format support is read-only import of v0.7.5 `easee.csv` and
+`st-mq.csv`. Preserve source bytes/files, timestamp/unit meanings, missing/invalid
+quality, row/file provenance, duplicate/idempotency handling and supported
+interruption recovery. Normalize at this boundary into the current schema and
+model-input contract. No v0.7.5 runtime, native database reader, configuration/API,
+model engine, CSV live recording or second historical chart application is
+supported. Unverified dialects and filename variants add no support promise. Use
+synthetic supported-header fixtures; never rewrite owner source files. Re-import
+permitted CSV rather than an old development database.
+
+Current-version restart, same-schema backup/restore, deterministic reconstruction,
+transactional publication, current-format correction/recovery, replica fencing,
+supported external protocols/hardware, privacy, provenance and unknown states
+remain supported. An earlier event in a current session is not an old software
+format. Actively written `legacyOutstanding` restoration duties and standalone
+SSH replication remain current capabilities regardless of naming. Semantic changes
+may require a new current schema/algorithm and deliberate fresh start; they do not
+require old interpreters, translated checkpoints, old fitted seeds or archives of
+every development interpretation. Current corrections still require provenance
+and atomic replay. F1 ends only at actual production v1.0.0, when the owner-approved
+2026-10-07 [release upgrade policy](pairing.md#software-upgrades) applies; evidence,
+database-preservation and authority safeguards remain.
 
 Physical SQLite schema 36 and journaled layout 31 have separate identifiers.
 They retain compact independent-evidence recording coverage and indexed

@@ -33,9 +33,6 @@ values with `fixture-` so their intent is explicit to the secret checker.
 
 ## Changes and review
 
-Use focused commits and pull requests. Describe the concrete problem, resulting
-behavior and validation; preserve unrelated work. Update implementation,
-configuration, current documentation and callers together when a contract changes.
 Keep Home Assistant's root manifest, documentation, images and translation layout
 intact. The application package is private and is not published to npm.
 

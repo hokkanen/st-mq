@@ -1,8 +1,6 @@
 # Shared UI conventions
 
 This is the owning contract for shared presentation and interaction policies.
-Apply the repository's [engineering discipline](../AGENTS.md#engineering-discipline)
-to UI work as to every other part of the codebase.
 
 ## Wording, readings and action receipts
 

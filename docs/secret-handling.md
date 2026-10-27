@@ -6,6 +6,12 @@ HASSIO imports `/config/secrets.json` into Supervisor settings, then removes
 the uploaded file after successful application. Runtime Easee tokens remain
 in the private data directory; they are not configuration.
 
+Credentials and household data stay out of tool output, logs, diffs, screenshots
+and commit messages as well as Git, including precise coordinates, private
+device/account identifiers and household exports. Read private values only when
+needed for the task; inspect in memory and report paths, field names and counts
+without values. Never stage private configuration, copies or retired `options.json`.
+
 Private configuration files and backups use mode `0600` in directories with
 mode `0700`. Ignore rules prevent accidental staging and Docker packaging; the
 pre-commit hook also rejects private filenames even when force-added. Source

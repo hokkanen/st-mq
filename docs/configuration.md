@@ -83,6 +83,17 @@ for fixed verification boundaries, source supersession and deletion behavior.
 | Local history-tool work | Temporary per-computer verification progress, action receipts and results outside the main replicated database. It grants no device-control authority and is not a controller configuration default. |
 | `config.json.schema` and manifest metadata | Software configuration: accepted fields, types, ranges and Home Assistant packaging. These are not installation overrides. |
 
+Controller defaults belong exclusively to configuration. Dashboard edits do not
+rewrite them or create durable database preferences that replace them; reload and
+restart derive defaults from current configuration. Temporary overrides require
+an explicit physical session, expiry or the documented Home Pause scope. Their
+scope is displayed, only its remaining validity survives restart, and configured
+behavior returns when it ends. Validate equipment/session identity: a new physical
+connection inherits no old session override. Native observations, commissioning,
+pairing, historical records and restoration duties keep their separate ownership.
+Home, Garage, charging and Caravan permissions are independent; there is no global
+operating mode.
+
 Any supported option can be overridden. Validation checks JSON syntax, field names,
 types, ranges and supported combinations; it cannot establish whether installation
 assumptions are physically true.

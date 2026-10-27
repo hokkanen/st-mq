@@ -45,10 +45,5 @@ not create a separate permission model.
 | Guided-assessment assumptions | Exact assessment and physical connection | Assessment edits or closure; never a production request |
 | Saved session reports | Historical report in the current database | Explicit removal or applicable unsaved-report expiry; no control authority |
 
-## Documentation maintenance
-
-Keep this map and installation guides aligned with the owning subsystem contracts;
-link shared formulas and lifecycles instead of copying them. The repository's
-[engineering discipline](../../AGENTS.md#engineering-discipline) governs changes.
-Approved exceptions and evidence limits remain explicit; synthetic tests and
-firmware labels do not broaden physical qualification.
+Synthetic tests and firmware labels do not broaden physical qualification or
+approved evidence boundaries.

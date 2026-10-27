@@ -1,12 +1,8 @@
 # Development validation
 
-Use this page as a reference for checks relevant to the affected behavior,
-dependencies and risks. The coverage descriptions explain existing tests and
-their limits; they are not a checklist to run for every task. Documentation-only
-changes need consistency, local-link and diff checks. Release/platform
-qualification requirements below apply when qualifying those releases/platforms.
-Follow [engineering discipline](../AGENTS.md#engineering-discipline) and
-[select checks and reuse valid results](#selecting-and-reusing-validation).
+This reference describes available checks, their coverage and limits. Use
+[focused test selection](#selecting-and-reusing-validation) for local verification;
+[release qualification](#release-validation-and-known-limits) applies to releases.
 
 ## Coverage reference
 
@@ -740,13 +736,6 @@ native report arrives.
 
 ### Selecting and reusing validation
 
-Apply the [scoped validation and reuse rule](../AGENTS.md#scoped-validation-and-reuse)
-by retaining completed results for unchanged inputs/dependencies. Rerun affected
-cases/files and dependents after corrections; continue unfinished files after an
-interruption. Broaden only for shared changes, a concrete coverage or ordering/load
-concern, or explicit qualification requirements. Explain which results are
-invalidated and why; a new commit identifier alone invalidates none.
-
 The existing runner supports selecting files through `runOfflineTests({ files,
 profile, report, args })`; use its `args` field for `--test-name-pattern=...` when a
 case is independent of the rest of its file. For example, from the repository root:
@@ -755,14 +744,11 @@ case is independent of the rest of its file. For example, from the repository ro
 node --input-type=module -e 'import { runOfflineTests } from "./scripts/test-offline.js"; process.exitCode = await runOfflineTests({ files: ["test/energy-checks-worker.test.js"], report: "/private/results/energy-checks-rerun.jsonl" });'
 ```
 
-Keep the appropriate original profile and budgets (`profile: "ha-sd"` for native
-HA qualification). Receipts identify the actual tested source, runtime and selected
-files. Retain baseline failures/cancellations and corrected reruns separately,
-including unfinished work and optional-prerequisite skips. A baseline plus a
-corrected-file pass is combined coverage, not a single clean exact-final-revision
-full pass. File/case selection must preserve any shared setup and the concurrency
-conditions needed to investigate an ordering or load-dependent failure. Reuse is
-not permission to weaken assertions or inflate timeouts to hide a defect.
+`profile: "ha-sd"` selects native HA qualification budgets. `report` writes receipts
+identifying the tested source, runtime, selected files and actual pass/fail/skip or
+interruption outcomes. A baseline plus corrected-file reruns is combined evidence,
+not one clean full run of the final revision. Selected cases still depend on their
+file's shared setup and any ordering/load conditions relevant to the failure.
 
 ### UI messages and evidence
 

@@ -726,14 +726,22 @@ archived fresh development start when required. An incompatible format is not
 evidence of corruption or divergent history. Preserve originals and resolve the
 reported compatibility problem; repeated checks cannot translate old formats.
 
-Beginning with the v1.0.0 production baseline, [F9](../AGENTS.md#f9) requires each
-later production release to provide and test its specific upgrade from the
-preceding production release's database and persisted state. Older production
-backups retain a documented path through intermediate releases. This is a release
-obligation, not a universal old-database reader or speculative migration framework.
-Any unsupported rolling transition must be explained before the master stops.
-Restoration duties, recorded history and roles are part of the upgrade contract;
-copying a database alone does not transfer command permission.
+The owner approved the lasting [F9 upgrade policy](../AGENTS.md#f9) on 2026-10-07.
+Beginning with the actual v1.0.0 production baseline, each later production release
+provides and tests its specific upgrade from the preceding production database
+and persisted state. Unchanged formats need no conversion. Preserve source data
+until success, historical meaning, pairing roles, equipment identity and restoration
+duties. Learning changes explicitly retain/rebuild supported evidence or identify
+a new learning epoch; they never silently reinterpret or discard history.
+
+Older production backups retain a documented, tested path through necessary
+intermediate releases. This is a release obligation, not a universal old-database
+reader, parallel internal schemas or speculative migration framework. Unknown
+format variants are not guessed, and unsupported development databases gain no
+compatibility promise. Each release tests its supported slave-first sequence or
+identifies coordinated stopped activation before the master relinquishes control.
+Successful transfer alone is not cross-version control readiness; incompatibility
+fences remain binding. Copying a database never transfers command permission.
 
 ## Reset pairing
 
