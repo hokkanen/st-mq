@@ -840,6 +840,13 @@ both themes. Preserve focus, quiet background refresh and compact normal states;
 put detailed causes and provenance in existing disclosures. These fixtures use
 synthetic equipment and do not establish physical delivery or device behavior.
 
+Dialog regressions exercise an earlier close event after a window has reopened.
+Fireplace, history recovery and pairing-reset unit checks retain the new focus,
+review and HTTPS read; Garage-door and heating-explorer browser checks reproduce
+native quick close/reopen. The guided-charging browser fixture verifies that an
+older parent close cannot dismiss its current time chooser. Ordinary closing,
+cancellation and focus restoration remain covered separately.
+
 `node test/browser/secure-web-access-smoke.js` loads the dashboard’s actual runtime
 stylesheet imports in their production order. It checks optional HTTPS setup,
 missing authorization links, current faults and past receipts, certificate and

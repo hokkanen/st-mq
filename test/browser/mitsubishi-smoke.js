@@ -133,7 +133,7 @@ try {
     await until(editor==='garage-native-value'?pickerFocus(editor):`document.activeElement.id===${JSON.stringify(editor)}`);
   }
   // Exercise real application pickers, including a control added after initialization.
-  await evaluate("document.getElementById('garage-native-setting').value='fan';document.getElementById('garage-native-setting').dispatchEvent(new Event('change'));const select=document.createElement('select');select.id='dynamic-select-smoke';select.innerHTML='<option>First</option><option>Second</option>';document.body.append(select)");
+  await evaluate("document.getElementById('garage-native-setting').value='fan';document.getElementById('garage-native-setting').dispatchEvent(new Event('change'));const select=document.createElement('select');select.id='dynamic-select-smoke';select.innerHTML='<option>First</option><option>Second</option>';document.getElementById('garage-native-control-details').append(select)");
   for(const id of ['garage-native-value','dynamic-select-smoke']) {
     for(const pointerType of ['mouse','touch']) {
       const value=await evaluate(`(()=>{const select=document.getElementById('${id}');return [...select.options].find(option=>!option.disabled&&option.value!==''&&!option.selected).value;})()`);

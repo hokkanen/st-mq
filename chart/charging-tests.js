@@ -493,6 +493,7 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
   });
   q('[data-test-close]').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => {
+    if (dialog.open) return;
     timePicker.dismiss(); saveDraft();
     if (switchingDialog) { switchingDialog = false; return; }
     if (!document.querySelector('dialog[open]') && opener?.isConnected) opener.focus();

@@ -103,7 +103,7 @@ try {
   await until('storageBrowser.actionStarted');
   await evaluate("storageBrowser.writer='saving';storageBrowser.pending=true;window.beforeReads=storageBrowser.statusReads;storageBrowser.poll();true");
   await until('storageBrowser.statusReads>beforeReads');
-  await until("document.getElementById('context').textContent.includes('last saved dashboard state')");
+  await until("document.getElementById('context').textContent.includes('saved readings alongside live door reports')");
   assert.equal(await evaluate("document.getElementById('pause-until').value"), '2026-12-20T15:30', 'Health polling retains the pending form draft');
   assert.equal(await evaluate("document.getElementById('home-automation-message').textContent"), 'Enabling automatic heating…');
   assert.equal(await evaluate("document.getElementById('connection').textContent"), 'Simulation');

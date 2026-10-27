@@ -1598,6 +1598,23 @@ test('reset window presents balanced choices then confirms Keep in the same dial
   assert.equal(f.$('pairing-reset-dialog').open, false);
 });
 
+test('an older reset close cannot cancel the reopened review or invalidate its HTTPS read', async () => {
+  let reply;
+  const f = resetWindowFixture({ webRequest: () => new Promise(resolve => { reply = resolve; }) });
+  f.click(''); await flushReset();
+  f.click('continue'); await flushReset();
+  assert.equal(f.$('pairing-reset-dialog').dataset.stage, 'review');
+  f.$('pairing-reset-dialog').listeners.get('close')();
+  reply({ version: 1, phase: 'disabled', enabled: false, recovery: { kind: 'fresh' } });
+  await flushReset();
+  assert.equal(f.$('pairing-reset').attributes['aria-expanded'], 'true');
+  assert.equal(f.$('pairing-reset-dialog').dataset.stage, 'review');
+  assert.doesNotMatch(f.$('pairing-reset-https-help').textContent, /Checking current/);
+  assert.equal(f.sent.length, 0);
+  f.click('confirm'); await flushReset();
+  assert.equal(f.sent.length, 1, 'Only explicit confirmation submits the preserved review');
+});
+
 test('Fresh review collects restoration consent only at confirmation and never submits an unchecked acknowledgement', async () => {
   const f = resetWindowFixture(); f.click(''); f.fresh();
   assert.equal(f.$('pairing-reset-backup-options').hidden, false);

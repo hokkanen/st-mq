@@ -154,6 +154,7 @@ export function createGarageDoorPanel({ document, onAction, blocked = () => fals
   });
   back.addEventListener('click', close);
   dialog.addEventListener('close', () => {
+    if (dialog.open) return;
     shortcut.setAttribute('aria-expanded', 'false');
     if (shortcut.isConnected && !shortcut.disabled) shortcut.focus({ preventScroll: true });
   });

@@ -63,6 +63,11 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
     }
     const folds = await evaluate("[...document.querySelectorAll('.controller-panels details')].map(node=>node.open)");
     await open();
+    await evaluate(`document.querySelector('${panel}').close();document.querySelector('${overview}').click();document.querySelector('#garage-doors-back').focus();true`);
+    await settle();
+    assert.equal(await evaluate(`document.querySelector('${panel}').matches(':modal')`), true, 'A quick close and reopen keeps the new door window open');
+    assert.equal(await evaluate(`document.querySelector('${overview}').getAttribute('aria-expanded')`), 'true', 'The queued close event cannot collapse the reopened window announcement');
+    assert.equal(await evaluate('document.activeElement.id'), 'garage-doors-back', 'An older close event cannot move focus out of the reopened window');
     assert.deepEqual(await bayStates(panel), closedBays, 'Dialog and overview preserve the same physical placement');
     assert.equal(await evaluate(`document.querySelector('${overview} .garage-facade-roof').getAttribute('d')===document.querySelector('${panel} .garage-facade-roof').getAttribute('d')`), true, 'Both views share the gable-front illustration');
     assert.equal(await text(`${bay(panel, 'left')} .garage-door-name`), 'Left');

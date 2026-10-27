@@ -465,6 +465,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
   $('history-recovery-open').addEventListener('click', () => { void open(); });
   $('history-recovery-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => {
+    if (dialog.open) return;
     opener?.setAttribute('aria-expanded', 'false');
     if (opener && !opener.disabled && !opener.hidden) opener.focus({ preventScroll: true });
   });

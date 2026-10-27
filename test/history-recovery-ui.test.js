@@ -370,6 +370,19 @@ test('closing the shared dialog leaves server recovery running and reopening res
   assert(requests.every(call => call.body === undefined), 'Opening and closing never cancels or repeats the operation');
 });
 
+test('an older close cannot collapse reopened history recovery or steal its current focus', async () => {
+  const { document, $ } = fixture();
+  const panel = createHistoryRecoveryPanel({ document, request: async () => view() });
+  panel.update(admin); await panel.open();
+  $('history-recovery-source').focus();
+  $('history-recovery-dialog').listeners.get('close')();
+  assert.equal($('history-recovery-open').attributes['aria-expanded'], 'true');
+  assert.equal(document.activeElement, $('history-recovery-source'));
+  panel.close();
+  assert.equal($('history-recovery-open').attributes['aria-expanded'], 'false');
+  assert.equal(document.activeElement, $('history-recovery-open'));
+});
+
 test('family cannot open recovery, and current server read-only state fences actions', async () => {
   const { document, $ } = fixture(); let reads = 0;
   const panel = createHistoryRecoveryPanel({ document, request: async () => { reads++; return view({ readOnly: true, available: false }); } });

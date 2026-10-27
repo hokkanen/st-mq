@@ -276,7 +276,7 @@ try {
     if (summary.includes('Connection to this computer is lost')) window.pairingDisconnects.push(summary);
   }); window.pairingObserver.observe(${$('pairing-panel')}, { subtree: true, childList: true }); true`);
   failedReads.add('/api/events');
-  await evaluate("window.dispatchEvent(new Event('online')); true");
+  await evaluate("document.getElementById('event-log-panel').scrollIntoView({block:'center'});window.dispatchEvent(new Event('online')); true");
   await until(`!${$('event-log-message')}.hidden && ${$('event-log-message')}.dataset.state === 'error'`);
   assert.equal(await evaluate(`${$('error')}.hidden`), true, 'An event-history read failure stays local to its card');
   assert.equal(await evaluate(`${$('pairing-broker')}.textContent.includes('unconfirmed')`), false,

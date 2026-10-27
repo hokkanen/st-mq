@@ -273,7 +273,7 @@ export async function checkTimingBrowser({ command, evaluate, until, capture, co
     const chartBefore = await chartRange();
     for (const [preset, start, end] of [
       ['week', '2026-09-01', '2026-09-07'],
-      ['month', '2026-08-01', '2026-08-31'],
+      ['four-weeks', '2026-08-11', '2026-09-07'],
       ['year', '2026-01-01', '2026-09-07'],
       ['previous-year', '2025-01-01', '2025-12-31'],
     ]) {

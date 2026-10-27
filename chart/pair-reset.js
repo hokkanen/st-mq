@@ -133,6 +133,7 @@ export function createPairResetWindow({ document, request, getState, getAccess, 
   $('cancel').addEventListener('click', () => dialog.close());
   $('https-link').addEventListener('click', event => { event?.preventDefault(); webAccessRequested = true; dialog.close(); });
   dialog.addEventListener('close', () => {
+    if (dialog.open) return;
     ++epoch; webStatus = null; webIdentity = null; webLoading = false;
     const cancelled = review, submitted = acceptedClose; review = null; acceptedClose = false; cancelled?.resolve(false);
     const navigateToWebAccess = webAccessRequested; webAccessRequested = false;

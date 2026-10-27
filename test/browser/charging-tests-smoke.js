@@ -783,6 +783,9 @@ try {
     await screenshot(`initial-schedule-${width}-${theme}`, '#charging-test-dialog', {preserveScroll:true});
     await pointerClick('#charging-test-initial-time-choose');
     await until("document.getElementById('charging-test-time-dialog')?.open");
+    await evaluate("document.getElementById('charging-test-dialog').dispatchEvent(new Event('close'));true");
+    assert.equal(await evaluate("document.getElementById('charging-test-time-dialog').open"), true,
+      'An older guided-window close cannot dismiss the time chooser in the reopened guide');
     await fits('#charging-test-time-dialog'); await screenshot(`initial-time-picker-${width}-${theme}`, '#charging-test-time-dialog');
     await evaluate("globalThis.timePickerClosed = new Promise(resolve => document.getElementById('charging-test-time-dialog').addEventListener('close', () => resolve(true), {once:true})); true");
     await keyPress('Escape');

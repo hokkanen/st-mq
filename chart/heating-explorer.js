@@ -412,7 +412,10 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   const close = () => { if (dialog.open) dialog.close(); };
   opener.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); void open(); });
   $('heating-explorer-close').addEventListener('click', close);
-  dialog.addEventListener('close', () => { opener.setAttribute('aria-expanded', 'false'); opener.focus({ preventScroll: true }); });
+  dialog.addEventListener('close', () => {
+    if (dialog.open) return;
+    opener.setAttribute('aria-expanded', 'false'); opener.focus({ preventScroll: true });
+  });
   $('heating-explorer-refresh').addEventListener('click', () => { void actions.load(); });
   $('heating-explorer-reset').addEventListener('click', () => actions.reset());
   $('heating-explorer-jump').addEventListener('click', () => {

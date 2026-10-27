@@ -186,6 +186,20 @@ test('the fireplace shortcut opens independently and Close or Escape returns foc
   assert.equal(document.activeElement, $('fireplace-shortcut'));
 });
 
+test('a queued close cannot collapse a reopened fireplace or move its draft focus', () => {
+  const { panel, document, $ } = panelFixture();
+  panel.update(view(), now);
+  $('fireplace-shortcut').click();
+  $('fireplace-kg').value = '6';
+  $('fireplace-dialog').dispatch('close');
+  assert.equal($('fireplace-shortcut').getAttribute('aria-expanded'), 'true');
+  assert.equal(document.activeElement, $('fireplace-kg'));
+  assert.equal($('fireplace-kg').value, '6');
+  $('fireplace-close').click();
+  assert.equal($('fireplace-shortcut').getAttribute('aria-expanded'), 'false');
+  assert.equal(document.activeElement, $('fireplace-shortcut'));
+});
+
 test('refreshes and reopening preserve selected kilograms, focus, and existing row controls', () => {
   const { panel, document, $ } = panelFixture();
   panel.update(view(1, [entry()]), now);

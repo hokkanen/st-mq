@@ -251,6 +251,11 @@ try {
   await keyPress(' ');
   await until(`document.getElementById('heating-explorer-dialog').open && !document.getElementById('heating-explorer-content').hidden`);
   await until(`!document.getElementById('heating-explorer-refresh').disabled`);
+  await evaluate(`document.getElementById('heating-explorer-dialog').close();document.getElementById('home-planned-change').click();document.getElementById('heating-explorer-close').focus()`);
+  await evaluate(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame)`);
+  assert.equal(await evaluate(`document.getElementById('home-planned-change').getAttribute('aria-expanded')`), 'true', 'An older close cannot collapse a reopened heating plan');
+  assert.equal(await evaluate('document.activeElement.id'), 'heating-explorer-close');
+  await until(`!document.getElementById('heating-explorer-refresh').disabled`);
   for (const [width, height] of [[320,740],[390,844],[650,900],[651,900],[1280,1000],[1920,1080]]) {
     await send('Emulation.setDeviceMetricsOverride', {width,height,deviceScaleFactor:1,mobile:false});
     for (const theme of ['light', 'dark']) {

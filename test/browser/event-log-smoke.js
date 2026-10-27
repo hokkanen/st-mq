@@ -310,7 +310,7 @@ try {
   await evaluate("document.getElementById('event-log-panel').scrollIntoView({block:'center'});window.dispatchEvent(new Event('online'));true"); await blocked;
   await evaluate('document.getElementById("web-logout").click();true');
   release(); await until('document.body?.dataset.authenticated==="false"');
-  assert.equal(await evaluate('document.getElementById("events").children.length'), 0, 'Sign-out discards history and fences delayed responses');
+  assert.equal(await evaluate('document.querySelectorAll("#events > li").length'), 0, 'Sign-out discards history and fences delayed responses, including after login-page navigation');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ browser: firefox ? 'Firefox' : 'Chromium', layouts: layoutCases,
     checks: 'Real API, visible-only reads, safe projection, stable reading, new events, older paging beyond 200, local failure/recovery, successful action receipt, filters, replica advancement, family access, enlarged text and sign-out fencing passed.', artifacts }));

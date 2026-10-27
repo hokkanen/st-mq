@@ -396,6 +396,7 @@ try {
   await app.engine.runWrite(() => app.engine.setTemporary({ pauseUntil: new Date(now + 60_000).toISOString() }));
   await send('Page.reload');
   await until("document.getElementById('history')?.dataset.ready === 'true'");
+  await until("document.getElementById('h66-test-submit')?.disabled === false");
   assert.match(await evaluate("document.getElementById('h66-test-status').textContent"), /Remains as the pump’s setting until changed again/);
   await evaluate("document.getElementById('home-equipment-details').open=true; document.getElementById('home-pump-device').open=true; document.getElementById('h66-test-details').open=true; document.getElementById('h66-readings-details').open=true; window.savedH66Row=document.querySelector('#h66-readings tr[data-register=\"0208\"]'); window.savedH66Trigger=window.savedH66Row.querySelector('.status-detail-trigger'); document.getElementById('h66-test-register').value='0208'; document.getElementById('h66-test-register').dispatchEvent(new Event('change')); document.getElementById('h66-test-value').value='50'; document.getElementById('h66-test-form').requestSubmit()");
   await until("document.getElementById('h66-test-message').textContent.includes('confirmed')");

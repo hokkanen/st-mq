@@ -211,6 +211,8 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-overview-content').querySelectorAll('[data-overview-key]').length > 0"), true,
     'The recording response rendered its dataset inventory, including collapsed groups');
   await until("document.getElementById('energy-audit-content').children.length > 0");
+  await evaluate("document.getElementById('event-log-panel').scrollIntoView({block:'center'});true");
+  await until("document.getElementById('events').children.length > 0");
   for (const path of ['api/status', 'api/chart?', 'api/events?', 'api/settings/preview', 'api/settings/reload', 'api/recording-overview', 'api/energy-audits']) {
     assert.ok(requests.some(request => request.path.startsWith(`${prefix}${path}`)), `Browser requested ${path} through ingress`);
   }

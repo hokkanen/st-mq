@@ -98,6 +98,7 @@ try {
   await until(() => evaluate("document.body?.dataset.authenticated==='true'"));
   await pause(50);
   await healthy('Initial master render');
+  await evaluate("document.getElementById('event-log-panel').scrollIntoView({block:'center'});true");
   await until(() => eventReads > 0);
   await evaluate("document.getElementById('recording-details').open=true;document.getElementById('energy-audit-details').open=true;true");
   await until(() => evaluate("document.querySelectorAll('#energy-audit-content .energy-check').length===2"));
@@ -118,7 +119,7 @@ try {
   for (const nextMode of ['master', 'slave', 'slave']) {
     mode = nextMode; generation++;
     const previousStatus = statusReads, previousEvents = eventReads, previousEnergy = energyReads;
-    await evaluate("window.dispatchEvent(new Event('online'));true");
+    await evaluate("document.getElementById('event-log-panel').scrollIntoView({block:'center'});window.dispatchEvent(new Event('online'));true");
     await until(() => statusReads > previousStatus);
     await pause(50);
     await healthy(`${mode} generation ${generation}`);

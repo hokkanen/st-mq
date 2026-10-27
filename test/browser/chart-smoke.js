@@ -967,6 +967,7 @@ try {
   assert.equal(await evaluate("document.getElementById('away-until').value"), '2026-10-25T03:30');
   await command('browsingContext.reload', { context, wait: 'complete' });
   await until("document.getElementById('history').dataset.ready === 'true'");
+  await evaluate("document.getElementById('event-log-panel').scrollIntoView({block:'center'});true");
   await until("document.getElementById('events').children.length > 0");
   for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }]) {
     await command('browsingContext.setViewport', { context, viewport, devicePixelRatio: 1 });

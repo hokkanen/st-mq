@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Preserve reopened windows when an earlier close event arrives late. Keep
+  keyboard focus, expanded-state announcements, pairing-reset reviews and the
+  guided charging time chooser intact during quick navigation.
+
 - Keep garage door Open, Close and configured Stop, live status and command
   confirmation available during recording delays or writer failure, including
   MQTT reconnection. Preserve device and master authority, cancellation and no

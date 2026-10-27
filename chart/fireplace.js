@@ -184,6 +184,7 @@ export function createFireplacePanel({ document, request, storage, beforeMutatio
   });
   closeButton.addEventListener('click', close);
   dialog.addEventListener('close', () => {
+    if (dialog.open) return;
     shortcut.setAttribute('aria-expanded', 'false');
     if (!shortcut.hidden && !shortcut.disabled) shortcut.focus({ preventScroll: true });
   });
