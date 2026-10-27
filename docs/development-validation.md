@@ -904,6 +904,11 @@ the same declared allowance. Independent read/write/transfer bounds, reset
 ownership and retained history remain exact. The contention fixture also
 requires zero synchronous SQLite busy-wait time and timer progress before the
 external lock is released; a wider wall-clock guard cannot permit busy waiting.
+Offline startup, large-journal admission/worker heartbeat and recovery-coverage
+write measurements use this allowance too. Journal row/byte admission limits,
+rollback, exact reopened values, real timer overlap and pinned source/history
+checks remain unchanged; the recovery worker's fixture completion budget is
+separate from its measured write latency.
 The GiB reset fixture records generation and per-scenario preparation separately
 from reset latency. Its existing ten-minute parent budget uses the declared bulk
 completion allowance on HA, and each of the three independent reset scenarios

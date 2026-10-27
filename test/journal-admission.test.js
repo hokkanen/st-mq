@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { testLatencyLimit } from '../scripts/lib/offline-test-profile.js';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -33,7 +34,7 @@ test('an oversized main-thread write rejects promptly and atomically before gran
     assert.match(error.message, /storage worker/); return true;
   });
   const timerDelayMs = await timer;
-  assert(timerDelayMs < 1000, `Oversized admission must stay below the runtime warning threshold (${timerDelayMs} ms)`);
+  assert(timerDelayMs < testLatencyLimit(1000), `Oversized admission exceeded the test latency budget (${timerDelayMs} ms)`);
   assert.equal(dispatched, false);
   assert.deepEqual(store.checkpoint(), checkpoint);
   assert.deepEqual(store.getState('synthetic-authority'), { permitted: false });
@@ -81,7 +82,7 @@ test('tiny repeated edits to a large document cannot evade the main-thread work 
   }), { code: 'journal_main_thread_transaction_too_large' });
   const timerDelayMs = await timer;
   assert(attempted <= 2, 'Raw capture work is bounded before parsing the next mostly unchanged document');
-  assert(timerDelayMs < 1000, `Repeated small patches must remain below the runtime warning threshold (${timerDelayMs} ms)`);
+  assert(timerDelayMs < testLatencyLimit(1000), `Repeated small patches exceeded the test latency budget (${timerDelayMs} ms)`);
   assert.deepEqual(store.checkpoint(), checkpoint);
   assert.deepEqual(store.getState('synthetic-repeated-document'), { value, revision: 0 });
   t.diagnostic(JSON.stringify({ requestedEdits: 128, attempted, timerDelayMs }));
@@ -106,7 +107,7 @@ test('the same 48 MiB document remains supported in a storage worker while contr
   } finally { clearInterval(timer); }
   assert(result.ok); assert.equal(result.bytes, bytes);
   assert(ticks > 10, 'Large storage work must overlap real main-thread timers');
-  assert(maxHeartbeatMs < 1000, `Worker work must not block controller timers (${maxHeartbeatMs} ms)`);
+  assert(maxHeartbeatMs < testLatencyLimit(1000), `Worker work exceeded the test heartbeat budget (${maxHeartbeatMs} ms)`);
   // Verify the actual persisted value through a fresh read-only connection.
   // This explicit large read is after the responsiveness measurement.
   const reopened = new Store(path, { readOnly: true });

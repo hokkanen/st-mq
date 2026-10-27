@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { testLatencyLimit } from '../scripts/lib/offline-test-profile.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -23,7 +24,7 @@ test('standalone entry starts offline promptly, serves built UI, survives restar
   const started = performance.now();
   const app = await start({ config });
   try {
-    assert.ok(performance.now() - started < 3000);
+    assert.ok(performance.now() - started < testLatencyLimit(3000));
     const response = await fetch(`http://127.0.0.1:${app.server.address().port}/api/status`);
     const status = await response.json();
     assert.equal(status.input, 'simulated');

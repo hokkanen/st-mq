@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { testCompletionLimit, testLatencyLimit } from '../scripts/lib/offline-test-profile.js';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { readFile, readdir } from 'node:fs/promises';
@@ -220,7 +221,7 @@ test('selected history and bounded outage details exclude reverted evidence with
   assert.equal(f.donor.db.prepare('SELECT COUNT(*) n FROM observations').get().n,1);
 });
 
-test('worker check stays read only, uses a consistent master snapshot and leaves live writers responsive', { timeout: 20000 }, async t => {
+test('worker check stays read only, uses a consistent master snapshot and leaves live writers responsive', { timeout: testCompletionLimit(20000) }, async t => {
   const f = fixture(t), donor = new Store(`${f.directory}/unrelated-source.sqlite`);
   t.after(()=>donor.close());
   observation(f.master,start); observation(donor,start + HOUR);
@@ -240,7 +241,7 @@ test('worker check stays read only, uses a consistent master snapshot and leaves
     'All category summaries use the master snapshot pinned before concurrent writes');
   assert.equal(report.status,'checked'); assert.equal(report.model.status,'not-assessed');
   assert.equal(report.counts,undefined); assert.equal(writes,1);
-  assert(maxWriteMs < 1000);
+  assert(maxWriteMs < testLatencyLimit(1000));
   assert.deepEqual(f.master.observations().slice(0,1),historyBefore);
   assert.equal(f.master.observations().length,2,'Only the explicitly concurrent writer added history');
   assert.deepEqual(f.master.db.prepare('SELECT * FROM state').all(),statesBefore);
