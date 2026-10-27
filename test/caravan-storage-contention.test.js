@@ -9,16 +9,17 @@ import { Store } from '../src/storage/store.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
 import { CARAVAN_NATIVE_RESTART_DELAY_MS } from '../src/domain/caravan-power-timing.js';
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 
 const START = Date.parse('2026-10-09T10:00:00Z'), IDENTITY = 'a'.repeat(64);
 const RESTORE_KEY = `equipment:caravan-probe-restoration:v1:caravan_dehumidifier:${IDENTITY}`;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate) {
-  const deadline = performance.now() + 3000;
+  const deadline = performance.now() + testCompletionLimit(3000);
   while (!predicate()) { assert.ok(performance.now() < deadline, 'Condition did not settle'); await delay(5); }
 }
 
-async function fixture(t, { locationCheck = true, holdSubscriptions = false } = {}) {
+async function fixture(t, { locationCheck = true, holdSubscriptions = false, readbackTimeoutMs = 10_000 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-caravan-contention-'));
   const store = new Store(join(directory, 'recording.sqlite')), writer = new DatabaseSync(store.path);
   const client = new EventEmitter(), commands = [], subscriptions = [];
@@ -45,7 +46,7 @@ async function fixture(t, { locationCheck = true, holdSubscriptions = false } = 
   client.end = (force, options, done) => done();
   const acquisition = await startMqtt({ monotonicClock: () => elapsed, engine: { clock: () => now, ingest() {} }, store,
     connect: () => client, canControl: () => authority,
-    config: { h66: { readbackTimeoutMs: 500 }, connections: { equipment: settings, mqtt: { address: 'mqtt://synthetic.invalid' } } } });
+    config: { h66: { readbackTimeoutMs }, connections: { equipment: settings, mqtt: { address: 'mqtt://synthetic.invalid' } } } });
   t.after(async () => {
     if (locked) writer.exec('ROLLBACK');
     await acquisition.close({ restore: false });
@@ -106,7 +107,7 @@ test('a delayed native setting needs a committed report received after actual di
   assert.equal(f.commands.length, 1);
   assert.equal(f.state().operation.status, 'published', 'A queued matching report predates actual dispatch');
   assert.equal(f.commands[0].requestedAt, START + 100);
-  assert.equal(f.commands[0].expiresAt, START + 600, 'Storage waits never renew the original deadline');
+  assert.equal(f.commands[0].expiresAt, START + 10_100, 'Storage waits never renew the original deadline');
   assert.equal(f.state().operation.dispatchedAt, START + 200);
   f.advance(1); f.lock(); f.appliance(); await delay(20);
   assert.equal(f.state().operation.status, 'published');
@@ -115,7 +116,7 @@ test('a delayed native setting needs a committed report received after actual di
 
 for (const interruption of ['authority', 'revocation', 'reconnect', 'deadline', 'shutdown', 'timeout', 'newer-setting', 'identity', 'capability', 'failed-save']) {
   test(`a waiting dehumidifier setting is cancelled on ${interruption}`, async t => {
-    const f = await fixture(t, { locationCheck: false });
+    const f = await fixture(t, { locationCheck: false, readbackTimeoutMs: 500 });
     f.advance(100); f.lock(); f.air(2);
     const pending = f.acquisition.equipment.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'targetHumidity', value: 55 });
     const rejected = assert.rejects(pending);
@@ -177,7 +178,7 @@ test('delayed test dispatch durably fences restoration and phase evidence at its
   f.appliance(); f.unlock(); await clockChange;
   await until(() => f.commands.length === 1);
   assert.equal(f.commands[0].requestedAt, START + 35_000);
-  assert.equal(f.commands[0].expiresAt, START + 35_500);
+  assert.equal(f.commands[0].expiresAt, START + 45_000);
   assert.equal(f.state().operation.dispatchedAt, START + 35_100);
   assert.equal(f.store.getState(RESTORE_KEY).lastCommandAt, START + 35_100);
   assert.equal(f.state().temperatureControl.locationTest.phase, 'on');

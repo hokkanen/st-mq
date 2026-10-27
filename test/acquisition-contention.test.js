@@ -11,18 +11,19 @@ import { startMqtt } from '../src/acquisition/mqtt.js';
 import { startProviders } from '../src/acquisition/providers.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { createHeatingTransport } from '../src/control/mqtt.js';
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 
 const START = Date.parse('2026-10-07T09:00:00Z'), DEVICE = 'contention-fixture';
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate) {
-  const end = performance.now() + 3000;
+  const end = performance.now() + testCompletionLimit(3000);
   while (!predicate()) { assert.ok(performance.now() < end, 'Condition did not settle'); await delay(5); }
 }
-async function fixture(t, input = 'mqtt', devices = []) {
+async function fixture(t, input = 'mqtt', devices = [], { readbackTimeoutMs = 10_000, confirmationTimeoutMs = 30_000 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-acquisition-contention-'));
   const store = new Store(join(directory, 'recording.sqlite')), writer = new DatabaseSync(store.path);
   let now = START, locked = false, control = true;
-  const config = { input, deviceId: DEVICE, h66: { writeEnabled: true, readbackTimeoutMs: 1000, confirmationTimeoutMs: 1000 },
+  const config = { input, deviceId: DEVICE, h66: { writeEnabled: true, readbackTimeoutMs, confirmationTimeoutMs },
     garage: { enabled: false }, connections: { mqtt: { address: 'mqtt://fixture.invalid' }, equipment: equipmentConfiguration({ devices }) } };
   const engine = new Engine({ store, config, clock: () => now });
   const client = new EventEmitter(), commands = [];
@@ -47,8 +48,8 @@ async function fixture(t, input = 'mqtt', devices = []) {
     send(register, value, packet = {}) { client.emit('message', `${DEVICE}/HP/${register}`, Buffer.from(String(value)), packet); } };
 }
 
-async function relayFixture(t) {
-  const f = await fixture(t, 'mqtt', [{ id: 'dhwr', kind: 'switch', connection: 'shelly:fixture-circulation', generation: 3 }]);
+async function relayFixture(t, deadlines) {
+  const f = await fixture(t, 'mqtt', [{ id: 'dhwr', kind: 'switch', connection: 'shelly:fixture-circulation', generation: 3 }], deadlines);
   const requests = method => f.commands.filter(row => row.topic === 'fixture-circulation/rpc')
     .map(row => JSON.parse(row.payload)).filter(row => row.method === method);
   const reply = (method, result) => {
@@ -108,7 +109,7 @@ for (const interruption of ['authority', 'revocation', 'reconnect', 'expiry', 'i
 }
 
 test('circulation timeout cancels an unsent command before a later storage recovery', async t => {
-  const f = await relayFixture(t);
+  const f = await relayFixture(t, { readbackTimeoutMs: 1000 });
   f.lock(); f.send('0203', 21);
   await assert.rejects(f.transport.publishDhwr(true), { code: 'MQTT_STORAGE_PENDING' });
   const failed = f.store.writeHealth.status().history.windows.day;
@@ -169,7 +170,7 @@ for (const interruption of ['reconnect', 'device-offline', 'stale-feedback', 'ch
 
 test('Gen1 timeout cancels the unsent command before later storage recovery', async t => {
   const f = await fixture(t, 'mqtt', [{ id: 'relay', kind: 'switch', connection: 'shelly:shellies/fixture-relay',
-    generation: 1, switch_control: true }]);
+    generation: 1, switch_control: true }], { readbackTimeoutMs: 1000 });
   f.client.emit('message', 'shellies/fixture-relay/relay/0', Buffer.from('on'), {});
   f.lock(); f.send('0203', 21);
   await assert.rejects(f.reader.equipment.setSwitch('relay', false), { code: 'MQTT_STORAGE_PENDING' });
@@ -221,7 +222,7 @@ test('non-storage input rejection does not become a recorded storage-blocked com
 });
 
 test('a vehicle source-clock wait does not turn an unconfirmed device request into a storage-blocked command', async t => {
-  const f = await relayFixture(t);
+  const f = await relayFixture(t, { readbackTimeoutMs: 1000 });
   const route = f.engine.charging.mqttRoutes().find(row => row.id === 'bmw'); assert(route);
   f.client.emit('message', route.topic, Buffer.from(JSON.stringify({ provider: 'bmw-cardata', soc: 51,
     measuredAt: START + 400, readingId: 'synthetic-clock-admission' })), {});
@@ -494,7 +495,8 @@ test('MQTT observations wait through contention in receipt order without renewin
   assert.equal(f.store.writeHealth.status().failing, false);
 });
 
-test('queued H66 readback confirms a command only after its actual database commit', async t => {
+for (const heldMs of [150, 1600])
+test(`queued H66 readback confirms a command only after its actual database commit (${heldMs}ms held)`, async t => {
   const f = await fixture(t);
   f.send('0203', 20);
   f.at(START + 1000);
@@ -503,13 +505,31 @@ test('queued H66 readback confirms a command only after its actual database comm
     .then(() => { confirmed = true; });
   await until(() => f.commands.some(command => command.topic.endsWith('/SET/0203')));
   f.lock(); f.send('0203', 21);
-  await delay(150);
+  await delay(heldMs);
   assert.equal(confirmed, false);
   assert.equal(f.reader.h66.status().readings['0203'].value, 20);
   assert.equal(f.store.getState(`h66:control:${DEVICE}`).obligations['0203'].confirmed, false);
   f.unlock(); await operation;
   assert.equal(confirmed, true);
   assert.equal(f.store.getState(`h66:control:${DEVICE}`).obligations['0203'].confirmed, true);
+});
+
+test('an explicitly short H66 deadline rejects late committed readback and preserves restoration', async t => {
+  const f = await fixture(t, 'mqtt', [], { confirmationTimeoutMs: 1000 });
+  f.send('0203', 20); f.at(START + 1000);
+  const rejected = assert.rejects(f.reader.h66.writeSettings({ '0203': 21 }, { expiresAt: START + 60_000 }),
+    { code: 'H66_READBACK_TIMEOUT' });
+  await until(() => f.commands.some(command => command.topic.endsWith('/SET/0203')));
+  f.lock(); f.send('0203', 21);
+  await delay(1200);
+  assert.equal(f.reader.h66.status().readings['0203'].value, 20);
+  assert.equal(f.store.getState(`h66:control:${DEVICE}`).obligations['0203'].confirmed, false);
+  f.unlock(); await rejected;
+  await until(() => f.store.writeQueueStatus().pending === 0);
+  const writes = f.commands.filter(command => command.topic.endsWith('/SET/0203'));
+  assert.equal(writes.filter(command => String(command.payload) === '21').length, 1, 'The expired request is never replayed');
+  assert(writes.every(command => ['20', '21'].includes(String(command.payload))), 'Only the owned baseline restoration may follow');
+  assert(Object.hasOwn(f.store.getState(`h66:control:${DEVICE}`).obligations, '0203'), 'An unconfirmed restoration retains its duty');
 });
 
 test('a packet waiting across MQTT disconnect cannot gain authority in the new connection', async t => {

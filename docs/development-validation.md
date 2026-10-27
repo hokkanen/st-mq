@@ -926,6 +926,13 @@ heartbeats independently of one outstanding synthetic controller write, retains
 its original standard admission bound, and checks actual between-batch admission
 and persistence of every submitted write. The delayed-retry race retains its
 original checks and also covers three queued writes.
+Successful acquisition/Caravan contention fixtures use the actual ten-second
+publication and thirty-second H66 confirmation defaults instead of shortened
+positive-case deadlines. Explicit one-second and 500 ms expiry cases retain
+their configured limits. H66 checks cover a readback held beyond one second,
+confirmation only after COMMIT, late committed feedback rejected by an expired
+request and retained baseline restoration. Caravan dispatch still preserves the
+original requested expiry rather than renewing it at storage admission.
 Selected whole-case budgets for checkpoint/replay, sensor/fireplace correction,
 publication admission and bulk pairing/rsync/SSH/cross-runtime fixtures use that
 same completion allowance. Their original standard bounds remain unchanged.
