@@ -303,7 +303,8 @@ for (const shape of ['symlink', 'directory', 'public-permissions', 'oversize']) 
   const options = await fixture(t), path = resolve(options.directory, 'setup-replacement.json');
   if (shape === 'directory') await mkdir(path, { mode: 0o700 });
   else if (shape === 'symlink') await symlink(resolve(options.directory, 'state.json'), path);
-  else await writeFile(path, shape === 'oversize' ? 'x'.repeat(512 * 1024 + 1) : 'fixture-bad-journal', { mode: shape === 'public-permissions' ? 0o644 : 0o600 });
+  else await writeFile(path, shape === 'oversize' ? 'x'.repeat(512 * 1024 + 1) : 'fixture-bad-journal', { mode: 0o600 });
+  if (shape === 'public-permissions') await chmod(path, 0o644);
   await assert.rejects(reviewSetupReplacement(options), { code: 'https_setup_replacement_unsafe' });
   assert.equal(await readFile(resolve(options.directory, 'state.json'), 'utf8'), 'fixture-saved-state.json');
 });
@@ -313,7 +314,10 @@ for (const shape of ['symlink', 'public-directory', 'file']) test(`native stoppe
   const socketDirectory = resolve(tmpdir(), `stmq-h-${createHash('sha256').update(options.identityDirectory).digest('hex').slice(0, 16)}`);
   t.after(() => rm(socketDirectory, { recursive: true, force: true }));
   if (shape === 'symlink') await symlink(options.directory, socketDirectory);
-  else if (shape === 'public-directory') await mkdir(socketDirectory, { mode: 0o755 });
+  else if (shape === 'public-directory') {
+    await mkdir(socketDirectory, { mode: 0o700 });
+    await chmod(socketDirectory, 0o755);
+  }
   else await writeFile(socketDirectory, 'fixture-unsafe-socket-location', { mode: 0o600 });
   await assert.rejects(assertHelperStopped(options.identityDirectory, record), { code: 'helper_socket_directory_unsafe' });
 });

@@ -73,7 +73,8 @@ export async function installProvisioning(input, { rootDir = '/', run = runComma
       chmodSync(backup, mode); if (!fixture) chownSync(backup, 0, gid);
     }
     const temporary = destination + '.install-' + randomUUID();
-    writeFileSync(temporary, contents, { mode, flag: 'wx' }); if (!fixture) chownSync(temporary, 0, gid);
+    writeFileSync(temporary, contents, { mode: 0o600, flag: 'wx' }); if (!fixture) chownSync(temporary, 0, gid);
+    chmodSync(temporary, mode);
     renameSync(temporary, destination); return true;
   };
   const publicCode = Object.fromEntries(helperSourceFiles.map(name => {

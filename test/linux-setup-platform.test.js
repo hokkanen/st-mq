@@ -196,6 +196,19 @@ test('managed broker credentials never enter command arguments and provisioning 
     assert.ok(mask >= 0 && mask < apt && unmask > apt);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+test('restrictive umask retains readable helper files and broker group access with private policy', async () => {
+  const root = temp(), calls = [], previous = process.umask(0o077);
+  try {
+    await installProvisioning(request({ vip, broker: { user: 'device', password: 'synthetic-password' } }),
+      { rootDir: root, fixture: true, run: fixtureRunner(root, calls) });
+    for (const name of ['usr/local/lib/st-mq/package.json', 'usr/local/lib/st-mq/scripts/pair-vip.js',
+      'etc/systemd/system/st-mq-vip.service', 'etc/systemd/system/st-mq-vip.socket', 'etc/mosquitto/conf.d/st-mq.conf'])
+      assert.equal(lstatSync(join(root, name)).mode & 0o777, 0o644, name);
+    assert.equal(lstatSync(join(root, 'etc/mosquitto/st-mq-passwords')).mode & 0o777, 0o640);
+    assert.equal(lstatSync(join(root, 'etc/st-mq-vip/policy.json')).mode & 0o777, 0o600);
+    assert.equal(lstatSync(join(root, 'etc/st-mq-vip')).mode & 0o777, 0o700);
+  } finally { process.umask(previous); rmSync(root, { recursive: true, force: true }); }
+});
 test('unmanaged broker configuration and symlinked destinations are rejected before commands', async () => {
   for (const variant of ['config', 'symlink', 'dangling-symlink']) {
     const root = temp(), calls = [];

@@ -59,6 +59,7 @@ test('each public helper artifact must match; missing or unreadable artifacts re
     writeFileSync(filename, original); rmSync(filename);
     assert.equal(await f.inspect(), true, name);
     writeFileSync(filename, original, { mode: 0o644 });
+    chmodSync(filename, 0o644);
   }
   const readFile = f.options.readFile;
   f.options.readFile = (name, encoding) => {
