@@ -245,6 +245,9 @@ for (const writer of [false, true]) for (const delivery of ['snapshot', 'availab
       f.advance(40);
       // Queue automatic meter admission first, then a delivery whose original
       // receipt precedes that meter's source clock. Both await the real writer.
+      // Other pending work can already contribute to the queue depth. Let the
+      // existing 80 ms admission timer fire before inspecting that depth.
+      await delay(100);
       for (let attempt = 0; attempt < 100 && f.store.writeQueueStatus().pending < 2; attempt++) await delay(10);
       assert.ok(f.store.writeQueueStatus().pending >= 2);
       if (delivery === 'snapshot') f.dryer('on');
