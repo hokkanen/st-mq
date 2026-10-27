@@ -18,6 +18,31 @@ function keyFor(token) {
   return createHash('sha256').update('st-mq paired transport\0').update(token).digest();
 }
 
+// Native idle timers cannot run while this event loop is delayed. Retire an
+// expired free socket before admission too: a separate peer may already have
+// closed it while its FIN is still waiting in our event queue. Reusing that
+// socket can lose the first request; retrying it could repeat a physical action.
+const scopedAgent = Base => class extends Base {
+  idleDeadlines = new WeakMap();
+  keepSocketAlive(socket) {
+    if (!super.keepSocketAlive(socket)) return false;
+    if (!(socket.timeout > 0)) return false;
+    this.idleDeadlines.set(socket, performance.now() + socket.timeout);
+    return true;
+  }
+  addRequest(request, options) {
+    const now = performance.now();
+    for (const socket of Object.values(this.freeSockets).flat())
+      if (!(this.idleDeadlines.get(socket) > now)) socket.destroy();
+    return super.addRequest(request, options);
+  }
+  reuseSocket(socket, request) {
+    this.idleDeadlines.delete(socket);
+    return super.reuseSocket(socket, request);
+  }
+};
+const ScopedHttpAgent = scopedAgent(HttpAgent), ScopedHttpsAgent = scopedAgent(HttpsAgent);
+
 export function sealEnvelope(value, key, context = CONTEXT) {
   const nonce = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key, nonce);
@@ -107,8 +132,8 @@ export class PairPeer {
     // A finite idle budget lets the native agents apply shorter server
     // keep-alive hints. Active sockets use the operation deadline above.
     this.agents = fetchImpl ? null : {
-      http: new HttpAgent({ keepAlive: true, maxSockets: 8, maxFreeSockets: 2, timeout: timeoutMs }),
-      https: new HttpsAgent({ keepAlive: true, maxSockets: 8, maxFreeSockets: 2, timeout: timeoutMs }),
+      http: new ScopedHttpAgent({ keepAlive: true, maxSockets: 8, maxFreeSockets: 2, timeout: timeoutMs }),
+      https: new ScopedHttpsAgent({ keepAlive: true, maxSockets: 8, maxFreeSockets: 2, timeout: timeoutMs }),
     };
     this.fetchImpl = fetchImpl ?? ((url, options) => requestPeer(url, options, this.agents));
     this.handler = handler;

@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Retire expired idle peer connections before reuse even when an event-loop
+  delay prevents their timer from running. Open a fresh connection for the next
+  request while preserving active deadlines and avoiding automatic replay.
+
 - Keep paired bulk transfers and durable cleanup within the configured operation
   timeout instead of the short polling budget. Preserve fresh authority checks,
   cancellation, exact history and protected handover outcomes on expiry.

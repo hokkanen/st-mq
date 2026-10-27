@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fork } from 'node:child_process';
 import { PairPeer, openEnvelope, sealEnvelope } from '../src/pairing/peer.js';
 import { PairManager, peerFailureDiagnostic } from '../src/pairing/manager.js';
 import { Store } from '../src/storage/store.js';
@@ -145,6 +146,34 @@ test('encrypted operations use their explicit deadline and reuse connections aft
   assert.deepEqual(await client.request('status', {}, { timeoutMs: 2000 }), { checked: true });
   assert.equal(connections, 1, 'Completed replies return the socket to the scoped keep-alive agent');
   await assert.rejects(client.request('verify-checkpoint'), { code: 'peer_unavailable' });
+});
+
+for (const { timeoutMs, stallMs, reason } of [
+  { timeoutMs: 25, stallMs: 60, reason: 'the scoped idle deadline expires before its timer can run' },
+  { timeoutMs: 10000, stallMs: 2200, reason: 'the independent server closes during an event-loop delay' },
+]) test(`peer replaces an idle socket when ${reason}`, async t => {
+  // Keep the server on a separate event loop so it can close idle connections
+  // while this client is stalled. No network provider or household service.
+  const server = fork(new URL('./helpers/peer-idle-server.js', import.meta.url), [],
+    { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
+  const exited = new Promise(resolve => server.once('exit', resolve));
+  t.after(async () => {
+    if (server.connected) server.send('close');
+    else server.kill();
+    await exited;
+  });
+  const { port } = await new Promise((resolve, reject) => {
+    server.once('message', resolve); server.once('error', reject);
+    server.once('exit', () => reject(new Error('Idle peer exited before readiness')));
+  });
+  const client = new PairPeer({ token: 'synthetic-idle-peer-token-0123456789abcdef', pairId: 'synthetic-idle',
+    peerUrl: `http://127.0.0.1:${port}`, timeoutMs });
+  t.after(() => client.close());
+  assert.deepEqual(await client.request('status', {}, { timeoutMs: 5000 }), { connections: 1, handled: 1 });
+  await new Promise(resolve => setImmediate(resolve));
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, stallMs);
+  assert.deepEqual(await client.request('status', {}, { timeoutMs: 5000 }), { connections: 2, handled: 2 },
+    'Retire expired idle transport before sending; do not replay either request');
 });
 
 test('cancelling a delayed response body releases the connection without waiting for the peer', async t => {

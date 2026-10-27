@@ -189,6 +189,10 @@ ordinary polling timeout. Shutdown and the enclosing synchronization deadline
 still cancel them. Fresh status and authority checks keep their separate short
 budget; transfer expiry cannot activate a peer or restart the former master.
 An expired RPC is not automatically resent within the accepted operation.
+Idle HTTP/TLS sockets also retain their monotonic expiry independently of native
+timer delivery. A delayed event loop cannot reuse one after that deadline; the
+next request opens a fresh connection. Active requests keep their operation
+deadline, and no failed request is automatically replayed.
 
 Restart after changing pair configuration. The pair state directory must be
 separate from the database directory and `pair.snapshot_directory`. Pair mode
