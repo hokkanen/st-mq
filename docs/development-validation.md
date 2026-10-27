@@ -971,6 +971,10 @@ The held manual-current publication fixture controls the adapter's periodic
 poll timer explicitly. Its positive case admits a normal poll before takeover;
 the competing-input case injects a newer native reading during the held COMMIT.
 Real RPC, persistence and instruction checks remain active in both cases.
+Before installing synthetic same-session restart ownership, the Shelly writer
+fixture drains received preparation and joins the previous controller's shutdown.
+An in-flight prior save must finish before the artificial disk record is seeded;
+it cannot overwrite that restart record during the subsequent adapter replacement.
 The Shelly intent-COMMIT and accepted-period fixtures likewise own the periodic
 reader while holding their selected boundaries, and admit a normal poll before
 selecting the displayed scope. Explicit received-poll cases still close native

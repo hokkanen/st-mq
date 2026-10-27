@@ -50,6 +50,11 @@ async function readyFixture(t, action) {
   f.advance(1000);
   f.fields.start_charging = { value: false, at: f.now, source: 'rpc' };
   await f.settle();
+  await settleReceivedWork(f);
+  // Seed restart state only after the previous controller has joined its
+  // pending saves. A live controller may otherwise overwrite this fixture's
+  // artificial disk record while setAdapter waits for its shutdown.
+  await f.runtime.chargers.charger2.controller.close();
   // Same-session restart retains an expired dispatched Stop without inventing
   // its missing acknowledgement, even when fresh native readback is stopped.
   f.advance(30_000);
