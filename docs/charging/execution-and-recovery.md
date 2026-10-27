@@ -126,6 +126,10 @@ charger readback.
 
 ### Dashboard Pause
 
+The owner approved this lasting Pause policy and the scoped Charge now takeover
+of an earlier external Stop, supported native schedule or Shelly SYS permission
+hold on 2026-10-15.
+
 **Pause charging** records a current-connection instruction before native dispatch.
 It clears Charge now, preserves Automatic and session battery/deadline choices,
 and stops both scheduled charging and immediate charging. Its own source and

@@ -4,6 +4,11 @@
 
 Charger 1 retains native Equalizer current control. This contract owns Charger 2 current entitlement, source admission, fallback and recovery; its [Shelly integration](integrations/shelly.md) owns protocol capability and command confirmation.
 
+On 2026-10-05 the owner approved removing the independent Equalizer cross-check
+and unchanged-value expiry, and the session precedence of adjustable current
+described below. These changes avoid competing balancing loops, false fallback
+and a carried-over setting permanently capping a new connection.
+
 ## Charger 2 current allocation
 
 Current adjustment defaults on (`limiterEnabled:true`) and follows property load

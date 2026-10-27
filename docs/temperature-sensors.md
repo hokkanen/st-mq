@@ -286,9 +286,11 @@ Persistent changes to local floor thermostats gradually move the overall
 reference in either direction according to each room's configured weight. This
 observes achieved temperature, not the person's intent: a faulty valve or open
 window can resemble a changed preference. A native ROOM setting edit also retains
-the previous reference while new Normal evidence refines it. Provisional references
-limit automatic reduction to at most 0.5°C below the reference; equipment readiness,
-thermal-model evidence and all other comfort checks remain independent.
+the previous reference while new Normal evidence refines it; it invalidates
+applicable equipment-response evidence without erasing that comfort reference.
+Provisional references limit automatic reduction to at most 0.5°C below the
+reference; equipment readiness, thermal-model evidence and all other comfort checks
+remain independent.
 
 ## One missing room
 

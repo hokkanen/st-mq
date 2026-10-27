@@ -1,5 +1,32 @@
 # Shared UI conventions
 
+This is the owning contract for shared presentation and interaction policies.
+Apply the repository's [engineering discipline](../AGENTS.md#engineering-discipline)
+to UI work as to every other part of the codebase.
+
+## Wording, readings and action receipts
+
+Do not use the project name **ST-MQ** in user-facing labels, descriptions,
+popovers, statuses or errors. Use natural wording such as “the controller” or
+“this application”; actual file paths and protocol identifiers remain accurate.
+In UI and current documentation, describe devices by role, such as “protection
+sender”, “heat-pump controller” and “Bluetooth gateway”. Name hardware/firmware
+as tested examples or in device-specific instructions, describe required
+capabilities, and distinguish tested installations from unverified candidates.
+
+Mitsubishi readings show real reported fields, including valid zero/false values.
+Omit never-observed or unsupported placeholders. During temporary loss, keep
+previously observed fields visible as unavailable with source/quality details.
+Readings have their own fold; compressor state stays in the summary. Missing
+compressor activity is unknown, never an inferred idle state.
+
+Action success/failure/confirmation receipts remain for 24 hours after the action
+or until a newer action replaces them on that control. Fresh device evidence
+updates pending text immediately; later stale readings cannot undo a confirmed
+receipt. A past receipt does not establish current control ownership. Live faults
+and unresolved restoration stay visible for their actual duration independently
+of receipt expiry.
+
 ## Links, actions and explanations
 
 Ordinary navigation links inherit their accent color, underline offset and

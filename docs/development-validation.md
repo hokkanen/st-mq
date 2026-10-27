@@ -1,5 +1,15 @@
 # Development validation
 
+Use this page as a reference for checks relevant to the affected behavior,
+dependencies and risks. The coverage descriptions explain existing tests and
+their limits; they are not a checklist to run for every task. Documentation-only
+changes need consistency, local-link and diff checks. Release/platform
+qualification requirements below apply when qualifying those releases/platforms.
+Follow [engineering discipline](../AGENTS.md#engineering-discipline) and
+[select checks and reuse valid results](#selecting-and-reusing-validation).
+
+## Coverage reference
+
 `test/easee-ocpp-approval-integration.test.js` exercises a locally refused virtual-tag
 start followed by a confirmed deauthorization and suspension. Recovery requires
 the same physical session, fresh stopped evidence and current permission; Pause,
@@ -158,11 +168,6 @@ synthetic Node listener probe. No household services are used.
 `STMQ_REQUIRE_SYSTEMD_TESTS=1 node --test test/extended/linux-deployment-systemd.test.js`
 additionally exercises a real disposable user service and Linux listener ownership;
 it creates and removes only its synthetic unit, never the household service.
-
-Start with the [repository foundations and working rules](../AGENTS.md). Tests
-validate those contracts; existing assertions do not authorize conflicting changes.
-Follow the [conflict procedure](../AGENTS.md#conflicting-requests) before changing
-a foundation, even when the requested implementation would require it.
 
 `test/web-sessions.test.js` checks fixed 360-day expiry without renewal, protected
 cookies, server revocation, password changes, database reopen, active-peer
@@ -736,12 +741,11 @@ native report arrives.
 ### Selecting and reusing validation
 
 Apply the [scoped validation and reuse rule](../AGENTS.md#scoped-validation-and-reuse)
-before starting or repeating a sequence. For a correction confined to one fixture,
-retain completed results for unchanged inputs/dependencies and rerun its affected
-case/file plus dependents. Continue only unfinished files after an interruption.
-Broader requalification needs a stated shared change, coverage gap, relevant
-ordering/load concern or explicit requirement; a changed revision identifier alone
-does not invalidate unrelated results.
+by retaining completed results for unchanged inputs/dependencies. Rerun affected
+cases/files and dependents after corrections; continue unfinished files after an
+interruption. Broaden only for shared changes, a concrete coverage or ordering/load
+concern, or explicit qualification requirements. Explain which results are
+invalidated and why; a new commit identifier alone invalidates none.
 
 The existing runner supports selecting files through `runOfflineTests({ files,
 profile, report, args })`; use its `args` field for `--test-name-pattern=...` when a
@@ -757,7 +761,8 @@ files. Retain baseline failures/cancellations and corrected reruns separately,
 including unfinished work and optional-prerequisite skips. A baseline plus a
 corrected-file pass is combined coverage, not a single clean exact-final-revision
 full pass. File/case selection must preserve any shared setup and the concurrency
-conditions needed to investigate an ordering or load-dependent failure.
+conditions needed to investigate an ordering or load-dependent failure. Reuse is
+not permission to weaken assertions or inflate timeouts to hide a defect.
 
 ### UI messages and evidence
 

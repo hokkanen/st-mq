@@ -417,6 +417,11 @@ timer, target or user stop. The final period always remains an open release.
 
 ## Published and forecast prices
 
+The owner approved normal forecast scheduling and the one-extra-day comparison
+policy on 2026-10-09, removing the former restriction of forecasts to approved
+flexibility. The approval also covers the comparison's no-increase cash-cost
+rule, ordered allowances, actual joint-plan display and shared admin/family access.
+
 Normal automatic planning and both alternatives in **One extra day** use one
 price outlook: available published prices plus fresh predictions when the
 optional [electricity forecast](../electricity-forecast.md) is enabled. Published

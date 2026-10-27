@@ -2,8 +2,8 @@
 
 The supported EVSE profile has exhibited SYS permission interruptions after an
 acknowledged Start. Native provenance and timing have been observed; their cause
-and any firmware correction remain unproven. The owner approved the bounded
-policy and indistinguishable native-Stop ambiguity in [F3](../../AGENTS.md#f3).
+and any firmware correction remain unproven. Under [F3](../../AGENTS.md#f3), the
+owner approved the bounded [system-permission policy and native-Stop ambiguity](execution-and-recovery.md#shelly-system-permission-changes).
 
 ## Boundaries
 
@@ -43,7 +43,8 @@ pauses, current changes and long holds. Record the firmware and distinguish
 absence of an observed failure from proof of its cause.
 
 Remove the selected policy and its explicit controller hooks in one reviewed
-change, together with policy-only state validation, tests and F3/execution text.
+change, together with policy-only state validation, tests and the owning execution
+contract and policy summary.
 For startup recovery, the hooks are native event observation, acknowledged Start,
 recovery evaluation and the durable retry debit immediately before publication.
 For permission reconciliation, replace its preview and acknowledged-Start policy

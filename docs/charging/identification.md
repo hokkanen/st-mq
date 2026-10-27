@@ -208,9 +208,9 @@ The shared BMW episode is consumed for new matching while its positive evidence
 remains bound to the resolved BMW connection. Polling and restart cannot reuse it
 on the Tesla connection or grant it to a new connection. Consuming a newer BMW
 source episode continues to fence earlier episodes; resolving the pair cannot
-move that consumption boundary backward. This owner-approved rule combines two
-positive observations, and never identifies BMW from a negative Tesla result or
-by elimination alone.
+move that consumption boundary backward. The owner approved this narrow joint
+assignment rule on 2026-10-04. It combines two positive observations and never
+identifies BMW from a negative Tesla result or by elimination alone.
 
 The current test saves the original setting, equipment/session scope and fixed
 90-second deadline before a write. Positive identification or expiry returns
@@ -476,6 +476,11 @@ unchanged. Real evidence loss, failed persistence and native restrictions retain
 their existing control barriers.
 
 ## Extra charging during an economic delay
+
+On 2026-10-17 the owner increased the allowance from 0.15 to 0.30 kWh per probe
+and approved bounded startup before the first usable power sample on either
+charger. This adds no startup-energy exemption, metering API or polling change;
+the original deadlines, source checks, current preparation and restoration remain.
 
 When the charging plan is delaying charge, the extra test temporarily permits
 charging under the existing charger, vehicle and local load-balancing limits.

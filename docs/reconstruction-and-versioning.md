@@ -1,71 +1,11 @@
 # Model reconstruction, corrections and software versions
 
-This is the detailed engineering contract for
-[F2: model reconstruction](../AGENTS.md#f2). The foundational policies and
-[conflicting-request process](../AGENTS.md#conflicting-requests) in `AGENTS.md`
-govern changes; [F1: current-format compatibility](../AGENTS.md#f1) governs the
-supported software and database boundary. Changes to the agreed reconstruction
-guarantees or scope require the owner's explicit agreement after identifying the
-conflict and consequences; specific informed approval already given for the change
-carries forward. Maintaining algorithm identifiers and implementation details
-within those guarantees does not itself require another approval. The
-fireplace feature keeps the existing scope of reproducible learning; it does not
-add a general archive for reproducing every historical control choice.
+This contract details [F1: current formats](../AGENTS.md#f1) and
+[F2: reconstruction](../AGENTS.md#f2), under the repository's
+[foundation authority](../AGENTS.md#authority-and-scope). It covers reproducible
+learning, not a general archive of every historical control choice.
 
 ## What can be reconstructed
-
-The owner-approved [production convergence and upgrade policy](../AGENTS.md#f9)
-starts production data continuity at v1.0.0. Each subsequent release owns its
-specific conversion from the preceding production release; older backups may use
-documented intermediate releases. This does not add historical interpreters to
-the current runtime or relax pre-production format rejection. An algorithm change
-must explicitly describe retained evidence, any supported rebuild and any new
-learning epoch. Original observations, frozen forecasts, corrections and their
-provenance keep their historical meaning throughout an upgrade.
-
-The current physical SQLite schema and the current journaled data layout have
-separate identifiers. Physical schema 36 and journaled layout 31 retain the compact
-independent-evidence endpoint to recording coverage, with indexed selected-period
-counter, completed/active cycle, temperature-receipt, voltage-availability and
-per-signal energy-start reads. They retain indexed manual-firewood,
-coefficient-history, chronological coverage and bounded
-journal/recovery reads. Every fresh database uses this one current layout and
-its matching genesis/hash interpretation. There is no older-schema runtime
-branch or alternate journal decoder. Strict physical-schema
-validation rejects incompatible physical schemas before writable setup. The owner's one-time
-2026-10-15 chart-index conversion exception requires verified backups and rollback,
-unchanged table rows, original database/checkpoint identities and journal hashes,
-and successful full current validation before coordinated code/database adoption.
-It does not authorize startup conversion, journal rehashing or conversion to
-a later schema. The owner separately approved the installation-only offline
-coefficient-history preparation on 2026-10-21 under [F1](../AGENTS.md#f1), with
-verified backups, retained source/transaction identities, external disposable
-tooling and rollback. That exception adds no runtime conversion or permission to
-convert other databases. For schema 34, the owner approved a further installation-only
-offline conversion on 2026-10-22 under F1: stop both paired applications, preserve
-verified backups and each node's own source rows, checkpoint, transaction and
-authority identities, refresh only physical-file publication accounting, and
-fully validate the candidates with rollback retained. The disposable tooling stays
-outside Git; this is no permission to convert other databases. Runtime startup still rejects
-other physical schemas before mutation. A pair with different physical schemas cannot mirror or
-hand over across that boundary; both roles must use the same supported schema.
-For schema 35/layout 31 the owner separately approved the installation-only
-offline transition and scoped dehumidifier-history removal on 2026-10-24 under
-[F1](../AGENTS.md#f1). External disposable tools must preserve the other source
-history, complete learning journal, control/restoration state and pair authority,
-with verified backups and rehearsed rollback. The operational replication
-journal may be reanchored; its original history remains in those backups.
-No conversion, journal translation, backfill or reset-on-startup is supplied
-by the application, and this exception does not cover other installations.
-
-For schema 36, the owner separately approved one installation-only offline,
-index-only conversion on 2026-10-26 under [F1](../AGENTS.md#f1). Stop both paired
-applications for coordinated code/schema activation after rehearsing forward
-conversion and rollback. Verify backups, exact source/learning and journal row
-parity, unchanged checkpoints, control/restoration state and pair authority;
-refresh only replica physical-file accounting through current publication
-helpers. Conversion tools remain outside Git. Journaled layout 31 and numerical
-learning are unchanged. Startup rejects incompatible files without conversion.
 
 Given an intact committed learning journal, its saved configuration and initial
 seed, the selected fireplace and sensor-correction revisions, and the matching
@@ -419,7 +359,70 @@ and frozen forecasts remain recorded. Recovery corrections never replay equipmen
 commands, revert configuration, grant control authority or erase restoration duties.
 They correct the retained interpretation, not the physical actions already taken.
 
+## Current formats and installation exceptions
+
+Physical SQLite schema 36 and journaled layout 31 have separate identifiers.
+They retain compact independent-evidence recording coverage and indexed
+selected-period counter, completed/active cycle, temperature-receipt,
+voltage-availability and per-signal energy-start reads, plus indexed manual
+firewood, coefficient history, chronological coverage and bounded journal/recovery
+reads. Fresh databases use this one current layout and matching genesis/hash
+interpretation. Startup rejects incompatible physical schemas before mutation;
+there is no older-schema branch, alternate journal decoder or automatic reset.
+A pair cannot mirror or hand over between incompatible physical schemas.
+
+### Approved installation-only schema changes
+
+These closed, task-specific owner approvals under [F1](../AGENTS.md#f1) apply only
+to the existing paired installation. They do not authorize conversions of other
+databases, runtime migrations, generic backfills, old-format readers, mixed-version
+bridges or a startup conversion ladder. Conversions approved from 2026-10-21 onward
+use disposable tools outside the repository and Git. Verified backups and rollback
+remain required.
+
+- **2026-10-15 — chronological chart-coverage index.** One controlled,
+  data-preserving physical-schema upgrade, retaining exact journal/history parity,
+  unchanged table rows, original database/checkpoint identities and journal hashes.
+  Full current validation precedes coordinated code/database adoption. This
+  exception permits neither journal rehashing nor conversion to a later schema.
+- **2026-10-21 — coefficient chart history.** One offline physical-schema conversion
+  and historical population using an external disposable script. Preserve all
+  existing source/learning history and transaction identities; verify backups and
+  retain rollback before the paired installation adopts the schema.
+- **2026-10-22 — bounded manual-firewood reads, schema 33 → 34.** Add only the four
+  firewood indexes. Stop both applications; verify exact source/journal identity
+  parity and preserve each node's own history, checkpoint, transaction identities
+  and authority. Refresh only the replica's physical-file accounting through
+  current publication helpers, preserving its accepted checkpoint and pairing.
+  Fully validate the candidates with rollback retained. Journaled layout 30 and
+  the learning algorithm remain unchanged.
+- **2026-10-24 — compact Caravan recording evidence, schema 34/layout 30 →
+  schema 35/layout 31.** Preserve all non-dehumidifier source and learning history,
+  dashboard choices, electrical association/restoration duties and pairing
+  identity/authority. Only incompatible dehumidifier state history and its recorder
+  metadata may be removed; Caravan air and energy history remain intact. The
+  operational replication journal may be reanchored with its original history in
+  verified backups; the committed learning journal remains intact. Rehearse forward
+  conversion and rollback, including newly admitted non-dehumidifier observations
+  and control intent, before stopping both applications for activation.
+- **2026-10-26 — bounded selected-period Energy checks and Home savings reads,
+  schema 35 → 36.** Add only the counter-time, three cycle-selection, sparse voltage
+  availability, signal-scoped energy-start, three sparse temperature-receipt,
+  saved charging-report history and scoped equipment-time indexes. Preserve exact
+  source/learning and journal row identities, unchanged checkpoints, dashboard
+  choices, restoration duties and pairing identity/authority. Rehearse forward
+  conversion and rollback, including new observations and control intent, before
+  stopping both applications for coordinated activation. Refresh only replica
+  physical-file accounting through current publication helpers; preserve its
+  accepted checkpoint. Journaled layout 31 and numerical learning remain unchanged.
+
 ## Version discipline
+
+[F9](../AGENTS.md#f9) and [production upgrades](pairing.md#software-upgrades)
+define release-owned continuity from the actual v1.0.0 production baseline.
+Original observations, frozen forecasts and correction provenance keep their
+historical meaning; learning changes explicitly identify retained evidence,
+supported rebuilds or a new learning epoch.
 
 The Home learning algorithm is `committed-house-v17-time-evidence-admission`, with
 thermal model version 4. Production starts from a fresh database and an explicit

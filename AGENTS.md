@@ -1,756 +1,282 @@
 # Repository foundations and working rules
 
-This is the entry point for the owner's foundational design decisions and AI
-working rules. Read it before changing code, tests, configuration or documentation.
-Apply the relevant linked contracts as part of the task, including delegated work.
-**Codebase-wide consistency is a completion requirement for every task.** Apply
-the [consistency review](#codebase-wide-consistency) before and after every change;
-fixing only the reported location does not complete a task when equivalent paths
-remain inconsistent.
+Read this file before changing the repository. Follow the linked contracts relevant
+to the work; they hold the detailed ST-MQ policies.
+
+## Engineering discipline
+
+Understand the underlying problem before choosing a fix. Treat reported examples
+as evidence of a problem category, not automatically its entire scope. Investigate
+relevant counterparts and causes, while respecting explicit user limits.
+
+<a id="codebase-wide-consistency"></a>
+
+Consistency is a basic requirement across the entire codebase and every kind of
+change. Find the established design and responsible implementation, reuse them,
+and carry a fix through equivalent affected paths and their callers. A local fix
+is incomplete when the same problem remains in an equivalent path. Preserve
+intentional differences required by capabilities, ownership or lifecycle; an
+existing difference alone does not establish that it is intentional.
+
+Prefer the smallest coherent change that solves the problem. Complete its affected
+implementation, configuration, presentation, tests and documentation together.
+Avoid unrelated cleanup, speculative frameworks and broad refactors, especially
+near release. Consistency does not require a new abstraction when small aligned
+changes are safer.
+
+<a id="scoped-validation-and-reuse"></a>
+
+Use validation proportionate to the change and its risks, including relevant
+counterparts and failure paths. Reuse valid results for unchanged inputs and
+dependencies; rerun affected checks when a correction invalidates them. Tests
+should establish expected behavior independently of implementation formulas.
+Report what was verified and what remains uncertain; a narrow check does not prove
+whole-codebase correctness. Documentation-only work needs consistency, link and
+diff checks rather than runtime suites. The [validation guide](docs/development-validation.md)
+is a reference for selecting checks, not a checklist for every edit.
 
 ## Authority and scope
 
-Within repository documentation, this file governs the foundations; linked feature
-contracts define their detailed behavior. Historical handoffs, audit results, task records,
-examples, existing code and tests do not silently amend these decisions. If they
-conflict, flag the discrepancy and align affected work with the current contract.
-An implementation or passing test is not proof that a foundation is satisfied.
+Within repository documentation, this file governs foundations; linked feature
+contracts own their detailed behavior. Historical records, examples, existing code
+and passing tests do not silently amend those decisions. Flag contradictions and
+align work with the current contract.
 
-The foundations protect behavior and ownership, not every implementation choice.
-Algorithm identifiers, schema versions, thresholds, file layouts and UI conventions
-may evolve within them. Ordinary compliant work needs no new approval. The owner
-can explicitly amend a foundation using the conflict procedure below; a routine
-feature request is not by itself an informed waiver of an earlier decision.
+Foundations protect behavior and ownership, not every algorithm identifier,
+schema version, threshold, file layout or UI convention. Ordinary compliant work
+needs no new approval. A routine feature request does not implicitly waive an
+earlier foundation.
 
 | ID | Foundation | Scope |
 | --- | --- | --- |
-| [F1](#f1) | One current development contract | Temporary pre-v1.0.0 policy; only v0.7.5 CSV import is a historical exception. |
-| [F2](#f2) | Reconstructible learning and reversible corrections | Durable model contract within the supported journal/algorithm. |
-| [F3](#f3) | Explicit configuration and state ownership | Configuration defaults, scoped overrides, device state and durable intent have distinct owners. |
-| [F4](#f4) | Honest evidence and historical meaning | Preserve provenance, unknown states and the distinction between observation and inference. |
-| [F5](#f5) | Explicit control authority and restoration | Device identity, fresh evidence and physical obligations govern actuation. |
-| [F6](#f6) | Cost, comfort and service together | Assess complete consequences; do not substitute a convenient proxy for savings. |
-| [F7](#f7) | Responsive local operation | Raspberry Pi 5/Home Assistant and standalone Linux remain first-class targets. |
-| [F8](#f8) | Private data stays private | Keep installation secrets and household data outside Git and diagnostic output. |
-| [F9](#f9) | Converge toward production reliability | Prefer focused fixes and fewer failure paths; each production release owns its upgrade obligations. |
+| [F1](#f1) | One current development contract | Pre-v1.0.0; only v0.7.5 CSV import is historical format support. |
+| [F2](#f2) | Reconstructible learning and reversible corrections | Supported journal, algorithm and retained inputs. |
+| [F3](#f3) | Explicit configuration and state ownership | Defaults, overrides, native state and durable intent have distinct owners. |
+| [F4](#f4) | Honest evidence and historical meaning | Provenance, unknown states and observation versus inference. |
+| [F5](#f5) | Explicit control authority and restoration | Identity, fresh evidence and physical obligations govern actuation. |
+| [F6](#f6) | Cost, comfort and service together | Assess complete consequences and attributable savings. |
+| [F7](#f7) | Responsive local operation | Raspberry Pi 5/Home Assistant and standalone Linux are first-class targets. |
+| [F8](#f8) | Private data stays private | Installation secrets and household data stay outside Git and diagnostic output. |
+| [F9](#f9) | Converge toward production reliability | Focused fixes, fewer failure paths and release-owned upgrades. |
 
 <a id="conflicting-requests"></a>
 
-## Handling requests that conflict with a foundation
+## Handling foundation conflicts
 
-Before making a potentially conflicting change, including one explicitly requested
-by the owner:
+Before a conflicting edit or operation, name and link the affected foundation,
+explain the concrete conflict and consequences, and offer a compliant alternative
+where practical. If unresolved, ask one focused question and wait for explicit
+owner approval. Silence and general instructions to work autonomously are not
+approval. Do not weaken documentation or tests first to bypass the decision.
 
-1. Name the affected foundation ID, link the relevant rule and explain the concrete
-   conflict and consequences in plain language. Do this before the conflicting
-   edit or operation, not only in the final report.
-2. Offer a compliant alternative when one is practical. If the conflict or intended
-   exception remains unresolved, ask one focused question and **wait for explicit
-   owner approval** of the exception or amendment. Silence is not approval.
-3. Pause only the conflicting part. Continue independent authorized investigation,
-   design and implementation that does not assume the answer. Do not bypass the
-   decision by first weakening documentation, tests or validation.
-4. An instruction that already explicitly acknowledges the affected rule and
-   authorizes that specific departure is sufficient approval. State its scope and
-   proceed; do not ask again. A general instruction to work autonomously, make it
-   work, or use best judgment is not approval to disregard a foundation.
-5. For an approved lasting change, update this file and affected contracts,
-   implementation and validation together. Record the reason and scope in the
-   task's issue or pull-request description (or commit body for direct work).
-   A one-task exception does not silently become a new general rule; record its
-   limits without exposing private information.
+Pause only the conflicting work; continue independent authorized work. Approval
+already given for the specific departure with the affected rule acknowledged is
+sufficient: state its scope and proceed without asking again. Resolve only
+material ambiguities with the owner, not routine implementation choices.
 
-Ask about a material ambiguity in a foundation when the existing contracts and
-session do not resolve it. Do not create approval gates for routine implementation
-choices. Report unresolved contradictions and validation limits honestly.
+For a lasting approved change, update the foundation, owning contracts,
+implementation and validation together. Record its reason and scope in the issue,
+PR or commit body. Keep one-task exceptions explicitly limited and private data
+out of the record. Report unresolved contradictions and validation limits honestly.
 
 <a id="f1"></a>
 
 ## F1. One current development contract before v1.0.0
 
-This temporary policy governs every change before the first actual production
-release, **v1.0.0**. It does not weaken the durable correctness and safety rules.
+Until the first actual production release, v1.0.0, maintain one current internal
+schema, algorithm, persisted-state, configuration and API contract. Actively remove
+obsolete development representations: migration ladders, backfills or repair
+passes for old data, old-path migrations, payload decoders, algorithm interpreters,
+settings translators, renamed-field aliases, mixed-version bridges, old runtime
+entrypoints and historical development-data presentation. Update current callers
+and rejection tests together; an obsolete preservation test is not a reason to
+restore prohibited compatibility.
 
-### One historical exception
+Fresh databases initialize directly with the current final schema. Reject an
+incompatible, malformed or nonempty unversioned database **before mutation**, with
+actionable fresh-start guidance. Never automatically delete, truncate, recreate,
+migrate or overwrite it. An intentional owner reset is an operational action, not
+a reset-on-startup subsystem. Re-import supported CSV sources rather than old
+development databases.
 
-Retain **read-only import of version 0.7.5 `easee.csv` and `st-mq.csv`**. Preserve
-source bytes/files, timestamp and unit meanings, missing/invalid-value quality,
-row/file provenance, duplicate/idempotency handling and supported interruption
-recovery. Normalize accepted rows at this import boundary into the **one current
-internal schema and model-input contract**. This exception does not authorize a
-0.7.5 runtime, native database reader, old configuration/API, old model engine,
-CSV-based live recording or a second historical chart application. Neither
-filename spelling variants nor unverified CSV dialects become additional support
-promises. Tests use synthetic files with the supported headers; real owner files
-remain outside the repository and must never be silently rewritten.
+The sole historical format exception is **read-only v0.7.5 `easee.csv` and
+`st-mq.csv` import**. Preserve source bytes/files, timestamp and unit meanings,
+missing/invalid quality, row/file provenance, duplicate/idempotency handling and
+supported interruption recovery. Normalize at the boundary into the current
+schema and model-input contract. This permits no old runtime, native database
+reader, configuration/API, model engine, CSV live recorder or second historical
+chart application. Unverified dialects and filename variants are unsupported.
+Use synthetic supported-header fixtures; never rewrite the owner's source files.
 
-### Actively remove internal backwards compatibility
+Reject unknown or retired fields and payload versions at their relevant boundary.
+Documented defaults for genuinely absent optional current fields or new state do
+not authorize translating old shapes. Old charger slots, associations, ownership
+or permissions cannot authorize newly configured equipment.
 
-Development databases and checkpoints are disposable. Do not add or retain
-schema-upgrade ladders, development-data backfills/repair passes, old-path
-migration, old payload decoders, old algorithm interpreters, settings translators,
-renamed-field aliases, mixed-ST-MQ-version bridges, legacy runtime entrypoints or
-historical development-data presentation solely to support earlier ST-MQ designs.
-Update current callers, schemas, configuration examples, UI and tests together.
-Tests that require retaining an obsolete design are not constraints to preserve;
-replace them with current-contract and unsupported-input rejection tests.
-
-A fresh database is initialized directly with the final current schema, not by
-walking historical migrations. An existing incompatible or malformed database
-must be rejected **before mutation**, with actionable fresh-start guidance. Do
-not automatically delete, truncate, recreate, migrate or overwrite it. A
-nonempty unversioned database is not a blank database. The owner's intentional
-reset of a known disposable development database is an operational action, not a
-new compatibility/reset-on-startup subsystem. Re-import permitted CSV sources
-into the fresh schema rather than importing an old development database.
-
-For the chronological chart-coverage index on 2026-10-15, the owner approved one
-controlled, data-preserving physical-schema upgrade of the existing paired
-installation, with verified backups, exact journal/history parity and rollback.
-This task-specific exception adds no startup conversion, migration ladder,
-automatic reset or permission to convert other development databases.
-
-For coefficient chart history on 2026-10-21, the owner approved one further
-installation-only, offline physical-schema conversion and historical population
-using an external disposable script. Verify backups, preserve all existing source
-and learning history and transaction identities, and retain rollback before the
-paired installation adopts the new schema. The script stays outside the repository
-and Git. This exception adds no runtime conversion, generic backfill, older-format
-reader or permission to convert other development databases.
-
-For bounded manual-firewood reads on 2026-10-22, the owner approved one further
-installation-only, offline physical-schema conversion from 33 to 34, adding only
-the four firewood indexes. Stop both paired applications, verify backups and
-exact source/journal identity parity, preserve each node's own history and
-authority, and retain rollback. Refresh only the replica's physical-file
-accounting through current publication helpers; preserve its accepted checkpoint
-and pairing state. The disposable conversion script stays outside the repository
-and Git. Journaled layout 30 and the learning algorithm remain unchanged. This
-exception adds no runtime conversion, generic migration or permission to convert
-other development databases.
-
-For compact Caravan recording evidence on 2026-10-24, the owner approved one
-installation-only offline conversion from physical schema 34/journaled layout
-30 to schema 35/layout 31, using external disposable tools. Preserve verified
-backups, all non-dehumidifier source and learning history, dashboard control
-choices, electrical-association/restoration duties and pairing identity/authority.
-The owner explicitly permits removal of incompatible dehumidifier state history
-and its recorder metadata; Caravan air and energy history remain intact. The
-operational replication journal may be reanchored for the new row layout, with
-its original history retained in the verified backups; this does not remove the
-committed learning journal. Rehearse forward conversion and rollback, including
-newly admitted non-dehumidifier observations and control intent, before stopping
-both applications for activation. Keep conversion tools outside the repository
-and Git; add no runtime migration, old decoder or mixed-version bridge.
-
-For bounded selected-period Energy checks and Home savings reads on 2026-10-26,
-the owner approved one installation-only offline conversion from physical schema
-35 to 36, adding only the counter-time, three cycle-selection, sparse voltage
-availability, signal-scoped energy-start, three sparse temperature-receipt
-and saved charging-report history and scoped equipment-time indexes. Preserve
-verified backups, exact source/learning and journal row identities, dashboard
-choices, restoration duties and pairing identity/authority. Rehearse forward
-conversion and rollback, including new observations and control intent, before
-stopping both paired applications for coordinated activation. Refresh only the
-replica's physical-file accounting through current publication helpers while
-preserving its accepted checkpoint. The disposable conversion tool stays outside
-the repository and Git. Journaled layout 31 and the learning algorithm remain
-unchanged; this exception adds no runtime conversion, old decoder, migration
-ladder or permission to convert other installations.
-
-Use one current persisted/configuration/API contract. Unknown or retired fields
-and payload versions must fail closed at their relevant boundary, not silently
-be translated, ignored or granted authority. Genuinely missing optional current
-fields and genuinely absent new state may use documented current defaults; that
-is different from recognizing an old shape. No old charger slot, device
-association, ownership or permission may authorize a newly configured actuator.
-
-### Preserve current correctness and safety
-
-Do not confuse backwards compatibility with current functionality. Preserve
-same-schema backup/restore, current-version restart and deterministic journal
+Preserve current-version restart, same-schema backup/restore, deterministic journal
 reconstruction, transactional publication, current-format correction/recovery,
-replica fencing, current supported external protocols and hardware behavior,
-secret handling, provenance, quality/unknown states and fail-closed validation.
-An earlier event in a current-version session is not an earlier software format.
-The actively written `legacyOutstanding` restoration obligation and the current
-standalone SSH replication feature are not removable merely because comments
-call them legacy. Remove obsolete representation support, not current physical
-safety or restoration duties. Use controlled offline fixtures for implementation;
-do not operate, probe or erase a household installation as part of these audits.
+replica fencing, supported external protocols/hardware, provenance, unknown states,
+privacy and fail-closed validation. An earlier event in a current session is not
+an older software format. Actively written `legacyOutstanding` restoration duties
+and standalone SSH replication remain current capabilities regardless of naming.
 
-Semantic changes may change the current schema/algorithm identifier and require
-a deliberate clean development start. They do not require maintaining old
-interpreters, migrating old checkpoints, seeding from old fitted coefficients or
-archiving every prior development interpretation. Current source corrections
-within the supported contract still need provenance and atomic current replay.
+Semantic changes may require a new current schema/algorithm and a deliberate
+fresh development start; they do not require old interpreters, translated
+checkpoints, old fitted seeds or archives of every development interpretation.
+Current source corrections still require provenance and atomic replay.
 
-### Agent/review gate
-
-Before and after each relevant change, inspect producers, consumers, state,
-configuration, UI, tests and documentation for obsolete compatibility paths.
-Delete them as part of the affected implementation instead of adding wrappers.
-Document removal, retained current capabilities and tests in the issue,
-pull request or commit body.
-Do not resolve a failing legacy-preservation test by restoring prohibited code.
-Do not overstate unrun tests or treat current guard tests as proof of completeness.
-
-The development-only compatibility restriction ends at the first actual v1.0.0
-production release, when the release-owned upgrade policy in [F9](#f9) applies.
-The owner approved that future policy on 2026-10-07; it does not authorize
-pre-release migrations, a generic compatibility framework or support for every
-historical development format. A package-version edit alone is not a production
-release. Database preservation, evidence and authority safeguards remain in force.
+The approved installation-only conversions and their exact safeguards are recorded
+in [the reconstruction contract](docs/reconstruction-and-versioning.md#approved-installation-only-schema-changes).
+They authorize no runtime migration or conversion of other databases. Ordinary
+development uses offline fixtures, not household probing, operation or erasure.
+This temporary restriction ends at the actual v1.0.0 production release, not a
+package-version edit; [F9](#f9) then governs upgrades. The owner approved that
+future policy on 2026-10-07. Evidence, database and authority safeguards remain.
 
 <a id="f2"></a>
 
 ## F2. Reconstructible learning and reversible corrections
 
-- Apply [the reconstruction contract](docs/reconstruction-and-versioning.md) to
-  Home within the current supported journal/algorithm. Garage has no learned heat
-  model or economic controller. F1 governs
-  incompatible development formats; reconstruction does not require old interpreters.
-- Given the intact committed learning journal, saved seed and configuration,
-  selected source-correction revisions and matching algorithm/software, replay
-  must reproduce the complete model checkpoint at the same journal boundary:
-  coefficients, estimated thermal state, comfort references and learning evidence.
-  Live learning and rebuilding use the same ordered update function. Checkpoints
-  are replaceable caches, never the only source of learning history.
-- Preserve enough committed inputs, source context and configuration history to
-  reconstruct corrected learning from the supported seed. A telemetry CSV alone
-  is insufficient. Do not silently remove required replay history or replace it
-  with fitted coefficients; a retention change that narrows the guarantee needs
-  an explicit scope decision under the conflict procedure.
-- The owner approved deliberate **Reset pairing → Start fresh** with an optional
-  recovery backup on 2026-10-25. The backup checkbox defaults to checked. Unchecked
-  requires explicit destructive warning confirmation and may permanently discard
-  this computer's active source/learning history; existing independent backups and
-  archives remain untouched. This operational reset narrows reconstruction only
-  for the deliberately discarded local history, never routine retention or replay.
-  **Keep local history** retains the database in place under protected authority.
-  Neither choice bypasses equipment restoration, safe storage or single-master rules.
-- Manual additions, sensor changes and their corrections are compact immutable
-  source events. Removing a firewood entry excludes its heat throughout the
-  selected corrected history. Reverting a sensor-change entry removes that
-  boundary's learning effect, including its settling exclusion, using preserved
-  measurements. Other active corrections and actual reporting gaps still apply.
-  Keep original events and observations so earlier revisions remain interpretable.
-- Change the learning algorithm identifier when numerical interpretation, training
-  selection, corrections, seeds or fitting rules change, and validate replay.
-  SQLite schema versioning remains separate. Before v1.0.0, an
-  incompatible format/algorithm requires a deliberate fresh start, not an old
-  interpreter, checkpoint translator, old fitted seed or development-history archive.
-- Correction rebuilds keep control available, survive restart, reject stale work
-  and atomically publish a complete, caught-up checkpoint with matching source
-  revisions and journal head. Failure retains the previous model and reports the
-  problem; publication must never expose partial replacement state.
-- Original observed behavior and frozen forecasts remain distinct from corrected
-  assessments. This contract does not reproduce every historical control choice,
-  recover missing physical outcomes or prove receipt of attempted commands. It is
-  conditional on intact retained inputs and corresponding software. Do not add
-  per-minute snapshots or comprehensive decision-input archives without agreement.
+Within the supported Home journal/algorithm, an intact committed learning journal,
+saved seed/configuration, selected source-correction revisions and matching
+software must reproduce the complete checkpoint at the same journal boundary:
+coefficients, estimated thermal state, comfort references and learning evidence.
+Live learning and replay use the same ordered update function. Checkpoints are
+replaceable caches, never the only learning history. Garage has no learned heat
+model or economic controller.
+
+Retain the inputs, source context and configuration history needed for corrected
+reconstruction from the supported seed; telemetry CSV or fitted coefficients alone
+are insufficient. Narrowing this guarantee through retention requires an explicit
+scope decision. The owner-approved deliberate [Reset pairing → Start fresh](docs/pairing.md#reset-pairing)
+is limited to the local history intentionally discarded, not routine retention;
+restoration, safe storage and single-master requirements still apply.
+
+Manual additions, sensor changes and corrections are compact immutable source
+events. Keep originals and measurements so earlier revisions remain interpretable.
+Removing firewood excludes its heat throughout the selected corrected history;
+reverting a sensor change removes its boundary and settling exclusion while
+preserving other corrections and actual gaps.
+
+Change the learning algorithm identifier when numerical interpretation, training
+selection, corrections, seeds or fitting rules change, and validate replay.
+SQLite schema versioning is separate; F1 governs incompatible development formats.
+Correction rebuilds keep control available, survive restart, reject stale work and
+atomically publish a complete caught-up checkpoint with matching revisions and
+journal head. Failure retains the previous model and reports the problem.
+
+Original observations and frozen forecasts remain distinct from corrected
+assessments. Reconstruction does not promise every historical control choice,
+missing physical outcomes or command receipt. Do not add per-minute snapshots or
+comprehensive decision-input archives without agreement. Details:
+[reconstruction and corrections](docs/reconstruction-and-versioning.md).
 
 <a id="f3"></a>
 
 ## F3. Explicit configuration and state ownership
 
-Classify a new setting or control by its owner and lifetime before choosing where
-it is stored. Persistence alone does not make a value a configuration default or
-permission to act. See [the configuration guide](docs/configuration.md).
+Choose a value's owner and lifetime before its storage. Configuration exclusively
+owns controller defaults; dashboard edits must not rewrite them or persist
+replacement defaults. Reload/restart derives defaults from current configuration.
+Temporary overrides need an explicit physical session or expiry, or the documented
+Home Pause scope. Show their scope, preserve only its remaining validity across
+restart and restore configured behavior when it ends. Validate equipment/session
+identity; a new physical connection inherits no previous session's override.
 
-### Configuration ownership and dashboard controls
+Keep native observations and commands, durable dashboard intent, commissioning,
+restoration duties, pairing state and historical records distinct from defaults.
+Environment scope is not actuation permission; there is no global operating mode.
+Home, Garage, charging and Caravan retain their documented independent ownership.
+Native parameter edits are explicitly labeled device actions, not default edits.
 
-- Home automatic heating permission is a durable dashboard control choice bound
-  to its current equipment identity, defaulting to Pause. Garage has manual
-  Normal/Away selections and independent device-local frost protection. Charging
-  Automatic scheduling and Caravan Automatic power retain independent ownership. There is no global operating
-  mode. The environment
-  (live, simulation or history viewer) describes data/connection scope, not an
-  automatic actuation permission. Explicit manual heating overrides are separately
-  authorized actions with restoration duties regardless of automation. Home
-  Automatic / Pause is one choice: Pause has no end unless a resume time is set.
-  Normal and Reduced choices remain during Pause; Preheat always has a fixed
-  lease deadline and restores ROOM at that deadline. Scheduled expiry resumes
-  Automatic for the same equipment identity.
-- Configured controller defaults belong exclusively to configuration. Dashboard
-  edits must never rewrite those defaults or create persistent database
-  preferences that replace them. Reloading or restarting must derive defaults
-  from the current configuration, not from an earlier dashboard preference.
-- Temporary controller overrides require an explicit physical session or expiry
-  (Home Normal/Reduced may instead use the current explicit Pause). Display
-  that scope beside the action, restore configured behavior when it ends, and
-  persist only the remaining valid scope across restart. Validate session and
-  device identity before accepting an edit; a new connection inherits no old
-  override. Live device observations retain separate provenance and authority.
-- Charging configuration owns only the shared and vehicle-specific defaults for
-  ready-by time, starting charge, target charge and usable battery capacity.
-  Session edits of those four values do not replace configuration defaults.
-  Automatic charging and shared charger priority are persistent dashboard
-  control choices, not configuration fields. Bind them to current equipment
-  identity; preserve them across restart and unplugging for that equipment.
-  Charge now is a session action independent of the Automatic charging switch.
-  It still respects live control authority, device readiness and native limits.
-  Integration setup, commissioning and electrical limits remain configured.
-  The same identified physical connection retains its last usable vehicle target
-  and capacity as labelled planning references during feed loss and restart,
-  together with its charge anchor. Missing telemetry cannot silently lower its
-  effective target and release a completed request. Original clocks and unavailable
-  raw telemetry remain visible; new usable observations and explicit session edits
-  take precedence. These references neither rewrite defaults nor grant actuator
-  authority, and cannot cross vehicle or physical-session boundaries.
-- Charging current adjusts to property loading and shared charger priority by
-  default, independently of Automatic scheduling and including Charge now.
-  Charger 1 retains native Equalizer current control. Shelly applies the shared
-  planner's allocation policy to admitted live household headroom, using priority,
-  remaining energy and ready-by requirements;
-  Balanced is not necessarily an equal split. Charger 1's momentary draw,
-  Equalizer allowance and response delay must not redistribute that entitlement,
-  directly or through replanning. Charger 1's measured current is used to remove
-  its contribution from property consumption, not to reserve its entitlement.
-  Shelly reduces for property protection only when household demand plus Shelly
-  alone exceeds the configured effective phase limit. If reducing Charger 1
-  could remove the excess, Shelly leaves that correction to Equalizer regardless
-  of the amount or duration of the excess; no response watchdog takes over.
-  Allocation changes and native/vehicle restrictions remain independent.
-  With Charger 2 priority, a conservative forecast allocation or secondary
-  deadline reservation must not lower Shelly's live household headroom.
-  Current adjustment requires supported capabilities, explicitly configured
-  electrical limits and valid property and charger source evidence. Equalizer
-  supplies property current; its reported allowance, native budget and an
-  agreement comparison are not prerequisites for Shelly's calculation.
-  Healthy synchronized reporting or current native status readback can confirm
-  unchanged measurements without renewing their original last-change clocks.
-  Reading an application cache or retained MQTT message cannot establish that
-  health. Use each source's latest valid current measurement whenever that
-  source is healthy in its current connection, independently of other sources'
-  timestamps. Neither OCPP nor cloud readings need to follow a property update;
-  changed charger values also need no later property confirmation. There is no
-  measurement-pairing hold or retained prior ceiling for timestamp ordering.
-  Separately arriving changes can temporarily overestimate or underestimate
-  household demand and headroom. The owner explicitly accepted that uncertainty
-  on 2026-10-06 to keep current allocation responsive; independently received
-  reports remain non-atomic and retain their original clocks. Invalid or
-  contradictory measurements and actual feed loss still select fallback.
-  Record both charger allowances even without plugged-in vehicles: Charger 1
-  keeps its healthy native Equalizer allowance; Charger 2 reports available
-  capacity while preserving connected-peer commitments without inventing an
-  unplugged vehicle's request or deadline. Connection, applied current, session
-  restrictions and command permission remain separate. Observing unplugged
-  capacity sends no device command and cannot backfill unobserved history.
-  Command readiness, native readback and physical identification retain
-  their separate freshness requirements. Unavailable or invalid source evidence
-  uses the configured fallback, still respecting known tighter limits and never
-  inventing headroom. The per-phase effective budget is `mainFuseA - marginA`;
-  a negative configured margin intentionally increases it for owner calibration,
-  without changing the declared physical fuse rating or native protection.
-  An explicit configuration opt-out remains supported. This lasting amendment,
-  approved on 2026-10-05, removes the independent Equalizer cross-check and the
-  unchanged-value expiry to avoid competing balancing loops and false fallback.
-  With current adjustment enabled, a confirmed connected idle permission-off
-  stop holds the configured fallback setting, constrained by applicable tighter
-  native, vehicle and electrical limits. Changes in computed headroom do not
-  repeatedly rewrite that idle setting. Capacity calculation and history remain
-  independent; the idle setting is not evidence of available capacity. Before
-  an application-authorized Start, apply and confirm a limit within current
-  admitted capacity. Active charging uses normal adjustment. A transient zero
-  draw does not establish idle, and a load-balancing Stop remains held until
-  sufficient capacity returns. Unplugged observation sends no setting commands;
-  scoped identification and restoration duties remain applicable. This idle
-  behavior was explicitly agreed by the owner on 2026-10-09.
-- Shelly's adjustable current setting follows the physical session's instruction
-  precedence. With `limiterEnabled:true`, a setting carried into a new confirmed
-  connection is readback, not a permanent restriction on load balancing. A
-  genuinely observed external current choice made during that connection remains
-  a ceiling until unplugging or explicit **Use automatic** supersedes it;
-  same-session restart and transport reconnection preserve that choice. Confirmed
-  controller writes cannot become external choices. The Automatic scheduling
-  switch does not enable or disable current adjustment, and changing it or using
-  Charge now does not clear a later external current choice. Current adjustment
-  still requires its own capability, evidence and command confirmation; it grants
-  no Start permission and cannot relax configured electrical, native hardware or
-  vehicle limits. `limiterEnabled:false` preserves the native setting except for
-  separately scoped identification and restoration. This owner-approved lasting
-  amendment on 2026-10-05 separates an adjustable session choice from an equipment
-  limit so a carried-over setting cannot permanently cap a new connection.
-- When future charging current is unknown, economic scheduling assumes the
-  maximum the charger can deliver within its configured/verified ceiling and
-  forecast property headroom on every phase after household and peer load. Use
-  that assumption to estimate delivery, duration and completion and select cheap
-  periods. Do not invent hidden vehicle timers or lower current settings, reserve
-  permanent worst-case peer demand, or release both chargers merely because one
-  charger's current or control readiness is unavailable. Keep that charger in
-  the joint forecast; label assumed delivery and revise it when usable evidence
-  arrives. Known applicable native, vehicle and electrical restrictions remain
-  authoritative. Battery-request defaults retain their configured ownership.
-  A modeled deadline shortfall or missing shared price/capacity evidence is
-  distinct from an unknown charging-current restriction. This is an optimistic
-  planning assumption, never evidence of current draw, command readiness,
-  accepted scheduling or guaranteed completion. See
-  [the charging planning contract](docs/charging/planning.md#maximum-available-current-assumption).
-- Normal charging and one-extra-day planning use the same available published
-  prices and configured fresh price forecasts. Published prices take precedence;
-  both plans use the same all-in tariff calculation and forecast uncertainty
-  treatment. The uncertainty allowance guides decisions and remains separate
-  from estimated cash cost and recorded bills. An extra-day comparison changes
-  only the selected charger's deadline, with the same remaining energy and joint
-  capacity assumptions, so any saving reflects additional time. Retain the
-  earlier complete plan as a candidate, including its allocation targets. A new
-  allowance uses the extra time only when combined cost plus forecast uncertainty
-  improves without increasing the selected charger's or household's estimated
-  cash cost; keep the earlier plan on ties. A stopped, unscheduled peer's unfulfilled
-  request is not promised service, while independently active or scheduled peer
-  demand and its uncertainty remain part of the joint assessment. This
-  owner-approved clarification on 2026-10-09 applies both to prospective
-  comparisons and planning with an approved extra day. Multiple allowances keep
-  their approval order. An active allowance's comparison must show the actual
-  current joint plan; explain any redistribution from a later peer allowance
-  instead of hiding costs or displaying a different hypothetical approved plan.
-  Forecast use does not require a deadline extension or grant control authority. Admin and
-  family-password users may view and refresh the comparison, allow one more day
-  and cancel an active allowance under the same equipment, session and readiness
-  checks. This lasting amendment, approved on 2026-10-09, removes the former rule
-  that reserved forecast scheduling for approved flexibility; see
-  [charging price evidence](docs/charging/planning.md#published-and-forecast-prices).
-- Both charger cards use one shared component with capability-driven differences.
-  With Automatic enabled, each new confirmed physical connection takes automatic
-  control, superseding earlier charging instructions and native charger schedules,
-  including recurring schedules. Genuinely absent saved session state follows the
-  same policy after fresh connection evidence; unreadable or invalid state does
-  not grant permission. Later external instructions take priority for that
-  connection and survive restart/reconnect. The explicit **Use automatic** action
-  also supersedes earlier instructions, enables Automatic and returns to price
-  scheduling; it need not start charging immediately. **Charge now** is also an
-  explicit takeover of the displayed external Stop and supported native charging
-  schedules, including an earlier Shelly SYS permission hold, requesting immediate
-  charging without changing Automatic or clearing an external adjustable current
-  ceiling. A fresh explicit request is independent of automatic retry budgets. Ordinary polling within an established
-  connection and the Automatic preference switch never acquire takeover authority.
-  Bind takeover to current equipment,
-  connection and observed native instructions; newer external changes retain
-  priority. Confirm native changes and preserve uncertain outcomes across failure.
-  Unsupported native schedule operations remain visibly blocked; this policy does
-  not authorize guessed device commands or unrelated site settings. Do not restore
-  superseded instructions after unplugging or restart, infer who caused an observed
-  stop, change unrelated device schedules or bypass electrical protection, charger
-  authorization, faults or vehicle restrictions.
-- **Pause charging** is a durable dashboard instruction for the current physical
-  connection. It turns Charge now off, leaves Automatic unchanged and prevents
-  scheduling, identification and permission recovery from starting charging.
-  Ready-by expiry, application restart, transport reconnection and transaction
-  rollover do not end it. Confirmed unplug ends its scope; the next connection
-  follows the saved Automatic preference. **Use automatic** returns to scheduling;
-  **Charge now** requests immediate charging. A positively evidenced later external
-  Start/Resume supersedes the pause and yields to external control. A later external
-  Stop ends an earlier Charge now request. Polling, generic status and Shelly `sys`
-  permission changes cannot manufacture these external instructions. Preserve the
-  dashboard origin separately from observed native Stops, and distinguish saved
-  intent, native confirmation and measured stopping. Existing current limits and
-  restoration duties remain binding. This lasting amendment, including the scoped
-  Charge now takeover above, was explicitly approved by the owner on 2026-10-15.
-- Once Easee Direct OCPP is commissioned, normal local charging permission,
-  scheduling, Charge now, new-connection takeover and same-session recovery must
-  not require an Easee cloud reply. This owner-approved clarification on
-  2026-10-06 keeps the preceding instruction precedence: current authenticated
-  local evidence and valid equipment/session authority are sufficient when no
-  contrary instruction is known. Missing, expired or unknown cloud data supplies
-  no new restriction and must not be rewritten as fresh evidence of no schedule
-  or no Stop. A known later external instruction survives cloud loss and restart;
-  source-timed supplementary observations can establish newer instructions, but
-  cloud recovery cannot renew an old instruction merely by rereading it. OCPP
-  suspension or zero power alone cannot identify an external action. Initial
-  commissioning and clearing a positively identified native dynamic-current
-  zero Pause may still need Easee's cloud API. That exceptional recovery must be
-  separately scoped and confirmed; ordinary local scheduling never requires it
-  or automatically clears an unexplained zero-current state. See
-  [local Easee operation](docs/charging/integrations/easee.md#easee-cloud-outages).
-- The owner-approved [Shelly native-permission compatibility exception](docs/charging/execution-and-recovery.md#shelly-system-permission-changes)
-  has two removable policies: permission-transition reconciliation and startup
-  retry recovery. Fresh supported `sys` permission changes remain device
-  transitions at any connection age/current, not evidence of an external actor.
-  A witnessed Stop retains its physical hold until fresh native permission,
-  a fresh explicit Charge now takeover or an eligible bounded startup retry
-  resolves it. Retry recovery covers a SYS Stop within 60 seconds of an
-  acknowledged ordinary Start, excluding identification/restoration Starts:
-  three retries after 10/30/60 seconds, at most five minutes per incident and
-  six scheduled retries per physical connection. Charge now has three retries
-  per explicit ON request and never consumes or resets the scheduler budget.
-  A confirmed terminal Charge now failure performs the ordinary OFF transition,
-  enabling Automatic and reassessing the schedule without a special hold.
-  Retry state survives restart/reconnect/handover; fresh authority, current
-  preparation, physical zero and all independent restrictions remain required.
-  An indistinguishable native user Stop reported as SYS within the startup
-  window may be retried; the owner explicitly accepted this ambiguity and
-  amendment on 2026-10-22. System Enable supplies no Start authority and clears
-  no unrelated instruction. Interrupted pauses cannot furnish continuous stop
-  evidence; identification keeps its original deadlines and energy allowance.
-  Capture native incidents and outcomes even when recovery works, using normal
-  report retention and explicit Save. See the linked contract for evidence and
-  removal boundaries. No firmware-based automatic enable/disable is inferred.
-- Explicit configuration import/application and clearly labeled native-device
-  setup/commands are separate from controller-default edits. Keep their actual
-  effect visible. Historical records, restoration obligations, commissioning and
-  pairing state are not configuration defaults; preserve their appropriate
-  persistence and safety duties.
-- Caravan dehumidifier Automatic power and its OFF/ON thresholds are durable
-  dashboard control choices bound to the appliance and Caravan temperature-sensor
-  connection. Configuration owns the wiring, not replacement threshold defaults.
-  Disabling automatic power does not disable the independent recording evidence
-  gate or grant authority to stale device/sensor observations.
-- Ordinary heat-pump parameter edits are persistent device commands. Read the
-  actual settings from the pump; do not impose an application expiry or mirror
-  readable native settings into controller configuration. Successful edits
-  establish the baseline for later automatic control. Home Heat control actions
-  Normal and Reduction last through the current Pause, including a pause without
-  an end time. In Automatic they are reassessed on the next controller update.
-  Preheat and explicit timed tests retain fixed deadlines and restoration duties
-  separately from parameter edits. Manual phases use the same immediate equipment
-  actions as automatic phases; equipment capability and protection checks remain.
-- Garage Normal/Away is durable device-bound application intent without expiry.
-  Configuration owns the predefined Away target; the explicit normal target and
-  mode selection survive restart. ST-MQ sends the resulting real target and
-  external-control enable to the heat-pump controller. It persists these,
-  regulates from native BTHome temperature components and does not need mode
-  labels. Ordinary power/mode/fan/vane edits are one-shot device commands without
-  automatic replay or restoration. Temperature maintenance preserves OFF and never enforces HEAT;
-  non-HEAT suspends/clears the offset and fresh HEAT recovery resumes the target.
-  In HEAT, sensor timeout clears the offset and selects native 16°C preserving
-  power. Successful external regulation first confirms native 17°C and sends
-  measured temperature + 17°C - effective target. Freshness is received sensor
-  evidence, never repeatedly reading a cache or a stored target.
-- Garage frost protection runs independently in the probe sender and heat-pump
-  controller. The sender retains conservative front/rear pipe-reserve state and
-  settings;
-  the heat-pump controller applies a minimum target and explicit HEAT/ON rescue.
-  Protection cannot overwrite the saved user target. The installation approval,
-  protection margin, pipe geometry and heat-transfer assumptions belong exclusively
-  to `garage.protection` in configuration. ST-MQ applies those loaded values to the
-  sender over MQTT; the dashboard only compares configured values with actual
-  readback and cannot edit them. Configuration or a command acknowledgement is
-  not proof that the sender applied it. Unavailable or stale protection remains
-  unknown. There is one pump-command
-  owner. The BLU H&T development setup supplies temperature but no pipe protection.
-  Warn when manual target/mode changes raise temperature; approximately 24 hours
-  is moisture-avoidance guidance, not a guarantee that stored objects are warm.
-- Keep the configured H66 assumptions `compressor_integral_a1`,
-  `aux_integral_a2`, `compressor_hysteresis_c`, `aux_hysteresis_c` and `a2_basis`:
-  the integration cannot read these from the pump. Treat them as declared model
-  assumptions, not observed settings or commands. Controller strategies,
-  comfort/protection limits and integration setup remain configuration-owned.
+Shared defaults remain in `config.json.options`, with sparse private/Supervisor
+overrides. Keep non-secret common topics/equipment definitions public and private
+identifiers external. Settings and schema stay beside related fields in matching
+order; change current paths and callers together without aliases. Another layer or
+format needs a concrete requirement. Feature tests configure their own relevant
+synthetic integrations, with separate public-default/sparse-merge coverage.
 
-### Configuration design
-
-- Keep `config.json.options` as the shared defaults and the existing private or
-  Supervisor source as sparse installation overrides. Add another configuration
-  layer or format only when a concrete requirement justifies it.
-- Keep credentials and private identifiers in private configuration. Non-secret
-  installation choices may also go there; common MQTT topics and equipment
-  definitions belong in public defaults. Do not copy defaults into private files
-  or examples just because a feature adds settings.
-- Put new settings in their owning section beside related settings, and keep
-  `options` and `schema` in the same section and field order. Use the section map
-  in [docs/configuration.md](docs/configuration.md); update it for new sections.
-  Change field paths when the current design needs it, updating all current callers, examples and tests together. Reject retired paths; do not add aliases or migrations for development configurations.
-- Public Garage enablement and sender protection approval default to false.
-  Test explicit private opt-in independently; approval is installation intent,
-  not evidence of adapter readiness or fresh local protection.
-- Feature tests must explicitly configure the synthetic integrations relevant
-  to their scenario instead of inheriting unrelated public device subscriptions.
-  Keep separate coverage for intended public defaults and sparse override merging.
+Owning contracts: [configuration and section map](docs/configuration.md),
+[Home controls](docs/automation-and-manual-control.md), [Garage](docs/garage.md),
+[charging policies and subsystem contracts](docs/charging/policies.md),
+[Caravan](docs/caravan-dehumidifier.md). Their equipment-specific lifetimes,
+precedence, defaults and approved exceptions remain binding.
 
 <a id="f4"></a>
 
 ## F4. Honest evidence and historical meaning
 
-- Keep observations, engineering assumptions, estimates, forecasts, requests,
-  acknowledgements and confirmed device readback distinguishable. Preserve source
-  identity, units, source/receipt clocks, quality and the meaning effective at the
-  recorded time. Today's configuration must not silently reinterpret history.
-- Missing, stale, invalid or unsupported evidence is unknown, not zero, off or a
-  successful result. Preserve valid zero/false values. Reconnection, held values
-  and cached republishes do not manufacture fresh observations or independent
-  learning evidence. Corrections cannot invent data for actual acquisition gaps.
-- For the commissioned Home floor controller, fresh correlated GPIO output
-  readback may confirm the commanded override and its release. The owner
-  explicitly approved this evidence boundary on 2026-10-15. Label it as GPIO
-  feedback throughout controls and history; it does not measure relay-contact
-  continuity, valve movement, water flow or delivered heat. Physical wiring and
-  safe thermostat restoration must still be commissioned before heating control
-  is enabled. Individual timed valve overrides remain separate from the pooled
-  automatic treatment. See [Home floor preheating](docs/floor-preheat.md).
-- On 2026-10-14 the owner approved retaining a successful Caravan electrical
-  association across restart and paired handover, bound to actual appliance,
-  meter and configured wiring. Historical proof is separate from live qualified,
-  recordable or commandable evidence. A continuous unavailable interval of
-  60 seconds invalidates it; a return before that boundary requires 30 seconds
-  of independently advancing stable feeds. Unseen downtime counts conservatively
-  from the last admitted checkpoint, without renewing source or proof clocks.
-  Wiring changes, explicit physical rechecks and failed coupling checks retain
-  their own invalidation and restoration duties. Brief flaps do not rearm failed
-  tests. This accepts relocation inside the grace as a residual uncertainty,
-  not a probability guarantee. See [Caravan qualification](docs/caravan-dehumidifier.md#automatic-power-and-caravan-location-check).
-- Charging may resolve both vehicle assignments jointly when fresh Tesla
-  actual-current evidence, corroborating power and confirmed positive measured
-  draw within a confirmed 6 A offer provide a unique comparison, and BMW's own
-  valid start/stop episode matches the other unchanged physical connection.
-  That same BMW episode may fit the Tesla
-  connection's transitions; the unique Tesla comparison resolves this ambiguity.
-  BMW still requires its own positive evidence. A negative Tesla result or the
-  remaining charger alone cannot identify BMW, and a different contradictory BMW
-  episode keeps the assignment unresolved. Preserve source, session, retry and
-  consumption checks; polling, restart or a new connection cannot reuse the
-  shared episode to contradict the resolved assignment. A confirmed comparison
-  may retain its original clocks for a delayed BMW report within the same two
-  physical connections, identification attempts and feed associations; it is
-  historical identity evidence, not fresh current or control permission. This
-  narrow lasting amendment was explicitly approved by the owner on 2026-10-04.
-  On 2026-10-07 the owner approved accepting matching lower measured draw:
-  6 A is the offered ceiling, not required vehicle consumption. Fresh, settled
-  current and corroborating power must still distinguish the chargers, every
-  measured Charger 2 phase must remain within the offer's measurement tolerance,
-  and BMW still needs its own positive episode. See
-  [vehicle assignment](docs/charging/identification.md#vehicle-assignment).
-- On 2026-10-16 the owner clarified that Tesla identification uses one positive
-  comparison on either charger, without requiring a test or command on Charger 2.
-  An observed disconnected peer retains the existing start/power evidence rules.
-  With a connected peer, fresh measured Tesla current and corroborating power
-  must uniquely match the target against both physical chargers during its bounded
-  probe or ordinary charging, including settled observations. Unknown or
-  overlapping peer evidence remains ambiguous. A minimum-current intervention is
-  additional distinguishing evidence, not a universal prerequisite. This Tesla-only comparison cannot identify BMW
-  by elimination or furnish the preceding joint 6 A proof without that real test.
-  On 2026-10-17 the owner explicitly approved the ordinary-charging comparison:
-  the same current/power, physical-session, source, peer and settling checks apply
-  without requiring an extra-energy probe. Healthy change-only reports retain
-  their original receipt clocks while fresh physical measurements establish the
-  later comparison. This grants no Start permission, additional charging budget
-  or extension of a bounded probe, and does not change restoration duties.
-- Once positive identification succeeds, inconclusive later evidence preserves
-  that assignment within the same physical connection, including across restart.
-  A vehicle start/stop episode matching both chargers is not a clear mismatch
-  of their established identities. Preserve their scoped battery references,
-  targets and progress. Clear distinguishing contradictory evidence still
-  withdraws certainty; actual connection, equipment and vehicle-feed identity
-  boundaries retain their existing fences. This continuity rule applies to
-  ordinary identification as well as a minimum-current comparison. It cannot
-  identify an unknown peer by elimination, supply missing joint proof, renew
-  source clocks or grant control permission. The owner explicitly approved this
-  clarification on 2026-10-18.
-- On 2026-10-09 the owner approved identification on either reachable charger
-  while its peer is explicitly unreachable. Missing peer observations remain
-  unknown; they cannot supply disconnection, zero draw or an identity. BMW keeps
-  its existing positive matching rules. Its controlled pause may proceed without
-  live peer evidence. Tesla may instead use fresh matching measured current and
-  power as a baseline, followed by an owned, physically confirmed pause and new
-  live vehicle stop, zero-current and zero-power reports with matching clocks.
-  Static current/power matching retains its peer requirements. Known peer
-  instructions, pending actions, test/restoration duties, nearby transitions and
-  conflicting assignments retain priority; later contradictory peer evidence
-  withdraws a match supported only by that pause. The owner accepts the residual
-  possibility of a coincident unobserved peer transition. Only the reachable
-  connection is identified; all other freshness, scope, budget and restoration
-  checks remain in force.
-- Keep original frozen forecasts and outcomes separate from later corrected model
-  assessments. Estimated or timing-only benefits are not measured causal savings;
-  overlapping energy totals and components must not be double-counted.
-- Require independent validation appropriate to the claim. Tests should encode
-  expected behavior rather than reproduce implementation formulas; chronological
-  learning validation must not leak future evidence into training or forecasts.
+Distinguish observations, engineering assumptions, estimates, forecasts, requests,
+acknowledgements, native readback and physical outcomes. Preserve source identity,
+units, source/receipt clocks, quality and the meaning effective at the recorded
+time. Today's configuration must not silently reinterpret history.
 
-Details: [recording and provenance](docs/recording.md),
-[time and evidence](docs/time-evidence.md),
-[temperature evidence](docs/temperature-sensors.md),
-[learning and control](docs/learning-and-control.md).
+Missing, stale, invalid or unsupported evidence is unknown, not zero, off or
+success. Preserve valid zero/false. Reconnection, caches and held republishes do
+not manufacture fresh observations or independent learning evidence. Corrections
+cannot invent data for real acquisition gaps. Keep frozen forecasts and original
+outcomes separate from corrected assessments; timing alone does not prove causal
+savings, and overlapping energy totals/components must not be double-counted.
+Chronological validation must not leak future evidence into training or forecasts.
+
+Detailed evidence boundaries and approved exceptions:
+[recording](docs/recording.md), [time](docs/time-evidence.md),
+[temperatures](docs/temperature-sensors.md), [learning](docs/learning-and-control.md),
+[floor GPIO feedback](docs/floor-preheat.md#evidence-and-ownership),
+[Caravan qualification](docs/caravan-dehumidifier.md#automatic-power-and-caravan-location-check),
+[positive vehicle identification](docs/charging/identification.md).
 
 <a id="f5"></a>
 
 ## F5. Explicit control authority and restoration
 
-- Keep one authorized owner of equipment commands. Paused automation,
-  read-only replicas, copied database state and restored checkpoints do not grant
-  actuation permission. Pair promotion is explicit, never automatic after timeout.
-- Bind control choices and permission to the current equipment/session identity
-  where applicable. Require the live evidence, commissioning and readiness for
-  the action; owner approval alone is not evidence of adapter capability. Reject
-  stale, unknown or retired authority rather than translating it into permission.
-  For commissioned Direct OCPP, the current local connection supplies local
-  command readiness; optional Easee cloud evidence has separate availability.
-  Loss of that optional source does not revoke valid local authority or erase a
-  known restriction. Physical device refusals, faults, electrical protection,
-  identification limits and restoration obligations remain authoritative.
-- On 2026-10-17 the owner explicitly increased the extra identification charging
-  allowance from 0.15 to 0.30 kWh per probe. Retain the current energy accounting,
-  source checks, hardware-ceiling deadline calculation, ten-second stopping
-  reserve, five-minute maximum and current-test restoration deadlines. This
-  amendment adds no startup-energy exemption, new metering API or polling change.
-  Fresh native connection and command readiness may start the bounded probe
-  before its first usable power sample on either charger. The original
-  hardware-ceiling deadline includes that unobserved startup; no reading is
-  fabricated. Once fresh power is established, including measured zero, its
-  loss ends probing. Missing initial metering cannot renew the deadline or
-  relax native current preparation, Stop/Pause or restoration requirements.
-- Ordinary application stop, restart and paired handover preserve the charger's
-  OCPP configuration and current instructions. Only explicit native-control
-  deactivation or connection reconfiguration owns return to cloud control.
-- Preserve native equipment protection and required service. Temporary changes
-  retain their ownership, expiry and durable restoration obligations across
-  restart, failure, model repair and correction. Reconcile with fresh actual state
-  and respect independent manual device changes. Model resets do not erase physical
-  obligations; a command acknowledgement alone does not prove restoration.
-- The [Shelly system permission exception](docs/charging/execution-and-recovery.md#shelly-system-permission-changes)
-  preserves a device permission hold as a restriction across restart. Fresh native
-  evidence, a fresh explicit Charge now instruction or the bounded F3 startup
-  recovery must resolve it; restored state grants no new Start or observation.
-  A device hold is not an owned identification pause or evidence of physical
-  charging. Existing restoration duties and original identification limits remain.
-- Preserve device-local freshness and command fencing. Garage permanent targets
-  and one-shot device edits have no leases; source timeout and local frost rescue
-  remain independent. Do not claim a software retry can restore equipment through a broken link. Economic preferences
-  and learned confidence cannot relax hard comfort/equipment protection limits.
-- Use controlled offline fixtures for ordinary development. A coding request alone
-  does not authorize deployment, household probing or live equipment commands;
-  honor explicit, applicable authorization already given in the session.
+Keep one authorized owner of equipment commands. Paused automation, read-only
+replicas, copied state and restored checkpoints grant no actuation permission.
+Pair promotion is explicit, never automatic after timeout. Bind permission to
+current equipment/session identity and require the action's live evidence,
+commissioning and readiness. Owner approval is not adapter capability; stale,
+unknown or retired authority fails closed.
 
-Details: [control and restoration](docs/learning-and-control.md),
-[pairing](docs/pairing.md), [Garage adapter](docs/garage-adapter.md),
-[charging](docs/charging.md).
+Preserve native protection, device refusals, required service, independent manual
+instructions, identification limits and restoration duties. Source availability
+and command readiness are distinct; commissioned local OCPP follows its
+[cloud-outage contract](docs/charging/integrations/easee.md#easee-cloud-outages).
+Temporary changes retain ownership, expiry and durable restoration across restart,
+failure, model repair and correction. Reconcile against fresh actual state and
+respect later manual changes. A model reset cannot erase physical obligations;
+an acknowledgement alone cannot prove restoration.
+
+Preserve device-local freshness and command fencing. Do not claim software can
+restore equipment through a broken link. Economics and learned confidence cannot
+relax hard comfort or equipment-protection limits. Ordinary development uses
+controlled offline fixtures. A coding request alone does not authorize deployment,
+household probing or live commands; honor applicable authorization already given.
+
+Details: [control/restoration](docs/learning-and-control.md), [pairing](docs/pairing.md),
+[Garage adapter](docs/garage-adapter.md), [charging execution](docs/charging/execution-and-recovery.md)
+and [bounded identification](docs/charging/identification.md).
 
 <a id="f6"></a>
 
 ## F6. Cost, comfort and service together
 
-Reduce actual attributable energy cost while maintaining acceptable comfort and
-required service. Evaluate preheat, reduction and recovery together at comparable
-comfort and thermal end states. Account for auxiliary energy and delayed recovery;
-cheaper purchase timing, more OFF time or fewer auxiliary starts alone do not prove
-savings. Keep normal operation a real option. Do not provoke unsafe cooling or
-resistance use merely to obtain training labels, or treat reduced service during
-absence as ordinary occupied-operation savings. State uncertainty and distinguish
-engineering assumptions, simulated benefit and supported outcome evidence.
+Reduce attributable energy cost while maintaining acceptable comfort and required
+service. Evaluate preheat, reduction and recovery together at comparable comfort
+and thermal end states, including auxiliary energy and delayed recovery. Cheaper
+purchase timing, more OFF time or fewer auxiliary starts alone do not prove savings.
+Keep normal operation a real option. Do not provoke unsafe cooling or resistance
+use merely for training, or count reduced service during absence as occupied
+savings. State uncertainty and distinguish assumptions, simulations and supported
+outcomes.
 
-Home uses one learned occupied comfort reference and one weighted indoor
-temperature for comfort limits, with fixed configured room weights (default
-Bedroom 50%, Downstairs 25%, Upstairs 25% when all three are configured). There
-are no individual room comfort vetoes or day/night schedules. The owner approved
-this policy on 2026-10-07: initialize provisionally from about one covered hour
-of eligible normal heating conditions, refine gradually, and pause rather than
-erase learning across reporting gaps. Native ROOM changes invalidate applicable
-equipment-response evidence without erasing the comfort reference.
-
-During Home Away, temperature protection remains native to the heat pump; the
-application does not impose a separate absolute indoor minimum, including for
-bounded learning trials. Occupied average-temperature limits resume at the
-configured return time. The owner explicitly approved this clarification on
-2026-10-07. Away does not relax equipment readiness, restoration, trial cost
-allowances or the distinction between reduced service and occupied savings.
-
-The occupied-comfort approval also permits a bounded, explicitly labelled control
-estimate when exactly one of the three contributing indoor sensors is unavailable. Preserve
-its weight and estimate its change from two fresh rooms relative to a common
-observed anchor. Increase uncertainty with missing weight, age and disagreement;
-use it in planning and recovery and return to normal heating when margins or
-coverage are insufficient. Estimates never fill measured history, initialize or
-adapt comfort references, train thermal coefficients, or validate trials. Actual
-device readiness and restoration obligations remain independently required.
+Home uses one learned occupied reference and one fixed configured weighted indoor
+average for comfort, without individual-room vetoes or day/night schedules. The
+[temperature contract](docs/temperature-sensors.md#normal-temperature-reference)
+owns initialization, refinement and the bounded control-only missing-room estimate.
+The [Away policy](docs/learning-and-control.md#planning-and-recovery) leaves absolute
+temperature protection to the native pump and restores occupied limits at return.
+Neither estimates nor Away relax evidence, equipment, cost or restoration duties.
+These owner-approved policies date from 2026-10-07.
 
 Details: [learning and control](docs/learning-and-control.md),
 [Garage manual heating](docs/garage.md), [firewood estimates](docs/fireplace.md).
@@ -759,281 +285,94 @@ Details: [learning and control](docs/learning-and-control.md),
 
 ## F7. Responsive local operation
 
-Raspberry Pi 5 Home Assistant add-on and standalone Linux are first-class targets
-with the same core behavior and data semantics. Keep learning and control practical
-locally without a GPU, a permanently running cloud model or routine paid AI calls.
-External weather, market and supported device services remain legitimate inputs;
-the application must handle their outages conservatively.
+Raspberry Pi 5/Home Assistant and standalone Linux are first-class targets with
+the same core behavior and data semantics. Learning and control remain practical
+locally without a GPU, permanent cloud model or routine paid AI calls. Supported
+external weather, market and device services remain legitimate; handle outages
+conservatively.
 
-Learning, reconstruction and historical queries must not block timely control,
-MQTT ingestion or the UI. Keep memory, rolling caches and background work bounded;
-do not load unlimited history for routine requests or rebuild all history on every
-ordinary restart. Choose maintainable complexity supported by measured behavior.
-Resource/storage targets do not authorize discarding required F2/F4 evidence.
-
-Details: [development validation](docs/development-validation.md),
+Learning, reconstruction and historical reads must not block timely control,
+MQTT ingestion or the UI. Bound memory, rolling caches and background work; avoid
+unlimited routine history loads or full rebuilds on ordinary restart. Complexity
+needs measured justification. Resource targets do not authorize discarding F2/F4
+evidence. Details: [validation](docs/development-validation.md),
 [recording](docs/recording.md), [startup](docs/startup.md).
 
 <a id="f8"></a>
 
 ## F8. Private configuration and personal data
 
-- Keep credentials and private personal data out of Git and out of tool output,
-  logs, diffs, screenshots and commit messages. This includes precise household
-  coordinates, private device/account identifiers and household exports.
-- Private configuration lives outside the checkout in
-  `$XDG_CONFIG_HOME/st-mq/secrets.json` (default `~/.config/st-mq/secrets.json`),
-  or the explicit `STMQ_CONFIG` path. Never stage `secrets.json`, its copies or
-  the retired `options.json`. Use invented, nonfunctional examples in tests/docs.
-- Private directories use mode `0700`; private files use `0600`. Do not read
-  private values unless needed for the task. Inspect them in memory and report
-  only paths, field names and counts.
-- Repository encryption is retired. Keep encryption keys out of the checkout,
-  Git metadata and Git history; do not install encryption filters or key links.
-  Private configuration stays external. Existing historical encrypted data stays
-  opaque and unchanged; never decrypt it into the repository. Its exact paths and
-  blob IDs are inventoried in `scripts/historical-private-blobs.json` solely for
-  history auditing, not runtime support. Do not extend that inventory to admit
-  new private data or keys.
+Keep credentials and household data outside Git and tool output, logs, diffs,
+screenshots and commit messages, including precise coordinates, private
+device/account identifiers and exports. Read private values only when needed;
+inspect in memory and report paths, field names and counts rather than values.
+Private directories use `0700`, files `0600`.
 
-### If plaintext ever enters history
+Private configuration belongs at `$XDG_CONFIG_HOME/st-mq/secrets.json`
+(default `~/.config/st-mq/secrets.json`) or the explicit `STMQ_CONFIG` path.
+Never stage it, copies or retired `options.json`. Use invented nonfunctional
+fixtures. Repository encryption is retired: no keys in checkout/Git metadata or
+history, encryption filters or key links. Historical encrypted data stays opaque
+and unchanged; never decrypt it into the repository or expand the fixed audit
+inventory to admit new private data or keys.
 
-Stop committing/pushing the affected history. Deleting a file from the newest
-revision does not remove earlier plaintext. Preserve unrelated work and recovery
-information, identify affected refs without printing values, and coordinate any
-shared-history repair with the owner. If credentials reached a remote or another
-person, revoke/rotate them with the provider. Do not rewrite unrelated refs or
-claim an exposure is removed from other clones/caches without evidence.
-
-See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scope.
+If plaintext enters history, stop committing/publishing that history and preserve
+unrelated work. Coordinate repair with the owner; deleting a tip file does not
+remove history. Rotate credentials exposed to a remote or another person.
+[Secret handling](docs/secret-handling.md) owns incident and historical-audit scope.
 
 <a id="f9"></a>
 
 ## F9. Converge toward production reliability
 
-The owner approved this lasting policy on 2026-10-07. As production approaches,
-prioritize correctness, reliability and a smaller bug surface over architectural
-novelty or theoretical optimality. Preserve established behavior and ownership
-boundaries. Prefer the smallest coherent change that fixes a demonstrated problem.
+The owner approved this lasting policy on 2026-10-07. Prioritize correctness,
+reliability and a smaller bug surface over architectural novelty. Preserve
+established behavior and ownership. Reuse existing pairing, recovery, publication
+and authority paths; keep one current implementation per responsibility and remove
+redundant states/ownership when practical without broad rewrites.
 
-- Prefer a focused fix within the affected responsibility, covering every
-  equivalent path identified by the consistency review. Focused does not mean
-  changing only the reported location. A defect does not by itself justify
-  redesigning its subsystem. Reuse established pairing, recovery, publication
-  and authority paths instead of adding parallel workflows, speculative fallbacks
-  or generic frameworks.
-- Keep one implementation per responsibility and one current internal contract.
-  Remove redundant states and duplicate ownership when practical without turning
-  a focused fix into a broad rewrite. F1 still governs development compatibility.
-- Separate focused fixes from unrelated restructuring. Architectural changes need
-  a concrete failure or measured limitation, an explanation of why a smaller
-  change is insufficient, and validation of the affected behavior and boundaries.
-  Fewer lines or a cleaner abstraction alone do not establish lower regression risk.
-- Preserve tests for established behavior unless the owner deliberately changes
-  that behavior. Add regression coverage for demonstrated defects, including
-  interruption and uncertain outcomes when persistent state or authority changes.
-  Passing tests do not prove the absence of bugs; report validation limits.
-- Beginning with the v1.0.0 database and persisted application state, every later
-  production release must provide and test a safe upgrade from the preceding
-  production release. That release owns any specific conversion it needs; unchanged
-  formats need no conversion. Preserve source data until success and preserve
-  historical meaning, pairing roles, equipment identity and restoration duties.
-  Learning changes must explicitly retain/rebuild supported evidence or identify a
-  new learning epoch; they cannot silently reinterpret history or discard it.
-- Retain a documented, tested upgrade path for older production backups through
-  the necessary intermediate releases. A current runtime need not read every old
-  format. Do not guess unknown variants, maintain parallel internal schemas or
-  build migration machinery for hypothetical future releases. This commitment
-  does not include unsupported pre-v1.0.0 development databases.
-- Use the existing slave-first upgrade and normal handover sequence for release
-  pairs that support it: upgrade the slave, verify catch-up, complete handover,
-  upgrade the former master and verify it returns as a slave. Each release tests
-  that sequence or clearly identifies a required stopped upgrade before the
-  current master relinquishes control. Never infer cross-version control readiness
-  from a successful transfer or relax incompatibility checks to finish an upgrade.
+A defect does not justify redesigning a subsystem. Architectural changes need a
+concrete failure or measured limitation, why a focused fix is insufficient, and
+validation of the affected behavior/boundaries. Fewer lines alone do not prove
+lower risk. Preserve established behavior tests unless the owner deliberately
+changes the behavior; cover demonstrated defects and relevant interruption or
+uncertain outcomes when persistent state or authority changes.
 
-See [upgrade guidance](docs/pairing.md#software-upgrades). This policy is a release
-obligation and a review discipline, not a new compatibility subsystem.
+From the actual v1.0.0 production baseline, each later production release must
+provide and test a safe upgrade from the preceding production database and state.
+Each release owns the conversion it needs; unchanged formats need none. Preserve
+source until success, historical meaning, roles, identity and restoration duties.
+Learning changes explicitly retain/rebuild supported evidence or identify a new
+epoch. Older production backups need a documented tested path through necessary
+intermediate releases, not a universal runtime reader or parallel schemas. This
+excludes unsupported pre-v1.0.0 development databases and hypothetical migrations.
+Never guess unknown format variants.
 
-## Working and review rules
+Use the [slave-first upgrade and normal handover](docs/pairing.md#software-upgrades)
+when the release pair supports it; otherwise require coordinated stopped
+activation. Each release tests its sequence and identifies incompatibility before
+the master relinquishes control. A successful transfer is not control readiness;
+never weaken incompatibility fences to complete an upgrade.
 
-For each relevant task, identify the foundations it touches and inspect the affected
-producers, consumers, state, configuration, UI, tests and documentation. Keep them
-consistent. Use current contracts and unsupported-input rejection tests; do not
-restore forbidden compatibility to satisfy an obsolete test. Apply focused checks
-that establish the changed behavior; documentation-only work calls for consistency,
-link and diff checks, not a new runtime test suite. Use the existing
-[validation guide](docs/development-validation.md) for code and deployment changes.
-Report what ran and what remains unverified; never claim exhaustive compliance
-from a narrow guard test. Record the change, retained capabilities, relevant
-removals and validation in the issue, pull request or commit body. Track unfinished
-work in issues and user-facing release changes in `CHANGELOG.md`; do not keep a
-completed-task diary in the checkout.
+## Owner workflow
 
-<a id="codebase-wide-consistency"></a>
+Every AI task with net repository changes must commit its completed intended work
+before the final response unless the user explicitly says not to commit. Commits
+are authorized by default; never create empty commits or include unrelated pending
+work. Stage explicit paths and preserve the user's work. The lead coordinates Git
+operations for delegated work; concurrent staging/commits need explicit ownership.
+Report the commit hash and validation outcome. Committing does not authorize
+pushing or deployment; push only when requested.
 
-### Codebase-wide consistency is required for every change
+Complete appropriate validation and use the repository hooks; never bypass a
+failure to satisfy the commit rule. Resolve it or report the blocker without
+claiming completion. Integrate checks with an existing custom hooks setup instead
+of replacing it. One successful secret check on the final index is sufficient;
+whole-history audits are for checker changes, history repair or exposure evidence.
+See [contributing](CONTRIBUTING.md) and [secret handling](docs/secret-handling.md).
 
-This rule applies to **the entire codebase and every kind of change**, including
-small fixes. The reported location is a starting point, never an assumed scope.
-Do not invent a separate solution before checking the established implementation
-and contract for that responsibility.
-
-1. **Find the whole affected family before editing.** Search for equivalent
-   behavior, parallel implementations, callers, producers, consumers and alternate
-   entry points throughout the repository. Follow the responsibility across its
-   representations and lifecycle, rather than searching only for the reported
-   spelling or nearby files. Identify its existing owner and shared pattern.
-2. **Use one established rule and implementation where the responsibility is
-   the same.** Fix a shared owner when practical and update every affected caller.
-   Do not add copied implementations, local workarounds or competing defaults
-   that allow the same defect or inconsistency to survive elsewhere. Reuse
-   existing shared paths first. Consistency is not permission for broad refactors
-   or wholesale deduplication: prefer small, behavior-preserving fixes and verify
-   parallel paths directly when extracting a new abstraction would add risk.
-3. **Preserve justified differences explicitly.** Different capabilities,
-   authority, evidence or lifecycle contracts can require different behavior.
-   Verify and explain those differences; neither accidental divergence nor
-   forced uniformity is acceptable. An existing difference alone is not proof
-   that it is intentional. Follow the foundation conflict procedure when needed.
-4. **Complete the change across its contract.** Update all affected
-   implementations, persisted and exchanged representations, configuration,
-   presentation, operational tooling, tests and documentation together. Remove
-   superseded paths under F1 instead of hiding them behind compatibility glue.
-5. **Verify the family, not just the reproduction.** Exercise equivalent paths
-   and meaningful differences, including affected failure and recovery cases.
-   Use shared or parameterized regression coverage when it establishes the same
-   requirement across implementations. Scope validation to the actual impact;
-   a passing test at one location cannot establish consistency elsewhere.
-6. **Search again and report evidence.** Check for remaining copies, conflicting
-   rules and missed consumers after the edit. Record the reviewed family,
-   changes, justified differences, validation and unverified paths in the commit
-   or pull-request description. Do not claim whole-codebase correctness from a
-   limited audit or mark unfinished equivalent paths as complete.
-
-### Issue relevance and triage
-
-Every new or substantially revised GitHub issue must explain its practical
-relevance before technical implementation details. Start with the actual problem,
-the affected user/workflow and triggering situation, what the user sees, and the
-concrete consequences. Explain why those consequences matter, including useful
-workarounds and their limits. A technical mechanism or a generic claim about
-performance, reliability or safety is insufficient without this explanation.
-For an investigation or qualification gap, identify the decision or assurance
-that is missing and its practical importance without inventing an observed defect.
-
-- Keep the title focused on an understandable symptom or missing assurance.
-  Put justified impact and frequency ratings beside the opening explanation,
-  followed by a dated current status. Technical evidence, validation, completion
-  criteria and historical details follow.
-- Use one `impact:` label: `critical` for supported safety, irrecoverable-data or
-  privacy consequences; `high` for major required-service or control failures;
-  `moderate` for material workflow delay or misleading information; `low` for a
-  minor, limited nuisance; `unknown` when the practical impact is not established.
-  Justify the rating from supported consequences and distinguish conditional
-  risks from observed harm. These ratings are independent of frequency.
-- Use one `frequency:` label: `systematic` when the problem follows the stated
-  trigger consistently; `intermittent` for repeated irregular occurrences;
-  `single-observed` for one recorded occurrence with recurrence unestablished;
-  `unknown` when recurrence is not established. State the trigger and evidence
-  scope, including whether it is source inspection, synthetic testing or installed
-  use. A rare operation can have a systematic defect; one observation never
-  establishes that a problem is rare in actual use.
-- Keep observed failures, source-backed findings, suspected risks and untested
-  hardware/platform cases distinct. Describe important unknown consequences
-  explicitly; do not turn a possible failure chain into established severity.
-- Closed issues retain their original problem's impact/frequency with a prominent
-  explanation of what was fixed, mitigated or closed without a current reproducer.
-  Preserve useful dated evidence and original reports/comments; correct obsolete
-  present-tense claims in the current summary and mark superseded history clearly.
-  A closure must state its scope, remaining limits and relevant reopening criteria.
-- Review the opening before publishing: a reader must understand when the issue
-  matters and what it causes without reading source names, traces or commit lists.
-
-### Scoped validation and reuse
-
-Do not restart a completed test sequence because one isolated test fixture needed
-correction. Successful checks remain usable when their inputs and dependencies
-are unchanged. Identify the affected boundary and rerun the smallest relevant
-case/file plus dependent checks; use the whole file when its shared setup or
-ordering is affected. Continue unfinished files instead of repeating completed
-ones, and reuse unchanged builds and platform results where applicable.
-
-Broaden a rerun only for a concrete gap in coverage: changed shared behavior,
-fixtures, test harness, dependencies or runtime; relevant ordering/load concerns;
-or an explicit qualification requirement. State which prior results are
-invalidated and why before launching another large sequence. A new commit hash
-or an isolated fixture edit alone is not a reason to discard unrelated results.
-
-Keep the original failures, cancellations and unfinished work alongside corrected
-reruns, with the tested source, runtime/platform, selected checks and relevant
-budgets identified. Report a completed baseline plus corrected-file checks as
-combined evidence; never describe it as one clean full run of the exact final
-revision. Reuse does not justify weakening assertions, increasing timeouts to
-hide a defect, omitting affected checks or mixing incompatible test conditions.
-See the [validation guide](docs/development-validation.md#selecting-and-reusing-validation)
-for file/case selection and receipts.
-
-### Required commits for AI tasks
-
-- Every AI task that changes repository files must commit its completed changes
-  before the final response, however small the task. This includes code, tests,
-  documentation, configuration, formatting, and repository instructions.
-- Commits are authorized by default; do not wait for another request or ask for
-  confirmation. Follow an explicit user instruction not to commit when given.
-- **Never create empty commits.** If a task makes no net repository changes,
-  report that no commit was needed. Do not manufacture changes just to commit.
-- Commit only the task's intended changes. Preserve unrelated pending work
-  unless the user explicitly asks to include it.
-- Complete appropriate validation and the secret checks below before
-  committing. Never bypass a failed check to satisfy this rule; resolve it or
-  clearly report the blocker without claiming the task is complete.
-- The lead agent coordinates commits for delegated work. Subagents must not
-  stage or commit concurrently unless explicitly assigned ownership of Git work.
-- Report the resulting commit hash and validation outcome. Creating a commit
-  does not authorize pushing it; push only when the user requests it.
-
-### Routine commit validation
-
-1. Use the repository hooks (`core.hooksPath=.githooks`). If another hooks path
-   is configured, integrate the checks instead of silently replacing it.
-2. Review intended changed paths, run appropriate tests/build checks, and stage
-   explicit paths. Never use an unchecked `git add .` or bypass hooks.
-3. The pre-commit hook runs `node scripts/check-secrets.js --staged`, checking the
-   index for private filenames and credential patterns. One successful check on
-   the final index is sufficient; routine tasks need no decryption or
-   whole-history audit commands.
-4. Pre-push and CI audit reachable history automatically against the fixed
-   private-blob inventory. Run a history audit manually when changing the
-   checker, repairing history or investigating an exposure, not after every task.
-
-Pattern checks cannot recognize every private value. Review confidential-data
-handling when the task touches configuration, accounts or household observations.
-Do not broaden a routine code task into a repeated security audit without evidence.
-
-## UI conventions
-
-- Keep outer card/window padding separate from the smaller nested fold inset;
-  both adapt to narrower screens. Follow [the layout contract](docs/ui-layout.md):
-  each visible hierarchy level has one spacing owner; do not combine a fold
-  margin with card padding for the same step.
-- Do not use the project name **ST-MQ** in user-facing labels, descriptions,
-  popovers, status messages or errors. Use natural wording such as “the controller”
-  or “this application”. Keep actual file paths and protocol identifiers accurate.
-- Use device roles such as “protection sender”, “heat-pump controller” and
-  “Bluetooth gateway” throughout the UI and current documentation. Name specific
-  hardware and firmware as tested examples or in device-specific instructions,
-  not as universal requirements. Describe compatibility through the capabilities
-  needed, and distinguish tested installations from unverified candidates.
-- Show Mitsubishi fields that have real reported data, including valid zero/false
-  values. Omit never-observed or unsupported placeholders. Keep previously observed
-  fields visible during temporary data loss, with an explicit unavailable state
-  and source/quality details. Keep readings in their own fold and compressor state
-  in the summary; never interpret missing compressor activity as idle.
-
-- Action receipts and similar success/failure/confirmation messages remain for
-  24 hours after the action, or until replaced by a newer action on that control.
-  Fresh device evidence updates pending text immediately; later stale readings
-  must not undo a confirmed receipt. Distinguish a past receipt from current
-  control ownership. Live faults and unresolved restoration remain visible for
-  their actual duration, independently of receipt expiry.
+Use issues for unfinished work, commit/PR descriptions for implementation and
+validation, and `CHANGELOG.md` for changes users need to know about. Keep completed
+task diaries out of the checkout. Follow [issue triage](CONTRIBUTING.md#issue-triage)
+when creating or substantially revising issues. User-facing wording, interaction,
+spacing and receipt policies live in [shared UI conventions](docs/ui-layout.md).

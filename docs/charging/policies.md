@@ -11,6 +11,7 @@ not create a separate permission model.
 
 | Choice | Reason and consequence | Detailed contract |
 | --- | --- | --- |
+| Both charger cards use one shared component | Capability-driven differences preserve equipment-specific behavior within the same interaction model. | [Shared UI conventions](../ui-layout.md), [architecture](architecture.md) |
 | Two physical charger roles, independent vehicle feeds | Energy belongs to the charger; BMW or Tesla can use either. Vehicle power never becomes another household electricity contribution. | [Architecture](architecture.md), [evidence](evidence-and-reporting.md) |
 | Automatic scheduling and live current allocation have separate ownership | Turning Automatic off does not disable Charger 2 load adjustment. Charge now still respects current, native and electrical restrictions. | [Current allocation](current-allocation.md) |
 | New confirmed connections can take automatic control when Automatic is enabled | Earlier native instructions are superseded for that new session. Later external instructions have priority; an ordinary preference toggle does not reclaim an established session. | [Takeover](execution-and-recovery.md#automatic-takeover-and-native-instructions) |
@@ -46,9 +47,8 @@ not create a separate permission model.
 
 ## Documentation maintenance
 
-A policy change must name the governing foundation and update the owning contract,
-its producers and consumers, relevant validation, and this summary together.
-Installation guides link to shared rules instead of maintaining another copy of
-their formulas or lifecycle. Preserve approved exceptions and known evidence
-limits explicitly. A synthetic test or firmware label does not silently broaden
-physical qualification.
+Keep this map and installation guides aligned with the owning subsystem contracts;
+link shared formulas and lifecycles instead of copying them. The repository's
+[engineering discipline](../../AGENTS.md#engineering-discipline) governs changes.
+Approved exceptions and evidence limits remain explicit; synthetic tests and
+firmware labels do not broaden physical qualification.

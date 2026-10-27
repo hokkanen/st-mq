@@ -539,6 +539,8 @@ authorization and pause-expiry limitations described above.
 
 ### Easee cloud outages
 
+The owner approved this local-operation boundary on 2026-10-06.
+
 Once Direct OCPP is commissioned, normal local approval, scheduled starts and
 pauses, Charge now, permitted identification and valid session recovery operate
 without a successful Easee cloud read. A confirmed new plug-in follows Automatic

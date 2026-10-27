@@ -20,6 +20,11 @@ for extended tests, isolated browser fixtures, container checks and the pinned
 Home Assistant Supervisor validator. Run the checks relevant to a change and
 report any skips or limitations.
 
+The pre-commit hook runs `node scripts/check-secrets.js --staged` on the index.
+Pre-push and CI audit reachable history automatically against the fixed private-blob
+inventory. Do not bypass hooks or run routine decryption/history audits; see
+[secret handling](docs/secret-handling.md) for the audit boundaries.
+
 Ordinary development uses invented data and isolated services. Never point
 fixtures at an installed controller, private broker or household equipment.
 Keep credentials and household exports outside the checkout; see
@@ -48,6 +53,39 @@ on `main`, and mark `-dev.N` GitHub releases as prereleases. Home Assistant foll
 its configured repository branch and reads the app manifest version; a Git tag
 alone does not publish an app update. Record validation results and remaining
 installation limits with the release.
+
+## Issue triage
+
+New or substantially revised issues start with an understandable symptom or
+missing assurance: who is affected, the trigger, what happens, why it matters,
+and useful workarounds with their limits. Put justified impact/frequency ratings
+and a dated current status before technical evidence and completion criteria.
+An investigation describes the missing decision or assurance without inventing
+an observed defect.
+
+Use one label from each group; impact and frequency are independent:
+
+| Label | Meaning |
+| --- | --- |
+| `impact: critical` | Supported safety, irrecoverable-data or privacy consequences |
+| `impact: high` | Major required-service or control failure |
+| `impact: moderate` | Material workflow delay or misleading information |
+| `impact: low` | Minor, limited nuisance |
+| `impact: unknown` | Practical impact not established |
+| `frequency: systematic` | Consistently follows the stated trigger |
+| `frequency: intermittent` | Repeated irregular occurrences |
+| `frequency: single-observed` | One recorded occurrence; recurrence unestablished |
+| `frequency: unknown` | Recurrence not established |
+
+Distinguish observed harm, source-backed findings, suspected/conditional risks and
+untested hardware or platform cases. State important unknown consequences and the
+evidence scope: source inspection, synthetic tests or installed use. A rare
+operation can have a systematic defect; one observation does not establish rarity.
+
+Closed issues retain the original problem's impact/frequency and useful original
+reports, comments and dated evidence. Keep the current summary accurate, mark
+superseded history, and explain the closure's fixed/mitigated scope, remaining
+limits and reopening criteria, including closure without a current reproducer.
 
 ## Existing clones after the 0.9.5-dev.1 publication
 

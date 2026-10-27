@@ -36,6 +36,15 @@ categories without matched values. Run a history audit when changing the
 checker or investigating an exposure; ordinary commits need one staged check.
 See [AGENTS.md](../AGENTS.md) for the working policy.
 
+## Plaintext exposure
+
+Stop committing or publishing affected history. Deleting a file from the tip
+does not remove earlier plaintext. Preserve unrelated work and recovery information,
+identify affected refs without printing private values, and coordinate shared-history
+repair with the owner. Revoke/rotate credentials that reached a remote or another
+person. Do not rewrite unrelated refs or claim removal from other clones/caches
+without evidence.
+
 ## Historical repair scope
 
 The 2026-09-07 repair sanitized H66's earlier history while preserving existing

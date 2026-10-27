@@ -737,6 +737,11 @@ copying a database alone does not transfer command permission.
 
 ## Reset pairing
 
+On 2026-10-25 the owner approved deliberate Start fresh with the optional recovery
+backup described below. Only intentionally discarded local history narrows
+[F2 reconstruction](../AGENTS.md#f2); this is no routine retention exception and
+does not bypass restoration, safe storage or single-master rules.
+
 The admin-only **Reset pairing** action changes only this computer. It keeps
 configuration, peer addresses, shared credentials, provider tokens and the other
 computer's data unchanged. A confirmation is required; a changed pairing role

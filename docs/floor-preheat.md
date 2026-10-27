@@ -43,6 +43,7 @@ this feedback to confirm the commanded override after physical commissioning on
 retained, stale or invalid feedback remains unknown. A broker acknowledgement or
 an accepted request alone is insufficient. GPIO agreement is not proof that a
 relay contact moved or that ordinary thermostat operation was physically restored.
+Controls and history label both override confirmation and release as GPIO feedback.
 
 The wiring must make **OFF release the override while leaving ordinary thermostat
 heating electrically possible**, including loss of device power. Verify that
