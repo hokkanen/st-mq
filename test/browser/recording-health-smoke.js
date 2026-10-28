@@ -147,15 +147,18 @@ window.payload = ${JSON.stringify(status)}; window.inventory = ${JSON.stringify(
 window.initialHealth = structuredClone(payload.recordingHealth);
 window.partialSourceHealth = ${JSON.stringify(partialSourceHealth)};
 window.productionInventory = ${JSON.stringify(productionInventory)};
+const sourceGroup = issue => ({id:'stream-'+issue.id,label:issue.label,unit:issue.unit ?? '',
+  status:issue.status,sourceLabel:null,issues:[issue]});
 window.setScenario = state => {
   const health = structuredClone(initialHealth);
   if(state !== 'critical') {
     health.recording = {storage:structuredClone(initialHealth.recording.storage),writer:{state:'ready'},runtimeTiming:{basis:'observed-event-loop-delay',hardRealtime:false,samples:12680,maxObservedDelayMs:72,p99ObservedDelayMs:24,warningThresholdMs:1000},state:state === 'sources' ? 'source-unavailable' : 'ok', lastSourceCheckAt:${now}, lastLoopCompletedAt:${now - 1000}, lastWriteAt:${now - 1000},
-      sources:{observedStreams:3,usableStreams:state==='sources'?2:3,attentionStreams:state==='sources'?1:0,unknownStreams:0,complete:false,issues:state==='sources'?[{id:'synthetic-temperature',label:'Outdoor temperature',unit:'°C',status:'stale',sourceObservedAt:${now-900000},lastCheckedAt:${now}}]:[]},
+      sources:{observedStreams:3,usableStreams:state==='sources'?2:3,attentionStreams:state==='sources'?1:0,unknownStreams:0,attentionCount:state==='sources'?1:0,diagnosticCount:state==='sources'?1:0,impactCount:state==='sources'?1:0,metadataKnown:true,complete:false,issues:state==='sources'?[{id:'synthetic-temperature',label:'Outdoor temperature',unit:'°C',status:'stale',sourceObservedAt:${now-900000},lastCheckedAt:${now}}]:[]},
       detail:state === 'sources' ? 'Check source connections.' : 'Source monitoring is active.', history: structuredClone(initialHealth.recording.history)};
     health.disk = {state:'ok', totalBytes:128e9, freeBytes:80e9, checkedAt:${now}, detail:'Local disk space is available.'};
     health.attention = state === 'sources' ? [{id:'recording', severity:'warning', title:'Recording sources are unavailable', detail:'Check source connections.'}] : [];
   }
+  if (health.recording.sources) health.recording.sources.groups=health.recording.sources.issues.map(sourceGroup);
   payload.recordingHealth = health;
   renderStatus(payload);
 };
@@ -164,7 +167,7 @@ window.setDetailedSources = () => {
   payload.recordingHealth.recording.state = 'ok';
   payload.recordingHealth.recording.detail = 'Source monitoring is active.';
   payload.recordingHealth.attention = [{id:'recording-sources',severity:'warning',title:'Some recording sources need attention',detail:'Check the affected measurements.'}];
-  payload.recordingHealth.recording.sources = {observedStreams:5,usableStreams:2,attentionStreams:3,unknownStreams:1,complete:false,issues:[
+  payload.recordingHealth.recording.sources = {observedStreams:5,usableStreams:2,attentionStreams:3,unknownStreams:1,attentionCount:3,diagnosticCount:3,impactCount:3,metadataKnown:true,complete:false,issues:[
     {id:'synthetic-temperature',label:'Outdoor temperature',unit:'°C',status:'stale',destination:'adaptive',
       reason:'The last received observation is older than the supported freshness limit.',sourceObservedAt:${now-900000},lastCheckedAt:${now}},
     {id:'synthetic-garage',label:'Garage heat-pump indoor temperature',unit:'°C',status:'unavailable',destination:'adaptive',
@@ -172,6 +175,7 @@ window.setDetailedSources = () => {
     {id:'synthetic-circulation',label:'Hot-water circulation feedback',status:'unknown',destination:'overview',
       reason:'The current source observation is not known.',sourceObservedAt:null,lastCheckedAt:null}
   ]};
+  payload.recordingHealth.recording.sources.groups=payload.recordingHealth.recording.sources.issues.map(sourceGroup);
   renderStatus(payload);
 };
 window.setPerformance = state => {
@@ -389,7 +393,7 @@ try {
     assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]', 'Card padding and nested indentation remain independent');
     assert.equal(await evaluate(`JSON.stringify((${uiLinkFailures.toString()})())`), '[]', 'Rendered evidence and source links share navigation styling');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${label}: page fits`);
-    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-backup-list, .recording-backup-toolbar, .recording-backup-actions, .recording-source-exceptions, .recording-source-heading, .recording-source-reason, .recording-source-clocks, .recording-source-clocks dd, #recording-recording-unknown, #recording-recording-coverage, .recording-storage-inventory, .recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-data-group, .recording-data-group > summary, .recording-data-group > p, .recording-dataset, .recording-dataset-facts, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents, .recording-operation-list, .recording-operation, .recording-command-coverage')).filter(node => {
+    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-backup-list, .recording-backup-toolbar, .recording-backup-actions, .recording-source-exceptions, .recording-source-heading, .recording-source-reason, .recording-source-summary, .recording-source-details, .recording-source-issue-heading, .recording-source-clocks, .recording-source-clocks dd, #recording-recording-unknown, #recording-recording-coverage, .recording-storage-inventory, .recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-status, .recording-status-issue, .recording-measurements, .recording-data-group, .recording-data-group > summary, .recording-data-group > p, .recording-dataset, .recording-dataset-facts, .recording-performance-timings, .recording-performance-toolbar, .recording-performance-measures, .recording-performance-outcomes, .recording-performance-incidents, .recording-operation-list, .recording-operation, .recording-command-coverage')).filter(node => {
       if(!node.checkVisibility()) return false;
       const b = node.getBoundingClientRect(), owner=node.closest('.recording-health-card')?.getBoundingClientRect();
       return b.width <= 0 || b.left < 0 || b.right > innerWidth + 1 || node.scrollWidth > node.clientWidth + 1
@@ -515,7 +519,7 @@ try {
       assert.equal(await evaluate("document.querySelectorAll('#recording-backup-list > li').length"),3,'Backups lists individual saved copies');
       assert.match(await evaluate("document.getElementById('recording-backup-catalogStatus').textContent"),/completed reset archive.*without a portable backup.*incompatible source database/);
       assert.match(await evaluate("document.getElementById('recording-backup-folder').textContent"),/synthetic\/recording\/backups/);
-      await evaluate("setDetailedSources(); document.getElementById('recording-recording-card').open=true");
+      await evaluate("setDetailedSources(); document.getElementById('recording-recording-card').open=true; document.querySelectorAll('.recording-source-details').forEach(node=>node.open=true)");
       await settle(); await checkLayout(`${width}/${theme}/source-details`);
       assert.match(await evaluate("document.getElementById('recording-recording-sources').textContent"),/Outdoor temperature.*Out of date.*Source observation/);
       assert.match(await evaluate("document.getElementById('recording-recording-coverage').textContent"),/never reported are outside/);
@@ -582,13 +586,13 @@ try {
     'An expired focused task returns focus to its persistent diagnostic disclosure');
   await evaluate("payload.recordingHealth.operations=originalOperations; panel.update(payload)");
   assert.match(await evaluate("document.getElementById('recording-performance-operations-evidence').textContent"), /On this computer/);
-  await evaluate("setDetailedSources(); document.getElementById('recording-details').open=true; document.getElementById('recording-recording-card').open=true; window.sourceRow=document.querySelector('#recording-recording-sources > li'); window.sourceLink=sourceRow.querySelector('.recording-source-link'); sourceLink.focus(); panel.update(payload)");
-  assert.equal(await evaluate("document.activeElement===sourceLink && sourceLink.closest('li')===sourceRow && document.getElementById('recording-recording-card').open"), true,
+  await evaluate("setDetailedSources(); document.getElementById('recording-details').open=true; document.getElementById('recording-recording-card').open=true; window.sourceRow=document.querySelector('#recording-recording-sources > li'); window.sourceFold=sourceRow.querySelector('.recording-source-details'); sourceFold.open=true; window.sourceLink=sourceRow.querySelector('.recording-source-link'); sourceLink.focus(); panel.update(payload)");
+  assert.equal(await evaluate("document.activeElement===sourceLink && sourceLink.closest('.recording-source-exception')===sourceRow && sourceFold.open && document.getElementById('recording-recording-card').open"), true,
     'Routine source polling preserves its row, disclosure and focused link');
-  await evaluate("payload.recordingHealth.recording.sources.issues.reverse(); panel.update(payload)");
+  await evaluate("payload.recordingHealth.recording.sources.groups.reverse(); panel.update(payload)");
   assert.equal(await evaluate("document.activeElement===sourceLink && document.querySelector('#recording-recording-sources > li:last-child')===sourceRow"), true,
     'Reordering source exceptions preserves identity and focused navigation');
-  await evaluate("payload.recordingHealth.recording.sources.issues=payload.recordingHealth.recording.sources.issues.filter(item=>item.id!=='synthetic-temperature'); panel.update(payload)");
+  await evaluate("payload.recordingHealth.recording.sources.groups=payload.recordingHealth.recording.sources.groups.filter(item=>item.id!=='stream-synthetic-temperature'); panel.update(payload)");
   assert.equal(await evaluate("document.activeElement===document.querySelector('#recording-recording-card > summary')"), true,
     'A source recovering during inspection moves focus to its persistent fold summary');
   await send('Input.dispatchKeyEvent', {type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r',unmodifiedText:'\r'});
@@ -822,7 +826,7 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-recording-state').textContent"), 'Monitoring active');
   assert.equal(await evaluate("document.getElementById('recording-status').hidden"), false, 'A real partial-source-loss response keeps attention visible');
   assert.equal(await evaluate("document.getElementById('recording-health-badge').hidden"), false, 'Partial source loss reaches the collapsed section');
-  assert.match(await evaluate("document.getElementById('recording-recording-evidence').textContent"), /1 observed measurement stream needs attention/);
+  assert.match(await evaluate("document.getElementById('recording-recording-evidence').textContent"), /1 item has source issues.*1 with data limitations/);
   await evaluate("payload.recording.parameters.push({signal:'voltage_estimate_l1',streamId:'abcdef123456',source:'voltage-estimate',unit:'V',policy:'adaptive-value',observedThisRun:true,lastPollAt:payload.now,lastSourceTime:payload.now,freshness:{status:'fresh',sourceObservedAt:payload.now,maxAgeMs:120000},voltage:{available:true,lastObservedAt:payload.now,reporting:true}}); renderMeasurements(); document.getElementById('recording-details').open=true; document.getElementById('recording-adaptive-details').open=true; document.querySelector('[data-recording-source] .status-detail-trigger').focus(); renderMeasurements()");
   assert.equal(await evaluate("document.activeElement.classList.contains('status-detail-trigger') && Boolean(document.activeElement.closest('[data-recording-source]'))"), true,
     'Voltage source information keeps keyboard focus through measurement polling');

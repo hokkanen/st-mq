@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { sourceFeedHealth } from '../src/app/source-feed-health.js';
 import { startProviders } from '../src/acquisition/providers.js';
 import { createSourceHealthFixture, outdoorDefinitions, providerProofDefinitions, NOW, MINUTE, HOUR } from './helpers/source-feed-health-fixture.js';
 
@@ -49,7 +50,10 @@ test('outdoor warnings name the individual provider and current feed for every o
       assert.equal(garage[0].sourceLabel, 'Garage protection sender');
       assert.equal(garage[0].sourceRole, null);
       assert.equal(summary.providerAttentionCount, 0);
-      assert.equal(summary.attentionCount, expected.length + 1);
+      assert.equal(summary.attentionCount, Number(expected.length > 0) + 1);
+      assert.equal(summary.diagnosticCount, expected.length + 1);
+      assert.equal(summary.groups.filter(group => group.id === 'feed-outdoor').length, Number(expected.length > 0));
+      assert.equal(summary.impactCount, Number(expected.length > 0 && !fixture.selectedSource) + 1);
       assert.equal(summary.attentionStreams, expected.length + 1);
       assert.equal(summary.observedStreams, Number(definition.fmi !== 'never') + Number(definition.openmeteo !== 'never') + 2);
       assert.deepEqual(fixture.engine.recorder.sourceStatus(NOW), recordingBefore, 'presentation preserves original source evidence');
@@ -440,4 +444,124 @@ test('replica health never inspects copied provider evidence or claims live sour
   const before = changes(fixture), health = await fixture.status({ readOnly: true });
   assert.equal(health.recording.state, 'read-only'); assert.equal(health.recording.sources, null);
   assert.equal(changes(fixture), before);
+});
+
+test('logical source groups distinguish diagnostic failures from current and planning impact', async t => {
+  const definitions = [
+    { title: 'working outdoor backup', definition: { fmi: 'stale', openmeteo: 'fresh' }, id: 'feed-outdoor', status: 'available', impact: 0 },
+    { title: 'both outdoor readings lost', definition: { fmi: 'stale', openmeteo: 'failed' }, id: 'feed-outdoor', status: 'unavailable', impact: 1 },
+    { title: 'valid saved prices survive two failed providers', definition: {
+      providerHealth: { market: { status: 'error', source: 'entsoe', acquisition: { selected: 'entsoe',
+        attempts: [failedAttempt('entsoe'), failedAttempt('elering')] } } }, snapshots: { market: market('entsoe') } },
+      id: 'feed-market', status: 'available', impact: 0 },
+    { title: 'current prices without rest-of-day coverage', definition: {
+      providerHealth: { market: { status: 'ok', source: 'entsoe', acquisition: { selected: 'entsoe', attempts: [successfulAttempt('entsoe')] } } },
+      snapshots: { market: market('entsoe', { intervals: [{ source: 'entsoe', start: NOW - MINUTE, end: NOW + 15 * MINUTE, spotCtPerKwh: 0 }] }) } },
+      id: 'feed-market', status: 'partial', impact: 1 },
+    { title: 'future weather gap impacts planning', definition: {
+      providerHealth: { weather: { status: 'ok', source: 'fmi', acquisition: { selected: 'fmi', attempts: [successfulAttempt('fmi')] } } },
+      snapshots: { weather: forecast('fmi', { forecast: [
+        { source: 'fmi', start: NOW - MINUTE, end: NOW + HOUR, issuedAt: NOW, fetchedAt: NOW, outdoorC: 0, solarRadiationWm2: 0 },
+        { source: 'fmi', start: NOW + 2 * HOUR, end: NOW + 24 * HOUR, issuedAt: NOW, fetchedAt: NOW, outdoorC: 0, solarRadiationWm2: 0 }] }) } },
+      id: 'feed-weather', status: 'partial', impact: 1 },
+    { title: 'successful request cannot replace a missing snapshot', definition: {
+      providerHealth: { market: { status: 'ok', source: 'entsoe', lastSuccessAt: NOW,
+        acquisition: { selected: 'entsoe', attempts: [successfulAttempt('entsoe')] } } } },
+      id: 'feed-market', status: 'unavailable', impact: 1 },
+  ];
+  for (const row of definitions) await t.test(row.title, async () => {
+    const fixture = createSourceHealthFixture(row.definition);
+    try {
+      const health = await fixture.status(), sources = health.recording.sources;
+      assert.equal(sources.attentionCount, 1);
+      assert.equal(sources.groups.length, 1);
+      const group = sources.groups[0];
+      assert.equal(group.id, row.id); assert.equal(group.status, row.status);
+      if (group.status === 'unavailable') assert.equal(group.sourceLabel, null, 'lost feeds do not invent a current supplier');
+      assert.equal(sources.impactCount, row.impact);
+      assert.equal(health.attention.some(item => item.id === 'recording-sources'), row.impact > 0);
+      assert(group.issues.length > 0);
+      assert.equal(group.providers.length, 2, 'known primary and backup each have an evidence row');
+      for (const issue of group.issues.filter(issue => issue.sourceLabel)) {
+        const provider = group.providers.find(provider => provider.id === issue.id);
+        assert(provider, 'the affected provider retains its diagnostic');
+        assert.equal(provider.status, issue.status); assert.equal(provider.sourceObservedAt, issue.sourceObservedAt);
+        assert.equal(provider.lastCheckedAt, issue.lastCheckedAt);
+      }
+    } finally { await fixture.close(); }
+  });
+});
+
+test('an informational provider issue cannot suppress an independent measurement warning', async t => {
+  const fixture = createSourceHealthFixture({ fmi: 'fresh', openmeteo: 'stale', garage: 'unavailable',
+    providerHealth: { outdoor: { status: 'ok', source: 'fmi',
+      acquisition: { selected: 'fmi', attempts: [successfulAttempt('fmi')] }, standby: standby('error') } } });
+  t.after(() => fixture.close());
+  const health = await fixture.status();
+  assert.equal(health.recording.sources.attentionCount, 2);
+  assert.equal(health.recording.sources.impactCount, 1);
+  assert.equal(health.recording.sources.groups.find(group => group.id === 'feed-outdoor').status, 'available');
+  assert(health.attention.some(item => item.id === 'recording-sources'));
+});
+
+test('price availability requires the actual remaining Finnish day on both daylight-saving transitions', () => {
+  for (const [now, dayEnd] of [
+    [Date.parse('2026-03-28T22:00:00Z'), Date.parse('2026-03-29T21:00:00Z')],
+    [Date.parse('2026-10-24T21:00:00Z'), Date.parse('2026-10-25T22:00:00Z')],
+  ]) {
+    for (const missingTail of [false, true]) {
+      const states = { 'providers:health': { market: { status: 'ok', source: 'entsoe' } },
+        'provider:market': { source: 'entsoe', fetchedAt: now, coverage: { completeToday: true },
+          intervals: [{ source: 'entsoe', start: now, end: dayEnd - Number(missingTail), spotCtPerKwh: 0 }] } };
+      const result = sourceFeedHealth({ store: { getState: key => states[key] }, parameters: [], now });
+      assert.equal(result.feeds.market.status, missingTail ? 'partial' : 'available');
+      assert.equal(result.issues.length, Number(missingTail));
+    }
+  }
+});
+
+test('weather availability uses the existing minimum planning horizon and sanitizes successful standby clocks', () => {
+  for (const duration of [4 * HOUR - 1, 4 * HOUR]) {
+    const states = { 'providers:health': { weather: { status: 'ok', source: 'fmi',
+      acquisition: { selected: 'fmi', attempts: [successfulAttempt('fmi')] },
+      standby: standby('ok', { sourceObservedAt: 'private-synthetic-observation' }) } },
+      'provider:weather': forecast('fmi', { forecast: [{ source: 'fmi', start: NOW - MINUTE, end: NOW + duration,
+        issuedAt: NOW, fetchedAt: NOW, outdoorC: 0, solarRadiationWm2: 0 }] }) };
+    const result = sourceFeedHealth({ store: { getState: key => states[key] }, parameters: [], now: NOW });
+    assert.equal(result.feeds.weather.status, duration < 4 * HOUR ? 'partial' : 'available');
+    assert(!JSON.stringify(result.providerDetails).includes('private-synthetic'));
+    const backup = result.providerDetails.weather.find(row => row.sourceRole === 'backup');
+    assert.equal(backup.status, 'checked'); assert.equal(backup.sourceObservedAt, null);
+  }
+});
+
+test('outdoor grouping and current supply remain observation-based when provider diagnostics are absent', async t => {
+  for (const [fmi, openmeteo, status, supplier] of [
+    ['stale', 'failed', 'unavailable', null], ['fresh', 'stale', 'available', 'FMI'],
+    ['stale', 'fresh', 'available', 'Open-Meteo'],
+  ]) await t.test(`${fmi} / ${openmeteo}`, async () => {
+    const fixture = createSourceHealthFixture({ fmi, openmeteo });
+    try {
+      fixture.store.setState('providers:health', null);
+      const result = await fixture.status(), groups = result.recording.sources.groups;
+      assert.equal(groups.length, 1);
+      assert.equal(groups[0].id, 'feed-outdoor'); assert.equal(groups[0].status, status);
+      assert.equal(groups[0].sourceLabel, supplier);
+      assert.equal(result.recording.sources.impactCount, Number(status !== 'available'));
+      for (const provider of groups[0].providers) {
+        const issue = groups[0].issues.find(issue => issue.sourceLabel === provider.sourceLabel);
+        assert.equal(provider.lastCheckedAt, issue?.lastCheckedAt ?? null, 'absent diagnostics create no provider check clock');
+        if (issue) assert.equal(provider.sourceObservedAt, issue.sourceObservedAt);
+      }
+    } finally { await fixture.close(); }
+  });
+});
+
+test('a provider success without a valid completion clock cannot claim a completed backup check', () => {
+  const states = { 'providers:health': { market: { status: 'ok', source: 'entsoe',
+    acquisition: { selected: 'entsoe', attempts: [successfulAttempt('entsoe'), { source: 'elering', status: 'ok' }] } } },
+    'provider:market': market('entsoe') };
+  const result = sourceFeedHealth({ store: { getState: key => states[key] }, parameters: [], now: NOW });
+  const backup = result.providerDetails.market.find(row => row.sourceRole === 'backup');
+  assert.equal(backup.status, 'unknown'); assert.equal(backup.lastCheckedAt, null);
 });

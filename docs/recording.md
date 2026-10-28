@@ -62,28 +62,48 @@ recorded checks and make no live-readiness claim. Easee, vehicle feeds, the
 electricity-price prediction service and FMI station selection keep their
 existing behavior.
 
-Recording details' **Sources needing attention** names each affected public
-provider and its primary/backup role, separately from the availability and source
-of the current feed. Outdoor temperature, weather (including solar radiation)
-and published spot prices share this presentation. Both providers can have their
-own warning; usable cached data or a working fallback does not erase a failed
-request. A real newer success clears that provider's earlier failure. Skipping a
-request during backoff creates no new check clock, and a shared provider cooldown
-does not claim another route was polled. Missing primary credentials in a supported
-keyless installation and unpublished tomorrow prices do not invent outages.
-An overdue scheduled standby check warns about unconfirmed backup readiness;
-it does not declare the current feed stale. Weather radiation keeps its own
-provider and publication/acquisition age even inside a fresh temperature forecast.
+Recording details' **Sources needing attention** shows one card per logical
+item, such as Outdoor temperature, Weather forecast or Published electricity
+prices. Independent measurement streams retain separate identities. Each card
+puts overall data availability first, followed by the current supply and a brief
+explanation. Uniform collapsed cards expand naturally on small screens and with
+enlarged text. **Feed details** exposes each primary/backup provider's status,
+reason and original observation/check clocks; individual measurements use the
+same disclosure for their evidence. Refreshes preserve disclosure state and focus.
+
+Overall availability and provider diagnostics remain independent. A failed
+primary request with a working backup, a failed backup check with a healthy
+primary, or still-valid saved prices after a failed request can leave the item
+available. Both providers can retain their own warning. A real newer success
+clears that provider's earlier failure. Skipping a request during backoff creates
+no new check clock, and a shared provider cooldown does not claim another route
+was polled. Missing primary credentials in a supported keyless installation and
+unpublished tomorrow prices do not invent outages. An overdue scheduled standby
+check warns about unconfirmed backup readiness, not current feed staleness.
+Weather radiation keeps its own provider and publication/acquisition age even
+inside a fresh temperature forecast. A usable past check is dated evidence,
+not proof of current backup readiness.
+
+The front-page source warning follows functional impact, including incomplete
+required planning coverage. Provider-only diagnostics do not trigger that warning
+when required current data and coverage remain usable. Partial, unavailable or
+unknown required data remains attention-worthy; independent storage and backup
+warnings retain their own rules. Available status does not imply that a provider
+request succeeded. Recorded/history views do not claim live readiness.
 
 The panel combines observed measurement warnings with bounded acquisition and
-standby diagnostics. Provider checks do not inflate the observed/usable stream
-counts. An unhealthy outdoor stream and its newer provider failure share one
-warning, retaining the original measurement timestamp and identifying the latest
-provider-check clock. Unused historical Open-Meteo observations do not override a
-newer completed backup check. Other measurement warnings, including unavailable
-Garage estimates, remain independent. These read-only projections do not select
-providers, ingest standby results or renew cached evidence; replicas continue to
-show recorded history rather than live recording health.
+standby diagnostics. Observed and usable counts refer to measurement streams;
+Needs attention counts logical items, while diagnostic counts describe the
+underlying issues and the impact count describes affected items. Provider checks
+do not inflate observed/usable counts. An unhealthy outdoor stream and its newer
+provider failure share one diagnostic, retaining the original measurement
+timestamp and identifying the latest provider-check clock. Unused historical
+Open-Meteo observations do not override a newer completed backup check. Other
+measurement warnings, including unavailable Garage estimates, remain independent.
+Grouping precedes the bounded display limit; impact counts include omitted items.
+These read-only projections do not select providers, ingest standby results or
+renew cached evidence; replicas show recorded history rather than live recording
+health.
 
 The shared provider HTTP transport keeps its original finite request deadline
 through response-body consumption. Caller cancellation, provider shutdown and
@@ -1684,8 +1704,10 @@ the first three minutes of a recording run show **Starting recording**, includin
 when unavailable diagnostic rows have already been recorded. After usable evidence
 has arrived, a subsequent source loss warns immediately. This initial wait never
 hides write failures or a stalled loop. **Monitoring active** means some observed
-recording evidence is usable. Partial loss of an observed source still raises
-attention and links to its explanation, even when other sources remain healthy.
+recording evidence is usable. Loss of required data from an independent observed
+measurement still raises attention, even when unrelated sources remain healthy.
+An individual provider failure remains in source details but does not raise the
+front-page warning while its logical item retains required data and coverage.
 An old Open-Meteo outdoor stream is labelled **Standby** while the committed
 outdoor provider selects FMI and a same-unit/policy FMI observation from this run
 is fresh. Its original stale status and timestamps remain in the recorder;
@@ -1708,15 +1730,18 @@ recording details, without exposing private source identifiers. **Last source ch
 an unavailable result, and does not claim a saved measurement or successful write.
 The expanded Recording fold separates **Activity** from **Source health**.
 Activity dates the last completed loop update and source polling attempt. Source
-counts distinguish observed streams, usable evidence and source issues needing attention;
-unknown statuses are identified separately within the attention count. These are
+counts distinguish observed streams, usable evidence and logical items needing
+attention; unknown stream statuses are identified separately. **About these counts**
+keeps the explanation in a disclosure, while the recorded-history caveat stays
+visible in read-only views. These are
 not additive categories: held evidence can remain usable while needing attention.
-Each unavailable, stale, failed, unknown or held-attention stream has its own name,
-unit, status, reason, source-observation time, polling-attempt time and details link.
+Each unavailable, stale, failed, unknown or held-attention stream retains its name,
+unit, status, reason, source-observation time, polling-attempt time and details link
+inside its item's evidence disclosure. Provider chains share one logical item.
 Observed/usable counts describe measurement streams, not all configured sources:
 a never-seen measurement can be absent, while a concrete provider request failure
-can still appear without any recorded measurement. Provider-only issues have their
-own count and do not inflate measurement counts. Source checks retain their own timestamps; unchanged readings and
+can still appear without any recorded measurement. Provider diagnostics contribute
+to the affected item count and do not inflate measurement counts. Source checks retain their own timestamps; unchanged readings and
 open energy intervals need no new observation rows. Storage health separately dates
 the last successful storage write, which can save settings or events as well as
 measurements. This summary is an early warning, not an integrity check or proof
@@ -1811,6 +1836,13 @@ the normal controller status. The dashboard can still display storage health whe
 controller status fails. Filesystem checks time out from the request's perspective
 without claiming zero free bytes or blocking ordinary control. A stopped process,
 unreachable dashboard or complete host failure cannot report its own condition.
+The version-3 `recording.sources.groups` projection gives each affected logical
+item a stable ID, label, unit, overall status, current source label, diagnostics
+and bounded provider evidence. `attentionCount` counts items, `diagnosticCount`
+counts underlying diagnostics and `impactCount` counts items with functional
+impact before truncation. `issues` retains the bounded individual diagnostic
+projection; it is not the card count. These fields are transient health
+projections, not a persisted format or a provider-selection policy.
 The current version-3 response includes `recording.writer.state`: `ready`, `saving`,
 `confirming`, `unavailable`, `stopped` or `unknown`. This is current Store and queue
 evidence, independent of saved outcomes and historical windows. A failed worker

@@ -81,17 +81,29 @@
 .recording-source-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 20px; margin: 0 0 12px; padding: 14px var(--ui-inset); background: var(--surface-soft); border-radius: 6px; font-size: 12px; line-height: 1.5; }
 .recording-source-counts dd { margin: 5px 0 0; font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .recording-source-counts [data-tone="warning"] { color: var(--stale); }
-.recording-source-exceptions { list-style: none; padding: 0; margin: 12px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 28px; }
-.recording-source-exception { min-width: 0; border-inline-start: 2px solid var(--border); padding-inline-start: var(--ui-inset); }
-.recording-source-exception:only-child { grid-column: 1 / -1; }
-.recording-source-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px 12px; }
+.recording-source-counts-details { margin-block: 0; border: 0; }
+.recording-source-counts-details > summary { padding: 12px 0; min-height: 44px; box-sizing: border-box; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.recording-source-counts-details > .recording-health-evidence { margin: 4px 0 0; }
+.recording-source-exceptions { list-style: none; padding: 0; margin: 12px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 12px; }
+.recording-source-exception { min-width: 0; border: 1px solid var(--border); border-radius: 7px; padding: 14px var(--ui-inset) 0; }
+.recording-source-heading { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; min-height: 36px; margin-bottom: 6px; }
 .recording-source-heading strong { font-size: 12px; line-height: 1.5; font-weight: 600; overflow-wrap: anywhere; }
 .recording-source-status { font-size: 11px; line-height: 1.5; color: var(--muted); }
-.recording-source-status[data-tone="warning"] { color: var(--stale); }
+.recording-source-status[data-tone="healthy"], .recording-source-issue-heading [data-tone="healthy"] { color: var(--chart-indoor); }
+.recording-source-status[data-tone="warning"], .recording-source-issue-heading [data-tone="warning"] { color: var(--stale); }
 .recording-source-status::before { content: '•'; margin-inline-end: 5px; }
-.recording-source-origin { flex-basis: 100%; color: var(--text); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.recording-source-feed { margin: 0; min-height: 30px; color: var(--text); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.recording-source-summary { margin: 0 0 12px; min-height: 38px; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.recording-source-exception > .recording-source-details { margin: 0; border-top: 1px solid var(--border); }
+.recording-source-details > summary { padding: 12px 0; min-height: 44px; box-sizing: border-box; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.recording-source-details > summary:hover { color: var(--text); }
+.recording-source-details > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 2px; }
+.recording-source-issues { list-style: none; margin: 0; padding: 0 0 14px; }
+.recording-source-issue + .recording-source-issue { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 14px; }
+.recording-source-issue-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 11px; line-height: 1.6; }
+.recording-source-issue-heading strong { font-weight: 550; overflow-wrap: anywhere; }
+.recording-source-issue-heading span { color: var(--muted); }
 .recording-source-reason { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.recording-source-feed { margin: 6px 0 0; color: var(--text); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .recording-source-clocks { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.4fr); gap: 4px 12px; margin: 10px 0 4px; font-size: 11px; line-height: 1.6; }
 .recording-source-clocks dt { color: var(--muted); }
 .recording-source-clocks dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }

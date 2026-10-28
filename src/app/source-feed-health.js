@@ -1,3 +1,4 @@
+import moment from 'moment-timezone';
 import { assembleOutlook } from './contract.js';
 import { recordingSourceUsable } from '../domain/reading-freshness.js';
 import { outdoorReadingStatus } from './temperature-status.js';
@@ -37,7 +38,7 @@ function snapshotFeed(name, snapshot, now) {
   if (!object(snapshot) || !Array.isArray(rows) || rows.length > 2000
     || rows.some(row => !object(row) || !Number.isFinite(row.start) || !Number.isFinite(row.end)
       || row.start >= row.end || !Number.isFinite(name === 'weather' ? row.outdoorC : row.spotCtPerKwh)))
-    return { feed: { label: definition.label, sourceLabel: null, status: snapshot == null ? 'unknown' : 'unavailable' },
+    return { feed: { id: name, label: definition.label, sourceLabel: null, status: snapshot == null ? 'unknown' : 'unavailable' },
       gaps: false, solarIssues: [] };
   const outlook = assembleOutlook(name === 'market' ? snapshot : null, name === 'weather' ? snapshot : null, null, now);
   const usable = name === 'market' ? outlook.spot.filter(row => row.authorityConflict !== true) : outlook.forecast;
@@ -47,24 +48,35 @@ function snapshotFeed(name, snapshot, now) {
     if (!gaps) cursor = Math.max(cursor, row.end);
   }
   const current = cursor > now;
+  // Match acquisition's required current-day prices and the planner's minimum
+  // four-hour weather horizon. Unpublished tomorrow prices are not an outage.
+  const requiredEnd = name === 'market' ? moment.tz(now, 'Europe/Helsinki').startOf('day').add(1, 'day').valueOf()
+    : now + 4 * 3_600_000;
+  const incomplete = current && cursor < requiredEnd;
   const solarIssues = name === 'weather' ? usable.map(row => solarEvidence(row, snapshot, now)).filter(solar => !solar.current) : [];
-  return { feed: { label: definition.label, sourceLabel: current
+  return { feed: { id: name, label: definition.label, sourceLabel: current
     ? sourceNames(usable.flatMap(row => [row.source, ...(name === 'weather' && solarEvidence(row, snapshot, now).current ? [row.solar?.source] : [])]))
       ?? publicSourceLabel(snapshot.source) : null,
-  status: !current ? 'unavailable' : gaps || solarIssues.length ? 'partial' : 'available' }, gaps, solarIssues };
+  status: !current ? 'unavailable' : gaps || incomplete || solarIssues.length ? 'partial' : 'available' },
+    gaps: gaps || incomplete, solarIssues };
 }
 
 /** Project the three acquisition chains onto independent health evidence.
  * A selected/remembered provider is not proof that its current data is usable.
  * Standby checks do not become measurements or renew a cached snapshot. */
 export function sourceFeedHealth({ store, parameters, outdoorCandidates, now }) {
-  const feeds = {}, issues = [], backupChecks = {};
-  if (typeof store?.getState !== 'function') return { feeds, issues, backupChecks };
-  const health = store.getState('providers:health');
-  if (!object(health)) return { feeds, issues, backupChecks };
+  const feeds = {}, issues = [], backupChecks = {}, providerDetails = {};
+  if (typeof store?.getState !== 'function') return { feeds, issues, backupChecks, providerDetails };
+  const saved = store.getState('providers:health'), health = object(saved) ? saved : {};
   for (const [name, definition] of Object.entries(FEEDS)) {
-    const job = health[name];
-    if (!object(job) || job.status === 'not-configured') continue;
+    // Logical outdoor identity and usability come from actual observations,
+    // independently of whether acquisition diagnostics have been published yet.
+    const observedOutdoor = name === 'outdoor' && (parameters?.some(row => row.signal === 'outdoor_temperature'
+      && [definition.primary, definition.backup].includes(row.source))
+      || object(outdoorCandidates) && [definition.primary, definition.backup].some(source => object(outdoorCandidates[source])));
+    const configured = object(health[name]) && health[name].status !== 'not-configured';
+    if (!configured && !observedOutdoor) continue;
+    const job = configured ? health[name] : {};
     const selected = [definition.primary, definition.backup].includes(job.acquisition?.selected)
       ? job.acquisition.selected : [definition.primary, definition.backup].includes(job.source) ? job.source : null;
     let feed, snapshot, snapshotHealth;
@@ -74,7 +86,7 @@ export function sourceFeedHealth({ store, parameters, outdoorCandidates, now }) 
       const source = object(outdoorCandidates) ? [definition.primary, definition.backup].find(source =>
         !outdoorReadingStatus(outdoorCandidates[source], now).stale)
         : usable.find(row => row.source === definition.primary)?.source ?? usable[0]?.source;
-      feed = { label: definition.label, sourceLabel: publicSourceLabel(source),
+      feed = { id: name, label: definition.label, sourceLabel: publicSourceLabel(source),
         status: source ? 'available' : parameters === null && !object(outdoorCandidates) ? 'unknown' : 'unavailable' };
     } else {
       snapshot = store.getState(`provider:${name}`);
@@ -94,6 +106,7 @@ export function sourceFeedHealth({ store, parameters, outdoorCandidates, now }) 
     const attempts = Array.isArray(job.acquisition?.attempts) ? job.acquisition.attempts.slice(0, 4) : [];
     if (feed.status === 'unknown' && attempts.some(attempt => [definition.primary, definition.backup].includes(attempt?.source)
       && ['ok', 'error', 'incomplete'].includes(attempt.status))) feed.status = 'unavailable';
+    const outcomes = new Map();
     for (const source of [definition.primary, definition.backup]) {
       const attempt = attempts.find(row => row?.source === source);
       const blocked = job.sourceBackoff?.[source];
@@ -113,6 +126,7 @@ export function sourceFeedHealth({ store, parameters, outdoorCandidates, now }) 
         sourceObservedAt: standby.sourceObservedAt, solarStatus: standby.solarStatus, priority: 3 });
       candidates.sort((a, b) => (b.at ?? -1) - (a.at ?? -1) || b.priority - a.priority);
       const outcome = candidates[0];
+      outcomes.set(source, outcome);
       if (!outcome || outcome.status === 'ok') continue;
       add(source, outcome.status, outcome.status === 'failed' ? 'The last check could not obtain usable data from this provider.'
         : outcome.status === 'unavailable' ? 'This provider is not configured.'
@@ -144,6 +158,38 @@ export function sourceFeedHealth({ store, parameters, outdoorCandidates, now }) 
         ? name === 'weather' ? 'The current feed has gaps or missing solar radiation.' : 'The current published prices have gaps.'
         : 'The saved feed no longer provides usable current data.', snapshot.lastCheckedAt ?? snapshot.fetchedAt);
     }
+    // Diagnostics also expose known current-feed loss without requiring a failed
+    // request. Initial waiting/running jobs retain their ordinary startup grace.
+    const hasDiagnostic = issues.some(issue => issue.feed.id === name);
+    const hasObservedOutdoor = name === 'outdoor' && parameters?.some(row => row.signal === 'outdoor_temperature'
+      && [definition.primary, definition.backup].includes(row.source));
+    if (feed.status !== 'available' && !hasDiagnostic && !hasObservedOutdoor
+      && (snapshot || selected || time(job.lastSuccessAt, now) !== null
+        || attempts.some(attempt => ['ok', 'error', 'incomplete'].includes(attempt?.status) && time(attempt.checkedAt, now) !== null))) issues.push({
+      id: `feed-${name}`, kind: 'feed', label: definition.label, sourceLabel: null, sourceRole: null,
+      status: feed.status, reason: feed.status === 'partial' ? 'Required planning coverage is incomplete.'
+        : 'Usable current feed data could not be confirmed.', policy: null, unit: name === 'outdoor' ? 'degC' : '',
+      destination: `provider-${name}`, lastCheckedAt: time(snapshot?.lastCheckedAt ?? snapshot?.fetchedAt, now),
+      sourceObservedAt: null, feed,
+    });
+    providerDetails[name] = [definition.primary, definition.backup].map(source => {
+      const issue = issues.find(issue => issue.feed.id === name && issue.sourceLabel === publicSourceLabel(source));
+      if (issue) { const { feed: ignored, ...detail } = issue; return detail; }
+      const outcome = outcomes.get(source), attempt = attempts.find(row => row?.source === source);
+      const supplying = feed.status === 'available' && feed.sourceLabel?.split(' + ').includes(publicSourceLabel(source));
+      const status = supplying ? 'supplying' : outcome?.status === 'ok' && outcome.at !== null ? 'checked'
+        : attempt?.status === 'not-configured' ? 'not-configured' : 'unknown';
+      return { id: `provider-${name}-${source}`, kind: 'provider', label: definition.label,
+        sourceLabel: publicSourceLabel(source), sourceRole: source === definition.primary ? 'primary' : 'backup',
+        status, reason: supplying ? 'Supplies usable current data.' : status === 'checked'
+          ? 'Usable at the last completed check; this does not confirm current backup readiness.'
+          : status === 'not-configured' ? 'This provider is not configured.' : 'No completed provider check is available.',
+        policy: null, unit: name === 'outdoor' ? 'degC' : '', destination: `provider-${name}`,
+        lastCheckedAt: outcome?.at ?? null, sourceObservedAt: supplying && name === 'outdoor'
+          ? time(outdoorCandidates?.[source]?.sourceTime ?? parameters?.find(row => row.source === source
+            && row.signal === 'outdoor_temperature' && recordingSourceUsable(row, now))?.freshness?.sourceObservedAt, now)
+          : time(outcome?.sourceObservedAt, now) };
+    });
   }
-  return { feeds, issues, backupChecks };
+  return { feeds, issues, backupChecks, providerDetails };
 }

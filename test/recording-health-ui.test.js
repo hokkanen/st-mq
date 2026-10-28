@@ -7,10 +7,23 @@ import { storagePerformanceView, storageDuration, storageOperationsView, storage
 import { storageHealthFixture } from './helpers/storage-health-fixture.js';
 
 const now = Date.parse('2026-10-07T12:00:00Z');
-const health = (overrides = {}) => ({ version: 3, checkedAt: now, scope: 'live',
-  disk: { state: 'ok', totalBytes: 100e9, freeBytes: 60e9 },
-  backup: { state: 'available', count: 1, totalBytes: 1000, complete: true, latestKind: 'saved-copy', latestAt: now - 100 * 86400_000 }, attention: [], ...overrides,
-  recording: { state: 'ok', writer: { state: 'ready' }, lastSourceCheckAt: now - 60000, lastLoopCompletedAt: now - 1000, ...overrides.recording } });
+// Most storage tests use one diagnostic per synthetic measurement. Provider
+// grouping is supplied explicitly in the source-card scenarios below.
+const health = (overrides = {}) => {
+  const sources = overrides.recording?.sources;
+  return { version: 3, checkedAt: now, scope: 'live',
+    disk: { state: 'ok', totalBytes: 100e9, freeBytes: 60e9 },
+    backup: { state: 'available', count: 1, totalBytes: 1000, complete: true, latestKind: 'saved-copy', latestAt: now - 100 * 86400_000 }, attention: [], ...overrides,
+    recording: { state: 'ok', writer: { state: 'ready' }, lastSourceCheckAt: now - 60000, lastLoopCompletedAt: now - 1000, ...overrides.recording,
+      ...(sources ? { sources: { attentionCount: sources.attentionStreams, impactCount: sources.attentionStreams, ...sources,
+        groups: sources.groups ?? (sources.issues ?? []).map((issue, index) => ({ id: issue.id ?? `fixture-${index}`, label: issue.label,
+          unit: issue.unit, status: issue.status, sourceLabel: issue.sourceLabel, issues: [{ ...issue, id: issue.id ?? `fixture-${index}` }] })),
+      } } : {}),
+    },
+  };
+};
+const sourceRows = card => card.children[3].children[1].children;
+const sourceToggle = card => card.children[3].children[0];
 
 test('recording counts explain expected standby evidence without calling it usable or needing attention', () => {
   const view = recordingHealthView(health({ recording: { sources: {
@@ -24,14 +37,14 @@ test('recording counts explain expected standby evidence without calling it usab
 
 test('provider checks add source attention without inventing observed or usable measurement streams', () => {
   const view = recordingHealthView(health({ recording: { sources: {
-    observedStreams: 0, usableStreams: 0, attentionStreams: 0, providerAttentionCount: 2, attentionCount: 2,
+    observedStreams: 0, usableStreams: 0, attentionStreams: 0, providerAttentionCount: 2, attentionCount: 2, impactCount: 0,
     unknownStreams: 0, issues: [],
   } } }), undefined, now);
   assert.equal(view.recording.observed, '0'); assert.equal(view.recording.usable, '0');
-  assert.equal(view.recording.attention, '2'); assert.equal(view.recording.tone, 'warning');
-  assert.match(view.recording.evidence, /2 source issues need attention.*2 provider checks/);
-  assert.match(view.recording.sourcesEmpty, /2 source issues need attention/);
-  assert.match(view.recording.coverage, /Needs attention also includes provider checks/);
+  assert.equal(view.recording.attention, '2'); assert.equal(view.recording.tone, 'neutral');
+  assert.match(view.recording.evidence, /2 items have source issues.*affected data usable at this check/);
+  assert.match(view.recording.sourcesEmpty, /2 items need attention/);
+  assert.match(view.recording.coverage, /Needs attention counts items with measurement or provider issues/);
 });
 
 test('known provider issues remain visible when measurement metadata is unavailable without claiming complete counts', () => {
@@ -42,8 +55,8 @@ test('known provider issues remain visible when measurement metadata is unavaila
   } } }), undefined, now);
   assert.equal(view.recording.observed, 'Unknown'); assert.equal(view.recording.usable, 'Unknown');
   assert.equal(view.recording.attention, 'At least 1');
-  assert.match(view.recording.evidence, /At least 1 source issue needs attention/);
-  assert.match(view.recording.coverage, /other source issues may be unknown/);
+  assert.match(view.recording.evidence, /At least 1 item has source issues/);
+  assert.match(view.recording.coverage, /other issues may be unknown/);
   assert.equal(view.recording.issues.length, 1);
   const noKnownIssues = recordingHealthView(health({ recording: { sources: {
     metadataKnown: false, attentionCount: 0, providerAttentionCount: 0,
@@ -85,7 +98,7 @@ test('recording separates completed updates, attempted source checks, observed c
         status: 'stale', lastCheckedAt: now - 60000, sourceObservedAt: now - 900000 }] },
   } }) });
   assert.equal(view.element('recording-health-scope').textContent, 'On this server · Simulated recording');
-  assert.match(view.element('recording-recording-evidence').textContent, /2 observed measurement streams need attention/);
+  assert.match(view.element('recording-recording-evidence').textContent, /2 items have source issues/);
   assert.match(view.element('recording-recording-loop').textContent, /just now/);
   assert.match(view.element('recording-recording-sourceCheck').textContent, /1 min ago/);
   assert.equal(view.element('recording-recording-observed').textContent, '5');
@@ -95,7 +108,7 @@ test('recording separates completed updates, attempted source checks, observed c
   assert.match(view.element('recording-recording-coverage').textContent, /never reported are outside.*held reading can be usable and still need attention/);
   assert.match(view.element('recording-performance-lastWrite').textContent, /2 min ago/);
   assert.equal(view.element('recording-recording-sources').children.length, 1);
-  assert.match(view.element('recording-recording-sources').children[0].children[3].children[1].textContent, /15 min ago/);
+  assert.match(sourceRows(view.element('recording-recording-sources').children[0])[0].children[2].children[1].textContent, /15 min ago/);
   assert.equal(view.element('recording-performance-state').textContent, 'Caught up', 'Simulation monitors its own writer');
 });
 
@@ -1248,7 +1261,7 @@ test('health freshness is visible when the outer section is collapsed and invali
   }
 });
 
-test('source exceptions retain distinct evidence clocks and reach the matching recording policy', () => {
+test('source exceptions retain distinct evidence clocks inside a consistent disclosure and reach the matching recording policy', () => {
   const view = panelFixture();
   view.panel.update({ recordingHealth: health({ recording: { state: 'ok', sources: { attentionStreams: 2,
     issues: [{ label: 'Outdoor temperature', destination: 'adaptive', policy: 'adaptive-value', status: 'stale',
@@ -1260,17 +1273,20 @@ test('source exceptions retain distinct evidence clocks and reach the matching r
   assert.equal(view.element('recording-health-badge').hidden, false);
   assert.equal(view.element('recording-recording-card').dataset.tone, 'warning');
   const [adaptive, exact] = view.element('recording-recording-sources').children;
-  assert.equal(adaptive.children[4].dataset.recordingOpen, 'recording-adaptive-details');
-  assert.equal(exact.children[4].dataset.recordingOpen, 'recording-overview-details');
+  const [adaptiveIssue] = sourceRows(adaptive), [exactIssue] = sourceRows(exact);
+  assert.equal(adaptiveIssue.children[3].dataset.recordingOpen, 'recording-adaptive-details');
+  assert.equal(exactIssue.children[3].dataset.recordingOpen, 'recording-overview-details');
   assert.equal(adaptive.children[0].children[0].textContent, 'Outdoor temperature');
   assert.equal(adaptive.children[0].children[1].textContent, 'Out of date');
-  assert.match(adaptive.children[1].textContent, /out of date/);
-  assert.equal(adaptive.children[3].children[0].textContent, 'Source observation');
-  assert.match(adaptive.children[3].children[1].textContent, /15 min ago/);
-  assert.equal(adaptive.children[3].children[2].textContent, 'Last polling attempt');
-  assert.match(adaptive.children[3].children[3].textContent, /just now/);
+  assert.equal(sourceToggle(adaptive).textContent, 'Evidence · 1 issue');
+  assert.equal(adaptive.children[3].open, undefined, 'Evidence starts collapsed');
+  assert.match(adaptiveIssue.children[1].textContent, /out of date/);
+  assert.equal(adaptiveIssue.children[2].children[0].textContent, 'Source observation');
+  assert.match(adaptiveIssue.children[2].children[1].textContent, /15 min ago/);
+  assert.equal(adaptiveIssue.children[2].children[2].textContent, 'Last polling attempt');
+  assert.match(adaptiveIssue.children[2].children[3].textContent, /just now/);
   assert.equal(exact.children[0].children[1].textContent, 'Source check failed');
-  assert.equal(exact.children[3].children[1].textContent, 'Not known', 'Missing source evidence stays explicit beside its own clock label');
+  assert.equal(exactIssue.children[2].children[1].textContent, 'Not known');
 });
 
 test('source counts distinguish unknown, no observed streams, overlapping attention and recorded history', () => {
@@ -1301,86 +1317,122 @@ test('source counts distinguish unknown, no observed streams, overlapping attent
   assert.match(view.element('recording-recording-sources-note').textContent, /Additional source issues are omitted/);
   view.panel.update({ recordingHealth: health({ scope: 'snapshot', recording: { state: 'read-only' } }) });
   assert.equal(view.element('recording-recording-counts').hidden, true);
+  assert.equal(view.element('recording-recording-counts-details').hidden, true);
+  assert.equal(view.element('recording-recording-source-context').hidden, false);
+  assert.match(view.element('recording-recording-source-context').textContent, /recorded history/);
   assert.equal(view.element('recording-recording-unknown').hidden, true);
   assert.equal(view.element('recording-recording-sources-title').textContent, 'Recorded source exceptions');
   assert.match(view.element('recording-recording-sources-empty').textContent, /recorded history/);
   assert.equal(view.element('recording-recording-sources-note').hidden, true);
 });
 
-test('structured source rows preserve focus and dated evidence through reorder, failed refresh and recovery', async () => {
-  const view = panelFixture(async () => { throw Error('Synthetic refresh failure'); });
-  const sources = { observedStreams: 3, usableStreams: 1, attentionStreams: 2, unknownStreams: 0, issues: [
-    { id: 'outdoor', label: 'Outdoor temperature', unit: 'degC', status: 'stale', destination: 'adaptive',
-      sourceObservedAt: now - 900000, lastCheckedAt: now - 60000, reason: 'The source is out of date.' },
-    { id: 'bedroom', label: 'Bedroom temperature', status: 'unavailable', lastCheckedAt: now },
-  ] };
-  const detail = 'Writes have resumed after 2 failed writes in this run. Earlier gaps may remain.';
-  const update = () => view.panel.update({ recordingHealth: health({ recording: { state: 'ok', detail, sources } }) });
-  const summary = view.document.createElement('summary');
-  view.element('recording-recording-card').append(summary);
-  update();
-  const [outdoor, bedroom] = view.element('recording-recording-sources').children;
-  const focusedLink = outdoor.children[4]; focusedLink.focus();
-  assert.equal(outdoor.children[0].children[0].textContent, 'Outdoor temperature (°C)');
-  sources.issues.reverse(); update();
-  assert.deepEqual(view.element('recording-recording-sources').children, [bedroom, outdoor]);
-  assert.equal(view.document.activeElement, focusedLink);
-  assert.equal(outdoor.children[4], focusedLink);
-  const observed = outdoor.children[3].children[1].textContent;
-  await view.panel.refresh();
-  assert.equal(view.document.activeElement, focusedLink);
-  assert.equal(outdoor.children[3].children[1].textContent, observed, 'A failed health request cannot renew source dates');
-  assert.match(view.element('recording-recording-detail').textContent, /^Last known status\. Writes have resumed.*Earlier gaps may remain/);
-  sources.issues = []; sources.attentionStreams = 0; sources.usableStreams = 3; update();
-  assert.equal(view.document.activeElement, summary, 'A disappearing focused source returns to its recording fold');
-  assert.equal(view.element('recording-recording-sources').hidden, true);
-  assert.equal(view.element('recording-recording-sources-title').hidden, true);
-  assert.equal(view.element('recording-recording-sources-empty').hidden, false);
-  assert.equal(view.element('recording-recording-sources-empty').textContent, 'No source issues need attention.');
-  assert.equal(view.element('recording-recording-detail').textContent, detail);
+test('count explanations keep disclosure state and return focus when recorded scope hides the counts', () => {
+  const view = panelFixture();
+  const counts = view.element('recording-recording-counts-details');
+  const toggle = view.document.createElement('summary'), recordingToggle = view.document.createElement('summary');
+  counts.append(toggle); view.element('recording-recording-card').append(recordingToggle);
+  view.panel.update({ recordingHealth: health() });
+  counts.open = true; toggle.focus(); view.panel.update({ recordingHealth: health() });
+  assert.equal(counts.open, true); assert.equal(view.document.activeElement, toggle);
+  view.panel.update({ recordingHealth: health({ scope: 'snapshot', recording: { state: 'read-only' } }) });
+  assert.equal(counts.hidden, true); assert.equal(view.document.activeElement, recordingToggle);
+  assert.match(view.element('recording-recording-source-context').textContent, /not acquiring/);
+  view.panel.update({ recordingHealth: health() });
+  assert.equal(counts.hidden, false); assert.equal(counts.open, true);
 });
 
-test('source issue cards name each provider and its role separately from current feed availability', () => {
+test('grouped source cards preserve open state, focus and dated evidence through reorder, failed refresh and recovery', async () => {
+  const view = panelFixture(async () => { throw Error('Synthetic refresh failure'); });
+  const outdoorIssue = { id: 'outdoor-evidence', label: 'Outdoor temperature', status: 'stale', destination: 'adaptive',
+    sourceObservedAt: now - 900000, lastCheckedAt: now - 60000, reason: 'The source is out of date.' };
+  const sources = { observedStreams: 3, usableStreams: 1, attentionCount: 2, impactCount: 2, unknownStreams: 0, groups: [
+    { id: 'outdoor', label: 'Outdoor temperature', unit: 'degC', status: 'stale', issues: [outdoorIssue] },
+    { id: 'bedroom', label: 'Bedroom temperature', status: 'unavailable', issues: [{ id: 'bedroom-evidence', status: 'unavailable', lastCheckedAt: now }] },
+  ] };
+  const update = () => view.panel.update({ recordingHealth: health({ recording: { sources } }) });
+  const summary = view.document.createElement('summary'); view.element('recording-recording-card').append(summary);
+  update();
+  const [outdoor, bedroom] = view.element('recording-recording-sources').children;
+  outdoor.children[3].open = true;
+  const [outdoorRow] = sourceRows(outdoor), focusedLink = outdoorRow.children[3]; focusedLink.focus();
+  assert.equal(outdoor.children[0].children[0].textContent, 'Outdoor temperature (°C)');
+  sources.groups.reverse(); update();
+  assert.deepEqual(view.element('recording-recording-sources').children, [bedroom, outdoor]);
+  assert.equal(view.document.activeElement, focusedLink);
+  assert.equal(outdoor.children[3].open, true);
+  assert.equal(sourceRows(outdoor)[0], outdoorRow);
+  const observed = outdoorRow.children[2].children[1].textContent;
+  await view.panel.refresh();
+  assert.equal(view.document.activeElement, focusedLink);
+  assert.equal(outdoorRow.children[2].children[1].textContent, observed);
+  assert.match(outdoor.children[0].children[1].textContent, /^Last known:/);
+  update(); sources.groups = []; sources.attentionCount = 0; sources.impactCount = 0; update();
+  assert.equal(view.document.activeElement, summary);
+  assert.equal(view.element('recording-recording-sources').hidden, true);
+  assert.equal(view.element('recording-recording-sources-title').hidden, true);
+  assert.equal(view.element('recording-recording-sources-empty').textContent, 'No source issues need attention.');
+});
+
+test('one healthy logical item contains provider problems separately from current supply and preserves provider identity', () => {
   const view = panelFixture();
-  const issues = [
-    { id: 'fmi', kind: 'stream', label: 'Outdoor temperature', unit: 'degC', status: 'stale',
-      sourceLabel: 'FMI', sourceRole: 'primary', sourceObservedAt: now - 3600000, lastCheckedAt: now,
-      reason: 'The latest observation is out of date.', feed: { label: 'Outdoor temperature', status: 'available', sourceLabel: 'Open-Meteo' } },
-    { id: 'elering', kind: 'provider', label: 'Published electricity prices', status: 'failed',
-      sourceLabel: 'Elering', sourceRole: 'backup', sourceObservedAt: now - 7200000, lastCheckedAt: now,
-      destination: 'provider-market', reason: 'The backup check failed.', feed: { label: 'Published electricity prices', status: 'available', sourceLabel: 'ENTSO-E' } },
-  ];
-  const update = () => view.panel.update({ recordingHealth: health({ recording: { sources: {
-    observedStreams: 1, usableStreams: 0, attentionStreams: 1, providerAttentionCount: 1, attentionCount: 2, unknownStreams: 0, issues,
-  } } }) });
+  const fmi = { id: 'fmi', kind: 'provider', sourceLabel: 'FMI', sourceRole: 'primary', status: 'failed',
+    sourceObservedAt: now - 3600000, lastCheckedAt: now, reason: 'The primary check failed.', destination: 'provider-outdoor' };
+  const backup = { id: 'openmeteo', kind: 'provider', sourceLabel: 'Open-Meteo', sourceRole: 'backup', status: 'supplying',
+    sourceObservedAt: now - 60000, lastCheckedAt: now, reason: 'The current feed is using this provider.', destination: 'provider-outdoor' };
+  const group = { id: 'feed-outdoor', label: 'Outdoor temperature', unit: 'degC', status: 'available', sourceLabel: 'Open-Meteo',
+    issues: [fmi], providers: [fmi, backup] };
+  const sources = { observedStreams: 2, usableStreams: 1, attentionCount: 1, impactCount: 0, groups: [group] };
+  const update = (scope = 'live') => view.panel.update({ recordingHealth: health({ scope, recording: { state: scope === 'snapshot' ? 'read-only' : 'ok', sources } }) });
+  update(); view.expireIntro();
+  const [card] = view.element('recording-recording-sources').children;
+  const [primary, secondary] = sourceRows(card);
+  assert.equal(view.element('recording-recording-sources').children.length, 1);
+  assert.equal(card.children[0].children[1].textContent, 'Available');
+  assert.equal(card.children[0].children[1].dataset.tone, 'healthy');
+  assert.equal(card.children[1].textContent, 'Current feed · Open-Meteo (backup)');
+  assert.equal(card.children[2].textContent, 'Primary feed check failed.');
+  assert.equal(sourceToggle(card).textContent, 'Feed details · 1 issue');
+  assert.equal(primary.children[0].children[0].textContent, 'FMI · Primary feed');
+  assert.equal(secondary.children[0].children[0].textContent, 'Open-Meteo · Backup feed');
+  assert.equal(secondary.children[0].children[1].textContent, 'Supplying data');
+  assert.equal(primary.children[3].dataset.recordingOpen, 'provider-main-temperatures-details');
+  assert.equal(primary.children[2].children[0].textContent, 'Source observation');
+  assert.equal(primary.children[2].children[2].textContent, 'Last provider check');
+  assert.equal(view.element('recording-recording-card').dataset.tone, 'neutral');
+  assert.equal(view.element('recording-status').hidden, true);
+  group.issues.push({ id: 'second', sourceRole: 'backup', status: 'overdue' }); update();
+  assert.equal(card.children[2].textContent, '2 source issues need attention.');
+  assert.equal(sourceToggle(card).textContent, 'Feed details · 2 issues');
+  group.status = 'partial'; sources.impactCount = 1; update();
+  assert.equal(card.children[0].children[1].textContent, 'Limited');
+  assert.equal(card.children[0].children[1].dataset.tone, 'warning');
+  assert.equal(card.children[2].textContent, 'Required data is incomplete.');
+  assert.equal(view.element('recording-recording-card').dataset.tone, 'warning');
+  group.status = 'unavailable'; group.sourceLabel = null; update();
+  assert.equal(card.children[1].textContent, 'Current feed unavailable');
+  assert.match(primary.children[2].children[1].textContent, /1 h ago/);
+  group.status = 'available'; group.sourceLabel = 'Open-Meteo'; sources.impactCount = 0; update('snapshot');
+  assert.equal(card.children[1].textContent, 'Recorded feed · Open-Meteo (backup)');
+  assert.equal(secondary.children[0].children[1].textContent, 'Recorded supply');
+});
+
+test('removing focused provider evidence returns focus to the stable group disclosure and distinct equal-labelled measurements stay separate', () => {
+  const view = panelFixture();
+  const issues = [{ id: 'first', kind: 'provider', sourceLabel: 'FMI', status: 'failed' }, { id: 'second', kind: 'provider', sourceLabel: 'Open-Meteo', status: 'failed' }];
+  const groups = [{ id: 'feed-outdoor', label: 'Outdoor temperature', status: 'unavailable', issues },
+    ...['room-a', 'room-b'].map(id => ({ id, label: 'Indoor temperature', status: 'unknown', issues: [{ id, status: 'unknown' }] }))];
+  const update = () => view.panel.update({ recordingHealth: health({ recording: { sources: { attentionCount: 3, impactCount: 3, groups } } }) });
   update();
-  const [fmi, elering] = view.element('recording-recording-sources').children;
-  assert.equal(fmi.children[0].children[2].textContent, 'FMI · Primary feed');
-  assert.equal(elering.children[0].children[2].textContent, 'Elering · Backup feed');
-  assert.equal(fmi.children[2].textContent, 'Current feed: available · Open-Meteo.');
-  assert.equal(elering.children[2].textContent, 'Current feed: available · ENTSO-E.');
-  assert.equal(elering.children[4].dataset.recordingOpen, 'provider-market-details');
-  assert.equal(elering.children[4].textContent, 'Published price feed details');
-  assert.equal(fmi.children[3].children[0].textContent, 'Source observation');
-  assert.equal(elering.children[3].children[0].textContent, 'Source observation', 'The source clock is never relabelled as a successful request');
-  assert.equal(elering.children[3].children[2].textContent, 'Last provider check');
-  issues[0].checkKind = 'acquisition'; update();
-  assert.equal(fmi.children[3].children[0].textContent, 'Source observation');
-  assert.equal(fmi.children[3].children[2].textContent, 'Last provider check');
-  issues[1].status = 'overdue'; update();
-  assert.equal(elering.children[0].children[1].textContent, 'Check overdue');
-  assert.equal(elering.children[2].textContent, 'Current feed: available · ENTSO-E.', 'An overdue backup check does not turn a healthy primary feed unavailable');
-  issues[0].feed = { label: 'Outdoor temperature', status: 'unavailable', sourceLabel: null };
-  issues[1].feed = { label: 'Published electricity prices', status: 'partial', sourceLabel: 'Elering' };
-  update();
-  assert.equal(fmi.children[2].textContent, 'Current feed: unavailable.');
-  assert.equal(elering.children[2].textContent, 'Current feed: partly available · Elering.');
-  assert.match(fmi.children[3].children[1].textContent, /1 h ago/, 'Feed changes do not renew original source evidence');
-  issues[0].sourceLabel = null; issues[0].sourceRole = null; issues[0].feed = null; update();
-  assert.equal(fmi.children[0].children[2].hidden, true);
-  assert.equal(fmi.children[2].hidden, true, 'Unidentified native/custom sources gain no invented provider or feed');
-  view.panel.update({ recordingHealth: health({ scope: 'snapshot', recording: { state: 'read-only', sources: { issues } } }) });
-  assert.equal(elering.children[2].textContent, 'Recorded feed: partly available · Elering.', 'Saved context never claims current acquisition');
+  const [card, roomA, roomB] = view.element('recording-recording-sources').children;
+  assert.notEqual(roomA, roomB);
+  card.children[3].open = true;
+  sourceRows(card)[0].children[3].focus();
+  issues.shift(); update();
+  assert.equal(view.document.activeElement, sourceToggle(card));
+  assert.equal(card.children[3].open, true);
+  assert.equal(sourceRows(card).length, 1);
+  view.panel.clear();
+  assert.equal(view.element('recording-recording-sources').children.length, 0);
 });
 
 test('a failed saved-copy recheck supersedes creation evidence and reaches collapsed warnings', async () => {

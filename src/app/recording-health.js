@@ -117,8 +117,8 @@ function sourceSummary(parameters, now, providers) {
       };
     });
   const providerIssues = providers.issues.filter(issue => {
-    const matching = issue.feed.label === 'Outdoor temperature' ? streamIssues.filter(stream =>
-      stream.feed?.label === issue.feed.label && stream.sourceLabel === issue.sourceLabel) : [];
+    const matching = issue.feed.id === 'outdoor' ? streamIssues.filter(stream =>
+      stream.feed?.id === issue.feed.id && stream.sourceLabel === issue.sourceLabel) : [];
     if (!matching.length) return true;
     for (const stream of matching) if (issue.lastCheckedAt !== null && issue.lastCheckedAt >= (stream.lastCheckedAt ?? -1)) {
       Object.assign(stream, { status: issue.status, reason: issue.reason, lastCheckedAt: issue.lastCheckedAt,
@@ -127,13 +127,43 @@ function sourceSummary(parameters, now, providers) {
     return false;
   });
   const combined = [...streamIssues, ...providerIssues];
+  const grouped = new Map();
+  for (const issue of combined) {
+    const feed = issue.feed, id = feed?.id ? `feed-${feed.id}` : `stream-${issue.id}`;
+    let group = grouped.get(id);
+    if (!group) {
+      group = { id, label: feed?.label ?? issue.label, unit: issue.unit,
+        status: feed?.status ?? issue.status, sourceLabel: feed ? feed.sourceLabel : issue.sourceLabel,
+        issues: [], providers: feed?.id ? providers.providerDetails?.[feed.id] ?? [] : [] };
+      grouped.set(id, group);
+    }
+    group.issues.push(issue);
+  }
+  const groups = [...grouped.values()];
+  let detailBudget = 50;
+  const visibleGroups = groups.slice(0, 50).map((group, index, visible) => {
+    // Reserve one diagnostic for every visible item before allocating extra
+    // provider evidence. Grouping must not turn a bounded panel into an archive.
+    const count = Math.min(group.issues.length, detailBudget - (visible.length - index - 1));
+    detailBudget -= count;
+    const retained = group.issues.slice(0, count);
+    return { ...group, issueCount: group.issues.length, issues: retained, truncated: count < group.issues.length,
+      providers: group.providers.map(provider => {
+        const diagnostic = retained.find(issue => issue.sourceLabel === provider.sourceLabel);
+        if (!diagnostic) return provider;
+        const { feed: ignored, ...detail } = diagnostic;
+        return detail;
+      }) };
+  });
   return { observedStreams: parameters?.length ?? null,
     usableStreams: parameters?.filter(row => usableSource(row, now)).length ?? null,
     attentionStreams: parameters === null ? null : streamIssues.length,
     unknownStreams: parameters === null ? null : issues.filter(row => !row.freshness).length,
     standbyStreams: parameters?.filter(row => row.standby === true && row.source === 'openmeteo' && row.signal === 'outdoor_temperature').length ?? null,
-    providerAttentionCount: providerIssues.length, attentionCount: combined.length, metadataKnown: parameters !== null,
-    complete: false, truncated: combined.length > 50, issues: combined.slice(0, 50) };
+    providerAttentionCount: providerIssues.filter(issue => issue.kind === 'provider').length,
+    attentionCount: groups.length, diagnosticCount: combined.length,
+    impactCount: groups.filter(group => group.status !== 'available').length, metadataKnown: parameters !== null,
+    complete: false, truncated: groups.length > 50 || visibleGroups.some(group => group.truncated), groups: visibleGroups, issues: combined.slice(0, 50) };
 }
 
 export function diskSpaceStatus(stats, checkedAt) {
@@ -393,11 +423,11 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
           ? 'Database writes are failing' : recording.state === 'write-waiting' ? 'Waiting for storage' : recording.state === 'stalled' ? 'Recording needs attention' : 'Recording sources are unavailable', detail: recording.detail });
       else if (recording.state !== 'read-only' && recording.lastFailureAt !== null && now - recording.lastFailureAt < DAY)
         attention.push({ id: 'recording-resumed', severity: 'warning', title: 'A database write failed earlier', detail: recording.detail });
-      if (recording.sources?.attentionCount > 0 && (recording.state === 'ok'
+      if (recording.sources?.impactCount > 0 && (recording.state === 'ok'
         || recording.sources.providerAttentionCount > 0
         || recording.sources.issues.some(issue => issue.checkKind === 'acquisition'))) attention.push({ id: 'recording-sources',
-        severity: 'warning', title: `${recording.sources.attentionCount} source${recording.sources.attentionCount === 1 ? ' needs' : 's need'} attention`,
-        detail: 'Review the affected sources and the current availability of each feed.' });
+        severity: 'warning', title: `${recording.sources.impactCount} source${recording.sources.impactCount === 1 ? ' needs' : 's need'} attention`,
+        detail: 'Required current data or planning coverage is unavailable, incomplete or needs attention. Review the affected sources.' });
       if (backup.state === 'failed') attention.push({ id: 'backup', severity: 'warning', title: 'The last backup failed', detail: backup.detail });
       if (backup.failedChecks || backup.changedChecks) attention.push({ id: 'backup-check', severity: 'warning',
         title: 'Saved-copy checks need attention', detail: `${backup.failedChecks} failed check${backup.failedChecks === 1 ? '' : 's'} and ${backup.changedChecks} changed cop${backup.changedChecks === 1 ? 'y' : 'ies'} were observed in this application run. Review Backups for the dated results.` });

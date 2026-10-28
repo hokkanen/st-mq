@@ -656,3 +656,32 @@ test('waiting for SQLite is visible independently of failed writes and clears wh
   assert.equal((await f.status()).recording.state, 'write-failed');
   assert.equal((await f.status()).recording.errorCode, 'write-queue-full');
 });
+
+test('source groups preserve equal-label stream identity and bound details after grouping without hiding impact', async () => {
+  const f = fixture();
+  f.current.recording.parameters = Array.from({ length: 60 }, (_, index) => ({
+    streamId: index.toString(16).padStart(12, '0'), observedThisRun: true,
+    signal: 'outdoor_temperature', unit: 'degC', source: 'mqtt-temperature', lastPollAt: start,
+    freshness: { status: 'unavailable' },
+  }));
+  const result = await f.status(), sources = result.recording.sources;
+  assert.equal(sources.attentionCount, 60);
+  assert.equal(sources.impactCount, 60);
+  assert.equal(sources.diagnosticCount, 60);
+  assert.equal(sources.groups.length, 50);
+  assert.equal(new Set(sources.groups.map(group => group.id)).size, 50);
+  assert(sources.groups.every(group => group.label === 'Outdoor temperature'));
+  assert.equal(sources.groups.reduce((n, group) => n + group.issues.length, 0), 50);
+  assert.equal(sources.truncated, true);
+  assert.match(result.attention.find(issue => issue.id === 'recording-sources').title, /^60 sources/);
+  for (const row of f.current.recording.parameters) row.source = 'fmi';
+  const grouped = (await f.status()).recording.sources;
+  assert.equal(grouped.attentionCount, 1, 'one outdoor item owns all of its provider observations');
+  assert.equal(grouped.impactCount, 1);
+  assert.equal(grouped.diagnosticCount, 60);
+  assert.equal(grouped.groups.length, 1);
+  assert.equal(grouped.groups[0].issueCount, 60);
+  assert.equal(grouped.groups[0].issues.length, 50);
+  assert.equal(grouped.groups[0].truncated, true);
+  assert.equal(grouped.truncated, true);
+});

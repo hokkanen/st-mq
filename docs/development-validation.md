@@ -338,8 +338,11 @@ fresh/stale/unavailable/failed/never-observed matrix, provider identity, both
 weather/market failures, partial solar/prices, recovery, original clocks,
 shared-cooldown provenance, privacy and replica boundaries. The isolated browser
 fixture `node test/browser/source-feed-health-smoke.js` renders the exact
-**Sources needing attention** section and produces a screenshot gallery/PDF for
-the outdoor matrix and weather/price-provider cases. It uses invented evidence,
+**Sources needing attention** section at 320/390/768/1440 pixels in both
+themes, with collapsed and expanded cards, preserved disclosure/focus and
+impact-based banner checks. It produces a screenshot gallery/PDF for the outdoor
+matrix and weather/price-provider cases, including healthy independent measurements
+to distinguish provider diagnostics from functional impact. It uses invented evidence,
 never installed configuration or live provider requests.
 
 `test/provider-standby.test.js` covers hourly checks through the real backup

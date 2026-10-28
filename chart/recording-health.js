@@ -33,9 +33,10 @@ const backupLabels = { available: 'Copy available', 'none-known': 'No known copy
   failed: 'Last backup failed', interrupted: 'Backup interrupted', unknown: 'Backup status unknown' };
 const diskLabels = { ok: 'Space available', low: 'Low disk space', critical: 'Critically low space', unknown: 'Disk space unknown' };
 const sourceLabels = { stale: 'Out of date', unavailable: 'Unavailable', 'held-attention': 'Held reading needs attention',
+  supplying: 'Supplying data', checked: 'Usable at last check', 'not-configured': 'Not configured',
   failed: 'Source check failed', partial: 'Partial coverage', overdue: 'Check overdue', invalid: 'Reading rejected', waiting: 'Waiting for a reading', unknown: 'Unknown' };
 const sourceRoleLabels = { primary: 'Primary feed', backup: 'Backup feed' };
-const feedStates = { available: 'available', partial: 'partly available', unavailable: 'unavailable', unknown: 'availability unknown' };
+const feedStates = { available: 'Available', partial: 'Limited', unavailable: 'Unavailable', unknown: 'Unknown' };
 const sourceDestinations = {
   adaptive: ['recording-adaptive-details', 'Adaptive measurement details'],
   inventory: ['recording-overview-details', 'Exact measurement and recorded-data details'],
@@ -89,13 +90,11 @@ export function recordingHealthView(health, recording, now = Date.now()) {
   const writer = dashboardWriterState({ recordingHealth: current });
   const sources = recorder.sources;
   const observed = count(sources?.observedStreams), usable = count(sources?.usableStreams);
-  const streamAttention = count(sources?.attentionStreams), providerAttention = count(sources?.providerAttentionCount);
-  const attention = count(sources?.attentionCount) ?? streamAttention, unknown = count(sources?.unknownStreams);
+  const attention = count(sources?.attentionCount), impact = count(sources?.impactCount), unknown = count(sources?.unknownStreams);
   const metadataUnknown = sources?.metadataKnown === false;
   const attentionLabel = `${metadataUnknown ? 'At least ' : ''}${decimal(attention)}`;
-  const sourceEvidence = attention > 0 ? providerAttention > 0
-    ? `${attentionLabel} source ${attention === 1 ? 'issue needs' : 'issues need'} attention · ${decimal(providerAttention)} provider ${providerAttention === 1 ? 'check' : 'checks'}`
-    : `${decimal(attention)} observed measurement stream${attention === 1 ? ' needs' : 's need'} attention` : null;
+  const sourceEvidence = attention > 0
+    ? `${attentionLabel} ${attention === 1 ? 'item has' : 'items have'} source issues${impact === 0 ? ' · affected data usable at this check' : impact > 0 ? ` · ${decimal(impact)} with data limitations` : ''}` : null;
   return {
     known: health?.version === 3,
     storageHistory: storageProblemSummary(health, { now }),
@@ -122,7 +121,7 @@ export function recordingHealthView(health, recording, now = Date.now()) {
         ? 'Storage status unknown' : recordingLabels[recorder.state] ?? recordingLabels.unknown,
       target: !readOnly && writer === 'unknown' && ['ok', 'starting'].includes(recorder.state)
         ? 'recording-performance-details' : issueTarget('recording', recorder.state),
-      tone: attention > 0 && tone(recorder.state) === 'neutral' ? 'warning' : tone(recorder.state),
+      tone: impact > 0 && tone(recorder.state) === 'neutral' ? 'warning' : tone(recorder.state),
       cardLabel: recorder.state === 'write-waiting' ? 'Recording delayed'
         : recorder.state === 'write-failed' ? 'Recording interrupted' : recordingLabels[recorder.state] ?? recordingLabels.unknown,
       detail: recorder.detail || 'Waiting for recording health information.',
@@ -131,8 +130,8 @@ export function recordingHealthView(health, recording, now = Date.now()) {
       loop: validTime(recorder.lastLoopCompletedAt) ? recordingEvidenceTime(recorder.lastLoopCompletedAt, now) : 'Not known',
       sourceCheck: validTime(recorder.lastSourceCheckAt) ? recordingEvidenceTime(recorder.lastSourceCheckAt, now) : 'Not known',
       coverage: readOnly ? 'Source evidence describes the recorded history; this server is not acquiring these measurements.'
-        : metadataUnknown ? 'Measurement stream counts are unavailable. Needs attention shows the known provider issues; other source issues may be unknown.'
-        : 'Observed and usable count measurement streams recorded in this run. Needs attention also includes provider checks. Configured measurements that have never reported are outside the observed counts. A held reading can be usable and still need attention.'
+        : metadataUnknown ? 'Measurement stream counts are unavailable. Needs attention counts items with known source issues; other issues may be unknown.'
+        : 'Observed and usable count measurement streams recorded in this run. Needs attention counts items with measurement or provider issues; several feed issues can belong to one item. Configured measurements that have never reported are outside the observed counts. A held reading can be usable and still need attention.'
           + (count(sources?.standbyStreams) > 0 ? ' A backup reading on standby keeps its original time; its age does not need attention while a fresh primary supplies the feed. See Backup checks in Data & settings for backup readiness.' : ''),
       countsVisible: !readOnly,
       observed: observed === null ? 'Unknown' : decimal(observed),
@@ -147,8 +146,9 @@ export function recordingHealthView(health, recording, now = Date.now()) {
         : observed === 0 && attention === 0 ? 'No measurement streams have been observed in this run.'
           : attention === 0 ? 'No source issues need attention.'
             : attention === null ? 'Source attention status is not known.'
-              : `${attentionLabel} source ${attention === 1 ? 'issue needs' : 'issues need'} attention; individual details are not available.`,
-      issues: Array.isArray(recorder.sources?.issues) ? recorder.sources.issues : [],
+              : `${attentionLabel} ${attention === 1 ? 'item needs' : 'items need'} attention; individual details are not available.`,
+      issues: Array.isArray(sources?.issues) ? sources.issues : [],
+      groups: Array.isArray(sources?.groups) ? sources.groups : [],
       truncated: recorder.sources?.truncated === true,
     },
     backup: { label: backup.state === 'available' && copies !== null ? `${copies} saved cop${copies === 1 ? 'y' : 'ies'}${backup.complete === false ? ' listed' : ''}${backupCheckWarning ? ' · check needs attention' : ''}` : backup.state === 'failed' && backupFailureLabel ? backupFailureLabel : backupLabels[backup.state] ?? backupLabels.unknown,
@@ -489,67 +489,127 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     set('recording-recording-loop', view.recording.loop);
     set('recording-recording-sourceCheck', view.recording.sourceCheck);
     set('recording-recording-coverage', view.recording.coverage);
+    set('recording-recording-source-context', view.recording.countsVisible ? '' : view.recording.coverage);
+    $('recording-recording-source-context').hidden = view.recording.countsVisible;
+    const countsDetails = $('recording-recording-counts-details');
+    if (!view.recording.countsVisible && countsDetails.contains(document.activeElement))
+      $('recording-recording-card').querySelector(':scope > summary')?.focus({ preventScroll: true });
+    countsDetails.hidden = !view.recording.countsVisible;
     for (const field of ['observed', 'usable', 'attention', 'unknown']) set(`recording-recording-${field}`, view.recording[field]);
     $('recording-recording-counts').hidden = !view.recording.countsVisible;
     $('recording-recording-unknown').hidden = !view.recording.unknown;
     set('recording-recording-sources-title', view.recording.sourceTitle);
     set('recording-recording-sources-empty', view.recording.sourcesEmpty);
-    $('recording-recording-sources-title').hidden = view.recording.issues.length === 0;
-    $('recording-recording-sources-empty').hidden = view.recording.issues.length > 0;
+    const groups = view.recording.groups;
+    $('recording-recording-sources-title').hidden = groups.length === 0;
+    $('recording-recording-sources-empty').hidden = groups.length > 0;
     set('recording-recording-sources-note', view.recording.truncated ? 'Additional source issues are omitted from this list.' : '');
     $('recording-recording-sources-note').hidden = !view.recording.truncated;
     const sourceList = $('recording-recording-sources');
-    const sourceIds = new Set(view.recording.issues.map((item, index) => item.id ?? `source-${index}`));
-    for (const [id, node] of sourceNodes) if (!sourceIds.has(id)) {
-      if (node.contains(document.activeElement)) $('recording-recording-card').querySelector(':scope > summary')?.focus({ preventScroll: true });
-      node.remove(); sourceNodes.delete(id);
+    const sourceIds = new Set(groups.map(item => item.id));
+    for (const [id, card] of sourceNodes) if (!sourceIds.has(id)) {
+      if (card.node.contains(document.activeElement)) $('recording-recording-card').querySelector(':scope > summary')?.focus({ preventScroll: true });
+      card.node.remove(); sourceNodes.delete(id);
     }
-    view.recording.issues.forEach((item, index) => {
-      const id = item.id ?? `source-${index}`;
-      let node = sourceNodes.get(id);
-      if (!node) {
-        node = document.createElement('li'); node.className = 'recording-source-exception';
+    groups.forEach((item, index) => {
+      let card = sourceNodes.get(item.id);
+      if (!card) {
+        const node = document.createElement('li'); node.className = 'recording-source-exception';
         const heading = document.createElement('div'); heading.className = 'recording-source-heading';
         const status = document.createElement('span'); status.className = 'recording-source-status';
         heading.append(document.createElement('strong'), status);
-        const origin = document.createElement('span'); origin.className = 'recording-source-origin'; heading.append(origin);
-        const reason = document.createElement('p'); reason.className = 'recording-source-reason';
         const feed = document.createElement('p'); feed.className = 'recording-source-feed';
-        const clocks = document.createElement('dl'); clocks.className = 'recording-source-clocks';
-        for (const label of ['Source observation', 'Last polling attempt']) {
-          const term = document.createElement('dt'); term.textContent = label;
-          clocks.append(term, document.createElement('dd'));
-        }
-        const link = document.createElement('a'); link.className = 'recording-source-link';
-        node.append(heading, reason, feed, clocks, link); sourceNodes.set(id, node);
+        const summary = document.createElement('p'); summary.className = 'recording-source-summary';
+        const details = document.createElement('details'); details.className = 'recording-source-details';
+        const toggle = document.createElement('summary');
+        const issues = document.createElement('ul'); issues.className = 'recording-source-issues';
+        details.append(toggle, issues);
+        node.append(heading, feed, summary, details);
+        card = { node, issueNodes: new Map() }; sourceNodes.set(item.id, card);
       }
+      const { node, issueNodes } = card;
       if (sourceList.children[index] !== node) {
         const focused = node.contains(document.activeElement) ? document.activeElement : null;
         sourceList.insertBefore(node, sourceList.children[index] ?? null); focused?.focus({ preventScroll: true });
       }
-      const [heading, reason, feed, clocks, link] = node.children;
-      const [title, status, origin] = heading.children;
+      const [heading, feed, summary, details] = node.children;
+      const [title, status] = heading.children;
+      const [toggle, issueList] = details.children;
       const unit = ({ degC: '°C', 'degree-minutes': '°min' })[item.unit] ?? item.unit;
       title.textContent = `${item.label}${unit ? ` (${unit})` : ''}`;
-      status.textContent = Object.hasOwn(sourceLabels, item.status) ? sourceLabels[item.status] : 'Needs attention';
-      status.dataset.tone = item.status === 'unknown' ? 'neutral' : 'warning';
-      const role = Object.hasOwn(sourceRoleLabels, item.sourceRole) ? sourceRoleLabels[item.sourceRole] : null;
-      origin.textContent = [item.sourceLabel, role].filter(Boolean).join(' · ');
-      origin.hidden = !origin.textContent;
-      reason.textContent = item.reason || ''; reason.hidden = !item.reason;
-      const feedState = Object.hasOwn(feedStates, item.feed?.status) ? feedStates[item.feed.status] : null;
-      feed.textContent = feedState ? `${view.recording.feedPrefix}: ${feedState}${item.feed.sourceLabel ? ` · ${item.feed.sourceLabel}` : ''}.` : '';
-      feed.hidden = !feed.textContent;
-      const destination = Object.hasOwn(sourceDestinations, item.destination) ? sourceDestinations[item.destination] : sourceDestinations.inventory;
-      link.dataset.recordingOpen = destination[0];
-      link.href = `#${link.dataset.recordingOpen}`;
-      link.textContent = destination[1];
-      clocks.children[0].textContent = 'Source observation';
-      clocks.children[1].textContent = validTime(item.sourceObservedAt) ? recordingEvidenceTime(item.sourceObservedAt, now()) : 'Not known';
-      clocks.children[2].textContent = item.kind === 'provider' || item.checkKind === 'acquisition' ? 'Last provider check' : 'Last polling attempt';
-      clocks.children[3].textContent = validTime(item.lastCheckedAt) ? recordingEvidenceTime(item.lastCheckedAt, now()) : 'Not known';
+      status.textContent = `${dated ? 'Last known: ' : ''}${feedStates[item.status] ?? sourceLabels[item.status] ?? 'Unknown'}`;
+      status.dataset.tone = item.status === 'available' ? dated ? 'neutral' : 'healthy' : item.status === 'unknown' ? 'neutral' : 'warning';
+      const issues = Array.isArray(item.issues) ? item.issues : [];
+      const providers = Array.isArray(item.providers) ? item.providers : [];
+      const provider = providers.length > 0 || issues.some(issue => issue.kind === 'provider' || issue.sourceRole);
+      const diagnosticCount = count(item.issueCount) ?? issues.length;
+      const recorded = view.recording.feedPrefix === 'Recorded feed';
+      const prefix = recorded ? 'Recorded feed' : dated ? 'Last known feed' : 'Current feed';
+      const supplier = item.providers?.find(provider => provider.sourceLabel === item.sourceLabel);
+      const supplierRole = supplier && ['primary', 'backup'].includes(supplier.sourceRole) ? ` (${supplier.sourceRole})` : '';
+      feed.textContent = !provider ? item.sourceLabel ? `Source · ${item.sourceLabel}` : recorded ? 'Recorded measurement' : dated ? 'Last known measurement' : 'Observed measurement'
+        : item.sourceLabel ? `${prefix} · ${item.sourceLabel}${supplierRole}`
+        : item.status === 'available' ? `${prefix} available` : item.status === 'partial' ? `${prefix} has incomplete data`
+          : item.status === 'unknown' ? `${prefix} not confirmed` : item.status === 'unavailable' ? `${prefix} unavailable`
+            : recorded ? 'Recorded measurement' : dated ? 'Last known measurement' : 'Observed measurement';
+      const role = issues.length === 1 ? sourceRoleLabels[issues[0].sourceRole] : null;
+      const affected = role ?? 'A feed';
+      const availableSummary = diagnosticCount === 1 ? issues[0].status === 'failed' ? `${role ?? 'Feed'} check failed.`
+        : issues[0].status === 'overdue' ? `${role ?? 'Feed'} check is overdue.`
+          : issues[0].status === 'stale' ? `${affected} data is out of date.`
+            : `${affected} needs attention.` : diagnosticCount ? `${diagnosticCount} source issues need attention.` : 'Feed issues need attention.';
+      summary.textContent = item.status === 'available'
+        ? availableSummary
+        : item.status === 'partial' ? 'Required data is incomplete.' : item.status === 'unavailable' ? 'Required data is unavailable.'
+          : item.status === 'unknown' ? 'Data availability is not confirmed.' : item.status === 'held-attention' ? 'Retained reading has a source warning.'
+            : item.status === 'stale' ? 'The reading is out of date.' : item.status === 'waiting' ? 'Waiting for usable source evidence.'
+              : 'Source evidence needs attention.';
+      const issueCount = `${diagnosticCount} ${diagnosticCount === 1 ? 'issue' : 'issues'}`;
+      toggle.textContent = `${provider ? 'Feed details' : 'Evidence'} · ${issueCount}`;
+      toggle.setAttribute('aria-label', `${provider ? 'Feed details' : 'Evidence'} for ${item.label} · ${issueCount}`);
+      const providerIds = new Set(providers.map(provider => provider.id));
+      const rows = [...providers, ...issues.filter(issue => !providerIds.has(issue.id))];
+      let omitted = details.children[2];
+      if (item.truncated && !omitted) { omitted = document.createElement('p'); omitted.className = 'recording-source-reason'; details.append(omitted); }
+      if (omitted) { omitted.textContent = 'Additional evidence for this item is omitted.'; omitted.hidden = !item.truncated; }
+      const issueIds = new Set(rows.map(issue => issue.id));
+      for (const [id, issueNode] of issueNodes) if (!issueIds.has(id)) {
+        if (issueNode.contains(document.activeElement)) toggle.focus({ preventScroll: true });
+        issueNode.remove(); issueNodes.delete(id);
+      }
+      rows.forEach((issue, issueIndex) => {
+        let issueNode = issueNodes.get(issue.id);
+        if (!issueNode) {
+          issueNode = document.createElement('li'); issueNode.className = 'recording-source-issue';
+          const origin = document.createElement('div'); origin.className = 'recording-source-issue-heading';
+          origin.append(document.createElement('strong'), document.createElement('span'));
+          const reason = document.createElement('p'); reason.className = 'recording-source-reason';
+          const clocks = document.createElement('dl'); clocks.className = 'recording-source-clocks';
+          for (const label of ['Source observation', 'Last polling attempt']) {
+            const term = document.createElement('dt'); term.textContent = label;
+            clocks.append(term, document.createElement('dd'));
+          }
+          const link = document.createElement('a'); link.className = 'recording-source-link';
+          issueNode.append(origin, reason, clocks, link); issueNodes.set(issue.id, issueNode);
+        }
+        if (issueList.children[issueIndex] !== issueNode) {
+          const focused = issueNode.contains(document.activeElement) ? document.activeElement : null;
+          issueList.insertBefore(issueNode, issueList.children[issueIndex] ?? null); focused?.focus({ preventScroll: true });
+        }
+        const [origin, reason, clocks, link] = issueNode.children;
+        const role = sourceRoleLabels[issue.sourceRole];
+        origin.children[0].textContent = [issue.sourceLabel, role].filter(Boolean).join(' · ') || 'Measurement evidence';
+        origin.children[1].textContent = issue.status === 'supplying' && (recorded || dated) ? recorded ? 'Recorded supply' : 'Last known supply' : sourceLabels[issue.status] ?? 'Needs attention';
+        origin.children[1].dataset.tone = ['unknown', 'checked', 'not-configured'].includes(issue.status) ? 'neutral' : issue.status === 'supplying' ? dated ? 'neutral' : 'healthy' : 'warning';
+        reason.textContent = issue.reason || ''; reason.hidden = !issue.reason;
+        clocks.children[1].textContent = validTime(issue.sourceObservedAt) ? recordingEvidenceTime(issue.sourceObservedAt, now()) : 'Not known';
+        clocks.children[2].textContent = issue.kind === 'provider' || issue.checkKind === 'acquisition' ? 'Last provider check' : 'Last polling attempt';
+        clocks.children[3].textContent = validTime(issue.lastCheckedAt) ? recordingEvidenceTime(issue.lastCheckedAt, now()) : 'Not known';
+        const destination = sourceDestinations[issue.destination] ?? sourceDestinations.inventory;
+        link.dataset.recordingOpen = destination[0]; link.href = `#${destination[0]}`; link.textContent = destination[1];
+      });
     });
-    sourceList.hidden = view.recording.issues.length === 0;
+    sourceList.hidden = groups.length === 0;
     const writeAt = health?.recording?.lastWriteAt;
     set('recording-performance-lastWrite', validTime(writeAt) ? recordingEvidenceTime(writeAt, now())
       : ['snapshot', 'history'].includes(health?.scope) ? 'Not monitored here' : 'No confirmed save in this run');
