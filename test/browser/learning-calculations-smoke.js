@@ -1,4 +1,5 @@
 // Exercise shared learning disclosures in a real browser using only synthetic data.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';

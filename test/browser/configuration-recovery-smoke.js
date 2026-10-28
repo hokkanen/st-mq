@@ -1,5 +1,6 @@
 // Synthetic recovery API fixture: checks the isolated page without starting a
 // controller, loading installation configuration, or contacting any equipment.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';

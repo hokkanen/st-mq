@@ -1,6 +1,7 @@
 // Real chart modules/Chart.js and production chart HTTP endpoint, using only a
 // disposable synthetic database/browser. Vite serves modules so --source can
 // compare an untouched checkout without overwriting its built dashboard.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

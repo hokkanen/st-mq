@@ -1,3 +1,4 @@
+import WebSocket from 'ws';
 import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Isolated UI fixture: actual built HTML, styles and monitor modules, with a
 // synthetic pair API in front of a temporary simulation. No pair manager,

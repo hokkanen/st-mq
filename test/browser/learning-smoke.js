@@ -1,4 +1,5 @@
 // Synthetic local fixture only. Requires an isolated Chrome DevTools listener.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';

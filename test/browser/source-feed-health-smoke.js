@@ -1,5 +1,6 @@
 // Exact production "Sources needing attention" panel, driven by real isolated
 // Engine/Recorder evidence. No household configuration, devices or services.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';

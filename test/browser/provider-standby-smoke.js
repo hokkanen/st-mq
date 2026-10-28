@@ -1,4 +1,5 @@
 // Full built dashboard, invented provider data and a disposable browser only.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';

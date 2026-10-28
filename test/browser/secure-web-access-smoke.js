@@ -1,3 +1,4 @@
+import WebSocket from 'ws';
 import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Browser-only fixture: synthetic endpoint responses, loopback static server,
 // disposable Chrome profile and blocked external requests. No application or

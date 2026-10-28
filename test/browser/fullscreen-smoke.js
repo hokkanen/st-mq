@@ -1,4 +1,5 @@
 // Isolated synthetic app and Chrome profile; never reads household configuration.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';

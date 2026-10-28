@@ -1,4 +1,5 @@
 // Synthetic app and browser-only pump responses. No device connection or actuation.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';

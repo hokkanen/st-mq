@@ -1,5 +1,6 @@
 // Production dashboard with a synthetic history-recovery API. Disposable data,
 // simulation and browser only; no household configuration or equipment access.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';

@@ -1,3 +1,4 @@
+import WebSocket from 'ws';
 import { uiSpacingFailures, uiLinkFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Production recording markup, tables and styles in a disposable browser,
 // with synthetic data only. No application or household connections are made.

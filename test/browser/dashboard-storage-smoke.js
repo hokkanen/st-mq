@@ -1,5 +1,6 @@
 // The production dashboard and a disposable simulated application. Only the
 // browser's status evidence and one delayed request are controlled by this test.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';

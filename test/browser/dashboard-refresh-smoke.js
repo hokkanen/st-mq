@@ -1,5 +1,6 @@
 // Exercise the complete built dashboard, including errors caught and displayed
 // by refresh(). Disposable simulation only; no household configuration or devices.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';

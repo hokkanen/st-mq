@@ -1,5 +1,6 @@
 // Run after npm run build. Every provider/status/action below is synthetic;
 // the isolated application and disposable browser never load household config.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';

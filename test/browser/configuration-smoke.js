@@ -1,3 +1,4 @@
+import WebSocket from 'ws';
 import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Run after npm run build. All configuration, runtime and browser data are synthetic.
 import assert from 'node:assert/strict';

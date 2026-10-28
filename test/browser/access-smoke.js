@@ -1,4 +1,5 @@
 // Isolated simulation and browser profile; never opens household configuration.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';

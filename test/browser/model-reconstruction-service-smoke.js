@@ -1,5 +1,6 @@
 // Full standalone simulation, file-backed learning history and real local APIs.
 // The browser and every database are disposable; no household configuration loads.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID, createHash } from 'node:crypto';

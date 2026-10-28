@@ -1,3 +1,4 @@
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';

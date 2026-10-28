@@ -1,4 +1,5 @@
 // Actual chart, provider panel and HTTP route with invented data, no live acquisition.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';

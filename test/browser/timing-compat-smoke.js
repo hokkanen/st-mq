@@ -1,3 +1,4 @@
+import WebSocket from 'ws';
 import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Isolated comparison UI through disclosure cycles; no runtime or household data.
 import assert from 'node:assert/strict';

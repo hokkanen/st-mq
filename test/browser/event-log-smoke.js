@@ -1,6 +1,7 @@
 // The built dashboard and real event API, with isolated source history and
 // transport failures. No household configuration, broker or equipment is used.
 // Run after npm run build; add --firefox to exercise the same cases through BiDi.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';

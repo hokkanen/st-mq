@@ -1,3 +1,4 @@
+import WebSocket from 'ws';
 import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Synthetic HA fixture: real add-on runtime, ingress listener and configuration
 // imports behind a local proxy, with an in-memory Supervisor API. Requires an

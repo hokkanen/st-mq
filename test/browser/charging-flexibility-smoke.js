@@ -1,3 +1,4 @@
+import WebSocket from 'ws';
 import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Synthetic shared charger cards and guarded dialog. No app runtime or live feeds.
 import assert from 'node:assert/strict';

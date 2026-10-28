@@ -1,3 +1,4 @@
+import WebSocket from 'ws';
 import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 // Run after npm run build. Every provider/status/action below is synthetic;
 // the isolated application and disposable browser never load household config.

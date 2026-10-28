@@ -1,5 +1,6 @@
 // Production markup and every stylesheet, without live providers or dashboard
 // mutations. Feature suites separately exercise the renderers and role behavior.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';

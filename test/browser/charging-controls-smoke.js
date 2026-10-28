@@ -1,4 +1,5 @@
 // Real shared charger renderer and styles, isolated synthetic data and requests.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -684,7 +685,8 @@ try {
       }
       if (state === 'confirmed-pause') for (const id of ['charger1', 'charger2']) {
         assert.equal(await evaluate(`document.getElementById('${id}-state').textContent`), 'Controlled');
-        assert.match(await evaluate(`document.getElementById('${id}-event-value').textContent`), /^Paused between periods · Resumes /);
+        assert.equal(await evaluate(`document.getElementById('${id}-event-label').textContent`), 'Paused between periods');
+        assert.match(await evaluate(`document.getElementById('${id}-event-value').textContent`), /^Resumes /);
         assert.equal(await evaluate(`document.getElementById('${id}-completion').textContent`), '17:00');
       }
       const actionVisible = ['long', 'manual-stop', 'manual-start', 'manual-window', 'startup-stop'].includes(state);

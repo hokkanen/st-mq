@@ -1,3 +1,4 @@
+import WebSocket from 'ws';
 import { seedGarageIntent } from '../../scripts/lib/garage-intent-fixture.js';
 // Isolated synthetic app and Chrome profile; never reads household configuration.
 import assert from 'node:assert/strict';

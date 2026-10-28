@@ -1,4 +1,5 @@
 // Synthetic localhost app and intercepted controls; no household configuration.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';

@@ -1574,6 +1574,11 @@ separate from both Node commands; run the relevant suite for UI changes. All
 browser scripts create isolated application servers and temporary databases.
 Never point them at a household application.
 
+Browser harnesses use the existing `ws` dependency for their debugging transport.
+The bundled Node 22 WebSocket client can lose the Firefox BiDi connection after
+4,096 commands, even on an empty page. The full chart sweep crosses that boundary;
+retain its original UI assertions and deadlines when checking either runtime.
+
 These scripts start their own disposable Chrome processes:
 
 ```sh

@@ -1,4 +1,5 @@
 // Run after npm run build. Uses a disposable synthetic app and Chrome profile.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';

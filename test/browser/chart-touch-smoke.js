@@ -1,4 +1,5 @@
 // Disposable simulated app and actual browser input; no household configuration.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';

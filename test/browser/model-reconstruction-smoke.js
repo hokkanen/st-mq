@@ -1,4 +1,5 @@
 // Real History tools markup and styles; synthetic service, no household access.
+import WebSocket from 'ws';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
