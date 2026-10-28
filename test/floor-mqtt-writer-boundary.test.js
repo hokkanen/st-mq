@@ -23,13 +23,25 @@ async function waitUntil(predicate, signal) {
 async function fixture(t, { deferAcquireReply = false } = {}) {
   // Completion of received MQTT/writer work belongs to the case deadline, not
   // an independent three-second poll. Native request/lease timers stay real.
-  const until = predicate => waitUntil(predicate, t.signal);
   const directory = mkdtempSync(join(tmpdir(), 'stmq-floor-mqtt-writer-'));
   const store = new Store(join(directory, 'history.sqlite'));
   let authority = true, acquisition, client, stream, readOnly, acquireSignal, bytes = 0;
   let expectedIngress = 0, receivedIngress = 0;
   const clock = { wall: Date.parse('2026-10-15T12:00:00Z'), mono: 10000 };
   const wire = [], held = [], acquireReplies = [], heldAcquireBodies = [], commitGates = [], actions = new Set();
+  let waitingFor = null, lastCompletedWait = null;
+  const until = async predicate => {
+    waitingFor = String(predicate);
+    await waitUntil(predicate, t.signal);
+    lastCompletedWait = waitingFor; waitingFor = null;
+  };
+  const describeInterruption = () => t.diagnostic(JSON.stringify({ waitingFor, lastCompletedWait,
+    queue: store.writeQueueStatus(), writePending: store.writePending, writerFailed: store.writerFailed,
+    writePhase: store.writePhase, expectedIngress, receivedIngress,
+    heldPublications: held.length, acquireReplies: acquireReplies.length, pendingActions: actions.size,
+    recentOperations: wire.slice(-8).map(row => row.op) }));
+  t.signal.addEventListener('abort', describeInterruption, { once: true });
+  t.after(() => t.signal.removeEventListener('abort', describeInterruption));
   const native = { active: false, mask: 0, gpio_mask: 0, owner: '', treatment: 0,
     seq: 0, highwater: 0, lease_until_ms: 0, end_ms: 0, reason: 'connected' };
   const frame = extra => ({ v: 1, build: 'sonoff4chpro-lease-v1', sketch_md5: 'd'.repeat(32),
