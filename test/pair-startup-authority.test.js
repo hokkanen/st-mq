@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { Store } from '../src/storage/store.js';
 import { PairManager } from '../src/pairing/manager.js';
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 
 const failure = code => Object.assign(new Error(code), { code });
 const deferred = () => Promise.withResolvers();
@@ -12,7 +13,7 @@ const deferred = () => Promise.withResolvers();
 async function fixture(t) {
   const directory = await mkdtemp('/tmp/stmq-startup-authority-'), nodes = [], events = [];
   t.after(async () => { await Promise.all(nodes.map(node => node.pair.close())); await rm(directory, { recursive: true, force: true }); });
-  async function create(name, platform, { role = 'master', timeoutMs = 1000 } = {}) {
+  async function create(name, platform, { role = 'master', timeoutMs = testCompletionLimit(1000) } = {}) {
     const databasePath = join(directory, `${name}.sqlite`);
     if (role === 'master') new Store(databasePath).close();
     const node = { name, owned: false, starts: 0, stopError: null, releaseError: null, restore: [] };

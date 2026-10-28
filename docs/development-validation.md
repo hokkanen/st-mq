@@ -975,6 +975,10 @@ original requested expiry rather than renewing it at storage admission.
 Selected whole-case budgets for checkpoint/replay, sensor/fireplace correction,
 publication admission and bulk pairing/rsync/SSH/cross-runtime fixtures use that
 same completion allowance. Their original standard bounds remain unchanged.
+The startup-authority fixture applies it to ordinary synthetic peer exchanges,
+so a durable fencing reply can report its intended failure on native storage.
+Its explicit 30/100 ms timeout cases and the production ten-second startup
+authority ceiling remain unchanged.
 These wrappers include setup and cleanup; actual transport, writer, cancellation
 and equipment deadlines retain their own ownership. In particular, the separate
 continuous-recording recovery guard is unchanged and cannot pass publication
