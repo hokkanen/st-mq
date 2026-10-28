@@ -58,7 +58,7 @@ automation:
             else:
               - if:
                   - condition: template
-                    value_template: "{{ trigger.platform == 'homeassistant' }}"
+                    value_template: "{{ trigger is defined and trigger.platform | default('') == 'homeassistant' }}"
                 then:
                   - action: persistent_notification.dismiss
                     data:

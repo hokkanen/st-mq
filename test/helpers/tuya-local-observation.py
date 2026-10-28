@@ -541,6 +541,8 @@ class InstallerTests(unittest.TestCase):
         clear = success['else'][0]['if'][0]['value_template']
         self.assertTrue(render(clear, trigger={'platform': 'homeassistant'}))
         self.assertFalse(render(clear, trigger={'platform': 'state'}))
+        self.assertFalse(render(clear))
+        self.assertFalse(render(clear, trigger={}))
 
     def test_partial_install_and_unsafe_backup_rejected(self):
         (self.integration / 'device.py').write_bytes(PATCHED['device.py'])
