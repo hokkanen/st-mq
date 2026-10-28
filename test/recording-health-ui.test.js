@@ -12,6 +12,16 @@ const health = (overrides = {}) => ({ version: 3, checkedAt: now, scope: 'live',
   backup: { state: 'available', count: 1, totalBytes: 1000, complete: true, latestKind: 'saved-copy', latestAt: now - 100 * 86400_000 }, attention: [], ...overrides,
   recording: { state: 'ok', writer: { state: 'ready' }, lastSourceCheckAt: now - 60000, lastLoopCompletedAt: now - 1000, ...overrides.recording } });
 
+test('recording counts explain expected standby evidence without calling it usable or needing attention', () => {
+  const view = recordingHealthView(health({ recording: { sources: {
+    observedStreams: 2, usableStreams: 1, attentionStreams: 0, unknownStreams: 0, standbyStreams: 1, issues: [],
+  } } }), undefined, now);
+  assert.equal(view.recording.observed, '2'); assert.equal(view.recording.usable, '1'); assert.equal(view.recording.attention, '0');
+  assert.match(view.recording.coverage, /outdoor backup is on standby/);
+  assert.match(view.recording.coverage, /Backup checks/);
+  assert.equal(view.recording.issues.length, 0);
+});
+
 test('backup age is factual, not an invented schedule or present verification', () => {
   const view = recordingHealthView(health(), undefined, now);
   assert.equal(view.backup.label, '1 saved copy');

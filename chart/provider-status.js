@@ -5,6 +5,7 @@ import { vehicleConnections, equipmentConnectionSummary } from './equipment.js';
 import { durationText } from './reading-status.js';
 import { vehicleObservationAdmissionStatus } from './vehicle-feed-status.js';
 import { homeIndoorEstimate } from './home-controls.js';
+import { standbyCheckRows } from './provider-standby.js';
 import { PROVIDER_CURRENT_ATTENTION_MS, PROVIDER_TEMPERATURE_ATTENTION_MS } from '../src/domain/reading-freshness.js';
 
 const names = Object.freeze({ entsoe: 'ENTSO-E', elering: 'Elering', fmi: 'FMI',
@@ -581,7 +582,9 @@ export function dashboardProviders(status, options) {
     status.charging?.vehicleFeeds?.length || entries.some(([key]) => key === 'teslamate') ? vehicleDisplay(status) : null,
     currentTemperatures || weather ? temperatureWeatherDisplay(status, currentTemperatures, weather ? describe(weather) : null, options) : null,
   ].filter(Boolean).map(group => ({ ...withPriceForecast(recordedView(status) ? recordedProviderGroup(group, status, options) : group, status, options),
-    introduction: group.key === 'market' ? 'Published electricity prices and optional forecasts have separate availability and uses.' : providerIntroductions[group.key] }));
+    introduction: group.key === 'market' ? 'Published electricity prices and optional forecasts have separate availability and uses.' : providerIntroductions[group.key],
+    standbyChecks: standbyCheckRows(status.providers, group.key === 'market' ? ['market']
+      : group.key === 'main-temperatures' ? ['outdoor', 'weather'] : [], { ...options, recorded: recordedView(status) }) }));
 }
 
 function failureLabel(value) {

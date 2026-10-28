@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Check unused Open-Meteo outdoor/forecast feeds and Elering published prices
+  hourly. Show dated backup readiness separately from the current feed, and
+  identify old Open-Meteo outdoor readings as standby while fresh FMI data is
+  available, without changing recorded history or source selection.
+
 - Give ordinary links shared themed styling and keyboard focus across the
   dashboard. Keep reopened time, priority and cost-comparison windows and nested
   calendars usable when an earlier close event arrives late. Explain malformed

@@ -22,6 +22,7 @@ import './charging-setup.css';
 import { createHistoryChart } from './history-chart.js';
 import { fetchChartResponse } from './chart-request.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
+import { renderStandbyChecks } from './provider-standby.js';
 import { activeRates, rateRows, temporaryValues, priceControlState, renderHomePolicy, homeIndoorEstimate, homeReferenceValue, homeReferenceSummary } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, h66ReadingGroups, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderRecordingOverview, recordingOverviewRefresh } from './recording.js';
@@ -651,7 +652,8 @@ function renderProviders(s) {
       const detail = document.createElement('p'); detail.className = 'muted provider-health';
       const readings = document.createElement('div'); readings.className = 'provider-series-content';
       const sections = document.createElement('div'); sections.className = 'provider-source-sections';
-      body.append(introduction, detail, sections);
+      const checks = document.createElement('section'); checks.className = 'provider-standby-checks'; checks.hidden = true;
+      body.append(introduction, detail, checks, sections);
       if (key === 'electricity') {
         const setupReference = document.createElement('p'); setupReference.className = 'provider-charging-setup';
         const link = document.createElement('a'); link.href = '#charging-setup-charger1-details';
@@ -672,8 +674,9 @@ function renderProviders(s) {
     state.dataset.state = row.dataset.state;
     const sources = sourceStates?.length ? sourceStates : [{ label: sourceLabel, tone: row.dataset.state, state: display.state }];
     const sourceDetail = sources.map(source => `${source.label}: ${source.state}`).join('. ');
+    const standbyAttention = entry.standbyChecks?.filter(check => check.attention) ?? [];
     setStatusDetail(state, { key: `provider-overview-${key}`, label: display.state, title: overviewTitle,
-      detail: [display.detail, sourceDetail].filter(Boolean).join('\n\n') });
+      detail: [display.detail, sourceDetail, ...standbyAttention.map(check => `${check.label}: ${check.state}. ${check.detail}`)].filter(Boolean).join('\n\n') });
     const source = row.querySelector('.provider-category-meta');
     source.replaceChildren();
     for (const [sourceIndex, sourceEntry] of sources.entries()) {
@@ -682,11 +685,16 @@ function renderProviders(s) {
       name.textContent = sourceEntry.label; name.title = `${sourceEntry.label}: ${sourceEntry.state}`;
       name.setAttribute('aria-label', name.title); source.append(name);
     }
+    if (standbyAttention.length) {
+      const note = document.createElement('span'); note.className = 'provider-name'; note.dataset.state = 'attention';
+      note.textContent = ` · ${standbyAttention.length === 1 ? 'Backup check needs' : 'Backup checks need'} attention`; source.append(note);
+    }
     row.querySelector('.provider-introduction').textContent = entry.introduction;
     const health = row.querySelector('.provider-health');
     health.hidden = key === 'vehicle-telemetry';
     setStatusDetail(health, { key: `provider-health-${key}`,
       label: 'Source details', title: overviewTitle, detail: `${display.state}. ${display.detail}` });
+    renderStandbyChecks(row.querySelector('.provider-standby-checks'), entry.standbyChecks ?? []);
     const sections = row.querySelector('.provider-source-sections');
     for (const existing of [...sections.children]) if (!entry.sections?.some(section => section.key === existing.dataset.sourceSection)) existing.remove();
     for (const [sectionIndex, section] of (entry.sections ?? []).entries()) {

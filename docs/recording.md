@@ -34,6 +34,34 @@ the session's explicit one-day approval and binding deadline are durable chargin
 intent, not electricity-price observations. A read-only replica does not fetch
 or reconstruct transient predictions from copied history.
 
+Open-Meteo outdoor temperature, Open-Meteo weather/solar forecasts and Elering
+published prices each have an hourly standby check on the active master. The
+first check is due one hour after acquisition starts; ordinary use of the backup
+also counts as a check and postpones its next standby request. These checks use
+the same configured location/market, requests and decoders as actual fallback.
+They respect shared provider access/rate-limit cooldowns and `Retry-After`, retain
+their last completed result and due time across ordinary restart, and yield to
+foreground acquisition. No request runs on a replica or after loss of authority.
+
+Standby results are compact diagnostics under the corresponding
+`providers:health` job's `standby` field. They do not select a provider, update
+current readings, store forecast/price snapshots, extend recorder coverage or
+enter learning. A check requires usable current data, not only HTTP success.
+Forecast checks assess temperature continuity and solar availability separately;
+price checks report current/rest-of-day coverage without treating unpublished
+tomorrow prices as failure. Failed/partial checks keep the current feed's status
+independent. A separate `checking` flag never replaces the last completed result.
+
+Data & settings shows compact **Backup checks** rows inside Electricity prices
+and Main temperatures & Weather. They distinguish not checked, in use, usable at
+last check, partial coverage, failed checks and overdue checks, with original
+check dates and next attempts in the shared explanation popover. A successful
+hourly check does not keep a 30-minute outdoor observation continuously fresh or
+guarantee availability at a later failover. Read-only views label these as
+recorded checks and make no live-readiness claim. Easee, vehicle feeds, the
+electricity-price prediction service and FMI station selection keep their
+existing behavior.
+
 The shared provider HTTP transport keeps its original finite request deadline
 through response-body consumption. Caller cancellation, provider shutdown and
 that deadline also cancel an admitted body reader after headers arrive. A
@@ -1635,6 +1663,15 @@ has arrived, a subsequent source loss warns immediately. This initial wait never
 hides write failures or a stalled loop. **Monitoring active** means some observed
 recording evidence is usable. Partial loss of an observed source still raises
 attention and links to its explanation, even when other sources remain healthy.
+An old Open-Meteo outdoor stream is labelled **Standby** while the committed
+outdoor provider selects FMI and a same-unit/policy FMI observation from this run
+is fresh. Its original stale status and timestamps remain in the recorder;
+it does not raise a current-feed exception during that replacement. Expired FMI
+evidence restores source warnings immediately. Backup readiness/failures belong
+to Backup checks, separately from current recording health. `standbyStreams`
+counts that observed standby evidence separately, without declaring it fresh;
+the source-count explanation identifies the expected standby gap. Individual FMI
+station streams and other independent measurements keep their existing rules.
 Garage's saved Normal/Away selection is durable application intent without a
 reporting deadline. Its original event timestamp remains unchanged; its age
 alone raises no source warning. This neither extends recorded

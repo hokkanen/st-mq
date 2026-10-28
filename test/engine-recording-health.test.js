@@ -5,7 +5,7 @@ import { Engine } from '../src/app/engine.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { createRecordingHealth } from '../src/app/recording-health.js';
 import { createAppServer } from '../src/app/server.js';
-import { recordingRows } from '../chart/recording.js';
+import { recordingRows, recordingStatus } from '../chart/recording.js';
 
 const MINUTE = 60_000, START = Date.parse('2026-10-11T14:28:00Z');
 const stateRow = recording => recording.exactParameters.find(row=>row.signal === 'caravan_dehumidifier_state');
@@ -26,6 +26,35 @@ function fixture(t) {
       receivedAt:now,quality,raw:{timeBasis:value === null ? 'availability-transition' : 'mqtt-live-status'}}),
     status:()=>health.status({store,engine,current:engine.latestStatus})};
 }
+
+test('an expired Open-Meteo stream becomes standby only while committed FMI evidence is usable', async t => {
+  const f = fixture(t);
+  const put = source => f.engine.ingest({ source, device: `synthetic-${source}`, signal: 'outdoor_temperature',
+    value: 0, unit: 'degC', sourceTime: f.now(), receivedAt: f.now(), quality: source === 'openmeteo' ? ['estimated'] : [] });
+  put('openmeteo'); f.advance(40 * MINUTE); put('fmi');
+  f.store.setState('providers:health', { outdoor: { source: 'fmi', acquisition: { selected: 'fmi' } } });
+  const recorded = f.engine.recorder.sourceStatus(f.now());
+  const before = f.store.db.prepare('SELECT total_changes() n').get().n;
+  let current = f.engine.recordingSourceStatus(f.now());
+  let row = current.parameters.find(row => row.source === 'openmeteo');
+  assert.equal(row.standby, true); assert.equal(row.freshness.status, 'stale');
+  assert.equal(recordingStatus(row, { now: f.now() }).label, 'Standby');
+  let health = await f.status();
+  assert.equal(health.recording.sources.observedStreams, 2);
+  assert.equal(health.recording.sources.usableStreams, 1);
+  assert.equal(health.recording.sources.standbyStreams, 1);
+  assert.deepEqual(health.recording.sources.issues, []);
+  assert.deepEqual(f.engine.recorder.sourceStatus(f.now()), recorded, 'classification changes no recorder evidence');
+  assert.equal(f.store.db.prepare('SELECT total_changes() n').get().n, before, 'health classification is read-only');
+  f.advance(31 * MINUTE);
+  current = f.engine.recordingSourceStatus(f.now());
+  assert.equal(current.parameters.find(row => row.source === 'openmeteo').standby, false);
+  health = await f.status(); assert.equal(health.recording.sources.attentionStreams, 2, 'loss of current data restores warnings');
+  put('openmeteo');
+  f.store.setState('providers:health', { outdoor: { source: 'openmeteo', acquisition: { selected: 'openmeteo' } } });
+  assert.equal(f.engine.recordingSourceStatus(f.now()).parameters.find(row => row.source === 'openmeteo').standby, false);
+  assert.equal((await f.status()).recording.sources.attentionStreams, 1, 'FMI stream behavior is unchanged');
+});
 
 test('status and independent health use committed recovery and loss between controller updates without writes', async t=>{
   const f = fixture(t);

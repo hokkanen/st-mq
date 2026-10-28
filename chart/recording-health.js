@@ -117,7 +117,8 @@ export function recordingHealthView(health, recording, now = Date.now()) {
       loop: validTime(recorder.lastLoopCompletedAt) ? recordingEvidenceTime(recorder.lastLoopCompletedAt, now) : 'Not known',
       sourceCheck: validTime(recorder.lastSourceCheckAt) ? recordingEvidenceTime(recorder.lastSourceCheckAt, now) : 'Not known',
       coverage: readOnly ? 'Source evidence describes the recorded history; this server is not acquiring these measurements.'
-        : 'Counts cover measurement streams observed in this run. Configured sources that have never reported are outside these counts. A held reading can be usable and still need attention.',
+        : 'Counts cover measurement streams observed in this run. Configured sources that have never reported are outside these counts. A held reading can be usable and still need attention.'
+          + (count(sources?.standbyStreams) > 0 ? ' The outdoor backup is on standby; its old reading does not need attention while FMI is fresh. See Backup checks under Main temperatures & Weather.' : ''),
       countsVisible: !readOnly,
       observed: observed === null ? 'Unknown' : decimal(observed),
       usable: usable === null ? 'Unknown' : decimal(usable),

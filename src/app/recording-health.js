@@ -89,9 +89,11 @@ function usableSource(row, now) {
  * provider strings never leave this independent health endpoint. */
 function sourceSummary(parameters, now) {
   if (parameters === null) return null;
-  const issues = parameters.filter(row => !usableSource(row, now) || row.freshness?.status === 'held-attention');
+  const issues = parameters.filter(row => !(row.standby === true && row.source === 'openmeteo' && row.signal === 'outdoor_temperature')
+    && (!usableSource(row, now) || row.freshness?.status === 'held-attention'));
   return { observedStreams: parameters.length, usableStreams: parameters.filter(row => usableSource(row, now)).length,
-    attentionStreams: issues.length, unknownStreams: parameters.filter(row => !row.freshness).length,
+    attentionStreams: issues.length, unknownStreams: issues.filter(row => !row.freshness).length,
+    standbyStreams: parameters.filter(row => row.standby === true && row.source === 'openmeteo' && row.signal === 'outdoor_temperature').length,
     complete: false, truncated: issues.length > 50,
     issues: issues.slice(0, 50).map((row, index) => {
       const info = typeof row.signal === 'string' ? recordedSignalInfo(row.signal) : null;

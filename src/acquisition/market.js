@@ -208,14 +208,16 @@ function attemptFailure(source, error) {
 /** One primary GET, then one original-provider fallback only when needed.
  * Tomorrow not being published yet is a valid short horizon, not an outage.
  */
-export async function fetchMarket({ connections, now, http, signal, skipSources = [] } = {}) {
+export async function fetchMarket({ connections, now, http, signal, skipSources = [], onSourceResult, clock = Date.now } = {}) {
   const attempts = [];
   let primary, backup, lastError;
   for (const [source, fetcher] of [['entsoe', fetchEntsoe], ['elering', fetchElering]]) {
     if (signal?.aborted) throw new ProviderError('provider-request-aborted');
     if (skipSources.includes(source)) { attempts.push({ source, status: 'backoff', error: null }); continue; }
+    const attemptedAt = clock();
     try {
       const result = await fetcher({ connections, now, http, signal });
+      onSourceResult?.({ source, result, attemptedAt });
       const incomplete = result.coverage.gaps || !result.coverage.completeToday;
       attempts.push({ source, status: incomplete ? 'incomplete' : 'ok',
         error: incomplete ? 'incomplete-market-coverage' : null });
@@ -223,6 +225,7 @@ export async function fetchMarket({ connections, now, http, signal, skipSources 
       if (!incomplete) break;
     } catch (error) {
       if (signal?.aborted) throw new ProviderError('provider-request-aborted');
+      onSourceResult?.({ source, error, attemptedAt });
       lastError = error; attempts.push(attemptFailure(source, error));
     }
   }

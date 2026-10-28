@@ -35,9 +35,11 @@ async function weatherFallback(options, forecast) {
     if (skipSources.includes(source)) {
       acquisition.attempts.push({ source, status: 'backoff', error: null }); continue;
     }
+    const attemptedAt = (options.clock ?? Date.now)();
     try {
       let result = await fetcher(options);
       if (signal?.aborted) throw weatherError(null, 'Weather acquisition cancelled');
+      options.onSourceResult?.({ source, result, attemptedAt });
       acquisition.attempts.push({ source, status: 'ok', error: null });
       if (forecast && source === 'fmi' && solarStatus(result.forecast) !== 'available') {
         primary = result; continue;
@@ -50,6 +52,7 @@ async function weatherFallback(options, forecast) {
       return result;
     } catch (error) {
       if (signal?.aborted) throw weatherError(null, 'Weather acquisition cancelled');
+      options.onSourceResult?.({ source, error, attemptedAt });
       lastError = error;
       acquisition.attempts.push({ source, status: 'error',
         error: Number.isInteger(error?.status) ? `HTTP-${error.status}` : 'provider-request-failed',

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { weatherAcquisitionIdentity } from '../acquisition/weather-identity.js';
+import { outdoorStandbyStatus } from '../domain/provider-standby.js';
 import { unavailableElectricityForecast } from '../acquisition/electricity-forecast.js';
 import { createFloorOverride, floorOverrideObligation, floorOverrideStatus } from '../control/floor-override.js';
 import { HeatingAutomation } from './automation.js';
@@ -1963,7 +1964,7 @@ export class Engine {
     return this.latestStatus;
   }
   recordingSourceStatus(now = this.clock()) {
-    return this.recorder.sourceStatus(now);
+    return outdoorStandbyStatus(this.recorder.sourceStatus(now), this.store.getState('providers:health')?.outdoor, now);
   }
   async initializeCommittedStatus({ signal, isCurrent = () => true } = {}) {
     const current = () => !this.suspended && this.canControl() && isCurrent();

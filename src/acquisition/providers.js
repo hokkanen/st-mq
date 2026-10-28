@@ -6,7 +6,8 @@ import { createHttp, providerFailureCode } from './http.js';
 import { fileTokenStore } from './token-store.js';
 import { ocppInstallation } from './easee-ocpp-setup.js';
 import { createDeviceProviders } from './devices.js';
-import { fetchMarket } from './market.js';
+import { fetchMarket, marketLocation } from './market.js';
+import { STANDBY_CHECK_MS, STANDBY_SOURCES, standbyAssessment } from '../domain/provider-standby.js';
 import { startElectricityForecast, fetchElectricityForecast } from './electricity-forecast.js';
 import { resolveMarketIntervals } from '../domain/market-authority.js';
 import { fetchWeather, fetchOutdoorTemperature } from './weather.js';
@@ -129,7 +130,7 @@ function acquisitionInfo(raw) {
   return info;
 }
 
-function noteAcquisition(state, raw, now) {
+function noteAcquisition(state, raw, now, { select = true } = {}) {
   const info = acquisitionInfo(raw);
   if (!info) return;
   for (const attempt of info.attempts) {
@@ -141,7 +142,7 @@ function noteAcquisition(state, raw, now) {
         shared: /HTTP-(401|403|429)/.test(attempt.error ?? '') || attempt.retryAfterMs > 0 };
     }
   }
-  state.acquisition = info;
+  if (select) state.acquisition = info;
 }
 
 function cacheWeather(previous, result, snapshotId, now) {
@@ -245,6 +246,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     outdoor: { enabled: location, period: cadence.outdoorIntervalMs ?? 5 * MINUTE, run: args => outdoor({ ...args, connections, http }), sources: ['fmi', 'openmeteo'] },
   };
   const health = {}, pending = new Map();
+  const standbyCancellations = new Map();
   const saved = store.getState('providers:health') ?? {};
   const weatherIdentity = weatherAcquisitionIdentity(connections);
   const now = clock();
@@ -269,6 +271,24 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
         .map(([source, state]) => [source, { failures: Math.min(10, Math.max(0, state.failures ?? 0)),
           nextAttemptAt: state.nextAttemptAt, error: safeFailure(state.error),
           shared: state.shared === true || /HTTP-(401|403|429)/.test(safeFailure(state.error)) }])) };
+    if (job.enabled && STANDBY_SOURCES[name] && (name !== 'market' || marketLocation(connections).country)) {
+      const prior = previous?.standby?.source === STANDBY_SOURCES[name] ? previous.standby : null;
+      const evidenceTime = value => validSourceTime(value) && value <= now ? value : null;
+      health[name].standby = { source: STANDBY_SOURCES[name],
+        status: ['ok', 'partial', 'error'].includes(prior?.status) && evidenceTime(prior.lastCheckedAt) ? prior.status : 'waiting',
+        checking: false,
+        lastAttemptAt: evidenceTime(prior?.lastAttemptAt), lastCheckedAt: evidenceTime(prior?.lastCheckedAt),
+        lastSuccessAt: evidenceTime(prior?.lastSuccessAt),
+        nextAttemptAt: Number.isFinite(prior?.nextAttemptAt) && prior.nextAttemptAt <= now + 24 * 60 * MINUTE
+          ? Math.max(now, prior.nextAttemptAt) : now + STANDBY_CHECK_MS,
+        error: prior?.error ? safeFailure(prior.error) : null,
+        sourceObservedAt: evidenceTime(prior?.sourceObservedAt),
+        coverage: prior?.coverage && typeof prior.coverage.current === 'boolean' && typeof prior.coverage.gaps === 'boolean'
+          && validSourceTime(prior.coverage.knownUntil) ? { current: prior.coverage.current, gaps: prior.coverage.gaps,
+            knownUntil: prior.coverage.knownUntil,
+            ...(name === 'market' ? { completeToday: prior.coverage.completeToday === true } : {}) } : null,
+        solarStatus: ['available', 'partial', 'unavailable'].includes(prior?.solarStatus) ? prior.solarStatus : null };
+    }
     if (name === 'easee' && job.enabled) {
       const state = health[name];
       const readings = savedCurrentReadings(previous, configuredCurrents);
@@ -357,25 +377,82 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     }
   }
 
+  function sourceCooldowns(name, at) {
+    const state = health[name], job = definitions[name];
+    // Provider-wide access/rate limits apply equally to acquisition and checks.
+    for (const other of Object.values(health)) for (const [source, blocked] of Object.entries(other.sourceBackoff)) {
+      if (job.sources?.includes(source) && blocked.shared && blocked.nextAttemptAt > at
+        && blocked.nextAttemptAt > (state.sourceBackoff[source]?.nextAttemptAt ?? 0)) state.sourceBackoff[source] = { ...blocked };
+    }
+    return Object.entries(state.sourceBackoff).filter(([, value]) => value.nextAttemptAt > at).map(([source]) => source);
+  }
+
+  function standbyOutcome(name, { result, error, attemptedAt }, checkedAt) {
+    const state = health[name], previous = state.standby;
+    if (!previous) return;
+    let assessment;
+    try { if (!error) assessment = standbyAssessment(name, result, checkedAt); }
+    catch { error = new Error('Invalid standby response'); }
+    state.standby = { source: previous.source, status: error ? 'error' : assessment.status, checking: false,
+      lastAttemptAt: attemptedAt, lastCheckedAt: checkedAt,
+      lastSuccessAt: !error && assessment.status === 'ok' ? checkedAt : previous.lastSuccessAt,
+      nextAttemptAt: Math.max(checkedAt + STANDBY_CHECK_MS, state.sourceBackoff[previous.source]?.nextAttemptAt ?? 0),
+      error: error ? Number.isInteger(error.status) ? `HTTP-${error.status}` : errorCode(error) : null,
+      sourceObservedAt: assessment?.sourceObservedAt ?? null, coverage: assessment?.coverage ?? null,
+      solarStatus: assessment?.solarStatus ?? null };
+  }
+
+  async function pollStandby(name) {
+    const state = health[name], job = definitions[name], at = clock();
+    const skipped = sourceCooldowns(name, at), source = state.standby.source;
+    if (skipped.includes(source)) {
+      state.standby.nextAttemptAt = Math.max(state.standby.nextAttemptAt, state.sourceBackoff[source].nextAttemptAt);
+      await write(() => store.setState('providers:health', health));
+      return;
+    }
+    const cancellationForCheck = new AbortController();
+    standbyCancellations.set(name, cancellationForCheck);
+    const signal = AbortSignal.any([cancellation.signal, cancellationForCheck.signal]);
+    const previous = state.standby;
+    const checking = { ...previous, checking: true, lastAttemptAt: at };
+    state.standby = checking;
+    let result, error, outcome;
+    try {
+      await write(() => store.setState('providers:health', health));
+      if (!signal.aborted && canControl())
+        result = await job.run({ now: at, clock, signal, skipSources: [job.sources[0], ...skipped],
+          onSourceResult: row => { if (row.source === source) outcome = row; } });
+    } catch (failure) { error = failure; }
+    finally { if (standbyCancellations.get(name) === cancellationForCheck) standbyCancellations.delete(name); }
+    if (closed || !canControl()) return;
+    if (signal.aborted) {
+      // A due foreground poll takes precedence. Its real backup attempt, if
+      // any, will replace this diagnostic; cancellation is not a feed failure.
+      if (state.standby === checking) state.standby = previous;
+    } else {
+      noteAcquisition(state, (error ?? result)?.acquisition, clock(), { select: false });
+      standbyOutcome(name, outcome ?? { result, error, attemptedAt: at }, clock());
+    }
+    await write(() => store.setState('providers:health', health));
+  }
+
   async function poll(name) {
     if (closed || !canControl()) return;
     const job = definitions[name], state = health[name], at = clock();
+    standbyCancellations.get(name)?.abort();
     Object.assign(state, { status: 'running', lastAttemptAt: at });
     void write(() => store.setState('providers:health', health)).catch(() => {});
-    let failure = null, retryAfterMs = 0, issues = [], staleSourceTimes = {}, readings, missingTomorrow = false, electricityCommitted = false, completedAt = null;
+    let failure = null, retryAfterMs = 0, issues = [], staleSourceTimes = {}, readings, missingTomorrow = false, electricityCommitted = false, completedAt = null, standbyResult;
     try {
       if (name === 'easee' && interruptedDevices.size && !await interruptElectricity([]))
         throw new Error('Electrical interruption could not be saved');
       // Forecast and current weather share provider hosts. A server's rate
       // limit or access denial applies to both routes, while a missing station
       // reading alone must not disable a working forecast.
-      for (const other of Object.values(health)) for (const [source, blocked] of Object.entries(other.sourceBackoff)) {
-        if (job.sources?.includes(source) && blocked.shared && blocked.nextAttemptAt > at
-          && blocked.nextAttemptAt > (state.sourceBackoff[source]?.nextAttemptAt ?? 0)) state.sourceBackoff[source] = { ...blocked };
-      }
-      const skipSources = Object.entries(state.sourceBackoff).filter(([, value]) => value.nextAttemptAt > at).map(([source]) => source);
+      const skipSources = sourceCooldowns(name, at);
       const epoch = name === 'easee' ? devices.electricityEpoch?.() : undefined;
-      const result = await job.run({ now: at, clock, signal: cancellation.signal, skipSources });
+      const result = await job.run({ now: at, clock, signal: cancellation.signal, skipSources,
+        ...(state.standby ? { onSourceResult: row => { if (row.source === state.standby.source) standbyResult = row; } } : {}) });
       const acquiredAt = clock();
       completedAt = acquiredAt;
       if (closed || !canControl()) return;
@@ -384,6 +461,8 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       if (name === 'weather') result.acquisitionIdentity = weatherIdentity;
       if (name === 'outdoor') for (const row of result) row.raw = { ...row.raw, acquisitionIdentity: weatherIdentity };
       noteAcquisition(state, result?.acquisition, clock());
+      if (!standbyResult && state.standby && (result.source ?? result[0]?.source) === state.standby.source)
+        standbyResult = { result, attemptedAt: at };
       state.source = result?.acquisition?.selected ?? result?.source ?? (Array.isArray(result) ? result.find(row => row.value !== null)?.source : null) ?? state.source;
       await write(() => {
       if (name === 'easee' && epoch !== devices.electricityEpoch?.())
@@ -505,6 +584,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       }
     }
     if (closed || !canControl()) return;
+    if (standbyResult) standbyOutcome(name, standbyResult, clock());
     state.error = failure;
     state.failures = failure ? Math.min(10, state.failures + 1) : 0;
     if (!failure) state.lastSuccessAt = completedAt;
@@ -544,6 +624,12 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       if (!job.enabled || pending.has(name) || health[name].nextAttemptAt > clock() && !streamRecovered) continue;
       const flight = poll(name).finally(() => pending.delete(name));
       pending.set(name, flight);
+    }
+    for (const [name, state] of Object.entries(health)) {
+      const key = `standby:${name}`;
+      if (!state.standby || pending.has(name) || pending.has(key) || state.standby.nextAttemptAt > clock()) continue;
+      const flight = pollStandby(name).finally(() => pending.delete(key));
+      pending.set(key, flight);
     }
     return Promise.allSettled([...pending.values(), priceForecastFlight]);
   }

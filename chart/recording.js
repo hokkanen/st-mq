@@ -46,6 +46,7 @@ export function recordingStatus(row = {}, { now = Date.now() } = {}) {
       messages.push(`The estimate was last saved ${durationText(now-row.lastSavedAt)} ago.`);
     return {label,detail:messages.join(' ')};
   }
+  if (row.standby === true) return { label: 'Standby', detail: 'FMI supplies the current outdoor reading. Open-Meteo is the backup; its last reading keeps its original time. See Backup checks under Main temperatures & Weather for its readiness.' };
   const freshness = row.freshness;
   if (!freshness) return { label: ({ fresh: 'Recorded acquisition', stale: 'Reading rejected',
     failed: 'Acquisition failed', unavailable: 'Reading unavailable' })[row.status] ?? 'Waiting for source',

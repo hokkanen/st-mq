@@ -333,6 +333,15 @@ or establish physical Raspberry Pi timing.
 `test/control-attempt.test.js` check exact-once known-unsent outcomes, safe parent
 rollback causes, query/post-dispatch exclusions and monitoring enable/disable
 history. Adapter suites exercise the same accounting at native boundaries.
+`test/provider-standby.test.js` covers hourly checks through the real backup
+decoders, normal-use deduplication, restart, shared retry delays, foreground
+preemption and authority loss, while asserting unchanged selected data/history.
+`test/provider-standby-ui.test.js` and `test/engine-recording-health.test.js`
+cover dated backup states, read-only projection and the scoped outdoor standby
+warning. After building, `node test/browser/provider-standby-smoke.js` starts its
+own disposable Chrome and checks the complete synthetic dashboard in both
+themes at 320–1440 px, keyboard explanations and refresh preservation.
+
 `test/storage-operation-health.test.js` and
 `test/storage-operation-owners.test.js` cover bounded monotonic retention,
 owner deduplication, dated refusals, failures retained after later successes,
